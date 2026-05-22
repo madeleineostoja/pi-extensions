@@ -1,0 +1,179 @@
+export type { SandboxAuditEvent, SandboxPolicyChangedEvent, AuditEntry } from "./audit/schema.js";
+export { createAuditPipeline } from "./audit/audit.js";
+export type { RecordAuditOptions, AuditPipeline } from "./audit/audit.js";
+
+export { createCaps } from "./enforcement/caps.js";
+export type {
+  CapabilityManifest,
+  CapabilitySet,
+  ManifestContext,
+  NonoFilesystem,
+  NonoFilesystemDeny,
+  NonoNetwork,
+  CapsInstance,
+} from "./enforcement/caps.js";
+
+export { getNonoPath, getBinaryStatus, isSupportedPlatform, detectMusl, checkNonoVersion, pinnedVersion } from "./runtime/binary.js";
+export type { BinaryStatus } from "./runtime/binary.js";
+
+export {
+  parseArgs,
+  getArgumentCompletions,
+  createSlashCommands,
+  isValidHost,
+  writeHostsToPersisted,
+  removeHostFromPersistedFile,
+} from "./slash/commands.js";
+export type {
+  SessionState,
+  SubcommandContext,
+  ParsedArgs,
+  SlashCommandsInstance,
+} from "./slash/commands.js";
+
+export { applySessionOverrides } from "./policy/effective.js";
+
+export { createToolGate, BLOCK_REASON } from "./enforcement/toolGate.js";
+export type {
+  ToolCallEvent,
+  ToolGate,
+  ToolGateOptions,
+  ToolGateResult,
+  AccessMode,
+} from "./enforcement/toolGate.js";
+
+export { sandboxExtension };
+export default sandboxExtension;
+
+import type { ExtensionAPI, ExtensionContext, SessionStartEvent, ToolCallEvent, ToolCallEventResult, SessionShutdownEvent } from "@earendil-works/pi-coding-agent";
+import { createPolicyManager } from "./policy/load.js";
+import { createSlashCommands } from "./slash/commands.js";
+import { createToolGate } from "./enforcement/toolGate.js";
+import { initSubprocessSandbox } from "./enforcement/subprocess.js";
+import { createBinaryRuntime } from "./runtime/binary.js";
+import { subscribeStatus } from "./ui/status.js";
+import { createAuditPipeline } from "./audit/audit.js";
+import type { AuditEntry } from "./audit/schema.js";
+import type { ManifestContext } from "./enforcement/caps.js";
+
+// Process-wide guard: prevents double-registration on the same pi object.
+// A WeakSet is appropriate because instances are owned by the caller and
+// we must not extend their lifetime.
+const _registered = new WeakSet<ExtensionAPI>();
+
+/**
+ * Wire the sandbox extension into a Pi instance.
+ *
+ * Conforms to `ExtensionFactory = (pi: ExtensionAPI) => void`. Initialization
+ * that requires an `ExtensionContext` (cwd, ui, hasUI) runs inside the
+ * `session_start` handler, where Pi provides `ctx` as the second argument.
+ *
+ * Safe to load multiple times: a second `session_start` on the same `pi`
+ * instance is a no-op with a warning emitted via `ctx.ui.notify`.
+ */
+function sandboxExtension(pi: ExtensionAPI): void {
+  pi.on("session_start", (_event: SessionStartEvent, ctx: ExtensionContext): void => {
+    if (_registered.has(pi)) {
+      ctx.ui.notify("pi-sandbox: sandboxExtension called twice on the same pi instance — ignoring.", "warning");
+      return;
+    }
+    _registered.add(pi);
+
+    const policyManager = createPolicyManager();
+
+    try {
+      policyManager.loadPolicy(ctx.cwd, { ui: ctx.ui });
+    } catch (err) {
+      ctx.ui.notify(`pi-sandbox: failed to load policy: ${String(err)}`, "error");
+    }
+
+    const manifestCtx: ManifestContext = {
+      hasUI: ctx.hasUI,
+      cwd: ctx.cwd,
+      platform: process.platform,
+      ui: {
+        notify: (text: string, level: "warning" | "error") => ctx.ui.notify(text, level),
+      },
+    };
+
+    const piEventsTarget = { emit: (event: string, payload: unknown) => pi.events.emit(event, payload) };
+    const { recordAudit, getRecentBlockedHosts } = createAuditPipeline();
+
+    function onAudit(entry: Omit<AuditEntry, "ts">): void {
+      const policy = policyManager.getPolicy();
+      recordAudit(entry, {
+        logEnabled: policy.audit.log,
+        logFile: policy.audit.logFile,
+        events: piEventsTarget,
+      });
+    }
+
+    const cmds = createSlashCommands({ recordAudit, getRecentBlockedHosts });
+
+    const binaryRuntime = createBinaryRuntime();
+
+    const { binaryStatus, nonoPath } = initSubprocessSandbox(
+      pi,
+      () => policyManager.getPolicy(),
+      manifestCtx,
+      () => cmds.getSessionState(),
+      undefined,
+      onAudit
+    );
+
+    const policy = policyManager.getPolicy();
+    if (policy.enforcement.requireKernelSandbox && binaryStatus.kind !== "ok") {
+      const reasonDetail =
+        binaryStatus.kind === "platform-unsupported"
+          ? `platform ${binaryStatus.platform} is not supported for the nono kernel sandbox`
+          : `install failed (${binaryStatus.reason}${binaryStatus.detail ? `: ${binaryStatus.detail}` : ""})`;
+      ctx.ui.notify(
+        `pi-sandbox: enforcement.requireKernelSandbox is true but kernel enforcement is unavailable — ${reasonDetail}. ` +
+          "To recover, run: npm rebuild @earendil-works/pi-sandbox. " +
+          "To acknowledge degraded mode, set enforcement.requireKernelSandbox to false.",
+        "error"
+      );
+      _registered.delete(pi);
+      return;
+    }
+
+    const gate = createToolGate({
+      getPolicy: () => policyManager.getPolicy(),
+      getSession: () => cmds.getSessionState(),
+      ctx: manifestCtx,
+      subscribe: policyManager.subscribe,
+      onAudit,
+    });
+
+    pi.on("tool_call", async (event: ToolCallEvent): Promise<ToolCallEventResult | void> => {
+      const result = await gate.handleToolCall(event);
+      if (result) {
+        return { block: true, reason: result.reason };
+      }
+      return undefined;
+    });
+
+    if (nonoPath === null && binaryStatus.kind !== "ok") {
+      binaryRuntime.warnMissingOnce((msg, level) => ctx.ui.notify(msg, level));
+    }
+
+    cmds.registerSandboxCommand(pi, policyManager, ctx.cwd, piEventsTarget);
+
+    const unsubStatus = subscribeStatus({
+      policyManager,
+      getSessionState: () => cmds.getSessionState(),
+      hasUI: ctx.hasUI,
+      ui: { setStatus: (key, text) => ctx.ui.setStatus(key, text) },
+      onSessionMutation: (fn: () => void) => {
+        return cmds.subscribeSessionChange(fn);
+      },
+      inProcessOnly: nonoPath === null,
+    });
+
+    pi.on("session_shutdown", (_shutdownEvent: SessionShutdownEvent): void => {
+      unsubStatus();
+      gate.dispose();
+      _registered.delete(pi);
+    });
+  });
+}

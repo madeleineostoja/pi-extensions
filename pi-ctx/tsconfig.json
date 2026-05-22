@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "typebox": ["./node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/build/index.d.mts"]
+    }
+  },
+  "include": ["src"]
+}

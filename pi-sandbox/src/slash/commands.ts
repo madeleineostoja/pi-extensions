@@ -1,0 +1,625 @@
+/**
+ * /sandbox slash command implementation.
+ *
+ * Registers the `sandbox` command with Pi. The module exports testable functions
+ * and registration is attempted only when the pi object is passed in.
+ */
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+import { modify, applyEdits, parse as parseJsonc } from "jsonc-parser";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "../types/pi-tui.js";
+import type { AuditPipeline } from "../audit/audit.js";
+import { isValidNetworkAllowEntry } from "../policy/schema.js";
+import type { PolicyManager } from "../policy/load.js";
+import type { EventsTarget } from "../audit/events.js";
+import { decideFsAccess } from "../enforcement/decide.js";
+import { applySessionOverrides } from "../policy/effective.js";
+
+// ---------------------------------------------------------------------------
+// Host validation — delegates to isValidNetworkAllowEntry from policy/schema.ts
+// ---------------------------------------------------------------------------
+
+export { isValidNetworkAllowEntry as isValidHost };
+
+// ---------------------------------------------------------------------------
+// Session state
+// ---------------------------------------------------------------------------
+
+export interface SessionState {
+  sessionAllowedHosts: Set<string>;
+  networkOff: boolean;
+  sandboxOff: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// JSONC persistence helpers
+// ---------------------------------------------------------------------------
+
+function readFileOrEmpty(filePath: string): string {
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch {
+    return "{}";
+  }
+}
+
+function ensureDir(filePath: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function parsePersistedConfig(filePath: string): { network?: { allow?: string[] } } {
+  if (!fs.existsSync(filePath)) return {};
+  const src = readFileOrEmpty(filePath);
+  const errors: { error: number; offset: number; length: number }[] = [];
+  const result = parseJsonc(src, errors, { allowTrailingComma: true });
+  return (result as { network?: { allow?: string[] } }) ?? {};
+}
+
+export function writeHostsToPersisted(filePath: string, hosts: string[]): void {
+  ensureDir(filePath);
+  let src = readFileOrEmpty(filePath);
+
+  const existing = parsePersistedConfig(filePath);
+  const existingHosts = new Set<string>(existing?.network?.allow ?? []);
+
+  for (const host of hosts) {
+    if (existingHosts.has(host)) continue;
+    existingHosts.add(host);
+    const edits = modify(src, ["network", "allow", -1], host, {
+      formattingOptions: { insertSpaces: true, tabSize: 2 },
+    });
+    src = applyEdits(src, edits);
+  }
+
+  fs.writeFileSync(filePath, src, "utf8");
+}
+
+export function removeHostFromPersistedFile(filePath: string, host: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+
+  const parsed = parsePersistedConfig(filePath);
+  const currentAllow: string[] = parsed?.network?.allow ?? [];
+  const idx = currentAllow.indexOf(host);
+  if (idx === -1) return false;
+
+  let src = readFileOrEmpty(filePath);
+  const newAllow = currentAllow.filter((h) => h !== host);
+  const edits = modify(src, ["network", "allow"], newAllow, {
+    formattingOptions: { insertSpaces: true, tabSize: 2 },
+  });
+  src = applyEdits(src, edits);
+  fs.writeFileSync(filePath, src, "utf8");
+  return true;
+}
+
+function getPersistedAllowedHosts(filePath: string): string[] {
+  const parsed = parsePersistedConfig(filePath);
+  return parsed?.network?.allow ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Config file paths
+// ---------------------------------------------------------------------------
+
+function getProjectConfigPath(cwd: string): string {
+  return path.join(cwd, ".pi", "sandbox.json");
+}
+
+function getUserConfigPath(): string {
+  return path.join(os.homedir(), ".pi", "agent", "sandbox.json");
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand context
+// ---------------------------------------------------------------------------
+
+export interface SubcommandContext {
+  ui: Pick<ExtensionUIContext, "notify">;
+  policyManager: PolicyManager;
+  cwd: string;
+  events?: EventsTarget;
+}
+
+// ---------------------------------------------------------------------------
+// Argument parsing
+// ---------------------------------------------------------------------------
+
+export interface ParsedArgs {
+  subcommand: string;
+  hosts: string[];
+  persist: false | "project" | "user";
+  target: string;
+}
+
+export function parseArgs(rawArgs: string): ParsedArgs {
+  const tokens = rawArgs.trim().split(/\s+/).filter(Boolean);
+  const result: ParsedArgs = {
+    subcommand: "",
+    hosts: [],
+    persist: false,
+    target: "",
+  };
+
+  if (tokens.length === 0) return result;
+
+  result.subcommand = tokens[0];
+
+  const rest = tokens.slice(1);
+  const positional: string[] = [];
+
+  for (const tok of rest) {
+    if (tok === "--persist") {
+      result.persist = "project";
+    } else if (tok === "--persist=user") {
+      result.persist = "user";
+    } else {
+      positional.push(tok);
+    }
+  }
+
+  result.hosts = positional;
+  result.target = positional[0] ?? "";
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Tab completion
+// ---------------------------------------------------------------------------
+
+const SUBCOMMANDS = ["status", "reload", "why", "allow", "revoke", "network", "on", "off"];
+
+export function getArgumentCompletions(
+  prefix: string,
+  policyManager: PolicyManager,
+  getSession?: () => SessionState,
+  getRecentBlockedHosts?: () => readonly string[]
+): AutocompleteItem[] | null {
+  const tokens = prefix.trim().split(/\s+/).filter(Boolean);
+  const endsWithSpace = prefix.endsWith(" ");
+
+  if (tokens.length === 0 || (tokens.length === 1 && !endsWithSpace)) {
+    const partial = tokens[0] ?? "";
+    return SUBCOMMANDS.filter((s) => s.startsWith(partial)).map((s) => ({ value: s, label: s }));
+  }
+
+  const subcommand = tokens[0];
+
+  if (subcommand === "allow") {
+    const blocked = getRecentBlockedHosts?.() ?? [];
+    const existing = new Set(tokens.slice(1));
+    return [...blocked].filter((h) => !existing.has(h)).map((s) => ({ value: s, label: s }));
+  }
+
+  if (subcommand === "revoke") {
+    const policy = policyManager.getPolicy();
+    const candidates = new Set<string>(policy.network.allow);
+    if (getSession) {
+      for (const h of getSession().sessionAllowedHosts) {
+        candidates.add(h);
+      }
+    }
+    const existing = new Set(tokens.slice(1));
+    return [...candidates].filter((h) => !existing.has(h)).map((s) => ({ value: s, label: s }));
+  }
+
+  if (subcommand === "network") {
+    if (tokens.length === 1 || (tokens.length === 2 && !endsWithSpace)) {
+      const partial = tokens[1] ?? "";
+      return ["on", "off"].filter((s) => s.startsWith(partial)).map((s) => ({ value: s, label: s }));
+    }
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// createSlashCommands factory — owns per-instance session state and listeners
+// ---------------------------------------------------------------------------
+
+export interface SlashCommandsInstance {
+  getSessionState: () => SessionState;
+  subscribeSessionChange: (fn: () => void) => () => void;
+  notifySessionChange: () => void;
+  handleStatus: (ctx: SubcommandContext) => void;
+  handleSummary: (ctx: SubcommandContext) => void;
+  handleReload: (ctx: SubcommandContext) => void;
+  handleWhy: (ctx: SubcommandContext, target: string) => Promise<void>;
+  handleAllow: (ctx: SubcommandContext, hosts: string[], persist: false | "project" | "user") => void;
+  handleRevoke: (ctx: SubcommandContext, host: string, persist: boolean) => void;
+  handleNetworkOff: (ctx: SubcommandContext) => void;
+  handleNetworkOn: (ctx: SubcommandContext) => void;
+  handleOff: (ctx: SubcommandContext) => void;
+  handleOn: (ctx: SubcommandContext) => void;
+  dispatch: (rawArgs: string, ctx: SubcommandContext) => void;
+  registerSandboxCommand: (pi: ExtensionAPI, policyManager: PolicyManager, cwd: string, events?: EventsTarget) => void;
+}
+
+export interface SlashCommandsDeps {
+  recordAudit: AuditPipeline["recordAudit"];
+  getRecentBlockedHosts: AuditPipeline["getRecentBlockedHosts"];
+}
+
+export function createSlashCommands(deps: SlashCommandsDeps): SlashCommandsInstance {
+  const { recordAudit, getRecentBlockedHosts } = deps;
+
+  function emitPolicyChange(
+    ctx: SubcommandContext,
+    decision: "granted" | "revoked",
+    scope: "session" | "persisted",
+    hostsOrRule?: string | string[],
+    rule?: string
+  ): void {
+    if (Array.isArray(hostsOrRule)) {
+      for (const host of hostsOrRule) {
+        recordAudit(
+          { kind: "policy-change", decision, scope, source: "command", host },
+          { events: ctx.events }
+        );
+      }
+    } else {
+      recordAudit(
+        {
+          kind: "policy-change",
+          decision,
+          scope,
+          source: "command",
+          ...(hostsOrRule != null && { host: hostsOrRule }),
+          ...(rule != null && { rule }),
+        },
+        { events: ctx.events }
+      );
+    }
+  }
+
+  const state: SessionState = {
+    sessionAllowedHosts: new Set(),
+    networkOff: false,
+    sandboxOff: false,
+  };
+
+  const listeners = new Set<() => void>();
+
+  function getSessionState(): SessionState {
+    return state;
+  }
+
+  function subscribeSessionChange(fn: () => void): () => void {
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+  }
+
+  function notifySessionChange(): void {
+    for (const fn of listeners) fn();
+  }
+
+  function handleStatus(ctx: SubcommandContext): void {
+    let line: string;
+    if (state.sandboxOff) {
+      line = "sandbox: OFF (session override)";
+    } else if (state.networkOff) {
+      const policy = ctx.policyManager.getPolicy();
+      line = `sandbox: ON (network filtering disabled this session) | mode=${policy.network.mode}`;
+    } else {
+      const policy = ctx.policyManager.getPolicy();
+      const grantCount = state.sessionAllowedHosts.size;
+      line = `sandbox: ON | mode=${policy.network.mode} | session grants=${grantCount}`;
+    }
+    ctx.ui.notify(line);
+  }
+
+  function handleSummary(ctx: SubcommandContext): void {
+    const policy = ctx.policyManager.getPolicy();
+    const lines = [
+      "=== Sandbox Policy Summary ===",
+      `Enabled:         ${state.sandboxOff ? "false (session override)" : String(policy.enabled)}`,
+      `Network mode:    ${state.networkOff ? "off (session override)" : policy.network.mode}`,
+      `Allowed hosts:   ${policy.network.allow.join(", ") || "(none)"}`,
+      `Session grants:  ${state.sessionAllowedHosts.size > 0 ? [...state.sessionAllowedHosts].join(", ") : "(none)"}`,
+      `FS allow read:   ${policy.fs.allowRead.join(", ") || "(none)"}`,
+      `FS allow write:  ${policy.fs.allowWrite.join(", ") || "(none)"}`,
+      `Deny patterns:   ${policy.fs.denyPatterns.join(", ") || "(none)"}`,
+      `Audit log:       ${policy.audit.log ? policy.audit.logFile : "disabled"}`,
+    ];
+    ctx.ui.notify(lines.join("\n"));
+  }
+
+  function handleReload(ctx: SubcommandContext): void {
+    const notifyTarget = {
+      notify: (text: string, level: "error" | "warning") => ctx.ui.notify(text, level),
+    };
+
+    try {
+      ctx.policyManager.reloadPolicy(ctx.cwd, notifyTarget);
+    } catch (err) {
+      ctx.ui.notify(`Sandbox config reload failed: ${String(err)}`, "error");
+      return;
+    }
+
+    ctx.ui.notify("Sandbox config reloaded. Run /sandbox status for current state.");
+  }
+
+  async function handleWhy(ctx: SubcommandContext, target: string): Promise<void> {
+    if (!target) {
+      ctx.ui.notify("Usage: /sandbox why <path|host>", "error");
+      return;
+    }
+
+    const policy = ctx.policyManager.getPolicy();
+    const looksLikeHost = !target.includes("/") && !target.startsWith(".");
+
+    if (looksLikeHost) {
+      const host = target;
+      const sessionGranted = state.sessionAllowedHosts.has(host);
+      const configAllowed = policy.network.allow.some((h) => {
+        if (h === host) return true;
+        if (h.startsWith("*.")) {
+          const suffix = h.slice(2);
+          return host === suffix || host.endsWith("." + suffix);
+        }
+        return false;
+      });
+
+      if (state.networkOff || state.sandboxOff) {
+        ctx.ui.notify(`${host}: would be allowed (network filtering disabled this session)`);
+      } else if (sessionGranted) {
+        ctx.ui.notify(`${host}: allowed by session grant`);
+      } else if (configAllowed) {
+        ctx.ui.notify(`${host}: allowed by config (network.allow)`);
+      } else {
+        ctx.ui.notify(`${host}: would be blocked (not in network.allow and no session grant)`);
+      }
+    } else {
+      const abs = path.resolve(ctx.cwd, target);
+
+      if (state.sandboxOff) {
+        ctx.ui.notify(`${abs}: would be allowed (sandbox disabled this session)`);
+        return;
+      }
+
+      const effective = applySessionOverrides(policy, state);
+      const decision = await decideFsAccess(target, "read", effective, { cwd: ctx.cwd });
+
+      if (!decision.allow) {
+        if (decision.rule === "denyPattern" && decision.matchedPattern != null) {
+          ctx.ui.notify(`${abs}: blocked by denyPattern "${decision.matchedPattern}"`);
+        } else {
+          ctx.ui.notify(`${abs}: blocked (not in fs.allowRead)`);
+        }
+      } else {
+        ctx.ui.notify(`${abs}: would be allowed`);
+      }
+    }
+  }
+
+  function handleAllow(
+    ctx: SubcommandContext,
+    hosts: string[],
+    persist: false | "project" | "user"
+  ): void {
+    if (hosts.length === 0) {
+      ctx.ui.notify("Usage: /sandbox allow [--persist[=user]] <host> [host…]", "error");
+      return;
+    }
+
+    const invalid = hosts.filter((h) => !isValidNetworkAllowEntry(h));
+    if (invalid.length > 0) {
+      ctx.ui.notify(
+        `Invalid host(s): ${invalid.join(", ")}. CIDR ranges and malformed entries are not accepted.`,
+        "error"
+      );
+      return;
+    }
+
+    if (persist === false) {
+      for (const host of hosts) {
+        state.sessionAllowedHosts.add(host);
+      }
+      ctx.ui.notify(`Session grant added: ${hosts.join(", ")}`);
+      emitPolicyChange(ctx, "granted", "session", hosts);
+      notifySessionChange();
+    } else {
+      const filePath =
+        persist === "user" ? getUserConfigPath() : getProjectConfigPath(ctx.cwd);
+
+      try {
+        writeHostsToPersisted(filePath, hosts);
+      } catch (err) {
+        ctx.ui.notify(`Failed to write to ${filePath}: ${String(err)}`, "error");
+        return;
+      }
+
+      ctx.policyManager.reloadPolicy(ctx.cwd);
+      ctx.ui.notify(`Persisted grant to ${filePath}: ${hosts.join(", ")}`);
+      emitPolicyChange(ctx, "granted", "persisted", hosts);
+    }
+  }
+
+  function handleRevoke(
+    ctx: SubcommandContext,
+    host: string,
+    persist: boolean
+  ): void {
+    if (!host) {
+      ctx.ui.notify("Usage: /sandbox revoke [--persist] <host>", "error");
+      return;
+    }
+
+    const removedSession = state.sessionAllowedHosts.delete(host);
+
+    if (persist) {
+      const projectPath = getProjectConfigPath(ctx.cwd);
+      const userPath = getUserConfigPath();
+      const removedProject = removeHostFromPersistedFile(projectPath, host);
+      const removedUser = removeHostFromPersistedFile(userPath, host);
+
+      if (removedProject || removedUser) {
+        ctx.policyManager.reloadPolicy(ctx.cwd);
+        ctx.ui.notify(`Revoked ${host} from persisted config.`);
+        emitPolicyChange(ctx, "revoked", "persisted", host);
+        notifySessionChange();
+      } else if (removedSession) {
+        ctx.ui.notify(`Revoked ${host} from session grants.`);
+        emitPolicyChange(ctx, "revoked", "session", host);
+        notifySessionChange();
+      } else {
+        ctx.ui.notify(`${host} was not found in session grants or persisted config.`);
+      }
+    } else {
+      if (removedSession) {
+        ctx.ui.notify(`Revoked ${host} from session grants.`);
+        emitPolicyChange(ctx, "revoked", "session", host);
+        notifySessionChange();
+      } else {
+        const projectPath = getProjectConfigPath(ctx.cwd);
+        const projectHosts = getPersistedAllowedHosts(projectPath);
+        const userPath = getUserConfigPath();
+        const userHosts = getPersistedAllowedHosts(userPath);
+
+        if (projectHosts.includes(host) || userHosts.includes(host)) {
+          ctx.ui.notify(
+            `${host} is in persisted config but not in session grants. ` +
+              `Use /sandbox revoke --persist ${host} to remove from config.`
+          );
+        } else {
+          ctx.ui.notify(`${host} was not found in session grants.`);
+        }
+      }
+    }
+  }
+
+  function handleNetworkOff(ctx: SubcommandContext): void {
+    state.networkOff = true;
+    ctx.ui.notify("Network filtering disabled for this session.", "warning");
+    emitPolicyChange(ctx, "granted", "session", undefined, "network-off");
+    notifySessionChange();
+  }
+
+  function handleNetworkOn(ctx: SubcommandContext): void {
+    state.networkOff = false;
+    ctx.ui.notify("Network filtering re-enabled (per config).");
+    emitPolicyChange(ctx, "revoked", "session", undefined, "network-off");
+    notifySessionChange();
+  }
+
+  function handleOff(ctx: SubcommandContext): void {
+    state.sandboxOff = true;
+    ctx.ui.notify("Sandbox DISABLED for this session. All enforcement is bypassed.", "warning");
+    emitPolicyChange(ctx, "granted", "session", undefined, "sandbox-off");
+    notifySessionChange();
+  }
+
+  function handleOn(ctx: SubcommandContext): void {
+    state.sandboxOff = false;
+    ctx.ui.notify("Sandbox re-enabled.");
+    emitPolicyChange(ctx, "revoked", "session", undefined, "sandbox-off");
+    notifySessionChange();
+  }
+
+  function dispatch(rawArgs: string, ctx: SubcommandContext): void {
+    const parsed = parseArgs(rawArgs);
+    const { subcommand } = parsed;
+
+    switch (subcommand) {
+      case "":
+        handleSummary(ctx);
+        break;
+
+      case "status":
+        handleStatus(ctx);
+        break;
+
+      case "reload":
+        handleReload(ctx);
+        break;
+
+      case "why":
+        handleWhy(ctx, parsed.target);
+        break;
+
+      case "allow":
+        handleAllow(ctx, parsed.hosts, parsed.persist);
+        break;
+
+      case "revoke":
+        handleRevoke(ctx, parsed.target, parsed.persist !== false);
+        break;
+
+      case "network":
+        if (parsed.target === "off") {
+          handleNetworkOff(ctx);
+        } else if (parsed.target === "on") {
+          handleNetworkOn(ctx);
+        } else {
+          ctx.ui.notify(
+            `Unknown network subcommand: "${parsed.target}". Use 'on' or 'off'.`,
+            "error"
+          );
+        }
+        break;
+
+      case "on":
+        handleOn(ctx);
+        break;
+
+      case "off":
+        handleOff(ctx);
+        break;
+
+      default:
+        ctx.ui.notify(
+          `Unknown subcommand: ${subcommand}. Try: ${SUBCOMMANDS.join(", ")}`,
+          "error"
+        );
+    }
+  }
+
+  function registerSandboxCommand(
+    pi: ExtensionAPI,
+    policyManager: PolicyManager,
+    cwd: string,
+    events?: EventsTarget
+  ): void {
+    const ui: Pick<ExtensionUIContext, "notify"> = {
+      notify: (text, level) => {
+        if (level === "error" || level === "warning") {
+          process.stderr.write(`[sandbox/${level ?? "warning"}] ${text}\n`);
+        } else {
+          process.stdout.write(`[sandbox] ${text}\n`);
+        }
+      },
+    };
+
+    const cmdCtx: SubcommandContext = { ui, policyManager, cwd, events };
+
+    pi.registerCommand("sandbox", {
+      description: "Inspect and control the pi-sandbox policy",
+      getArgumentCompletions: (prefix: string) => getArgumentCompletions(prefix, policyManager, getSessionState, getRecentBlockedHosts),
+      handler: async (args: string, _ctx: ExtensionCommandContext) => {
+        await dispatch(args, cmdCtx);
+      },
+    });
+  }
+
+  return {
+    getSessionState,
+    subscribeSessionChange,
+    notifySessionChange,
+    handleStatus,
+    handleSummary,
+    handleReload,
+    handleWhy,
+    handleAllow,
+    handleRevoke,
+    handleNetworkOff,
+    handleNetworkOn,
+    handleOff,
+    handleOn,
+    dispatch,
+    registerSandboxCommand,
+  };
+}
+

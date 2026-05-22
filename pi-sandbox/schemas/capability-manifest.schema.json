@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "capability-manifest.schema.json",
+  "title": "NonoCapabilityManifest",
+  "description": "Capability manifest consumed by the nono CLI (nono run --config <manifest>.json)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "filesystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow_read": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Absolute paths the sandboxed process may read. Paths must exist at manifest-build time."
+        },
+        "allow_write": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Absolute paths the sandboxed process may write. Paths must exist at manifest-build time."
+        },
+        "deny": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "macOS-only (Seatbelt) deny rules. Ignored on Linux.",
+          "properties": {
+            "access": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Paths or path-prefixes denied for any access. macOS Seatbelt only."
+            },
+            "unlink": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Paths or path-prefixes denied for deletion. macOS Seatbelt only."
+            }
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow_domain": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Allowlisted hostnames or *.suffix wildcard domains. CIDR ranges are not supported."
+        }
+      }
+    }
+  }
+}
