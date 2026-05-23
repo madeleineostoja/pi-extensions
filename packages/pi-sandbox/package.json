@@ -1,0 +1,40 @@
+{
+  "name": "pi-sandbox",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "nonoVersion": "0.57.0",
+  "nonoSha256SumsHash": "458f571f6d0b59f683e05115d8cc3afa92863bd394f6c57ac8312f791104a1bc",
+  "keywords": [
+    "pi-package",
+    "caffeinate"
+  ],
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1",
+    "picomatch": "^4.0.4"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "catalog:",
+    "@earendil-works/pi-tui": "catalog:",
+    "@types/picomatch": "^4.0.0",
+    "@types/node": "catalog:",
+    "ajv": "^6.12.6",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

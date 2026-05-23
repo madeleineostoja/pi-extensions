@@ -1,0 +1,52 @@
+{
+  "name": "pi-extensions",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal extensions for the Pi agent harness.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@11.1.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extensions"
+  ],
+  "pi": {
+    "extensions": [
+      "./packages/pi-caffeinate/src/index.ts",
+      "./packages/pi-ctx/src/index.ts",
+      "./packages/pi-guard/src/index.ts",
+      "./packages/pi-sandbox/src/index.ts",
+      "./packages/pi-deepinfra/src/index.ts"
+    ]
+  },
+  "scripts": {
+    "postinstall": "node packages/pi-sandbox/scripts/postinstall.js",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@prettier/plugin-oxc": "^0.1.4",
+    "@types/node": "catalog:",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.10",
+    "oxlint": "^0.15.0",
+    "prettier": "^3.4.2",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "lint-staged": {
+    "*.{ts,js,json}": [
+      "oxlint --fix",
+      "prettier --write"
+    ]
+  }
+}
