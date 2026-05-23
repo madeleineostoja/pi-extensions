@@ -5,7 +5,10 @@
   "description": "Personal extensions for the Pi agent harness.",
   "license": "MIT",
   "type": "module",
-  "packageManager": "pnpm@11.1.2",
+  "packageManager": "npm@10.9.8",
+  "workspaces": [
+    "packages/*"
+  ],
   "engines": {
     "node": ">=22"
   },
@@ -23,25 +26,26 @@
     ]
   },
   "scripts": {
-    "postinstall": "node packages/pi-sandbox/scripts/postinstall.js",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test",
+    "check": "npm run lint && npm run format:check && npm run typecheck && npm run test",
     "prepare": "husky"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.75.4",
+    "@earendil-works/pi-tui": "^0.75.4",
     "@prettier/plugin-oxc": "^0.1.4",
-    "@types/node": "catalog:",
+    "@types/node": "^22.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^15.2.10",
     "oxlint": "^0.15.0",
     "prettier": "^3.4.2",
-    "typescript": "catalog:",
-    "vitest": "catalog:"
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.0"
   },
   "lint-staged": {
     "*.{ts,js,json}": [

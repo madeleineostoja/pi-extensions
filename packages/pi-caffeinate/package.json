@@ -19,10 +19,5 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
-  },
-  "devDependencies": {
-    "@earendil-works/pi-coding-agent": "catalog:",
-    "typescript": "catalog:",
-    "@types/node": "catalog:"
   }
 }

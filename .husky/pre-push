@@ -1,1 +1,1 @@
-pnpm typecheck && pnpm test
+npm run typecheck && npm run test

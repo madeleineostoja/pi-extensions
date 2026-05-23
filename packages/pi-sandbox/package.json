@@ -26,15 +26,11 @@
     "picomatch": "^4.0.4"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "catalog:",
-    "@earendil-works/pi-tui": "catalog:",
     "@types/picomatch": "^4.0.0",
-    "@types/node": "catalog:",
-    "ajv": "^6.12.6",
-    "typescript": "catalog:",
-    "vitest": "catalog:"
+    "ajv": "^6.12.6"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   }
 }
