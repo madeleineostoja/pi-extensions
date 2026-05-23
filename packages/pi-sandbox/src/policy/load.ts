@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { parse as parseJsonc } from "jsonc-parser";
+
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_POLICY, type Policy } from "./defaults.js";
 import {
@@ -112,10 +112,10 @@ function tryLoadFile(
     return null;
   }
 
-  const errors: { error: number; offset: number; length: number }[] = [];
-  const parsed: unknown = parseJsonc(raw, errors, { allowTrailingComma: true });
-
-  if (errors.length > 0) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
     ui?.notify(`pi-sandbox: invalid JSON in ${filePath}`, "error");
     return null;
   }

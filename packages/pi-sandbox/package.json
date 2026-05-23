@@ -22,7 +22,6 @@
     "postinstall": "node scripts/postinstall.js"
   },
   "dependencies": {
-    "jsonc-parser": "^3.3.1",
     "picomatch": "^4.0.4"
   },
   "devDependencies": {

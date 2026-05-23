@@ -8,7 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { modify, applyEdits, parse as parseJsonc } from "jsonc-parser";
+
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -39,48 +39,49 @@ export interface SessionState {
 }
 
 // ---------------------------------------------------------------------------
-// JSONC persistence helpers
+// Config persistence helpers
 // ---------------------------------------------------------------------------
-
-function readFileOrEmpty(filePath: string): string {
-  try {
-    return fs.readFileSync(filePath, "utf8");
-  } catch {
-    return "{}";
-  }
-}
 
 function ensureDir(filePath: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
-function parsePersistedConfig(filePath: string): {
+function readPersistedConfig(filePath: string): {
   network?: { allow?: string[] };
 } {
   if (!fs.existsSync(filePath)) return {};
-  const src = readFileOrEmpty(filePath);
-  const errors: { error: number; offset: number; length: number }[] = [];
-  const result = parseJsonc(src, errors, { allowTrailingComma: true });
-  return (result as { network?: { allow?: string[] } }) ?? {};
+  try {
+    return (
+      (JSON.parse(fs.readFileSync(filePath, "utf8")) as {
+        network?: { allow?: string[] };
+      }) ?? {}
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writePersistedConfig(
+  filePath: string,
+  config: { network?: { allow?: string[] } },
+): void {
+  fs.writeFileSync(filePath, JSON.stringify(config, null, 2) + "\n", "utf8");
 }
 
 export function writeHostsToPersisted(filePath: string, hosts: string[]): void {
   ensureDir(filePath);
-  let src = readFileOrEmpty(filePath);
-
-  const existing = parsePersistedConfig(filePath);
-  const existingHosts = new Set<string>(existing?.network?.allow ?? []);
+  const config = readPersistedConfig(filePath);
+  const existingHosts = new Set<string>(config?.network?.allow ?? []);
 
   for (const host of hosts) {
-    if (existingHosts.has(host)) continue;
     existingHosts.add(host);
-    const edits = modify(src, ["network", "allow", -1], host, {
-      formattingOptions: { insertSpaces: true, tabSize: 2 },
-    });
-    src = applyEdits(src, edits);
   }
 
-  fs.writeFileSync(filePath, src, "utf8");
+  const updated = {
+    ...config,
+    network: { ...config.network, allow: [...existingHosts] },
+  };
+  writePersistedConfig(filePath, updated);
 }
 
 export function removeHostFromPersistedFile(
@@ -89,24 +90,23 @@ export function removeHostFromPersistedFile(
 ): boolean {
   if (!fs.existsSync(filePath)) return false;
 
-  const parsed = parsePersistedConfig(filePath);
-  const currentAllow: string[] = parsed?.network?.allow ?? [];
-  const idx = currentAllow.indexOf(host);
-  if (idx === -1) return false;
+  const config = readPersistedConfig(filePath);
+  const currentAllow: string[] = config?.network?.allow ?? [];
+  if (!currentAllow.includes(host)) return false;
 
-  let src = readFileOrEmpty(filePath);
-  const newAllow = currentAllow.filter((h) => h !== host);
-  const edits = modify(src, ["network", "allow"], newAllow, {
-    formattingOptions: { insertSpaces: true, tabSize: 2 },
-  });
-  src = applyEdits(src, edits);
-  fs.writeFileSync(filePath, src, "utf8");
+  const updated = {
+    ...config,
+    network: {
+      ...config.network,
+      allow: currentAllow.filter((h) => h !== host),
+    },
+  };
+  writePersistedConfig(filePath, updated);
   return true;
 }
 
 function getPersistedAllowedHosts(filePath: string): string[] {
-  const parsed = parsePersistedConfig(filePath);
-  return parsed?.network?.allow ?? [];
+  return readPersistedConfig(filePath)?.network?.allow ?? [];
 }
 
 // ---------------------------------------------------------------------------

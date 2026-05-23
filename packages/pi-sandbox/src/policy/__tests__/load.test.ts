@@ -273,25 +273,6 @@ describe("loadPolicy", () => {
     );
   });
 
-  it("parses JSONC (comments and trailing commas) without error", () => {
-    const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
-    writeRaw(
-      globalPath,
-      `{
-        // a comment
-        "network": {
-          "mode": "always", // trailing comma
-        },
-      }`,
-    );
-
-    const policy = loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
-
-    expect(policy.network.mode).toBe("always");
-    expect(mockUi.notify).not.toHaveBeenCalled();
-  });
-
   it("invalid file that is a non-object JSON is rejected gracefully", () => {
     const { loadPolicy } = createPolicyManager();
     const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");

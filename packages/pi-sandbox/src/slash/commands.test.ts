@@ -761,14 +761,14 @@ describe("--persist write preserves comments", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes to project config and preserves existing comments", () => {
+  it("writes to project config and merges with existing content", () => {
     const configDir = path.join(tmpDir, ".pi");
     fs.mkdirSync(configDir, { recursive: true });
     const configPath = path.join(configDir, "sandbox.json");
 
     fs.writeFileSync(
       configPath,
-      '// sandbox config\n{ "network": { "allow": ["existing.com"] } }\n',
+      '{ "network": { "allow": ["existing.com"] } }\n',
     );
 
     const { ui } = makeUI();
@@ -790,7 +790,6 @@ describe("--persist write preserves comments", () => {
     expect(reloadCalled).toBe(true);
     const written = fs.readFileSync(configPath, "utf8");
 
-    expect(written).toContain("// sandbox config");
     expect(written).toContain("existing.com");
     expect(written).toContain("newhost.com");
   });
@@ -813,14 +812,13 @@ describe("--persist write preserves comments", () => {
     const configPath = path.join(tmpDir, "sandbox.json");
     fs.writeFileSync(
       configPath,
-      '// my config\n{ "network": { "allow": ["keep.com", "remove.com"] } }\n',
+      '{ "network": { "allow": ["keep.com", "remove.com"] } }\n',
     );
 
     const removed = removeHostFromPersistedFile(configPath, "remove.com");
     expect(removed).toBe(true);
 
     const written = fs.readFileSync(configPath, "utf8");
-    expect(written).toContain("// my config");
     expect(written).toContain("keep.com");
     expect(written).not.toContain("remove.com");
   });
