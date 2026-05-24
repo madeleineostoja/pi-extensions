@@ -164,7 +164,7 @@ async function main() {
   }
 
   const { target } = result;
-  const tarball = `${target}.tar.gz`;
+  const tarball = `${target.replace(/^nono-/, `nono-v${NONO_VERSION}-`)}.tar.gz`;
   const baseUrl = `https://github.com/always-further/nono/releases/download/v${NONO_VERSION}`;
   const tarballUrl = `${baseUrl}/${tarball}`;
   const sha256Url = `${baseUrl}/SHA256SUMS.txt`;
