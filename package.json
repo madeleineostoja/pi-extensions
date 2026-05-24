@@ -21,8 +21,7 @@
       "./packages/pi-caffeinate/src/index.ts",
       "./packages/pi-ctx/src/index.ts",
       "./packages/pi-guard/src/index.ts",
-      "./packages/pi-sandbox/src/index.ts",
-      "./packages/pi-deepinfra/src/index.ts"
+      "./packages/pi-sandbox/src/index.ts"
     ]
   },
   "scripts": {

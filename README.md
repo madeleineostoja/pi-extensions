@@ -10,7 +10,6 @@ Personal extensions for the [Pi](https://github.com/earendil-works/pi) agent har
 | [pi-ctx](packages/pi-ctx)               | Keep the context window small by pruning large, stale tool results and re-fetching on demand. |
 | [pi-guard](packages/pi-guard)           | Lightweight approval before agents begin editing or writing files                             |
 | [pi-sandbox](packages/pi-sandbox)       | Kernel level sandboxing with pi agents with [nono](https://github.com/always-further/nono)    |
-| [pi-deepinfra](packages/pi-deepinfra)   | Registers [DeepInfra](https://deepinfra.com) as a model provider.                             |
 
 ## Install
 
