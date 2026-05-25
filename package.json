@@ -5,7 +5,6 @@
   "description": "Personal extensions for the Pi agent harness.",
   "license": "MIT",
   "type": "module",
-  "packageManager": "npm@10.9.8",
   "workspaces": [
     "packages/*"
   ],
