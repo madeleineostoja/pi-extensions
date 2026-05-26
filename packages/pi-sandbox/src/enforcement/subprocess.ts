@@ -295,13 +295,26 @@ export function wrapPiExec(
     }
 
     if (nonoPath === null) {
+      if (effectivePol.degraded?.allowExec === true) {
+        emitAudit?.({
+          kind: "exec",
+          decision: "allowed",
+          tool: command,
+          rule: "degraded:no-nono",
+        });
+        return originalExec(command, args, opts);
+      }
       emitAudit?.({
         kind: "exec",
-        decision: "allowed",
+        decision: "blocked",
         tool: command,
         rule: "degraded:no-nono",
       });
-      return originalExec(command, args, opts);
+      return Promise.reject(
+        new Error(
+          "sandbox: exec blocked — kernel sandbox unavailable and degraded.allowExec is false",
+        ),
+      );
     }
 
     const manifest = capsInstance.buildManifest(effectivePol, ctx);
@@ -333,19 +346,36 @@ export function createUserBashHandler(
   return function handleUserBash(
     _event: UserBashEvent,
   ): UserBashEventResult | undefined {
-    if (nonoPath === null) {
-      emitAudit?.({
-        kind: "exec",
-        decision: "allowed",
-        tool: "bash",
-        rule: "degraded:no-nono",
-      });
-      return undefined;
-    }
-
     const policy = getSession
       ? applySessionOverrides(getPolicy(), getSession())
       : getPolicy();
+
+    if (nonoPath === null) {
+      if (policy.degraded?.allowExec === true) {
+        emitAudit?.({
+          kind: "exec",
+          decision: "allowed",
+          tool: "bash",
+          rule: "degraded:no-nono",
+        });
+        return undefined;
+      }
+      emitAudit?.({
+        kind: "exec",
+        decision: "blocked",
+        tool: "bash",
+        rule: "degraded:no-nono",
+      });
+      return {
+        result: {
+          output:
+            "sandbox: bash blocked — kernel sandbox unavailable and degraded.allowExec is false",
+          exitCode: 1,
+          cancelled: false,
+          truncated: false,
+        },
+      };
+    }
 
     if (policy.enabled === false) {
       emitAudit?.({

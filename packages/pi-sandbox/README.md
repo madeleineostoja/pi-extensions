@@ -43,8 +43,6 @@ This is useful in high-security environments where running without kernel-level 
 }
 ```
 
-To recover after a failed install: `npm rebuild @earendil-works/pi-sandbox`. To acknowledge degraded mode instead: set `requireKernelSandbox` to `false`.
-
 ### Skipping the postinstall download
 
 If you already have `nono` installed (via `brew install always-further/tap/nono`, `apt`, `nix`, `cargo`, etc.) and want to skip the postinstall download:
@@ -151,17 +149,6 @@ Emitted in addition to `sandbox:audit` whenever `kind === "policy-change"`. The 
 { "ts": 1700000000009, "scope": "persisted", "source": "command" }
 ```
 
-### TypeScript types
-
-Both event types are exported from the package entrypoint for type-safe consumers:
-
-```ts
-import type {
-  SandboxAuditEvent,
-  SandboxPolicyChangedEvent,
-} from "@earendil-works/pi-sandbox";
-```
-
 ## Threat model
 
 The in-process tool gate intercepts Pi's built-in filesystem tools (`read`, `write`, `edit`, `ls`, `find`, `grep`). User-typed `!cmd` and `!!cmd` shell pass-through commands are routed through the same `nono` subprocess confinement as bash execution. Two deliberate limitations are worth noting:
@@ -180,33 +167,7 @@ The in-process tool gate intercepts Pi's built-in filesystem tools (`read`, `wri
 
 Drop a thin wrapper file at `~/.pi/agent/extensions/sandbox.ts` (global) or `.pi/extensions/sandbox.ts` (project-local). Pi picks it up automatically on startup and on `/reload`:
 
-```ts
-// ~/.pi/agent/extensions/sandbox.ts
-export { default } from "@earendil-works/pi-sandbox";
-```
-
 No other wiring is needed. `sandboxExtension` accepts the `pi` instance and an `ExtensionContext` automatically.
-
-### Programmatic loading (embedders)
-
-If you are embedding Pi via the SDK, pass the extension factory through `DefaultResourceLoader`:
-
-```ts
-import {
-  createAgentSession,
-  DefaultResourceLoader,
-} from "@earendil-works/pi-coding-agent";
-import sandboxExtension from "@earendil-works/pi-sandbox";
-
-const loader = new DefaultResourceLoader({
-  extensionFactories: [sandboxExtension],
-});
-await loader.reload();
-
-const { session } = await createAgentSession({ resourceLoader: loader });
-```
-
-For the full extension loading API see the [Pi extensions docs](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
 ### Config file locations
 

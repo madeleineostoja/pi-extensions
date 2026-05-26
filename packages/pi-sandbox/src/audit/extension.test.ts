@@ -111,7 +111,9 @@ function makeCtx(
       setTheme: vi.fn().mockReturnValue({ success: true }),
       getToolsExpanded: vi.fn().mockReturnValue(false),
       setToolsExpanded: vi.fn(),
-      theme: {} as ExtensionContext["ui"]["theme"],
+      theme: {
+        fg: vi.fn((_color: string, text: string) => text),
+      } as unknown as ExtensionContext["ui"]["theme"],
     },
     sessionManager: {} as ExtensionContext["sessionManager"],
     modelRegistry: {} as ExtensionContext["modelRegistry"],

@@ -4,6 +4,7 @@ import type {
   NetworkPolicy,
   AuditPolicy,
   EnforcementPolicy,
+  DegradedPolicy,
 } from "./defaults.js";
 
 export type PartialPolicy = {
@@ -11,6 +12,7 @@ export type PartialPolicy = {
   network?: Partial<NetworkPolicy>;
   audit?: Partial<AuditPolicy>;
   enforcement?: Partial<EnforcementPolicy>;
+  degraded?: Partial<DegradedPolicy>;
 };
 
 export class PolicyValidationError extends Error {
@@ -28,8 +30,10 @@ const KNOWN_TOP_LEVEL = new Set([
   "network",
   "audit",
   "enforcement",
+  "degraded",
 ]);
 const KNOWN_ENFORCEMENT = new Set(["requireKernelSandbox"]);
+const KNOWN_DEGRADED = new Set(["allowExec"]);
 const KNOWN_FS = new Set(["allowRead", "allowWrite", "denyPatterns"]);
 const KNOWN_NETWORK = new Set(["mode", "allow"]);
 const KNOWN_AUDIT = new Set(["log", "logFile"]);
@@ -193,6 +197,26 @@ function validateEnforcement(raw: unknown): Partial<EnforcementPolicy> {
   };
 }
 
+function validateDegraded(raw: unknown): Partial<DegradedPolicy> {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new PolicyValidationError('"degraded" must be an object');
+  }
+  const obj = raw as Record<string, unknown>;
+  rejectUnknownKeys(obj, KNOWN_DEGRADED, "degraded");
+
+  let allowExec: boolean | undefined;
+  if (obj.allowExec !== undefined) {
+    if (typeof obj.allowExec !== "boolean") {
+      throw new PolicyValidationError('"degraded.allowExec" must be a boolean');
+    }
+    allowExec = obj.allowExec;
+  }
+
+  return {
+    ...(allowExec !== undefined && { allowExec }),
+  };
+}
+
 /**
  * Validate a raw parsed object as a partial Policy. Returns the validated
  * partial, or throws PolicyValidationError on schema violations.
@@ -229,6 +253,10 @@ export function validatePolicy(
 
   if (obj.enforcement !== undefined) {
     result.enforcement = validateEnforcement(obj.enforcement);
+  }
+
+  if (obj.degraded !== undefined) {
+    result.degraded = validateDegraded(obj.degraded);
   }
 
   return result;

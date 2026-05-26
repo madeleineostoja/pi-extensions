@@ -18,12 +18,17 @@ export interface EnforcementPolicy {
   requireKernelSandbox: boolean;
 }
 
+export interface DegradedPolicy {
+  allowExec: boolean;
+}
+
 export interface Policy {
   enabled: boolean;
   fs: FsPolicy;
   network: NetworkPolicy;
   audit: AuditPolicy;
   enforcement: EnforcementPolicy;
+  degraded?: DegradedPolicy;
 }
 
 export const DEFAULT_POLICY: Policy = {
@@ -81,5 +86,8 @@ export const DEFAULT_POLICY: Policy = {
   },
   enforcement: {
     requireKernelSandbox: false,
+  },
+  degraded: {
+    allowExec: false,
   },
 };

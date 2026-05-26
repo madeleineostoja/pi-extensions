@@ -3,7 +3,11 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_POLICY, type Policy } from "./defaults.js";
+import {
+  DEFAULT_POLICY,
+  type DegradedPolicy,
+  type Policy,
+} from "./defaults.js";
 import {
   validatePolicy,
   PolicyValidationError,
@@ -91,6 +95,13 @@ function deepMerge(
 
   if (override.enforcement !== undefined) {
     result.enforcement = { ...result.enforcement, ...override.enforcement };
+  }
+
+  if (override.degraded !== undefined) {
+    result.degraded = {
+      ...result.degraded,
+      ...override.degraded,
+    } as DegradedPolicy;
   }
 
   return result;

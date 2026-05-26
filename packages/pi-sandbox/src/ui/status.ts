@@ -1,3 +1,4 @@
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Policy } from "../policy/defaults.js";
 import type { PolicyManager } from "../policy/load.js";
 import type { SessionState } from "../slash/commands.js";
@@ -44,6 +45,35 @@ export function renderStatus(state: StatusState): string {
   return `🔒 sandbox · ${state.allowedHostCount} hosts · ${state.writableRootCount} writable`;
 }
 
+export function renderStatusThemed(
+  state: StatusState,
+  theme: Pick<Theme, "fg">,
+): string {
+  if (!state.enabled) {
+    return `${theme.fg("warning", "󰒃")} ${theme.fg("warning", "sandbox: off")}`;
+  }
+
+  if (state.inProcessOnly) {
+    return `${theme.fg("warning", "󰒃")} ${theme.fg("muted", "sandbox · in-process only")}`;
+  }
+
+  const icon = theme.fg("success", "󰒃");
+
+  if (state.networkOff) {
+    return `${icon} ${theme.fg("muted", "sandbox · network:")} ${theme.fg("dim", "off")}`;
+  }
+
+  if (state.networkMode === "off") {
+    return `${icon} ${theme.fg("muted", "sandbox · network: off (config)")}`;
+  }
+
+  if (state.networkMode === "non-interactive-only" && state.hasUI) {
+    return `${icon} ${theme.fg("muted", "sandbox · network: off (interactive)")}`;
+  }
+
+  return `${icon} ${theme.fg("muted", `sandbox · ${state.allowedHostCount} hosts · ${state.writableRootCount} writable`)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Glue layer — subscribe-and-update
 // ---------------------------------------------------------------------------
@@ -60,6 +90,7 @@ export interface StatusSubscribeOptions {
   /** Subscribe to session mutation events (sandbox:policy-changed). Returns unsubscribe fn. */
   onSessionMutation: (fn: () => void) => () => void;
   inProcessOnly?: boolean;
+  theme?: Pick<Theme, "fg">;
 }
 
 export function subscribeStatus(opts: StatusSubscribeOptions): () => void {
@@ -70,6 +101,7 @@ export function subscribeStatus(opts: StatusSubscribeOptions): () => void {
     ui,
     onSessionMutation,
     inProcessOnly,
+    theme,
   } = opts;
 
   function buildState(): StatusState {
@@ -87,8 +119,12 @@ export function subscribeStatus(opts: StatusSubscribeOptions): () => void {
     };
   }
 
+  const render = theme
+    ? (state: StatusState) => renderStatusThemed(state, theme)
+    : renderStatus;
+
   function update(): void {
-    ui.setStatus("sandbox", renderStatus(buildState()));
+    ui.setStatus("sandbox", render(buildState()));
   }
 
   update();

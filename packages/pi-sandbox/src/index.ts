@@ -70,7 +70,7 @@ import { createPolicyManager } from "./policy/load.js";
 import { createSlashCommands } from "./slash/commands.js";
 import { createToolGate } from "./enforcement/toolGate.js";
 import { initSubprocessSandbox } from "./enforcement/subprocess.js";
-import { createBinaryRuntime } from "./runtime/binary.js";
+import { getNonoPath, getBinaryStatus } from "./runtime/binary.js";
 import { subscribeStatus } from "./ui/status.js";
 import { createAuditPipeline } from "./audit/audit.js";
 import type { AuditEntry } from "./audit/schema.js";
@@ -142,37 +142,39 @@ function sandboxExtension(pi: ExtensionAPI): void {
 
       const cmds = createSlashCommands({ recordAudit, getRecentBlockedHosts });
 
-      const binaryRuntime = createBinaryRuntime();
-
-      const { binaryStatus, nonoPath, userBashHandler } = initSubprocessSandbox(
-        pi,
-        () => policyManager.getPolicy(),
-        manifestCtx,
-        () => cmds.getSessionState(),
-        undefined,
-        onAudit,
-      );
+      const nonoPath = getNonoPath();
+      const binaryStatus = getBinaryStatus();
 
       const policy = policyManager.getPolicy();
-      if (
-        policy.enforcement.requireKernelSandbox &&
-        binaryStatus.kind !== "ok"
-      ) {
+      if (policy.enforcement.requireKernelSandbox && nonoPath === null) {
         const reasonDetail =
           binaryStatus.kind === "platform-unsupported"
-            ? `platform ${binaryStatus.platform} is not supported for the nono kernel sandbox`
-            : `install failed (${binaryStatus.reason}${
-                binaryStatus.detail ? `: ${binaryStatus.detail}` : ""
-              })`;
+            ? `platform ${binaryStatus.platform} is not supported`
+            : binaryStatus.kind === "install-failed"
+              ? `install failed (${binaryStatus.reason}${
+                  binaryStatus.detail ? `: ${binaryStatus.detail}` : ""
+                })`
+              : binaryStatus.kind === "ok"
+                ? "binary missing despite ok status (state drift)"
+                : `unexpected status ${(binaryStatus as { kind: string }).kind}`;
         ctx.ui.notify(
           `pi-sandbox: enforcement.requireKernelSandbox is true but kernel enforcement is unavailable — ${reasonDetail}. ` +
-            "To recover, run: npm rebuild @earendil-works/pi-sandbox. " +
-            "To acknowledge degraded mode, set enforcement.requireKernelSandbox to false.",
+            "Install nono: node packages/pi-sandbox/scripts/postinstall.js (or brew install always-further/tap/nono). " +
+            "To run in degraded mode, set enforcement.requireKernelSandbox to false.",
           "error",
         );
         _registered.delete(pi);
         return;
       }
+
+      const { userBashHandler } = initSubprocessSandbox(
+        pi,
+        () => policyManager.getPolicy(),
+        manifestCtx,
+        () => cmds.getSessionState(),
+        nonoPath,
+        onAudit,
+      );
 
       const gate = createToolGate({
         getPolicy: () => policyManager.getPolicy(),
@@ -199,9 +201,22 @@ function sandboxExtension(pi: ExtensionAPI): void {
           userBashHandler(event),
       );
 
-      if (nonoPath === null && binaryStatus.kind !== "ok") {
-        binaryRuntime.warnMissingOnce((msg, level) =>
-          ctx.ui.notify(msg, level),
+      if (nonoPath === null) {
+        const reasonDetail =
+          binaryStatus.kind === "platform-unsupported"
+            ? `platform ${binaryStatus.platform} is not supported`
+            : binaryStatus.kind === "install-failed"
+              ? `install failed (${binaryStatus.reason}${
+                  binaryStatus.detail ? `: ${binaryStatus.detail}` : ""
+                })`
+              : binaryStatus.kind === "ok"
+                ? "binary missing despite ok status (state drift)"
+                : `unexpected status ${(binaryStatus as { kind: string }).kind}`;
+        ctx.ui.notify(
+          `pi-sandbox: nono binary unavailable — ${reasonDetail}. ` +
+            "Subprocess sandboxing is disabled; bash/exec will be blocked unless degraded.allowExec is true. " +
+            "Install nono: node packages/pi-sandbox/scripts/postinstall.js (or brew install always-further/tap/nono).",
+          "warning",
         );
       }
 
@@ -216,6 +231,7 @@ function sandboxExtension(pi: ExtensionAPI): void {
           return cmds.subscribeSessionChange(fn);
         },
         inProcessOnly: nonoPath === null,
+        theme: ctx.hasUI ? ctx.ui.theme : undefined,
       });
 
       pi.on(

@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 
-import { renderStatus, subscribeStatus, type StatusState } from "./status.js";
+import {
+  renderStatus,
+  renderStatusThemed,
+  subscribeStatus,
+  type StatusState,
+} from "./status.js";
 import {
   createSlashCommands,
   type SubcommandContext,
@@ -458,6 +463,129 @@ describe("subscribeStatus — integration", () => {
 
     const text = calls[calls.length - 1].text;
     expect(text).toBe("🔒 sandbox · in-process only");
+    dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Themed rendering tests
+// ---------------------------------------------------------------------------
+
+function makeThemeSpy() {
+  const calls: Array<{ color: string; text: string }> = [];
+  return {
+    theme: {
+      fg: (color: string, text: string) => {
+        calls.push({ color, text });
+        return `<${color}>${text}</${color}>`;
+      },
+    },
+    calls,
+  };
+}
+
+describe("renderStatusThemed", () => {
+  const baseState: StatusState = {
+    enabled: true,
+    networkOff: false,
+    networkMode: "non-interactive-only",
+    hasUI: false,
+    allowedHostCount: 12,
+    writableRootCount: 3,
+  };
+
+  it("normal state → success icon and muted text", () => {
+    const { theme, calls } = makeThemeSpy();
+    const result = renderStatusThemed({ ...baseState, hasUI: false }, theme);
+    expect(result).toContain("󰒃");
+    expect(result).toContain("sandbox");
+    expect(calls).toContainEqual({ color: "success", text: "󰒃" });
+    expect(
+      calls.some((c) => c.color === "muted" && c.text.includes("sandbox")),
+    ).toBe(true);
+    expect(result).not.toContain("\n");
+  });
+
+  it("disabled state → warning icon and text", () => {
+    const { theme, calls } = makeThemeSpy();
+    const result = renderStatusThemed({ ...baseState, enabled: false }, theme);
+    expect(result).toContain("sandbox: off");
+    expect(calls).toContainEqual({ color: "warning", text: "󰒃" });
+    expect(calls).toContainEqual({ color: "warning", text: "sandbox: off" });
+    expect(result).not.toContain("\n");
+  });
+
+  it("network off (session) → no warning color for network-off detail", () => {
+    const { theme, calls } = makeThemeSpy();
+    const result = renderStatusThemed(
+      { ...baseState, networkOff: true },
+      theme,
+    );
+    expect(result).toContain("network:");
+    expect(result).toContain("off");
+    expect(calls.some((c) => c.color === "warning")).toBe(false);
+    expect(result).not.toContain("\n");
+  });
+
+  it("in-process only → warning on icon or detail, not fully off", () => {
+    const { theme, calls } = makeThemeSpy();
+    const result = renderStatusThemed(
+      { ...baseState, inProcessOnly: true },
+      theme,
+    );
+    expect(result).toContain("in-process only");
+    expect(calls.some((c) => c.color === "warning")).toBe(true);
+    expect(result).not.toContain("sandbox: off");
+    expect(result).not.toContain("\n");
+  });
+
+  it("network mode 'off' → muted text without warning", () => {
+    const { theme, calls } = makeThemeSpy();
+    const result = renderStatusThemed(
+      { ...baseState, networkMode: "off" },
+      theme,
+    );
+    expect(result).toContain("network: off (config)");
+    expect(calls.some((c) => c.color === "warning")).toBe(false);
+    expect(calls).toContainEqual({ color: "success", text: "󰒃" });
+    expect(result).not.toContain("\n");
+  });
+
+  it("non-interactive-only + hasUI=true → muted text without warning", () => {
+    const { theme, calls } = makeThemeSpy();
+    const result = renderStatusThemed(
+      { ...baseState, networkMode: "non-interactive-only", hasUI: true },
+      theme,
+    );
+    expect(result).toContain("network: off (interactive)");
+    expect(calls.some((c) => c.color === "warning")).toBe(false);
+    expect(result).not.toContain("\n");
+  });
+
+  it("subscribeStatus with theme uses themed rendering", () => {
+    const localCmds = createSlashCommands(createAuditPipeline());
+    const policy = makePolicy({ network: { mode: "always", allow: [] } });
+    const policyManager = makePolicyManager(policy);
+    const { ui, calls } = makeStatusUI();
+    const { onSessionMutation } = makeSessionMutationSubscriber();
+    const theme = {
+      fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+    };
+
+    const dispose = subscribeStatus({
+      policyManager,
+      getSessionState: () => localCmds.getSessionState(),
+      hasUI: false,
+      ui,
+      onSessionMutation,
+      theme,
+    });
+
+    const text = calls[calls.length - 1].text;
+    expect(text).toContain("󰒃");
+    expect(text).toContain("sandbox");
+    expect(text).toContain("<success>");
+    expect(text).not.toContain("\n");
     dispose();
   });
 });

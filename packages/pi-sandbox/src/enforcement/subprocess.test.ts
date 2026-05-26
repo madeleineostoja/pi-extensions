@@ -45,6 +45,7 @@ function makePolicy(overrides: Partial<Policy> = {}): Policy {
       logFile: "/tmp/audit.jsonl",
     },
     enforcement: { requireKernelSandbox: false },
+    degraded: { allowExec: false },
     ...overrides,
   };
 }
@@ -112,8 +113,21 @@ function readFakeNonoArgs(argsPath: string): string[] {
 }
 
 describe("createUserBashHandler", () => {
-  it("returns undefined and lets pi run normally when nonoPath is null", () => {
+  it("blocks bash when nonoPath is null and degraded.allowExec is false", () => {
     const handler = createUserBashHandler(() => makePolicy(), makeCtx(), null);
+    const result = handler(makeUserBashEvent("ls -la", "/tmp"));
+
+    expect(result).not.toBeUndefined();
+    expect(result?.result?.exitCode).toBe(1);
+    expect(result?.result?.output).toContain("sandbox: bash blocked");
+  });
+
+  it("lets pi run normally when nonoPath is null and degraded.allowExec is true", () => {
+    const handler = createUserBashHandler(
+      () => makePolicy({ degraded: { allowExec: true } }),
+      makeCtx(),
+      null,
+    );
     const result = handler(makeUserBashEvent("ls -la", "/tmp"));
 
     expect(result).toBeUndefined();
@@ -242,7 +256,7 @@ describe("createUserBashHandler", () => {
     }
   });
 
-  it("emits a degraded exec audit entry when nonoPath is null", () => {
+  it("emits a blocked degraded exec audit entry when nonoPath is null", () => {
     const emitAudit = vi.fn();
     const handler = createUserBashHandler(
       () => makePolicy(),
@@ -252,10 +266,11 @@ describe("createUserBashHandler", () => {
     );
     const result = handler(makeUserBashEvent("ls"));
 
-    expect(result).toBeUndefined();
+    expect(result?.result?.exitCode).toBe(1);
     expect(emitAudit).toHaveBeenCalledOnce();
     const [entry] = emitAudit.mock.calls[0] as [Omit<AuditEntry, "ts">];
     expect(entry.kind).toBe("exec");
+    expect(entry.decision).toBe("blocked");
     expect(entry.rule).toContain("degraded");
   });
 });
@@ -307,12 +322,31 @@ describe("wrapPiExec — no sandbox opt-out", () => {
 });
 
 describe("wrapPiExec — fallback mode (nonoPath null)", () => {
-  it("calls original exec when nono is not available", async () => {
+  it("blocks exec when nono is not available and degraded.allowExec is false", async () => {
     const originalExec = vi
       .fn()
       .mockResolvedValue({ stdout: "ok", stderr: "", code: 0, killed: false });
     const pi = makePi({ exec: originalExec });
     wrapPiExec(pi, () => makePolicy(), makeCtx(), null);
+
+    await expect(pi.exec!("ls", ["/etc"])).rejects.toThrow(
+      "sandbox: exec blocked",
+    );
+
+    expect(originalExec).not.toHaveBeenCalled();
+  });
+
+  it("allows exec fallback when nono is not available and degraded.allowExec is true", async () => {
+    const originalExec = vi
+      .fn()
+      .mockResolvedValue({ stdout: "ok", stderr: "", code: 0, killed: false });
+    const pi = makePi({ exec: originalExec });
+    wrapPiExec(
+      pi,
+      () => makePolicy({ degraded: { allowExec: true } }),
+      makeCtx(),
+      null,
+    );
 
     const result = await pi.exec!("ls", ["/etc"]);
 
@@ -320,17 +354,19 @@ describe("wrapPiExec — fallback mode (nonoPath null)", () => {
     expect(result.stdout).toBe("ok");
   });
 
-  it("emits a degraded exec audit entry in fallback mode", async () => {
+  it("emits a blocked degraded exec audit entry in fallback mode", async () => {
     const pi = makePi();
     const emitAudit = vi.fn();
     wrapPiExec(pi, () => makePolicy(), makeCtx(), null, emitAudit);
 
-    await pi.exec!("ls", ["/etc"]);
+    await expect(pi.exec!("ls", ["/etc"])).rejects.toThrow(
+      "sandbox: exec blocked",
+    );
 
     expect(emitAudit).toHaveBeenCalledOnce();
     const [entry] = emitAudit.mock.calls[0] as [Omit<AuditEntry, "ts">];
     expect(entry.kind).toBe("exec");
-    expect(entry.decision).toBe("allowed");
+    expect(entry.decision).toBe("blocked");
     expect(entry.rule).toContain("degraded");
   });
 });
@@ -373,7 +409,7 @@ describe("initSubprocessSandbox — missing binary (fallback mode)", () => {
     expect(result.nonoPath).toBeNull();
   });
 
-  it("returns a userBashHandler that falls back to pi's default backend", () => {
+  it("returns a userBashHandler that blocks bash in degraded mode", () => {
     const pi = makePi();
     const ctx = makeCtx();
     const { userBashHandler } = initSubprocessSandbox(
@@ -383,7 +419,9 @@ describe("initSubprocessSandbox — missing binary (fallback mode)", () => {
     );
 
     const bashResult = userBashHandler(makeUserBashEvent("ls", "/"));
-    expect(bashResult).toBeUndefined();
+    expect(bashResult).not.toBeUndefined();
+    expect(bashResult?.result?.exitCode).toBe(1);
+    expect(bashResult?.result?.output).toContain("sandbox: bash blocked");
   });
 });
 
