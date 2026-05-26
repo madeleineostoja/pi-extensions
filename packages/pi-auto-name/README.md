@@ -19,7 +19,7 @@ When a new interactive coding session starts from a first user prompt, pi-auto-n
 | `/auto-name rename`              | Generate a name for the current session if unnamed   |
 | `/auto-name rename --force`      | Replace an existing session name                     |
 
-The default naming model is `openrouter/deepseek/deepseek-v4-flash`.
+The default naming model is `openrouter/openai/gpt-oss-120b`.
 Model overrides are stored in `<agent-dir>/extensions/pi-auto-name/config.json` and persist across restarts.
 
 ## Behavior

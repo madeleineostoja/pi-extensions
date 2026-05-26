@@ -48,6 +48,17 @@ export default function (pi: ExtensionAPI) {
       if (result.outcome !== "unknown-error") {
         attemptedThisSession = true;
       }
+      if (result.outcome !== "success") {
+        const msg =
+          result.outcome === "preflight-failure"
+            ? result.message
+            : result.outcome === "unknown-error"
+              ? result.message
+              : result.outcome === "aborted"
+                ? "Title generation was aborted."
+                : "Model returned an invalid title.";
+        maybeWarn(ctx, msg);
+      }
     });
   });
 
@@ -132,10 +143,18 @@ export default function (pi: ExtensionAPI) {
         if (result.outcome === "success") {
           pi.setSessionName(result.title);
           ctx.ui.notify(`Session named: ${result.title}`, "info");
-        } else if (result.outcome === "unknown-error") {
-          ctx.ui.notify("Failed to generate a valid session name.", "warning");
+          return;
         }
-        // Pre-flight failures already surfaced via the warn callback above.
+
+        const msg =
+          result.outcome === "unknown-error"
+            ? `Failed to generate session name: ${result.message}`
+            : result.outcome === "preflight-failure"
+              ? result.message
+              : result.outcome === "aborted"
+                ? "Title generation was aborted."
+                : "Model returned an invalid title.";
+        ctx.ui.notify(`[pi-auto-name] ${msg}`, "warning");
         return;
       }
 
@@ -174,10 +193,10 @@ function findFirstUserPrompt(ctx: ExtensionContext): string | undefined {
 
 type GenerateResult =
   | { outcome: "success"; title: string }
-  | { outcome: "preflight-failure" }
+  | { outcome: "preflight-failure"; message: string }
   | { outcome: "aborted" }
-  | { outcome: "invalid-output" }
-  | { outcome: "unknown-error" };
+  | { outcome: "invalid-output"; raw?: string }
+  | { outcome: "unknown-error"; message: string };
 
 async function generateNameAsync(
   ctx: ExtensionContext,
@@ -189,25 +208,25 @@ async function generateNameAsync(
     const effective = resolveEffectiveModel(agentDir);
     const parsed = parseModelRef(effective.model);
     if (!parsed) {
-      warn(ctx, `Invalid model reference: ${effective.model}`);
-      return { outcome: "preflight-failure" };
+      const message = `Invalid model reference: ${effective.model}`;
+      warn(ctx, message);
+      return { outcome: "preflight-failure", message };
     }
 
     const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
     if (!model) {
-      warn(ctx, `Model not found: ${effective.model}`);
-      return { outcome: "preflight-failure" };
+      const message = `Model not found: ${effective.model}`;
+      warn(ctx, message);
+      return { outcome: "preflight-failure", message };
     }
 
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok || !auth.apiKey) {
-      warn(
-        ctx,
-        auth.ok
-          ? `No API key for ${model.provider}`
-          : `Auth error: ${auth.error}`,
-      );
-      return { outcome: "preflight-failure" };
+      const message = auth.ok
+        ? `No API key for ${model.provider}`
+        : `Auth error: ${auth.error}`;
+      warn(ctx, message);
+      return { outcome: "preflight-failure", message };
     }
 
     const { systemPrompt, userText } = buildTitlePrompt(promptText);
@@ -237,10 +256,11 @@ async function generateNameAsync(
       .join("\n");
 
     const title = sanitizeTitle(text);
-    if (!title) return { outcome: "invalid-output" };
+    if (!title) return { outcome: "invalid-output", raw: text };
 
     return { outcome: "success", title };
-  } catch {
-    return { outcome: "unknown-error" };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { outcome: "unknown-error", message };
   }
 }

@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-export const DEFAULT_MODEL = "openrouter/deepseek/deepseek-v4-flash";
+export const DEFAULT_MODEL = "openrouter/openai/gpt-oss-120b";
 
 export type AutoNameConfig = {
   model?: string;
