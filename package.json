@@ -21,7 +21,8 @@
       "./packages/pi-ctx/src/index.ts",
       "./packages/pi-guard/src/index.ts",
       "./packages/pi-sandbox/src/index.ts",
-      "./packages/pi-footer/src/index.ts"
+      "./packages/pi-footer/src/index.ts",
+      "./packages/pi-auto-name/src/index.ts"
     ]
   },
   "scripts": {
@@ -34,6 +35,7 @@
     "check": "npm run lint && npm run format:check && npm run typecheck && npm run test"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^0.75.4",
     "@earendil-works/pi-coding-agent": "^0.75.4",
     "@earendil-works/pi-tui": "^0.75.4",
     "@prettier/plugin-oxc": "^0.1.4",
