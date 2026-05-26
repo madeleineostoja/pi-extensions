@@ -9,10 +9,10 @@ const BLOCKED_HOSTS_RING_SIZE = 20;
 
 export type EventsTarget = Pick<EventBus, "emit">;
 
-export interface AuditEmitter {
+export type AuditEmitter = {
   getRecentBlockedHosts: () => readonly string[];
   emitAuditEvents: (entry: AuditEntry, events: EventsTarget) => void;
-}
+};
 
 export function createAuditEmitter(): AuditEmitter {
   const recentBlockedHosts: string[] = [];

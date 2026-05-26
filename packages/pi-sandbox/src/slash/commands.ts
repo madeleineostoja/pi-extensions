@@ -32,11 +32,11 @@ export { isValidNetworkAllowEntry as isValidHost };
 // Session state
 // ---------------------------------------------------------------------------
 
-export interface SessionState {
+export type SessionState = {
   sessionAllowedHosts: Set<string>;
   networkOff: boolean;
   sandboxOff: boolean;
-}
+};
 
 // ---------------------------------------------------------------------------
 // Config persistence helpers
@@ -125,23 +125,23 @@ function getUserConfigPath(): string {
 // Subcommand context
 // ---------------------------------------------------------------------------
 
-export interface SubcommandContext {
+export type SubcommandContext = {
   ui: Pick<ExtensionUIContext, "notify">;
   policyManager: PolicyManager;
   cwd: string;
   events?: EventsTarget;
-}
+};
 
 // ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
 
-export interface ParsedArgs {
+export type ParsedArgs = {
   subcommand: string;
   hosts: string[];
   persist: false | "project" | "user";
   target: string;
-}
+};
 
 export function parseArgs(rawArgs: string): ParsedArgs {
   const tokens = rawArgs.trim().split(/\s+/).filter(Boolean);
@@ -247,7 +247,7 @@ export function getArgumentCompletions(
 // createSlashCommands factory — owns per-instance session state and listeners
 // ---------------------------------------------------------------------------
 
-export interface SlashCommandsInstance {
+export type SlashCommandsInstance = {
   getSessionState: () => SessionState;
   subscribeSessionChange: (fn: () => void) => () => void;
   notifySessionChange: () => void;
@@ -276,12 +276,12 @@ export interface SlashCommandsInstance {
     cwd: string,
     events?: EventsTarget,
   ) => void;
-}
+};
 
-export interface SlashCommandsDeps {
+export type SlashCommandsDeps = {
   recordAudit: AuditPipeline["recordAudit"];
   getRecentBlockedHosts: AuditPipeline["getRecentBlockedHosts"];
-}
+};
 
 export function createSlashCommands(
   deps: SlashCommandsDeps,

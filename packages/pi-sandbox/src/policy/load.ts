@@ -18,13 +18,13 @@ import { literalPrefix } from "../enforcement/glob-prefix.js";
 
 export type NotifyTarget = Pick<ExtensionUIContext, "notify">;
 
-export interface LoadPolicyOptions {
+export type LoadPolicyOptions = {
   ui?: NotifyTarget;
   home?: string;
   platform?: NodeJS.Platform;
-}
+};
 
-export interface PolicyManager {
+export type PolicyManager = {
   loadPolicy(cwd: string, uiOrOpts?: NotifyTarget | LoadPolicyOptions): Policy;
   reloadPolicy(
     cwd: string,
@@ -32,7 +32,7 @@ export interface PolicyManager {
   ): Policy;
   subscribe(fn: (policy: Policy) => void): () => void;
   getPolicy(): Policy;
-}
+};
 
 export function expandPaths(value: string, cwd: string, home?: string): string {
   const homeDir = home ?? os.homedir();

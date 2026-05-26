@@ -7,13 +7,13 @@ import type { SessionState } from "../slash/commands.js";
 // Status state shape
 // ---------------------------------------------------------------------------
 
-export interface StatusState {
+export type StatusState = {
   enabled: boolean;
   networkOff: boolean;
   networkMode: Policy["network"]["mode"];
   hasUI: boolean;
   inProcessOnly?: boolean;
-}
+};
 
 // ---------------------------------------------------------------------------
 // Pure renderer
@@ -58,11 +58,11 @@ export function renderStatusThemed(
 // Glue layer — subscribe-and-update
 // ---------------------------------------------------------------------------
 
-export interface StatusUI {
+export type StatusUI = {
   setStatus: (key: string, text: string | undefined) => void;
-}
+};
 
-export interface StatusSubscribeOptions {
+export type StatusSubscribeOptions = {
   policyManager: PolicyManager;
   getSessionState: () => SessionState;
   hasUI: boolean;
@@ -71,7 +71,7 @@ export interface StatusSubscribeOptions {
   onSessionMutation: (fn: () => void) => () => void;
   inProcessOnly?: boolean;
   theme?: Pick<Theme, "fg">;
-}
+};
 
 export function subscribeStatus(opts: StatusSubscribeOptions): () => void {
   const {

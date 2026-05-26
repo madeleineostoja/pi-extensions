@@ -1,33 +1,33 @@
-export interface ToolStats {
+export type ToolStats = {
   toolName: string;
   tokens: number;
   entries: number;
   recalls: number;
-}
+};
 
-export interface StatsSnapshot {
+export type StatsSnapshot = {
   tokensElidedCumulative: number;
   elidedCountLatest: number;
   recallCount: number;
   byTool: ToolStats[];
-}
+};
 
-export interface ElisionPassEntry {
+export type ElisionPassEntry = {
   toolCallId: string;
   tokenCount: number;
   toolName: string;
-}
+};
 
-export interface ElisionPassResult {
+export type ElisionPassResult = {
   entries: ElisionPassEntry[];
-}
+};
 
-export interface StatsStore {
+export type StatsStore = {
   onElisionPass(result: ElisionPassResult): void;
   onRecall(toolName: string): void;
   reset(): void;
   snapshot(): StatsSnapshot;
-}
+};
 
 export function createStatsStore(): StatsStore {
   const elidedById = new Map<

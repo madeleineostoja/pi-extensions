@@ -35,12 +35,12 @@ export type UserBashHandler = (
   event: UserBashEvent,
 ) => UserBashEventResult | undefined;
 
-export interface SandboxWrapperOptions {
+export type SandboxWrapperOptions = {
   getPolicy: () => Policy;
   getSession?: () => SessionState;
   ctx: ManifestContext;
   nonoPath?: string | null;
-}
+};
 
 function buildNonoArgv(
   nonoPath: string,
@@ -418,12 +418,12 @@ export function createUserBashHandler(
 // SubprocessSandbox factory
 // ---------------------------------------------------------------------------
 
-export interface SubprocessSandboxResult {
+export type SubprocessSandboxResult = {
   userBashHandler: UserBashHandler;
   nonoPath: string | null;
   /** Restore pi.exec to its pre-wrap value. Safe to call multiple times. */
   unwrap: () => void;
-}
+};
 
 export function createSubprocessSandbox(
   pi: ExtensionAPI,

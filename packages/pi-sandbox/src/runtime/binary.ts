@@ -98,9 +98,9 @@ export function checkNonoVersion(
   }
 }
 
-export interface IsMuslResult {
+export type IsMuslResult = {
   isMusl: boolean;
-}
+};
 
 /**
  * Detect whether we're running on a musl-based Linux system.
@@ -139,18 +139,18 @@ export function isSupportedPlatform(): boolean {
   return false;
 }
 
-interface InstallStatusOk {
+type InstallStatusOk = {
   ok: true;
   version: string;
   ts: number;
-}
+};
 
-interface InstallStatusFail {
+type InstallStatusFail = {
   ok: false;
   reason: string;
   detail?: string;
   ts: number;
-}
+};
 
 type InstallStatus = InstallStatusOk | InstallStatusFail;
 
@@ -241,13 +241,13 @@ export function getNonoPath(): string | null {
   return whichInPath("nono", process.env.PATH ?? "");
 }
 
-export interface BinaryRuntime {
+export type BinaryRuntime = {
   getBinaryStatus: () => BinaryStatus;
   getNonoPath: () => string | null;
   warnMissingOnce: (
     notify: (msg: string, level: "warning" | "error") => void,
   ) => void;
-}
+};
 
 export function createBinaryRuntime(): BinaryRuntime {
   let missingBinaryWarned = false;

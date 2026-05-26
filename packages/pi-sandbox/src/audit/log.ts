@@ -6,15 +6,15 @@ import type { AuditEntry } from "./schema.js";
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 const DEFAULT_MAX_FILES = 3;
 
-export interface LogWriterOptions {
+export type LogWriterOptions = {
   logFile: string;
   maxBytes?: number;
   maxFiles?: number;
-}
+};
 
-export interface LogWriter {
+export type LogWriter = {
   appendLogEntry: (entry: AuditEntry, opts: LogWriterOptions) => void;
-}
+};
 
 export function createLogWriter(): LogWriter {
   const warnedLogFiles = new Set<string>();

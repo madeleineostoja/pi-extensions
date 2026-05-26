@@ -139,10 +139,10 @@ function isToolResult(msg: AgentMsg) {
   return msg.role === "toolResult";
 }
 
-interface ToolCallInfo {
+type ToolCallInfo = {
   name: string;
   input: unknown;
-}
+};
 
 function buildSupersededMaps(
   messages: AgentMsg[],
@@ -186,10 +186,10 @@ function buildSupersededMaps(
   return { toolCallInfoMap, supersededPaths };
 }
 
-interface DuplicateInfo {
+type DuplicateInfo = {
   normalizedPath: string;
   keptUserTurnIndex: number;
-}
+};
 
 // Groups successful reads by (normalizedPath, offset, limit) — reads of the same file at different
 // ranges are not duplicates since they may capture non-overlapping content.
@@ -200,11 +200,11 @@ function buildDuplicateReadMap(
 ): Map<string, DuplicateInfo> {
   const userTurnCounts = userTurnsUpToEachPosition(messages);
 
-  interface ReadEntry {
+  type ReadEntry = {
     toolCallId: string;
     normalizedPath: string;
     userTurnIndex: number;
-  }
+  };
 
   const groups = new Map<string, ReadEntry[]>();
 

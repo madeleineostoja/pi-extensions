@@ -5,40 +5,40 @@ import * as os from "node:os";
 import type { Policy } from "../policy/defaults.js";
 import { literalPrefix } from "./glob-prefix.js";
 
-export interface ManifestContext {
+export type ManifestContext = {
   hasUI: boolean;
   cwd: string;
   platform?: NodeJS.Platform;
   ui: {
     notify: (text: string, level: "warning" | "error") => void;
   };
-}
+};
 
-export interface NonoFilesystemDeny {
+export type NonoFilesystemDeny = {
   access?: string[];
   unlink?: string[];
-}
+};
 
-export interface NonoFilesystem {
+export type NonoFilesystem = {
   allow_read?: string[];
   allow_write?: string[];
   deny?: NonoFilesystemDeny;
-}
+};
 
-export interface NonoNetwork {
+export type NonoNetwork = {
   allow_domain?: string[];
-}
+};
 
-export interface CapabilityManifest {
+export type CapabilityManifest = {
   filesystem?: NonoFilesystem;
   network?: NonoNetwork;
-}
+};
 
 // nono-ts CapabilitySet is not installable; define a compatible interface.
-export interface CapabilitySet {
+export type CapabilitySet = {
   queryPath(p: string, mode: "read" | "write"): boolean;
   platformRules: string[];
-}
+};
 
 export function escapeSeatbeltString(s: string): string {
   for (let i = 0; i < s.length; i++) {
@@ -89,10 +89,10 @@ function filterExistingPaths(
   return result;
 }
 
-export interface CapsInstance {
+export type CapsInstance = {
   buildManifest: (policy: Policy, ctx: ManifestContext) => CapabilityManifest;
   buildCapabilitySet: (policy: Policy, ctx: ManifestContext) => CapabilitySet;
-}
+};
 
 export function createCaps(): CapsInstance {
   const warnedMissingPaths = new Set<string>();

@@ -34,23 +34,23 @@ export const BLOCK_REASON = "sandbox: path denied";
 
 export type AccessMode = "read" | "write";
 
-export interface ToolGateResult {
+export type ToolGateResult = {
   block: true;
   reason: string;
-}
+};
 
-export interface ToolGateOptions {
+export type ToolGateOptions = {
   getPolicy: () => Policy;
   getSession?: () => SessionState;
   ctx: ManifestContext;
   /** Optional callback invoked for every allow/block decision. */
   onAudit?: (entry: Omit<AuditEntry, "ts">) => void;
-}
+};
 
-interface ToolSpec {
+type ToolSpec = {
   mode: AccessMode | "readwrite";
   getPath: (input: Record<string, unknown>) => string | undefined;
-}
+};
 
 const TOOL_SPECS: Record<string, ToolSpec> = {
   read: { mode: "read", getPath: (i) => i.path as string | undefined },
@@ -61,7 +61,7 @@ const TOOL_SPECS: Record<string, ToolSpec> = {
   edit: { mode: "readwrite", getPath: (i) => i.path as string | undefined },
 };
 
-export interface ToolGate {
+export type ToolGate = {
   /**
    * Handle a tool_call event. Returns a block result to abort the call, or
    * undefined to allow it.
@@ -70,7 +70,7 @@ export interface ToolGate {
 
   /** Tear down any resources held by this gate. */
   dispose(): void;
-}
+};
 
 export function createToolGate(opts: ToolGateOptions): ToolGate {
   const { getPolicy, getSession, ctx, onAudit } = opts;

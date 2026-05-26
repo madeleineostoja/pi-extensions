@@ -2,12 +2,12 @@ import { formatSteer } from "./utils";
 
 export type ToolCallDecision = "pass" | "auto-disable" | "prompt";
 
-export interface DecideToolCallParams {
+export type DecideToolCallParams = {
   guardMode: boolean;
   hasUI: boolean;
   toolName: string;
   triggerTools: Set<string>;
-}
+};
 
 export function decideToolCall(params: DecideToolCallParams): ToolCallDecision {
   const { guardMode, hasUI, toolName, triggerTools } = params;
@@ -17,11 +17,11 @@ export function decideToolCall(params: DecideToolCallParams): ToolCallDecision {
   return "prompt";
 }
 
-export interface ResolveChoiceResult {
+export type ResolveChoiceResult = {
   block: boolean;
   reason?: string;
   sideEffect?: "disable";
-}
+};
 
 export function resolveChoice(params: {
   choice: string | undefined;

@@ -1,35 +1,35 @@
-export interface FsPolicy {
+export type FsPolicy = {
   allowRead: string[];
   allowWrite: string[];
   denyPatterns: string[];
-}
+};
 
-export interface NetworkPolicy {
+export type NetworkPolicy = {
   mode: "non-interactive-only" | "always" | "off";
   allow: string[];
-}
+};
 
-export interface AuditPolicy {
+export type AuditPolicy = {
   log: boolean;
   logFile: string;
-}
+};
 
-export interface EnforcementPolicy {
+export type EnforcementPolicy = {
   requireKernelSandbox: boolean;
-}
+};
 
-export interface DegradedPolicy {
+export type DegradedPolicy = {
   allowExec: boolean;
-}
+};
 
-export interface Policy {
+export type Policy = {
   enabled: boolean;
   fs: FsPolicy;
   network: NetworkPolicy;
   audit: AuditPolicy;
   enforcement: EnforcementPolicy;
   degraded?: DegradedPolicy;
-}
+};
 
 export const DEFAULT_POLICY: Policy = {
   enabled: true,

@@ -5,21 +5,21 @@ import { createAuditEmitter, type EventsTarget } from "./events.js";
 export type { AuditEntry } from "./schema.js";
 export type { SandboxAuditEvent, SandboxPolicyChangedEvent } from "./schema.js";
 
-export interface RecordAuditOptions {
+export type RecordAuditOptions = {
   logFile?: string;
   logEnabled?: boolean;
   maxBytes?: number;
   maxFiles?: number;
   events?: EventsTarget;
-}
+};
 
-export interface AuditPipeline {
+export type AuditPipeline = {
   recordAudit: (
     entry: Omit<AuditEntry, "ts"> & { ts?: number },
     opts?: RecordAuditOptions,
   ) => void;
   getRecentBlockedHosts: () => readonly string[];
-}
+};
 
 export function createAuditPipeline(): AuditPipeline {
   const logWriter = createLogWriter();

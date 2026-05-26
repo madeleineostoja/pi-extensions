@@ -13,8 +13,8 @@ export type AuditEntry = {
 
 export type SandboxAuditEvent = AuditEntry & {};
 
-export interface SandboxPolicyChangedEvent {
+export type SandboxPolicyChangedEvent = {
   ts: number;
   source?: "config" | "command" | `ext:${string}`;
   scope?: "session" | "persisted";
-}
+};
