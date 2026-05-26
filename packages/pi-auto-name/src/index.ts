@@ -104,7 +104,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      if (subcommand === "regen") {
+      if (subcommand === "rename") {
         const force = tokens.includes("--force");
         if (pi.getSessionName() && !force) {
           ctx.ui.notify(
@@ -140,7 +140,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       ctx.ui.notify(
-        "Usage: /auto-name | /auto-name model [<provider/id> | reset] | /auto-name regen [--force]",
+        "Usage: /auto-name | /auto-name model [<provider/id> | reset] | /auto-name rename [--force]",
         "warning",
       );
     },
