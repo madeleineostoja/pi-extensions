@@ -158,7 +158,7 @@ export function buildStatusLine(
       const sanitized = sanitizeStatusText(text);
       return hasAnsi(sanitized) ? sanitized : theme.fg("muted", sanitized);
     });
-  return sorted.join("    ");
+  return sorted.join("  ");
 }
 
 export function buildFooterLines(
