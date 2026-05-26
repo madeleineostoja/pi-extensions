@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { createRequire } from "node:module";
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -107,6 +108,18 @@ function deepMerge(
   return result;
 }
 
+function resolveHostDocsDir(): string | null {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkgJsonPath =
+      require.resolve("@earendil-works/pi-coding-agent/package.json");
+    const docsDir = path.join(path.dirname(pkgJsonPath), "docs");
+    return fs.existsSync(docsDir) ? docsDir : null;
+  } catch {
+    return null;
+  }
+}
+
 function tryLoadFile(
   filePath: string,
   ui: NotifyTarget | undefined,
@@ -178,6 +191,11 @@ export function createPolicyManager(): PolicyManager {
     }
 
     policy = expandPathsInPolicy(policy, cwd, homeDir);
+
+    const hostDocsDir = resolveHostDocsDir();
+    if (hostDocsDir && !policy.fs.allowRead.includes(hostDocsDir)) {
+      policy.fs.allowRead.push(hostDocsDir);
+    }
 
     if (platform === "darwin" && ui) {
       for (const pattern of policy.fs.denyPatterns) {

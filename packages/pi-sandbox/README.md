@@ -219,6 +219,10 @@ Policy is loaded from up to two JSON (or JSONC) files and merged in this order:
 
 Each layer only needs to specify the fields it wants to override; omitted fields retain their value from the previous layer.
 
+### Implicit read grant for host docs
+
+After config merge, pi-sandbox resolves `@earendil-works/pi-coding-agent/package.json` and, if found, appends its sibling `docs/` directory to `fs.allowRead`. This lets agents read the bundled Pi documentation (`extensions.md`, `sdk.md`, `skills.md`, …) regardless of where the package manager places the package on disk (pnpm content-addressed store, npm/yarn flat layout, etc.). The grant is read-only and scoped to that single directory; if the host package is unresolvable, no grant is added.
+
 ### Array replacement
 
 Arrays are **replaced**, not merged. If a project config sets `network.allow` to `["internal.corp"]`, the full default allowlist is discarded and only `"internal.corp"` is active. The same applies to `fs.allowRead`, `fs.allowWrite`, and `fs.denyPatterns`.
