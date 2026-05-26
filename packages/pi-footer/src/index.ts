@@ -48,8 +48,6 @@ export default function (pi: ExtensionAPI) {
             const footerModel = model
               ? { name: model.name, id: model.id, provider: model.provider }
               : undefined;
-            const includeProvider = footerData.getAvailableProviderCount() > 1;
-
             const rightWithWindow = buildRightSegment(
               footerModel,
               thinkingLevel,
@@ -58,7 +56,7 @@ export default function (pi: ExtensionAPI) {
               usingSubscription,
               theme,
               true,
-              includeProvider,
+              false,
             );
 
             const rightWithoutWindow = buildRightSegment(
@@ -69,7 +67,7 @@ export default function (pi: ExtensionAPI) {
               usingSubscription,
               theme,
               false,
-              includeProvider,
+              false,
             );
 
             return buildFooterLines(
