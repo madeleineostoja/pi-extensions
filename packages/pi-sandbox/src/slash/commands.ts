@@ -269,7 +269,7 @@ export interface SlashCommandsInstance {
   handleNetworkOn: (ctx: SubcommandContext) => void;
   handleOff: (ctx: SubcommandContext) => void;
   handleOn: (ctx: SubcommandContext) => void;
-  dispatch: (rawArgs: string, ctx: SubcommandContext) => void;
+  dispatch: (rawArgs: string, ctx: SubcommandContext) => Promise<void>;
   registerSandboxCommand: (
     pi: ExtensionAPI,
     policyManager: PolicyManager,
@@ -603,7 +603,10 @@ export function createSlashCommands(
     notifySessionChange();
   }
 
-  function dispatch(rawArgs: string, ctx: SubcommandContext): void {
+  async function dispatch(
+    rawArgs: string,
+    ctx: SubcommandContext,
+  ): Promise<void> {
     const parsed = parseArgs(rawArgs);
     const { subcommand } = parsed;
 
@@ -621,7 +624,7 @@ export function createSlashCommands(
         break;
 
       case "why":
-        handleWhy(ctx, parsed.target);
+        await handleWhy(ctx, parsed.target);
         break;
 
       case "allow":
@@ -667,18 +670,6 @@ export function createSlashCommands(
     cwd: string,
     events?: EventsTarget,
   ): void {
-    const ui: Pick<ExtensionUIContext, "notify"> = {
-      notify: (text, level) => {
-        if (level === "error" || level === "warning") {
-          process.stderr.write(`[sandbox/${level ?? "warning"}] ${text}\n`);
-        } else {
-          process.stdout.write(`[sandbox] ${text}\n`);
-        }
-      },
-    };
-
-    const cmdCtx: SubcommandContext = { ui, policyManager, cwd, events };
-
     pi.registerCommand("sandbox", {
       description: "Inspect and control the pi-sandbox policy",
       getArgumentCompletions: (prefix: string) =>
@@ -689,6 +680,12 @@ export function createSlashCommands(
           getRecentBlockedHosts,
         ),
       handler: async (args: string, _ctx: ExtensionCommandContext) => {
+        const cmdCtx: SubcommandContext = {
+          ui: _ctx.ui,
+          policyManager,
+          cwd,
+          events,
+        };
         await dispatch(args, cmdCtx);
       },
     });

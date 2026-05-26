@@ -1,8 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
 import {
   parseArgs,
   getArgumentCompletions,
@@ -1130,5 +1134,41 @@ describe("per-host audit emission", () => {
     expect((auditEvents[0].payload as Record<string, unknown>).rule).toBe(
       "sandbox-off",
     );
+  });
+});
+
+describe("registerSandboxCommand", () => {
+  it("uses command context UI instead of stdout/stderr", async () => {
+    const cmds = createSlashCommands(createAuditPipeline());
+    const policyManager = makePolicyManager(makePolicy());
+
+    let capturedHandler:
+      | ((args: string, ctx: ExtensionCommandContext) => Promise<void>)
+      | undefined;
+
+    const mockPi = {
+      registerCommand: (
+        _name: string,
+        options: {
+          handler: (
+            args: string,
+            ctx: ExtensionCommandContext,
+          ) => Promise<void>;
+        },
+      ) => {
+        capturedHandler = options.handler;
+      },
+    } as unknown as ExtensionAPI;
+
+    cmds.registerSandboxCommand(mockPi, policyManager, os.tmpdir());
+
+    const notifyMock = vi.fn();
+    const mockCtx = {
+      ui: { notify: notifyMock },
+    } as unknown as ExtensionCommandContext;
+
+    await capturedHandler!("status", mockCtx);
+
+    expect(notifyMock).toHaveBeenCalled();
   });
 });
