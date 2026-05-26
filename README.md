@@ -8,6 +8,7 @@ Personal extensions for the [Pi](https://github.com/earendil-works/pi) agent har
 | --------------------------------------- | --------------------------------------------------------------------------------------------- |
 | [pi-caffeinate](packages/pi-caffeinate) | Prevent host idle-sleep for the lifetime of a pi session (macOS + Linux).                     |
 | [pi-ctx](packages/pi-ctx)               | Keep the context window small by pruning large, stale tool results and re-fetching on demand. |
+| [pi-footer](packages/pi-footer)         | Compact replacement footer with cwd, branch, model, cost, context, and extension statuses.    |
 | [pi-guard](packages/pi-guard)           | Lightweight approval before agents begin editing or writing files                             |
 | [pi-sandbox](packages/pi-sandbox)       | Kernel level sandboxing with pi agents with [nono](https://github.com/always-further/nono)    |
 
