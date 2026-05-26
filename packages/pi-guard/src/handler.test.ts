@@ -10,6 +10,26 @@ import registerExtension from "./index";
 const DECLINED_NO_FEEDBACK =
   "Edit not applied. User declined without feedback. Ask for clarification before retrying.";
 
+function makeDummyTheme(): { fg: (color: string, text: string) => string } {
+  return { fg: (_color: string, text: string) => text };
+}
+
+function makeThemeSpy(): {
+  theme: { fg: (color: string, text: string) => string };
+  calls: Array<{ color: string; text: string }>;
+} {
+  const calls: Array<{ color: string; text: string }> = [];
+  return {
+    theme: {
+      fg: (color: string, text: string) => {
+        calls.push({ color, text });
+        return `<${color}>${text}</${color}>`;
+      },
+    },
+    calls,
+  };
+}
+
 function makeToolCallCtx(
   overrides: Partial<{
     selectResult: string | undefined | (() => Promise<string | undefined>);
@@ -49,7 +69,7 @@ function makeToolCallCtx(
       setEditorComponent: () => {},
       getEditorComponent: () => undefined,
       get theme() {
-        return {} as never;
+        return makeDummyTheme() as never;
       },
       getAllThemes: () => [],
       getTheme: () => undefined,
@@ -362,7 +382,7 @@ function makeCapturingCtx(
       setEditorComponent: () => {},
       getEditorComponent: () => undefined,
       get theme() {
-        return {} as never;
+        return makeDummyTheme() as never;
       },
       getAllThemes: () => [],
       getTheme: () => undefined,
@@ -546,7 +566,7 @@ function makeNonInteractiveCtx(): ExtensionContext & { notifyCalls: string[] } {
       setEditorComponent: () => {},
       getEditorComponent: () => undefined,
       get theme() {
-        return {} as never;
+        return makeDummyTheme() as never;
       },
       getAllThemes: () => [],
       getTheme: () => undefined,
@@ -626,8 +646,10 @@ describe("non-interactive mode (tool_call handler)", () => {
 
 function makeInteractiveCtx(): ExtensionContext & {
   statusCalls: Array<{ key: string; value: string | undefined }>;
+  themeCalls: Array<{ color: string; text: string }>;
 } {
   const statusCalls: Array<{ key: string; value: string | undefined }> = [];
+  const { theme, calls: themeCalls } = makeThemeSpy();
   return {
     hasUI: true,
     signal: undefined,
@@ -657,7 +679,7 @@ function makeInteractiveCtx(): ExtensionContext & {
       setEditorComponent: () => {},
       getEditorComponent: () => undefined,
       get theme() {
-        return {} as never;
+        return theme as never;
       },
       getAllThemes: () => [],
       getTheme: () => undefined,
@@ -677,11 +699,11 @@ function makeInteractiveCtx(): ExtensionContext & {
     compact: () => {},
     getSystemPrompt: () => "",
     statusCalls,
+    themeCalls,
   };
 }
 
 const FOOTER_KEY = "pi-guard.active";
-const FOOTER_TEXT = "guarding";
 
 describe("session_start reason handling", () => {
   it('reason "startup" enables guard and sets footer', async () => {
@@ -695,7 +717,10 @@ describe("session_start reason handling", () => {
 
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toBe(FOOTER_TEXT);
+    expect(lastStatus?.value).toContain("󰌾");
+    expect(lastStatus?.value).toContain("guarding");
+    expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰌾" });
+    expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "guarding" });
   });
 
   it('reason "new" enables guard and sets footer', async () => {
@@ -709,7 +734,8 @@ describe("session_start reason handling", () => {
 
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toBe(FOOTER_TEXT);
+    expect(lastStatus?.value).toContain("󰌾");
+    expect(lastStatus?.value).toContain("guarding");
   });
 
   it('reason "fork" enables guard and sets footer', async () => {
@@ -723,7 +749,8 @@ describe("session_start reason handling", () => {
 
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toBe(FOOTER_TEXT);
+    expect(lastStatus?.value).toContain("󰌾");
+    expect(lastStatus?.value).toContain("guarding");
   });
 
   it('reason "reload" does not call applyMode(true): guard remains off if previously disabled', async () => {
@@ -742,7 +769,8 @@ describe("session_start reason handling", () => {
 
     const lastStatus = reloadCtx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toBeUndefined();
+    expect(lastStatus?.value).toContain("guard off");
+    expect(lastStatus?.value).toContain("󰌾");
   });
 
   it('reason "resume" does not call applyMode(true): guard remains off if previously disabled', async () => {
@@ -761,7 +789,8 @@ describe("session_start reason handling", () => {
 
     const lastStatus = resumeCtx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toBeUndefined();
+    expect(lastStatus?.value).toContain("guard off");
+    expect(lastStatus?.value).toContain("󰌾");
   });
 });
 
@@ -846,7 +875,7 @@ function makeNotifyCapturingCtx(_guardOn: boolean = true): ExtensionContext & {
       setEditorComponent: () => {},
       getEditorComponent: () => undefined,
       get theme() {
-        return {} as never;
+        return makeDummyTheme() as never;
       },
       getAllThemes: () => [],
       getTheme: () => undefined,
@@ -934,5 +963,38 @@ describe("ctrl+shift+g shortcut notifications", () => {
     await shortcutHandler(ctx);
 
     expect(ctx.notifyCalls).toHaveLength(0);
+  });
+});
+
+describe("footer theming", () => {
+  it("guard on sets themed status with success icon and muted text", async () => {
+    const { sessionStartHandler } = captureHandlers();
+    const ctx = makeInteractiveCtx();
+
+    await sessionStartHandler(makeSessionStartEvent() as never, ctx);
+
+    const lastStatus = ctx.statusCalls.at(-1);
+    expect(lastStatus?.key).toBe(FOOTER_KEY);
+    expect(lastStatus?.value).toContain("󰌾");
+    expect(lastStatus?.value).toContain("guarding");
+    expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰌾" });
+    expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "guarding" });
+  });
+
+  it("guard off sets themed warning status instead of clearing", async () => {
+    const { commandHandler } = captureCommandAndShortcutHandlers();
+    const ctx = makeInteractiveCtx();
+
+    await commandHandler("off", ctx);
+
+    const lastStatus = ctx.statusCalls.at(-1);
+    expect(lastStatus?.key).toBe(FOOTER_KEY);
+    expect(lastStatus?.value).toContain("guard off");
+    expect(lastStatus?.value).toContain("󰌾");
+    expect(ctx.themeCalls).toContainEqual({ color: "warning", text: "󰌾" });
+    expect(ctx.themeCalls).toContainEqual({
+      color: "warning",
+      text: "guard off",
+    });
   });
 });

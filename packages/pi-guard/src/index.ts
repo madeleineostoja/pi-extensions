@@ -12,7 +12,6 @@ import {
 import { decideToolCall, resolveChoice } from "./handler";
 
 const FOOTER_KEY = "pi-guard.active";
-const FOOTER_TEXT = "guarding";
 
 const NON_INTERACTIVE_MSG =
   "guard mode auto-disabled: no interactive UI available in this session. Edits will proceed without confirmation.";
@@ -34,7 +33,19 @@ export default function (pi: ExtensionAPI) {
   }
 
   function syncFooter(ctx: ExtensionContext) {
-    ctx.ui.setStatus(FOOTER_KEY, guardMode ? FOOTER_TEXT : undefined);
+    if (!ctx.hasUI) return;
+    const theme = ctx.ui.theme;
+    if (guardMode) {
+      ctx.ui.setStatus(
+        FOOTER_KEY,
+        `${theme.fg("success", "󰌾")} ${theme.fg("muted", "guarding")}`,
+      );
+    } else {
+      ctx.ui.setStatus(
+        FOOTER_KEY,
+        `${theme.fg("warning", "󰌾")} ${theme.fg("warning", "guard off")}`,
+      );
+    }
   }
 
   pi.registerShortcut("ctrl+shift+g", {
