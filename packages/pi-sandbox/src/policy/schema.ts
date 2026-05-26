@@ -89,6 +89,22 @@ function validateFs(raw: unknown): Partial<FsPolicy> {
   };
 }
 
+/**
+ * Returns true if `host` is matched by a single allowlist entry.
+ *
+ * Bare hostnames match exactly. Wildcard entries (`*.example.com`) match any
+ * proper subdomain but not the apex itself — `*.example.com` matches
+ * `api.example.com` but not `example.com`. This mirrors standard DNS wildcard
+ * semantics (and the contract nono enforces in the subprocess sandbox).
+ */
+export function matchHost(host: string, entry: string): boolean {
+  if (entry.startsWith("*.")) {
+    const suffix = entry.slice(2);
+    return host.endsWith("." + suffix);
+  }
+  return host === entry;
+}
+
 // Accepts bare hostnames ("example.com", "api.github.com") and wildcard prefixes
 // ("*.example.com", "*.github.com"). Rejects CIDR ranges and malformed entries.
 export function isValidNetworkAllowEntry(entry: string): boolean {

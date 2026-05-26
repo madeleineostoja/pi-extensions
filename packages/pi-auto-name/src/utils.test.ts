@@ -61,9 +61,27 @@ describe("sanitizeTitle", () => {
     expect(sanitizeTitle("Session title")).toBeNull();
   });
 
-  it("rejects titles over 40 characters", () => {
-    expect(sanitizeTitle("a".repeat(41))).toBeNull();
+  it("truncates titles over 40 characters on a word boundary", () => {
     expect(sanitizeTitle("a".repeat(40))).toBe("a".repeat(40));
+    expect(
+      sanitizeTitle("Implement a red black tree data structure in Rust"),
+    ).toBe("Implement a red black tree data");
+  });
+
+  it("hard-truncates when no word boundary is available", () => {
+    expect(sanitizeTitle("a".repeat(60))).toBe("a".repeat(40));
+  });
+
+  it("strips smart quotes", () => {
+    expect(sanitizeTitle("“hello world”")).toBe("hello world");
+    expect(sanitizeTitle("‘hello world’")).toBe("hello world");
+  });
+
+  it("strips leading label prefixes", () => {
+    expect(sanitizeTitle("Title: hello world")).toBe("hello world");
+    expect(sanitizeTitle("Name: hello world")).toBe("hello world");
+    expect(sanitizeTitle("Session name: hello world")).toBe("hello world");
+    expect(sanitizeTitle('Title: "hello world"')).toBe("hello world");
   });
 });
 

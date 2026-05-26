@@ -12,8 +12,6 @@ export interface StatusState {
   networkOff: boolean;
   networkMode: Policy["network"]["mode"];
   hasUI: boolean;
-  allowedHostCount: number;
-  writableRootCount: number;
   inProcessOnly?: boolean;
 }
 
@@ -21,28 +19,18 @@ export interface StatusState {
 // Pure renderer
 // ---------------------------------------------------------------------------
 
+function isNetworkSandboxed(state: StatusState): boolean {
+  if (state.networkOff) return true;
+  if (state.networkMode === "off" || state.networkMode === "always")
+    return true;
+  return state.networkMode === "non-interactive-only" && !state.hasUI;
+}
+
 export function renderStatus(state: StatusState): string {
-  if (!state.enabled) {
-    return "⚠ sandbox: off";
-  }
-
-  if (state.inProcessOnly) {
-    return "🔒 sandbox · in-process only";
-  }
-
-  if (state.networkOff) {
-    return "🔒 sandbox · network: ⚠ off";
-  }
-
-  if (state.networkMode === "off") {
-    return "🔒 sandbox · network: off (config)";
-  }
-
-  if (state.networkMode === "non-interactive-only" && state.hasUI) {
-    return "🔒 sandbox · network: off (interactive)";
-  }
-
-  return `🔒 sandbox · ${state.allowedHostCount} hosts · ${state.writableRootCount} writable`;
+  if (!state.enabled) return "⚠ sandbox: off";
+  if (state.inProcessOnly) return "🔒 sandbox (degraded)";
+  if (isNetworkSandboxed(state)) return "🔒 sandbox (network)";
+  return "🔒 sandbox";
 }
 
 export function renderStatusThemed(
@@ -54,24 +42,16 @@ export function renderStatusThemed(
   }
 
   if (state.inProcessOnly) {
-    return `${theme.fg("warning", "󰒃")} ${theme.fg("muted", "sandbox · in-process only")}`;
+    return `${theme.fg("warning", "󰒃")} ${theme.fg("warning", "sandbox (degraded)")}`;
   }
 
   const icon = theme.fg("success", "󰒃");
 
-  if (state.networkOff) {
-    return `${icon} ${theme.fg("muted", "sandbox · network:")} ${theme.fg("dim", "off")}`;
+  if (isNetworkSandboxed(state)) {
+    return `${icon} ${theme.fg("muted", "sandbox (network)")}`;
   }
 
-  if (state.networkMode === "off") {
-    return `${icon} ${theme.fg("muted", "sandbox · network: off (config)")}`;
-  }
-
-  if (state.networkMode === "non-interactive-only" && state.hasUI) {
-    return `${icon} ${theme.fg("muted", "sandbox · network: off (interactive)")}`;
-  }
-
-  return `${icon} ${theme.fg("muted", `sandbox · ${state.allowedHostCount} hosts · ${state.writableRootCount} writable`)}`;
+  return `${icon} ${theme.fg("muted", "sandbox")}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,9 +92,6 @@ export function subscribeStatus(opts: StatusSubscribeOptions): () => void {
       networkOff: session.networkOff,
       networkMode: policy.network.mode,
       hasUI,
-      allowedHostCount:
-        policy.network.allow.length + session.sessionAllowedHosts.size,
-      writableRootCount: policy.fs.allowWrite.length,
       inProcessOnly,
     };
   }

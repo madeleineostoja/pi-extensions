@@ -10,20 +10,24 @@ When a new interactive coding session starts from a first user prompt, pi-auto-n
 
 **Slash commands**
 
-| Command                    | Effect                                               |
-| -------------------------- | ---------------------------------------------------- |
-| `/auto-name`               | Show current session name and effective naming model |
-| `/auto-name regen`         | Generate a name for the current branch if unnamed    |
-| `/auto-name regen --force` | Replace an existing session name                     |
+| Command                          | Effect                                               |
+| -------------------------------- | ---------------------------------------------------- |
+| `/auto-name`                     | Show current session name and effective naming model |
+| `/auto-name model`               | Show effective naming model and its source           |
+| `/auto-name model <provider/id>` | Persist a naming model override                      |
+| `/auto-name model reset`         | Remove the override and return to the default        |
+| `/auto-name regen`               | Generate a name for the current session if unnamed   |
+| `/auto-name regen --force`       | Replace an existing session name                     |
 
 The default naming model is `openrouter/deepseek/deepseek-v4-flash`.
+Model overrides are stored in `<agent-dir>/extensions/pi-auto-name/config.json` and persist across restarts.
 
 ## Behavior
 
 - Never overwrites an existing or manually set session name.
 - Skips cleanly if the model is missing, unauthenticated, errors, or returns invalid output.
 - At most one warning notification per session for configuration or auth problems.
-- Generated titles are sanitized: trimmed, collapsed, stripped of quotes and backticks, limited to 40 visible characters, and taken from the first non-empty output line only.
+- Generated titles are sanitized: trimmed, collapsed, stripped of surrounding quotes/backticks and leading `Title:` / `Name:` style prefixes, truncated to 40 characters on a word boundary, and taken from the first non-empty output line only.
 
 ## License
 

@@ -145,15 +145,18 @@ export function createCaps(): CapsInstance {
 
     const { mode, allow } = policy.network;
 
+    // mode === "off" means no network filtering: omit the network section
+    // entirely so nono leaves outbound traffic unrestricted. Deny-all is
+    // expressible as { mode: "always", allow: [] }.
     let applyAllowlist = false;
-    if (mode === "always" || mode === "off") {
+    if (mode === "always") {
       applyAllowlist = true;
     } else if (mode === "non-interactive-only") {
       applyAllowlist = !ctx.hasUI;
     }
 
     if (applyAllowlist) {
-      manifest.network = { allow_domain: mode === "off" ? [] : [...allow] };
+      manifest.network = { allow_domain: [...allow] };
     }
 
     return manifest;

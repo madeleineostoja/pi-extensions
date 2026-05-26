@@ -119,7 +119,7 @@ function runUnderNono(
       }, opts.timeout);
     }
 
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
       if (timeoutHandle !== null) clearTimeout(timeoutHandle);
       try {
         fs.unlinkSync(manifestPath);
@@ -267,9 +267,11 @@ export function wrapPiExec(
   emitAudit?: (entry: Omit<AuditEntry, "ts">) => void,
   getSession?: () => SessionState,
   caps?: ReturnType<typeof createCaps>,
-): void {
+): () => void {
   if ((pi.exec as PiExecFnWrapped)[piSandboxWrappedSymbol]) {
-    return;
+    // Already wrapped by a prior session — caller is responsible for not
+    // double-wrapping. Return a no-op unwrap so callers can compose safely.
+    return () => {};
   }
 
   const capsInstance = caps ?? createCaps();
@@ -331,6 +333,12 @@ export function wrapPiExec(
 
   wrappedExec[piSandboxWrappedSymbol] = true;
   (pi as { exec: PiExecFnWrapped }).exec = wrappedExec;
+
+  return () => {
+    if ((pi.exec as PiExecFnWrapped) === wrappedExec) {
+      (pi as { exec: ExtensionAPI["exec"] }).exec = originalExec;
+    }
+  };
 }
 
 export function createUserBashHandler(
@@ -413,6 +421,8 @@ export function createUserBashHandler(
 export interface SubprocessSandboxResult {
   userBashHandler: UserBashHandler;
   nonoPath: string | null;
+  /** Restore pi.exec to its pre-wrap value. Safe to call multiple times. */
+  unwrap: () => void;
 }
 
 export function createSubprocessSandbox(
@@ -445,7 +455,15 @@ export function createSubprocessSandbox(
 
   const caps = createCaps();
 
-  wrapPiExec(pi, getPolicy, ctx, nonoPath, auditFn, getSession, caps);
+  const unwrap = wrapPiExec(
+    pi,
+    getPolicy,
+    ctx,
+    nonoPath,
+    auditFn,
+    getSession,
+    caps,
+  );
 
   const userBashHandler = createUserBashHandler(
     getPolicy,
@@ -456,7 +474,7 @@ export function createSubprocessSandbox(
     caps,
   );
 
-  return { userBashHandler, nonoPath };
+  return { userBashHandler, nonoPath, unwrap };
 }
 
 export function initSubprocessSandbox(

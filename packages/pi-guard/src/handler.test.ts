@@ -154,7 +154,6 @@ describe("decideToolCall", () => {
           hasUI: true,
           toolName: "edit",
           triggerTools: TRIGGER_TOOLS,
-          nonInteractiveAlreadyNotified: false,
         }),
       ).toBe("pass");
     });
@@ -166,7 +165,6 @@ describe("decideToolCall", () => {
           hasUI: false,
           toolName: "edit",
           triggerTools: TRIGGER_TOOLS,
-          nonInteractiveAlreadyNotified: false,
         }),
       ).toBe("pass");
     });
@@ -178,7 +176,6 @@ describe("decideToolCall", () => {
           hasUI: true,
           toolName: "bash",
           triggerTools: TRIGGER_TOOLS,
-          nonInteractiveAlreadyNotified: false,
         }),
       ).toBe("pass");
     });
@@ -190,7 +187,6 @@ describe("decideToolCall", () => {
           hasUI: false,
           toolName: "bash",
           triggerTools: TRIGGER_TOOLS,
-          nonInteractiveAlreadyNotified: false,
         }),
       ).toBe("pass");
     });
@@ -204,7 +200,6 @@ describe("decideToolCall", () => {
           hasUI: true,
           toolName: "bash",
           triggerTools: TRIGGER_TOOLS,
-          nonInteractiveAlreadyNotified: false,
         }),
       ).toBe("pass");
     });
@@ -216,7 +211,6 @@ describe("decideToolCall", () => {
           hasUI: false,
           toolName: "bash",
           triggerTools: TRIGGER_TOOLS,
-          nonInteractiveAlreadyNotified: false,
         }),
       ).toBe("pass");
     });
@@ -230,7 +224,6 @@ describe("decideToolCall", () => {
           hasUI: true,
           toolName: "edit",
           triggerTools: TRIGGER_TOOLS,
-          nonInteractiveAlreadyNotified: false,
         }),
       ).toBe("prompt");
     });
@@ -242,7 +235,6 @@ describe("decideToolCall", () => {
           hasUI: true,
           toolName: "write",
           triggerTools: TRIGGER_TOOLS,
-          nonInteractiveAlreadyNotified: false,
         }),
       ).toBe("prompt");
     });
@@ -254,7 +246,6 @@ describe("decideToolCall", () => {
           hasUI: false,
           toolName: "edit",
           triggerTools: TRIGGER_TOOLS,
-          nonInteractiveAlreadyNotified: false,
         }),
       ).toBe("auto-disable");
     });
@@ -266,7 +257,6 @@ describe("decideToolCall", () => {
           hasUI: false,
           toolName: "write",
           triggerTools: TRIGGER_TOOLS,
-          nonInteractiveAlreadyNotified: false,
         }),
       ).toBe("auto-disable");
     });
@@ -279,7 +269,6 @@ describe("decideToolCall", () => {
         hasUI: true,
         toolName: "edit",
         triggerTools: new Set(),
-        nonInteractiveAlreadyNotified: false,
       }),
     ).toBe("pass");
   });

@@ -43,8 +43,6 @@ export interface ToolGateOptions {
   getPolicy: () => Policy;
   getSession?: () => SessionState;
   ctx: ManifestContext;
-  /** Accepted for API compatibility but unused: policy is re-read via getPolicy() on every call. */
-  subscribe?: (fn: (policy: Policy) => void) => () => void;
   /** Optional callback invoked for every allow/block decision. */
   onAudit?: (entry: Omit<AuditEntry, "ts">) => void;
 }

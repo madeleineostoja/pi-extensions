@@ -99,15 +99,10 @@ describe("session enforcement — /sandbox off", () => {
         denyPatterns: ["**/.env", "**/.ssh/**"],
       },
     });
-    const subscribers = new Set<(p: Policy) => void>();
     gate = createToolGate({
       getPolicy: () => policy,
       getSession: () => cmds.getSessionState(),
       ctx: makeCtx(tmpDir),
-      subscribe: (fn) => {
-        subscribers.add(fn);
-        return () => subscribers.delete(fn);
-      },
     });
   });
 
@@ -194,7 +189,7 @@ describe("session enforcement — /sandbox network off", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("manifest has deny-all network field after dispatch('network off') with mode=off", () => {
+  it("manifest omits the network field after dispatch('network off') (allow all)", () => {
     const ctx = makeSubcommandCtx(tmpDir);
     cmds.dispatch("network off", ctx);
 
@@ -203,8 +198,7 @@ describe("session enforcement — /sandbox network off", () => {
     const effective = applySessionOverrides(policy, session);
     const manifest = createCaps().buildManifest(effective, makeCtx(tmpDir));
 
-    expect(manifest.network).toBeDefined();
-    expect(manifest.network?.allow_domain).toEqual([]);
+    expect(manifest.network).toBeUndefined();
   });
 });
 

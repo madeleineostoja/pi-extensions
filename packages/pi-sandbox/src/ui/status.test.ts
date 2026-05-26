@@ -103,92 +103,55 @@ describe("renderStatus — pure renderer", () => {
     networkOff: false,
     networkMode: "non-interactive-only",
     hasUI: false,
-    allowedHostCount: 12,
-    writableRootCount: 3,
   };
 
-  it("normal state → N hosts · M writable", () => {
-    const result = renderStatus({ ...baseState, hasUI: false });
-    expect(result).toBe("🔒 sandbox · 12 hosts · 3 writable");
+  it("non-interactive-only + hasUI=false → sandbox (network)", () => {
+    expect(renderStatus({ ...baseState, hasUI: false })).toBe(
+      "🔒 sandbox (network)",
+    );
   });
 
-  it("normal interactive state (non-interactive-only mode but not disabled) → network off (interactive)", () => {
-    const result = renderStatus({ ...baseState, hasUI: true });
-    expect(result).toBe("🔒 sandbox · network: off (interactive)");
+  it("non-interactive-only + hasUI=true → sandbox (file only)", () => {
+    expect(renderStatus({ ...baseState, hasUI: true })).toBe("🔒 sandbox");
   });
 
-  it("network mode 'always' + hasUI=true → normal (N hosts)", () => {
-    const result = renderStatus({
-      ...baseState,
-      networkMode: "always",
-      hasUI: true,
-    });
-    expect(result).toBe("🔒 sandbox · 12 hosts · 3 writable");
+  it("network mode 'always' → sandbox (network) regardless of hasUI", () => {
+    expect(
+      renderStatus({ ...baseState, networkMode: "always", hasUI: true }),
+    ).toBe("🔒 sandbox (network)");
+    expect(
+      renderStatus({ ...baseState, networkMode: "always", hasUI: false }),
+    ).toBe("🔒 sandbox (network)");
   });
 
-  it("network mode 'always' + hasUI=false → normal (N hosts)", () => {
-    const result = renderStatus({
-      ...baseState,
-      networkMode: "always",
-      hasUI: false,
-    });
-    expect(result).toBe("🔒 sandbox · 12 hosts · 3 writable");
+  it("session networkOff → sandbox (network) (blocks all)", () => {
+    expect(renderStatus({ ...baseState, networkOff: true })).toBe(
+      "🔒 sandbox (network)",
+    );
   });
 
-  it("network off (session) → network: ⚠ off", () => {
-    const result = renderStatus({ ...baseState, networkOff: true });
-    expect(result).toBe("🔒 sandbox · network: ⚠ off");
+  it("fully disabled → ⚠ sandbox: off", () => {
+    expect(renderStatus({ ...baseState, enabled: false })).toBe(
+      "⚠ sandbox: off",
+    );
   });
 
-  it("network off takes precedence over non-interactive-only + hasUI", () => {
-    const result = renderStatus({
-      ...baseState,
-      networkOff: true,
-      hasUI: true,
-    });
-    expect(result).toBe("🔒 sandbox · network: ⚠ off");
-  });
-
-  it("fully disabled (enabled=false) → ⚠ sandbox: off", () => {
-    const result = renderStatus({ ...baseState, enabled: false });
-    expect(result).toBe("⚠ sandbox: off");
-  });
-
-  it("in-process only degraded state", () => {
-    const result = renderStatus({ ...baseState, inProcessOnly: true });
-    expect(result).toBe("🔒 sandbox · in-process only");
+  it("in-process only → sandbox (degraded)", () => {
+    expect(renderStatus({ ...baseState, inProcessOnly: true })).toBe(
+      "🔒 sandbox (degraded)",
+    );
   });
 
   it("disabled takes precedence over in-process only", () => {
-    const result = renderStatus({
-      ...baseState,
-      enabled: false,
-      inProcessOnly: true,
-    });
-    expect(result).toBe("⚠ sandbox: off");
+    expect(
+      renderStatus({ ...baseState, enabled: false, inProcessOnly: true }),
+    ).toBe("⚠ sandbox: off");
   });
 
-  it("network mode 'off' → network: off (config)", () => {
-    const result = renderStatus({ ...baseState, networkMode: "off" });
-    expect(result).toBe("🔒 sandbox · network: off (config)");
-  });
-
-  it("network mode 'off' + hasUI=true → network: off (config)", () => {
-    const result = renderStatus({
-      ...baseState,
-      networkMode: "off",
-      hasUI: true,
-    });
-    expect(result).toBe("🔒 sandbox · network: off (config)");
-  });
-
-  it("session networkOff takes precedence over mode 'off'", () => {
-    const result = renderStatus({
-      ...baseState,
-      networkMode: "off",
-      networkOff: true,
-    });
-    expect(result).toBe("🔒 sandbox · network: ⚠ off");
+  it("network mode 'off' → sandbox (network)", () => {
+    expect(renderStatus({ ...baseState, networkMode: "off" })).toBe(
+      "🔒 sandbox (network)",
+    );
   });
 });
 
@@ -224,7 +187,7 @@ describe("subscribeStatus — integration", () => {
     dispose();
   });
 
-  it("initial normal state with hasUI=false → N hosts · M writable", () => {
+  it("initial state mode=always hasUI=false → sandbox (network)", () => {
     const policy = makePolicy({
       network: { mode: "always", allow: ["a.com", "b.com", "c.com"] },
       fs: {
@@ -246,11 +209,11 @@ describe("subscribeStatus — integration", () => {
     });
 
     const text = calls[calls.length - 1].text;
-    expect(text).toBe("🔒 sandbox · 3 hosts · 2 writable");
+    expect(text).toBe("🔒 sandbox (network)");
     dispose();
   });
 
-  it("/sandbox network off → flips to network: ⚠ off", () => {
+  it("/sandbox network off → sandbox (network)", () => {
     const policy = makePolicy({
       network: { mode: "always", allow: ["a.com"] },
     });
@@ -272,7 +235,7 @@ describe("subscribeStatus — integration", () => {
     triggerMutation();
 
     const text = calls[calls.length - 1].text;
-    expect(text).toBe("🔒 sandbox · network: ⚠ off");
+    expect(text).toBe("🔒 sandbox (network)");
     dispose();
   });
 
@@ -300,7 +263,7 @@ describe("subscribeStatus — integration", () => {
     triggerMutation();
 
     const text = calls[calls.length - 1].text;
-    expect(text).toMatch(/hosts/);
+    expect(text).toBe("🔒 sandbox (network)");
     dispose();
   });
 
@@ -358,7 +321,7 @@ describe("subscribeStatus — integration", () => {
     dispose();
   });
 
-  it("non-interactive-only + hasUI=true → network: off (interactive)", () => {
+  it("non-interactive-only + hasUI=true → bare sandbox (network unrestricted)", () => {
     const policy = makePolicy({
       network: { mode: "non-interactive-only", allow: [] },
     });
@@ -375,11 +338,11 @@ describe("subscribeStatus — integration", () => {
     });
 
     const text = calls[calls.length - 1].text;
-    expect(text).toBe("🔒 sandbox · network: off (interactive)");
+    expect(text).toBe("🔒 sandbox");
     dispose();
   });
 
-  it("policy reload updates host count", () => {
+  it("policy reload re-renders status", () => {
     type Subscriber = (p: Policy) => void;
     const policySubscribers: Set<Subscriber> = new Set();
     let currentPolicy = makePolicy({
@@ -410,13 +373,15 @@ describe("subscribeStatus — integration", () => {
       onSessionMutation,
     });
 
+    const countBefore = calls.length;
     currentPolicy = makePolicy({
-      network: { mode: "always", allow: ["a.com", "b.com", "c.com"] },
+      network: { mode: "off", allow: [] },
     });
     policyManager.reloadPolicy("/tmp");
 
+    expect(calls.length).toBeGreaterThan(countBefore);
     const text = calls[calls.length - 1].text;
-    expect(text).toMatch(/3 hosts/);
+    expect(text).toBe("🔒 sandbox (network)");
     dispose();
   });
 
@@ -462,7 +427,7 @@ describe("subscribeStatus — integration", () => {
     });
 
     const text = calls[calls.length - 1].text;
-    expect(text).toBe("🔒 sandbox · in-process only");
+    expect(text).toBe("🔒 sandbox (degraded)");
     dispose();
   });
 });
@@ -490,23 +455,32 @@ describe("renderStatusThemed", () => {
     networkOff: false,
     networkMode: "non-interactive-only",
     hasUI: false,
-    allowedHostCount: 12,
-    writableRootCount: 3,
   };
 
-  it("normal state → success icon and muted text", () => {
+  it("bare sandbox (network unrestricted) → success icon and muted text", () => {
     const { theme, calls } = makeThemeSpy();
-    const result = renderStatusThemed({ ...baseState, hasUI: false }, theme);
+    const result = renderStatusThemed({ ...baseState, hasUI: true }, theme);
     expect(result).toContain("󰒃");
     expect(result).toContain("sandbox");
     expect(calls).toContainEqual({ color: "success", text: "󰒃" });
-    expect(
-      calls.some((c) => c.color === "muted" && c.text.includes("sandbox")),
-    ).toBe(true);
+    expect(calls).toContainEqual({ color: "muted", text: "sandbox" });
+    expect(result).not.toContain("(network)");
     expect(result).not.toContain("\n");
   });
 
-  it("disabled state → warning icon and text", () => {
+  it("network sandboxed → success icon and muted (network) text", () => {
+    const { theme, calls } = makeThemeSpy();
+    const result = renderStatusThemed({ ...baseState, hasUI: false }, theme);
+    expect(result).toContain("sandbox (network)");
+    expect(calls).toContainEqual({ color: "success", text: "󰒃" });
+    expect(calls).toContainEqual({
+      color: "muted",
+      text: "sandbox (network)",
+    });
+    expect(result).not.toContain("\n");
+  });
+
+  it("disabled → warning icon and warning text", () => {
     const { theme, calls } = makeThemeSpy();
     const result = renderStatusThemed({ ...baseState, enabled: false }, theme);
     expect(result).toContain("sandbox: off");
@@ -515,50 +489,62 @@ describe("renderStatusThemed", () => {
     expect(result).not.toContain("\n");
   });
 
-  it("network off (session) → no warning color for network-off detail", () => {
-    const { theme, calls } = makeThemeSpy();
-    const result = renderStatusThemed(
-      { ...baseState, networkOff: true },
-      theme,
-    );
-    expect(result).toContain("network:");
-    expect(result).toContain("off");
-    expect(calls.some((c) => c.color === "warning")).toBe(false);
-    expect(result).not.toContain("\n");
-  });
-
-  it("in-process only → warning on icon or detail, not fully off", () => {
+  it("in-process only → warning icon and warning text", () => {
     const { theme, calls } = makeThemeSpy();
     const result = renderStatusThemed(
       { ...baseState, inProcessOnly: true },
       theme,
     );
-    expect(result).toContain("in-process only");
-    expect(calls.some((c) => c.color === "warning")).toBe(true);
+    expect(result).toContain("sandbox (degraded)");
+    expect(calls).toContainEqual({ color: "warning", text: "󰒃" });
+    expect(calls).toContainEqual({
+      color: "warning",
+      text: "sandbox (degraded)",
+    });
     expect(result).not.toContain("sandbox: off");
     expect(result).not.toContain("\n");
   });
 
-  it("network mode 'off' → muted text without warning", () => {
+  it("network off (session) → success icon, muted (network) text", () => {
+    const { theme, calls } = makeThemeSpy();
+    const result = renderStatusThemed(
+      { ...baseState, networkOff: true },
+      theme,
+    );
+    expect(result).toContain("sandbox (network)");
+    expect(calls).toContainEqual({ color: "success", text: "󰒃" });
+    expect(calls).toContainEqual({
+      color: "muted",
+      text: "sandbox (network)",
+    });
+    expect(result).not.toContain("\n");
+  });
+
+  it("network mode 'off' → success icon, muted (network) text", () => {
     const { theme, calls } = makeThemeSpy();
     const result = renderStatusThemed(
       { ...baseState, networkMode: "off" },
       theme,
     );
-    expect(result).toContain("network: off (config)");
-    expect(calls.some((c) => c.color === "warning")).toBe(false);
+    expect(result).toContain("sandbox (network)");
     expect(calls).toContainEqual({ color: "success", text: "󰒃" });
+    expect(calls).toContainEqual({
+      color: "muted",
+      text: "sandbox (network)",
+    });
     expect(result).not.toContain("\n");
   });
 
-  it("non-interactive-only + hasUI=true → muted text without warning", () => {
+  it("non-interactive-only + hasUI=true → bare sandbox, no (network)", () => {
     const { theme, calls } = makeThemeSpy();
     const result = renderStatusThemed(
       { ...baseState, networkMode: "non-interactive-only", hasUI: true },
       theme,
     );
-    expect(result).toContain("network: off (interactive)");
-    expect(calls.some((c) => c.color === "warning")).toBe(false);
+    expect(result).not.toContain("(network)");
+    expect(result).toContain("sandbox");
+    expect(calls).toContainEqual({ color: "success", text: "󰒃" });
+    expect(calls).toContainEqual({ color: "muted", text: "sandbox" });
     expect(result).not.toContain("\n");
   });
 

@@ -643,7 +643,6 @@ describe("toolGate onAudit hook", () => {
           platform: "linux",
           ui: { notify: () => {} },
         },
-        subscribe: () => () => {},
         onAudit: (entry) =>
           auditCalls.push(entry as Omit<SandboxAuditEvent, "ts">),
       });
@@ -689,7 +688,6 @@ describe("toolGate onAudit hook", () => {
           platform: "linux",
           ui: { notify: () => {} },
         },
-        subscribe: () => () => {},
         onAudit: (entry) =>
           auditCalls.push(entry as Omit<SandboxAuditEvent, "ts">),
       });

@@ -23,12 +23,13 @@ Guard: proposed edit — apply?
 
 **Slash command**
 
-| Command         | Effect                   |
-| --------------- | ------------------------ |
-| `/guard`        | Toggle guard mode on/off |
-| `/guard on`     | Enable                   |
-| `/guard off`    | Disable                  |
-| `/guard status` | Show current state       |
+| Command      | Effect                   |
+| ------------ | ------------------------ |
+| `/guard`     | Toggle guard mode on/off |
+| `/guard on`  | Enable                   |
+| `/guard off` | Disable                  |
+
+Current state is always visible in the footer (`guarding` or `guard off`).
 
 **Keyboard shortcut** — `Ctrl+Shift+G` toggles guard mode and shows a brief notification.
 

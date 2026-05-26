@@ -3,13 +3,15 @@ import type { UserMessage } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
+  SessionMessageEntry,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { resolveEffectiveModel } from "./config.js";
+import { resolveEffectiveModel, readConfig, writeConfig } from "./config.js";
 import { buildTitlePrompt, parseModelRef, sanitizeTitle } from "./utils.js";
 
 export default function (pi: ExtensionAPI) {
   let warnedThisSession = false;
+  let attemptedThisSession = false;
   let firstPromptText: string | undefined;
 
   function maybeWarn(ctx: ExtensionContext, message: string) {
@@ -22,6 +24,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async () => {
     warnedThisSession = false;
+    attemptedThisSession = false;
     firstPromptText = undefined;
   });
 
@@ -33,41 +36,19 @@ export default function (pi: ExtensionAPI) {
 
     if (pi.getSessionName()) return;
     if (!prompt) return;
+    if (attemptedThisSession) return;
 
     const agentDir = getAgentDir();
-    const effective = resolveEffectiveModel(agentDir);
-    const parsed = parseModelRef(effective.model);
-    if (!parsed) {
-      maybeWarn(ctx, `Invalid model reference: ${effective.model}`);
-      return;
-    }
-
-    const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
-    if (!model) {
-      maybeWarn(ctx, `Model not found: ${effective.model}`);
-      return;
-    }
-
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) {
-      maybeWarn(
-        ctx,
-        auth.ok
-          ? `No API key for ${model.provider}`
-          : `Auth error: ${auth.error}`,
-      );
-      return;
-    }
-
-    void generateNameAsync(
-      pi,
-      ctx,
-      model,
-      auth.apiKey,
-      auth.headers,
-      prompt,
-      false,
-    );
+    void generateNameAsync(ctx, agentDir, prompt, maybeWarn).then((result) => {
+      if (result.outcome === "success" && !pi.getSessionName()) {
+        pi.setSessionName(result.title);
+      }
+      // Only block future attempts when we succeeded or hit a known
+      // pre-flight failure. Transient/unknown errors stay retryable.
+      if (result.outcome !== "unknown-error") {
+        attemptedThisSession = true;
+      }
+    });
   });
 
   pi.registerCommand("auto-name", {
@@ -84,6 +65,42 @@ export default function (pi: ExtensionAPI) {
           `Session: ${name}\nModel: ${effective.model} (${effective.source})`,
           "info",
         );
+        return;
+      }
+
+      if (subcommand === "model") {
+        const arg = tokens[1];
+
+        if (!arg) {
+          const effective = resolveEffectiveModel(agentDir);
+          ctx.ui.notify(
+            `Model: ${effective.model} (${effective.source})`,
+            "info",
+          );
+          return;
+        }
+
+        if (arg === "reset") {
+          const config = readConfig(agentDir);
+          delete config.model;
+          writeConfig(agentDir, config);
+          const effective = resolveEffectiveModel(agentDir);
+          ctx.ui.notify(`Model reset to default: ${effective.model}`, "info");
+          return;
+        }
+
+        if (!parseModelRef(arg)) {
+          ctx.ui.notify(
+            `Invalid model reference: ${arg}. Expected format: provider/model-id`,
+            "warning",
+          );
+          return;
+        }
+
+        const config = readConfig(agentDir);
+        config.model = arg;
+        writeConfig(agentDir, config);
+        ctx.ui.notify(`Naming model set to: ${arg}`, "info");
         return;
       }
 
@@ -105,53 +122,25 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        const effective = resolveEffectiveModel(agentDir);
-        const parsed = parseModelRef(effective.model);
-        if (!parsed) {
-          ctx.ui.notify(
-            `Invalid model reference: ${effective.model}`,
-            "warning",
-          );
-          return;
-        }
-
-        const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
-        if (!model) {
-          ctx.ui.notify(`Model not found: ${effective.model}`, "warning");
-          return;
-        }
-
-        const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-        if (!auth.ok || !auth.apiKey) {
-          ctx.ui.notify(
-            auth.ok
-              ? `No API key for ${model.provider}`
-              : `Auth error: ${auth.error}`,
-            "warning",
-          );
-          return;
-        }
-
-        const title = await generateNameAsync(
-          pi,
+        const result = await generateNameAsync(
           ctx,
-          model,
-          auth.apiKey,
-          auth.headers,
+          agentDir,
           prompt,
-          force,
+          (_c, msg) => ctx.ui.notify(`[pi-auto-name] ${msg}`, "warning"),
         );
 
-        if (title) {
-          ctx.ui.notify(`Session named: ${title}`, "info");
-        } else {
+        if (result.outcome === "success") {
+          pi.setSessionName(result.title);
+          ctx.ui.notify(`Session named: ${result.title}`, "info");
+        } else if (result.outcome === "unknown-error") {
           ctx.ui.notify("Failed to generate a valid session name.", "warning");
         }
+        // Pre-flight failures already surfaced via the warn callback above.
         return;
       }
 
       ctx.ui.notify(
-        "Unknown subcommand. Usage: /auto-name [regen [--force]]",
+        "Usage: /auto-name | /auto-name model [<provider/id> | reset] | /auto-name regen [--force]",
         "warning",
       );
     },
@@ -161,30 +150,20 @@ export default function (pi: ExtensionAPI) {
 function findFirstUserPrompt(ctx: ExtensionContext): string | undefined {
   try {
     for (const entry of ctx.sessionManager.getEntries()) {
-      if (
-        entry.type === "message" &&
-        (entry.message as { role?: string }).role === "user"
-      ) {
-        const msg = entry.message as {
-          content?: Array<{ type: string; text?: string }> | string;
-          text?: string;
-        };
-        if (typeof msg.content === "string") {
-          return msg.content.trim();
-        }
-        if (Array.isArray(msg.content)) {
-          const text = msg.content
-            .filter(
-              (c): c is { type: "text"; text: string } =>
-                c.type === "text" && typeof c.text === "string",
-            )
-            .map((c) => c.text)
-            .join("\n");
-          if (text.trim()) return text.trim();
-        }
-        if (typeof msg.text === "string") {
-          return msg.text.trim();
-        }
+      if (entry.type !== "message") continue;
+      const msg = (entry as SessionMessageEntry).message;
+      if (msg.role !== "user") continue;
+      const user = msg as UserMessage;
+      if (typeof user.content === "string") {
+        const t = user.content.trim();
+        if (t) return t;
+      } else if (Array.isArray(user.content)) {
+        const text = user.content
+          .filter((c): c is { type: "text"; text: string } => c.type === "text")
+          .map((c) => c.text)
+          .join("\n")
+          .trim();
+        if (text) return text;
       }
     }
   } catch {
@@ -193,16 +172,44 @@ function findFirstUserPrompt(ctx: ExtensionContext): string | undefined {
   return undefined;
 }
 
+type GenerateResult =
+  | { outcome: "success"; title: string }
+  | { outcome: "preflight-failure" }
+  | { outcome: "aborted" }
+  | { outcome: "invalid-output" }
+  | { outcome: "unknown-error" };
+
 async function generateNameAsync(
-  pi: ExtensionAPI,
   ctx: ExtensionContext,
-  model: Parameters<typeof complete>[0],
-  apiKey: string,
-  headers: Record<string, string> | undefined,
+  agentDir: string,
   promptText: string,
-  force: boolean,
-): Promise<string | null> {
+  warn: (ctx: ExtensionContext, msg: string) => void,
+): Promise<GenerateResult> {
   try {
+    const effective = resolveEffectiveModel(agentDir);
+    const parsed = parseModelRef(effective.model);
+    if (!parsed) {
+      warn(ctx, `Invalid model reference: ${effective.model}`);
+      return { outcome: "preflight-failure" };
+    }
+
+    const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
+    if (!model) {
+      warn(ctx, `Model not found: ${effective.model}`);
+      return { outcome: "preflight-failure" };
+    }
+
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (!auth.ok || !auth.apiKey) {
+      warn(
+        ctx,
+        auth.ok
+          ? `No API key for ${model.provider}`
+          : `Auth error: ${auth.error}`,
+      );
+      return { outcome: "preflight-failure" };
+    }
+
     const { systemPrompt, userText } = buildTitlePrompt(promptText);
 
     const userMessage: UserMessage = {
@@ -215,15 +222,14 @@ async function generateNameAsync(
       model,
       { systemPrompt, messages: [userMessage] },
       {
-        apiKey,
-        headers,
+        apiKey: auth.apiKey,
+        headers: auth.headers,
         maxTokens: 64,
-        temperature: 0.3,
         signal: ctx.signal,
       },
     );
 
-    if (response.stopReason === "aborted") return null;
+    if (response.stopReason === "aborted") return { outcome: "aborted" };
 
     const text = response.content
       .filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -231,13 +237,10 @@ async function generateNameAsync(
       .join("\n");
 
     const title = sanitizeTitle(text);
-    if (!title) return null;
+    if (!title) return { outcome: "invalid-output" };
 
-    if (!force && pi.getSessionName()) return null;
-
-    pi.setSessionName(title);
-    return title;
+    return { outcome: "success", title };
   } catch {
-    return null;
+    return { outcome: "unknown-error" };
   }
 }

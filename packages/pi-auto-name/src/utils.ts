@@ -9,16 +9,31 @@ export function parseModelRef(
   };
 }
 
+const QUOTES = "`\"'‘’“”«»";
+const QUOTE_EDGE = new RegExp(`^[${QUOTES}]+|[${QUOTES}]+$`, "g");
+const LEADING_LABEL =
+  /^(?:title|name|session(?:\s+(?:name|title))?)\s*[:-]\s*/i;
+
 export function sanitizeTitle(raw: string): string | null {
   const first = raw.split(/\r?\n/).find((l) => l.trim().length > 0);
   if (!first) return null;
 
   let s = first.trim();
-  s = s.replace(/^[`"']+|[`"']+$/g, "");
+  s = s.replace(QUOTE_EDGE, "");
+  s = s.replace(LEADING_LABEL, "");
+  s = s.replace(QUOTE_EDGE, "");
   s = s.replace(/\s+/g, " ").trim();
   s = s.replace(/[.!?,;:]+$/, "");
 
-  if (!s || s.length > 40) return null;
+  if (!s) return null;
+
+  if (s.length > 40) {
+    const cut = s.slice(0, 40);
+    const lastSpace = cut.lastIndexOf(" ");
+    s = (lastSpace >= 20 ? cut.slice(0, lastSpace) : cut).trimEnd();
+    s = s.replace(/[.!?,;:]+$/, "");
+    if (!s) return null;
+  }
 
   const boilerplate = /^session\s*(name|title)?\s*[:-]?\s*$/i;
   if (boilerplate.test(s)) return null;

@@ -79,7 +79,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const action = parseGuardArgs(args);
       if (action.kind === "invalid") {
-        ctx.ui.notify("unknown: /guard [on|off|status]", "warning");
+        ctx.ui.notify("unknown: /guard [on|off]", "warning");
         return;
       }
       if (action.kind === "toggle") {
@@ -105,7 +105,6 @@ export default function (pi: ExtensionAPI) {
       hasUI: ctx.hasUI,
       toolName: event.toolName,
       triggerTools,
-      nonInteractiveAlreadyNotified: nonInteractiveNotified,
     });
 
     if (decision === "pass") return undefined;

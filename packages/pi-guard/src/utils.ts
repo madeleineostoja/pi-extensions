@@ -4,7 +4,6 @@ export type GuardAction =
       kind: "set";
       value: boolean;
     }
-  | { kind: "status" }
   | { kind: "invalid" };
 
 export function extractToolPath(input: unknown): string | undefined {
@@ -42,7 +41,6 @@ export function parseGuardArgs(args: string): GuardAction {
   if (token === "") return { kind: "toggle" };
   if (Object.hasOwn(GUARD_SET_MAP, token))
     return { kind: "set", value: GUARD_SET_MAP[token] };
-  if (token === "status") return { kind: "status" };
   return { kind: "invalid" };
 }
 

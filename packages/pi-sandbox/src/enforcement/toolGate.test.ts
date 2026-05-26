@@ -58,15 +58,9 @@ function makeGate(
   cwd: string,
   extraOpts: Partial<ToolGateOptions> = {},
 ): ToolGate {
-  let current = policy;
-  const subscribers = new Set<(p: Policy) => void>();
   return createToolGate({
-    getPolicy: () => current,
+    getPolicy: () => policy,
     ctx: makeCtx(cwd),
-    subscribe: (fn) => {
-      subscribers.add(fn);
-      return () => subscribers.delete(fn);
-    },
     ...extraOpts,
   });
 }
@@ -362,10 +356,6 @@ describe("denyPatterns glob semantics", () => {
     const gate = createToolGate({
       getPolicy: () => policy,
       ctx: linuxCtx,
-      subscribe: (fn) => {
-        void fn;
-        return () => {};
-      },
     });
     try {
       const result = await gate.handleToolCall(
@@ -539,15 +529,10 @@ describe("policy reload", () => {
     fs.writeFileSync(file, "x");
 
     let currentPolicy = makePolicy({ allowRead: [] });
-    const subscribers = new Set<(p: Policy) => void>();
 
     const gate = createToolGate({
       getPolicy: () => currentPolicy,
       ctx: makeCtx(tmpDir),
-      subscribe: (fn) => {
-        subscribers.add(fn);
-        return () => subscribers.delete(fn);
-      },
     });
 
     try {
@@ -557,7 +542,6 @@ describe("policy reload", () => {
       expect(before).toEqual({ block: true, reason: BLOCK_REASON });
 
       currentPolicy = makePolicy({ allowRead: [tmpDir] });
-      for (const fn of subscribers) fn(currentPolicy);
 
       const after = await gate.handleToolCall(
         makeEvent("read", { path: file }),
@@ -573,15 +557,10 @@ describe("policy reload", () => {
     fs.writeFileSync(file, "x");
 
     let currentPolicy = makePolicy({ allowRead: [tmpDir], denyPatterns: [] });
-    const subscribers = new Set<(p: Policy) => void>();
 
     const gate = createToolGate({
       getPolicy: () => currentPolicy,
       ctx: makeCtx(tmpDir),
-      subscribe: (fn) => {
-        subscribers.add(fn);
-        return () => subscribers.delete(fn);
-      },
     });
 
     try {
@@ -594,7 +573,6 @@ describe("policy reload", () => {
         allowRead: [tmpDir],
         denyPatterns: ["**/*.key"],
       });
-      for (const fn of subscribers) fn(currentPolicy);
 
       const after = await gate.handleToolCall(
         makeEvent("read", { path: file }),

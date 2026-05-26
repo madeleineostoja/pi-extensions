@@ -114,22 +114,20 @@ describe("buildManifest — network.mode × hasUI", () => {
     caps = createCaps();
   });
 
-  it('mode "off" → emits deny-all network section (allow_domain present and empty)', () => {
+  it('mode "off" → omits network section (no filtering, allow all)', () => {
     const policy = makeBasePolicy({
       network: { mode: "off", allow: ["example.com"] },
     });
     const manifest = caps.buildManifest(policy, makeCtx({ hasUI: false }));
-    expect(manifest.network).toBeDefined();
-    expect(manifest.network?.allow_domain).toEqual([]);
+    expect(manifest.network).toBeUndefined();
   });
 
-  it('mode "off" + hasUI → still emits deny-all network section', () => {
+  it('mode "off" + hasUI → still omits network section', () => {
     const policy = makeBasePolicy({
       network: { mode: "off", allow: ["example.com"] },
     });
     const manifest = caps.buildManifest(policy, makeCtx({ hasUI: true }));
-    expect(manifest.network).toBeDefined();
-    expect(manifest.network?.allow_domain).toEqual([]);
+    expect(manifest.network).toBeUndefined();
   });
 
   it('mode "always" + hasUI=false → strict allowlist', () => {
@@ -189,13 +187,13 @@ describe("buildManifest — network.mode × hasUI", () => {
   });
 });
 
-describe("buildManifest — networkOff session override produces deny-all", () => {
+describe("buildManifest — networkOff session override allows all network", () => {
   let caps: CapsInstance;
   beforeEach(() => {
     caps = createCaps();
   });
 
-  it("applySessionOverrides with networkOff=true + buildManifest produces { allow_domain: [] }", () => {
+  it("applySessionOverrides with networkOff=true + buildManifest omits the network section", () => {
     const basePolicy = makeBasePolicy({
       network: { mode: "non-interactive-only", allow: ["github.com"] },
     });
@@ -206,8 +204,7 @@ describe("buildManifest — networkOff session override produces deny-all", () =
     };
     const effective = applySessionOverrides(basePolicy, session);
     const manifest = caps.buildManifest(effective, makeCtx({ hasUI: false }));
-    expect(manifest.network).toBeDefined();
-    expect(manifest.network?.allow_domain).toEqual([]);
+    expect(manifest.network).toBeUndefined();
   });
 });
 

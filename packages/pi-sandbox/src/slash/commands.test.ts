@@ -934,13 +934,22 @@ describe("handleWhy", () => {
     expect(messages[0].text).toMatch(/blocked/);
   });
 
-  it("networkOff → reports allowed (network filtering disabled)", async () => {
+  it("networkOff → reports allowed (network filtering off)", async () => {
     const { ui, messages } = makeUI();
     const ctx = makeCtx({ ui });
     cmds.handleNetworkOff(ctx);
     messages.length = 0;
     await cmds.handleWhy(ctx, "unknown.example.com");
-    expect(messages[0].text).toMatch(/network filtering disabled/);
+    expect(messages[0].text).toMatch(/allowed.*network filtering off/);
+  });
+
+  it("sandboxOff → reports allowed (sandbox disabled)", async () => {
+    const { ui, messages } = makeUI();
+    const ctx = makeCtx({ ui });
+    cmds.handleOff(ctx);
+    messages.length = 0;
+    await cmds.handleWhy(ctx, "unknown.example.com");
+    expect(messages[0].text).toMatch(/allowed.*sandbox disabled/);
   });
 
   it("path in fs.allowRead → reports would be allowed", async () => {

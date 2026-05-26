@@ -16,7 +16,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "../types/pi-tui.js";
 import type { AuditPipeline } from "../audit/audit.js";
-import { isValidNetworkAllowEntry } from "../policy/schema.js";
+import { isValidNetworkAllowEntry, matchHost } from "../policy/schema.js";
 import type { PolicyManager } from "../policy/load.js";
 import type { EventsTarget } from "../audit/events.js";
 import { decideFsAccess } from "../enforcement/decide.js";
@@ -407,62 +407,70 @@ export function createSlashCommands(
     }
 
     const policy = ctx.policyManager.getPolicy();
+    const effective = applySessionOverrides(policy, state);
     const looksLikeHost = !target.includes("/") && !target.startsWith(".");
 
     if (looksLikeHost) {
       const host = target;
-      const sessionGranted = state.sessionAllowedHosts.has(host);
-      const configAllowed = policy.network.allow.some((h) => {
-        if (h === host) return true;
-        if (h.startsWith("*.")) {
-          const suffix = h.slice(2);
-          return host === suffix || host.endsWith("." + suffix);
-        }
-        return false;
-      });
 
-      if (state.networkOff || state.sandboxOff) {
+      if (!effective.enabled) {
         ctx.ui.notify(
-          `${host}: would be allowed (network filtering disabled this session)`,
+          `${host}: would be allowed (sandbox disabled this session)`,
         );
-      } else if (sessionGranted) {
-        ctx.ui.notify(`${host}: allowed by session grant`);
-      } else if (configAllowed) {
-        ctx.ui.notify(`${host}: allowed by config (network.allow)`);
+        return;
+      }
+      if (effective.network.mode === "off") {
+        ctx.ui.notify(`${host}: would be allowed (network filtering off)`);
+        return;
+      }
+
+      const matched = effective.network.allow.find((entry) =>
+        matchHost(host, entry),
+      );
+      if (matched !== undefined) {
+        const fromSession = state.sessionAllowedHosts.has(matched);
+        ctx.ui.notify(
+          `${host}: allowed by ${fromSession ? "session grant" : "config"} "${matched}"`,
+        );
       } else {
         ctx.ui.notify(
-          `${host}: would be blocked (not in network.allow and no session grant)`,
+          `${host}: would be blocked (no entry in network.allow matches)`,
         );
       }
     } else {
       const abs = path.resolve(ctx.cwd, target);
 
-      if (state.sandboxOff) {
+      if (!effective.enabled) {
         ctx.ui.notify(
           `${abs}: would be allowed (sandbox disabled this session)`,
         );
         return;
       }
 
-      const effective = applySessionOverrides(policy, state);
-      const decision = await decideFsAccess(target, "read", effective, {
-        cwd: ctx.cwd,
-      });
+      const [readDecision, writeDecision] = await Promise.all([
+        decideFsAccess(target, "read", effective, { cwd: ctx.cwd }),
+        decideFsAccess(target, "write", effective, { cwd: ctx.cwd }),
+      ]);
 
-      if (!decision.allow) {
+      const fmt = (
+        mode: "read" | "write",
+        decision: typeof readDecision,
+      ): string => {
+        if (decision.allow) return `  ${mode}:  would be allowed`;
         if (
           decision.rule === "denyPattern" &&
           decision.matchedPattern != null
         ) {
-          ctx.ui.notify(
-            `${abs}: blocked by denyPattern "${decision.matchedPattern}"`,
-          );
-        } else {
-          ctx.ui.notify(`${abs}: blocked (not in fs.allowRead)`);
+          return `  ${mode}:  blocked by denyPattern "${decision.matchedPattern}"`;
         }
-      } else {
-        ctx.ui.notify(`${abs}: would be allowed`);
-      }
+        return `  ${mode}:  blocked (not in fs.allow${mode === "read" ? "Read" : "Write"})`;
+      };
+
+      ctx.ui.notify(
+        [abs, fmt("read", readDecision), fmt("write", writeDecision)].join(
+          "\n",
+        ),
+      );
     }
   }
 

@@ -7,7 +7,6 @@ export interface DecideToolCallParams {
   hasUI: boolean;
   toolName: string;
   triggerTools: Set<string>;
-  nonInteractiveAlreadyNotified: boolean;
 }
 
 export function decideToolCall(params: DecideToolCallParams): ToolCallDecision {

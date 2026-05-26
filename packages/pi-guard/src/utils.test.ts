@@ -24,8 +24,8 @@ describe("parseGuardArgs", () => {
     expect(parseGuardArgs("OFF")).toEqual({ kind: "set", value: false });
   });
 
-  it('returns status for " status " (with surrounding whitespace)', () => {
-    expect(parseGuardArgs(" status ")).toEqual({ kind: "status" });
+  it('returns invalid for "status" (no longer recognized)', () => {
+    expect(parseGuardArgs(" status ")).toEqual({ kind: "invalid" });
   });
 
   it('returns invalid for unknown arg "garbage"', () => {

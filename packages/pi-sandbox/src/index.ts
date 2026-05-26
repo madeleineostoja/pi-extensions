@@ -167,7 +167,7 @@ function sandboxExtension(pi: ExtensionAPI): void {
         return;
       }
 
-      const { userBashHandler } = initSubprocessSandbox(
+      const { userBashHandler, unwrap: unwrapPiExec } = initSubprocessSandbox(
         pi,
         () => policyManager.getPolicy(),
         manifestCtx,
@@ -180,7 +180,6 @@ function sandboxExtension(pi: ExtensionAPI): void {
         getPolicy: () => policyManager.getPolicy(),
         getSession: () => cmds.getSessionState(),
         ctx: manifestCtx,
-        subscribe: policyManager.subscribe,
         onAudit,
       });
 
@@ -239,6 +238,7 @@ function sandboxExtension(pi: ExtensionAPI): void {
         (_shutdownEvent: SessionShutdownEvent): void => {
           unsubStatus();
           gate.dispose();
+          unwrapPiExec();
           _registered.delete(pi);
         },
       );
