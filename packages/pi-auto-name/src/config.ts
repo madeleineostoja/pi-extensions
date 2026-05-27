@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-export const DEFAULT_MODEL = "openrouter/openai/gpt-oss-120b";
+export const DEFAULT_MODEL = "openrouter/openai/gpt-oss-20b";
 
 export type AutoNameConfig = {
   model?: string;

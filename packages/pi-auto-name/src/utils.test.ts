@@ -3,10 +3,10 @@ import { parseModelRef, sanitizeTitle, buildTitlePrompt } from "./utils.js";
 
 describe("parseModelRef", () => {
   it("splits on the first slash for openrouter nested ids", () => {
-    const result = parseModelRef("openrouter/openai/gpt-oss-120b");
+    const result = parseModelRef("openrouter/openai/gpt-oss-20b");
     expect(result).toEqual({
       provider: "openrouter",
-      id: "openai/gpt-oss-120b",
+      id: "openai/gpt-oss-20b",
     });
   });
 

@@ -243,7 +243,7 @@ async function generateNameAsync(
       {
         apiKey: auth.apiKey,
         headers: auth.headers,
-        maxTokens: 256,
+        maxTokens: 64,
         signal: ctx.signal,
       },
     );
