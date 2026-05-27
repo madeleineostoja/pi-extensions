@@ -12,6 +12,8 @@ import {
 import { decideToolCall, resolveChoice } from "./handler";
 
 const FOOTER_KEY = "pi-readonly.mode";
+const READONLY_ICON = "󰏯";
+const EDITING_ICON = "󰏫";
 
 const NON_INTERACTIVE_MSG =
   "readonly mode auto-disabled: no interactive UI available in this session. Edits will proceed without confirmation.";
@@ -38,12 +40,12 @@ export default function (pi: ExtensionAPI) {
     if (readonlyMode) {
       ctx.ui.setStatus(
         FOOTER_KEY,
-        `${theme.fg("success", "󰌾")} ${theme.fg("muted", "readonly")}`,
+        `${theme.fg("success", READONLY_ICON)} ${theme.fg("muted", "readonly")}`,
       );
     } else {
       ctx.ui.setStatus(
         FOOTER_KEY,
-        `${theme.fg("warning", "󰌾")} ${theme.fg("warning", "editing")}`,
+        `${theme.fg("warning", EDITING_ICON)} ${theme.fg("warning", "editing")}`,
       );
     }
   }

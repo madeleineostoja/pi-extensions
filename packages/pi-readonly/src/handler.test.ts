@@ -706,9 +706,9 @@ describe("session_start reason handling", () => {
 
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("󰌾");
+    expect(lastStatus?.value).toContain("󰏯");
     expect(lastStatus?.value).toContain("readonly");
-    expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰌾" });
+    expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰏯" });
     expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "readonly" });
   });
 
@@ -723,7 +723,7 @@ describe("session_start reason handling", () => {
 
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("󰌾");
+    expect(lastStatus?.value).toContain("󰏯");
     expect(lastStatus?.value).toContain("readonly");
   });
 
@@ -738,7 +738,7 @@ describe("session_start reason handling", () => {
 
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("󰌾");
+    expect(lastStatus?.value).toContain("󰏯");
     expect(lastStatus?.value).toContain("readonly");
   });
 
@@ -759,7 +759,7 @@ describe("session_start reason handling", () => {
     const lastStatus = reloadCtx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
     expect(lastStatus?.value).toContain("editing");
-    expect(lastStatus?.value).toContain("󰌾");
+    expect(lastStatus?.value).toContain("󰏫");
   });
 
   it('reason "resume" does not call applyMode(true): readonly remains off if previously disabled', async () => {
@@ -779,7 +779,7 @@ describe("session_start reason handling", () => {
     const lastStatus = resumeCtx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
     expect(lastStatus?.value).toContain("editing");
-    expect(lastStatus?.value).toContain("󰌾");
+    expect(lastStatus?.value).toContain("󰏫");
   });
 });
 
@@ -966,9 +966,9 @@ describe("footer theming", () => {
 
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("󰌾");
+    expect(lastStatus?.value).toContain("󰏯");
     expect(lastStatus?.value).toContain("readonly");
-    expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰌾" });
+    expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰏯" });
     expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "readonly" });
   });
 
@@ -981,8 +981,8 @@ describe("footer theming", () => {
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
     expect(lastStatus?.value).toContain("editing");
-    expect(lastStatus?.value).toContain("󰌾");
-    expect(ctx.themeCalls).toContainEqual({ color: "warning", text: "󰌾" });
+    expect(lastStatus?.value).toContain("󰏫");
+    expect(ctx.themeCalls).toContainEqual({ color: "warning", text: "󰏫" });
     expect(ctx.themeCalls).toContainEqual({
       color: "warning",
       text: "editing",
