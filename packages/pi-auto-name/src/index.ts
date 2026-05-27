@@ -1,4 +1,4 @@
-import { complete } from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai";
 import type { UserMessage } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
@@ -237,13 +237,14 @@ async function generateNameAsync(
       timestamp: Date.now(),
     };
 
-    const response = await complete(
+    const response = await completeSimple(
       model,
       { systemPrompt, messages: [userMessage] },
       {
         apiKey: auth.apiKey,
         headers: auth.headers,
-        maxTokens: 64,
+        maxTokens: 128,
+        reasoning: "minimal",
         signal: ctx.signal,
       },
     );
