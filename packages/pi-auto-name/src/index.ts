@@ -56,7 +56,7 @@ export default function (pi: ExtensionAPI) {
               ? result.message
               : result.outcome === "aborted"
                 ? "Title generation was aborted."
-                : "Model returned an invalid title.";
+                : result.message || "Model returned an invalid title.";
         maybeWarn(ctx, msg);
       }
     });
@@ -153,7 +153,7 @@ export default function (pi: ExtensionAPI) {
               ? result.message
               : result.outcome === "aborted"
                 ? "Title generation was aborted."
-                : "Model returned an invalid title.";
+                : result.message || "Model returned an invalid title.";
         ctx.ui.notify(`[pi-auto-name] ${msg}`, "warning");
         return;
       }
@@ -195,7 +195,7 @@ type GenerateResult =
   | { outcome: "success"; title: string }
   | { outcome: "preflight-failure"; message: string }
   | { outcome: "aborted" }
-  | { outcome: "invalid-output"; raw?: string }
+  | { outcome: "invalid-output"; raw?: string; message?: string }
   | { outcome: "unknown-error"; message: string };
 
 async function generateNameAsync(
@@ -243,12 +243,18 @@ async function generateNameAsync(
       {
         apiKey: auth.apiKey,
         headers: auth.headers,
-        maxTokens: 64,
+        maxTokens: 256,
         signal: ctx.signal,
       },
     );
 
     if (response.stopReason === "aborted") return { outcome: "aborted" };
+    if (response.stopReason === "error") {
+      return {
+        outcome: "unknown-error",
+        message: response.errorMessage || "Provider returned an error",
+      };
+    }
 
     const text = response.content
       .filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -256,7 +262,16 @@ async function generateNameAsync(
       .join("\n");
 
     const title = sanitizeTitle(text);
-    if (!title) return { outcome: "invalid-output", raw: text };
+    if (!title) {
+      if (response.stopReason === "length") {
+        return {
+          outcome: "invalid-output",
+          raw: text,
+          message: "Model hit token limit without producing text",
+        };
+      }
+      return { outcome: "invalid-output", raw: text };
+    }
 
     return { outcome: "success", title };
   } catch (err) {
