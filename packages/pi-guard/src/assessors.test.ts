@@ -307,6 +307,18 @@ describe("assessBashCommand — shell overwrite / truncate", () => {
     ).toBeUndefined();
   });
 
+  it("passes redirect to /dev/null", () => {
+    expect(
+      assessBashCommand("some-cmd > /dev/null", repo, new Set()),
+    ).toBeUndefined();
+  });
+
+  it("passes redirect to /dev/stderr", () => {
+    expect(
+      assessBashCommand("some-cmd > /dev/stderr", repo, new Set()),
+    ).toBeUndefined();
+  });
+
   it("prompts for truncate -s 0 on existing untracked file", () => {
     writeFileSync(join(repo, "existing.txt"), "hello");
     const action = assessBashCommand(

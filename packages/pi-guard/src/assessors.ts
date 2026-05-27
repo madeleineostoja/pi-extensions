@@ -1,4 +1,14 @@
 import { existsSync } from "node:fs";
+
+const SAFE_PSEUDO_DEVICES = new Set([
+  "/dev/null",
+  "/dev/zero",
+  "/dev/stdin",
+  "/dev/stdout",
+  "/dev/stderr",
+  "/dev/urandom",
+  "/dev/random",
+]);
 import { classifyGitRecoverability, hasDirtyWorktree } from "./git";
 import { extractShellWords, toAbsolutePath } from "./paths";
 
@@ -50,6 +60,7 @@ function targetExistsAndNotSafe(
   sessionCreatedPaths: Set<string>,
 ): boolean {
   const abs = toAbsolutePath(target, cwd);
+  if (SAFE_PSEUDO_DEVICES.has(abs)) return false;
   if (!existsAsFile(abs)) return false;
   if (isSessionCreated(abs, sessionCreatedPaths)) return false;
   const rec = classifyGitRecoverability(cwd, abs);
