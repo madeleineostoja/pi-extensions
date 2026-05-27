@@ -19,7 +19,7 @@
     "extensions": [
       "./packages/pi-caffeinate/src/index.ts",
       "./packages/pi-ctx/src/index.ts",
-      "./packages/pi-guard/src/index.ts",
+      "./packages/pi-readonly/src/index.ts",
       "./packages/pi-sandbox/src/index.ts",
       "./packages/pi-footer/src/index.ts",
       "./packages/pi-auto-name/src/index.ts"

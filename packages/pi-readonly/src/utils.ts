@@ -1,4 +1,4 @@
-export type GuardAction =
+export type ReadonlyAction =
   | { kind: "toggle" }
   | {
       kind: "set";
@@ -18,8 +18,8 @@ export function formatModalTitle(
   toolName: string,
   path: string | undefined,
 ): string {
-  if (path) return `Guard: ${toolName} ${path} — apply?`;
-  return `Guard: ${toolName} — apply?`;
+  if (path) return `Readonly: ${toolName} ${path} — apply?`;
+  return `Readonly: ${toolName} — apply?`;
 }
 
 export function formatSteerTitle(path: string | undefined): string {
@@ -27,7 +27,7 @@ export function formatSteerTitle(path: string | undefined): string {
   return "Steer the agent";
 }
 
-const GUARD_SET_MAP: Record<string, boolean> = {
+const READONLY_SET_MAP: Record<string, boolean> = {
   on: true,
   enable: true,
   true: true,
@@ -36,11 +36,11 @@ const GUARD_SET_MAP: Record<string, boolean> = {
   false: false,
 };
 
-export function parseGuardArgs(args: string): GuardAction {
+export function parseReadonlyArgs(args: string): ReadonlyAction {
   const token = args.trim().toLowerCase();
   if (token === "") return { kind: "toggle" };
-  if (Object.hasOwn(GUARD_SET_MAP, token))
-    return { kind: "set", value: GUARD_SET_MAP[token] };
+  if (Object.hasOwn(READONLY_SET_MAP, token))
+    return { kind: "set", value: READONLY_SET_MAP[token] };
   return { kind: "invalid" };
 }
 

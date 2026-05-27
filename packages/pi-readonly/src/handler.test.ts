@@ -146,11 +146,11 @@ function makeEditEvent(input: Record<string, unknown> = {}): ToolCallEvent {
 const TRIGGER_TOOLS = new Set(["edit", "write"]);
 
 describe("decideToolCall", () => {
-  describe("guardMode=false", () => {
-    it("passes when guard is off, tool in set, has UI", () => {
+  describe("readonlyMode=false", () => {
+    it("passes when readonly is off, tool in set, has UI", () => {
       expect(
         decideToolCall({
-          guardMode: false,
+          readonlyMode: false,
           hasUI: true,
           toolName: "edit",
           triggerTools: TRIGGER_TOOLS,
@@ -158,10 +158,10 @@ describe("decideToolCall", () => {
       ).toBe("pass");
     });
 
-    it("passes when guard is off, tool in set, no UI", () => {
+    it("passes when readonly is off, tool in set, no UI", () => {
       expect(
         decideToolCall({
-          guardMode: false,
+          readonlyMode: false,
           hasUI: false,
           toolName: "edit",
           triggerTools: TRIGGER_TOOLS,
@@ -169,10 +169,10 @@ describe("decideToolCall", () => {
       ).toBe("pass");
     });
 
-    it("passes when guard is off, tool not in set, has UI", () => {
+    it("passes when readonly is off, tool not in set, has UI", () => {
       expect(
         decideToolCall({
-          guardMode: false,
+          readonlyMode: false,
           hasUI: true,
           toolName: "bash",
           triggerTools: TRIGGER_TOOLS,
@@ -180,10 +180,10 @@ describe("decideToolCall", () => {
       ).toBe("pass");
     });
 
-    it("passes when guard is off, tool not in set, no UI", () => {
+    it("passes when readonly is off, tool not in set, no UI", () => {
       expect(
         decideToolCall({
-          guardMode: false,
+          readonlyMode: false,
           hasUI: false,
           toolName: "bash",
           triggerTools: TRIGGER_TOOLS,
@@ -192,11 +192,11 @@ describe("decideToolCall", () => {
     });
   });
 
-  describe("guardMode=true, tool NOT in trigger set", () => {
+  describe("readonlyMode=true, tool NOT in trigger set", () => {
     it("passes when tool is not in set, has UI", () => {
       expect(
         decideToolCall({
-          guardMode: true,
+          readonlyMode: true,
           hasUI: true,
           toolName: "bash",
           triggerTools: TRIGGER_TOOLS,
@@ -207,7 +207,7 @@ describe("decideToolCall", () => {
     it("passes when tool is not in set, no UI", () => {
       expect(
         decideToolCall({
-          guardMode: true,
+          readonlyMode: true,
           hasUI: false,
           toolName: "bash",
           triggerTools: TRIGGER_TOOLS,
@@ -216,11 +216,11 @@ describe("decideToolCall", () => {
     });
   });
 
-  describe("guardMode=true, tool IN trigger set", () => {
+  describe("readonlyMode=true, tool IN trigger set", () => {
     it("prompts when tool is 'edit' and has UI", () => {
       expect(
         decideToolCall({
-          guardMode: true,
+          readonlyMode: true,
           hasUI: true,
           toolName: "edit",
           triggerTools: TRIGGER_TOOLS,
@@ -231,7 +231,7 @@ describe("decideToolCall", () => {
     it("prompts when tool is 'write' and has UI", () => {
       expect(
         decideToolCall({
-          guardMode: true,
+          readonlyMode: true,
           hasUI: true,
           toolName: "write",
           triggerTools: TRIGGER_TOOLS,
@@ -242,7 +242,7 @@ describe("decideToolCall", () => {
     it("auto-disables when tool is 'edit' and no UI", () => {
       expect(
         decideToolCall({
-          guardMode: true,
+          readonlyMode: true,
           hasUI: false,
           toolName: "edit",
           triggerTools: TRIGGER_TOOLS,
@@ -253,7 +253,7 @@ describe("decideToolCall", () => {
     it("auto-disables when tool is 'write' and no UI", () => {
       expect(
         decideToolCall({
-          guardMode: true,
+          readonlyMode: true,
           hasUI: false,
           toolName: "write",
           triggerTools: TRIGGER_TOOLS,
@@ -265,7 +265,7 @@ describe("decideToolCall", () => {
   it("passes for a tool that is not in an empty trigger set", () => {
     expect(
       decideToolCall({
-        guardMode: true,
+        readonlyMode: true,
         hasUI: true,
         toolName: "edit",
         triggerTools: new Set(),
@@ -281,12 +281,12 @@ describe("resolveChoice", () => {
     });
   });
 
-  it('"Accept and stop guarding" returns not blocked with disable side effect', () => {
+  it('"Accept for this session" returns not blocked with setEditing side effect', () => {
     expect(
-      resolveChoice({ choice: "Accept and stop guarding", message: undefined }),
+      resolveChoice({ choice: "Accept for this session", message: undefined }),
     ).toEqual({
       block: false,
-      sideEffect: "disable",
+      sideEffect: "setEditing",
     });
   });
 
@@ -400,14 +400,14 @@ describe("modal title construction (integration)", () => {
     const handler = captureToolCallHandler();
     const ctx = makeCapturingCtx("Accept");
     await handler(makeEditEvent({ path: "src/foo.ts" }), ctx);
-    expect(ctx.selectCalls[0].title).toBe("Guard: edit src/foo.ts — apply?");
+    expect(ctx.selectCalls[0].title).toBe("Readonly: edit src/foo.ts — apply?");
   });
 
   it("modal title falls back to tool name only when event.input has no path", async () => {
     const handler = captureToolCallHandler();
     const ctx = makeCapturingCtx("Accept");
     await handler(makeEditEvent({}), ctx);
-    expect(ctx.selectCalls[0].title).toBe("Guard: edit — apply?");
+    expect(ctx.selectCalls[0].title).toBe("Readonly: edit — apply?");
   });
 
   it("modal title does not contain 'undefined' when path is absent", async () => {
@@ -585,7 +585,7 @@ function makeSessionStartEvent(): SessionStartEvent {
 }
 
 describe("non-interactive mode (tool_call handler)", () => {
-  it("tool_call with hasUI=false → returns undefined, disables guard, notifies once", async () => {
+  it("tool_call with hasUI=false → returns undefined, disables readonly, notifies once", async () => {
     const { toolCallHandler } = captureHandlers();
     const ctx = makeNonInteractiveCtx();
 
@@ -593,7 +593,7 @@ describe("non-interactive mode (tool_call handler)", () => {
 
     expect(result).toBeUndefined();
     expect(ctx.notifyCalls).toHaveLength(1);
-    expect(ctx.notifyCalls[0]).toMatch(/guard mode auto-disabled/);
+    expect(ctx.notifyCalls[0]).toMatch(/readonly mode auto-disabled/);
     expect(ctx.notifyCalls[0]).toMatch(/no interactive UI/);
   });
 
@@ -625,7 +625,7 @@ describe("non-interactive mode (tool_call handler)", () => {
     await sessionStartHandler(makeSessionStartEvent() as never, ctx);
 
     expect(ctx.notifyCalls).toHaveLength(1);
-    expect(ctx.notifyCalls[0]).toMatch(/guard mode auto-disabled/);
+    expect(ctx.notifyCalls[0]).toMatch(/readonly mode auto-disabled/);
 
     const result = await toolCallHandler(makeEditEvent() as never, ctx);
     expect(result).toBeUndefined();
@@ -692,10 +692,10 @@ function makeInteractiveCtx(): ExtensionContext & {
   };
 }
 
-const FOOTER_KEY = "pi-guard.active";
+const FOOTER_KEY = "pi-readonly.mode";
 
 describe("session_start reason handling", () => {
-  it('reason "startup" enables guard and sets footer', async () => {
+  it('reason "startup" enables readonly and sets footer', async () => {
     const { sessionStartHandler } = captureHandlers();
     const ctx = makeInteractiveCtx();
 
@@ -707,12 +707,12 @@ describe("session_start reason handling", () => {
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
     expect(lastStatus?.value).toContain("󰌾");
-    expect(lastStatus?.value).toContain("guarding");
+    expect(lastStatus?.value).toContain("readonly");
     expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰌾" });
-    expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "guarding" });
+    expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "readonly" });
   });
 
-  it('reason "new" enables guard and sets footer', async () => {
+  it('reason "new" enables readonly and sets footer', async () => {
     const { sessionStartHandler } = captureHandlers();
     const ctx = makeInteractiveCtx();
 
@@ -724,10 +724,10 @@ describe("session_start reason handling", () => {
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
     expect(lastStatus?.value).toContain("󰌾");
-    expect(lastStatus?.value).toContain("guarding");
+    expect(lastStatus?.value).toContain("readonly");
   });
 
-  it('reason "fork" enables guard and sets footer', async () => {
+  it('reason "fork" enables readonly and sets footer', async () => {
     const { sessionStartHandler } = captureHandlers();
     const ctx = makeInteractiveCtx();
 
@@ -739,13 +739,13 @@ describe("session_start reason handling", () => {
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
     expect(lastStatus?.value).toContain("󰌾");
-    expect(lastStatus?.value).toContain("guarding");
+    expect(lastStatus?.value).toContain("readonly");
   });
 
-  it('reason "reload" does not call applyMode(true): guard remains off if previously disabled', async () => {
+  it('reason "reload" does not call applyMode(true): readonly remains off if previously disabled', async () => {
     const { sessionStartHandler, toolCallHandler } = captureHandlers();
     const acceptCtx = makeToolCallCtx({
-      selectResult: "Accept and stop guarding",
+      selectResult: "Accept for this session",
     });
 
     await toolCallHandler(makeEditEvent() as never, acceptCtx);
@@ -758,14 +758,14 @@ describe("session_start reason handling", () => {
 
     const lastStatus = reloadCtx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("guard off");
+    expect(lastStatus?.value).toContain("editing");
     expect(lastStatus?.value).toContain("󰌾");
   });
 
-  it('reason "resume" does not call applyMode(true): guard remains off if previously disabled', async () => {
+  it('reason "resume" does not call applyMode(true): readonly remains off if previously disabled', async () => {
     const { sessionStartHandler, toolCallHandler } = captureHandlers();
     const acceptCtx = makeToolCallCtx({
-      selectResult: "Accept and stop guarding",
+      selectResult: "Accept for this session",
     });
 
     await toolCallHandler(makeEditEvent() as never, acceptCtx);
@@ -778,7 +778,7 @@ describe("session_start reason handling", () => {
 
     const lastStatus = resumeCtx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("guard off");
+    expect(lastStatus?.value).toContain("editing");
     expect(lastStatus?.value).toContain("󰌾");
   });
 });
@@ -793,10 +793,10 @@ function captureCommandAndShortcutHandlers() {
   const pi = {
     on: () => {},
     registerShortcut(name: string, opts: { handler: ShortcutHandler }) {
-      if (name === "ctrl+shift+g") shortcutHandler = opts.handler;
+      if (name === "ctrl+shift+r") shortcutHandler = opts.handler;
     },
     registerCommand(name: string, opts: { handler: CommandHandler }) {
-      if (name === "guard") commandHandler = opts.handler;
+      if (name === "readonly") commandHandler = opts.handler;
     },
     registerTool: () => {},
     registerFlag: () => {},
@@ -825,13 +825,15 @@ function captureCommandAndShortcutHandlers() {
   registerExtension(pi);
 
   if (!commandHandler)
-    throw new Error("guard command handler was not registered");
+    throw new Error("readonly command handler was not registered");
   if (!shortcutHandler)
-    throw new Error("ctrl+shift+g shortcut handler was not registered");
+    throw new Error("ctrl+shift+r shortcut handler was not registered");
   return { commandHandler, shortcutHandler };
 }
 
-function makeNotifyCapturingCtx(_guardOn: boolean = true): ExtensionContext & {
+function makeNotifyCapturingCtx(
+  _readonlyOn: boolean = true,
+): ExtensionContext & {
   notifyCalls: Array<{ message: string; level: string }>;
 } {
   const notifyCalls: Array<{ message: string; level: string }> = [];
@@ -887,54 +889,54 @@ function makeNotifyCapturingCtx(_guardOn: boolean = true): ExtensionContext & {
   };
 }
 
-describe("/guard command notifications", () => {
-  it("/guard (toggle) emits a notification with the new state", async () => {
+describe("/readonly command notifications", () => {
+  it("/readonly (toggle) emits a notification with the new state", async () => {
     const { commandHandler } = captureCommandAndShortcutHandlers();
     const ctx = makeNotifyCapturingCtx();
 
     await commandHandler("", ctx);
 
     expect(ctx.notifyCalls).toHaveLength(1);
-    expect(ctx.notifyCalls[0].message).toBe("guard mode: off");
+    expect(ctx.notifyCalls[0].message).toBe("readonly mode: off");
   });
 
-  it("/guard on when guard is already on emits no-op notification", async () => {
+  it("/readonly on when readonly is already on emits no-op notification", async () => {
     const { commandHandler } = captureCommandAndShortcutHandlers();
     const ctx = makeNotifyCapturingCtx();
 
     await commandHandler("on", ctx);
 
     expect(ctx.notifyCalls).toHaveLength(1);
-    expect(ctx.notifyCalls[0].message).toBe("guard mode: already on");
+    expect(ctx.notifyCalls[0].message).toBe("readonly mode: already on");
   });
 
-  it("/guard off when guard is already off emits no-op notification", async () => {
+  it("/readonly off when readonly is already off emits no-op notification", async () => {
     const { commandHandler } = captureCommandAndShortcutHandlers();
     const ctx = makeNotifyCapturingCtx();
 
     await commandHandler("off", ctx);
     const notifyCountAfterOff = ctx.notifyCalls.length;
-    expect(ctx.notifyCalls.at(-1)?.message).toBe("guard mode: off");
+    expect(ctx.notifyCalls.at(-1)?.message).toBe("readonly mode: off");
 
     await commandHandler("off", ctx);
 
     expect(ctx.notifyCalls).toHaveLength(notifyCountAfterOff + 1);
-    expect(ctx.notifyCalls.at(-1)?.message).toBe("guard mode: already off");
+    expect(ctx.notifyCalls.at(-1)?.message).toBe("readonly mode: already off");
   });
 
-  it("/guard on after /guard off emits action notification", async () => {
+  it("/readonly on after /readonly off emits action notification", async () => {
     const { commandHandler } = captureCommandAndShortcutHandlers();
     const ctx = makeNotifyCapturingCtx();
 
     await commandHandler("off", ctx);
     await commandHandler("on", ctx);
 
-    expect(ctx.notifyCalls.at(-1)?.message).toBe("guard mode: on");
+    expect(ctx.notifyCalls.at(-1)?.message).toBe("readonly mode: on");
   });
 });
 
-describe("ctrl+shift+g shortcut notifications", () => {
-  it("shortcut toggles guard and does not emit a notification", async () => {
+describe("ctrl+shift+r shortcut notifications", () => {
+  it("shortcut toggles readonly and does not emit a notification", async () => {
     const { shortcutHandler } = captureCommandAndShortcutHandlers();
     const ctx = makeNotifyCapturingCtx();
 
@@ -956,7 +958,7 @@ describe("ctrl+shift+g shortcut notifications", () => {
 });
 
 describe("footer theming", () => {
-  it("guard on sets themed status with success icon and muted text", async () => {
+  it("readonly on sets themed status with success icon and muted text", async () => {
     const { sessionStartHandler } = captureHandlers();
     const ctx = makeInteractiveCtx();
 
@@ -965,12 +967,12 @@ describe("footer theming", () => {
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
     expect(lastStatus?.value).toContain("󰌾");
-    expect(lastStatus?.value).toContain("guarding");
+    expect(lastStatus?.value).toContain("readonly");
     expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰌾" });
-    expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "guarding" });
+    expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "readonly" });
   });
 
-  it("guard off sets themed warning status instead of clearing", async () => {
+  it("readonly off sets themed warning status instead of clearing", async () => {
     const { commandHandler } = captureCommandAndShortcutHandlers();
     const ctx = makeInteractiveCtx();
 
@@ -978,12 +980,12 @@ describe("footer theming", () => {
 
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("guard off");
+    expect(lastStatus?.value).toContain("editing");
     expect(lastStatus?.value).toContain("󰌾");
     expect(ctx.themeCalls).toContainEqual({ color: "warning", text: "󰌾" });
     expect(ctx.themeCalls).toContainEqual({
       color: "warning",
-      text: "guard off",
+      text: "editing",
     });
   });
 });

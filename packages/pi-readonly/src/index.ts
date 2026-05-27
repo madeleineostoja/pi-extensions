@@ -3,7 +3,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
-  parseGuardArgs,
+  parseReadonlyArgs,
   formatSteer,
   extractToolPath,
   formatModalTitle,
@@ -11,47 +11,47 @@ import {
 } from "./utils";
 import { decideToolCall, resolveChoice } from "./handler";
 
-const FOOTER_KEY = "pi-guard.active";
+const FOOTER_KEY = "pi-readonly.mode";
 
 const NON_INTERACTIVE_MSG =
-  "guard mode auto-disabled: no interactive UI available in this session. Edits will proceed without confirmation.";
+  "readonly mode auto-disabled: no interactive UI available in this session. Edits will proceed without confirmation.";
 
 export default function (pi: ExtensionAPI) {
-  let guardMode = true;
+  let readonlyMode = true;
   let nonInteractiveNotified = false;
   const triggerTools = new Set<string>(["edit", "write"]);
 
   function applyMode(next: boolean) {
-    guardMode = next;
+    readonlyMode = next;
   }
 
   function notifyNonInteractive(ctx: ExtensionContext) {
     if (nonInteractiveNotified) return;
     nonInteractiveNotified = true;
-    process.stderr.write(`[pi-guard] ${NON_INTERACTIVE_MSG}\n`);
+    process.stderr.write(`[pi-readonly] ${NON_INTERACTIVE_MSG}\n`);
     ctx.ui.notify(NON_INTERACTIVE_MSG, "info");
   }
 
   function syncFooter(ctx: ExtensionContext) {
     if (!ctx.hasUI) return;
     const theme = ctx.ui.theme;
-    if (guardMode) {
+    if (readonlyMode) {
       ctx.ui.setStatus(
         FOOTER_KEY,
-        `${theme.fg("success", "󰌾")} ${theme.fg("muted", "guarding")}`,
+        `${theme.fg("success", "󰌾")} ${theme.fg("muted", "readonly")}`,
       );
     } else {
       ctx.ui.setStatus(
         FOOTER_KEY,
-        `${theme.fg("warning", "󰌾")} ${theme.fg("warning", "guard off")}`,
+        `${theme.fg("warning", "󰌾")} ${theme.fg("warning", "editing")}`,
       );
     }
   }
 
-  pi.registerShortcut("ctrl+shift+g", {
-    description: "Toggle edit guard mode",
+  pi.registerShortcut("ctrl+shift+r", {
+    description: "Toggle readonly mode",
     handler: async (ctx) => {
-      applyMode(!guardMode);
+      applyMode(!readonlyMode);
       syncFooter(ctx);
     },
   });
@@ -74,20 +74,20 @@ export default function (pi: ExtensionAPI) {
     syncFooter(ctx);
   });
 
-  pi.registerCommand("guard", {
-    description: "Toggle edit guard mode",
+  pi.registerCommand("readonly", {
+    description: "Toggle readonly mode",
     handler: async (args, ctx) => {
-      const action = parseGuardArgs(args);
+      const action = parseReadonlyArgs(args);
       if (action.kind === "invalid") {
-        ctx.ui.notify("unknown: /guard [on|off]", "warning");
+        ctx.ui.notify("unknown: /readonly [on|off]", "warning");
         return;
       }
       if (action.kind === "toggle") {
-        applyMode(!guardMode);
+        applyMode(!readonlyMode);
       } else if (action.kind === "set") {
-        if (action.value === guardMode) {
+        if (action.value === readonlyMode) {
           ctx.ui.notify(
-            `guard mode: already ${guardMode ? "on" : "off"}`,
+            `readonly mode: already ${readonlyMode ? "on" : "off"}`,
             "info",
           );
           return;
@@ -95,13 +95,13 @@ export default function (pi: ExtensionAPI) {
         applyMode(action.value);
       }
       syncFooter(ctx);
-      ctx.ui.notify(`guard mode: ${guardMode ? "on" : "off"}`, "info");
+      ctx.ui.notify(`readonly mode: ${readonlyMode ? "on" : "off"}`, "info");
     },
   });
 
   pi.on("tool_call", async (event, ctx) => {
     const decision = decideToolCall({
-      guardMode,
+      readonlyMode,
       hasUI: ctx.hasUI,
       toolName: event.toolName,
       triggerTools,
@@ -123,7 +123,7 @@ export default function (pi: ExtensionAPI) {
     try {
       choice = await ctx.ui.select(
         formatModalTitle(event.toolName, toolPath),
-        ["Accept", "Accept and stop guarding", "Steer"],
+        ["Accept", "Accept for this session", "Steer"],
         ctx.signal ? { signal: ctx.signal } : undefined,
       );
 
@@ -143,7 +143,7 @@ export default function (pi: ExtensionAPI) {
 
     const result = resolveChoice({ choice, message });
 
-    if (result.sideEffect === "disable") {
+    if (result.sideEffect === "setEditing") {
       applyMode(false);
       syncFooter(ctx);
     }

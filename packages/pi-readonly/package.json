@@ -1,5 +1,5 @@
 {
-  "name": "pi-guard",
+  "name": "pi-readonly",
   "version": "0.1.0",
   "description": "Pi extension that pauses before applying edits and asks for your approval.",
   "license": "MIT",

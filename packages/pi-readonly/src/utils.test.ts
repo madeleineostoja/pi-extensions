@@ -1,71 +1,71 @@
 import { describe, it, expect } from "vitest";
 import {
-  parseGuardArgs,
+  parseReadonlyArgs,
   formatSteer,
   extractToolPath,
   formatModalTitle,
   formatSteerTitle,
 } from "./utils";
 
-describe("parseGuardArgs", () => {
+describe("parseReadonlyArgs", () => {
   it("returns toggle for empty string", () => {
-    expect(parseGuardArgs("")).toEqual({ kind: "toggle" });
+    expect(parseReadonlyArgs("")).toEqual({ kind: "toggle" });
   });
 
   it("returns toggle for whitespace-only string", () => {
-    expect(parseGuardArgs("   ")).toEqual({ kind: "toggle" });
+    expect(parseReadonlyArgs("   ")).toEqual({ kind: "toggle" });
   });
 
   it('returns set true for "on"', () => {
-    expect(parseGuardArgs("on")).toEqual({ kind: "set", value: true });
+    expect(parseReadonlyArgs("on")).toEqual({ kind: "set", value: true });
   });
 
   it('returns set false for "OFF" (case-insensitive)', () => {
-    expect(parseGuardArgs("OFF")).toEqual({ kind: "set", value: false });
+    expect(parseReadonlyArgs("OFF")).toEqual({ kind: "set", value: false });
   });
 
   it('returns invalid for "status" (no longer recognized)', () => {
-    expect(parseGuardArgs(" status ")).toEqual({ kind: "invalid" });
+    expect(parseReadonlyArgs(" status ")).toEqual({ kind: "invalid" });
   });
 
   it('returns invalid for unknown arg "garbage"', () => {
-    expect(parseGuardArgs("garbage")).toEqual({ kind: "invalid" });
+    expect(parseReadonlyArgs("garbage")).toEqual({ kind: "invalid" });
   });
 
   it('returns invalid for "on off" (extra tokens)', () => {
-    expect(parseGuardArgs("on off")).toEqual({ kind: "invalid" });
+    expect(parseReadonlyArgs("on off")).toEqual({ kind: "invalid" });
   });
 
   it('returns set true for "enable"', () => {
-    expect(parseGuardArgs("enable")).toEqual({ kind: "set", value: true });
+    expect(parseReadonlyArgs("enable")).toEqual({ kind: "set", value: true });
   });
 
   it('returns set false for "disable"', () => {
-    expect(parseGuardArgs("disable")).toEqual({ kind: "set", value: false });
+    expect(parseReadonlyArgs("disable")).toEqual({ kind: "set", value: false });
   });
 
   it('returns set false for "DISABLE" (case-insensitive)', () => {
-    expect(parseGuardArgs("DISABLE")).toEqual({ kind: "set", value: false });
+    expect(parseReadonlyArgs("DISABLE")).toEqual({ kind: "set", value: false });
   });
 
   it('returns set true for "true"', () => {
-    expect(parseGuardArgs("true")).toEqual({ kind: "set", value: true });
+    expect(parseReadonlyArgs("true")).toEqual({ kind: "set", value: true });
   });
 
   it('returns set false for "false"', () => {
-    expect(parseGuardArgs("false")).toEqual({ kind: "set", value: false });
+    expect(parseReadonlyArgs("false")).toEqual({ kind: "set", value: false });
   });
 
   it('returns set true for "ENABLE" (case-insensitive)', () => {
-    expect(parseGuardArgs("ENABLE")).toEqual({ kind: "set", value: true });
+    expect(parseReadonlyArgs("ENABLE")).toEqual({ kind: "set", value: true });
   });
 
   it('returns set true for "TRUE" (case-insensitive)', () => {
-    expect(parseGuardArgs("TRUE")).toEqual({ kind: "set", value: true });
+    expect(parseReadonlyArgs("TRUE")).toEqual({ kind: "set", value: true });
   });
 
   it('returns invalid for "toString" (prototype key, not a valid alias)', () => {
-    expect(parseGuardArgs("toString")).toEqual({ kind: "invalid" });
+    expect(parseReadonlyArgs("toString")).toEqual({ kind: "invalid" });
   });
 });
 
@@ -94,17 +94,17 @@ describe("extractToolPath", () => {
 describe("formatModalTitle", () => {
   it("includes tool name and path when path is present", () => {
     expect(formatModalTitle("edit", "src/foo.ts")).toBe(
-      "Guard: edit src/foo.ts — apply?",
+      "Readonly: edit src/foo.ts — apply?",
     );
   });
 
   it("falls back to tool name only when path is undefined", () => {
-    expect(formatModalTitle("edit", undefined)).toBe("Guard: edit — apply?");
+    expect(formatModalTitle("edit", undefined)).toBe("Readonly: edit — apply?");
   });
 
   it("works with a different tool name", () => {
     expect(formatModalTitle("write", "lib/bar.ts")).toBe(
-      "Guard: write lib/bar.ts — apply?",
+      "Readonly: write lib/bar.ts — apply?",
     );
   });
 });

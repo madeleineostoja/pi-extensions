@@ -464,12 +464,12 @@ describe("buildStatusLine", () => {
 
   it("wraps plain statuses in muted theme color", () => {
     const theme = makeSpyTheme();
-    const statuses = new Map([["k", "guarding"]]);
+    const statuses = new Map([["k", "readonly"]]);
     buildStatusLine(statuses, theme);
     expect(theme.calls).toContainEqual({
       method: "fg",
       color: "muted",
-      text: "guarding",
+      text: "readonly",
     });
   });
 });

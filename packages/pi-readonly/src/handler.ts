@@ -3,15 +3,15 @@ import { formatSteer } from "./utils";
 export type ToolCallDecision = "pass" | "auto-disable" | "prompt";
 
 export type DecideToolCallParams = {
-  guardMode: boolean;
+  readonlyMode: boolean;
   hasUI: boolean;
   toolName: string;
   triggerTools: Set<string>;
 };
 
 export function decideToolCall(params: DecideToolCallParams): ToolCallDecision {
-  const { guardMode, hasUI, toolName, triggerTools } = params;
-  if (!guardMode) return "pass";
+  const { readonlyMode, hasUI, toolName, triggerTools } = params;
+  if (!readonlyMode) return "pass";
   if (!triggerTools.has(toolName)) return "pass";
   if (!hasUI) return "auto-disable";
   return "prompt";
@@ -20,7 +20,7 @@ export function decideToolCall(params: DecideToolCallParams): ToolCallDecision {
 export type ResolveChoiceResult = {
   block: boolean;
   reason?: string;
-  sideEffect?: "disable";
+  sideEffect?: "setEditing";
 };
 
 export function resolveChoice(params: {
@@ -31,8 +31,8 @@ export function resolveChoice(params: {
   if (choice === "Accept") {
     return { block: false };
   }
-  if (choice === "Accept and stop guarding") {
-    return { block: false, sideEffect: "disable" };
+  if (choice === "Accept for this session") {
+    return { block: false, sideEffect: "setEditing" };
   }
   return { block: true, reason: formatSteer(message ?? "") };
 }
