@@ -4,14 +4,14 @@ Personal extensions for the [Pi](https://github.com/earendil-works/pi) agent har
 
 ## Packages
 
-| Package                                 | Description                                                                                   |
-| --------------------------------------- | --------------------------------------------------------------------------------------------- |
-| [pi-auto-name](packages/pi-auto-name)   | Automatically generate a short session name from the first user prompt.                       |
-| [pi-caffeinate](packages/pi-caffeinate) | Prevent host idle-sleep for the lifetime of a pi session (macOS + Linux).                     |
-| [pi-ctx](packages/pi-ctx)               | Keep the context window small by pruning large, stale tool results and re-fetching on demand. |
-| [pi-footer](packages/pi-footer)         | Compact replacement footer with cwd, branch, model, cost, context, and extension statuses.    |
-| [pi-readonly](packages/pi-readonly)     | Lightweight approval before agents begin editing or writing files                             |
-| [pi-sandbox](packages/pi-sandbox)       | Kernel level sandboxing with pi agents with [nono](https://github.com/always-further/nono)    |
+| Package                                       | Description                                                                                   |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| [pi-auto-name](packages/pi-auto-name)         | Automatically generate a short session name from the first user prompt.                       |
+| [pi-caffeinate](packages/pi-caffeinate)       | Prevent host idle-sleep for the lifetime of a pi session (macOS + Linux).                     |
+| [pi-context-prune](packages/pi-context-prune) | Keep the context window small by pruning large, stale tool results and re-fetching on demand. |
+| [pi-footer](packages/pi-footer)               | Compact replacement footer with cwd, branch, model, cost, context, and extension statuses.    |
+| [pi-readonly](packages/pi-readonly)           | Lightweight approval before agents begin editing or writing files                             |
+| [pi-sandbox](packages/pi-sandbox)             | Kernel level sandboxing with pi agents with [nono](https://github.com/always-further/nono)    |
 
 ## Install
 

@@ -27,7 +27,7 @@ export default function (pi: ExtensionAPI) {
   );
   registerRecallTool(pi, (toolName) => stats.onRecall(toolName));
 
-  pi.registerCommand("ctx", {
+  pi.registerCommand("context-prune", {
     description: "Show context elision and recall statistics for this session",
     handler: async (_args, ctx) => {
       ctx.ui.notify(formatStats(stats.snapshot()), "info");

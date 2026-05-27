@@ -45,7 +45,7 @@ export function registerRecallTool(
     label: "ctx_recall",
     description:
       "Retrieve the full content of a tool result that was elided from context. " +
-      "When a tool result is large and old, pi-ctx replaces it with a stub of the form " +
+      "When a tool result is large and old, pi-context-prune replaces it with a stub of the form " +
       '`[ToolName result elided: SIZE. Call ctx_recall("TOOL_CALL_ID") to retrieve.]`. ' +
       "Call this tool with the toolCallId from the stub to get the original content back.",
     promptSnippet:
@@ -53,7 +53,7 @@ export function registerRecallTool(
     promptGuidelines: [
       'Use ctx_recall when a tool result has been replaced with a stub — all three stub variants end with Call ctx_recall("id") to retrieve. and carry the toolCallId you need.',
       'The three stub forms are: standard age/size ("ToolName result elided: SIZE"), superseded-read ("read result elided (superseded by later edit/write of PATH)"), and duplicate-read ("read result elided (superseded by later read of PATH at turn N)"). ctx_recall works the same way for all three.',
-      "ctx_recall returns the original content unchanged; pi-ctx never discards anything.",
+      "ctx_recall returns the original content unchanged; pi-context-prune never discards anything.",
       'Pass \'lines\' to ctx_recall (e.g. "10-20" or "5") to fetch only a line range; only supported for single-text-block results.',
     ],
     parameters: RecallParams,

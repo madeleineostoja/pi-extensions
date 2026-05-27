@@ -1,5 +1,5 @@
 {
-  "name": "pi-ctx",
+  "name": "pi-context-prune",
   "version": "0.1.0",
   "description": "A Pi extension that keeps the context window small by pruning large, stale tool results",
   "license": "MIT",

@@ -1,10 +1,10 @@
-# pi-ctx
+# pi-context-prune
 
 A Pi extension that keeps the context window small by pruning large, stale tool results and letting the LLM fetch them back on demand.
 
 ## What it does
 
-On every context event pi-ctx scans all `toolResult` messages. Results that meet the staleness and size thresholds are replaced in-context with a one-line stub. Files that have been superseded by a later edit or written more than once are stubbed immediately, regardless of age or size. The original content is never discarded — it remains in the session store and can be retrieved at any time via `ctx_recall`.
+On every context event pi-context-prune scans all `toolResult` messages. Results that meet the staleness and size thresholds are replaced in-context with a one-line stub. Files that have been superseded by a later edit or written more than once are stubbed immediately, regardless of age or size. The original content is never discarded — it remains in the session store and can be retrieved at any time via `ctx_recall`.
 
 Error results (`isError: true`) are never elided by the standard rule, only by the rot rules (superseded/duplicate), so the LLM always has access to failures.
 
@@ -57,10 +57,10 @@ Note: image blocks within a tool result do not count toward `minTokens`. Elision
 
 ## Config file
 
-pi-ctx reads optional configuration from:
+pi-context-prune reads optional configuration from:
 
 ```
-~/.pi/agent/extensions/pi-ctx/config.json
+~/.pi/agent/extensions/pi-context-prune/config.json
 ```
 
 The file is loaded once at session start. A missing file is silently ignored and defaults are used. A malformed or invalid file emits a warning and defaults are used. To apply config changes, reload the extension.
@@ -92,9 +92,9 @@ The LLM calls `ctx_recall` to retrieve an elided result. Parameters:
 - `id` (required) — the `toolCallId` from the stub
 - `lines` (optional) — a 1-indexed line range such as `"10-20"` or `"5"` to fetch only part of the content; only supported for single-text-block results with no image blocks
 
-## `/ctx` command
+## `/context-prune` command
 
-Run `/ctx` in the Pi chat to see elision statistics for the current session:
+Run `/context-prune` in the Pi chat to see elision statistics for the current session:
 
 ```
 tokens elided (cumulative): 8.5K tokens

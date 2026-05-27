@@ -38,7 +38,7 @@ export function loadConfig(
     ".pi",
     "agent",
     "extensions",
-    "pi-ctx",
+    "pi-context-prune",
     "config.json",
   );
 
@@ -49,7 +49,10 @@ export function loadConfig(
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return defaultConfig();
     }
-    notify?.(`pi-ctx: could not read config file: ${String(err)}`, "warning");
+    notify?.(
+      `pi-context-prune: could not read config file: ${String(err)}`,
+      "warning",
+    );
     return defaultConfig();
   }
 
@@ -58,7 +61,7 @@ export function loadConfig(
     parsed = JSON.parse(raw);
   } catch {
     notify?.(
-      "pi-ctx: config file contains malformed JSON; using defaults",
+      "pi-context-prune: config file contains malformed JSON; using defaults",
       "warning",
     );
     return defaultConfig();
@@ -66,7 +69,7 @@ export function loadConfig(
 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     notify?.(
-      "pi-ctx: config file must be a JSON object; using defaults",
+      "pi-context-prune: config file must be a JSON object; using defaults",
       "warning",
     );
     return defaultConfig();
@@ -84,7 +87,7 @@ export function loadConfig(
     const val = obj[key];
     if (typeof val !== "number" || !Number.isFinite(val) || val < 0) {
       notify?.(
-        `pi-ctx: config key "${key}" must be a non-negative number; using default (${DEFAULTS[key]})`,
+        `pi-context-prune: config key "${key}" must be a non-negative number; using default (${DEFAULTS[key]})`,
         "warning",
       );
     } else {
@@ -101,7 +104,7 @@ export function loadConfig(
     const val = obj[key];
     if (typeof val !== "boolean") {
       notify?.(
-        `pi-ctx: config key "${key}" must be a boolean; using default (${DEFAULTS[key]})`,
+        `pi-context-prune: config key "${key}" must be a boolean; using default (${DEFAULTS[key]})`,
         "warning",
       );
     } else {
