@@ -218,7 +218,7 @@ function captureAllHandlers() {
       if (event === "session_start") sessionStartHandler = handler;
     },
     registerShortcut(name: string, opts: { handler: ShortcutHandler }) {
-      if (name === "ctrl+g") shortcutHandler = opts.handler;
+      if (name === "alt+g") shortcutHandler = opts.handler;
     },
     registerCommand(name: string, opts: { handler: CommandHandler }) {
       if (name === "guard") commandHandler = opts.handler;
@@ -255,7 +255,7 @@ function captureAllHandlers() {
   if (!commandHandler)
     throw new Error("guard command handler was not registered");
   if (!shortcutHandler)
-    throw new Error("ctrl+g shortcut handler was not registered");
+    throw new Error("alt+g shortcut handler was not registered");
   return {
     toolCallHandler,
     sessionStartHandler,
@@ -443,7 +443,7 @@ describe("session_start reason handling", () => {
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
     expect(lastStatus?.value).toContain("guard");
-    expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰒃" });
+    expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰌾" });
     expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "guard" });
   });
 
@@ -511,7 +511,7 @@ function captureCommandAndShortcutHandlers() {
   const pi = {
     on: () => {},
     registerShortcut(name: string, opts: { handler: ShortcutHandler }) {
-      if (name === "ctrl+g") shortcutHandler = opts.handler;
+      if (name === "alt+g") shortcutHandler = opts.handler;
     },
     registerCommand(name: string, opts: { handler: CommandHandler }) {
       if (name === "guard") commandHandler = opts.handler;
@@ -545,7 +545,7 @@ function captureCommandAndShortcutHandlers() {
   if (!commandHandler)
     throw new Error("guard command handler was not registered");
   if (!shortcutHandler)
-    throw new Error("ctrl+g shortcut handler was not registered");
+    throw new Error("alt+g shortcut handler was not registered");
   return { commandHandler, shortcutHandler };
 }
 
@@ -662,7 +662,7 @@ describe("/guard command notifications", () => {
   });
 });
 
-describe("ctrl+g shortcut", () => {
+describe("alt+g shortcut", () => {
   it("shortcut toggles guard and updates footer", async () => {
     const { shortcutHandler } = captureCommandAndShortcutHandlers();
     const ctx = makeInteractiveCtx();

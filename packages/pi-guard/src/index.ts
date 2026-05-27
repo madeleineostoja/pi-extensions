@@ -9,8 +9,8 @@ import { assessBashCommand } from "./assessors";
 import { extractPendingCreations, commitPendingCreations } from "./session";
 
 const FOOTER_KEY = "pi-guard.mode";
-const GUARD_ICON = "󰒃";
-const GUARD_OFF_ICON = "󰒄";
+const GUARD_ICON = "󰌾";
+const GUARD_OFF_ICON = "󰌿";
 
 const NON_INTERACTIVE_MSG =
   "guard auto-disabled: no interactive UI available in this session. Risky shell commands will proceed without confirmation.";
@@ -49,7 +49,7 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  pi.registerShortcut("ctrl+g", {
+  pi.registerShortcut("alt+g", {
     description: "Toggle guard mode",
     handler: async (ctx) => {
       applyMode(!guardEnabled);
