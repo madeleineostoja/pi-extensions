@@ -6,15 +6,28 @@ function clampPercent(percent: number): number {
   return Math.min(100, Math.max(0, percent));
 }
 
-function colorize(text: string, worstPercent: number, theme: Theme): string {
+type StatusColor = "success" | "warning" | "error";
+
+type StatusTextColor = StatusColor | "muted";
+
+function statusColor(worstPercent: number): StatusColor {
   const clampedWorst = clampPercent(worstPercent);
   if (clampedWorst >= 95) {
-    return theme.fg("error", text);
+    return "error";
   }
   if (clampedWorst >= 80) {
-    return theme.fg("warning", text);
+    return "warning";
   }
-  return theme.fg("success", text);
+  return "success";
+}
+
+function formatColoredStatus(
+  iconColor: StatusColor,
+  textColor: StatusTextColor,
+  text: string,
+  theme: Theme,
+): string {
+  return `${theme.fg(iconColor, ICON)} ${theme.fg(textColor, text)}`;
 }
 
 export function formatStatus(
@@ -22,7 +35,7 @@ export function formatStatus(
   theme: Theme,
 ): string | undefined {
   if (!snapshot) {
-    return theme.fg("warning", `${ICON} usage ?`);
+    return formatColoredStatus("warning", "warning", "codex usage ?", theme);
   }
 
   const parts: string[] = [];
@@ -44,8 +57,10 @@ export function formatStatus(
     return undefined;
   }
 
-  const text = `${ICON} ${parts.join(" ")}`;
+  const text = `codex ${parts.join(" ")}`;
   const worst = Math.max(...percents);
+  const color = statusColor(worst);
+  const textColor = color === "success" ? "muted" : color;
 
-  return colorize(text, worst, theme);
+  return formatColoredStatus(color, textColor, text, theme);
 }

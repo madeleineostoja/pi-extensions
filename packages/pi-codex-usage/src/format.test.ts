@@ -36,10 +36,11 @@ describe("formatStatus", () => {
   it("returns warning-colored unknown status when snapshot is null", () => {
     const theme = makeSpyTheme();
     const result = formatStatus(null, theme);
-    expect(result).toContain("usage ?");
-    expect(theme.calls).toContainEqual(
-      expect.objectContaining({ color: "warning" }),
-    );
+    expect(result).toBe(`[warning:${ICON}] [warning:codex usage ?]`);
+    expect(theme.calls).toEqual([
+      { color: "warning", text: ICON },
+      { color: "warning", text: "codex usage ?" },
+    ]);
   });
 
   it("formats compact status with both windows", () => {
@@ -50,7 +51,7 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     const result = formatStatus(snapshot, theme);
-    expect(result).toContain(`${ICON} 42% (71%)`);
+    expect(result).toBe(`[success:${ICON}] [muted:codex 42% (71%)]`);
   });
 
   it("omits fiveHour section when fiveHour is undefined", () => {
@@ -60,7 +61,7 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     const result = formatStatus(snapshot, theme);
-    expect(result).toContain(`${ICON} (55%)`);
+    expect(result).toContain("codex (55%)");
   });
 
   it("omits weekly section when weekly is undefined", () => {
@@ -70,7 +71,7 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     const result = formatStatus(snapshot, theme);
-    expect(result).toContain(`${ICON} 10%`);
+    expect(result).toContain("codex 10%");
   });
 
   it("hides status when both windows are undefined", () => {
@@ -81,7 +82,7 @@ describe("formatStatus", () => {
     expect(theme.calls).toHaveLength(0);
   });
 
-  it("uses success color when worst percent is below 80", () => {
+  it("uses success icon and muted text when worst percent is below 80", () => {
     const theme = makeSpyTheme();
     const snapshot: UsageSnapshot = {
       fiveHour: { usedPercent: 50 },
@@ -89,10 +90,13 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     formatStatus(snapshot, theme);
-    expect(theme.calls[0]!.color).toBe("success");
+    expect(theme.calls).toEqual([
+      { color: "success", text: ICON },
+      { color: "muted", text: "codex 50% (30%)" },
+    ]);
   });
 
-  it("uses warning color when worst percent is 80–94", () => {
+  it("uses warning color for icon and text when worst percent is 80–94", () => {
     const theme = makeSpyTheme();
     const snapshot: UsageSnapshot = {
       fiveHour: { usedPercent: 80 },
@@ -100,7 +104,10 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     formatStatus(snapshot, theme);
-    expect(theme.calls[0]!.color).toBe("warning");
+    expect(theme.calls).toEqual([
+      { color: "warning", text: ICON },
+      { color: "warning", text: "codex 80% (20%)" },
+    ]);
   });
 
   it("uses warning color at 94%", () => {
@@ -110,10 +117,13 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     formatStatus(snapshot, theme);
-    expect(theme.calls[0]!.color).toBe("warning");
+    expect(theme.calls).toEqual([
+      { color: "warning", text: ICON },
+      { color: "warning", text: "codex 94%" },
+    ]);
   });
 
-  it("uses error color when worst percent is 95 or above", () => {
+  it("uses error color for icon and text when worst percent is 95 or above", () => {
     const theme = makeSpyTheme();
     const snapshot: UsageSnapshot = {
       fiveHour: { usedPercent: 95 },
@@ -121,7 +131,10 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     formatStatus(snapshot, theme);
-    expect(theme.calls[0]!.color).toBe("error");
+    expect(theme.calls).toEqual([
+      { color: "error", text: ICON },
+      { color: "error", text: "codex 95% (40%)" },
+    ]);
   });
 
   it("uses error color at 100%", () => {
@@ -131,7 +144,10 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     formatStatus(snapshot, theme);
-    expect(theme.calls[0]!.color).toBe("error");
+    expect(theme.calls).toEqual([
+      { color: "error", text: ICON },
+      { color: "error", text: "codex (100%)" },
+    ]);
   });
 
   it("rounds percentages to whole numbers", () => {
@@ -142,7 +158,7 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     const result = formatStatus(snapshot, theme);
-    expect(result).toContain("43% (71%)");
+    expect(result).toContain("codex 43% (71%)");
   });
 
   it("clamps displayed percentages to 0–100", () => {
@@ -153,7 +169,7 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     const result = formatStatus(snapshot, theme);
-    expect(result).toContain("0% (100%)");
+    expect(result).toContain("codex 0% (100%)");
   });
 
   it("uses clamped percentages for color selection", () => {
@@ -163,16 +179,19 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     formatStatus(snapshot, theme);
-    expect(theme.calls[0]!.color).toBe("error");
+    expect(theme.calls).toEqual([
+      { color: "error", text: ICON },
+      { color: "error", text: "codex 100%" },
+    ]);
   });
 
-  it("wraps the entire text in theme.fg", () => {
+  it("colors icon and text separately", () => {
     const theme = makeSpyTheme();
     const snapshot: UsageSnapshot = {
       fiveHour: { usedPercent: 10 },
       fetchedAt: Date.now(),
     };
     formatStatus(snapshot, theme);
-    expect(theme.calls).toHaveLength(1);
+    expect(theme.calls).toHaveLength(2);
   });
 });
