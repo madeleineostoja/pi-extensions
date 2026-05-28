@@ -1,0 +1,190 @@
+export type VerificationStep = {
+  command: string;
+  result: string;
+  rationale: string;
+};
+
+export type ParsedImplementerResult = {
+  summary: string;
+  verification: VerificationStep[];
+  commitMessage: string;
+};
+
+export type ReviewerVerdict =
+  | { verdict: "approved" }
+  | { verdict: "changes_requested"; requiredChanges: string[] };
+
+export function parseImplementerResult(
+  text: string,
+):
+  | { ok: true; result: ParsedImplementerResult }
+  | { ok: false; reason: string } {
+  const parsed = parseTaggedJsonObject(text, "pi-implement-result");
+  if (!parsed.ok) {
+    return parsed;
+  }
+  const value = parsed.value;
+  const summary = value.summary;
+  const verification = value.verification;
+  const commitMessage = value.commitMessage;
+  if (!isNonEmptyString(summary)) {
+    return { ok: false, reason: "Implementer JSON is missing summary." };
+  }
+  if (!Array.isArray(verification) || verification.length === 0) {
+    return {
+      ok: false,
+      reason: "Implementer JSON must include a non-empty verification array.",
+    };
+  }
+  const steps: VerificationStep[] = [];
+  for (const step of verification) {
+    if (!isRecord(step)) {
+      return {
+        ok: false,
+        reason: "Each verification entry must be an object.",
+      };
+    }
+    if (
+      !isNonEmptyString(step.command) ||
+      !isNonEmptyString(step.result) ||
+      !isNonEmptyString(step.rationale)
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each verification entry must include command, result, and rationale strings.",
+      };
+    }
+    steps.push({
+      command: step.command,
+      result: step.result,
+      rationale: step.rationale,
+    });
+  }
+  if (!isNonEmptyString(commitMessage)) {
+    return {
+      ok: false,
+      reason: "Implementer JSON is missing commitMessage.",
+    };
+  }
+  return {
+    ok: true,
+    result: {
+      summary,
+      verification: steps,
+      commitMessage: commitMessage.trim(),
+    },
+  };
+}
+
+export function parseReviewerVerdict(text: string): ReviewerVerdict {
+  const parsed = parseTaggedJsonObject(text, "pi-review-result");
+  if (!parsed.ok) {
+    return {
+      verdict: "changes_requested",
+      requiredChanges: [parsed.reason],
+    };
+  }
+  const value = parsed.value;
+  if (value.verdict === "approved") {
+    return { verdict: "approved" };
+  }
+  if (value.verdict !== "changes_requested") {
+    return {
+      verdict: "changes_requested",
+      requiredChanges: [
+        "Reviewer JSON verdict must be either approved or changes_requested.",
+      ],
+    };
+  }
+  const requiredChanges = value.requiredChanges;
+  if (!Array.isArray(requiredChanges) || requiredChanges.length === 0) {
+    return {
+      verdict: "changes_requested",
+      requiredChanges: [
+        "Reviewer requested changes but did not provide requiredChanges.",
+      ],
+    };
+  }
+  const changes = requiredChanges.filter(isNonEmptyString).slice(0, 5);
+  if (changes.length === 0) {
+    return {
+      verdict: "changes_requested",
+      requiredChanges: [
+        "Reviewer requiredChanges must contain non-empty strings.",
+      ],
+    };
+  }
+  return { verdict: "changes_requested", requiredChanges: changes };
+}
+
+export function isValidCommitMessage(message: string): boolean {
+  const firstLine = message.trim().split(/\r?\n/, 1)[0] ?? "";
+  return /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert): .\S/.test(
+    firstLine,
+  );
+}
+
+export function fallbackCommitMessage(taskText: string): string {
+  const cleaned = taskText
+    .replace(/[`*_#[\]()]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return `${fallbackType(cleaned)}: ${cleaned.slice(0, 72) || "implement plan task"}`;
+}
+
+function fallbackType(taskText: string): string {
+  if (/\b(fix|bug|broken|regression)\b/.test(taskText)) {
+    return "fix";
+  }
+  if (/\b(docs?|readme|comment)\b/.test(taskText)) {
+    return "docs";
+  }
+  if (/\btest(s|ing)?\b/.test(taskText)) {
+    return "test";
+  }
+  if (/\brefactor\b/.test(taskText)) {
+    return "refactor";
+  }
+  return "chore";
+}
+
+function parseTaggedJsonObject(
+  text: string,
+  tag: "pi-implement-result" | "pi-review-result",
+):
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; reason: string } {
+  const candidate = lastTaggedContent(text, tag);
+  if (!candidate) {
+    return { ok: false, reason: `Response did not include <${tag}> output.` };
+  }
+  try {
+    const parsed = JSON.parse(candidate) as unknown;
+    if (!isRecord(parsed)) {
+      return { ok: false, reason: "Tagged JSON output must be an object." };
+    }
+    return { ok: true, value: parsed };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      reason: `Could not parse tagged JSON output: ${message}`,
+    };
+  }
+}
+
+function lastTaggedContent(text: string, tag: string): string | undefined {
+  const pattern = new RegExp(`<${tag}>\\s*([\\s\\S]*?)\\s*</${tag}>`, "gi");
+  const matches = [...text.matchAll(pattern)];
+  return matches.at(-1)?.[1]?.trim();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
