@@ -1,0 +1,23 @@
+{
+  "name": "codex-usage",
+  "version": "0.1.0",
+  "description": "Pi extension that shows ChatGPT Codex subscription usage in the Pi footer while a Codex model is active.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "codex-usage"
+  ],
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
