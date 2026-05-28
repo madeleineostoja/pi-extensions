@@ -33,9 +33,13 @@ function isSessionCreated(
   path: string,
   sessionCreatedPaths: Set<string>,
 ): boolean {
-  if (sessionCreatedPaths.has(path)) return true;
+  if (sessionCreatedPaths.has(path)) {
+    return true;
+  }
   for (const p of sessionCreatedPaths) {
-    if (path === p || path.startsWith(p + "/")) return true;
+    if (path === p || path.startsWith(p + "/")) {
+      return true;
+    }
   }
   return false;
 }
@@ -47,9 +51,13 @@ function allTargetsSafe(
 ): boolean {
   for (const t of targets) {
     const abs = toAbsolutePath(t, cwd);
-    if (isSessionCreated(abs, sessionCreatedPaths)) continue;
+    if (isSessionCreated(abs, sessionCreatedPaths)) {
+      continue;
+    }
     const rec = classifyGitRecoverability(cwd, abs);
-    if (rec !== "tracked-clean") return false;
+    if (rec !== "tracked-clean") {
+      return false;
+    }
   }
   return true;
 }
@@ -60,9 +68,15 @@ function targetExistsAndNotSafe(
   sessionCreatedPaths: Set<string>,
 ): boolean {
   const abs = toAbsolutePath(target, cwd);
-  if (SAFE_PSEUDO_DEVICES.has(abs)) return false;
-  if (!existsAsFile(abs)) return false;
-  if (isSessionCreated(abs, sessionCreatedPaths)) return false;
+  if (SAFE_PSEUDO_DEVICES.has(abs)) {
+    return false;
+  }
+  if (!existsAsFile(abs)) {
+    return false;
+  }
+  if (isSessionCreated(abs, sessionCreatedPaths)) {
+    return false;
+  }
   const rec = classifyGitRecoverability(cwd, abs);
   return rec !== "tracked-clean";
 }
@@ -104,12 +118,16 @@ function assessRemoval(
   }
 
   const cmd = words[0];
-  if (!RM_LIKE.has(cmd)) return undefined;
+  if (!RM_LIKE.has(cmd)) {
+    return undefined;
+  }
 
   const targets: string[] = [];
   for (let i = 1; i < words.length; i++) {
     const w = words[i];
-    if (w.startsWith("-")) continue;
+    if (w.startsWith("-")) {
+      continue;
+    }
     if (w === "." || w === ".." || w === "/") {
       return makeAction(
         command,
@@ -120,9 +138,13 @@ function assessRemoval(
     targets.push(w);
   }
 
-  if (targets.length === 0) return undefined;
+  if (targets.length === 0) {
+    return undefined;
+  }
 
-  if (allTargetsSafe(targets, cwd, sessionCreatedPaths)) return undefined;
+  if (allTargetsSafe(targets, cwd, sessionCreatedPaths)) {
+    return undefined;
+  }
 
   return makeAction(
     command,
@@ -150,7 +172,9 @@ function assessFindDelete(command: string): GuardAction | undefined {
   }
 
   const words = extractShellWords(command);
-  if (!words || words[0] !== "find") return undefined;
+  if (!words || words[0] !== "find") {
+    return undefined;
+  }
 
   const joined = words.join(" ");
   if (joined.includes(" -delete")) {
@@ -185,7 +209,9 @@ function assessGit(command: string, cwd: string): GuardAction | undefined {
         i++;
         break;
       }
-      if (!w.startsWith("-")) break;
+      if (!w.startsWith("-")) {
+        break;
+      }
       if (w === "-C") {
         gitCwd = toAbsolutePath(words[i + 1] ?? ".", cwd);
         i += 2;
@@ -310,7 +336,9 @@ function assessGitUnparseable(
   const gitRe =
     /(?:^|\s)git(?:\s+(?:-[Cc]\s+\S+|--git-dir\s+\S+|--work-tree\s+\S+))*\s+(\S+)/;
   const m = command.match(gitRe);
-  if (!m) return undefined;
+  if (!m) {
+    return undefined;
+  }
   const sub = m[1];
 
   if (sub === "clean") {
@@ -372,7 +400,9 @@ function assessRedirect(
   const redirectRe =
     /(?:^|[;|&]|\s\|\||\s&&|\s)\s*(?:\d*)>(?!>)\s*(['"]?)([^'"\s;|&]+)\1/;
   const match = command.match(redirectRe);
-  if (!match) return undefined;
+  if (!match) {
+    return undefined;
+  }
 
   const target = match[2];
   if (targetExistsAndNotSafe(target, cwd, sessionCreatedPaths)) {
@@ -392,7 +422,9 @@ function assessColonRedirect(
 ): GuardAction | undefined {
   const re = /(?:^|\s)(?::|true)\s*>(?!>)\s*(["']?)([^"'\s;|&]+)\1/;
   const match = command.match(re);
-  if (!match) return undefined;
+  if (!match) {
+    return undefined;
+  }
 
   const target = match[2];
   if (targetExistsAndNotSafe(target, cwd, sessionCreatedPaths)) {
@@ -411,31 +443,41 @@ function assessTruncate(
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
-  if (!words || words[0] !== "truncate") return undefined;
+  if (!words || words[0] !== "truncate") {
+    return undefined;
+  }
 
   let isZeroSize = false;
   for (let i = 1; i < words.length; i++) {
     const w = words[i];
     if (w === "-s" || w === "--size") {
       const val = words[i + 1];
-      if (val && val.startsWith("0")) isZeroSize = true;
+      if (val && val.startsWith("0")) {
+        isZeroSize = true;
+      }
       i++;
     } else if (w.startsWith("-s0") || w.startsWith("--size=0")) {
       isZeroSize = true;
     }
   }
-  if (!isZeroSize) return undefined;
+  if (!isZeroSize) {
+    return undefined;
+  }
 
   const targets: string[] = [];
   for (let i = 1; i < words.length; i++) {
     const w = words[i];
     if (w.startsWith("-")) {
-      if (w === "-s" || w === "--size") i++;
+      if (w === "-s" || w === "--size") {
+        i++;
+      }
       continue;
     }
     targets.push(w);
   }
-  if (targets.length === 0) return undefined;
+  if (targets.length === 0) {
+    return undefined;
+  }
 
   const risky = targets.filter((t) =>
     targetExistsAndNotSafe(t, cwd, sessionCreatedPaths),
@@ -456,10 +498,14 @@ function assessDd(
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
-  if (!words || words[0] !== "dd") return undefined;
+  if (!words || words[0] !== "dd") {
+    return undefined;
+  }
 
   const ofArg = words.find((w) => w.startsWith("of="));
-  if (!ofArg) return undefined;
+  if (!ofArg) {
+    return undefined;
+  }
   const target = ofArg.slice(3);
 
   if (targetExistsAndNotSafe(target, cwd, sessionCreatedPaths)) {
@@ -478,15 +524,21 @@ function assessSedInPlace(
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
-  if (!words || words[0] !== "sed") return undefined;
+  if (!words || words[0] !== "sed") {
+    return undefined;
+  }
 
   const hasInPlace = words.some((w) => w === "-i" || w.startsWith("-i"));
-  if (!hasInPlace) return undefined;
+  if (!hasInPlace) {
+    return undefined;
+  }
 
   const targets = words.filter(
     (w, i) => i > 0 && !w.startsWith("-") && !w.startsWith("'"),
   );
-  if (targets.length === 0) return undefined;
+  if (targets.length === 0) {
+    return undefined;
+  }
 
   const risky = targets.filter((t) =>
     targetExistsAndNotSafe(t, cwd, sessionCreatedPaths),
@@ -507,15 +559,21 @@ function assessPerlInPlace(
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
-  if (!words || words[0] !== "perl") return undefined;
+  if (!words || words[0] !== "perl") {
+    return undefined;
+  }
 
   const hasInPlace = words.some(
     (w) => w === "-pi" || w === "-p" || w.startsWith("-pi"),
   );
-  if (!hasInPlace) return undefined;
+  if (!hasInPlace) {
+    return undefined;
+  }
 
   const targets = words.filter((w, i) => i > 0 && !w.startsWith("-"));
-  if (targets.length === 0) return undefined;
+  if (targets.length === 0) {
+    return undefined;
+  }
 
   const risky = targets.filter((t) =>
     targetExistsAndNotSafe(t, cwd, sessionCreatedPaths),
@@ -536,12 +594,18 @@ function assessMvCp(
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
-  if (!words) return undefined;
+  if (!words) {
+    return undefined;
+  }
   const cmd = words[0];
-  if (cmd !== "mv" && cmd !== "cp") return undefined;
+  if (cmd !== "mv" && cmd !== "cp") {
+    return undefined;
+  }
 
   const targets = words.filter((w, i) => i > 0 && !w.startsWith("-"));
-  if (targets.length < 2) return undefined;
+  if (targets.length < 2) {
+    return undefined;
+  }
   const dest = targets[targets.length - 1];
 
   if (targetExistsAndNotSafe(dest, cwd, sessionCreatedPaths)) {
@@ -560,10 +624,14 @@ function assessInstall(
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
-  if (!words || words[0] !== "install") return undefined;
+  if (!words || words[0] !== "install") {
+    return undefined;
+  }
 
   const targets = words.filter((w, i) => i > 0 && !w.startsWith("-"));
-  if (targets.length < 2) return undefined;
+  if (targets.length < 2) {
+    return undefined;
+  }
   const dest = targets[targets.length - 1];
 
   if (targetExistsAndNotSafe(dest, cwd, sessionCreatedPaths)) {
@@ -580,9 +648,13 @@ function assessInstall(
 
 function assessPermissions(command: string): GuardAction | undefined {
   const words = extractShellWords(command);
-  if (!words) return undefined;
+  if (!words) {
+    return undefined;
+  }
   const cmd = words[0];
-  if (cmd !== "chmod" && cmd !== "chown") return undefined;
+  if (cmd !== "chmod" && cmd !== "chown") {
+    return undefined;
+  }
 
   if (cmd === "chmod") {
     const flags = words.slice(1).filter((w) => w.startsWith("-"));
@@ -613,7 +685,9 @@ function assessPermissions(command: string): GuardAction | undefined {
 
 function assessRsync(command: string): GuardAction | undefined {
   const words = extractShellWords(command);
-  if (!words || words[0] !== "rsync") return undefined;
+  if (!words || words[0] !== "rsync") {
+    return undefined;
+  }
 
   const flags = words.slice(1);
   const hasDelete = flags.some(
@@ -652,7 +726,9 @@ function assessInterpreter(command: string): GuardAction | undefined {
   const m = command.match(
     /^(python3?|node|ruby|perl)\s+(?:-[ec]\s+(['"])|<<\s*['"]?\w+['"]?)/,
   );
-  if (!m) return undefined;
+  if (!m) {
+    return undefined;
+  }
 
   const interpreter = m[1];
   const body = command;
@@ -726,7 +802,9 @@ export function assessBashCommand(
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const trimmed = command.trim();
-  if (!trimmed) return undefined;
+  if (!trimmed) {
+    return undefined;
+  }
 
   return (
     assessFindDelete(trimmed) ??

@@ -11,9 +11,15 @@ export type DecideToolCallParams = {
 
 export function decideToolCall(params: DecideToolCallParams): ToolCallDecision {
   const { readonlyMode, hasUI, toolName, triggerTools } = params;
-  if (!readonlyMode) return "pass";
-  if (!triggerTools.has(toolName)) return "pass";
-  if (!hasUI) return "auto-disable";
+  if (!readonlyMode) {
+    return "pass";
+  }
+  if (!triggerTools.has(toolName)) {
+    return "pass";
+  }
+  if (!hasUI) {
+    return "auto-disable";
+  }
   return "prompt";
 }
 

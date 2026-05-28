@@ -13,7 +13,9 @@ export default function (pi: ExtensionAPI) {
   pi.on(
     "session_start",
     async (_event: SessionStartEvent, ctx: ExtensionContext) => {
-      if (!ctx.hasUI) return;
+      if (!ctx.hasUI) {
+        return;
+      }
 
       ctx.ui.setFooter((tui, theme, footerData) => {
         const unsub = footerData.onBranchChange(() => tui.requestRender());
@@ -40,7 +42,9 @@ export default function (pi: ExtensionAPI) {
                 const total = (
                   entry.message as { usage?: { cost?: { total?: number } } }
                 ).usage?.cost?.total;
-                if (typeof total === "number") totalCost += total;
+                if (typeof total === "number") {
+                  totalCost += total;
+                }
               }
             }
 

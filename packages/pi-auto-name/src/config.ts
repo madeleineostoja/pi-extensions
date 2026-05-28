@@ -15,10 +15,14 @@ export function readConfig(agentDir: string): AutoNameConfig {
   try {
     const raw = readFileSync(configPath(agentDir), "utf-8");
     const parsed = JSON.parse(raw) as unknown;
-    if (typeof parsed !== "object" || parsed === null) return {};
+    if (typeof parsed !== "object" || parsed === null) {
+      return {};
+    }
     const config = parsed as Record<string, unknown>;
     const result: AutoNameConfig = {};
-    if (typeof config.model === "string") result.model = config.model;
+    if (typeof config.model === "string") {
+      result.model = config.model;
+    }
     return result;
   } catch {
     return {};

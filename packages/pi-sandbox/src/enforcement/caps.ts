@@ -119,8 +119,12 @@ export function createCaps(): CapsInstance {
     );
 
     const filesystem: NonoFilesystem = {};
-    if (allowRead.length > 0) filesystem.allow_read = allowRead;
-    if (allowWrite.length > 0) filesystem.allow_write = allowWrite;
+    if (allowRead.length > 0) {
+      filesystem.allow_read = allowRead;
+    }
+    if (allowWrite.length > 0) {
+      filesystem.allow_write = allowWrite;
+    }
 
     if (platform === "darwin") {
       const denyAccess: string[] = [];

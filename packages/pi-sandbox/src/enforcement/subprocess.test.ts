@@ -108,7 +108,9 @@ printf 'fake nono output'
 
 function readFakeNonoArgs(argsPath: string): string[] {
   const parts = fs.readFileSync(argsPath, "utf8").split("\0");
-  if (parts[parts.length - 1] === "") parts.pop();
+  if (parts[parts.length - 1] === "") {
+    parts.pop();
+  }
   return parts;
 }
 

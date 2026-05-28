@@ -50,10 +50,12 @@ function getPlatformTarget() {
   const { platform, arch } = process;
 
   if (platform === "darwin") {
-    if (arch === "arm64")
+    if (arch === "arm64") {
       return { target: "nono-aarch64-apple-darwin", supported: true };
-    if (arch === "x64")
+    }
+    if (arch === "x64") {
       return { target: "nono-x86_64-apple-darwin", supported: true };
+    }
     return { target: null, supported: false };
   }
 
@@ -62,10 +64,12 @@ function getPlatformTarget() {
     if (isMusl) {
       return { target: null, supported: false, musl: true };
     }
-    if (arch === "arm64")
+    if (arch === "arm64") {
       return { target: "nono-aarch64-unknown-linux-gnu", supported: true };
-    if (arch === "x64")
+    }
+    if (arch === "x64") {
       return { target: "nono-x86_64-unknown-linux-gnu", supported: true };
+    }
     return { target: null, supported: false };
   }
 
@@ -112,9 +116,13 @@ function parseSha256Sums(content) {
   const map = new Map();
   for (const line of content.toString("utf8").split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed) {
+      continue;
+    }
     const spaceIdx = trimmed.indexOf(" ");
-    if (spaceIdx === -1) continue;
+    if (spaceIdx === -1) {
+      continue;
+    }
     const hash = trimmed.slice(0, spaceIdx).trim();
     const filename = trimmed.slice(spaceIdx).trim().replace(/^\*/, "");
     map.set(filename, hash);
@@ -127,7 +135,9 @@ function findFile(dir, name) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       const found = findFile(full, name);
-      if (found) return found;
+      if (found) {
+        return found;
+      }
     } else if (entry.name === name) {
       return full;
     }

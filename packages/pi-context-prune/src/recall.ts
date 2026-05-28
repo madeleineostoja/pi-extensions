@@ -18,12 +18,20 @@ export function parseLineRange(
   spec: string,
 ): { start: number; end: number } | null {
   const m = /^(\d+)(?:-(\d+))?$/.exec(spec);
-  if (!m) return null;
+  if (!m) {
+    return null;
+  }
   const start = parseInt(m[1], 10);
-  if (start < 1) return null;
-  if (m[2] === undefined) return { start, end: start };
+  if (start < 1) {
+    return null;
+  }
+  if (m[2] === undefined) {
+    return { start, end: start };
+  }
   const end = parseInt(m[2], 10);
-  if (end < start) return null;
+  if (end < start) {
+    return null;
+  }
   return { start, end };
 }
 
@@ -32,7 +40,9 @@ function sliceLines(text: string, start: number, end: number): string {
   const total = lines.length;
   const lo = Math.max(1, start);
   const hi = Math.min(total, end);
-  if (lo > hi) return "";
+  if (lo > hi) {
+    return "";
+  }
   return lines.slice(lo - 1, hi).join("\n");
 }
 
@@ -70,7 +80,9 @@ export function registerRecallTool(
       const entries = ctx.sessionManager.getEntries();
 
       const entry = entries.find((e) => {
-        if (e.type !== "message") return false;
+        if (e.type !== "message") {
+          return false;
+        }
         const msg = e.message as { role?: string; toolCallId?: string };
         return msg.role === "toolResult" && msg.toolCallId === id;
       });

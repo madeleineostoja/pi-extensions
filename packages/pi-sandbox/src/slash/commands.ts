@@ -49,7 +49,9 @@ function ensureDir(filePath: string): void {
 function readPersistedConfig(filePath: string): {
   network?: { allow?: string[] };
 } {
-  if (!fs.existsSync(filePath)) return {};
+  if (!fs.existsSync(filePath)) {
+    return {};
+  }
   try {
     return (
       (JSON.parse(fs.readFileSync(filePath, "utf8")) as {
@@ -88,11 +90,15 @@ export function removeHostFromPersistedFile(
   filePath: string,
   host: string,
 ): boolean {
-  if (!fs.existsSync(filePath)) return false;
+  if (!fs.existsSync(filePath)) {
+    return false;
+  }
 
   const config = readPersistedConfig(filePath);
   const currentAllow: string[] = config?.network?.allow ?? [];
-  if (!currentAllow.includes(host)) return false;
+  if (!currentAllow.includes(host)) {
+    return false;
+  }
 
   const updated = {
     ...config,
@@ -152,7 +158,9 @@ export function parseArgs(rawArgs: string): ParsedArgs {
     target: "",
   };
 
-  if (tokens.length === 0) return result;
+  if (tokens.length === 0) {
+    return result;
+  }
 
   result.subcommand = tokens[0];
 
@@ -335,7 +343,9 @@ export function createSlashCommands(
   }
 
   function notifySessionChange(): void {
-    for (const fn of listeners) fn();
+    for (const fn of listeners) {
+      fn();
+    }
   }
 
   function handleStatus(ctx: SubcommandContext): void {
@@ -456,7 +466,9 @@ export function createSlashCommands(
         mode: "read" | "write",
         decision: typeof readDecision,
       ): string => {
-        if (decision.allow) return `  ${mode}:  would be allowed`;
+        if (decision.allow) {
+          return `  ${mode}:  would be allowed`;
+        }
         if (
           decision.rule === "denyPattern" &&
           decision.matchedPattern != null

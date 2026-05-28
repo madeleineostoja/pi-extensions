@@ -20,16 +20,25 @@ export type StatusState = {
 // ---------------------------------------------------------------------------
 
 function isNetworkSandboxed(state: StatusState): boolean {
-  if (state.networkOff) return true;
-  if (state.networkMode === "off" || state.networkMode === "always")
+  if (state.networkOff) {
     return true;
+  }
+  if (state.networkMode === "off" || state.networkMode === "always") {
+    return true;
+  }
   return state.networkMode === "non-interactive-only" && !state.hasUI;
 }
 
 export function renderStatus(state: StatusState): string {
-  if (!state.enabled) return "⚠ sandbox: off";
-  if (state.inProcessOnly) return "🔒 sandbox (degraded)";
-  if (isNetworkSandboxed(state)) return "🔒 sandbox (network)";
+  if (!state.enabled) {
+    return "⚠ sandbox: off";
+  }
+  if (state.inProcessOnly) {
+    return "🔒 sandbox (degraded)";
+  }
+  if (isNetworkSandboxed(state)) {
+    return "🔒 sandbox (network)";
+  }
   return "🔒 sandbox";
 }
 

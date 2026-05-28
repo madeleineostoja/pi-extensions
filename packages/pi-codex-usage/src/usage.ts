@@ -26,7 +26,9 @@ type RawUsageResponse = {
 function normalizeWindow(
   raw: RawWindow | undefined,
 ): NormalizedWindow | undefined {
-  if (!raw) return undefined;
+  if (!raw) {
+    return undefined;
+  }
   return {
     usedPercent: raw.used_percent ?? 0,
     ...(raw.reset_at !== undefined ? { resetAt: raw.reset_at } : {}),
@@ -42,7 +44,9 @@ export async function fetchUsage(
   buildHeadersFn = buildHeaders,
 ): Promise<UsageSnapshot | null> {
   const headerResult = await buildHeadersFn(model, ctx);
-  if (!headerResult.ok) return null;
+  if (!headerResult.ok) {
+    return null;
+  }
 
   let response: Response;
   try {
@@ -62,7 +66,9 @@ export async function fetchUsage(
   }
 
   const typed = data as Partial<RawUsageResponse>;
-  if (!typed.rate_limit) return null;
+  if (!typed.rate_limit) {
+    return null;
+  }
 
   return {
     fiveHour: normalizeWindow(typed.rate_limit.primary_window),
@@ -97,6 +103,8 @@ export async function getUsage(
 }
 
 export function isCodexProvider(provider: string | undefined): boolean {
-  if (!provider) return false;
+  if (!provider) {
+    return false;
+  }
   return provider === "openai-codex" || provider.startsWith("openai-codex-");
 }

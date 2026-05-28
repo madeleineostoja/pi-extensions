@@ -83,16 +83,24 @@ export function createToolGate(opts: ToolGateOptions): ToolGate {
   async function handleToolCall(
     event: ToolCallEvent,
   ): Promise<ToolGateResult | undefined> {
-    if (event.toolName === "bash") return undefined;
+    if (event.toolName === "bash") {
+      return undefined;
+    }
 
     const spec = TOOL_SPECS[event.toolName];
-    if (!spec) return undefined;
+    if (!spec) {
+      return undefined;
+    }
 
     const eff = effectivePolicy();
-    if (!eff.enabled) return undefined;
+    if (!eff.enabled) {
+      return undefined;
+    }
 
     const rawPath = spec.getPath(event.input as Record<string, unknown>);
-    if (rawPath == null || typeof rawPath !== "string") return undefined;
+    if (rawPath == null || typeof rawPath !== "string") {
+      return undefined;
+    }
 
     const modes: AccessMode[] =
       spec.mode === "readwrite" ? ["read", "write"] : [spec.mode];

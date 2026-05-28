@@ -169,8 +169,12 @@ function captureHandlers() {
 
   const pi = {
     on(event: string, handler: AnyHandler) {
-      if (event === "tool_call") toolCallHandler = handler;
-      if (event === "session_start") sessionStartHandler = handler;
+      if (event === "tool_call") {
+        toolCallHandler = handler;
+      }
+      if (event === "session_start") {
+        sessionStartHandler = handler;
+      }
     },
     registerShortcut: () => {},
     registerCommand: () => {},
@@ -200,9 +204,12 @@ function captureHandlers() {
 
   registerExtension(pi);
 
-  if (!toolCallHandler) throw new Error("tool_call handler was not registered");
-  if (!sessionStartHandler)
+  if (!toolCallHandler) {
+    throw new Error("tool_call handler was not registered");
+  }
+  if (!sessionStartHandler) {
     throw new Error("session_start handler was not registered");
+  }
   return { toolCallHandler, sessionStartHandler };
 }
 
@@ -214,14 +221,22 @@ function captureAllHandlers() {
 
   const pi = {
     on(event: string, handler: AnyHandler) {
-      if (event === "tool_call") toolCallHandler = handler;
-      if (event === "session_start") sessionStartHandler = handler;
+      if (event === "tool_call") {
+        toolCallHandler = handler;
+      }
+      if (event === "session_start") {
+        sessionStartHandler = handler;
+      }
     },
     registerShortcut(name: string, opts: { handler: ShortcutHandler }) {
-      if (name === "alt+g") shortcutHandler = opts.handler;
+      if (name === "alt+g") {
+        shortcutHandler = opts.handler;
+      }
     },
     registerCommand(name: string, opts: { handler: CommandHandler }) {
-      if (name === "guard") commandHandler = opts.handler;
+      if (name === "guard") {
+        commandHandler = opts.handler;
+      }
     },
     registerTool: () => {},
     registerFlag: () => {},
@@ -249,13 +264,18 @@ function captureAllHandlers() {
 
   registerExtension(pi);
 
-  if (!toolCallHandler) throw new Error("tool_call handler was not registered");
-  if (!sessionStartHandler)
+  if (!toolCallHandler) {
+    throw new Error("tool_call handler was not registered");
+  }
+  if (!sessionStartHandler) {
     throw new Error("session_start handler was not registered");
-  if (!commandHandler)
+  }
+  if (!commandHandler) {
     throw new Error("guard command handler was not registered");
-  if (!shortcutHandler)
+  }
+  if (!shortcutHandler) {
     throw new Error("alt+g shortcut handler was not registered");
+  }
   return {
     toolCallHandler,
     sessionStartHandler,
@@ -511,10 +531,14 @@ function captureCommandAndShortcutHandlers() {
   const pi = {
     on: () => {},
     registerShortcut(name: string, opts: { handler: ShortcutHandler }) {
-      if (name === "alt+g") shortcutHandler = opts.handler;
+      if (name === "alt+g") {
+        shortcutHandler = opts.handler;
+      }
     },
     registerCommand(name: string, opts: { handler: CommandHandler }) {
-      if (name === "guard") commandHandler = opts.handler;
+      if (name === "guard") {
+        commandHandler = opts.handler;
+      }
     },
     registerTool: () => {},
     registerFlag: () => {},
@@ -542,10 +566,12 @@ function captureCommandAndShortcutHandlers() {
 
   registerExtension(pi);
 
-  if (!commandHandler)
+  if (!commandHandler) {
     throw new Error("guard command handler was not registered");
-  if (!shortcutHandler)
+  }
+  if (!shortcutHandler) {
     throw new Error("alt+g shortcut handler was not registered");
+  }
   return { commandHandler, shortcutHandler };
 }
 

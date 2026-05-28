@@ -14,15 +14,23 @@ const UNSAFE_METACHARACTERS = /[;&|`$]|\$\(|\$\{|<\(|\*|\?|\{|\}/;
  * variables, globs, etc.).
  */
 export function extractShellWords(command: string): string[] | undefined {
-  if (UNSAFE_METACHARACTERS.test(command)) return undefined;
+  if (UNSAFE_METACHARACTERS.test(command)) {
+    return undefined;
+  }
 
   const words: string[] = [];
   let i = 0;
 
   while (i < command.length) {
-    while (i < command.length && /\s/.test(command[i])) i++;
-    if (i >= command.length) break;
-    if (command[i] === "#") break;
+    while (i < command.length && /\s/.test(command[i])) {
+      i++;
+    }
+    if (i >= command.length) {
+      break;
+    }
+    if (command[i] === "#") {
+      break;
+    }
 
     let word = "";
     let quote: "'" | '"' | null = null;
@@ -39,7 +47,9 @@ export function extractShellWords(command: string): string[] | undefined {
           word += ch;
         }
       } else {
-        if (/\s/.test(ch)) break;
+        if (/\s/.test(ch)) {
+          break;
+        }
         if (ch === "'" || ch === '"') {
           quote = ch;
         } else if (ch === "\\") {

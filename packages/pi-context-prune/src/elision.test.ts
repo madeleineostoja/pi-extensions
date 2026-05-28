@@ -1242,7 +1242,9 @@ describe("superseded-read detection", () => {
         text: bigText,
       }),
     );
-    for (let k = 0; k < DEFAULTS.staleTurns; k++) messages.push(makeUserMsg());
+    for (let k = 0; k < DEFAULTS.staleTurns; k++) {
+      messages.push(makeUserMsg());
+    }
     messages.push(
       makeAssistantMsg([
         {

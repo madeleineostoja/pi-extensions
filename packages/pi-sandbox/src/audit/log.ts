@@ -20,7 +20,9 @@ export function createLogWriter(): LogWriter {
   const warnedLogFiles = new Set<string>();
 
   function ensureLogDir(logFile: string, logDir: string): boolean {
-    if (warnedLogFiles.has(logFile)) return false;
+    if (warnedLogFiles.has(logFile)) {
+      return false;
+    }
     try {
       fs.mkdirSync(logDir, { recursive: true });
       return true;
@@ -41,7 +43,9 @@ export function createLogWriter(): LogWriter {
       const newer = i === 1 ? logFile : `${logFile}.${i - 1}`;
       if (fs.existsSync(newer)) {
         try {
-          if (fs.existsSync(older)) fs.unlinkSync(older);
+          if (fs.existsSync(older)) {
+            fs.unlinkSync(older);
+          }
           fs.renameSync(newer, older);
         } catch {
           // Best-effort rotation
@@ -71,10 +75,14 @@ export function createLogWriter(): LogWriter {
     const logFile = opts.logFile;
     const logDir = path.dirname(logFile);
 
-    if (warnedLogFiles.has(logFile)) return;
+    if (warnedLogFiles.has(logFile)) {
+      return;
+    }
 
     const ok = ensureLogDir(logFile, logDir);
-    if (!ok) return;
+    if (!ok) {
+      return;
+    }
 
     checkAndRotate(logFile, maxBytes, maxFiles);
 

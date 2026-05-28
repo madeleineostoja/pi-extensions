@@ -83,7 +83,9 @@ export function loadConfig(
     "minTokens",
   ];
   for (const key of numKeys) {
-    if (!(key in obj)) continue;
+    if (!(key in obj)) {
+      continue;
+    }
     const val = obj[key];
     if (typeof val !== "number" || !Number.isFinite(val) || val < 0) {
       notify?.(
@@ -100,7 +102,9 @@ export function loadConfig(
     "duplicateReadsEnabled",
   ];
   for (const key of boolKeys) {
-    if (!(key in obj)) continue;
+    if (!(key in obj)) {
+      continue;
+    }
     const val = obj[key];
     if (typeof val !== "boolean") {
       notify?.(

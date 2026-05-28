@@ -18,7 +18,9 @@ export function createAuditEmitter(): AuditEmitter {
   const recentBlockedHosts: string[] = [];
 
   function trackBlockedHost(entry: AuditEntry): void {
-    if (entry.decision !== "blocked" || entry.host == null) return;
+    if (entry.decision !== "blocked" || entry.host == null) {
+      return;
+    }
     const host = entry.host;
     const existing = recentBlockedHosts.indexOf(host);
     if (existing !== -1) {

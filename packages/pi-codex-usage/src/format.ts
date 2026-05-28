@@ -8,8 +8,12 @@ function clampPercent(percent: number): number {
 
 function colorize(text: string, worstPercent: number, theme: Theme): string {
   const clampedWorst = clampPercent(worstPercent);
-  if (clampedWorst >= 95) return theme.fg("error", text);
-  if (clampedWorst >= 80) return theme.fg("warning", text);
+  if (clampedWorst >= 95) {
+    return theme.fg("error", text);
+  }
+  if (clampedWorst >= 80) {
+    return theme.fg("warning", text);
+  }
   return theme.fg("success", text);
 }
 
@@ -36,7 +40,9 @@ export function formatStatus(
     percents.push(pct);
   }
 
-  if (parts.length === 0) return undefined;
+  if (parts.length === 0) {
+    return undefined;
+  }
 
   const text = `${ICON} ${parts.join(" ")}`;
   const worst = Math.max(...percents);

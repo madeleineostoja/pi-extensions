@@ -14,7 +14,9 @@ export function extractPendingCreations(
     const path = input.path;
     if (typeof path === "string") {
       const abs = toAbsolutePath(path, cwd);
-      if (existsSync(abs)) return;
+      if (existsSync(abs)) {
+        return;
+      }
       const set = pending.get(toolCallId) ?? new Set<string>();
       set.add(abs);
       pending.set(toolCallId, set);
@@ -22,10 +24,14 @@ export function extractPendingCreations(
     return;
   }
 
-  if (toolName !== "bash") return;
+  if (toolName !== "bash") {
+    return;
+  }
 
   const command = (input as { command?: string }).command;
-  if (typeof command !== "string") return;
+  if (typeof command !== "string") {
+    return;
+  }
 
   const words = command.trim().split(/\s+/);
   const cmd = words[0];
@@ -54,7 +60,9 @@ export function extractPendingCreations(
   if (redirectMatch) {
     const p = redirectMatch[2];
     const abs = toAbsolutePath(p, cwd);
-    if (existsSync(abs)) return;
+    if (existsSync(abs)) {
+      return;
+    }
     const set = pending.get(toolCallId) ?? new Set<string>();
     set.add(abs);
     pending.set(toolCallId, set);
@@ -68,9 +76,13 @@ export function commitPendingCreations(
   isError: boolean,
 ): void {
   const set = pending.get(toolCallId);
-  if (!set) return;
+  if (!set) {
+    return;
+  }
   pending.delete(toolCallId);
   if (!isError) {
-    for (const p of set) committed.add(p);
+    for (const p of set) {
+      committed.add(p);
+    }
   }
 }

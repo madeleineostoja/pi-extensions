@@ -579,7 +579,9 @@ describe("audit event emission", () => {
 function completionValues(
   items: ReturnType<typeof getArgumentCompletions>,
 ): string[] {
-  if (!items) return [];
+  if (!items) {
+    return [];
+  }
   return items.map((i) => i.value);
 }
 
@@ -1019,7 +1021,9 @@ describe("handleWhy", () => {
       cwd: "/tmp",
     });
     expect(decision.allow).toBe(false);
-    if (!decision.allow) expect(decision.rule).toBe("denyPattern");
+    if (!decision.allow) {
+      expect(decision.rule).toBe("denyPattern");
+    }
     expect(messages[0].text).toMatch(/blocked by denyPattern/);
   });
 
@@ -1036,7 +1040,9 @@ describe("handleWhy", () => {
       cwd: os.tmpdir(),
     });
     expect(decision.allow).toBe(false);
-    if (!decision.allow) expect(decision.rule).toBe("allowList:read");
+    if (!decision.allow) {
+      expect(decision.rule).toBe("allowList:read");
+    }
     expect(messages[0].text).toMatch(/blocked/);
   });
 });

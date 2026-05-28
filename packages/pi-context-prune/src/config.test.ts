@@ -9,7 +9,9 @@ function enoent(): NodeJS.ErrnoException {
 
 function makeReader(content: string | Error) {
   return (_path: string, _enc: "utf8"): string => {
-    if (content instanceof Error) throw content;
+    if (content instanceof Error) {
+      throw content;
+    }
     return content;
   };
 }

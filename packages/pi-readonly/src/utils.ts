@@ -9,7 +9,9 @@ export type ReadonlyAction =
 export function extractToolPath(input: unknown): string | undefined {
   if (input !== null && typeof input === "object") {
     const p = (input as Record<string, unknown>).path;
-    if (typeof p === "string" && p.length > 0) return p;
+    if (typeof p === "string" && p.length > 0) {
+      return p;
+    }
   }
   return undefined;
 }
@@ -18,12 +20,16 @@ export function formatModalTitle(
   toolName: string,
   path: string | undefined,
 ): string {
-  if (path) return `Readonly: ${toolName} ${path} — apply?`;
+  if (path) {
+    return `Readonly: ${toolName} ${path} — apply?`;
+  }
   return `Readonly: ${toolName} — apply?`;
 }
 
 export function formatSteerTitle(path: string | undefined): string {
-  if (path) return `Steer the agent — ${path}`;
+  if (path) {
+    return `Steer the agent — ${path}`;
+  }
   return "Steer the agent";
 }
 
@@ -38,9 +44,12 @@ const READONLY_SET_MAP: Record<string, boolean> = {
 
 export function parseReadonlyArgs(args: string): ReadonlyAction {
   const token = args.trim().toLowerCase();
-  if (token === "") return { kind: "toggle" };
-  if (Object.hasOwn(READONLY_SET_MAP, token))
+  if (token === "") {
+    return { kind: "toggle" };
+  }
+  if (Object.hasOwn(READONLY_SET_MAP, token)) {
     return { kind: "set", value: READONLY_SET_MAP[token] };
+  }
   return { kind: "invalid" };
 }
 

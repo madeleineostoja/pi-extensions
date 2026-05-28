@@ -2,7 +2,9 @@ export function parseModelRef(
   ref: string,
 ): { provider: string; id: string } | null {
   const slash = ref.indexOf("/");
-  if (slash <= 0 || slash === ref.length - 1) return null;
+  if (slash <= 0 || slash === ref.length - 1) {
+    return null;
+  }
   return {
     provider: ref.slice(0, slash),
     id: ref.slice(slash + 1),
@@ -16,7 +18,9 @@ const LEADING_LABEL =
 
 export function sanitizeTitle(raw: string): string | null {
   const first = raw.split(/\r?\n/).find((l) => l.trim().length > 0);
-  if (!first) return null;
+  if (!first) {
+    return null;
+  }
 
   let s = first.trim();
   s = s.replace(QUOTE_EDGE, "");
@@ -25,18 +29,24 @@ export function sanitizeTitle(raw: string): string | null {
   s = s.replace(/\s+/g, " ").trim();
   s = s.replace(/[.!?,;:]+$/, "");
 
-  if (!s) return null;
+  if (!s) {
+    return null;
+  }
 
   if (s.length > 40) {
     const cut = s.slice(0, 40);
     const lastSpace = cut.lastIndexOf(" ");
     s = (lastSpace >= 20 ? cut.slice(0, lastSpace) : cut).trimEnd();
     s = s.replace(/[.!?,;:]+$/, "");
-    if (!s) return null;
+    if (!s) {
+      return null;
+    }
   }
 
   const boilerplate = /^session\s*(name|title)?\s*[:-]?\s*$/i;
-  if (boilerplate.test(s)) return null;
+  if (boilerplate.test(s)) {
+    return null;
+  }
 
   return s;
 }

@@ -40,19 +40,27 @@ function isExecutable(p: string): boolean {
 
 function whichInPath(name: string, pathEnv: string): string | null {
   for (const dir of pathEnv.split(path.delimiter)) {
-    if (!dir) continue;
+    if (!dir) {
+      continue;
+    }
     const candidate = path.join(dir, name);
-    if (isExecutable(candidate)) return candidate;
+    if (isExecutable(candidate)) {
+      return candidate;
+    }
   }
   return null;
 }
 
 export function resolveNonoPath(root: string, pathEnv: string): string | null {
   const pkgBin = path.join(root, "bin", "nono");
-  if (isExecutable(pkgBin)) return pkgBin;
+  if (isExecutable(pkgBin)) {
+    return pkgBin;
+  }
 
   const onPath = whichInPath("nono", pathEnv);
-  if (onPath) return onPath;
+  if (onPath) {
+    return onPath;
+  }
 
   return null;
 }
@@ -81,10 +89,14 @@ export function checkNonoVersion(
   notify: (msg: string, level: "warning" | "error") => void,
 ): void {
   const actual = readNonoVersion(binPath);
-  if (actual === null) return;
+  if (actual === null) {
+    return;
+  }
 
   const pinned = pinnedVersion();
-  if (pinned === "unknown") return;
+  if (pinned === "unknown") {
+    return;
+  }
 
   const actualVersion = actual.replace(/^nono\s+v?/i, "").replace(/^v/, "");
   const pinnedVersion_ = pinned.replace(/^v/, "");
@@ -107,7 +119,9 @@ export type IsMuslResult = {
  * Uses process.report.getReport().header.glibcVersionRuntime: if undefined on Linux, assume musl.
  */
 export function detectMusl(): boolean {
-  if (process.platform !== "linux") return false;
+  if (process.platform !== "linux") {
+    return false;
+  }
   try {
     const report = process.report?.getReport() as
       | {
@@ -128,14 +142,16 @@ export function detectMusl(): boolean {
  */
 export function isSupportedPlatform(): boolean {
   const { platform, arch } = process;
-  if (platform === "darwin" && (arch === "arm64" || arch === "x64"))
+  if (platform === "darwin" && (arch === "arm64" || arch === "x64")) {
     return true;
+  }
   if (
     platform === "linux" &&
     !detectMusl() &&
     (arch === "arm64" || arch === "x64")
-  )
+  ) {
     return true;
+  }
   return false;
 }
 
@@ -236,7 +252,9 @@ export function getBinaryStatus(): BinaryStatus {
  */
 export function getNonoPath(): string | null {
   const status = getBinaryStatus();
-  if (status.kind === "ok") return status.path;
+  if (status.kind === "ok") {
+    return status.path;
+  }
 
   return whichInPath("nono", process.env.PATH ?? "");
 }
@@ -256,7 +274,9 @@ export function createBinaryRuntime(): BinaryRuntime {
     getBinaryStatus,
     getNonoPath,
     warnMissingOnce(notify) {
-      if (missingBinaryWarned) return;
+      if (missingBinaryWarned) {
+        return;
+      }
       missingBinaryWarned = true;
       notify(
         "pi-sandbox: nono binary not found — subprocess sandboxing is disabled. " +

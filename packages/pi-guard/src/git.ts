@@ -58,15 +58,21 @@ export function classifyGitRecoverability(
   cwd: string,
   absPath: string,
 ): GitRecoverability {
-  if (!isInsideWorkTree(cwd)) return "not-git";
+  if (!isInsideWorkTree(cwd)) {
+    return "not-git";
+  }
 
   const status = gitStatusPorcelain(cwd, absPath);
   const lines = status.split("\n").filter(Boolean);
 
   for (const line of lines) {
     const prefix = line.slice(0, 2);
-    if (prefix === "??") return "untracked";
-    if (/^[ MADRCU?]{2}/.test(prefix)) return "tracked-dirty";
+    if (prefix === "??") {
+      return "untracked";
+    }
+    if (/^[ MADRCU?]{2}/.test(prefix)) {
+      return "tracked-dirty";
+    }
   }
 
   const ls = gitLsFiles(cwd, absPath);

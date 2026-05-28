@@ -40,7 +40,9 @@ describe("buildHeaders", () => {
     const ctx = makeCtx({ ok: false, error: "no creds" });
     const result = await buildHeaders(fakeModel as never, ctx as never);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toBe("no creds");
+    if (!result.ok) {
+      expect(result.error).toBe("no creds");
+    }
   });
 
   it("includes Authorization header when apiKey is present", async () => {

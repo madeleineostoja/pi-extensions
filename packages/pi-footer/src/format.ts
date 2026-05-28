@@ -17,10 +17,18 @@ export type ContextUsageInfo =
   | undefined;
 
 export function formatCompactTokens(n: number): string {
-  if (n < 1000) return n.toString();
-  if (n < 10000) return `${(n / 1000).toFixed(1)}k`;
-  if (n < 1000000) return `${Math.round(n / 1000)}k`;
-  if (n < 10000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n < 1000) {
+    return n.toString();
+  }
+  if (n < 10000) {
+    return `${(n / 1000).toFixed(1)}k`;
+  }
+  if (n < 1000000) {
+    return `${Math.round(n / 1000)}k`;
+  }
+  if (n < 10000000) {
+    return `${(n / 1000000).toFixed(1)}M`;
+  }
   return `${Math.round(n / 1000000)}M`;
 }
 
@@ -36,8 +44,12 @@ export function formatModelName(
   includeProvider = false,
 ): string {
   const name = model?.name || model?.id;
-  if (!name) return "no model";
-  if (includeProvider && model?.provider) return `(${model.provider}) ${name}`;
+  if (!name) {
+    return "no model";
+  }
+  if (includeProvider && model?.provider) {
+    return `(${model.provider}) ${name}`;
+  }
   return name;
 }
 
@@ -55,9 +67,15 @@ export function formatContextPercent(
 ): string {
   const num = percent === null ? "?" : `${Math.round(percent)}`;
   const text = `${num}%`;
-  if (percent === null) return theme.fg("dim", text);
-  if (percent >= 90) return theme.fg("error", text);
-  if (percent >= 70) return theme.fg("warning", text);
+  if (percent === null) {
+    return theme.fg("dim", text);
+  }
+  if (percent >= 90) {
+    return theme.fg("error", text);
+  }
+  if (percent >= 70) {
+    return theme.fg("warning", text);
+  }
   return theme.fg("muted", text);
 }
 
@@ -68,7 +86,9 @@ export function buildLeftSegment(
 ): string {
   const name = basename(cwd) || cwd;
   const base = theme.fg("accent", name);
-  if (!branch) return base;
+  if (!branch) {
+    return base;
+  }
   return `${base} ${theme.fg("dim", "on")} ${theme.fg("accent", ` ${branch}`)}`;
 }
 

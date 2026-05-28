@@ -15,7 +15,9 @@ export default function (pi: ExtensionAPI) {
   let firstPromptText: string | undefined;
 
   function maybeWarn(ctx: ExtensionContext, message: string) {
-    if (warnedThisSession) return;
+    if (warnedThisSession) {
+      return;
+    }
     warnedThisSession = true;
     if (ctx.hasUI) {
       ctx.ui.notify(`[pi-auto-name] ${message}`, "warning");
@@ -34,9 +36,15 @@ export default function (pi: ExtensionAPI) {
       firstPromptText = prompt;
     }
 
-    if (pi.getSessionName()) return;
-    if (!prompt) return;
-    if (attemptedThisSession) return;
+    if (pi.getSessionName()) {
+      return;
+    }
+    if (!prompt) {
+      return;
+    }
+    if (attemptedThisSession) {
+      return;
+    }
 
     const agentDir = getAgentDir();
     void generateNameAsync(ctx, agentDir, prompt, maybeWarn).then((result) => {
@@ -169,20 +177,28 @@ export default function (pi: ExtensionAPI) {
 function findFirstUserPrompt(ctx: ExtensionContext): string | undefined {
   try {
     for (const entry of ctx.sessionManager.getEntries()) {
-      if (entry.type !== "message") continue;
+      if (entry.type !== "message") {
+        continue;
+      }
       const msg = (entry as SessionMessageEntry).message;
-      if (msg.role !== "user") continue;
+      if (msg.role !== "user") {
+        continue;
+      }
       const user = msg as UserMessage;
       if (typeof user.content === "string") {
         const t = user.content.trim();
-        if (t) return t;
+        if (t) {
+          return t;
+        }
       } else if (Array.isArray(user.content)) {
         const text = user.content
           .filter((c): c is { type: "text"; text: string } => c.type === "text")
           .map((c) => c.text)
           .join("\n")
           .trim();
-        if (text) return text;
+        if (text) {
+          return text;
+        }
       }
     }
   } catch {
@@ -249,7 +265,9 @@ async function generateNameAsync(
       },
     );
 
-    if (response.stopReason === "aborted") return { outcome: "aborted" };
+    if (response.stopReason === "aborted") {
+      return { outcome: "aborted" };
+    }
     if (response.stopReason === "error") {
       return {
         outcome: "unknown-error",

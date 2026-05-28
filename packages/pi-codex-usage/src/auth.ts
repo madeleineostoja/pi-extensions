@@ -16,7 +16,9 @@ function decodeJwtPayload(token: string): JwtPayload | null {
 
 function getChatGptAccountId(token: string): string | undefined {
   const payload = decodeJwtPayload(token);
-  if (!payload) return undefined;
+  if (!payload) {
+    return undefined;
+  }
   const claim = payload["https://api.openai.com/auth.chatgpt_account_id"];
   return typeof claim === "string" ? claim : undefined;
 }

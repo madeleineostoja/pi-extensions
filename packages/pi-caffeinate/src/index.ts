@@ -9,7 +9,9 @@ export default function (pi: ExtensionAPI) {
   let inhibitor: ChildProcess | null = null;
 
   const start = () => {
-    if (inhibitor) return;
+    if (inhibitor) {
+      return;
+    }
 
     const pid = String(process.pid);
     let cmd: string;
@@ -39,10 +41,14 @@ export default function (pi: ExtensionAPI) {
     try {
       const child = spawn(cmd, args, { stdio: "ignore" });
       child.once("error", () => {
-        if (inhibitor === child) inhibitor = null;
+        if (inhibitor === child) {
+          inhibitor = null;
+        }
       });
       child.once("exit", () => {
-        if (inhibitor === child) inhibitor = null;
+        if (inhibitor === child) {
+          inhibitor = null;
+        }
       });
       inhibitor = child;
     } catch {
@@ -53,7 +59,9 @@ export default function (pi: ExtensionAPI) {
   const stop = () => {
     const child = inhibitor;
     inhibitor = null;
-    if (!child) return;
+    if (!child) {
+      return;
+    }
     try {
       child.kill("SIGTERM");
     } catch {

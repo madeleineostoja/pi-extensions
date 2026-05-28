@@ -28,14 +28,18 @@ export default function (pi: ExtensionAPI) {
   }
 
   function notifyNonInteractive(ctx: ExtensionContext) {
-    if (nonInteractiveNotified) return;
+    if (nonInteractiveNotified) {
+      return;
+    }
     nonInteractiveNotified = true;
     process.stderr.write(`[pi-readonly] ${NON_INTERACTIVE_MSG}\n`);
     ctx.ui.notify(NON_INTERACTIVE_MSG, "info");
   }
 
   function syncFooter(ctx: ExtensionContext) {
-    if (!ctx.hasUI) return;
+    if (!ctx.hasUI) {
+      return;
+    }
     const theme = ctx.ui.theme;
     if (readonlyMode) {
       ctx.ui.setStatus(
@@ -109,7 +113,9 @@ export default function (pi: ExtensionAPI) {
       triggerTools,
     });
 
-    if (decision === "pass") return undefined;
+    if (decision === "pass") {
+      return undefined;
+    }
 
     if (decision === "auto-disable") {
       applyMode(false);

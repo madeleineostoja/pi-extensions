@@ -113,15 +113,23 @@ export function isValidNetworkAllowEntry(entry: string): boolean {
   // After stripping wildcard prefix, must be a valid hostname label sequence.
   // Labels: 1-63 chars each, alphanumeric or hyphen, not starting/ending with hyphen.
   // CIDR (contains '/') is explicitly rejected.
-  if (normalized.includes("/")) return false;
-  if (normalized.length === 0) return false;
+  if (normalized.includes("/")) {
+    return false;
+  }
+  if (normalized.length === 0) {
+    return false;
+  }
   const labelRe = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
   const labels = normalized.split(".");
-  if (labels.length === 0) return false;
+  if (labels.length === 0) {
+    return false;
+  }
   for (const label of labels) {
     if (!labelRe.test(label) && label.length !== 1) {
       // Allow single-char labels (e.g. "a.b.c")
-      if (!/^[a-zA-Z0-9]$/.test(label)) return false;
+      if (!/^[a-zA-Z0-9]$/.test(label)) {
+        return false;
+      }
     }
   }
   return true;

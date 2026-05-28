@@ -45,7 +45,9 @@ function makePolicyManager(policy: Policy): PolicyManager {
     getPolicy: () => current,
     loadPolicy: () => current,
     reloadPolicy: () => {
-      for (const fn of subs) fn(current);
+      for (const fn of subs) {
+        fn(current);
+      }
       return current;
     },
     subscribe: (fn) => {
@@ -77,7 +79,9 @@ function makeSessionMutationSubscriber(): {
       return () => listeners.delete(fn);
     },
     triggerMutation: () => {
-      for (const fn of listeners) fn();
+      for (const fn of listeners) {
+        fn();
+      }
     },
   };
 }
@@ -353,7 +357,9 @@ describe("subscribeStatus — integration", () => {
       getPolicy: () => currentPolicy,
       loadPolicy: () => currentPolicy,
       reloadPolicy: () => {
-        for (const fn of policySubscribers) fn(currentPolicy);
+        for (const fn of policySubscribers) {
+          fn(currentPolicy);
+        }
         return currentPolicy;
       },
       subscribe: (fn) => {

@@ -9,12 +9,22 @@ const FILE_BEARING_TOOLS = new Set(["read", "edit", "write"]);
 // We intentionally skip realpath() — it's async, fails for non-existent paths,
 // and our matching is a best-effort heuristic that doesn't need canonical symlink resolution.
 export function normalizePath(input: unknown, cwd: string): string | null {
-  if (typeof input !== "string") return null;
+  if (typeof input !== "string") {
+    return null;
+  }
   let s = input.trim();
-  if (s.length === 0) return null;
-  if (s.startsWith("@")) s = s.slice(1);
-  if (s.length === 0) return null;
-  if (s.startsWith("~/")) s = join(homedir(), s.slice(2));
+  if (s.length === 0) {
+    return null;
+  }
+  if (s.startsWith("@")) {
+    s = s.slice(1);
+  }
+  if (s.length === 0) {
+    return null;
+  }
+  if (s.startsWith("~/")) {
+    s = join(homedir(), s.slice(2));
+  }
   return resolve(cwd, s);
 }
 
@@ -24,10 +34,18 @@ export function extractFilePath(
   toolName: string,
   input: unknown,
 ): string | null {
-  if (!FILE_BEARING_TOOLS.has(toolName)) return null;
-  if (typeof input !== "object" || input === null) return null;
+  if (!FILE_BEARING_TOOLS.has(toolName)) {
+    return null;
+  }
+  if (typeof input !== "object" || input === null) {
+    return null;
+  }
   const obj = input as Record<string, unknown>;
-  if (typeof obj["path"] === "string") return obj["path"];
-  if (typeof obj["file_path"] === "string") return obj["file_path"];
+  if (typeof obj["path"] === "string") {
+    return obj["path"];
+  }
+  if (typeof obj["file_path"] === "string") {
+    return obj["file_path"];
+  }
   return null;
 }

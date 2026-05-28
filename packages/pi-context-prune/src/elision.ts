@@ -33,7 +33,9 @@ export function extractPreview(content: ToolResultContent): string | null {
     .filter((b) => b.type === "text")
     .map((b) => b.text)
     .join("\n");
-  if (joined.length === 0) return null;
+  if (joined.length === 0) {
+    return null;
+  }
   const truncated = joined.length > 100;
   const sliced = joined.slice(0, 100);
   const escaped = sliced
@@ -210,14 +212,20 @@ function buildDuplicateReadMap(
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    if (!isToolResult(msg) || msg.toolName !== "read" || msg.isError) continue;
+    if (!isToolResult(msg) || msg.toolName !== "read" || msg.isError) {
+      continue;
+    }
 
     const callInfo = toolCallInfoMap.get(msg.toolCallId);
-    if (!callInfo) continue;
+    if (!callInfo) {
+      continue;
+    }
 
     const rawPath = extractFilePath("read", callInfo.input);
     const normalized = normalizePath(rawPath, cwd);
-    if (normalized === null) continue;
+    if (normalized === null) {
+      continue;
+    }
 
     const input = callInfo.input as Record<string, unknown>;
     const offset = typeof input.offset === "number" ? input.offset : undefined;
@@ -237,7 +245,9 @@ function buildDuplicateReadMap(
   const result = new Map<string, DuplicateInfo>();
 
   for (const entries of groups.values()) {
-    if (entries.length < 2) continue;
+    if (entries.length < 2) {
+      continue;
+    }
     const kept = entries[entries.length - 1];
     for (const entry of entries.slice(0, -1)) {
       result.set(entry.toolCallId, {

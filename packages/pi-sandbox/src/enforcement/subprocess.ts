@@ -120,7 +120,9 @@ function runUnderNono(
     }
 
     child.once("close", (code) => {
-      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+      }
       try {
         fs.unlinkSync(manifestPath);
       } catch {
@@ -130,7 +132,9 @@ function runUnderNono(
     });
 
     child.once("error", (err) => {
-      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+      }
       try {
         fs.unlinkSync(manifestPath);
       } catch {
@@ -164,9 +168,13 @@ function runUserBashUnderNono(
     let timedOut = false;
 
     const settle = (fn: () => void): void => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
-      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+      }
       removeManifest(manifestPath);
       fn();
     };
@@ -223,7 +231,9 @@ let pidExitHandlerRegistered = false;
 export function ensurePidDir(targetDir?: string): void {
   const dir = targetDir ?? pidDir;
   if (targetDir === undefined) {
-    if (pidDirReady) return;
+    if (pidDirReady) {
+      return;
+    }
     pidDirReady = true;
   }
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -232,7 +242,9 @@ export function ensurePidDir(targetDir?: string): void {
 export function ensurePidExitHandler(targetDir?: string): void {
   const dir = targetDir ?? pidDir;
   if (targetDir === undefined) {
-    if (pidExitHandlerRegistered) return;
+    if (pidExitHandlerRegistered) {
+      return;
+    }
     pidExitHandlerRegistered = true;
   }
   process.on("exit", () => {

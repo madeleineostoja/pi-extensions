@@ -64,13 +64,16 @@ function extractBalancedJsonSubstrings(text: string): unknown[] {
   let i = 0;
   while (i < text.length) {
     const start = text.indexOf("{", i);
-    if (start === -1) break;
+    if (start === -1) {
+      break;
+    }
 
     let depth = 0;
     let j = start;
     while (j < text.length) {
-      if (text[j] === "{") depth++;
-      else if (text[j] === "}") {
+      if (text[j] === "{") {
+        depth++;
+      } else if (text[j] === "}") {
         depth--;
         if (depth === 0) {
           const candidate = text.slice(start, j + 1);
@@ -89,8 +92,12 @@ function extractBalancedJsonSubstrings(text: string): unknown[] {
 }
 
 function collectLeafStrings(obj: unknown, depth = 0): string[] {
-  if (depth > 10) return [];
-  if (typeof obj === "string") return [obj];
+  if (depth > 10) {
+    return [];
+  }
+  if (typeof obj === "string") {
+    return [obj];
+  }
   if (Array.isArray(obj)) {
     return obj.flatMap((item) => collectLeafStrings(item, depth + 1));
   }
@@ -137,7 +144,9 @@ function isLimitErrorText(text: string): boolean {
 function checkParsedObject(parsed: unknown): boolean {
   const leaves = collectLeafStrings(parsed);
   for (const leaf of leaves) {
-    if (isLimitErrorText(leaf)) return true;
+    if (isLimitErrorText(leaf)) {
+      return true;
+    }
   }
   // Also check if the combined stringified content looks like a limit error
   const combined = leaves.join(" ");
@@ -146,35 +155,49 @@ function checkParsedObject(parsed: unknown): boolean {
 
 export function isCodexLimitError(message: unknown): boolean {
   const msg = message as { role?: string };
-  if (msg?.role !== "assistant") return false;
+  if (msg?.role !== "assistant") {
+    return false;
+  }
 
   const rawText = extractTextFromMessage(message);
-  if (!rawText) return false;
+  if (!rawText) {
+    return false;
+  }
 
   // Fast path: plain text match
-  if (isLimitErrorText(rawText)) return true;
+  if (isLimitErrorText(rawText)) {
+    return true;
+  }
 
   // Try direct JSON parse
   const direct = tryParseJson(rawText.trim());
-  if (direct !== undefined && checkParsedObject(direct)) return true;
+  if (direct !== undefined && checkParsedObject(direct)) {
+    return true;
+  }
 
   // Try quoted/escaped JSON parse (JSON string containing JSON)
   const unescaped = tryUnescapeAndParse(rawText.trim());
-  if (unescaped !== undefined && checkParsedObject(unescaped)) return true;
+  if (unescaped !== undefined && checkParsedObject(unescaped)) {
+    return true;
+  }
 
   // Try extracting balanced JSON substrings from the text
   const substrings = extractBalancedJsonSubstrings(rawText);
   for (const sub of substrings) {
-    if (checkParsedObject(sub)) return true;
+    if (checkParsedObject(sub)) {
+      return true;
+    }
     // Also try nested extraction from string values within the parsed object
     const leaves = collectLeafStrings(sub);
     for (const leaf of leaves) {
       const nestedDirect = tryParseJson(leaf);
-      if (nestedDirect !== undefined && checkParsedObject(nestedDirect))
+      if (nestedDirect !== undefined && checkParsedObject(nestedDirect)) {
         return true;
+      }
       const nestedUnescaped = tryUnescapeAndParse(leaf);
-      if (nestedUnescaped !== undefined && checkParsedObject(nestedUnescaped))
+      if (nestedUnescaped !== undefined && checkParsedObject(nestedUnescaped)) {
         return true;
+      }
     }
   }
 

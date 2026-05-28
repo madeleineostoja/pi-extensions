@@ -6,5 +6,8 @@
     "perf": "warn",
     "style": "off"
   },
+  "rules": {
+    "curly": "error"
+  },
   "ignorePatterns": ["node_modules", "packages/pi-sandbox/bin"]
 }

@@ -10,9 +10,15 @@ export type DecideToolCallParams = {
 
 export function decideToolCall(params: DecideToolCallParams): GuardDecision {
   const { guardEnabled, hasUI, toolName } = params;
-  if (!guardEnabled) return "pass";
-  if (toolName !== "bash") return "pass";
-  if (!hasUI) return "auto-disable";
+  if (!guardEnabled) {
+    return "pass";
+  }
+  if (toolName !== "bash") {
+    return "pass";
+  }
+  if (!hasUI) {
+    return "auto-disable";
+  }
   return "prompt";
 }
 

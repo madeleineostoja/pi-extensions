@@ -204,7 +204,9 @@ describe("decideFsAccess — stable rule strings", () => {
       cwd: tmpDir,
     });
     expect(decision.allow).toBe(false);
-    if (!decision.allow) expect(decision.rule).toBe("denyPattern");
+    if (!decision.allow) {
+      expect(decision.rule).toBe("denyPattern");
+    }
   });
 
   it("deny due to read allowList miss emits rule='allowList:read'", async () => {
@@ -214,7 +216,9 @@ describe("decideFsAccess — stable rule strings", () => {
       cwd: tmpDir,
     });
     expect(decision.allow).toBe(false);
-    if (!decision.allow) expect(decision.rule).toBe("allowList:read");
+    if (!decision.allow) {
+      expect(decision.rule).toBe("allowList:read");
+    }
   });
 
   it("deny due to write allowList miss emits rule='allowList:write'", async () => {
@@ -224,6 +228,8 @@ describe("decideFsAccess — stable rule strings", () => {
       cwd: tmpDir,
     });
     expect(decision.allow).toBe(false);
-    if (!decision.allow) expect(decision.rule).toBe("allowList:write");
+    if (!decision.allow) {
+      expect(decision.rule).toBe("allowList:write");
+    }
   });
 });

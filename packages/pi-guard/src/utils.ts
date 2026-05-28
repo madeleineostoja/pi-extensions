@@ -5,11 +5,15 @@ export type GuardAction =
 
 export function parseGuardArgs(args: string): GuardAction {
   const token = args.trim().toLowerCase();
-  if (token === "") return { kind: "toggle" };
-  if (token === "on" || token === "enable" || token === "true")
+  if (token === "") {
+    return { kind: "toggle" };
+  }
+  if (token === "on" || token === "enable" || token === "true") {
     return { kind: "set", value: true };
-  if (token === "off" || token === "disable" || token === "false")
+  }
+  if (token === "off" || token === "disable" || token === "false") {
     return { kind: "set", value: false };
+  }
   return { kind: "invalid" };
 }
 

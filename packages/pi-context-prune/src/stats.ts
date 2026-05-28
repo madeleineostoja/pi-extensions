@@ -77,7 +77,9 @@ export function createStatsStore(): StatsStore {
           recalls: recallsByTool.get(toolName) ?? 0,
         }))
         .sort((a, b) => {
-          if (b.tokens !== a.tokens) return b.tokens - a.tokens;
+          if (b.tokens !== a.tokens) {
+            return b.tokens - a.tokens;
+          }
           return a.toolName.localeCompare(b.toolName);
         });
 

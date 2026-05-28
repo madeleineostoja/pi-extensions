@@ -39,7 +39,9 @@ export default function (pi: ExtensionAPI) {
   }
 
   function clearStatus(ctx: ExtensionContext) {
-    if (!ctx.hasUI) return;
+    if (!ctx.hasUI) {
+      return;
+    }
     ctx.ui.setStatus(STATUS_KEY, undefined);
   }
 
@@ -48,7 +50,9 @@ export default function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     force = false,
   ) {
-    if (!ctx.hasUI) return;
+    if (!ctx.hasUI) {
+      return;
+    }
 
     const requestId = ++currentRequestId;
 
@@ -56,8 +60,12 @@ export default function (pi: ExtensionAPI) {
 
     const snapshot = await getUsage(model, ctx, force);
 
-    if (requestId !== currentRequestId) return;
-    if (!ctx.hasUI) return;
+    if (requestId !== currentRequestId) {
+      return;
+    }
+    if (!ctx.hasUI) {
+      return;
+    }
 
     ctx.ui.setStatus(STATUS_KEY, formatStatus(snapshot, ctx.ui.theme));
 
@@ -99,9 +107,13 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", async (event, ctx) => {
-    if (!isCodexLimitError(event.message)) return;
+    if (!isCodexLimitError(event.message)) {
+      return;
+    }
     const model = ctx.model;
-    if (!model || !isCodexProvider(model.provider)) return;
+    if (!model || !isCodexProvider(model.provider)) {
+      return;
+    }
     const replacement = await buildLimitReplacementMessage(
       event.message as AssistantMessage,
       model,

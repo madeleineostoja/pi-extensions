@@ -157,7 +157,9 @@ function makeSessionStartEvent(): { type: "session_start"; reason: "startup" } {
 function fireSessionStart(pi: ExtensionAPI, ctx: ExtensionContext): void {
   const handlers = getPiHandlers(pi);
   const handler = handlers.get("session_start");
-  if (!handler) throw new Error("no session_start handler registered");
+  if (!handler) {
+    throw new Error("no session_start handler registered");
+  }
   handler(makeSessionStartEvent(), ctx);
 }
 
@@ -168,7 +170,9 @@ async function fireToolCall(
 ): Promise<unknown> {
   const handlers = getPiHandlers(pi);
   const handler = handlers.get("tool_call");
-  if (!handler) throw new Error("no tool_call handler registered");
+  if (!handler) {
+    throw new Error("no tool_call handler registered");
+  }
   return handler(event, ctx);
 }
 

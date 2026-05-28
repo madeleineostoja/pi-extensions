@@ -130,7 +130,9 @@ function captureToolCallHandler() {
 
   registerExtension(pi);
 
-  if (!toolCallHandler) throw new Error("tool_call handler was not registered");
+  if (!toolCallHandler) {
+    throw new Error("tool_call handler was not registered");
+  }
   return toolCallHandler;
 }
 
@@ -487,8 +489,12 @@ function captureHandlers() {
 
   const pi = {
     on(event: string, handler: AnyHandler) {
-      if (event === "tool_call") toolCallHandler = handler;
-      if (event === "session_start") sessionStartHandler = handler;
+      if (event === "tool_call") {
+        toolCallHandler = handler;
+      }
+      if (event === "session_start") {
+        sessionStartHandler = handler;
+      }
     },
     registerShortcut: () => {},
     registerCommand: () => {},
@@ -518,9 +524,12 @@ function captureHandlers() {
 
   registerExtension(pi);
 
-  if (!toolCallHandler) throw new Error("tool_call handler was not registered");
-  if (!sessionStartHandler)
+  if (!toolCallHandler) {
+    throw new Error("tool_call handler was not registered");
+  }
+  if (!sessionStartHandler) {
     throw new Error("session_start handler was not registered");
+  }
   return { toolCallHandler, sessionStartHandler };
 }
 
@@ -793,10 +802,14 @@ function captureCommandAndShortcutHandlers() {
   const pi = {
     on: () => {},
     registerShortcut(name: string, opts: { handler: ShortcutHandler }) {
-      if (name === "ctrl+shift+r") shortcutHandler = opts.handler;
+      if (name === "ctrl+shift+r") {
+        shortcutHandler = opts.handler;
+      }
     },
     registerCommand(name: string, opts: { handler: CommandHandler }) {
-      if (name === "readonly") commandHandler = opts.handler;
+      if (name === "readonly") {
+        commandHandler = opts.handler;
+      }
     },
     registerTool: () => {},
     registerFlag: () => {},
@@ -824,10 +837,12 @@ function captureCommandAndShortcutHandlers() {
 
   registerExtension(pi);
 
-  if (!commandHandler)
+  if (!commandHandler) {
     throw new Error("readonly command handler was not registered");
-  if (!shortcutHandler)
+  }
+  if (!shortcutHandler) {
     throw new Error("ctrl+shift+r shortcut handler was not registered");
+  }
   return { commandHandler, shortcutHandler };
 }
 

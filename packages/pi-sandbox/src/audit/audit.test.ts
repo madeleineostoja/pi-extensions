@@ -394,7 +394,9 @@ describe("permission-failure fallback", () => {
     const spy = vi
       .spyOn(process.stderr, "write")
       .mockImplementation((chunk) => {
-        if (typeof chunk === "string") warnings.push(chunk);
+        if (typeof chunk === "string") {
+          warnings.push(chunk);
+        }
         return true;
       });
 
@@ -438,7 +440,9 @@ describe("permission-failure fallback", () => {
     const spy = vi
       .spyOn(process.stderr, "write")
       .mockImplementation((chunk) => {
-        if (typeof chunk === "string") warnings.push(chunk);
+        if (typeof chunk === "string") {
+          warnings.push(chunk);
+        }
         return true;
       });
 

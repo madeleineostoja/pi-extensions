@@ -85,12 +85,24 @@ describe("stub listener receives sandbox:audit events with documented shape", ()
       expect(payload.kind).toBe(kind);
       expect(payload.decision).toBe(decision);
 
-      if (extra?.path != null) expect(payload.path).toBe(extra.path);
-      if (extra?.host != null) expect(payload.host).toBe(extra.host);
-      if (extra?.tool != null) expect(payload.tool).toBe(extra.tool);
-      if (extra?.rule != null) expect(payload.rule).toBe(extra.rule);
-      if (extra?.scope != null) expect(payload.scope).toBe(extra.scope);
-      if (extra?.source != null) expect(payload.source).toBe(extra.source);
+      if (extra?.path != null) {
+        expect(payload.path).toBe(extra.path);
+      }
+      if (extra?.host != null) {
+        expect(payload.host).toBe(extra.host);
+      }
+      if (extra?.tool != null) {
+        expect(payload.tool).toBe(extra.tool);
+      }
+      if (extra?.rule != null) {
+        expect(payload.rule).toBe(extra.rule);
+      }
+      if (extra?.scope != null) {
+        expect(payload.scope).toBe(extra.scope);
+      }
+      if (extra?.source != null) {
+        expect(payload.source).toBe(extra.source);
+      }
     });
   }
 

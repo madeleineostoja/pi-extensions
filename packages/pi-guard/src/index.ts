@@ -27,14 +27,18 @@ export default function (pi: ExtensionAPI) {
   }
 
   function notifyNonInteractive(ctx: ExtensionContext) {
-    if (nonInteractiveNotified) return;
+    if (nonInteractiveNotified) {
+      return;
+    }
     nonInteractiveNotified = true;
     process.stderr.write(`[pi-guard] ${NON_INTERACTIVE_MSG}\n`);
     ctx.ui.notify(NON_INTERACTIVE_MSG, "info");
   }
 
   function syncFooter(ctx: ExtensionContext) {
-    if (!ctx.hasUI) return;
+    if (!ctx.hasUI) {
+      return;
+    }
     const theme = ctx.ui.theme;
     if (guardEnabled) {
       ctx.ui.setStatus(
@@ -117,7 +121,9 @@ export default function (pi: ExtensionAPI) {
       toolName: event.toolName,
     });
 
-    if (decision === "pass") return undefined;
+    if (decision === "pass") {
+      return undefined;
+    }
 
     if (decision === "auto-disable") {
       applyMode(false);
@@ -127,14 +133,22 @@ export default function (pi: ExtensionAPI) {
     }
 
     // decision === "prompt"
-    if (event.toolName !== "bash") return undefined;
+    if (event.toolName !== "bash") {
+      return undefined;
+    }
 
     const command = (event.input as { command?: string }).command;
-    if (typeof command !== "string") return undefined;
+    if (typeof command !== "string") {
+      return undefined;
+    }
 
     const action = assessBashCommand(command, ctx.cwd, sessionCreatedPaths);
-    if (!action) return undefined;
-    if (sessionAllowKeys.has(action.allowKey)) return undefined;
+    if (!action) {
+      return undefined;
+    }
+    if (sessionAllowKeys.has(action.allowKey)) {
+      return undefined;
+    }
 
     let choice: string | undefined;
     let message: string | undefined;
