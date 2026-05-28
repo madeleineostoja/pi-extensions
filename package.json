@@ -37,7 +37,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.75.4",
-    "@earendil-works/pi-coding-agent": "^0.75.4",
+    "@earendil-works/pi-coding-agent": "^0.75.5",
     "@earendil-works/pi-tui": "^0.75.4",
     "@prettier/plugin-oxc": "^0.1.4",
     "@types/node": "^22.0.0",
