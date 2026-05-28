@@ -3,10 +3,14 @@ import type {
   ExtensionContext,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import type { Model, Api } from "@earendil-works/pi-ai";
+import type { Model, Api, AssistantMessage } from "@earendil-works/pi-ai";
 import { getUsage, isCodexProvider } from "./usage.js";
 import { formatStatus } from "./format.js";
 import { STATUS_KEY, CACHE_TTL_MS } from "./constants.js";
+import {
+  isCodexLimitError,
+  buildLimitReplacementMessage,
+} from "./limit-error.js";
 
 export { buildHeaders } from "./auth.js";
 export { fetchUsage, getUsage, isCodexProvider } from "./usage.js";
@@ -18,38 +22,10 @@ export {
   TIMEOUT_MS,
   ICON,
 } from "./constants.js";
-
-function isLimitFailureMessage(message: unknown): boolean {
-  const msg = message as {
-    role?: string;
-    content?: unknown;
-    errorMessage?: unknown;
-  };
-  if (msg?.role !== "assistant") return false;
-
-  let text = "";
-  const content = msg.content;
-  if (Array.isArray(content)) {
-    for (const part of content) {
-      const p = part as { type?: string; text?: string };
-      if (p?.type === "text" && typeof p.text === "string") {
-        text += p.text;
-      }
-    }
-  } else if (typeof content === "string") {
-    text = content;
-  }
-
-  if (typeof msg.errorMessage === "string") {
-    text += msg.errorMessage;
-  }
-
-  const lower = text.toLowerCase();
-  const hasLimit =
-    lower.includes("rate limit") || lower.includes("limit reached");
-  const hasCodex = lower.includes("codex") || lower.includes("chatgpt");
-  return hasLimit && hasCodex;
-}
+export {
+  isCodexLimitError,
+  formatLimitReplacementText,
+} from "./limit-error.js";
 
 export default function (pi: ExtensionAPI) {
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -123,10 +99,16 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", async (event, ctx) => {
-    if (!isLimitFailureMessage(event.message)) return;
+    if (!isCodexLimitError(event.message)) return;
     const model = ctx.model;
     if (!model || !isCodexProvider(model.provider)) return;
-    await refreshStatus(model, ctx, true);
+    const replacement = await buildLimitReplacementMessage(
+      event.message as AssistantMessage,
+      model,
+      ctx,
+    );
+    await refreshStatus(model, ctx, false);
+    return { message: replacement };
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
