@@ -4,7 +4,7 @@ Pi extension that shows a compact ChatGPT Codex subscription usage footer status
 
 ## What it does
 
-- Displays a compact usage status in the Pi footer (e.g. `󰍛 5h 42% W 71%`) whenever a Codex provider model is selected
+- Displays a compact usage status in the Pi footer (e.g. `󰍛 42% (71%)`) whenever a Codex provider model is selected
 - Automatically refreshes the usage snapshot on a timer after the TTL expires
 - Detects Codex rate-limit errors in assistant messages (`message_end`) and replaces the raw JSON blob with a readable `🚫 Codex usage limit reached` message that includes the latest usage figures
 - Clears the status and cancels the refresh timer when the session ends or a non-Codex model is selected

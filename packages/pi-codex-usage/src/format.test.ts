@@ -50,9 +50,7 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     const result = formatStatus(snapshot, theme);
-    expect(result).toContain(`5h 42%`);
-    expect(result).toContain(`W 71%`);
-    expect(result).toContain(ICON);
+    expect(result).toContain(`${ICON} 42% (71%)`);
   });
 
   it("omits fiveHour section when fiveHour is undefined", () => {
@@ -62,8 +60,7 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     const result = formatStatus(snapshot, theme);
-    expect(result).not.toContain("5h");
-    expect(result).toContain("W 55%");
+    expect(result).toContain(`${ICON} (55%)`);
   });
 
   it("omits weekly section when weekly is undefined", () => {
@@ -73,20 +70,18 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     const result = formatStatus(snapshot, theme);
-    expect(result).toContain("5h 10%");
-    expect(result).not.toContain("W");
+    expect(result).toContain(`${ICON} 10%`);
   });
 
-  it("shows icon only when both windows are undefined", () => {
+  it("hides status when both windows are undefined", () => {
     const theme = makeSpyTheme();
     const snapshot: UsageSnapshot = { fetchedAt: Date.now() };
     const result = formatStatus(snapshot, theme);
-    expect(result).toContain(ICON);
-    expect(result).not.toContain("5h");
-    expect(result).not.toContain("W");
+    expect(result).toBeUndefined();
+    expect(theme.calls).toHaveLength(0);
   });
 
-  it("uses muted color when worst percent is below 80", () => {
+  it("uses success color when worst percent is below 80", () => {
     const theme = makeSpyTheme();
     const snapshot: UsageSnapshot = {
       fiveHour: { usedPercent: 50 },
@@ -94,7 +89,7 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     formatStatus(snapshot, theme);
-    expect(theme.calls[0]!.color).toBe("muted");
+    expect(theme.calls[0]!.color).toBe("success");
   });
 
   it("uses warning color when worst percent is 80–94", () => {
@@ -147,8 +142,7 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     const result = formatStatus(snapshot, theme);
-    expect(result).toContain("5h 43%");
-    expect(result).toContain("W 71%");
+    expect(result).toContain("43% (71%)");
   });
 
   it("clamps displayed percentages to 0–100", () => {
@@ -159,8 +153,7 @@ describe("formatStatus", () => {
       fetchedAt: Date.now(),
     };
     const result = formatStatus(snapshot, theme);
-    expect(result).toContain("5h 0%");
-    expect(result).toContain("W 100%");
+    expect(result).toContain("0% (100%)");
   });
 
   it("uses clamped percentages for color selection", () => {

@@ -10,13 +10,13 @@ function colorize(text: string, worstPercent: number, theme: Theme): string {
   const clampedWorst = clampPercent(worstPercent);
   if (clampedWorst >= 95) return theme.fg("error", text);
   if (clampedWorst >= 80) return theme.fg("warning", text);
-  return theme.fg("muted", text);
+  return theme.fg("success", text);
 }
 
 export function formatStatus(
   snapshot: UsageSnapshot | null,
   theme: Theme,
-): string {
+): string | undefined {
   if (!snapshot) {
     return theme.fg("warning", `${ICON} usage ?`);
   }
@@ -26,19 +26,20 @@ export function formatStatus(
 
   if (snapshot.fiveHour !== undefined) {
     const pct = clampPercent(Math.round(snapshot.fiveHour.usedPercent));
-    parts.push(`5h ${pct}%`);
+    parts.push(`${pct}%`);
     percents.push(pct);
   }
 
   if (snapshot.weekly !== undefined) {
     const pct = clampPercent(Math.round(snapshot.weekly.usedPercent));
-    parts.push(`W ${pct}%`);
+    parts.push(`(${pct}%)`);
     percents.push(pct);
   }
 
-  const suffix = parts.length > 0 ? ` ${parts.join(" ")}` : "";
-  const text = `${ICON}${suffix}`;
-  const worst = percents.length > 0 ? Math.max(...percents) : 0;
+  if (parts.length === 0) return undefined;
+
+  const text = `${ICON} ${parts.join(" ")}`;
+  const worst = Math.max(...percents);
 
   return colorize(text, worst, theme);
 }
