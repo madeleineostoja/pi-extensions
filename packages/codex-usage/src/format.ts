@@ -2,9 +2,14 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { UsageSnapshot } from "./usage.js";
 import { ICON } from "./constants.js";
 
+function clampPercent(percent: number): number {
+  return Math.min(100, Math.max(0, percent));
+}
+
 function colorize(text: string, worstPercent: number, theme: Theme): string {
-  if (worstPercent >= 95) return theme.fg("error", text);
-  if (worstPercent >= 80) return theme.fg("warning", text);
+  const clampedWorst = clampPercent(worstPercent);
+  if (clampedWorst >= 95) return theme.fg("error", text);
+  if (clampedWorst >= 80) return theme.fg("warning", text);
   return theme.fg("muted", text);
 }
 
@@ -20,13 +25,13 @@ export function formatStatus(
   const percents: number[] = [];
 
   if (snapshot.fiveHour !== undefined) {
-    const pct = Math.round(snapshot.fiveHour.usedPercent);
+    const pct = clampPercent(Math.round(snapshot.fiveHour.usedPercent));
     parts.push(`5h ${pct}%`);
     percents.push(pct);
   }
 
   if (snapshot.weekly !== undefined) {
-    const pct = Math.round(snapshot.weekly.usedPercent);
+    const pct = clampPercent(Math.round(snapshot.weekly.usedPercent));
     parts.push(`W ${pct}%`);
     percents.push(pct);
   }
