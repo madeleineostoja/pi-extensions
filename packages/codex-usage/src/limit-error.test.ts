@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   isCodexLimitError,
   formatLimitReplacementText,
+  buildLimitReplacementMessage,
 } from "./limit-error.js";
 import type { UsageSnapshot } from "./usage.js";
 
@@ -175,5 +176,45 @@ describe("formatLimitReplacementText", () => {
     const text = formatLimitReplacementText(snapshot);
     expect(text).toContain("5h 43%");
     expect(text).toContain("W 71%");
+  });
+});
+
+describe("buildLimitReplacementMessage", () => {
+  it("removes the original raw errorMessage from the replacement", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      ({
+        json: async () => ({
+          rate_limit: { primary_window: { used_percent: 99 } },
+        }),
+      }) as Response;
+
+    try {
+      const message = {
+        role: "assistant",
+        content: [],
+        errorMessage: '{"error":"OpenAI Codex rate_limit hit"}',
+      };
+      const ctx = {
+        modelRegistry: {
+          getApiKeyAndHeaders: async () => ({ ok: true, headers: {} }),
+        },
+      };
+
+      const replacement = await buildLimitReplacementMessage(
+        message as never,
+        { provider: "openai-codex", id: "codex-1" } as never,
+        ctx as never,
+      );
+
+      expect(
+        "errorMessage" in (replacement as unknown as Record<string, unknown>),
+      ).toBe(false);
+      expect(JSON.stringify(replacement.content)).toContain(
+        "Codex usage limit reached",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

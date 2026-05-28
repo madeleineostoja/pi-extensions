@@ -212,8 +212,11 @@ export async function buildLimitReplacementMessage(
 
   const originalAssistant = original as unknown as Record<string, unknown>;
 
+  const { errorMessage: _errorMessage, ...withoutErrorMessage } =
+    originalAssistant;
+
   return {
-    ...originalAssistant,
+    ...withoutErrorMessage,
     role: "assistant" as const,
     content: [{ type: "text", text: replacementText }],
   } as AssistantMessage;
