@@ -1,4 +1,4 @@
-# codex-usage
+# pi-codex-usage
 
 Pi extension that shows a compact ChatGPT Codex subscription usage footer status while a Codex model is active, and replaces Codex limit-error messages with a human-readable summary.
 

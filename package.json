@@ -24,7 +24,7 @@
       "./packages/pi-sandbox/src/index.ts",
       "./packages/pi-footer/src/index.ts",
       "./packages/pi-auto-name/src/index.ts",
-      "./packages/codex-usage/src/index.ts"
+      "./packages/pi-codex-usage/src/index.ts"
     ]
   },
   "scripts": {
