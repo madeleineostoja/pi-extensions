@@ -287,7 +287,7 @@ describe("buildLeftSegment", () => {
     expect(result).toBe("pi-extensions");
   });
 
-  it("uses text for cwd, accent for branch, and dim for on", () => {
+  it("uses accent for cwd and branch, and dim for on", () => {
     const theme = makeSpyTheme();
     const result = buildLeftSegment(
       "/Users/mads/Code/pi-extensions",
@@ -295,11 +295,11 @@ describe("buildLeftSegment", () => {
       theme,
     );
     expect(result).toBe(
-      "**[fg:text:pi-extensions]** [fg:dim:on] **[fg:accent: main]**",
+      "**[fg:accent:pi-extensions]** [fg:dim:on] **[fg:accent: main]**",
     );
     expect(theme.calls).toContainEqual({
       method: "fg",
-      color: "text",
+      color: "accent",
       text: "pi-extensions",
     });
     expect(theme.calls).toContainEqual({
@@ -329,7 +329,7 @@ describe("buildRightSegment", () => {
     );
     expect(result).toContain("GPT-5.5 (high)");
     expect(result).toContain("$0.04");
-    expect(result).toContain("󰔚 12% (272k)");
+    expect(result).toContain("󰔚  12% (272k)");
   });
 
   it("hides cost for subscription models", () => {
@@ -346,7 +346,7 @@ describe("buildRightSegment", () => {
     expect(result).toContain("Claude Sonnet 4.6 (high)");
     expect(result).not.toContain("$");
     expect(result).not.toContain("sub");
-    expect(result).toContain("󰔚 12% (200k)");
+    expect(result).toContain("󰔚  12% (200k)");
   });
 
   it("drops window when includeWindow is false", () => {
@@ -360,7 +360,7 @@ describe("buildRightSegment", () => {
       theme,
       false,
     );
-    expect(result).toContain("󰔚 12%");
+    expect(result).toContain("󰔚  12%");
     expect(result).not.toContain("272k");
   });
 
@@ -376,7 +376,30 @@ describe("buildRightSegment", () => {
       false,
     );
     expect(result).toContain("no model (off)");
-    expect(result).toContain("󰔚 ?%");
+    expect(result).toContain("󰔚  ?%");
+  });
+
+  it("uses the context percent color for the context icon", () => {
+    const theme = makeSpyTheme();
+    buildRightSegment(
+      { name: "GPT-5.5", id: "openai-codex/gpt-5.5" },
+      "high",
+      0,
+      { percent: 70, contextWindow: 272000 },
+      false,
+      theme,
+      true,
+    );
+    expect(theme.calls).toContainEqual({
+      method: "fg",
+      color: "warning",
+      text: "󰔚",
+    });
+    expect(theme.calls).toContainEqual({
+      method: "fg",
+      color: "warning",
+      text: "70%",
+    });
   });
 
   it("prefers model name over id", () => {

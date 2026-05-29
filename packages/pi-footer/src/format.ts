@@ -61,22 +61,27 @@ export function formatThinking(level: ThinkingLevel, theme: Theme): string {
   return theme.fg(token, `(${level})`);
 }
 
+export function getContextColor(
+  percent: number | null,
+): Parameters<Theme["fg"]>[0] {
+  if (percent === null) {
+    return "dim";
+  }
+  if (percent >= 90) {
+    return "error";
+  }
+  if (percent >= 70) {
+    return "warning";
+  }
+  return "muted";
+}
+
 export function formatContextPercent(
   percent: number | null,
   theme: Theme,
 ): string {
   const num = percent === null ? "?" : `${Math.round(percent)}`;
-  const text = `${num}%`;
-  if (percent === null) {
-    return theme.fg("dim", text);
-  }
-  if (percent >= 90) {
-    return theme.fg("error", text);
-  }
-  if (percent >= 70) {
-    return theme.fg("warning", text);
-  }
-  return theme.fg("muted", text);
+  return theme.fg(getContextColor(percent), `${num}%`);
 }
 
 export function buildLeftSegment(
@@ -85,7 +90,7 @@ export function buildLeftSegment(
   theme: Theme,
 ): string {
   const name = basename(cwd) || cwd;
-  const base = theme.bold(theme.fg("text", name));
+  const base = theme.bold(theme.fg("accent", name));
   if (!branch) {
     return base;
   }
@@ -113,8 +118,9 @@ export function buildRightSegment(
   }
 
   const percent = contextUsage?.percent ?? null;
+  const contextColor = getContextColor(percent);
   const ctxPercent = formatContextPercent(percent, theme);
-  const ctxLabel = theme.fg("dim", "󰔚");
+  const ctxLabel = theme.fg(contextColor, "󰔚");
 
   let ctxPart: string;
   if (includeWindow && contextUsage) {
@@ -122,9 +128,9 @@ export function buildRightSegment(
       "dim",
       `(${formatCompactTokens(contextUsage.contextWindow)})`,
     );
-    ctxPart = `${ctxLabel} ${ctxPercent} ${windowText}`;
+    ctxPart = `${ctxLabel}  ${ctxPercent} ${windowText}`;
   } else {
-    ctxPart = `${ctxLabel} ${ctxPercent}`;
+    ctxPart = `${ctxLabel}  ${ctxPercent}`;
   }
   parts.push(ctxPart);
 
