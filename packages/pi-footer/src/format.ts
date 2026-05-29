@@ -85,11 +85,12 @@ export function buildLeftSegment(
   theme: Theme,
 ): string {
   const name = basename(cwd) || cwd;
-  const base = theme.fg("accent", name);
+  const base = theme.bold(theme.fg("text", name));
   if (!branch) {
     return base;
   }
-  return `${base} ${theme.fg("dim", "on")} ${theme.fg("accent", ` ${branch}`)}`;
+  const gitBranch = theme.bold(theme.fg("accent", ` ${branch}`));
+  return `${base} ${theme.fg("dim", "on")} ${gitBranch}`;
 }
 
 export function buildRightSegment(
@@ -113,7 +114,7 @@ export function buildRightSegment(
 
   const percent = contextUsage?.percent ?? null;
   const ctxPercent = formatContextPercent(percent, theme);
-  const ctxLabel = theme.fg("dim", "ctx");
+  const ctxLabel = theme.fg("dim", "󰔚");
 
   let ctxPart: string;
   if (includeWindow && contextUsage) {

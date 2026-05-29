@@ -274,7 +274,7 @@ describe("buildLeftSegment", () => {
       "main",
       theme,
     );
-    expect(result).toBe("pi-extensions on  main");
+    expect(result).toBe("pi-extensions on  main");
   });
 
   it("omits branch text when branch is null", () => {
@@ -287,12 +287,19 @@ describe("buildLeftSegment", () => {
     expect(result).toBe("pi-extensions");
   });
 
-  it("uses accent for cwd and branch, dim for on", () => {
+  it("uses text for cwd, accent for branch, and dim for on", () => {
     const theme = makeSpyTheme();
-    buildLeftSegment("/Users/mads/Code/pi-extensions", "main", theme);
+    const result = buildLeftSegment(
+      "/Users/mads/Code/pi-extensions",
+      "main",
+      theme,
+    );
+    expect(result).toBe(
+      "**[fg:text:pi-extensions]** [fg:dim:on] **[fg:accent: main]**",
+    );
     expect(theme.calls).toContainEqual({
       method: "fg",
-      color: "accent",
+      color: "text",
       text: "pi-extensions",
     });
     expect(theme.calls).toContainEqual({
@@ -303,7 +310,7 @@ describe("buildLeftSegment", () => {
     expect(theme.calls).toContainEqual({
       method: "fg",
       color: "accent",
-      text: " main",
+      text: " main",
     });
   });
 });
@@ -322,7 +329,7 @@ describe("buildRightSegment", () => {
     );
     expect(result).toContain("GPT-5.5 (high)");
     expect(result).toContain("$0.04");
-    expect(result).toContain("ctx 12% (272k)");
+    expect(result).toContain("󰔚 12% (272k)");
   });
 
   it("hides cost for subscription models", () => {
@@ -339,7 +346,7 @@ describe("buildRightSegment", () => {
     expect(result).toContain("Claude Sonnet 4.6 (high)");
     expect(result).not.toContain("$");
     expect(result).not.toContain("sub");
-    expect(result).toContain("ctx 12% (200k)");
+    expect(result).toContain("󰔚 12% (200k)");
   });
 
   it("drops window when includeWindow is false", () => {
@@ -353,7 +360,7 @@ describe("buildRightSegment", () => {
       theme,
       false,
     );
-    expect(result).toContain("ctx 12%");
+    expect(result).toContain("󰔚 12%");
     expect(result).not.toContain("272k");
   });
 
@@ -369,7 +376,7 @@ describe("buildRightSegment", () => {
       false,
     );
     expect(result).toContain("no model (off)");
-    expect(result).toContain("ctx ?%");
+    expect(result).toContain("󰔚 ?%");
   });
 
   it("prefers model name over id", () => {

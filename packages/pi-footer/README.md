@@ -4,8 +4,8 @@ Pi extension that replaces the built-in footer with a compact status bar.
 
 ## Display
 
-- Current directory basename and git branch
-- Selected model, thinking level, cost, and context usage
+- Starship-inspired current directory basename and git branch (``)
+- Selected model, thinking level, cost, and context usage (`󰔚`)
 - Extension statuses from `ctx.ui.setStatus()`
 
 Cost is hidden when the active model uses OAuth subscription auth.
