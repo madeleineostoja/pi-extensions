@@ -59,6 +59,7 @@ export default sandboxExtension;
 import type {
   ExtensionAPI,
   ExtensionContext,
+  MessageRenderer,
   SessionStartEvent,
   ToolCallEvent,
   ToolCallEventResult,
@@ -76,6 +77,24 @@ import { createAuditPipeline } from "./audit/audit.js";
 import type { AuditEntry } from "./audit/schema.js";
 import type { ManifestContext } from "./enforcement/caps.js";
 
+const MESSAGE_TYPE = "pi-sandbox.status";
+
+type StatusDetails = {
+  message: string;
+};
+
+const renderStatusMessage: MessageRenderer<StatusDetails> = (
+  message,
+  _options,
+  theme,
+) => {
+  const text = message.details?.message ?? String(message.content);
+  return {
+    render: () => [theme.fg("dim", text)],
+    invalidate: () => {},
+  };
+};
+
 // Process-wide guard: prevents double-registration on the same pi object.
 // A WeakSet is appropriate because instances are owned by the caller and
 // we must not extend their lifetime.
@@ -92,6 +111,17 @@ const _registered = new WeakSet<ExtensionAPI>();
  * instance is a no-op with a warning emitted via `ctx.ui.notify`.
  */
 function sandboxExtension(pi: ExtensionAPI): void {
+  pi.registerMessageRenderer(MESSAGE_TYPE, renderStatusMessage);
+
+  function sendStatusMessage(message: string): void {
+    pi.sendMessage({
+      customType: MESSAGE_TYPE,
+      content: message,
+      display: true,
+      details: { message },
+    });
+  }
+
   pi.on(
     "session_start",
     (_event: SessionStartEvent, ctx: ExtensionContext): void => {
@@ -137,6 +167,7 @@ function sandboxExtension(pi: ExtensionAPI): void {
           logEnabled: policy.audit.log,
           logFile: policy.audit.logFile,
           events: piEventsTarget,
+          onWarning: sendStatusMessage,
         });
       }
 

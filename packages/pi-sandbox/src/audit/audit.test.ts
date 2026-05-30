@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -391,43 +391,32 @@ describe("permission-failure fallback", () => {
   it("emits the warning exactly once even when called multiple times", () => {
     const logFile = path.join(lockedDir, "subdir", "sandbox-audit.jsonl");
     const warnings: string[] = [];
-    const spy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation((chunk) => {
-        if (typeof chunk === "string") {
-          warnings.push(chunk);
-        }
-        return true;
-      });
+    const onWarning = (message: string) => warnings.push(message);
 
-    try {
-      logWriter.appendLogEntry(
-        {
-          ts: Date.now(),
-          kind: "fs",
-          decision: "blocked",
-        } as import("./schema.js").AuditEntry,
-        { logFile },
-      );
-      logWriter.appendLogEntry(
-        {
-          ts: Date.now(),
-          kind: "fs",
-          decision: "blocked",
-        } as import("./schema.js").AuditEntry,
-        { logFile },
-      );
-      logWriter.appendLogEntry(
-        {
-          ts: Date.now(),
-          kind: "fs",
-          decision: "blocked",
-        } as import("./schema.js").AuditEntry,
-        { logFile },
-      );
-    } finally {
-      spy.mockRestore();
-    }
+    logWriter.appendLogEntry(
+      {
+        ts: Date.now(),
+        kind: "fs",
+        decision: "blocked",
+      } as import("./schema.js").AuditEntry,
+      { logFile, onWarning },
+    );
+    logWriter.appendLogEntry(
+      {
+        ts: Date.now(),
+        kind: "fs",
+        decision: "blocked",
+      } as import("./schema.js").AuditEntry,
+      { logFile, onWarning },
+    );
+    logWriter.appendLogEntry(
+      {
+        ts: Date.now(),
+        kind: "fs",
+        decision: "blocked",
+      } as import("./schema.js").AuditEntry,
+      { logFile, onWarning },
+    );
 
     const sandboxWarnings = warnings.filter((w) => w.includes("pi-sandbox:"));
     expect(sandboxWarnings).toHaveLength(1);
@@ -437,52 +426,40 @@ describe("permission-failure fallback", () => {
     const logFile1 = path.join(lockedDir, "subdir1", "sandbox-audit.jsonl");
     const logFile2 = path.join(lockedDir, "subdir2", "sandbox-audit.jsonl");
     const warnings: string[] = [];
-    const spy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation((chunk) => {
-        if (typeof chunk === "string") {
-          warnings.push(chunk);
-        }
-        return true;
-      });
+    const onWarning = (message: string) => warnings.push(message);
 
-    try {
-      logWriter.appendLogEntry(
-        {
-          ts: Date.now(),
-          kind: "fs",
-          decision: "blocked",
-        } as import("./schema.js").AuditEntry,
-        { logFile: logFile1 },
-      );
-      logWriter.appendLogEntry(
-        {
-          ts: Date.now(),
-          kind: "fs",
-          decision: "blocked",
-        } as import("./schema.js").AuditEntry,
-        { logFile: logFile2 },
-      );
-      // Repeat both — should not produce additional warnings
-      logWriter.appendLogEntry(
-        {
-          ts: Date.now(),
-          kind: "fs",
-          decision: "blocked",
-        } as import("./schema.js").AuditEntry,
-        { logFile: logFile1 },
-      );
-      logWriter.appendLogEntry(
-        {
-          ts: Date.now(),
-          kind: "fs",
-          decision: "blocked",
-        } as import("./schema.js").AuditEntry,
-        { logFile: logFile2 },
-      );
-    } finally {
-      spy.mockRestore();
-    }
+    logWriter.appendLogEntry(
+      {
+        ts: Date.now(),
+        kind: "fs",
+        decision: "blocked",
+      } as import("./schema.js").AuditEntry,
+      { logFile: logFile1, onWarning },
+    );
+    logWriter.appendLogEntry(
+      {
+        ts: Date.now(),
+        kind: "fs",
+        decision: "blocked",
+      } as import("./schema.js").AuditEntry,
+      { logFile: logFile2, onWarning },
+    );
+    logWriter.appendLogEntry(
+      {
+        ts: Date.now(),
+        kind: "fs",
+        decision: "blocked",
+      } as import("./schema.js").AuditEntry,
+      { logFile: logFile1, onWarning },
+    );
+    logWriter.appendLogEntry(
+      {
+        ts: Date.now(),
+        kind: "fs",
+        decision: "blocked",
+      } as import("./schema.js").AuditEntry,
+      { logFile: logFile2, onWarning },
+    );
 
     const sandboxWarnings = warnings.filter((w) => w.includes("pi-sandbox:"));
     expect(sandboxWarnings).toHaveLength(2);

@@ -11,6 +11,7 @@ export type RecordAuditOptions = {
   maxBytes?: number;
   maxFiles?: number;
   events?: EventsTarget;
+  onWarning?: (message: string) => void;
 };
 
 export type AuditPipeline = {
@@ -45,6 +46,7 @@ export function createAuditPipeline(): AuditPipeline {
         logFile: opts.logFile,
         maxBytes: opts.maxBytes,
         maxFiles: opts.maxFiles,
+        onWarning: opts.onWarning,
       };
       logWriter.appendLogEntry(fullEntry, logOpts);
     }

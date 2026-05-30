@@ -67,6 +67,8 @@ function makePi(
       .fn()
       .mockResolvedValue({ stdout: "", stderr: "", code: 0, killed: false }),
     registerCommand: vi.fn(),
+    registerMessageRenderer: vi.fn(),
+    sendMessage: vi.fn(),
     events: { emit: vi.fn() },
     // expose handlers and setStatus for test access
     _handlers: handlers,

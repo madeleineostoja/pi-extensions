@@ -10,6 +10,7 @@ export type LogWriterOptions = {
   logFile: string;
   maxBytes?: number;
   maxFiles?: number;
+  onWarning?: (message: string) => void;
 };
 
 export type LogWriter = {
@@ -19,7 +20,23 @@ export type LogWriter = {
 export function createLogWriter(): LogWriter {
   const warnedLogFiles = new Set<string>();
 
-  function ensureLogDir(logFile: string, logDir: string): boolean {
+  function warnOnce(
+    logFile: string,
+    message: string,
+    onWarning: ((message: string) => void) | undefined,
+  ): void {
+    if (warnedLogFiles.has(logFile)) {
+      return;
+    }
+    warnedLogFiles.add(logFile);
+    onWarning?.(message);
+  }
+
+  function ensureLogDir(
+    logFile: string,
+    logDir: string,
+    onWarning: ((message: string) => void) | undefined,
+  ): boolean {
     if (warnedLogFiles.has(logFile)) {
       return false;
     }
@@ -27,12 +44,11 @@ export function createLogWriter(): LogWriter {
       fs.mkdirSync(logDir, { recursive: true });
       return true;
     } catch {
-      if (!warnedLogFiles.has(logFile)) {
-        warnedLogFiles.add(logFile);
-        process.stderr.write(
-          `pi-sandbox: could not create audit log directory ${logDir} — file logging disabled\n`,
-        );
-      }
+      warnOnce(
+        logFile,
+        `pi-sandbox: could not create audit log directory ${logDir} — file logging disabled`,
+        onWarning,
+      );
       return false;
     }
   }
@@ -79,7 +95,7 @@ export function createLogWriter(): LogWriter {
       return;
     }
 
-    const ok = ensureLogDir(logFile, logDir);
+    const ok = ensureLogDir(logFile, logDir, opts.onWarning);
     if (!ok) {
       return;
     }
@@ -90,9 +106,10 @@ export function createLogWriter(): LogWriter {
     try {
       fs.writeFileSync(logFile, line, { flag: "a", encoding: "utf8" });
     } catch {
-      warnedLogFiles.add(logFile);
-      process.stderr.write(
-        `pi-sandbox: could not write to audit log ${logFile} — file logging disabled\n`,
+      warnOnce(
+        logFile,
+        `pi-sandbox: could not write to audit log ${logFile} — file logging disabled`,
+        opts.onWarning,
       );
     }
   }
