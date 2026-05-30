@@ -23,7 +23,6 @@
       "./packages/pi-sandbox/src/index.ts",
       "./packages/pi-footer/src/index.ts",
       "./packages/pi-auto-name/src/index.ts",
-      "./node_modules/@tintinweb/pi-subagents/src/index.ts",
       "./packages/pi-implement/src/index.ts",
       "./packages/pi-codex-usage/src/index.ts"
     ]
