@@ -1,6 +1,5 @@
 {
   "name": "pi-auto-name",
-  "version": "0.1.0",
   "description": "Pi extension that automatically names sessions from the first user prompt.",
   "license": "MIT",
   "type": "module",
@@ -16,11 +15,5 @@
     "extensions": [
       "./src/index.ts"
     ]
-  },
-  "dependencies": {
-    "@earendil-works/pi-ai": "*"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
   }
 }

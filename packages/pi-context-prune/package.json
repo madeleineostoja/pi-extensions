@@ -1,6 +1,5 @@
 {
   "name": "pi-context-prune",
-  "version": "0.1.0",
   "description": "A Pi extension that keeps the context window small by pruning large, stale tool results",
   "license": "MIT",
   "type": "module",
@@ -15,11 +14,5 @@
     "extensions": [
       "./src/index.ts"
     ]
-  },
-  "dependencies": {
-    "typebox": "^1.1.38"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
   }
 }

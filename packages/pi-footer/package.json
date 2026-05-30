@@ -1,6 +1,5 @@
 {
   "name": "pi-footer",
-  "version": "0.1.0",
   "description": "Pi extension that replaces the built-in footer with a calm two-line status bar.",
   "license": "MIT",
   "type": "module",
@@ -16,9 +15,5 @@
     "extensions": [
       "./src/index.ts"
     ]
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
   }
 }

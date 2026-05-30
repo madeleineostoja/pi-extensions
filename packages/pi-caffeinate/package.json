@@ -1,6 +1,5 @@
 {
   "name": "pi-caffeinate",
-  "version": "0.1.0",
   "description": "Pi extension that keeps the host awake for the lifetime of a session. macOS + Linux.",
   "license": "MIT",
   "type": "module",
@@ -16,8 +15,5 @@
     "extensions": [
       "./src/index.ts"
     ]
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
   }
 }

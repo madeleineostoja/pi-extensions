@@ -1,6 +1,5 @@
 {
   "name": "pi-sandbox",
-  "version": "0.1.0",
   "license": "MIT",
   "type": "module",
   "nonoVersion": "0.57.0",
@@ -21,15 +20,10 @@
   "scripts": {
     "postinstall": "node scripts/postinstall.js"
   },
-  "dependencies": {
-    "picomatch": "^4.0.4"
-  },
   "devDependencies": {
-    "@types/picomatch": "^4.0.0",
     "ajv": "^6.12.6"
   },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+  "dependencies": {
+    "picomatch": "^4.0.4"
   }
 }

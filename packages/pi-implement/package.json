@@ -1,11 +1,11 @@
 {
   "name": "pi-implement",
-  "version": "0.1.0",
   "description": "Pi extension that implements /plan markdown artifacts one task at a time.",
   "license": "MIT",
   "type": "module",
   "files": [
     "src",
+    "agents",
     "README.md"
   ],
   "keywords": [
@@ -16,8 +16,5 @@
     "extensions": [
       "./src/index.ts"
     ]
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
   }
 }
