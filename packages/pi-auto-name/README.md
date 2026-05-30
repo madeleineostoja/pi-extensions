@@ -6,21 +6,10 @@ When a new interactive coding session starts from a first user prompt, pi-auto-n
 
 ## Usage
 
-**Automatic naming** happens on the first non-empty agent prompt in an unnamed session. Generation runs asynchronously so the main agent turn is never delayed.
-
-**Slash commands**
-
-| Command                          | Effect                                               |
-| -------------------------------- | ---------------------------------------------------- |
-| `/auto-name`                     | Show current session name and effective naming model |
-| `/auto-name model`               | Show effective naming model and its source           |
-| `/auto-name model <provider/id>` | Persist a naming model override                      |
-| `/auto-name model reset`         | Remove the override and return to the default        |
-| `/auto-name rename`              | Generate a name for the current session if unnamed   |
-| `/auto-name rename --force`      | Replace an existing session name                     |
+Automatic naming happens on the first non-empty agent prompt in an unnamed session. Generation runs asynchronously so the main agent turn is never delayed.
 
 The default naming model is `openrouter/openai/gpt-oss-20b`.
-Model overrides are stored in `<agent-dir>/extensions/pi-auto-name/config.json` and persist across restarts.
+Model overrides can be stored in `<agent-dir>/extensions/pi-auto-name/config.json` and persist across restarts.
 
 ## Behavior
 
