@@ -4,6 +4,7 @@ import {
   getConfigPath,
   parseConfig,
   resolveEffectiveRoles,
+  resolveMaxParallel,
 } from "./config.js";
 
 describe("config", () => {
@@ -33,6 +34,62 @@ describe("config", () => {
     expect(parsed.warning).toContain("Could not parse");
   });
 
+  it("parses maxParallel", () => {
+    expect(parseConfig(JSON.stringify({ maxParallel: 5 })).config).toEqual({
+      maxParallel: 5,
+    });
+  });
+
+  it("clamps maxParallel to hard maximum", () => {
+    expect(parseConfig(JSON.stringify({ maxParallel: 15 })).config).toEqual({
+      maxParallel: 8,
+    });
+  });
+
+  it("ignores invalid maxParallel with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ maxParallel: 0 }));
+    expect(parsed.config).toEqual({});
+    expect(parsed.warning).toContain("maxParallel");
+  });
+
+  it("ignores non-numeric maxParallel with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ maxParallel: "three" }));
+    expect(parsed.config).toEqual({});
+    expect(parsed.warning).toContain("maxParallel");
+  });
+
+  it("parses verifyCommand", () => {
+    expect(
+      parseConfig(JSON.stringify({ verifyCommand: "npm test" })).config,
+    ).toEqual({
+      verifyCommand: "npm test",
+    });
+  });
+
+  it("ignores empty verifyCommand with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ verifyCommand: "" }));
+    expect(parsed.config).toEqual({});
+    expect(parsed.warning).toContain("verifyCommand");
+  });
+
+  it("ignores non-string verifyCommand with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ verifyCommand: 42 }));
+    expect(parsed.config).toEqual({});
+    expect(parsed.warning).toContain("verifyCommand");
+  });
+
+  it("parses planner role", () => {
+    expect(
+      parseConfig(
+        JSON.stringify({
+          planner: { model: "e/f", type: "Explore" },
+        }),
+      ).config,
+    ).toEqual({
+      planner: { model: "e/f", type: "Explore" },
+    });
+  });
+
   it("falls back to the current session model and default subagent type", () => {
     const result = resolveEffectiveRoles({}, {
       model: { provider: "p", id: "m" },
@@ -42,8 +99,17 @@ describe("config", () => {
       roles: {
         implementer: { model: "p/m", type: "general-purpose" },
         reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
       },
     });
+  });
+
+  it("resolves maxParallel with defaults", () => {
+    expect(resolveMaxParallel({})).toBe(3);
+    expect(resolveMaxParallel({}, 5)).toBe(3);
+    expect(resolveMaxParallel({ maxParallel: 6 }, 10)).toBe(6);
+    expect(resolveMaxParallel({ maxParallel: 2 }, 10)).toBe(2);
+    expect(resolveMaxParallel({ maxParallel: 10 }, 10)).toBe(8);
   });
 
   it("formats config status", () => {

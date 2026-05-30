@@ -51,11 +51,11 @@ function setup() {
 }
 
 describe("/implement command", () => {
-  it("shows usage and status with no args", async () => {
+  it("shows usage with no args", async () => {
     const { handler, ctx } = setup();
     await handler("", ctx);
     expect(ctx.ui.notifications[0]?.message).toContain("Usage: /implement");
-    expect(ctx.ui.notifications[0]?.message).toContain("pi-implement: idle");
+    expect(ctx.ui.notifications[0]?.level).toBe("warning");
   });
 
   it("reports idle status", async () => {
@@ -65,5 +65,26 @@ describe("/implement command", () => {
       message: "pi-implement: idle",
       level: "info",
     });
+  });
+
+  it("shows usage for unknown flags", async () => {
+    const { handler, ctx } = setup();
+    await handler("--unknown plan.md", ctx);
+    expect(ctx.ui.notifications[0]?.message).toContain("Usage");
+    expect(ctx.ui.notifications[0]?.level).toBe("warning");
+  });
+
+  it("shows usage for plan path with spaces", async () => {
+    const { handler, ctx } = setup();
+    await handler("path to plan.md", ctx);
+    expect(ctx.ui.notifications[0]?.message).toContain("Usage");
+    expect(ctx.ui.notifications[0]?.level).toBe("warning");
+  });
+
+  it("shows usage for --parallel without integer", async () => {
+    const { handler, ctx } = setup();
+    await handler("--parallel abc plan.md", ctx);
+    expect(ctx.ui.notifications[0]?.message).toContain("positive integer");
+    expect(ctx.ui.notifications[0]?.level).toBe("warning");
   });
 });

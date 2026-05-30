@@ -1,7 +1,14 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
-import { isAbsolute, relative } from "node:path";
+import {
+  existsSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -25,6 +32,9 @@ export type GitClient = {
   stagedNameStatus(): Promise<string>;
   stagedDiff(): Promise<string>;
   stagedFingerprint(): Promise<string>;
+  worktreeFingerprintExcept(paths: string[]): Promise<string>;
+  restoreWorktreeFromIndexExcept(paths: string[]): Promise<void>;
+  restoreStagedPatch(patch: string, protectedPaths: string[]): Promise<void>;
   commit(message: string): Promise<CommandResult>;
   reset(): Promise<void>;
 };
@@ -51,7 +61,14 @@ export class ExecGitClient implements GitClient {
   async isCleanExcept(paths: string[]): Promise<boolean> {
     const excludes = await this.pathspecs(paths, true);
     const status = (
-      await this.run(["status", "--porcelain", "--", ":/", ...excludes])
+      await this.run([
+        "status",
+        "--porcelain",
+        "--",
+        ":/",
+        ...excludes,
+        ":(top,literal,exclude).pi/implement",
+      ])
     ).stdout;
     return isCleanStatus(status);
   }
@@ -61,7 +78,9 @@ export class ExecGitClient implements GitClient {
     const excluded = new Set(await this.repoRelativePaths(paths));
     const candidates = await this.changedPaths();
     const specs = candidates
-      .filter((path) => !excluded.has(path))
+      .filter(
+        (path) => !excluded.has(path) && !path.startsWith(".pi/implement/"),
+      )
       .map((path) => `:(top,literal)${path}`);
     if (specs.length) {
       await this.run(["add", "-A", "--", ...specs]);
@@ -94,7 +113,7 @@ export class ExecGitClient implements GitClient {
   }
 
   async stagedDiff(): Promise<string> {
-    return (await this.run(["diff", "--cached", "HEAD"])).stdout;
+    return (await this.run(["diff", "--cached", "--binary", "HEAD"])).stdout;
   }
 
   async stagedFingerprint(): Promise<string> {
@@ -110,6 +129,45 @@ export class ExecGitClient implements GitClient {
       .update("\0")
       .update(diff)
       .digest("hex");
+  }
+
+  async worktreeFingerprintExcept(paths: string[]): Promise<string> {
+    const pathspecs = await this.protectedPathspecs(paths);
+    const [status, diff] = await Promise.all([
+      this.run(["status", "--porcelain", "--", ...pathspecs]),
+      this.run(["diff", "--", ...pathspecs]),
+    ]);
+    return createHash("sha256")
+      .update(status.stdout)
+      .update("\0")
+      .update(diff.stdout)
+      .digest("hex");
+  }
+
+  async restoreWorktreeFromIndexExcept(paths: string[]): Promise<void> {
+    const pathspecs = await this.protectedPathspecs(paths);
+    await this.run(["restore", "-q", "--worktree", "--", ...pathspecs]);
+    await this.run(["clean", "-fd", "--", ...pathspecs]);
+  }
+
+  async restoreStagedPatch(
+    patch: string,
+    protectedPaths: string[],
+  ): Promise<void> {
+    const pathspecs = await this.protectedPathspecs(protectedPaths);
+    const tmpDir = mkdtempSync(join(tmpdir(), "pi-implement-patch-"));
+    const patchPath = join(tmpDir, "candidate.patch");
+    try {
+      writeFileSync(patchPath, patch, "utf-8");
+      await this.run(["reset", "-q"]);
+      await this.run(["restore", "-q", "--worktree", "--", ...pathspecs]);
+      await this.run(["clean", "-fd", "--", ...pathspecs]);
+      if (patch.trim()) {
+        await this.run(["apply", "--index", "--whitespace=nowarn", patchPath]);
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   }
 
   async commit(message: string): Promise<CommandResult> {
@@ -130,6 +188,11 @@ export class ExecGitClient implements GitClient {
       "--exclude-standard",
     ]);
     return result.stdout.split("\0").filter(Boolean);
+  }
+
+  private async protectedPathspecs(paths: string[]): Promise<string[]> {
+    const excludes = await this.pathspecs(paths, true);
+    return [":/", ...excludes, ":(top,literal,exclude).pi/implement"];
   }
 
   private async pathspecs(

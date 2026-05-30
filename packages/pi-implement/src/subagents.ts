@@ -88,10 +88,7 @@ export class EventSubagentClient implements SubagentClient {
         } else {
           done({
             status: "completed",
-            result:
-              typeof event.result === "string"
-                ? event.result
-                : String(event.result ?? ""),
+            result: subagentResultText(event.result),
           });
         }
       });
@@ -148,5 +145,38 @@ export class EventSubagentClient implements SubagentClient {
       );
       this.events.emit(`subagents:rpc:${method}`, { requestId, ...payload });
     });
+  }
+}
+
+export function subagentResultText(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (Array.isArray(value)) {
+    return value.map(subagentResultText).filter(Boolean).join("\n");
+  }
+  if (typeof value !== "object") {
+    return String(value);
+  }
+  const object = value as Record<string, unknown>;
+  for (const key of ["result", "output", "text", "content", "message"]) {
+    const nested = object[key];
+    if (nested !== undefined) {
+      const text = subagentResultText(nested);
+      if (text) {
+        return text;
+      }
+    }
+  }
+  if (object.type === "text" && typeof object.text === "string") {
+    return object.text;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }

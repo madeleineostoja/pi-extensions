@@ -7,7 +7,6 @@ import {
   nextUncheckedTask,
   parsePlanFile,
 } from "./plan.js";
-import type { ParsedPlan } from "./plan.js";
 import type { GitClient } from "./git.js";
 import type { SubagentClient } from "./subagents.js";
 import type { EffectiveRoles } from "./config.js";
@@ -18,6 +17,9 @@ import {
   parseImplementerResult,
   parseReviewerVerdict,
 } from "./verdict.js";
+import type { StatePaths } from "./state.js";
+import { writeTaskJson, appendEvent, taskIdFromTask } from "./state.js";
+import type { RunMode } from "./state.js";
 
 const MAX_REVIEWER_REQUESTS = 3;
 const MAX_SYSTEM_FAILURES = 2;
@@ -31,7 +33,12 @@ export type OrchestratorDeps = {
   git: GitClient;
   subagents: SubagentClient;
   planPath: string;
+  planArtifacts?: string[];
   roles: EffectiveRoles;
+  mode?: RunMode;
+  maxConcurrency?: number;
+  runId?: string;
+  paths?: StatePaths;
   updateState(state: Partial<RunState>): void;
   shouldStop(): boolean;
   signal?: AbortSignal;
@@ -45,15 +52,31 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
   });
   await deps.git.root();
   let plan = parsePlanFile(deps.planPath);
-  let planArtifacts = collectPlanArtifactPaths(plan);
+  const planArtifacts = deps.planArtifacts ?? [deps.planPath];
   if (!(await deps.git.isCleanExcept(planArtifacts))) {
     throw new BlockedError("dirty worktree");
   }
 
+  // Serial mode always uses the serial path; no planner spawn
+  if (deps.mode === "serial") {
+    await runSerialImplementation(deps, plan, planArtifacts);
+    return;
+  }
+
+  // For auto and parallel modes, we still run serial for now (future tasks will add triage/graph)
+  await runSerialImplementation(deps, plan, planArtifacts);
+}
+
+async function runSerialImplementation(
+  deps: OrchestratorDeps,
+  initialPlan: ReturnType<typeof parsePlanFile>,
+  planArtifacts: string[],
+): Promise<void> {
+  let plan = initialPlan;
+
   for (;;) {
     throwIfStopped(deps);
     plan = parsePlanFile(deps.planPath);
-    planArtifacts = collectPlanArtifactPaths(plan);
     if (!(await deps.git.isCleanExcept(planArtifacts))) {
       throw new BlockedError("dirty worktree");
     }
@@ -67,6 +90,19 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
         activeSubagentId: undefined,
       });
       return;
+    }
+
+    const taskId = taskIdFromTask(task.index - 1, task.text);
+    if (deps.paths) {
+      writeTaskJson(deps.paths, taskId, {
+        id: taskId,
+        planIndex: task.index - 1,
+        title: task.text,
+        status: "pending",
+        dependsOn: [],
+        attempts: 0,
+        integrationAttempts: 0,
+      });
     }
 
     let feedback: RetryFeedback | undefined;
@@ -98,11 +134,41 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
         model: deps.roles.implementer.model,
       });
       deps.updateState({ activeSubagentId: implementerId });
+      if (deps.paths) {
+        writeTaskJson(deps.paths, taskId, {
+          id: taskId,
+          planIndex: task.index - 1,
+          title: task.text,
+          status: "coding",
+          dependsOn: [],
+          attempts: attempt,
+          integrationAttempts: 0,
+          activeSubagentIds: [implementerId],
+        });
+        appendEvent(deps.paths, { type: "task_started", taskId });
+      }
       const implementation = await deps.subagents.waitFor(
         implementerId,
         deps.signal,
       );
       deps.updateState({ activeSubagentId: undefined });
+      if (deps.paths) {
+        writeTaskJson(deps.paths, taskId, {
+          id: taskId,
+          planIndex: task.index - 1,
+          title: task.text,
+          status:
+            implementation.status === "completed" ? "reviewing" : "failed",
+          dependsOn: [],
+          attempts: attempt,
+          integrationAttempts: 0,
+          activeSubagentIds: [],
+          lastReason:
+            implementation.status !== "completed"
+              ? implementation.error
+              : undefined,
+        });
+      }
       if (implementation.status === "stopped") {
         throw new StoppedError();
       }
@@ -120,7 +186,10 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
       if ((await deps.git.head()) !== headBefore) {
         throw new BlockedError("implementer changed HEAD");
       }
-      const changedPlanArtifact = changedSnapshotPath(planArtifactSnapshot);
+      const changedPlanArtifact = changedSnapshotPath(
+        planArtifacts,
+        planArtifactSnapshot,
+      );
       if (changedPlanArtifact) {
         throw new BlockedError(
           `implementer changed a plan artifact: ${changedPlanArtifact}`,
@@ -152,6 +221,9 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
         continue;
       }
       const fingerprintBefore = await deps.git.stagedFingerprint();
+      const candidatePatch = await deps.git.stagedDiff();
+      const worktreeFingerprintBefore =
+        await deps.git.worktreeFingerprintExcept(planArtifacts);
       const reviewHeadBefore = await deps.git.head();
       deps.updateState({ phase: "reviewing", activeSubagentId: undefined });
       const reviewerId = await deps.subagents.spawn({
@@ -164,8 +236,33 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
         model: deps.roles.reviewer.model,
       });
       deps.updateState({ activeSubagentId: reviewerId });
+      if (deps.paths) {
+        writeTaskJson(deps.paths, taskId, {
+          id: taskId,
+          planIndex: task.index - 1,
+          title: task.text,
+          status: "reviewing",
+          dependsOn: [],
+          attempts: attempt,
+          integrationAttempts: 0,
+          activeSubagentIds: [reviewerId],
+        });
+      }
       const review = await deps.subagents.waitFor(reviewerId, deps.signal);
       deps.updateState({ activeSubagentId: undefined });
+      if (deps.paths) {
+        writeTaskJson(deps.paths, taskId, {
+          id: taskId,
+          planIndex: task.index - 1,
+          title: task.text,
+          status: review.status === "completed" ? "reviewing" : "failed",
+          dependsOn: [],
+          attempts: attempt,
+          integrationAttempts: 0,
+          activeSubagentIds: [],
+          lastReason: review.status !== "completed" ? review.error : undefined,
+        });
+      }
       if (review.status === "stopped") {
         await deps.git.reset();
         throw new StoppedError();
@@ -185,9 +282,13 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
       if ((await deps.git.head()) !== reviewHeadBefore) {
         throw new BlockedError("reviewer changed HEAD");
       }
-      if ((await deps.git.stagedFingerprint()) !== fingerprintBefore) {
-        throw new BlockedError("reviewer changed the staged diff");
-      }
+      await healReviewerMutations({
+        deps,
+        planArtifacts,
+        stagedFingerprintBefore: fingerprintBefore,
+        candidatePatch,
+        worktreeFingerprintBefore,
+      });
       const verdict = parseReviewerVerdict(review.result);
       if (verdict.verdict === "changes_requested") {
         await deps.git.reset();
@@ -200,6 +301,18 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
         continue;
       }
 
+      if (deps.paths) {
+        writeTaskJson(deps.paths, taskId, {
+          id: taskId,
+          planIndex: task.index - 1,
+          title: task.text,
+          status: "approved",
+          dependsOn: [],
+          attempts: attempt,
+          integrationAttempts: 0,
+          activeSubagentIds: [],
+        });
+      }
       const approvedMessage = isValidCommitMessage(parsed.result.commitMessage)
         ? parsed.result.commitMessage.trim()
         : fallbackCommitMessage(task.text);
@@ -219,6 +332,30 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
       if (commit.exitCode === 0) {
         if (!(await deps.git.isCleanExcept(planArtifacts))) {
           throw new BlockedError("commit succeeded but worktree is dirty");
+        }
+        if (deps.paths) {
+          const head = await deps.git.head();
+          appendEvent(deps.paths, {
+            type: "task_approved",
+            taskId,
+            commitSha: head,
+          });
+          appendEvent(deps.paths, {
+            type: "task_landed",
+            taskId,
+            commitSha: head,
+          });
+          writeTaskJson(deps.paths, taskId, {
+            id: taskId,
+            planIndex: task.index - 1,
+            title: task.text,
+            status: "landed",
+            dependsOn: [],
+            attempts: attempt,
+            integrationAttempts: 0,
+            landedCommitSha: head,
+            activeSubagentIds: [],
+          });
         }
         break;
       }
@@ -243,7 +380,69 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
         `Commit failed. Fix the issue and try again.\n\n${commit.stderr || commit.stdout}`,
       );
       systemFailures++;
+      if (deps.paths) {
+        writeTaskJson(deps.paths, taskId, {
+          id: taskId,
+          planIndex: task.index - 1,
+          title: task.text,
+          status: "integration_failed",
+          dependsOn: [],
+          attempts: attempt,
+          integrationAttempts: systemFailures,
+          activeSubagentIds: [],
+          lastReason: feedback.message,
+        });
+        appendEvent(deps.paths, {
+          type: "integration_failed",
+          taskId,
+          reason: feedback.message,
+        });
+      }
     }
+  }
+}
+
+async function healReviewerMutations(args: {
+  deps: OrchestratorDeps;
+  planArtifacts: string[];
+  stagedFingerprintBefore: string;
+  candidatePatch: string;
+  worktreeFingerprintBefore: string;
+}): Promise<void> {
+  const {
+    deps,
+    planArtifacts,
+    stagedFingerprintBefore,
+    candidatePatch,
+    worktreeFingerprintBefore,
+  } = args;
+  const stagedFingerprintAfter = await deps.git.stagedFingerprint();
+  const worktreeFingerprintAfter =
+    await deps.git.worktreeFingerprintExcept(planArtifacts);
+
+  if (
+    stagedFingerprintAfter === stagedFingerprintBefore &&
+    worktreeFingerprintAfter === worktreeFingerprintBefore
+  ) {
+    return;
+  }
+
+  if (stagedFingerprintAfter === stagedFingerprintBefore) {
+    await deps.git.restoreWorktreeFromIndexExcept(planArtifacts);
+  } else {
+    await deps.git.restoreStagedPatch(candidatePatch, planArtifacts);
+  }
+
+  const healedStagedFingerprint = await deps.git.stagedFingerprint();
+  const healedWorktreeFingerprint =
+    await deps.git.worktreeFingerprintExcept(planArtifacts);
+  if (
+    healedStagedFingerprint !== stagedFingerprintBefore ||
+    healedWorktreeFingerprint !== worktreeFingerprintBefore
+  ) {
+    throw new BlockedError(
+      "reviewer changed the candidate diff and auto-heal failed",
+    );
   }
 }
 
@@ -261,10 +460,6 @@ export class StoppedError extends Error {
   }
 }
 
-function collectPlanArtifactPaths(plan: ParsedPlan): string[] {
-  return [plan.path];
-}
-
 function snapshotPlanArtifacts(
   paths: string[],
 ): Map<string, string | undefined> {
@@ -280,9 +475,11 @@ function snapshotPlanArtifacts(
 }
 
 function changedSnapshotPath(
+  paths: string[],
   snapshot: Map<string, string | undefined>,
 ): string | undefined {
-  for (const [path, content] of snapshot) {
+  for (const path of paths) {
+    const content = snapshot.get(path);
     try {
       if (readFileSync(path, "utf-8") !== content) {
         return path;

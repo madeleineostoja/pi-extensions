@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EventSubagentClient } from "./subagents.js";
+import { EventSubagentClient, subagentResultText } from "./subagents.js";
 
 type Handler = (payload: unknown) => void;
 
@@ -67,6 +67,25 @@ describe("EventSubagentClient", () => {
       status: "completed",
       result: "ok",
     });
+  });
+
+  it("extracts structured completion result text", async () => {
+    const events = new FakeEvents();
+    const client = new EventSubagentClient(events, 100);
+    const promise = client.waitFor("agent-1");
+    events.fire("subagents:completed", {
+      id: "agent-1",
+      result: { content: [{ type: "text", text: "ok" }] },
+    });
+    await expect(promise).resolves.toEqual({
+      status: "completed",
+      result: "ok",
+    });
+  });
+
+  it("normalizes nested subagent output", () => {
+    expect(subagentResultText({ output: { text: "done" } })).toBe("done");
+    expect(subagentResultText([{ text: "a" }, { text: "b" }])).toBe("a\nb");
   });
 
   it("returns stopped when aborted", async () => {

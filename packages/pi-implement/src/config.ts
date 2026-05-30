@@ -10,6 +10,9 @@ export type RoleConfig = {
 export type ImplementConfig = {
   implementer?: RoleConfig;
   reviewer?: RoleConfig;
+  maxParallel?: number;
+  verifyCommand?: string;
+  planner?: RoleConfig;
 };
 
 export type ConfigReadResult = {
@@ -26,9 +29,13 @@ export type EffectiveRole = {
 export type EffectiveRoles = {
   implementer: EffectiveRole;
   reviewer: EffectiveRole;
+  planner: EffectiveRole;
 };
 
 const DEFAULT_SUBAGENT_TYPE = "general-purpose";
+const DEFAULT_PLANNER_TYPE = "Explore";
+const DEFAULT_MAX_PARALLEL = 3;
+const HARD_MAX_PARALLEL = 8;
 
 export function getConfigPath(agentDir: string): string {
   return join(agentDir, "extensions", "pi-implement", "config.json");
@@ -53,7 +60,28 @@ export function parseConfig(raw: string): {
     const object = parsed as Record<string, unknown>;
     const config: ImplementConfig = {};
     const warningParts: string[] = [];
-    for (const role of ["implementer", "reviewer"] as const) {
+
+    if (object.maxParallel !== undefined) {
+      const mp = object.maxParallel;
+      if (typeof mp === "number" && Number.isInteger(mp) && mp > 0) {
+        config.maxParallel = Math.min(mp, HARD_MAX_PARALLEL);
+      } else {
+        warningParts.push("maxParallel must be a positive integer");
+      }
+    }
+
+    if (object.verifyCommand !== undefined) {
+      if (
+        typeof object.verifyCommand === "string" &&
+        object.verifyCommand.trim()
+      ) {
+        config.verifyCommand = object.verifyCommand.trim();
+      } else {
+        warningParts.push("verifyCommand must be a non-empty string");
+      }
+    }
+
+    for (const role of ["implementer", "reviewer", "planner"] as const) {
       const value = object[role];
       if (value === undefined) {
         continue;
@@ -99,6 +127,15 @@ export function parseConfig(raw: string): {
       warning: `Could not parse config JSON; ignoring it. ${message}`,
     };
   }
+}
+
+export function resolveMaxParallel(
+  config: ImplementConfig,
+  requested?: number,
+): number {
+  const fromConfig = config.maxParallel ?? DEFAULT_MAX_PARALLEL;
+  const fromRequest = requested ?? fromConfig;
+  return Math.min(fromRequest, fromConfig, HARD_MAX_PARALLEL);
 }
 
 export function readConfig(agentDir: string): ConfigReadResult {
@@ -153,6 +190,10 @@ export function resolveEffectiveRoles(
         model: reviewerModel,
         type: config.reviewer?.type ?? DEFAULT_SUBAGENT_TYPE,
       },
+      planner: {
+        model: config.planner?.model ?? current ?? implementerModel,
+        type: config.planner?.type ?? DEFAULT_PLANNER_TYPE,
+      },
     },
   };
 }
@@ -181,5 +222,17 @@ export function formatConfigStatus(
   lines.push(
     `Reviewer subagent: ${roles?.reviewer.type ?? result.config.reviewer?.type ?? DEFAULT_SUBAGENT_TYPE}`,
   );
+  lines.push(
+    `Planner model: ${roles?.planner.model ?? result.config.planner?.model ?? "(current session)"}`,
+  );
+  lines.push(
+    `Planner subagent: ${roles?.planner.type ?? result.config.planner?.type ?? DEFAULT_PLANNER_TYPE}`,
+  );
+  if (result.config.maxParallel !== undefined) {
+    lines.push(`Max parallel: ${result.config.maxParallel}`);
+  }
+  if (result.config.verifyCommand) {
+    lines.push(`Verify command: ${result.config.verifyCommand}`);
+  }
   return lines.join("\n");
 }

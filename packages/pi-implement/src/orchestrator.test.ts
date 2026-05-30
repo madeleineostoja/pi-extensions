@@ -41,8 +41,22 @@ class FakeGit implements GitClient {
   async stagedDiff() {
     return this.diffText;
   }
+  worktreeFingerprintText = "worktree";
+  restoredFromIndex = 0;
+  restoredPatches: string[] = [];
   async stagedFingerprint() {
     return `${this.diffText}:${this.statusText}`;
+  }
+  async worktreeFingerprintExcept() {
+    return this.worktreeFingerprintText;
+  }
+  async restoreWorktreeFromIndexExcept() {
+    this.restoredFromIndex++;
+    this.worktreeFingerprintText = "worktree";
+  }
+  async restoreStagedPatch(patch: string) {
+    this.restoredPatches.push(patch);
+    this.worktreeFingerprintText = "worktree";
   }
   async commit(message: string): Promise<CommandResult> {
     this.commits.push(message);
@@ -96,6 +110,7 @@ describe("runImplementation", () => {
       roles: {
         implementer: { model: "p/m", type: "general-purpose" },
         reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
       },
       updateState: (state) => states.push(state),
       shouldStop: () => false,
@@ -108,6 +123,42 @@ describe("runImplementation", () => {
       "general-purpose",
     ]);
     expect(states.at(-1)).toMatchObject({ phase: "done" });
+  });
+
+  it("does not spawn planner in serial mode", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result:
+          '<pi-implement-result>{"summary":"done","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"feat: do thing"}</pi-implement-result>',
+      },
+      {
+        status: "completed",
+        result: '<pi-review-result>{"verdict":"approved"}</pi-review-result>',
+      },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns).toHaveLength(2);
+    expect(subagents.spawns.map((s) => s.type)).not.toContain("Explore");
   });
 
   it("tracks reviewer requests separately from system failures", async () => {
@@ -146,6 +197,7 @@ describe("runImplementation", () => {
       roles: {
         implementer: { model: "p/m", type: "general-purpose" },
         reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
       },
       updateState: () => {},
       shouldStop: () => false,

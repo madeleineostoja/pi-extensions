@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -71,6 +71,59 @@ describe("git helpers", () => {
     writeFileSync(join(cwd, "ignored.log"), "ignored\n");
     writeFileSync(join(cwd, "new.ts"), "export const added = true;\n");
     git(cwd, "add", "-f", "ignored.log");
+    const client = new ExecGitClient(cwd);
+
+    await client.stageAllExcept([]);
+
+    expect(await client.stagedNameStatus()).toBe("A\tnew.ts\n");
+  });
+
+  it("ignores .pi/implement files in isCleanExcept", async () => {
+    const cwd = repo();
+    const runDir = join(cwd, ".pi", "implement", "runs", "r1");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, "run.json"), "{}");
+    const client = new ExecGitClient(cwd);
+
+    expect(await client.isCleanExcept([])).toBe(true);
+  });
+
+  it("restores reviewer worktree edits from the staged index", async () => {
+    const cwd = repo();
+    writeFileSync(join(cwd, "tracked.ts"), "export const value = 2;\n");
+    const client = new ExecGitClient(cwd);
+    await client.stageAllExcept([]);
+    const before = await client.worktreeFingerprintExcept([]);
+    writeFileSync(join(cwd, "tracked.ts"), "export const value = 3;\n");
+    writeFileSync(join(cwd, "reviewer.tmp"), "oops\n");
+
+    await client.restoreWorktreeFromIndexExcept([]);
+
+    expect(await client.worktreeFingerprintExcept([])).toBe(before);
+    expect(git(cwd, "status", "--porcelain")).toBe("M  tracked.ts\n");
+  });
+
+  it("restores the staged candidate patch after index mutation", async () => {
+    const cwd = repo();
+    writeFileSync(join(cwd, "tracked.ts"), "export const value = 2;\n");
+    const client = new ExecGitClient(cwd);
+    await client.stageAllExcept([]);
+    const patch = await client.stagedDiff();
+    const before = await client.stagedFingerprint();
+    git(cwd, "reset", "--hard", "HEAD");
+
+    await client.restoreStagedPatch(patch, []);
+
+    expect(await client.stagedFingerprint()).toBe(before);
+    expect(git(cwd, "status", "--porcelain")).toBe("M  tracked.ts\n");
+  });
+
+  it("does not stage .pi/implement files", async () => {
+    const cwd = repo();
+    const runDir = join(cwd, ".pi", "implement", "runs", "r1");
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(join(runDir, "run.json"), "{}");
+    writeFileSync(join(cwd, "new.ts"), "export const added = true;\n");
     const client = new ExecGitClient(cwd);
 
     await client.stageAllExcept([]);

@@ -1,0 +1,281 @@
+import { describe, expect, it } from "vitest";
+import { mkdtempSync, existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  getStatePaths,
+  makeRunId,
+  makeRunIdWithSuffix,
+  taskIdFromTask,
+  createRunState,
+  writeRunJson,
+  writeTaskJson,
+  appendEvent,
+  readEvents,
+  readRunJson,
+  readTaskJson,
+  cleanupRun,
+  listRunIds,
+} from "./state.js";
+
+function tempRepo(): string {
+  return mkdtempSync(join(tmpdir(), "pi-implement-state-"));
+}
+
+describe("state paths", () => {
+  it("computes correct paths", () => {
+    const paths = getStatePaths("/repo", "r20240101-120000");
+    expect(paths.baseDir).toBe("/repo/.pi/implement");
+    expect(paths.runDir).toBe("/repo/.pi/implement/runs/r20240101-120000");
+    expect(paths.runJson).toBe(
+      "/repo/.pi/implement/runs/r20240101-120000/run.json",
+    );
+    expect(paths.eventsJsonl).toBe(
+      "/repo/.pi/implement/runs/r20240101-120000/events.jsonl",
+    );
+    expect(paths.planSnapshot).toBe(
+      "/repo/.pi/implement/runs/r20240101-120000/plan.snapshot.md",
+    );
+    expect(paths.tasksDir).toBe(
+      "/repo/.pi/implement/runs/r20240101-120000/tasks",
+    );
+    expect(paths.worktreesDir).toBe(
+      "/repo/.pi/implement/worktrees/r20240101-120000",
+    );
+    expect(paths.lockFile).toBe("/repo/.pi/implement/locks/run.lock");
+  });
+});
+
+describe("run IDs", () => {
+  it("generates RFC-shaped run IDs", () => {
+    const id = makeRunId(new Date("2024-01-15T09:30:45"));
+    expect(id).toBe("r20240115-093045");
+  });
+
+  it("adds suffix on collision", () => {
+    const existing = new Set(["r20240115-093045"]);
+    const id = makeRunIdWithSuffix("r20240115-093045", existing);
+    expect(id).toBe("r20240115-093045-1");
+  });
+
+  it("increments suffix until unique", () => {
+    const existing = new Set(["r20240115-093045", "r20240115-093045-1"]);
+    const id = makeRunIdWithSuffix("r20240115-093045", existing);
+    expect(id).toBe("r20240115-093045-2");
+  });
+});
+
+describe("task IDs", () => {
+  it("generates deterministic task IDs", () => {
+    expect(taskIdFromTask(0, "Add user model")).toBe("t001-add-user-model");
+    expect(taskIdFromTask(1, "Fix the bug")).toBe("t002-fix-the-bug");
+  });
+
+  it("handles special characters", () => {
+    expect(taskIdFromTask(0, "Add [user] model!")).toBe("t001-add-user-model");
+  });
+
+  it("falls back for empty title", () => {
+    expect(taskIdFromTask(0, "")).toBe("t001-task");
+  });
+});
+
+describe("run state lifecycle", () => {
+  it("creates run state with all files", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const run = {
+      version: 1 as const,
+      runId: "r20240115-120000",
+      mode: "auto" as const,
+      strategyReason: "Auto mode selected; effective max concurrency 3.",
+      repoRoot: repo,
+      planPath: "/repo/plan.md",
+      planHash: "abc123",
+      baseSha: "def456",
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+
+    createRunState(paths, run, "# Plan\n");
+
+    expect(existsSync(paths.runJson)).toBe(true);
+    expect(existsSync(paths.planSnapshot)).toBe(true);
+    expect(existsSync(paths.eventsJsonl)).toBe(true);
+    expect(existsSync(paths.tasksDir)).toBe(true);
+    expect(existsSync(paths.worktreesDir)).toBe(true);
+    expect(existsSync(paths.lockFile)).toBe(true);
+    expect(JSON.parse(readFileSync(paths.lockFile, "utf-8"))).toMatchObject({
+      runId: "r20240115-120000",
+      runDir: paths.runDir,
+      startedAt: "2024-01-15T12:00:00Z",
+    });
+  });
+
+  it("writes and reads run.json", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const run = {
+      version: 1 as const,
+      runId: "r20240115-120000",
+      mode: "auto" as const,
+      strategyReason: "Auto mode selected; effective max concurrency 3.",
+      repoRoot: repo,
+      planPath: "/repo/plan.md",
+      planHash: "abc123",
+      baseSha: "def456",
+      currentPhase: "coding",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+
+    createRunState(paths, run, "# Plan\n");
+    writeRunJson(paths, { ...run, currentPhase: "reviewing" });
+
+    const read = readRunJson(paths);
+    expect(read?.currentPhase).toBe("reviewing");
+  });
+
+  it("writes and reads task.json", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const run = {
+      version: 1 as const,
+      runId: "r20240115-120000",
+      mode: "auto" as const,
+      strategyReason: "Auto mode selected; effective max concurrency 3.",
+      repoRoot: repo,
+      planPath: "/repo/plan.md",
+      planHash: "abc123",
+      baseSha: "def456",
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+
+    createRunState(paths, run, "# Plan\n");
+    const task = {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test task",
+      status: "pending" as const,
+      dependsOn: [],
+      attempts: 0,
+      integrationAttempts: 0,
+    };
+    writeTaskJson(paths, "t001-test", task);
+
+    const read = readTaskJson(paths, "t001-test");
+    expect(read).toEqual(task);
+  });
+
+  it("appends and reads events", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const run = {
+      version: 1 as const,
+      runId: "r20240115-120000",
+      mode: "auto" as const,
+      strategyReason: "Auto mode selected; effective max concurrency 3.",
+      repoRoot: repo,
+      planPath: "/repo/plan.md",
+      planHash: "abc123",
+      baseSha: "def456",
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+
+    createRunState(paths, run, "# Plan\n");
+    appendEvent(paths, {
+      type: "strategy_selected",
+      reason: "auto",
+      mode: "auto",
+    });
+    appendEvent(paths, { type: "task_started", taskId: "t001" });
+    appendEvent(paths, {
+      type: "task_approved",
+      taskId: "t001",
+      commitSha: "abc",
+    });
+    appendEvent(paths, {
+      type: "integration_failed",
+      taskId: "t001",
+      reason: "hook",
+    });
+    appendEvent(paths, {
+      type: "task_landed",
+      taskId: "t001",
+      commitSha: "def",
+    });
+    appendEvent(paths, { type: "cleanup_failed", reason: "busy" });
+
+    const events = readEvents(paths);
+    expect(events).toHaveLength(6);
+    expect(events[0].type).toBe("strategy_selected");
+    expect(events[1].type).toBe("task_started");
+    expect(events[2].type).toBe("task_approved");
+    expect(events[3].type).toBe("integration_failed");
+    expect(events[4].type).toBe("task_landed");
+    expect(events[5].type).toBe("cleanup_failed");
+    expect(events[0].timestamp).toBeDefined();
+  });
+
+  it("cleans up run directory", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const run = {
+      version: 1 as const,
+      runId: "r20240115-120000",
+      mode: "auto" as const,
+      strategyReason: "Auto mode selected; effective max concurrency 3.",
+      repoRoot: repo,
+      planPath: "/repo/plan.md",
+      planHash: "abc123",
+      baseSha: "def456",
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+
+    createRunState(paths, run, "# Plan\n");
+    expect(existsSync(paths.runDir)).toBe(true);
+    expect(existsSync(paths.lockFile)).toBe(true);
+
+    cleanupRun(paths);
+    expect(existsSync(paths.runDir)).toBe(false);
+    expect(existsSync(paths.lockFile)).toBe(false);
+  });
+
+  it("lists run IDs", () => {
+    const repo = tempRepo();
+    const paths1 = getStatePaths(repo, "r20240115-120000");
+    const paths2 = getStatePaths(repo, "r20240115-130000");
+    const run = {
+      version: 1 as const,
+      runId: "r20240115-120000",
+      mode: "auto" as const,
+      strategyReason: "Auto mode selected; effective max concurrency 3.",
+      repoRoot: repo,
+      planPath: "/repo/plan.md",
+      planHash: "abc123",
+      baseSha: "def456",
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+
+    createRunState(paths1, run, "# Plan\n");
+    createRunState(paths2, { ...run, runId: "r20240115-130000" }, "# Plan\n");
+
+    const ids = listRunIds(repo);
+    expect(ids.sort()).toEqual(["r20240115-120000", "r20240115-130000"]);
+  });
+});
