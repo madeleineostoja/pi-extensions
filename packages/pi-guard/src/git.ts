@@ -54,6 +54,19 @@ export function gitLsFiles(cwd: string, path?: string): string {
   }
 }
 
+export function gitWorktreeRoot(cwd: string): string | undefined {
+  try {
+    return execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 5000,
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
 export function classifyGitRecoverability(
   cwd: string,
   absPath: string,

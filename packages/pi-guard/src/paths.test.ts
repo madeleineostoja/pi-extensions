@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { toAbsolutePath, extractShellWords } from "./paths";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  expandKnownTempEnvVars,
+  extractShellWords,
+  isDisposableTempTarget,
+  toAbsolutePath,
+} from "./paths";
 
 describe("toAbsolutePath", () => {
   it("resolves relative paths against cwd", () => {
@@ -62,5 +69,51 @@ describe("extractShellWords", () => {
 
   it("returns undefined for brace expansion", () => {
     expect(extractShellWords("rm {a,b}.txt")).toBeUndefined();
+  });
+});
+
+describe("expandKnownTempEnvVars", () => {
+  it("expands known temp env vars", () => {
+    const previous = process.env.TMPDIR;
+    const base = tmpdir();
+    process.env.TMPDIR = join(base, "pi-guard-env");
+    try {
+      expect(expandKnownTempEnvVars("$TMPDIR/file")).toBe(
+        join(base, "pi-guard-env", "file"),
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = previous;
+      }
+    }
+  });
+
+  it("rejects unknown env vars", () => {
+    expect(expandKnownTempEnvVars("$HOME/file")).toBeUndefined();
+  });
+});
+
+describe("isDisposableTempTarget", () => {
+  it("allows children of known temp roots", () => {
+    expect(
+      isDisposableTempTarget(join(tmpdir(), "pi-guard-target"), "/home/user"),
+    ).toBe(true);
+  });
+
+  it("rejects temp roots themselves", () => {
+    expect(isDisposableTempTarget(tmpdir(), "/home/user")).toBe(false);
+  });
+
+  it("rejects globbed temp targets", () => {
+    expect(isDisposableTempTarget(join(tmpdir(), "*"), "/home/user")).toBe(
+      false,
+    );
+  });
+
+  it("rejects paths inside protected roots", () => {
+    const cwd = join(tmpdir(), "pi-guard-repo");
+    expect(isDisposableTempTarget(join(cwd, "file.txt"), cwd)).toBe(false);
   });
 });
