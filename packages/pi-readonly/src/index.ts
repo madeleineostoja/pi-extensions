@@ -1,6 +1,7 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
+  MessageRenderer,
 } from "@earendil-works/pi-coding-agent";
 import {
   parseReadonlyArgs,
@@ -12,11 +13,28 @@ import {
 import { decideToolCall, resolveChoice } from "./handler";
 
 const FOOTER_KEY = "pi-readonly.mode";
+const MESSAGE_TYPE = "pi-readonly.status";
 const READONLY_ICON = "󰏯";
 const EDITING_ICON = "󰏫";
 
+type StatusDetails = {
+  message: string;
+};
+
 const NON_INTERACTIVE_MSG =
   "readonly mode auto-disabled: no interactive UI available in this session. Edits will proceed without confirmation.";
+
+const renderStatusMessage: MessageRenderer<StatusDetails> = (
+  message,
+  _options,
+  theme,
+) => {
+  const text = message.details?.message ?? String(message.content);
+  return {
+    render: () => [theme.fg("dim", text)],
+    invalidate: () => {},
+  };
+};
 
 export default function (pi: ExtensionAPI) {
   let readonlyMode = true;
@@ -27,13 +45,18 @@ export default function (pi: ExtensionAPI) {
     readonlyMode = next;
   }
 
-  function notifyNonInteractive(ctx: ExtensionContext) {
+  function notifyNonInteractive() {
     if (nonInteractiveNotified) {
       return;
     }
     nonInteractiveNotified = true;
-    process.stderr.write(`[pi-readonly] ${NON_INTERACTIVE_MSG}\n`);
-    ctx.ui.notify(NON_INTERACTIVE_MSG, "info");
+    const message = `[pi-readonly] ${NON_INTERACTIVE_MSG}`;
+    pi.sendMessage({
+      customType: MESSAGE_TYPE,
+      content: message,
+      display: true,
+      details: { message },
+    });
   }
 
   function syncFooter(ctx: ExtensionContext) {
@@ -53,6 +76,8 @@ export default function (pi: ExtensionAPI) {
       );
     }
   }
+
+  pi.registerMessageRenderer(MESSAGE_TYPE, renderStatusMessage);
 
   pi.registerShortcut("ctrl+shift+r", {
     description: "Toggle readonly mode",
@@ -75,7 +100,7 @@ export default function (pi: ExtensionAPI) {
 
     if (!ctx.hasUI) {
       applyMode(false);
-      notifyNonInteractive(ctx);
+      notifyNonInteractive();
     }
     syncFooter(ctx);
   });
@@ -120,7 +145,7 @@ export default function (pi: ExtensionAPI) {
     if (decision === "auto-disable") {
       applyMode(false);
       syncFooter(ctx);
-      notifyNonInteractive(ctx);
+      notifyNonInteractive();
       return undefined;
     }
 

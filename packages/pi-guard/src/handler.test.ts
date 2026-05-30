@@ -162,10 +162,12 @@ describe("resolveChoice", () => {
 type AnyHandler = (event: never, ctx: ExtensionContext) => Promise<unknown>;
 type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>;
 type ShortcutHandler = (ctx: ExtensionContext) => Promise<void>;
+type CustomMessageInput = Parameters<ExtensionAPI["sendMessage"]>[0];
 
 function captureHandlers() {
   let toolCallHandler: AnyHandler | undefined;
   let sessionStartHandler: AnyHandler | undefined;
+  const messageCalls: CustomMessageInput[] = [];
 
   const pi = {
     on(event: string, handler: AnyHandler) {
@@ -182,7 +184,9 @@ function captureHandlers() {
     registerFlag: () => {},
     getFlag: () => undefined,
     registerMessageRenderer: () => {},
-    sendMessage: () => {},
+    sendMessage: (message: CustomMessageInput) => {
+      messageCalls.push(message);
+    },
     sendUserMessage: () => {},
     appendEntry: () => {},
     setSessionName: () => {},
@@ -210,7 +214,7 @@ function captureHandlers() {
   if (!sessionStartHandler) {
     throw new Error("session_start handler was not registered");
   }
-  return { toolCallHandler, sessionStartHandler };
+  return { toolCallHandler, sessionStartHandler, messageCalls };
 }
 
 function captureAllHandlers() {
@@ -347,8 +351,8 @@ function makeSessionStartEvent(
 }
 
 describe("non-interactive mode", () => {
-  it("tool_call with hasUI=false returns undefined, disables guard, notifies once", async () => {
-    const { toolCallHandler } = captureHandlers();
+  it("tool_call with hasUI=false returns undefined, disables guard, logs status once", async () => {
+    const { toolCallHandler, messageCalls } = captureHandlers();
     const ctx = makeNonInteractiveCtx();
 
     const result = await toolCallHandler(
@@ -357,38 +361,43 @@ describe("non-interactive mode", () => {
     );
 
     expect(result).toBeUndefined();
-    expect(ctx.notifyCalls).toHaveLength(1);
-    expect(ctx.notifyCalls[0]).toMatch(/guard auto-disabled/);
-    expect(ctx.notifyCalls[0]).toMatch(/no interactive UI/);
+    expect(ctx.notifyCalls).toHaveLength(0);
+    expect(messageCalls).toHaveLength(1);
+    expect(messageCalls[0]?.customType).toBe("pi-guard.status");
+    expect(messageCalls[0]?.display).toBe(true);
+    expect(messageCalls[0]?.content).toMatch(/guard auto-disabled/);
+    expect(messageCalls[0]?.content).toMatch(/no interactive UI/);
   });
 
-  it("second tool_call with hasUI=false does not re-notify", async () => {
-    const { toolCallHandler } = captureHandlers();
+  it("second tool_call with hasUI=false does not re-log", async () => {
+    const { toolCallHandler, messageCalls } = captureHandlers();
     const ctx = makeNonInteractiveCtx();
 
     await toolCallHandler(makeBashEvent("rm file.txt") as never, ctx);
-    const notifyCountAfterFirst = ctx.notifyCalls.length;
+    const messageCountAfterFirst = messageCalls.length;
 
     await toolCallHandler(makeBashEvent("rm file2.txt") as never, ctx);
 
-    expect(ctx.notifyCalls).toHaveLength(notifyCountAfterFirst);
+    expect(messageCalls).toHaveLength(messageCountAfterFirst);
   });
 
-  it("session_start with hasUI=false auto-disables and notifies once", async () => {
-    const { sessionStartHandler, toolCallHandler } = captureHandlers();
+  it("session_start with hasUI=false auto-disables and logs once", async () => {
+    const { sessionStartHandler, toolCallHandler, messageCalls } =
+      captureHandlers();
     const ctx = makeNonInteractiveCtx();
 
     await sessionStartHandler(makeSessionStartEvent("startup") as never, ctx);
 
-    expect(ctx.notifyCalls).toHaveLength(1);
-    expect(ctx.notifyCalls[0]).toMatch(/guard auto-disabled/);
+    expect(ctx.notifyCalls).toHaveLength(0);
+    expect(messageCalls).toHaveLength(1);
+    expect(messageCalls[0]?.content).toMatch(/guard auto-disabled/);
 
     const result = await toolCallHandler(
       makeBashEvent("rm file.txt") as never,
       ctx,
     );
     expect(result).toBeUndefined();
-    expect(ctx.notifyCalls).toHaveLength(1);
+    expect(messageCalls).toHaveLength(1);
   });
 });
 

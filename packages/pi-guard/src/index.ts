@@ -1,19 +1,37 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
+  MessageRenderer,
+  ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
-import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { parseGuardArgs, formatBlockReason } from "./utils";
 import { decideToolCall, resolveChoice } from "./handler";
 import { assessBashCommand } from "./assessors";
 import { extractPendingCreations, commitPendingCreations } from "./session";
 
 const FOOTER_KEY = "pi-guard.mode";
+const MESSAGE_TYPE = "pi-guard.status";
 const GUARD_ICON = "󰌾";
 const GUARD_OFF_ICON = "󰌿";
 
+type StatusDetails = {
+  message: string;
+};
+
 const NON_INTERACTIVE_MSG =
   "guard auto-disabled: no interactive UI available in this session. Risky shell commands will proceed without confirmation.";
+
+const renderStatusMessage: MessageRenderer<StatusDetails> = (
+  message,
+  _options,
+  theme,
+) => {
+  const text = message.details?.message ?? String(message.content);
+  return {
+    render: () => [theme.fg("dim", text)],
+    invalidate: () => {},
+  };
+};
 
 export default function (pi: ExtensionAPI) {
   let guardEnabled = true;
@@ -26,13 +44,18 @@ export default function (pi: ExtensionAPI) {
     guardEnabled = next;
   }
 
-  function notifyNonInteractive(ctx: ExtensionContext) {
+  function notifyNonInteractive() {
     if (nonInteractiveNotified) {
       return;
     }
     nonInteractiveNotified = true;
-    process.stderr.write(`[pi-guard] ${NON_INTERACTIVE_MSG}\n`);
-    ctx.ui.notify(NON_INTERACTIVE_MSG, "info");
+    const message = `[pi-guard] ${NON_INTERACTIVE_MSG}`;
+    pi.sendMessage({
+      customType: MESSAGE_TYPE,
+      content: message,
+      display: true,
+      details: { message },
+    });
   }
 
   function syncFooter(ctx: ExtensionContext) {
@@ -52,6 +75,8 @@ export default function (pi: ExtensionAPI) {
       );
     }
   }
+
+  pi.registerMessageRenderer(MESSAGE_TYPE, renderStatusMessage);
 
   pi.registerShortcut("alt+g", {
     description: "Toggle guard mode",
@@ -76,7 +101,7 @@ export default function (pi: ExtensionAPI) {
 
     if (!ctx.hasUI) {
       applyMode(false);
-      notifyNonInteractive(ctx);
+      notifyNonInteractive();
     }
     syncFooter(ctx);
   });
@@ -128,7 +153,7 @@ export default function (pi: ExtensionAPI) {
     if (decision === "auto-disable") {
       applyMode(false);
       syncFooter(ctx);
-      notifyNonInteractive(ctx);
+      notifyNonInteractive();
       return undefined;
     }
 

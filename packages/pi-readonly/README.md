@@ -46,7 +46,7 @@ These are deliberate non-features.
 - **No persistence.** Readonly mode resets to on when a new session starts (`startup`, `new`, `fork`). On reload or resume, the prior in-session state is preserved — if you turned readonly off before reloading, it stays off. There is no config file to make it default-off across sessions.
 - **No per-path config.** Readonly mode is global — you cannot exempt certain directories or file types.
 - **No bash-redirect interception.** Shell commands that write files (e.g. `echo foo > bar.txt`) bypass the `edit`/`write` tool hooks entirely and are not gated.
-- **Non-interactive sessions run without readonly mode.** In print mode (`pi -p "..."`), RPC mode, and other non-interactive contexts there is no UI to present the approval modal. Readonly mode is automatically disabled at session start and a one-time message is written to stderr. Edits proceed without confirmation.
+- **Non-interactive sessions run without readonly mode.** In print mode (`pi -p "..."`), RPC mode, and other non-interactive contexts there is no UI to present the approval modal. Readonly mode is automatically disabled at session start and a one-time status message is added to the response log. Edits proceed without confirmation.
 
 ## Keybinding conflicts
 

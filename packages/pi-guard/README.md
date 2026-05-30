@@ -51,7 +51,7 @@ Current state is always visible in the footer (`guard` or `guard off`).
 - **No sandbox or outside-cwd policy.** Filesystem boundaries are handled by `pi-sandbox`.
 - **No production-infrastructure rules.** Commands like `kubectl delete`, `terraform destroy`, and cloud CLI operations are not guarded.
 - **No secrets scanning.** Protected-file policies are out of scope.
-- **Non-interactive sessions run without guard.** In print mode, RPC mode, and other non-interactive contexts there is no UI to present the approval modal. Guard is automatically disabled at session start and a one-time message is written to stderr.
+- **Non-interactive sessions run without guard.** In print mode, RPC mode, and other non-interactive contexts there is no UI to present the approval modal. Guard is automatically disabled at session start and a one-time status message is added to the response log.
 - **Git-aware recoverability.** Deleting clean tracked files is allowed because Git can restore them. Deleting untracked files or dirty tracked files prompts.
 - **Best-effort parsing.** Commands with shell variables, globs, command substitution, pipelines, and compound statements (`&&`, `||`, `;`) are handled conservatively: some forms may prompt even when safe, and some complex forms may not be detected.
 - **Git commands with `-C` are supported** but dirty-worktree checks apply to the target directory.
