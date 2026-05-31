@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,6 +21,10 @@ import {
 
 function tempRepo(): string {
   return mkdtempSync(join(tmpdir(), "pi-implement-state-"));
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf-8" });
 }
 
 describe("state paths", () => {
@@ -249,6 +254,63 @@ describe("run state lifecycle", () => {
     expect(existsSync(paths.lockFile)).toBe(true);
 
     cleanupRun(paths);
+    expect(existsSync(paths.runDir)).toBe(false);
+    expect(existsSync(paths.lockFile)).toBe(false);
+  });
+
+  it("removes registered worktrees and task branches during cleanup", () => {
+    const repo = tempRepo();
+    git(repo, "init", "-q");
+    git(repo, "config", "user.email", "test@example.com");
+    git(repo, "config", "user.name", "Test User");
+    writeFileSync(join(repo, "README.md"), "# Test\n", "utf-8");
+    git(repo, "add", "README.md");
+    git(repo, "commit", "-q", "-m", "chore: init");
+
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const run = {
+      version: 1 as const,
+      runId: "r20240115-120000",
+      mode: "parallel" as const,
+      strategyReason: "Parallel mode requested.",
+      repoRoot: repo,
+      planPath: join(repo, "plan.md"),
+      planHash: "abc123",
+      baseSha: git(repo, "rev-parse", "HEAD").trim(),
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+    createRunState(paths, run, "# Plan\n");
+    const branchName = "pi-implement/r20240115-120000/t001-test";
+    const worktreePath = join(paths.worktreesDir, "t001-test");
+    git(repo, "branch", branchName, run.baseSha);
+    git(repo, "worktree", "add", "-q", worktreePath, branchName);
+    writeTaskJson(paths, "t001-test", {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test",
+      status: "approved",
+      dependsOn: [],
+      attempts: 1,
+      integrationAttempts: 0,
+      baseSha: run.baseSha,
+      worktreePath,
+      branchName,
+    });
+
+    expect(git(repo, "worktree", "list", "--porcelain")).toContain(
+      worktreePath,
+    );
+    expect(git(repo, "branch", "--list", branchName)).toContain(branchName);
+
+    cleanupRun(paths);
+
+    expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(
+      worktreePath,
+    );
+    expect(git(repo, "branch", "--list", branchName)).not.toContain(branchName);
     expect(existsSync(paths.runDir)).toBe(false);
     expect(existsSync(paths.lockFile)).toBe(false);
   });

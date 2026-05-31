@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   readFileSync,
@@ -220,7 +221,27 @@ export function readTaskJson(
 }
 
 export function cleanupRun(paths: StatePaths): void {
-  const runId = readRunJson(paths)?.runId ?? basename(paths.runDir);
+  const run = readRunJson(paths);
+  const runId = run?.runId ?? basename(paths.runDir);
+  const cleanupEntries = readTaskCleanupEntries(paths);
+  if (run?.repoRoot) {
+    for (const entry of cleanupEntries) {
+      if (entry.worktreePath) {
+        runGitCleanup(run.repoRoot, [
+          "worktree",
+          "remove",
+          "--force",
+          entry.worktreePath,
+        ]);
+      }
+    }
+    runGitCleanup(run.repoRoot, ["worktree", "prune"]);
+    for (const entry of cleanupEntries) {
+      if (entry.branchName?.startsWith(`pi-implement/${runId}/`)) {
+        runGitCleanup(run.repoRoot, ["branch", "-D", entry.branchName]);
+      }
+    }
+  }
   if (existsSync(paths.runDir)) {
     rmSync(paths.runDir, { recursive: true, force: true });
   }
@@ -257,6 +278,36 @@ export function listRunIds(repoRoot: string): string[] {
       .map((d) => d.name);
   } catch {
     return [];
+  }
+}
+
+function readTaskCleanupEntries(
+  paths: StatePaths,
+): Array<{ worktreePath?: string; branchName?: string }> {
+  if (!existsSync(paths.tasksDir)) {
+    return [];
+  }
+  const entries: Array<{ worktreePath?: string; branchName?: string }> = [];
+  for (const dirent of readdirSync(paths.tasksDir, { withFileTypes: true })) {
+    if (!dirent.isDirectory()) {
+      continue;
+    }
+    const task = readTaskJson(paths, dirent.name);
+    if (task?.worktreePath || task?.branchName) {
+      entries.push({
+        worktreePath: task.worktreePath,
+        branchName: task.branchName,
+      });
+    }
+  }
+  return entries;
+}
+
+function runGitCleanup(repoRoot: string, args: string[]): void {
+  try {
+    execFileSync("git", args, { cwd: repoRoot, stdio: "ignore" });
+  } catch {
+    return;
   }
 }
 

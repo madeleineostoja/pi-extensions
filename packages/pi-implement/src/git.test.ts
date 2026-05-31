@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -129,5 +129,163 @@ describe("git helpers", () => {
     await client.stageAllExcept([]);
 
     expect(await client.stagedNameStatus()).toBe("A\tnew.ts\n");
+  });
+
+  it("ignores .pi/implement/worktrees paths in isCleanExcept", async () => {
+    const cwd = repo();
+    const worktreePath = join(
+      cwd,
+      ".pi",
+      "implement",
+      "worktrees",
+      "r1",
+      "t001-my-task",
+    );
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(join(worktreePath, "some-file.ts"), "export const x = 1;\n");
+    const client = new ExecGitClient(cwd);
+
+    expect(await client.isCleanExcept([])).toBe(true);
+  });
+
+  it("creates a task branch at the specified base SHA", async () => {
+    const cwd = repo();
+    const client = new ExecGitClient(cwd);
+    const baseSha = await client.head();
+
+    await client.createTaskBranch("pi-implement/r1/t001-task", baseSha);
+
+    const branches = git(cwd, "branch", "--list");
+    expect(branches).toContain("pi-implement/r1/t001-task");
+  });
+
+  it("adds and removes a worktree under .pi/implement/worktrees", async () => {
+    const cwd = repo();
+    const client = new ExecGitClient(cwd);
+    const baseSha = await client.head();
+    const worktreePath = join(
+      cwd,
+      ".pi",
+      "implement",
+      "worktrees",
+      "r1",
+      "t001-wt-test",
+    );
+    const branchName = "pi-implement/r1/t001-wt-test";
+
+    await client.createTaskBranch(branchName, baseSha);
+    await client.addWorktree(worktreePath, branchName);
+
+    const wtList = git(cwd, "worktree", "list", "--porcelain");
+    expect(wtList).toContain(worktreePath);
+
+    await client.removeWorktree(worktreePath);
+    await client.deleteTaskBranch(branchName);
+
+    const wtListAfter = git(cwd, "worktree", "list", "--porcelain");
+    expect(wtListAfter).not.toContain(worktreePath);
+    const branchesAfter = git(cwd, "branch", "--list");
+    expect(branchesAfter).not.toContain(branchName);
+  });
+
+  it("forWorktree returns a GitClient rooted at the worktree", async () => {
+    const cwd = repo();
+    const client = new ExecGitClient(cwd);
+    const baseSha = await client.head();
+    const worktreePath = realpathSync(
+      mkdtempSync(join(tmpdir(), "pi-implement-wt2-")),
+    );
+    const branchName = "pi-implement/r1/t001-for-wt";
+
+    await client.createTaskBranch(branchName, baseSha);
+    await client.addWorktree(worktreePath, branchName);
+
+    const wtClient = client.forWorktree(worktreePath);
+    const wtRoot = await wtClient.root();
+    expect(wtRoot).toBe(worktreePath);
+
+    await client.removeWorktree(worktreePath);
+    await client.deleteTaskBranch(branchName);
+  });
+
+  it("stages and commits in a worktree without changing main HEAD", async () => {
+    const cwd = repo();
+    const client = new ExecGitClient(cwd);
+    const baseSha = await client.head();
+    const worktreePath = realpathSync(
+      mkdtempSync(join(tmpdir(), "pi-implement-wt3-")),
+    );
+    const branchName = "pi-implement/r1/t001-commit-test";
+
+    await client.createTaskBranch(branchName, baseSha);
+    await client.addWorktree(worktreePath, branchName);
+
+    const wtClient = client.forWorktree(worktreePath);
+    writeFileSync(join(worktreePath, "new.ts"), "export const added = true;\n");
+    await wtClient.stageAllExcept([]);
+    expect(await wtClient.hasStagedChanges()).toBe(true);
+    const commitResult = await wtClient.commit("feat: add new.ts");
+    expect(commitResult.exitCode).toBe(0);
+
+    // Main HEAD should be unchanged
+    expect(await client.head()).toBe(baseSha);
+    // Worktree HEAD should have advanced
+    expect(await wtClient.head()).not.toBe(baseSha);
+
+    await client.removeWorktree(worktreePath);
+    await client.deleteTaskBranch(branchName);
+  });
+
+  it("reads staged diff, diff stat, and name-status from a worktree", async () => {
+    const cwd = repo();
+    const client = new ExecGitClient(cwd);
+    const baseSha = await client.head();
+    const worktreePath = realpathSync(
+      mkdtempSync(join(tmpdir(), "pi-implement-wt4-")),
+    );
+    const branchName = "pi-implement/r1/t001-diff-test";
+
+    await client.createTaskBranch(branchName, baseSha);
+    await client.addWorktree(worktreePath, branchName);
+
+    const wtClient = client.forWorktree(worktreePath);
+    writeFileSync(join(worktreePath, "diff.ts"), "export const x = 42;\n");
+    await wtClient.stageAllExcept([]);
+
+    expect(await wtClient.stagedDiff()).toContain("diff.ts");
+    expect(await wtClient.stagedDiffStat()).toContain("diff.ts");
+    expect(await wtClient.stagedNameStatus()).toContain("diff.ts");
+
+    await client.removeWorktree(worktreePath);
+    await client.deleteTaskBranch(branchName);
+  });
+
+  it("excludes main-checkout plan artifacts when staging in a worktree", async () => {
+    const cwd = repo();
+    writeFileSync(join(cwd, "plan.md"), "# Plan\n");
+    git(cwd, "add", "plan.md");
+    git(cwd, "commit", "-m", "chore: add plan");
+    const client = new ExecGitClient(cwd);
+    const baseSha = await client.head();
+    const worktreePath = realpathSync(
+      mkdtempSync(join(tmpdir(), "pi-implement-wt5-")),
+    );
+    const branchName = "pi-implement/r1/t001-plan-exclude";
+
+    await client.createTaskBranch(branchName, baseSha);
+    await client.addWorktree(worktreePath, branchName);
+
+    const wtClient = client.forWorktree(worktreePath);
+    writeFileSync(join(worktreePath, "plan.md"), "# Mutated Plan\n");
+    writeFileSync(
+      join(worktreePath, "worker.ts"),
+      "export const worker = true;\n",
+    );
+    await wtClient.stageAllExcept([join(cwd, "plan.md")]);
+
+    expect(await wtClient.stagedNameStatus()).toBe("A\tworker.ts\n");
+
+    await client.removeWorktree(worktreePath);
+    await client.deleteTaskBranch(branchName);
   });
 });

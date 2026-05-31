@@ -37,10 +37,18 @@ export type GitClient = {
   restoreStagedPatch(patch: string, protectedPaths: string[]): Promise<void>;
   commit(message: string): Promise<CommandResult>;
   reset(): Promise<void>;
+  createTaskBranch(branchName: string, baseSha: string): Promise<void>;
+  addWorktree(worktreePath: string, branchName: string): Promise<void>;
+  removeWorktree(worktreePath: string): Promise<void>;
+  deleteTaskBranch(branchName: string): Promise<void>;
+  forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient;
 };
 
 export class ExecGitClient implements GitClient {
-  constructor(private readonly cwd: string) {}
+  constructor(
+    private readonly cwd: string,
+    private readonly mainRepoRoot?: string,
+  ) {}
 
   async root(): Promise<string> {
     return (await this.run(["rev-parse", "--show-toplevel"])).stdout.trim();
@@ -178,6 +186,29 @@ export class ExecGitClient implements GitClient {
     await this.run(["reset"]);
   }
 
+  async createTaskBranch(branchName: string, baseSha: string): Promise<void> {
+    await this.run(["branch", branchName, baseSha]);
+  }
+
+  async addWorktree(worktreePath: string, branchName: string): Promise<void> {
+    await this.run(["worktree", "add", worktreePath, branchName]);
+  }
+
+  async removeWorktree(worktreePath: string): Promise<void> {
+    await this.run(["worktree", "remove", "--force", worktreePath], true);
+  }
+
+  async deleteTaskBranch(branchName: string): Promise<void> {
+    await this.run(["branch", "-D", branchName], true);
+  }
+
+  forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient {
+    return new ExecGitClient(
+      worktreePath,
+      mainRepoRoot ?? this.mainRepoRoot ?? this.cwd,
+    );
+  }
+
   private async changedPaths(): Promise<string[]> {
     const result = await this.run([
       "ls-files",
@@ -205,7 +236,7 @@ export class ExecGitClient implements GitClient {
   }
 
   private async repoRelativePaths(paths: string[]): Promise<string[]> {
-    const root = await this.root();
+    const root = this.mainRepoRoot ?? (await this.root());
     const realRoot = safeRealpath(root);
     const seen = new Set<string>();
     const result: string[] = [];

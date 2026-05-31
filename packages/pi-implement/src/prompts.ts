@@ -2,6 +2,7 @@ import type { ParsedImplementerResult } from "./verdict.js";
 
 export function buildImplementerPrompt(args: {
   taskPacket: string;
+  worktreePath: string;
   feedback?: string;
   priorSummary?: string;
 }): string {
@@ -9,6 +10,12 @@ export function buildImplementerPrompt(args: {
     ? `\n## Retry Context\n\nPrevious attempt summary:\n${args.priorSummary ?? "(none)"}\n\nFeedback to address:\n${args.feedback}\n`
     : "";
   return `Implement exactly one task from a /plan artifact.
+
+You have been assigned a dedicated Git worktree for this task. Read and write only inside the assigned worktree:
+
+  ${args.worktreePath}
+
+Do not read or write files outside the assigned worktree. Any shell command that touches project files must run from or explicitly target the assigned worktree path above.
 
 The task packet is the authoritative plan context. Read and search the repository as needed to understand and integrate the change. You may read any file in the repository. Do not implement sibling tasks or unrelated cleanup.
 
@@ -40,13 +47,22 @@ End with exactly one <pi-implement-result> block containing raw JSON matching th
 
 export function buildReviewerPrompt(args: {
   taskPacket: string;
+  worktreePath: string;
   implementer: ParsedImplementerResult;
 }): string {
   return `Review the staged candidate commit for exactly one /plan task.
 
-Do not edit files, write files, run mutation commands, stage, reset, commit, or change HEAD. You may run read-only commands and read/search relevant files to understand the current implementation.
+The staged diff lives in the assigned worktree for this task:
 
-The staged diff is the candidate commit. Inspect it yourself with read-only git commands such as \`git diff --cached HEAD\`, \`git diff --cached --stat HEAD\`, and \`git diff --cached --name-status HEAD\`. For staged file contents, use \`git show :path/to/file\`. The on-disk worktree normally matches the staged content for files in this diff, but source plan/checklist files are intentionally excluded from the candidate commit and may differ on disk.
+  ${args.worktreePath}
+
+Inspect the staged candidate diff in the assigned worktree. Use read-only git commands such as:
+- \`cd ${args.worktreePath} && git diff --cached HEAD\`
+- \`git diff --cached --stat HEAD\` (run from the worktree)
+- \`git diff --cached --name-status HEAD\` (run from the worktree)
+- \`git show :path/to/file\` (run from the worktree)
+
+Do not edit files, stage, reset, commit, or change HEAD. You may run read-only commands and read/search relevant files to understand the current implementation.
 
 The selected task's required scope is the task line plus the indented lines directly under it. Sub-bullets are part of the task. Sibling tasks are out of scope unless this diff makes them worse.
 
