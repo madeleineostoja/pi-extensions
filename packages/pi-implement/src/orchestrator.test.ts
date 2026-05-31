@@ -71,6 +71,19 @@ class FakeGit implements GitClient {
     return { command: "git commit", exitCode: 0, stdout: "", stderr: "" };
   }
   async reset() {}
+  async resetHard(commitSha: string) {
+    this.headValue = commitSha;
+  }
+  async cherryPickNoCommit(commitSha: string): Promise<CommandResult> {
+    this.diffText = `diff --git a/${commitSha} b/${commitSha}`;
+    return {
+      command: "git cherry-pick --no-commit",
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    };
+  }
+  async cherryPickAbort() {}
   async createTaskBranch(branchName: string, _baseSha: string) {
     this.createdBranches.push(branchName);
   }

@@ -101,4 +101,55 @@ describe("EventSubagentClient", () => {
       error: "Stopped by user.",
     });
   });
+
+  it("resolves immediately when waitFor receives an already-aborted signal", async () => {
+    const events = new FakeEvents();
+    const client = new EventSubagentClient(events, 100);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(client.waitFor("agent-1", controller.signal)).resolves.toEqual(
+      {
+        status: "stopped",
+        error: "Stopped by user.",
+      },
+    );
+  });
+
+  it("supports multiple concurrent waitFor calls", async () => {
+    const events = new FakeEvents();
+    const client = new EventSubagentClient(events, 100);
+
+    const p1 = client.waitFor("agent-1");
+    const p2 = client.waitFor("agent-2");
+    const p3 = client.waitFor("agent-3");
+
+    // Fire in interleaved order
+    events.fire("subagents:completed", { id: "agent-2", result: "second" });
+    events.fire("subagents:completed", { id: "agent-1", result: "first" });
+    events.fire("subagents:failed", { id: "agent-3", error: "third" });
+
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+    expect(r1).toEqual({ status: "completed", result: "first" });
+    expect(r2).toEqual({ status: "completed", result: "second" });
+    expect(r3).toEqual({ status: "failed", error: "third" });
+  });
+
+  it("each waiter only resolves for its own agent id", async () => {
+    const events = new FakeEvents();
+    const client = new EventSubagentClient(events, 100);
+
+    const p1 = client.waitFor("agent-1");
+    const p2 = client.waitFor("agent-2");
+
+    // Multiple unrelated completions before our targets
+    events.fire("subagents:completed", { id: "other-1", result: "x" });
+    events.fire("subagents:completed", { id: "other-2", result: "y" });
+    events.fire("subagents:completed", { id: "agent-2", result: "b" });
+    events.fire("subagents:completed", { id: "agent-1", result: "a" });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1).toEqual({ status: "completed", result: "a" });
+    expect(r2).toEqual({ status: "completed", result: "b" });
+  });
 });

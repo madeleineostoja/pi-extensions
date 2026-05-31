@@ -19,7 +19,12 @@ import {
   resolveMaxParallel,
 } from "./config.js";
 import { ExecGitClient } from "./git.js";
-import { EventSubagentClient } from "./subagents.js";
+import {
+  EventSubagentClient,
+  type SpawnArgs,
+  type SubagentClient,
+  type SubagentResult,
+} from "./subagents.js";
 import {
   runImplementation,
   BlockedError,
@@ -28,6 +33,7 @@ import {
 import type { RunState } from "./status.js";
 import { formatFooterStatus, formatRunStatus } from "./status.js";
 import { parseCommand } from "./parser.js";
+import { selectStrategy } from "./strategy.js";
 import type { ExecutionMode } from "./parser.js";
 import { resolvePlanArtifacts } from "./artifacts.js";
 import { parsePlanFile } from "./plan.js";
@@ -51,7 +57,20 @@ type ActiveRun = {
   runId: number;
   runDir?: string;
   abortController?: AbortController;
+  activeSubagentIds?: string[];
 };
+
+const ACTIVE_PHASES = new Set([
+  "preflight",
+  "strategy",
+  "scheduling",
+  "coding",
+  "reviewing",
+  "committing",
+  "integrating",
+  "reworking",
+  "stopping",
+]);
 
 export function registerImplementCommand(pi: ExtensionAPI): void {
   let active: ActiveRun = {
@@ -60,6 +79,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
     runId: 0,
   };
   let nextRunId = 0;
+  let lastStoppedState: RunState | undefined;
 
   const setState = (ctx: ExtensionCommandContext, patch: Partial<RunState>) => {
     active.state = { ...active.state, ...patch };
@@ -69,10 +89,11 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, ctx) => {
     active.stopping = true;
     active.abortController?.abort();
-    const activeSubagentId = active.state.activeSubagentId;
-    if (activeSubagentId) {
+    const ids = activeSubagentIds(active);
+    const client = new EventSubagentClient(pi.events);
+    for (const id of ids) {
       try {
-        await new EventSubagentClient(pi.events).stop(activeSubagentId);
+        await client.stop(id);
       } catch {
         // Best-effort: session is shutting down anyway.
       }
@@ -94,7 +115,21 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
 
       if (parsed.kind === "subcommand") {
         if (parsed.name === "status") {
-          ctx.ui.notify(formatRunStatus(active.state), "info");
+          // If idle but we have a last stopped/failed/blocked state, show it
+          const stateToShow =
+            active.state.phase === "idle" && lastStoppedState
+              ? lastStoppedState
+              : active.state;
+          ctx.ui.notify(formatRunStatus(stateToShow), "info");
+          if (
+            stateToShow.phase === "blocked" ||
+            stateToShow.phase === "stopped"
+          ) {
+            ctx.ui.notify(
+              "Use `/implement cleanup` to remove preserved artifacts.",
+              "info",
+            );
+          }
           return;
         }
 
@@ -112,32 +147,49 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         }
 
         if (parsed.name === "stop") {
+          if (!ACTIVE_PHASES.has(active.state.phase)) {
+            ctx.ui.notify(
+              `pi-implement is not running (phase: ${active.state.phase}).`,
+              "info",
+            );
+            return;
+          }
           active.stopping = true;
           active.abortController?.abort();
-          if (active.state.activeSubagentId) {
-            setState(ctx, { phase: "stopping" });
-            try {
-              await new EventSubagentClient(pi.events).stop(
-                active.state.activeSubagentId,
-              );
-            } catch (err) {
-              const reason = err instanceof Error ? err.message : String(err);
-              ctx.ui.notify(
-                `pi-implement local run stopped, but stopping the active subagent failed: ${reason}`,
-                "warning",
-              );
+          setState(ctx, { phase: "stopping" });
+
+          const ids = activeSubagentIds(active);
+          const failedStops: string[] = [];
+          if (ids.length > 0) {
+            const client = new EventSubagentClient(pi.events);
+            for (const id of ids) {
+              try {
+                await client.stop(id);
+              } catch (err) {
+                const reason = err instanceof Error ? err.message : String(err);
+                failedStops.push(`${id} (${reason})`);
+              }
             }
           }
-          setState(ctx, {
+
+          const newState: RunState = {
+            ...active.state,
             phase: "stopped",
             activeSubagentId: undefined,
-            lastReason:
-              "Stopped by user. Worktree may need manual cleanup before rerunning /implement.",
-          });
-          ctx.ui.notify(
-            "pi-implement stopped. The worktree may need manual cleanup before rerunning /implement <plan.md>.",
-            "warning",
-          );
+            activeSubagentIds: [],
+            lastReason: "Stopped by user.",
+          };
+          active.state = newState;
+          lastStoppedState = newState;
+          syncStatus(ctx, newState);
+
+          if (failedStops.length > 0) {
+            ctx.ui.notify(
+              `pi-implement stopped, but some subagent stop requests failed: ${failedStops.join(", ")}`,
+              "warning",
+            );
+          }
+          ctx.ui.notify("pi-implement stopped.", "warning");
           if (ctx.hasUI) {
             ctx.ui.setStatus(STATUS_KEY, undefined);
           }
@@ -175,44 +227,32 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         }
 
         if (parsed.name === "cleanup") {
+          if (ACTIVE_PHASES.has(active.state.phase)) {
+            ctx.ui.notify(
+              "pi-implement cleanup refused: a run is currently active. Use `/implement stop` first.",
+              "warning",
+            );
+            return;
+          }
           const git = new ExecGitClient(ctx.cwd);
           const repoRoot = await git.root();
           const runIds = listRunIds(repoRoot);
-          const activeNonTerminalPhases = new Set([
-            "preflight",
-            "coding",
-            "reviewing",
-            "committing",
-            "stopping",
-          ]);
-          const skipDir =
-            active.runDir && activeNonTerminalPhases.has(active.state.phase)
-              ? active.runDir
-              : undefined;
           let cleaned = 0;
-          let skipped = 0;
           for (const runId of runIds) {
             const paths = getStatePaths(repoRoot, runId);
-            if (skipDir && paths.runDir === skipDir) {
-              skipped++;
-              continue;
-            }
             try {
               cleanupRun(paths);
               cleaned++;
             } catch (err) {
               const reason = err instanceof Error ? err.message : String(err);
               ctx.ui.notify(
-                `Cleanup failed for ${runId}: ${reason}`,
+                `Cleanup warning for ${runId}: ${reason}`,
                 "warning",
               );
             }
           }
-          const suffix = skipped
-            ? ` (skipped ${skipped} active run${skipped === 1 ? "" : "s"}).`
-            : ".";
           ctx.ui.notify(
-            `pi-implement cleanup: removed ${cleaned} run(s)${suffix}`,
+            `pi-implement cleanup: removed ${cleaned} run(s).`,
             "info",
           );
           return;
@@ -288,6 +328,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       let repoRoot: string;
       let baseSha: string;
       let planContent: string;
+      let plan: ReturnType<typeof parsePlanFile>;
       let planArtifacts: string[];
       let planHash: string;
       try {
@@ -295,7 +336,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         repoRoot = await git.root();
         baseSha = await git.head();
         planContent = readFileSync(planPath, "utf-8");
-        const plan = parsePlanFile(planPath);
+        plan = parsePlanFile(planPath);
         planArtifacts = resolvePlanArtifacts(planPath, plan);
         planHash = createHash("sha256").update(planContent).digest("hex");
         if (!(await git.isCleanExcept(planArtifacts))) {
@@ -311,7 +352,6 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       const runIdNum = ++nextRunId;
       const abortController = new AbortController();
 
-      // Compute effective concurrency
       const requestedConcurrency =
         mode === "parallel" ? parsed.mode.concurrency : undefined;
       const maxConcurrency = resolveMaxParallel(
@@ -325,18 +365,21 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       );
       const paths = getStatePaths(repoRoot, runId);
 
-      const strategyReason = describeStrategy(parsed.mode, maxConcurrency);
+      const initialStrategyReason = describeStrategy(
+        parsed.mode,
+        maxConcurrency,
+      );
       const now = new Date().toISOString();
       const runJson = {
         version: 1 as const,
         runId,
         mode,
-        strategyReason,
+        strategyReason: initialStrategyReason,
         repoRoot,
         planPath,
         planHash,
         baseSha,
-        currentPhase: "preflight",
+        currentPhase: "preflight" as const,
         maxConcurrency,
         startedAt: now,
         updatedAt: now,
@@ -344,66 +387,150 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
 
       createRunState(paths, runJson, planContent);
       appendEvent(paths, { type: "run_started", runId });
-      appendEvent(paths, {
-        type: "strategy_selected",
-        reason: strategyReason,
-        mode,
-      });
 
+      const modeSource = parsed.mode.kind === "auto" ? "auto" : "cli";
       active = {
-        state: { phase: "preflight", planPath },
+        state: {
+          phase: "preflight",
+          planPath,
+          runId,
+          mode,
+          modeSource,
+          baseSha,
+          currentMainHead: baseSha,
+          maxConcurrency,
+        },
         stopping: false,
         runId: runIdNum,
         runDir: paths.runDir,
         abortController,
+        activeSubagentIds: [],
       };
+      lastStoppedState = undefined;
       syncStatus(ctx, active.state);
       ctx.ui.notify(`pi-implement started: ${planPath}`, "info");
 
       const isCurrentRun = () => active.runId === runIdNum;
-
-      void runImplementation({
-        git,
-        subagents: new EventSubagentClient(pi.events),
-        planPath,
-        planArtifacts,
-        roles: effective.roles,
-        mode,
-        maxConcurrency,
-        runId,
-        paths,
-        updateState: (patch) => {
-          if (isCurrentRun()) {
-            setState(ctx, patch);
-            if (paths) {
-              const current = readRunJson(paths);
-              if (current) {
-                writeRunJson(paths, {
-                  ...current,
-                  currentPhase: patch.phase ?? current.currentPhase,
-                  updatedAt: new Date().toISOString(),
-                });
-              }
-            }
+      const rawClient = new EventSubagentClient(pi.events);
+      const client = new TrackingSubagentClient(
+        rawClient,
+        abortController.signal,
+        (ids) => {
+          if (!isCurrentRun()) {
+            return;
           }
+          active.activeSubagentIds = ids;
+          setState(ctx, {
+            activeSubagentIds: ids,
+            activeSubagentId: ids.at(-1),
+          });
         },
-        shouldStop: () =>
-          !isCurrentRun() || active.stopping || abortController.signal.aborted,
-        signal: abortController.signal,
-      })
+      );
+
+      const updateState = (patch: Partial<RunState>) => {
+        if (!isCurrentRun()) {
+          return;
+        }
+        if ("activeSubagentIds" in patch) {
+          active.activeSubagentIds = patch.activeSubagentIds ?? [];
+        }
+        setState(ctx, patch);
+        const current = readRunJson(paths);
+        if (current) {
+          writeRunJson(paths, {
+            ...current,
+            currentPhase: patch.phase ?? current.currentPhase,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      };
+
+      void (async () => {
+        updateState({ phase: "strategy" });
+        const strategy = await selectStrategy({
+          plan,
+          planContent,
+          planHash,
+          repoRoot,
+          baseSha,
+          config: config.config,
+          roles: effective.roles,
+          subagents: client,
+          paths,
+          runId,
+          requestedMode: mode,
+          requestedConcurrency,
+          signal: abortController.signal,
+        });
+        throwIfCommandStopped(isCurrentRun, active, abortController);
+        appendEvent(paths, {
+          type: "strategy_selected",
+          reason: strategy.reason,
+          mode: strategy.mode,
+        });
+        const current = readRunJson(paths);
+        if (current) {
+          writeRunJson(paths, {
+            ...current,
+            mode: strategy.mode,
+            strategyReason: strategy.reason,
+            maxConcurrency: strategy.maxConcurrency,
+            currentPhase: "preflight",
+            updatedAt: new Date().toISOString(),
+          });
+        }
+        updateState({
+          phase: "preflight",
+          mode: strategy.mode,
+          maxConcurrency: strategy.maxConcurrency,
+          lastReason: strategy.reason,
+        });
+
+        await runImplementation({
+          git,
+          subagents: client,
+          planPath,
+          planArtifacts,
+          roles: effective.roles,
+          mode: strategy.mode,
+          maxConcurrency: strategy.maxConcurrency,
+          runId,
+          paths,
+          updateState,
+          shouldStop: () =>
+            !isCurrentRun() ||
+            active.stopping ||
+            abortController.signal.aborted,
+          signal: abortController.signal,
+          verifyCommand: config.config.verifyCommand,
+        });
+      })()
         .then(() => {
           if (!isCurrentRun()) {
             return;
           }
-          setState(ctx, { phase: "done", activeSubagentId: undefined });
+          setState(ctx, {
+            phase: "done",
+            activeSubagentId: undefined,
+            activeSubagentIds: [],
+          });
           ctx.ui.notify("pi-implement done.", "info");
           if (ctx.hasUI) {
             ctx.ui.setStatus(STATUS_KEY, undefined);
           }
-          // Auto-clean successful serial runs
+          // Auto-clean successful runs
           if (paths) {
             appendEvent(paths, { type: "run_done" });
-            cleanupRun(paths);
+            try {
+              cleanupRun(paths);
+            } catch (err) {
+              const reason = err instanceof Error ? err.message : String(err);
+              appendEvent(paths, { type: "cleanup_failed", reason });
+              ctx.ui.notify(
+                `pi-implement auto-cleanup warning: ${reason}`,
+                "warning",
+              );
+            }
           }
         })
         .catch((err: unknown) => {
@@ -411,11 +538,16 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             return;
           }
           if (err instanceof StoppedError) {
-            setState(ctx, {
+            const stoppedState: RunState = {
+              ...active.state,
               phase: "stopped",
               activeSubagentId: undefined,
+              activeSubagentIds: [],
               lastReason: "Stopped by user.",
-            });
+            };
+            active.state = stoppedState;
+            lastStoppedState = stoppedState;
+            syncStatus(ctx, stoppedState);
             if (paths) {
               appendEvent(paths, { type: "run_stopped" });
             }
@@ -424,11 +556,16 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
               err instanceof BlockedError || err instanceof Error
                 ? err.message
                 : String(err);
-            setState(ctx, {
+            const blockedState: RunState = {
+              ...active.state,
               phase: "blocked",
               activeSubagentId: undefined,
+              activeSubagentIds: [],
               lastReason: reason,
-            });
+            };
+            active.state = blockedState;
+            lastStoppedState = blockedState;
+            setState(ctx, blockedState);
             ctx.ui.notify(`pi-implement blocked: ${reason}`, "warning");
             if (paths) {
               appendEvent(paths, { type: "run_blocked", reason });
@@ -440,6 +577,57 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         });
     },
   });
+}
+
+class TrackingSubagentClient implements SubagentClient {
+  private readonly activeIds = new Set<string>();
+
+  constructor(
+    private readonly inner: SubagentClient,
+    private readonly signal: AbortSignal,
+    private readonly onChange: (ids: string[]) => void,
+  ) {}
+
+  async spawn(args: SpawnArgs): Promise<string> {
+    const id = await this.inner.spawn(args);
+    this.activeIds.add(id);
+    this.emitChange();
+    return id;
+  }
+
+  async stop(id: string): Promise<void> {
+    await this.inner.stop(id);
+  }
+
+  async waitFor(id: string, signal?: AbortSignal): Promise<SubagentResult> {
+    try {
+      return await this.inner.waitFor(id, signal ?? this.signal);
+    } finally {
+      this.activeIds.delete(id);
+      this.emitChange();
+    }
+  }
+
+  private emitChange(): void {
+    this.onChange([...this.activeIds]);
+  }
+}
+
+function activeSubagentIds(active: ActiveRun): string[] {
+  return [
+    ...(active.activeSubagentIds ?? []),
+    ...(active.state.activeSubagentId ? [active.state.activeSubagentId] : []),
+  ].filter((id, index, ids) => ids.indexOf(id) === index);
+}
+
+function throwIfCommandStopped(
+  isCurrentRun: () => boolean,
+  active: ActiveRun,
+  abortController: AbortController,
+): void {
+  if (!isCurrentRun() || active.stopping || abortController.signal.aborted) {
+    throw new StoppedError();
+  }
 }
 
 function describeStrategy(mode: ExecutionMode, maxConcurrency: number): string {

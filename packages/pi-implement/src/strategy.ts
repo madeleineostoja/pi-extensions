@@ -48,6 +48,7 @@ export type StrategyRequest = {
   runId: string;
   requestedMode: "auto" | "serial" | "parallel";
   requestedConcurrency?: number;
+  signal?: AbortSignal;
 };
 
 export async function selectStrategy(
@@ -211,7 +212,7 @@ async function runTriage(
       description: "strategy triage: serial vs escalate-to-planner",
       model: req.roles.planner.model,
     });
-    const result = await req.subagents.waitFor(id);
+    const result = await req.subagents.waitFor(id, req.signal);
     if (result.status !== "completed") {
       return {
         decision: "serial",
@@ -330,7 +331,7 @@ async function runGraphPlanner(
       description: "graph planner: build task dependency graph",
       model: req.roles.planner.model,
     });
-    const result = await req.subagents.waitFor(id);
+    const result = await req.subagents.waitFor(id, req.signal);
     if (result.status !== "completed") {
       return {
         mode: "serial",

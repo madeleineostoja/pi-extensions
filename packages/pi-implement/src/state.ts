@@ -30,12 +30,15 @@ export type RunJson = {
 
 export type TaskStatus =
   | "pending"
+  | "ready"
   | "coding"
   | "reviewing"
-  | "committing"
   | "approved"
-  | "integration_failed"
+  | "integrating"
   | "landed"
+  | "blocked"
+  | "needs_rework"
+  | "integration_failed"
   | "failed"
   | "stopped";
 
@@ -54,6 +57,7 @@ export type TaskJson = {
   landedCommitSha?: string;
   activeSubagentIds?: string[];
   lastReason?: string;
+  commitMessage?: string;
 };
 
 export type EventEntry =
@@ -245,8 +249,6 @@ export function cleanupRun(paths: StatePaths): void {
   if (existsSync(paths.runDir)) {
     rmSync(paths.runDir, { recursive: true, force: true });
   }
-  // TODO(plan-03): refuse cleanup if any task in this run is non-terminal,
-  // since plan-03 worktrees may host live subagent processes.
   if (existsSync(paths.worktreesDir)) {
     rmSync(paths.worktreesDir, { recursive: true, force: true });
   }
@@ -265,6 +267,29 @@ export function cleanupRun(paths: StatePaths): void {
       rmSync(paths.lockFile, { force: true });
     }
   }
+}
+
+export function cleanupAllRuns(
+  repoRoot: string,
+  excludeRunIds?: string[],
+): { cleaned: number; warnings: string[] } {
+  const warnings: string[] = [];
+  const runIds = listRunIds(repoRoot);
+  let cleaned = 0;
+  for (const runId of runIds) {
+    if (excludeRunIds?.includes(runId)) {
+      continue;
+    }
+    try {
+      const paths = getStatePaths(repoRoot, runId);
+      cleanupRun(paths);
+      cleaned++;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      warnings.push(`${runId}: ${reason}`);
+    }
+  }
+  return { cleaned, warnings };
 }
 
 export function listRunIds(repoRoot: string): string[] {

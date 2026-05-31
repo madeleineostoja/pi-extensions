@@ -58,7 +58,12 @@ export class EventSubagentClient implements SubagentClient {
       let offCompleted = () => {};
       let offFailed = () => {};
       let offAbort = () => {};
+      let settled = false;
       const done = (result: SubagentResult) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
         offCompleted();
         offFailed();
         offAbort();

@@ -37,6 +37,9 @@ export type GitClient = {
   restoreStagedPatch(patch: string, protectedPaths: string[]): Promise<void>;
   commit(message: string): Promise<CommandResult>;
   reset(): Promise<void>;
+  resetHard(commitSha: string): Promise<void>;
+  cherryPickNoCommit(commitSha: string): Promise<CommandResult>;
+  cherryPickAbort(): Promise<void>;
   createTaskBranch(branchName: string, baseSha: string): Promise<void>;
   addWorktree(worktreePath: string, branchName: string): Promise<void>;
   removeWorktree(worktreePath: string): Promise<void>;
@@ -184,6 +187,18 @@ export class ExecGitClient implements GitClient {
 
   async reset(): Promise<void> {
     await this.run(["reset"]);
+  }
+
+  async resetHard(commitSha: string): Promise<void> {
+    await this.run(["reset", "--hard", commitSha], true);
+  }
+
+  async cherryPickNoCommit(commitSha: string): Promise<CommandResult> {
+    return this.run(["cherry-pick", "--no-commit", commitSha], true);
+  }
+
+  async cherryPickAbort(): Promise<void> {
+    await this.run(["cherry-pick", "--abort"], true);
   }
 
   async createTaskBranch(branchName: string, baseSha: string): Promise<void> {
