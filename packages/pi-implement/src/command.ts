@@ -37,6 +37,7 @@ import { selectStrategy } from "./strategy.js";
 import type { ExecutionMode } from "./parser.js";
 import { resolvePlanArtifacts } from "./artifacts.js";
 import { parsePlanFile } from "./plan.js";
+import { diffProgress } from "./progress.js";
 import {
   getStatePaths,
   makeRunId,
@@ -454,6 +455,16 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       syncStatus(ctx, active.state);
       ctx.ui.notify(`pi-implement started: ${planPath}`, "info");
 
+      const taskTitles = plan.tasks.map((t) => t.text);
+
+      pi.sendMessage({
+        customType: "pi-implement-guidance",
+        content: `pi-implement is now running and will autonomously implement the plan task-by-task using its own subagents. It owns the full implement → review → commit loop, including deciding what runs next.
+
+While it runs you may receive \`subagent-notification\` messages reporting that its internal background agents have completed. Those are pi-implement's own workers — NOT tasks for you. Do not respond to them, do not call get_subagent_result, do not start/stop/steer agents, and do not narrate or summarize progress yourself. pi-implement emits its own authoritative \`pi-implement-progress\` updates and a final completion/blocked notice. Simply stay idle until the run ends or the user asks you something directly.`,
+        display: false,
+      });
+
       const isCurrentRun = () => active.runId === runIdNum;
       const rawClient = new EventSubagentClient(pi.events);
       const client = new TrackingSubagentClient(
@@ -478,7 +489,15 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         if ("activeSubagentIds" in patch) {
           active.activeSubagentIds = patch.activeSubagentIds ?? [];
         }
+        const prevState = active.state;
         setState(ctx, patch);
+        for (const line of diffProgress(prevState, active.state, taskTitles)) {
+          pi.sendMessage({
+            customType: "pi-implement-progress",
+            content: line,
+            display: true,
+          });
+        }
         const current = readRunJson(paths);
         if (current) {
           writeRunJson(paths, {
