@@ -11,6 +11,7 @@ import {
 import { randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type RunMode = "auto" | "serial" | "parallel";
 
@@ -103,8 +104,16 @@ export type AcquireRunLockResult =
   | { ok: true; staleRemoved?: string }
   | { ok: false; reason: string; lock?: Partial<RunLock> };
 
+export function encodeRepoRoot(repoRoot: string): string {
+  return repoRoot.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
+}
+
+export function getBaseDir(repoRoot: string): string {
+  return join(getAgentDir(), "pi-implement", `--${encodeRepoRoot(repoRoot)}--`);
+}
+
 export function getStatePaths(repoRoot: string, runId: string): StatePaths {
-  const baseDir = join(repoRoot, ".pi", "implement");
+  const baseDir = getBaseDir(repoRoot);
   const runDir = join(baseDir, "runs", runId);
   return {
     baseDir,
@@ -370,7 +379,7 @@ export function cleanupAllRuns(
 }
 
 export function listRunIds(repoRoot: string): string[] {
-  const runsDir = join(repoRoot, ".pi", "implement", "runs");
+  const runsDir = join(getBaseDir(repoRoot), "runs");
   if (!existsSync(runsDir)) {
     return [];
   }

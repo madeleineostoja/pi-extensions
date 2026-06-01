@@ -9,8 +9,11 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
   getStatePaths,
+  getBaseDir,
+  encodeRepoRoot,
   makeRunId,
   makeRunIdWithSuffix,
   taskIdFromTask,
@@ -39,24 +42,32 @@ function git(cwd: string, ...args: string[]): string {
 describe("state paths", () => {
   it("computes correct paths", () => {
     const paths = getStatePaths("/repo", "r20240101-120000");
-    expect(paths.baseDir).toBe("/repo/.pi/implement");
-    expect(paths.runDir).toBe("/repo/.pi/implement/runs/r20240101-120000");
+    const expectedBase = join(getAgentDir(), "pi-implement", "--repo--");
+    expect(paths.baseDir).toBe(expectedBase);
+    expect(paths.runDir).toBe(join(expectedBase, "runs", "r20240101-120000"));
     expect(paths.runJson).toBe(
-      "/repo/.pi/implement/runs/r20240101-120000/run.json",
+      join(expectedBase, "runs", "r20240101-120000", "run.json"),
     );
     expect(paths.eventsJsonl).toBe(
-      "/repo/.pi/implement/runs/r20240101-120000/events.jsonl",
+      join(expectedBase, "runs", "r20240101-120000", "events.jsonl"),
     );
     expect(paths.planSnapshot).toBe(
-      "/repo/.pi/implement/runs/r20240101-120000/plan.snapshot.md",
+      join(expectedBase, "runs", "r20240101-120000", "plan.snapshot.md"),
     );
     expect(paths.tasksDir).toBe(
-      "/repo/.pi/implement/runs/r20240101-120000/tasks",
+      join(expectedBase, "runs", "r20240101-120000", "tasks"),
     );
     expect(paths.worktreesDir).toBe(
-      "/repo/.pi/implement/worktrees/r20240101-120000",
+      join(expectedBase, "worktrees", "r20240101-120000"),
     );
-    expect(paths.lockFile).toBe("/repo/.pi/implement/locks/run.lock");
+    expect(paths.lockFile).toBe(join(expectedBase, "locks", "run.lock"));
+  });
+
+  it("encodes repo root into the base dir", () => {
+    expect(encodeRepoRoot("/repo")).toBe("repo");
+    expect(getBaseDir("/repo")).toBe(
+      join(getAgentDir(), "pi-implement", "--repo--"),
+    );
   });
 });
 
