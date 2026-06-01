@@ -72,14 +72,7 @@ export class ExecGitClient implements GitClient {
   async isCleanExcept(paths: string[]): Promise<boolean> {
     const excludes = await this.pathspecs(paths, true);
     const status = (
-      await this.run([
-        "status",
-        "--porcelain",
-        "--",
-        ":/",
-        ...excludes,
-        ":(top,literal,exclude).pi/implement",
-      ])
+      await this.run(["status", "--porcelain", "--", ":/", ...excludes])
     ).stdout;
     return isCleanStatus(status);
   }
@@ -89,9 +82,7 @@ export class ExecGitClient implements GitClient {
     const excluded = new Set(await this.repoRelativePaths(paths));
     const candidates = await this.changedPaths();
     const specs = candidates
-      .filter(
-        (path) => !excluded.has(path) && !path.startsWith(".pi/implement/"),
-      )
+      .filter((path) => !excluded.has(path))
       .map((path) => `:(top,literal)${path}`);
     if (specs.length) {
       await this.run(["add", "-A", "--", ...specs]);
@@ -238,7 +229,7 @@ export class ExecGitClient implements GitClient {
 
   private async protectedPathspecs(paths: string[]): Promise<string[]> {
     const excludes = await this.pathspecs(paths, true);
-    return [":/", ...excludes, ":(top,literal,exclude).pi/implement"];
+    return [":/", ...excludes];
   }
 
   private async pathspecs(

@@ -78,16 +78,6 @@ describe("git helpers", () => {
     expect(await client.stagedNameStatus()).toBe("A\tnew.ts\n");
   });
 
-  it("ignores .pi/implement files in isCleanExcept", async () => {
-    const cwd = repo();
-    const runDir = join(cwd, ".pi", "implement", "runs", "r1");
-    mkdirSync(runDir, { recursive: true });
-    writeFileSync(join(runDir, "run.json"), "{}");
-    const client = new ExecGitClient(cwd);
-
-    expect(await client.isCleanExcept([])).toBe(true);
-  });
-
   it("restores reviewer worktree edits from the staged index", async () => {
     const cwd = repo();
     writeFileSync(join(cwd, "tracked.ts"), "export const value = 2;\n");
@@ -118,36 +108,6 @@ describe("git helpers", () => {
     expect(git(cwd, "status", "--porcelain")).toBe("M  tracked.ts\n");
   });
 
-  it("does not stage .pi/implement files", async () => {
-    const cwd = repo();
-    const runDir = join(cwd, ".pi", "implement", "runs", "r1");
-    mkdirSync(runDir, { recursive: true });
-    writeFileSync(join(runDir, "run.json"), "{}");
-    writeFileSync(join(cwd, "new.ts"), "export const added = true;\n");
-    const client = new ExecGitClient(cwd);
-
-    await client.stageAllExcept([]);
-
-    expect(await client.stagedNameStatus()).toBe("A\tnew.ts\n");
-  });
-
-  it("ignores .pi/implement/worktrees paths in isCleanExcept", async () => {
-    const cwd = repo();
-    const worktreePath = join(
-      cwd,
-      ".pi",
-      "implement",
-      "worktrees",
-      "r1",
-      "t001-my-task",
-    );
-    mkdirSync(worktreePath, { recursive: true });
-    writeFileSync(join(worktreePath, "some-file.ts"), "export const x = 1;\n");
-    const client = new ExecGitClient(cwd);
-
-    expect(await client.isCleanExcept([])).toBe(true);
-  });
-
   it("creates a task branch at the specified base SHA", async () => {
     const cwd = repo();
     const client = new ExecGitClient(cwd);
@@ -159,7 +119,7 @@ describe("git helpers", () => {
     expect(branches).toContain("pi-implement/r1/t001-task");
   });
 
-  it("adds and removes a worktree under .pi/implement/worktrees", async () => {
+  it("adds and removes a worktree", async () => {
     const cwd = repo();
     const client = new ExecGitClient(cwd);
     const baseSha = await client.head();

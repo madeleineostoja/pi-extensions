@@ -38,7 +38,7 @@ function makePlan(taskLines: string[], checked: boolean[] = []) {
 
 function makeStatePaths(): StatePaths {
   return {
-    baseDir: join(tmpRunDir, ".pi/implement"),
+    baseDir: join(tmpRunDir, "state"),
     runDir: tmpRunDir,
     runJson: join(tmpRunDir, "run.json"),
     eventsJsonl: join(tmpRunDir, "events.jsonl"),

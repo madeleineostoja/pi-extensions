@@ -496,7 +496,7 @@ ${fileTree}
 
 ${manifests}
 
-## Current Git Status (excluding .pi/implement/** and plan artifacts)
+## Current Git Status (excluding .pi/** and plan artifacts)
 
 ${gitStatus}
 
@@ -555,10 +555,7 @@ async function getFileTreeSummary(repoRoot: string): Promise<string> {
       cwd: repoRoot,
       maxBuffer: 10 * 1024 * 1024,
     });
-    const paths = result.stdout
-      .split("\n")
-      .filter(Boolean)
-      .filter((p) => !p.startsWith(".pi/implement/"));
+    const paths = result.stdout.split("\n").filter(Boolean);
     if (paths.length <= CAP) {
       return paths.join("\n");
     }
@@ -618,13 +615,7 @@ async function getFilteredGitStatus(
   try {
     const result = await execFileAsync(
       "git",
-      [
-        "status",
-        "--porcelain",
-        "--",
-        ":/",
-        ":(top,literal,exclude).pi/implement",
-      ],
+      ["status", "--porcelain", "--", ":/"],
       { cwd: repoRoot, maxBuffer: 1 * 1024 * 1024 },
     );
     const lines = result.stdout.split("\n").filter((line) => {
@@ -632,9 +623,6 @@ async function getFilteredGitStatus(
         return false;
       }
       const filePath = line.slice(3);
-      if (filePath.startsWith(".pi/implement/")) {
-        return false;
-      }
       if (filePath.startsWith(".pi/")) {
         return false;
       }
