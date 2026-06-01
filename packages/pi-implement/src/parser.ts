@@ -7,7 +7,7 @@ export type ParsedCommand =
   | { kind: "execution"; mode: ExecutionMode }
   | {
       kind: "subcommand";
-      name: "status" | "stop" | "cleanup" | "config" | "agents";
+      name: "status" | "stop" | "cleanup" | "config" | "agents" | "inspect";
     }
   | { kind: "error"; message: string };
 
@@ -79,7 +79,8 @@ export function parseCommand(input: string): ParsedCommand {
       first === "stop" ||
       first === "cleanup" ||
       first === "config" ||
-      first === "agents"
+      first === "agents" ||
+      first === "inspect"
     ) {
       return { kind: "subcommand", name: first };
     }
@@ -113,6 +114,6 @@ function parsePositiveInt(value: string): number | undefined {
 export function usage(): string {
   return (
     "Usage: /implement <plan.md> | /implement --serial <plan.md> | /implement --parallel <n> <plan.md> | " +
-    "/implement status | /implement stop | /implement cleanup | /implement config | /implement agents"
+    "/implement status | /implement stop | /implement cleanup | /implement config | /implement agents | /implement inspect"
   );
 }

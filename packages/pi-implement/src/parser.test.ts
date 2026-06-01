@@ -61,6 +61,13 @@ describe("parseCommand", () => {
     });
   });
 
+  it("parses inspect subcommand", () => {
+    expect(parseCommand("inspect")).toEqual({
+      kind: "subcommand",
+      name: "inspect",
+    });
+  });
+
   it("rejects empty input", () => {
     const result = parseCommand("");
     expect(result.kind).toBe("error");
@@ -158,5 +165,6 @@ describe("parseCommand", () => {
     expect(usage()).toContain("cleanup");
     expect(usage()).toContain("config");
     expect(usage()).toContain("agents");
+    expect(usage()).toContain("inspect");
   });
 });
