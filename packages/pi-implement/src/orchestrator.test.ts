@@ -114,6 +114,9 @@ class FakeSubagents implements SubagentClient {
   spawns: SpawnArgs[] = [];
   results: SubagentResult[] = [];
 
+  async probe() {
+    return { ok: true as const };
+  }
   async spawn(args: SpawnArgs) {
     this.spawns.push(args);
     return `agent-${this.spawns.length}`;

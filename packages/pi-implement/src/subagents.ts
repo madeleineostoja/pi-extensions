@@ -4,10 +4,13 @@ type EventBus = {
 };
 
 export type SubagentClient = {
+  probe(timeoutMs?: number): Promise<ProbeResult>;
   spawn(args: SpawnArgs): Promise<string>;
   stop(id: string): Promise<void>;
   waitFor(id: string, signal?: AbortSignal): Promise<SubagentResult>;
 };
+
+export type ProbeResult = { ok: true; version?: number } | { ok: false };
 
 export type SpawnArgs = {
   type: string;
@@ -32,6 +35,15 @@ export class EventSubagentClient implements SubagentClient {
     private readonly events: EventBus,
     private readonly rpcTimeoutMs = 10_000,
   ) {}
+
+  async probe(timeoutMs = 2_000): Promise<ProbeResult> {
+    try {
+      const data = await this.rpc<{ version?: number }>("ping", {}, timeoutMs);
+      return { ok: true, version: data.version };
+    } catch {
+      return { ok: false };
+    }
+  }
 
   async spawn(args: SpawnArgs): Promise<string> {
     const data = await this.rpc<{ id?: string }>("spawn", {
@@ -115,8 +127,9 @@ export class EventSubagentClient implements SubagentClient {
   }
 
   private rpc<T>(
-    method: "spawn" | "stop",
+    method: "ping" | "spawn" | "stop",
     payload: Record<string, unknown>,
+    timeoutMs = this.rpcTimeoutMs,
   ): Promise<T> {
     const requestId = `pi-implement-${Date.now()}-${++this.counter}`;
     return new Promise((resolve, reject) => {
@@ -130,7 +143,7 @@ export class EventSubagentClient implements SubagentClient {
         reject(
           new Error(`Timed out waiting for pi-subagents ${method} reply.`),
         );
-      }, this.rpcTimeoutMs);
+      }, timeoutMs);
       const unsubscribe = this.events.on(
         `subagents:rpc:${method}:reply:${requestId}`,
         (raw) => {

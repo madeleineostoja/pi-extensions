@@ -67,6 +67,7 @@ function makeSubagents(result?: string): SubagentClient {
         : { status: "failed", error: "not configured" },
     );
   return {
+    probe: vi.fn().mockResolvedValue({ ok: true }),
     spawn: spawnFn,
     stop: vi.fn().mockResolvedValue(undefined),
     waitFor: waitForFn,
@@ -733,6 +734,7 @@ describe("selectStrategy - concurrency clamping", () => {
     // Triage response followed by planner
     let callCount = 0;
     const subagents: SubagentClient = {
+      probe: vi.fn().mockResolvedValue({ ok: true }),
       spawn: vi.fn().mockImplementation(() => {
         callCount++;
         return Promise.resolve(`agent-${callCount}`);

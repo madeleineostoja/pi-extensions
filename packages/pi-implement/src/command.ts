@@ -288,6 +288,15 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         return;
       }
 
+      const probe = await new EventSubagentClient(pi.events).probe();
+      if (!probe.ok) {
+        ctx.ui.notify(
+          "pi-implement requires the pi-subagents extension, which is not installed or not responding. Install @tintinweb/pi-subagents and reload.",
+          "warning",
+        );
+        return;
+      }
+
       const config = readConfig(getAgentDir());
       if (config.warning) {
         ctx.ui.notify(config.warning, "warning");
@@ -625,6 +634,10 @@ class TrackingSubagentClient implements SubagentClient {
     private readonly signal: AbortSignal,
     private readonly onChange: (ids: string[]) => void,
   ) {}
+
+  probe(timeoutMs?: number) {
+    return this.inner.probe(timeoutMs);
+  }
 
   async spawn(args: SpawnArgs): Promise<string> {
     const id = await this.inner.spawn(args);

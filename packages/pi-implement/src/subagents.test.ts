@@ -33,6 +33,26 @@ class FakeEvents {
 }
 
 describe("EventSubagentClient", () => {
+  it("probe resolves ok with version when pi-subagents replies", async () => {
+    const events = new FakeEvents();
+    const client = new EventSubagentClient(events, 10_000);
+    const promise = client.probe(100);
+    const request = events.emitted[0];
+    expect(request).toMatchObject({ event: "subagents:rpc:ping" });
+    const requestId = (request.payload as { requestId: string }).requestId;
+    events.fire(`subagents:rpc:ping:reply:${requestId}`, {
+      success: true,
+      data: { version: 2 },
+    });
+    await expect(promise).resolves.toEqual({ ok: true, version: 2 });
+  });
+
+  it("probe resolves not-ok when nothing replies before the timeout", async () => {
+    const events = new FakeEvents();
+    const client = new EventSubagentClient(events, 10_000);
+    await expect(client.probe(1)).resolves.toEqual({ ok: false });
+  });
+
   it("spawns with background options and model", async () => {
     const events = new FakeEvents();
     const client = new EventSubagentClient(events, 100);

@@ -11,6 +11,10 @@ export function buildImplementerPrompt(args: {
     : "";
   return `Implement exactly one task from a /plan artifact.
 
+You are running non-interactively as a subagent. No human will see your intermediate messages or answer questions. Never ask for clarification, never ask how to proceed, and never wait for input. Make reasonable decisions yourself and finish with the result block.
+
+The task packet below is a deliberate single-task slice of a larger plan. Sibling task lines are intentionally omitted — they are not truncation and not your concern. If you need more context than the packet provides, read the full plan file at the "Source Plan" path yourself; do not request it.
+
 You have been assigned a dedicated Git worktree for this task. Read and write only inside the assigned worktree:
 
   ${args.worktreePath}
@@ -51,6 +55,8 @@ export function buildReviewerPrompt(args: {
   implementer: ParsedImplementerResult;
 }): string {
   return `Review the staged candidate commit for exactly one /plan task.
+
+You are running non-interactively as a subagent. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The task packet is a deliberate single-task slice; sibling task lines are intentionally omitted and are out of scope.
 
 The staged diff lives in the assigned worktree for this task:
 
