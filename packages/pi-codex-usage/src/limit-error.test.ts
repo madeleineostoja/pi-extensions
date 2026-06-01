@@ -10,10 +10,6 @@ function makeMsg(text: string, role = "assistant"): unknown {
   return { role, content: [{ type: "text", text }] };
 }
 
-function makeStringContentMsg(text: string): unknown {
-  return { role: "assistant", content: text };
-}
-
 function makeErrorMsgMsg(errorMessage: string): unknown {
   return { role: "assistant", content: [], errorMessage };
 }
@@ -28,92 +24,45 @@ describe("isCodexLimitError", () => {
     ).toBe(false);
   });
 
-  it("returns false for messages with no content", () => {
+  it("returns false for assistant messages with no errorMessage", () => {
     expect(isCodexLimitError({ role: "assistant", content: [] })).toBe(false);
-  });
-
-  it("detects plain text with both limit and codex indicators", () => {
     expect(
       isCodexLimitError(
         makeMsg("You have hit the codex openai rate limit 429"),
       ),
-    ).toBe(true);
-  });
-
-  it("returns false when only limit indicator present (no codex indicator)", () => {
-    expect(
-      isCodexLimitError(makeMsg("You have hit your quota for requests")),
     ).toBe(false);
   });
 
-  it("returns false when only codex indicator present (no limit indicator)", () => {
+  it("returns false when errorMessage has only limit indicator", () => {
     expect(
-      isCodexLimitError(makeMsg("OpenAI Codex is a great AI system")),
+      isCodexLimitError(
+        makeErrorMsgMsg("You have hit your quota for requests"),
+      ),
     ).toBe(false);
   });
 
-  it("detects direct JSON with limit + codex in leaf string", () => {
-    const payload = JSON.stringify({
-      error: {
-        message: "You have exceeded your OpenAI Codex rate_limit",
-        code: "quota_exceeded",
-      },
-    });
-    expect(isCodexLimitError(makeMsg(payload))).toBe(true);
-  });
-
-  it("detects JSON string shape (escaped JSON in a string)", () => {
-    const inner = JSON.stringify({
-      error: "OpenAI Codex rate_limit exceeded",
-    });
-    const outer = JSON.stringify(inner);
-    expect(isCodexLimitError(makeMsg(outer))).toBe(true);
-  });
-
-  it("detects JSON embedded in prose text", () => {
-    const embedded = `Server responded: {"error":"chatgpt quota exceeded","code":"429"}`;
-    expect(isCodexLimitError(makeMsg(embedded))).toBe(true);
-  });
-
-  it("detects limit+codex across combined leaf strings in JSON", () => {
-    const payload = JSON.stringify({
-      provider: "openai",
-      status: "rate_limit",
-    });
-    expect(isCodexLimitError(makeMsg(payload))).toBe(true);
-  });
-
-  it("detects error in errorMessage field", () => {
+  it("returns false when errorMessage has only codex indicator", () => {
     expect(
-      isCodexLimitError(makeErrorMsgMsg("OpenAI Codex wham rate_limit hit")),
-    ).toBe(true);
-  });
-
-  it("detects error in string content", () => {
-    expect(
-      isCodexLimitError(makeStringContentMsg("chatgpt quota limit reached")),
-    ).toBe(true);
-  });
-
-  it("returns false for ordinary JSON unrelated to limits", () => {
-    const payload = JSON.stringify({ result: "success", model: "codex-mini" });
-    expect(isCodexLimitError(makeMsg(payload))).toBe(false);
-  });
-
-  it("returns false for unrelated provider error", () => {
-    expect(
-      isCodexLimitError(makeMsg("Anthropic Claude rate_limit exceeded")),
+      isCodexLimitError(makeErrorMsgMsg("OpenAI Codex is unavailable")),
     ).toBe(false);
   });
 
-  it("returns false for unrelated plain text", () => {
-    expect(isCodexLimitError(makeMsg("Everything is working fine today"))).toBe(
-      false,
+  it("detects errorMessage with both limit and codex indicators", () => {
+    expect(
+      isCodexLimitError(makeErrorMsgMsg("OpenAI Codex rate_limit exceeded")),
+    ).toBe(true);
+    expect(isCodexLimitError(makeErrorMsgMsg("chatgpt quota 429 hit"))).toBe(
+      true,
     );
+    expect(isCodexLimitError(makeErrorMsgMsg("wham limit reached"))).toBe(true);
   });
 
-  it("detects wham indicator in error", () => {
-    expect(isCodexLimitError(makeMsg("wham quota 429 exceeded"))).toBe(true);
+  it("returns false for unrelated provider errorMessage", () => {
+    expect(
+      isCodexLimitError(
+        makeErrorMsgMsg("Anthropic Claude rate_limit exceeded"),
+      ),
+    ).toBe(false);
   });
 });
 

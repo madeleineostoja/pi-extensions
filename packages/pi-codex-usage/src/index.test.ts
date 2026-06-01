@@ -219,12 +219,8 @@ describe("extension lifecycle", () => {
       {
         message: {
           role: "assistant",
-          content: [
-            {
-              type: "text",
-              text: "chatgpt openai rate_limit quota exceeded 429",
-            },
-          ],
+          content: [],
+          errorMessage: "OpenAI Codex rate_limit exceeded",
         },
       },
       ctx,
