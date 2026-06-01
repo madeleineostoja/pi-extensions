@@ -101,7 +101,7 @@ describe("formatStub", () => {
       toolCallId: "abc-123",
     });
     expect(result).toBe(
-      '[read result elided: 500 tokens. Call ctx_recall("abc-123") to retrieve.]',
+      '[read result elided: 500 tokens. Call context_recall("abc-123") to retrieve.]',
     );
   });
 
@@ -112,7 +112,7 @@ describe("formatStub", () => {
       toolCallId: "xyz-789",
     });
     expect(result).toBe(
-      '[bash result elided: 1K tokens. Call ctx_recall("xyz-789") to retrieve.]',
+      '[bash result elided: 1K tokens. Call context_recall("xyz-789") to retrieve.]',
     );
   });
 
@@ -123,7 +123,7 @@ describe("formatStub", () => {
       toolCallId: "id-1",
     });
     expect(result).toBe(
-      '[grep result elided: 1.5K tokens. Call ctx_recall("id-1") to retrieve.]',
+      '[grep result elided: 1.5K tokens. Call context_recall("id-1") to retrieve.]',
     );
   });
 
@@ -134,7 +134,7 @@ describe("formatStub", () => {
       toolCallId: "tool-call-id-abc",
     });
     expect(result).toMatch(
-      /^\[\w+ result elided: (\d+(\.\d+)?K? tokens)\. Call ctx_recall\("[^"]+"\) to retrieve\.\]$/,
+      /^\[\w+ result elided: (\d+(\.\d+)?K? tokens)\. Call context_recall\("[^"]+"\) to retrieve\.\]$/,
     );
   });
 
@@ -146,7 +146,7 @@ describe("formatStub", () => {
       preview: "hello world",
     });
     expect(result).toBe(
-      '[read result elided: 300 tokens. Preview: "hello world". Call ctx_recall("id-prev") to retrieve.]',
+      '[read result elided: 300 tokens. Preview: "hello world". Call context_recall("id-prev") to retrieve.]',
     );
   });
 
@@ -158,7 +158,7 @@ describe("formatStub", () => {
       preview: null,
     });
     expect(result).toBe(
-      '[read result elided: 300 tokens. Call ctx_recall("id-null") to retrieve.]',
+      '[read result elided: 300 tokens. Call context_recall("id-null") to retrieve.]',
     );
   });
 
@@ -170,7 +170,7 @@ describe("formatStub", () => {
       preview: "some preview…",
     });
     expect(result).toMatch(
-      /^\[read result elided: 300 tokens\. Preview: ".*"\. Call ctx_recall\("id-300"\) to retrieve\.\]$/,
+      /^\[read result elided: 300 tokens\. Preview: ".*"\. Call context_recall\("id-300"\) to retrieve\.\]$/,
     );
   });
 });
@@ -402,7 +402,7 @@ describe("context hook", () => {
     ) as any;
     expect(elided.content[0].text).toMatch(/^\[read result elided:/);
     expect(elided.content[0].text).toMatch(
-      /Call ctx_recall\("call-abc"\) to retrieve\.\]$/,
+      /Call context_recall\("call-abc"\) to retrieve\.\]$/,
     );
   });
 
@@ -575,7 +575,7 @@ describe("context hook", () => {
       (m: any) => m.role === "toolResult",
     ) as any;
     expect(elided.content[0].text).toMatch(
-      /^\[\w+ result elided: (\d+(\.\d+)?K? tokens)\. Preview: "[^"]*"\. Call ctx_recall\("[^"]+"\) to retrieve\.\]$/,
+      /^\[\w+ result elided: (\d+(\.\d+)?K? tokens)\. Preview: "[^"]*"\. Call context_recall\("[^"]+"\) to retrieve\.\]$/,
     );
   });
 
@@ -771,7 +771,7 @@ describe("superseded-read detection", () => {
       /^\[read result elided \(superseded by later edit\/write of \/cwd\/src\/foo\.ts\):/,
     );
     expect(readResult.content[0].text).toMatch(
-      /Call ctx_recall\("read-1"\) to retrieve original\.\]$/,
+      /Call context_recall\("read-1"\) to retrieve original\.\]$/,
     );
   });
 
@@ -1025,7 +1025,7 @@ describe("superseded-read detection", () => {
       /^\[read result elided \(superseded by later edit\/write of \/cwd\/src\/foo\.ts\):/,
     );
     expect(text).toMatch(
-      /Call ctx_recall\("read-fmt"\) to retrieve original\.\]$/,
+      /Call context_recall\("read-fmt"\) to retrieve original\.\]$/,
     );
   });
 
@@ -1313,7 +1313,7 @@ describe("formatDuplicateStub", () => {
       toolCallId: "read-1",
     });
     expect(result).toBe(
-      '[read result elided (superseded by later read of /cwd/src/foo.ts at turn 3): 125 tokens. Call ctx_recall("read-1") to retrieve.]',
+      '[read result elided (superseded by later read of /cwd/src/foo.ts at turn 3): 125 tokens. Call context_recall("read-1") to retrieve.]',
     );
   });
 

@@ -51,20 +51,20 @@ export function registerRecallTool(
   onRecall?: (toolName: string) => void,
 ): void {
   pi.registerTool({
-    name: "ctx_recall",
-    label: "ctx_recall",
+    name: "context_recall",
+    label: "context_recall",
     description:
       "Retrieve the full content of a tool result that was elided from context. " +
       "When a tool result is large and old, pi-context-prune replaces it with a stub of the form " +
-      '`[ToolName result elided: SIZE. Call ctx_recall("TOOL_CALL_ID") to retrieve.]`. ' +
+      '`[ToolName result elided: SIZE. Call context_recall("TOOL_CALL_ID") to retrieve.]`. ' +
       "Call this tool with the toolCallId from the stub to get the original content back.",
     promptSnippet:
-      'ctx_recall("toolCallId") — retrieve a tool result that was replaced with an elision stub',
+      'context_recall("toolCallId") — retrieve a tool result that was replaced with an elision stub',
     promptGuidelines: [
-      'Use ctx_recall when a tool result has been replaced with a stub — all three stub variants end with Call ctx_recall("id") to retrieve. and carry the toolCallId you need.',
-      'The three stub forms are: standard age/size ("ToolName result elided: SIZE"), superseded-read ("read result elided (superseded by later edit/write of PATH)"), and duplicate-read ("read result elided (superseded by later read of PATH at turn N)"). ctx_recall works the same way for all three.',
-      "ctx_recall returns the original content unchanged; pi-context-prune never discards anything.",
-      'Pass \'lines\' to ctx_recall (e.g. "10-20" or "5") to fetch only a line range; only supported for single-text-block results.',
+      'Use context_recall when a tool result has been replaced with a stub — all three stub variants end with Call context_recall("id") to retrieve. and carry the toolCallId you need.',
+      'The three stub forms are: standard age/size ("ToolName result elided: SIZE"), superseded-read ("read result elided (superseded by later edit/write of PATH)"), and duplicate-read ("read result elided (superseded by later read of PATH at turn N)"). context_recall works the same way for all three.',
+      "context_recall returns the original content unchanged; pi-context-prune never discards anything.",
+      'Pass \'lines\' to context_recall (e.g. "10-20" or "5") to fetch only a line range; only supported for single-text-block results.',
     ],
     parameters: RecallParams,
 
@@ -100,8 +100,8 @@ export function registerRecallTool(
             {
               type: "text" as const,
               text: wasCompacted
-                ? `ctx_recall: id=${id} was compacted away and cannot be recovered.`
-                : `ctx_recall: no tool result with id=${id}`,
+                ? `context_recall: id=${id} was compacted away and cannot be recovered.`
+                : `context_recall: no tool result with id=${id}`,
             },
           ],
           details: undefined,
@@ -127,7 +127,7 @@ export function registerRecallTool(
           content: [
             {
               type: "text" as const,
-              text: `ctx_recall: invalid lines argument "${lines}" — use a format like "5" or "10-20" with 1-indexed positive integers`,
+              text: `context_recall: invalid lines argument "${lines}" — use a format like "5" or "10-20" with 1-indexed positive integers`,
             },
           ],
           details: undefined,
@@ -143,7 +143,7 @@ export function registerRecallTool(
           content: [
             {
               type: "text" as const,
-              text: `ctx_recall: lines slicing is not supported when content contains non-text (image) blocks — omit lines to retrieve full content`,
+              text: `context_recall: lines slicing is not supported when content contains non-text (image) blocks — omit lines to retrieve full content`,
             },
           ],
           details: undefined,
@@ -156,7 +156,7 @@ export function registerRecallTool(
           content: [
             {
               type: "text" as const,
-              text: `ctx_recall: lines slicing is not supported across multiple text blocks — omit lines to retrieve full content`,
+              text: `context_recall: lines slicing is not supported across multiple text blocks — omit lines to retrieve full content`,
             },
           ],
           details: undefined,

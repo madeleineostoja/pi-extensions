@@ -4,7 +4,7 @@ A Pi extension that keeps the context window small by pruning large, stale tool 
 
 ## What it does
 
-On every context event pi-context-prune scans all `toolResult` messages. Results that meet the staleness and size thresholds are replaced in-context with a one-line stub. Files that have been superseded by a later edit or written more than once are stubbed immediately, regardless of age or size. The original content is never discarded — it remains in the session store and can be retrieved at any time via `ctx_recall`.
+On every context event pi-context-prune scans all `toolResult` messages. Results that meet the staleness and size thresholds are replaced in-context with a one-line stub. Files that have been superseded by a later edit or written more than once are stubbed immediately, regardless of age or size. The original content is never discarded — it remains in the session store and can be retrieved at any time via `context_recall`.
 
 Error results (`isError: true`) are never elided by the standard rule, only by the rot rules (superseded/duplicate), so the LLM always has access to failures.
 
@@ -15,7 +15,7 @@ Error results (`isError: true`) are never elided by the standard rule, only by t
 Emitted when a result is old enough and large enough (both thresholds met):
 
 ```
-[ToolName result elided: SIZE. Preview: "PREVIEW". Call ctx_recall("TOOL_CALL_ID") to retrieve.]
+[ToolName result elided: SIZE. Preview: "PREVIEW". Call context_recall("TOOL_CALL_ID") to retrieve.]
 ```
 
 ### Superseded-read stub
@@ -23,7 +23,7 @@ Emitted when a result is old enough and large enough (both thresholds met):
 Emitted when a `read` result is later overwritten by an `edit` or `write` in the same pass, regardless of age or size:
 
 ```
-[read result elided (superseded by later edit/write of PATH): SIZE. Preview: "PREVIEW". Call ctx_recall("TOOL_CALL_ID") to retrieve original.]
+[read result elided (superseded by later edit/write of PATH): SIZE. Preview: "PREVIEW". Call context_recall("TOOL_CALL_ID") to retrieve original.]
 ```
 
 ### Duplicate-read stub
@@ -31,7 +31,7 @@ Emitted when a `read` result is later overwritten by an `edit` or `write` in the
 Emitted when the same file is read more than once with the same `offset`/`limit` in the same pass. All reads except the most recent are stubbed, regardless of age or size. The stub references `turn`, the 1-indexed user-turn number during which the kept read occurred (counting user messages up to and including that message's position):
 
 ```
-[read result elided (superseded by later read of PATH at turn TURN): SIZE. Preview: "PREVIEW". Call ctx_recall("TOOL_CALL_ID") to retrieve.]
+[read result elided (superseded by later read of PATH at turn TURN): SIZE. Preview: "PREVIEW". Call context_recall("TOOL_CALL_ID") to retrieve.]
 ```
 
 When both the superseded and duplicate rules match the same result, the superseded stub takes precedence.
@@ -85,9 +85,9 @@ All keys are optional. Any key omitted falls back to the default shown above.
 | `supersededReadsEnabled` | boolean      | `true`  | Stub read results that were later overwritten in the same pass                                 |
 | `duplicateReadsEnabled`  | boolean      | `true`  | Stub all but the most recent read of the same file (at the same offset/limit) in the same pass |
 
-## `ctx_recall` tool
+## `context_recall` tool
 
-The LLM calls `ctx_recall` to retrieve an elided result. Parameters:
+The LLM calls `context_recall` to retrieve an elided result. Parameters:
 
 - `id` (required) — the `toolCallId` from the stub
 - `lines` (optional) — a 1-indexed line range such as `"10-20"` or `"5"` to fetch only part of the content; only supported for single-text-block results with no image blocks
@@ -99,7 +99,7 @@ Run `/context-prune` in the Pi chat to see elision statistics for the current se
 ```
 tokens elided (cumulative): 8.5K tokens
 entries elided (latest pass): 3
-ctx_recall invocations: 1
+context_recall invocations: 1
 
 by tool:
   read   7K tokens  (2 entries, 1 recall)
@@ -108,7 +108,7 @@ by tool:
 
 - **tokens elided (cumulative)** — total estimated tokens elided across the session, deduplicated by `toolCallId`
 - **entries elided (latest pass)** — how many tool results were replaced with stubs on the most recent context event
-- **ctx_recall invocations** — how many times the LLM has called `ctx_recall` this session
+- **context_recall invocations** — how many times the LLM has called `context_recall` this session
 - **by tool** — token count, entry count, and recall count broken down per tool name, sorted descending by tokens
 
 ## Cache-stability invariant

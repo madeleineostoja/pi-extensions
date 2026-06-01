@@ -108,7 +108,7 @@ async function executeRecall(
   return capturedExecute!("recall-call-id", params, undefined, undefined, ctx);
 }
 
-describe("ctx_recall execute", () => {
+describe("context_recall execute", () => {
   it("returns original content for a known id", async () => {
     const entries = [makeSessionEntry("call-abc", "hello world content")];
     const result = await executeRecall(entries as any, { id: "call-abc" });
@@ -125,7 +125,7 @@ describe("ctx_recall execute", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(
-      /ctx_recall: no tool result with id=does_not_exist/,
+      /context_recall: no tool result with id=does_not_exist/,
     );
   });
 
@@ -272,10 +272,10 @@ describe("registerRecallTool registration metadata", () => {
     expect(def.promptGuidelines.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("every promptGuidelines bullet contains 'ctx_recall'", () => {
+  it("every promptGuidelines bullet contains 'context_recall'", () => {
     const def = captureRegistration();
     for (const bullet of def.promptGuidelines as string[]) {
-      expect(bullet).toContain("ctx_recall");
+      expect(bullet).toContain("context_recall");
     }
   });
 });

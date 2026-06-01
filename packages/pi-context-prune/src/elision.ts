@@ -58,7 +58,7 @@ export function formatStub({
   preview?: string | null;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result elided: ${formatTokenCount(tokenCount)}.${previewSegment} Call ctx_recall("${toolCallId}") to retrieve.]`;
+  return `[${toolName} result elided: ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
 }
 
 export function formatSupersededStub({
@@ -75,7 +75,7 @@ export function formatSupersededStub({
   preview?: string | null;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result elided (superseded by later edit/write of ${normalizedPath}): ${formatTokenCount(tokenCount)}.${previewSegment} Call ctx_recall("${toolCallId}") to retrieve original.]`;
+  return `[${toolName} result elided (superseded by later edit/write of ${normalizedPath}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve original.]`;
 }
 
 export function formatDuplicateStub({
@@ -94,7 +94,7 @@ export function formatDuplicateStub({
   preview?: string | null;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result elided (superseded by later read of ${normalizedPath} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call ctx_recall("${toolCallId}") to retrieve.]`;
+  return `[${toolName} result elided (superseded by later read of ${normalizedPath} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
 }
 
 // Image blocks intentionally contribute 0 tokens: elision eligibility is based on text payload only.

@@ -204,7 +204,7 @@ describe("formatStats", () => {
     expect(output).toContain("7");
     expect(output).toMatch(/tokens elided/i);
     expect(output).toMatch(/entries elided/i);
-    expect(output).toMatch(/ctx_recall/i);
+    expect(output).toMatch(/context_recall/i);
   });
 
   it("formats zeros correctly", () => {
@@ -294,6 +294,6 @@ describe("formatStats", () => {
       `tokens elided (cumulative): ${formatTokenCount(34000)}`,
     );
     expect(lines[1]).toBe("entries elided (latest pass): 3");
-    expect(lines[2]).toBe("ctx_recall invocations: 1");
+    expect(lines[2]).toBe("context_recall invocations: 1");
   });
 });

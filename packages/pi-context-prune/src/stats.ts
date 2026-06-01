@@ -98,7 +98,7 @@ export function formatStats(snapshot: StatsSnapshot): string {
   const lines = [
     `tokens elided (cumulative): ${formatTokenCount(snapshot.tokensElidedCumulative)}`,
     `entries elided (latest pass): ${snapshot.elidedCountLatest}`,
-    `ctx_recall invocations: ${snapshot.recallCount}`,
+    `context_recall invocations: ${snapshot.recallCount}`,
   ];
 
   if (snapshot.byTool.length > 0) {
