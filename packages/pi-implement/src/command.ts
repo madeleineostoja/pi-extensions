@@ -47,6 +47,9 @@ import {
   appendEvent,
   cleanupRun,
   listRunIds,
+  acquireRunLock,
+  releaseRunLock,
+  checkRunLock,
 } from "./state.js";
 
 const STATUS_KEY = "pi-implement.status";
@@ -236,6 +239,20 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           }
           const git = new ExecGitClient(ctx.cwd);
           const repoRoot = await git.root();
+          const lockCheck = checkRunLock(getStatePaths(repoRoot, "lock-check"));
+          if (lockCheck.active) {
+            ctx.ui.notify(
+              `pi-implement cleanup refused: ${lockCheck.reason}. Use /implement stop in that session first.`,
+              "warning",
+            );
+            return;
+          }
+          if (lockCheck.staleRemoved) {
+            ctx.ui.notify(
+              `Removed stale pi-implement lock: ${lockCheck.staleRemoved}.`,
+              "info",
+            );
+          }
           const runIds = listRunIds(repoRoot);
           let cleaned = 0;
           for (const runId of runIds) {
@@ -385,8 +402,26 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         updatedAt: now,
       };
 
-      createRunState(paths, runJson, planContent);
-      appendEvent(paths, { type: "run_started", runId });
+      const lock = acquireRunLock(paths, runJson);
+      if (!lock.ok) {
+        ctx.ui.notify(`pi-implement blocked: ${lock.reason}`, "warning");
+        return;
+      }
+      if (lock.staleRemoved) {
+        ctx.ui.notify(
+          `Removed stale pi-implement lock: ${lock.staleRemoved}.`,
+          "info",
+        );
+      }
+      try {
+        createRunState(paths, runJson, planContent);
+        appendEvent(paths, { type: "run_started", runId });
+      } catch (err) {
+        releaseRunLock(paths, runId);
+        const reason = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`pi-implement blocked: ${reason}`, "warning");
+        return;
+      }
 
       const modeSource = parsed.mode.kind === "auto" ? "auto" : "cli";
       active = {
@@ -526,6 +561,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             } catch (err) {
               const reason = err instanceof Error ? err.message : String(err);
               appendEvent(paths, { type: "cleanup_failed", reason });
+              releaseRunLock(paths, runId);
               ctx.ui.notify(
                 `pi-implement auto-cleanup warning: ${reason}`,
                 "warning",
@@ -550,6 +586,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             syncStatus(ctx, stoppedState);
             if (paths) {
               appendEvent(paths, { type: "run_stopped" });
+              releaseRunLock(paths, runId);
             }
           } else {
             const reason =
@@ -569,6 +606,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             ctx.ui.notify(`pi-implement blocked: ${reason}`, "warning");
             if (paths) {
               appendEvent(paths, { type: "run_blocked", reason });
+              releaseRunLock(paths, runId);
             }
           }
           if (ctx.hasUI) {

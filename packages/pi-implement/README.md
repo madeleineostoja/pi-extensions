@@ -70,7 +70,7 @@ Run `/implement agents` to scaffold the bundled global `review` agent at `~/.pi/
 
 `maxParallel` defaults to `3` and is clamped to a hard maximum of `8`. Invalid values are ignored with a warning.
 
-`verifyCommand` is an optional non-empty string recorded as evidence but not automatically executed.
+`verifyCommand` is an optional non-empty shell command. In parallel mode it is executed from the repository root during per-task integration and final validation. If omitted, pi-implement auto-detects `test`, `typecheck`, and `build` package scripts; if none are available, it falls back to an LLM integration review.
 
 ## Verification
 

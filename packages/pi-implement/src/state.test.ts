@@ -1,7 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  mkdtempSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+} from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   getStatePaths,
@@ -17,6 +23,9 @@ import {
   readTaskJson,
   cleanupRun,
   listRunIds,
+  acquireRunLock,
+  checkRunLock,
+  releaseRunLock,
 } from "./state.js";
 
 function tempRepo(): string {
@@ -82,6 +91,82 @@ describe("task IDs", () => {
 
   it("falls back for empty title", () => {
     expect(taskIdFromTask(0, "")).toBe("t001-task");
+  });
+});
+
+function makeRun(repo: string, runId = "r20240115-120000") {
+  return {
+    version: 1 as const,
+    runId,
+    mode: "auto" as const,
+    strategyReason: "Auto mode selected; effective max concurrency 3.",
+    repoRoot: repo,
+    planPath: "/repo/plan.md",
+    planHash: "abc123",
+    baseSha: "def456",
+    currentPhase: "preflight",
+    maxConcurrency: 3,
+    startedAt: "2024-01-15T12:00:00Z",
+    updatedAt: "2024-01-15T12:00:00Z",
+  };
+}
+
+describe("run locks", () => {
+  it("acquires and releases the run lock", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const run = makeRun(repo);
+
+    expect(acquireRunLock(paths, run)).toMatchObject({ ok: true });
+    expect(JSON.parse(readFileSync(paths.lockFile, "utf-8"))).toMatchObject({
+      runId: run.runId,
+      pid: process.pid,
+    });
+    expect(acquireRunLock(paths, run)).toMatchObject({ ok: false });
+
+    releaseRunLock(paths, run.runId);
+
+    expect(existsSync(paths.lockFile)).toBe(false);
+  });
+
+  it("removes stale locks from dead processes", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    mkdirSync(join(paths.baseDir, "locks"), { recursive: true });
+    writeFileSync(
+      paths.lockFile,
+      JSON.stringify({
+        version: 1,
+        runId: "old-run",
+        runDir: "/missing",
+        startedAt: "2024-01-15T12:00:00Z",
+        pid: 99999999,
+        hostname: hostname(),
+      }),
+      "utf-8",
+    );
+
+    const check = checkRunLock(paths);
+
+    expect(check).toMatchObject({ active: false });
+    expect(check.active === false && check.staleRemoved).toContain(
+      "process 99999999",
+    );
+    expect(existsSync(paths.lockFile)).toBe(false);
+  });
+
+  it("treats legacy pid-less locks as stale", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    mkdirSync(join(paths.baseDir, "locks"), { recursive: true });
+    writeFileSync(
+      paths.lockFile,
+      JSON.stringify({ runId: "old-run", runDir: paths.runDir }),
+      "utf-8",
+    );
+
+    expect(checkRunLock(paths)).toMatchObject({ active: false });
+    expect(existsSync(paths.lockFile)).toBe(false);
   });
 });
 

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join as joinPath } from "node:path";
+import { isAbsolute, join as joinPath, relative } from "node:path";
 import { promisify } from "node:util";
 import type { ParsedPlan, PlanTask } from "./plan.js";
 import type { ImplementConfig } from "./config.js";
@@ -612,6 +612,9 @@ async function getFilteredGitStatus(
   repoRoot: string,
   planPath?: string,
 ): Promise<string> {
+  const repoPlanPath = planPath
+    ? repoRelativePath(repoRoot, planPath)
+    : undefined;
   try {
     const result = await execFileAsync(
       "git",
@@ -635,7 +638,7 @@ async function getFilteredGitStatus(
       if (filePath.startsWith(".pi/")) {
         return false;
       }
-      if (planPath && filePath === planPath) {
+      if (repoPlanPath && filePath === repoPlanPath) {
         return false;
       }
       return true;
@@ -644,6 +647,14 @@ async function getFilteredGitStatus(
   } catch {
     return "(could not get git status)";
   }
+}
+
+function repoRelativePath(repoRoot: string, path: string): string | undefined {
+  const candidate = isAbsolute(path) ? relative(repoRoot, path) : path;
+  if (!candidate || candidate.startsWith("..") || isAbsolute(candidate)) {
+    return undefined;
+  }
+  return candidate.replaceAll("\\", "/");
 }
 
 async function getTargetedEvidence(

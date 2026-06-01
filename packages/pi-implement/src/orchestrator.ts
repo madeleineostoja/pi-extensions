@@ -259,6 +259,9 @@ async function runParallelImplementation(
       const taskNode = graph.nodes.find((n) => n.id === taskId)!;
       const planTask = plan.tasks.find((t) => t.index === taskNode.planIndex);
       if (!planTask) {
+        const task = sched.tasks.get(taskId)!;
+        task.status = "failed";
+        task.lastReason = `Plan task ${taskNode.planIndex} not found`;
         continue;
       }
 
@@ -352,12 +355,7 @@ async function runParallelImplementation(
 
     // Nothing running and nothing to land
     if (!toLand && !reworkInFlight) {
-      if (anyTaskFailedBlockedStopped(sched)) {
-        sched.phase = "blocked";
-        break;
-      }
-      // Could be waiting for dependencies to complete — if all pending are blocked
-      // by unlanded deps and nothing is running, that's a deadlock (shouldn't happen with valid graph)
+      sched.phase = "blocked";
       break;
     }
 
@@ -368,7 +366,13 @@ async function runParallelImplementation(
     }
   }
 
-  if (allTasksTerminal(sched) && !anyTaskFailedBlockedStopped(sched)) {
+  if (!allTasksTerminal(sched)) {
+    const reason = stalledSchedulerReason(sched);
+    deps.updateState({ phase: "blocked", lastReason: reason });
+    throw new BlockedError(reason);
+  }
+
+  if (!anyTaskFailedBlockedStopped(sched)) {
     const finalValidation = await validateFinalParallelRun(deps);
     if (!finalValidation.ok) {
       sched.phase = "blocked";
@@ -383,16 +387,18 @@ async function runParallelImplementation(
   const landedCount = [...sched.tasks.values()].filter(
     (t) => t.status === "landed",
   ).length;
+  const hasFailure = anyTaskFailedBlockedStopped(sched);
   deps.updateState({
-    phase:
-      sched.phase === "done" || allTasksTerminal(sched)
+    phase: hasFailure
+      ? "blocked"
+      : sched.phase === "done" || allTasksTerminal(sched)
         ? "done"
         : (sched.phase as RunState["phase"]),
     landedCount,
     activeSubagentIds: [],
   });
 
-  if (anyTaskFailedBlockedStopped(sched)) {
+  if (hasFailure) {
     const failed = [...sched.tasks.values()].find(
       (t) => t.status === "failed" || t.status === "integration_failed",
     );
@@ -439,6 +445,8 @@ async function launchTaskWorker(
         appendEvent(deps.paths, { type: "task_started", taskId });
       }
     } catch (err) {
+      await deps.git.removeWorktree(worktreePath).catch(() => undefined);
+      await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
       const reason = err instanceof Error ? err.message : String(err);
       return {
         taskId,
@@ -566,6 +574,37 @@ async function landApprovedTask(
     return "needs_rework" as const;
   };
 
+  const failBlocked = async (source: string, reason: string) => {
+    await rollbackIntegration(
+      deps,
+      preIntegrationHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    task.integrationAttempts++;
+    task.status = "integration_failed";
+    task.lastReason = `${source}: ${reason}`;
+    if (deps.paths) {
+      persistTaskArtifact(
+        deps.paths,
+        taskId,
+        "integration.md",
+        `# Integration blocked\n\nSource: ${source}\n\nPre-integration HEAD: ${preIntegrationHead}\n\n${reason}\n`,
+      );
+      appendEvent(deps.paths, {
+        type: "integration_failed",
+        taskId,
+        reason: task.lastReason,
+      });
+      writeTaskJson(deps.paths, taskId, {
+        ...taskToJson(task),
+        status: "integration_failed",
+        lastReason: task.lastReason,
+      });
+    }
+    return "integration_failed" as const;
+  };
+
   try {
     const cherryPick = await deps.git.cherryPickNoCommit(task.taskCommitSha);
     if (cherryPick.exitCode !== 0) {
@@ -577,6 +616,10 @@ async function landApprovedTask(
       );
     }
 
+    const candidateSnapshot = await snapshotIntegrationCandidate(
+      deps,
+      planArtifacts,
+    );
     const validation = await validateIntegratedTask(
       deps,
       taskId,
@@ -584,6 +627,15 @@ async function landApprovedTask(
     );
     if (!validation.ok) {
       return await failForRework("validation", validation.reason);
+    }
+    const mutationReason = await detectIntegrationMutation(
+      deps,
+      planArtifacts,
+      planArtifactSnapshot,
+      candidateSnapshot,
+    );
+    if (mutationReason) {
+      return await failBlocked("validation", mutationReason);
     }
 
     const commit = await deps.git.commit(
@@ -601,6 +653,22 @@ async function landApprovedTask(
       return await failForRework(
         "commit",
         "Commit succeeded but HEAD did not advance",
+      );
+    }
+    const changedPlanArtifactAfterCommit = changedSnapshotPath(
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    if (changedPlanArtifactAfterCommit) {
+      return await failBlocked(
+        "commit",
+        `Commit hook changed a plan artifact: ${changedPlanArtifactAfterCommit}`,
+      );
+    }
+    if (!(await deps.git.isCleanExcept(planArtifacts))) {
+      return await failBlocked(
+        "commit",
+        "Commit succeeded but main checkout is dirty",
       );
     }
 
@@ -660,7 +728,56 @@ async function rollbackIntegration(
     await deps.git.resetHard(preIntegrationHead).catch(() => undefined);
   });
   await deps.git.resetHard(preIntegrationHead).catch(() => undefined);
+  await deps.git
+    .restoreWorktreeFromIndexExcept(planArtifacts)
+    .catch(() => undefined);
   restorePlanArtifacts(planArtifacts, planArtifactSnapshot);
+}
+
+type IntegrationCandidateSnapshot = {
+  head: string;
+  stagedFingerprint: string;
+  worktreeFingerprint: string;
+};
+
+async function snapshotIntegrationCandidate(
+  deps: OrchestratorDeps,
+  planArtifacts: string[],
+): Promise<IntegrationCandidateSnapshot> {
+  const [head, stagedFingerprint, worktreeFingerprint] = await Promise.all([
+    deps.git.head(),
+    deps.git.stagedFingerprint(),
+    deps.git.worktreeFingerprintExcept(planArtifacts),
+  ]);
+  return { head, stagedFingerprint, worktreeFingerprint };
+}
+
+async function detectIntegrationMutation(
+  deps: OrchestratorDeps,
+  planArtifacts: string[],
+  planArtifactSnapshot: Map<string, string | undefined>,
+  snapshot: IntegrationCandidateSnapshot,
+): Promise<string | undefined> {
+  if ((await deps.git.head()) !== snapshot.head) {
+    return "Validation or integration review changed HEAD";
+  }
+  const changedPlanArtifact = changedSnapshotPath(
+    planArtifacts,
+    planArtifactSnapshot,
+  );
+  if (changedPlanArtifact) {
+    return `Validation or integration review changed a plan artifact: ${changedPlanArtifact}`;
+  }
+  const stagedFingerprint = await deps.git.stagedFingerprint();
+  if (stagedFingerprint !== snapshot.stagedFingerprint) {
+    return "Validation or integration review changed the staged integration diff";
+  }
+  const worktreeFingerprint =
+    await deps.git.worktreeFingerprintExcept(planArtifacts);
+  if (worktreeFingerprint !== snapshot.worktreeFingerprint) {
+    return "Validation or integration review changed the integration worktree";
+  }
+  return undefined;
 }
 
 type ValidationResult = { ok: true } | { ok: false; reason: string };
@@ -853,6 +970,8 @@ async function runIntegrationReviewFallback(
 
 No command validation is configured or auto-detected. Decide whether the integrated diff is safe to commit.
 
+Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, or run any command that changes files or git state. Use read-only commands only.
+
 Plan artifacts are not part of the implementation commit and should be ignored: ${planArtifacts.join(", ")}
 
 ## Staged Diff
@@ -937,6 +1056,23 @@ function safeArtifactName(value: string): string {
     value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-|-$/g, "") ||
     "validation"
   );
+}
+
+function stalledSchedulerReason(sched: SchedulerRun): string {
+  const nonTerminal = [...sched.tasks.values()].filter(
+    (task) =>
+      task.status !== "landed" &&
+      task.status !== "failed" &&
+      task.status !== "blocked" &&
+      task.status !== "stopped" &&
+      task.status !== "integration_failed",
+  );
+  if (!nonTerminal.length) {
+    return "Parallel scheduler stalled without runnable work.";
+  }
+  return `Parallel scheduler stalled with non-terminal task(s): ${nonTerminal
+    .map((task) => `${task.id}:${task.status}`)
+    .join(", ")}`;
 }
 
 function updateParallelState(

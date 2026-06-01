@@ -9,6 +9,7 @@ import {
   rmSync,
 } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 export type RunMode = "auto" | "serial" | "parallel";
@@ -74,6 +75,15 @@ export type EventEntry =
 
 export type DurableEvent = EventEntry & { timestamp: string };
 
+export type RunLock = {
+  version: 1;
+  runId: string;
+  runDir: string;
+  startedAt: string;
+  pid: number;
+  hostname: string;
+};
+
 export type StatePaths = {
   baseDir: string;
   runDir: string;
@@ -84,6 +94,14 @@ export type StatePaths = {
   worktreesDir: string;
   lockFile: string;
 };
+
+export type LockCheckResult =
+  | { active: false; staleRemoved?: string }
+  | { active: true; reason: string; lock?: Partial<RunLock> };
+
+export type AcquireRunLockResult =
+  | { ok: true; staleRemoved?: string }
+  | { ok: false; reason: string; lock?: Partial<RunLock> };
 
 export function getStatePaths(repoRoot: string, runId: string): StatePaths {
   const baseDir = join(repoRoot, ".pi", "implement");
@@ -140,21 +158,80 @@ export function createRunState(
   mkdirSync(dirname(paths.lockFile), { recursive: true });
   mkdirSync(paths.worktreesDir, { recursive: true });
   writeAtomic(paths.runJson, JSON.stringify(run, null, 2));
-  writeAtomic(
-    paths.lockFile,
-    JSON.stringify(
-      {
-        runId: run.runId,
-        runDir: paths.runDir,
-        startedAt: run.startedAt,
-      },
-      null,
-      2,
-    ),
-  );
+  if (!existsSync(paths.lockFile)) {
+    writeLockFile(paths.lockFile, makeRunLock(paths, run), "w");
+  }
   writeAtomic(paths.planSnapshot, planContent);
   if (!existsSync(paths.eventsJsonl)) {
     writeFileSync(paths.eventsJsonl, "", "utf-8");
+  }
+}
+
+export function acquireRunLock(
+  paths: StatePaths,
+  run: RunJson,
+): AcquireRunLockResult {
+  mkdirSync(dirname(paths.lockFile), { recursive: true });
+  const lock = makeRunLock(paths, run);
+  let staleRemoved: string | undefined;
+
+  for (;;) {
+    try {
+      writeLockFile(paths.lockFile, lock, "wx");
+      return { ok: true, staleRemoved };
+    } catch (err) {
+      const nodeError = err as NodeJS.ErrnoException;
+      if (nodeError.code !== "EEXIST") {
+        return {
+          ok: false,
+          reason: `Could not acquire pi-implement run lock: ${nodeError.message}`,
+        };
+      }
+    }
+
+    const existing = checkRunLock(paths);
+    if (!existing.active) {
+      staleRemoved = existing.staleRemoved;
+      continue;
+    }
+    return {
+      ok: false,
+      reason: `Another pi-implement run appears active: ${existing.reason}`,
+      lock: existing.lock,
+    };
+  }
+}
+
+export function checkRunLock(paths: StatePaths): LockCheckResult {
+  if (!existsSync(paths.lockFile)) {
+    return { active: false };
+  }
+
+  const staleReason = staleRunLockReason(paths);
+  if (staleReason) {
+    rmSync(paths.lockFile, { force: true });
+    return { active: false, staleRemoved: staleReason };
+  }
+
+  const lock = readRunLock(paths);
+  const details = [
+    lock?.runId ? `run ${lock.runId}` : undefined,
+    typeof lock?.pid === "number" ? `pid ${lock.pid}` : undefined,
+    lock?.hostname ? `host ${lock.hostname}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return {
+    active: true,
+    reason: details || paths.lockFile,
+    lock,
+  };
+}
+
+export function releaseRunLock(paths: StatePaths, runId: string): void {
+  const lock = readRunLock(paths);
+  if (lock?.runId === runId) {
+    rmSync(paths.lockFile, { force: true });
   }
 }
 
@@ -333,6 +410,71 @@ function runGitCleanup(repoRoot: string, args: string[]): void {
     execFileSync("git", args, { cwd: repoRoot, stdio: "ignore" });
   } catch {
     return;
+  }
+}
+
+function makeRunLock(paths: StatePaths, run: RunJson): RunLock {
+  return {
+    version: 1,
+    runId: run.runId,
+    runDir: paths.runDir,
+    startedAt: run.startedAt,
+    pid: process.pid,
+    hostname: hostname(),
+  };
+}
+
+function writeLockFile(path: string, lock: RunLock, flag: "w" | "wx"): void {
+  writeFileSync(path, JSON.stringify(lock, null, 2), {
+    encoding: "utf-8",
+    flag,
+  });
+}
+
+function readRunLock(paths: StatePaths): Partial<RunLock> | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(paths.lockFile, "utf-8")) as unknown;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return undefined;
+    }
+    return parsed as Partial<RunLock>;
+  } catch {
+    return undefined;
+  }
+}
+
+function staleRunLockReason(paths: StatePaths): string | undefined {
+  const lock = readRunLock(paths);
+  if (!lock) {
+    return "invalid lock file";
+  }
+  if (
+    typeof lock.pid !== "number" ||
+    !Number.isInteger(lock.pid) ||
+    lock.pid <= 0
+  ) {
+    return "lock file does not include a valid pid";
+  }
+  if (lock.hostname && lock.hostname !== hostname()) {
+    return undefined;
+  }
+  if (!processIsRunning(lock.pid)) {
+    return `process ${lock.pid} is not running`;
+  }
+  return undefined;
+}
+
+function processIsRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const nodeError = err as NodeJS.ErrnoException;
+    return nodeError.code !== "ESRCH";
   }
 }
 

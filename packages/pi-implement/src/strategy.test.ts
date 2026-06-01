@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -70,6 +71,10 @@ function makeSubagents(result?: string): SubagentClient {
     stop: vi.fn().mockResolvedValue(undefined),
     waitFor: waitForFn,
   };
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf-8" });
 }
 
 describe("extractSurfaceAreas", () => {
@@ -558,6 +563,51 @@ describe("selectStrategy - forced parallel", () => {
     });
     expect(result.mode).toBe("serial");
     expect(result.reason.toLowerCase()).toContain("serial");
+  });
+
+  it("excludes an absolute source plan path from planner git status", async () => {
+    const repoRoot = join(tmpRunDir, "repo");
+    mkdirSync(join(repoRoot, "src"), { recursive: true });
+    git(repoRoot, "init");
+    git(repoRoot, "config", "user.email", "test@example.com");
+    git(repoRoot, "config", "user.name", "Test");
+    const planPath = join(repoRoot, "plan.md");
+    const sourcePath = join(repoRoot, "src", "file.ts");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Update src/file.ts\n- [ ] Update docs/readme.md\n",
+    );
+    writeFileSync(sourcePath, "export const value = 1;\n");
+    git(repoRoot, "add", ".");
+    git(repoRoot, "commit", "-m", "chore: init");
+    const changedPlan =
+      "# Plan\n\n## Tasks\n\n- [ ] Update src/file.ts\n- [ ] Update docs/readme.md\n\nDirty local note\n";
+    writeFileSync(planPath, changedPlan);
+    writeFileSync(sourcePath, "export const value = 2;\n");
+
+    const subagents = makeSubagents("not valid json");
+    const plan = parsePlan(planPath, changedPlan);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot,
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      requestedMode: "parallel",
+      requestedConcurrency: 2,
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain(" M src/file.ts");
+    expect(prompt).not.toContain(" M plan.md");
   });
 });
 

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runImplementation, BlockedError } from "./orchestrator.js";
+import { writeGraphJson } from "./graph.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SpawnArgs, SubagentClient, SubagentResult } from "./subagents.js";
 import type { RunState } from "./status.js";
@@ -51,6 +52,7 @@ class FakeGit implements GitClient {
   worktreeFingerprintText = "worktree";
   restoredFromIndex = 0;
   restoredPatches: string[] = [];
+  addWorktreeError?: Error;
   async stagedFingerprint() {
     return `${this.diffText}:${this.statusText}`;
   }
@@ -88,6 +90,9 @@ class FakeGit implements GitClient {
     this.createdBranches.push(branchName);
   }
   async addWorktree(worktreePath: string, branchName: string) {
+    if (this.addWorktreeError) {
+      throw this.addWorktreeError;
+    }
     this.addedWorktrees.push({ path: worktreePath, branch: branchName });
   }
   async removeWorktree(worktreePath: string) {
@@ -114,7 +119,7 @@ class FakeSubagents implements SubagentClient {
     return `agent-${this.spawns.length}`;
   }
   async stop() {}
-  async waitFor() {
+  async waitFor(_id?: string, _signal?: AbortSignal) {
     const result = this.results.shift();
     if (!result) {
       throw new Error("missing fake result");
@@ -127,6 +132,28 @@ const GOOD_IMPL =
   '<pi-implement-result>{"summary":"done","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"feat: do thing"}</pi-implement-result>';
 const GOOD_REVIEW =
   '<pi-review-result>{"verdict":"approved"}</pi-review-result>';
+const GOOD_INTEGRATION_REVIEW =
+  '<pi-integration-review-result>{"verdict":"approved"}</pi-integration-review-result>';
+
+function makePaths(dir: string) {
+  return {
+    baseDir: join(dir, ".pi", "implement"),
+    runDir: join(dir, ".pi", "implement", "runs", "r1"),
+    runJson: join(dir, ".pi", "implement", "runs", "r1", "run.json"),
+    eventsJsonl: join(dir, ".pi", "implement", "runs", "r1", "events.jsonl"),
+    planSnapshot: join(
+      dir,
+      ".pi",
+      "implement",
+      "runs",
+      "r1",
+      "plan.snapshot.md",
+    ),
+    tasksDir: join(dir, ".pi", "implement", "runs", "r1", "tasks"),
+    worktreesDir: join(dir, ".pi", "implement", "worktrees", "r1"),
+    lockFile: join(dir, ".pi", "implement", "locks", "run.lock"),
+  };
+}
 
 describe("runImplementation", () => {
   it("implements, reviews, marks, and commits one task", async () => {
@@ -729,5 +756,187 @@ describe("runImplementation", () => {
     const committingIdx = phases.indexOf("committing");
     expect(codingIdx).toBeLessThan(reviewingIdx);
     expect(reviewingIdx).toBeLessThan(committingIdx);
+  });
+
+  it("blocks if integration validation or review mutates the staged diff", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "task-1",
+          planIndex: 1,
+          title: "Do thing",
+          taskHash: "hash",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_INTEGRATION_REVIEW },
+    ];
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    let waits = 0;
+    subagents.waitFor = async (id, signal) => {
+      waits++;
+      const result = await originalWaitFor(id, signal);
+      if (waits === 3) {
+        git.diffText = "mutated staged diff";
+      }
+      return result;
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("changed the staged integration diff");
+  });
+
+  it("cleans up task branches when worktree setup fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "task-1",
+          planIndex: 1,
+          title: "Do thing",
+          taskHash: "hash",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+    const git = new FakeGit();
+    git.addWorktreeError = new Error("worktree failed");
+
+    await expect(
+      runImplementation({
+        git,
+        subagents: new FakeSubagents(),
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("Worktree setup failed");
+    expect(git.deletedBranches).toContain("pi-implement/r1/task-1");
+  });
+
+  it("blocks instead of completing when the parallel scheduler stalls", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: ["second"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    await expect(
+      runImplementation({
+        git: new FakeGit(),
+        subagents: new FakeSubagents(),
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("Parallel scheduler stalled");
   });
 });
