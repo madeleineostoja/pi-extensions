@@ -10,6 +10,7 @@ import {
   makeContextHook,
 } from "./elision.ts";
 import { defaultConfig, DEFAULTS } from "./config.ts";
+import { createPruningState } from "./policy.ts";
 
 // Helpers so tests stay robust to threshold changes in DEFAULTS.
 // BIG: a char count guaranteed to produce tokenCount > DEFAULTS.minTokens
@@ -1845,5 +1846,72 @@ describe("young-or-batch read pruning", () => {
     expect(
       passes[0].entries.every((e: any) => e.reason === "batch-pressure"),
     ).toBe(true);
+  });
+
+  it("enforces old-history batch cooldown and lets emergency pressure bypass it", () => {
+    const config = {
+      ...defaultConfig(),
+      staleTurns: 0,
+      batchCooldownTurns: 5,
+      batchMinSavedTokens: 1,
+      batchMinNetValue: 0,
+    };
+    const state = createPruningState();
+    const passes: any[] = [];
+    const hook = makeContextHook(config, (p) => passes.push(p), state);
+    const firstIds = ["batch-cooldown-1", "batch-cooldown-2"];
+    const secondIds = ["batch-cooldown-3", "batch-cooldown-4"];
+    const makeBatchCandidate = (id: string) => [
+      makeAssistantMsg([{ id, name: "grep", arguments: { pattern: id } }]),
+      makeToolResultMsg({
+        toolCallId: id,
+        toolName: "grep",
+        text: "s".repeat(300_000),
+      }),
+    ];
+    const firstMessages: any[] = [
+      makeUserMsg(),
+      ...firstIds.flatMap(makeBatchCandidate),
+      makeTextMsg("user", "t".repeat(400_000)),
+    ];
+    const secondMessages: any[] = [
+      ...firstMessages,
+      ...secondIds.flatMap(makeBatchCandidate),
+      makeTextMsg("user", "u".repeat(400_000)),
+    ];
+
+    hook({ type: "context", messages: firstMessages } as any, fakeCtxWithCwd);
+    const cooledDown = hook(
+      { type: "context", messages: secondMessages } as any,
+      fakeCtxWithCwd,
+    );
+
+    for (const id of secondIds) {
+      const found = cooledDown.messages!.find(
+        (m: any) => m.toolCallId === id,
+      ) as any;
+      expect(found.content[0].text).toBe("s".repeat(300_000));
+    }
+    expect(passes[1].entries.map((e: any) => e.toolCallId)).not.toEqual(
+      expect.arrayContaining(secondIds),
+    );
+
+    const emergency = hook(
+      { type: "context", messages: secondMessages } as any,
+      {
+        ...fakeCtxWithCwd,
+        getContextUsage: () => ({ tokens: 90_000, contextWindow: 100_000 }),
+      } as any,
+    );
+
+    for (const id of secondIds) {
+      const found = emergency.messages!.find(
+        (m: any) => m.toolCallId === id,
+      ) as any;
+      expect(found.content[0].text).toMatch(/result elided/);
+    }
+    expect(passes[2].entries.map((e: any) => e.toolCallId)).toEqual(
+      expect.arrayContaining(secondIds),
+    );
   });
 });

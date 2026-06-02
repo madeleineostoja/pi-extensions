@@ -7,6 +7,10 @@ import { registerRecallTool } from "./recall.ts";
 import { createStatsStore, formatStats } from "./stats.ts";
 import { loadConfig } from "./config.ts";
 import { createPruningState, resetPruningState } from "./policy.ts";
+import {
+  ingestAssistantUsage,
+  formatTelemetryDiagnostics,
+} from "./telemetry.ts";
 
 export default function (pi: ExtensionAPI) {
   const stats = createStatsStore();
@@ -22,6 +26,39 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(msg, "warning");
     }
     pendingWarnings.length = 0;
+  });
+
+  pi.on("turn_end", (event) => {
+    const msg = event.message as unknown as {
+      role?: string;
+      provider?: string;
+      model?: string;
+      timestamp?: number;
+      usage?: {
+        input?: number;
+        output?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+      };
+    };
+    ingestAssistantUsage(pruningState, msg, config.adaptivePolicyEnabled);
+  });
+
+  pi.on("agent_end", (event) => {
+    for (const msg of event.messages as unknown as Array<{
+      role?: string;
+      provider?: string;
+      model?: string;
+      timestamp?: number;
+      usage?: {
+        input?: number;
+        output?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+      };
+    }>) {
+      ingestAssistantUsage(pruningState, msg, config.adaptivePolicyEnabled);
+    }
   });
 
   pi.on(
@@ -42,7 +79,17 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("context-prune", {
     description: "Show context elision and recall statistics for this session",
     handler: async (_args, ctx) => {
-      ctx.ui.notify(formatStats(stats.snapshot()), "info");
+      ctx.ui.notify(
+        [
+          formatStats(stats.snapshot()),
+          "",
+          formatTelemetryDiagnostics(
+            pruningState,
+            config.adaptivePolicyEnabled,
+          ),
+        ].join("\n"),
+        "info",
+      );
     },
   });
 }

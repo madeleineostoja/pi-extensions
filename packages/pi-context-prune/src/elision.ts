@@ -14,6 +14,11 @@ import {
 import { DEFAULTS, type Config } from "./config.ts";
 import { normalizePath, extractFilePath } from "./paths.ts";
 import { classifyBashOutput } from "./bash-classifier.ts";
+import {
+  getEffectiveProfile,
+  captureContextUsage,
+  computeRecentCacheHit,
+} from "./telemetry.ts";
 
 type AgentMsg = ContextEvent["messages"][number];
 type ToolResultMsg = Extract<AgentMsg, { role: "toolResult" }>;
@@ -345,21 +350,7 @@ function buildDuplicateReadMap(
   return result;
 }
 
-function computeRecentCacheHit(pruningState: PruningState | undefined): number {
-  if (!pruningState || pruningState.usageHistory.length === 0) {
-    return 0.5;
-  }
-  const recent = pruningState.usageHistory.slice(-5);
-  let total = 0;
-  for (const u of recent) {
-    const hitRate =
-      u.totalTokens > 0 ? (u.cacheRead + u.cacheWrite) / u.totalTokens : 0;
-    total += hitRate;
-  }
-  return total / recent.length;
-}
-
-function smoothedRecallRateForReason(
+function recallRateForScoring(
   pruningState: PruningState | undefined,
   reason: ElisionReason,
 ): number {
@@ -367,26 +358,8 @@ function smoothedRecallRateForReason(
     return 0;
   }
   const elisions = pruningState.elisionCountByReason.get(reason) ?? 0;
-  if (elisions === 0) {
-    return 0;
-  }
   const recalls = pruningState.recallCountByReason.get(reason) ?? 0;
-  return recalls / elisions;
-}
-
-function effectiveSuffixBudget(profile: {
-  baselineSuffixBudget: number;
-  minSuffixBudget: number;
-  maxSuffixBudget: number;
-}): number {
-  return Math.max(
-    profile.minSuffixBudget,
-    Math.min(profile.maxSuffixBudget, profile.baselineSuffixBudget),
-  );
-}
-
-function effectiveMinSavedTokens(profile: { minSavedTokens: number }): number {
-  return profile.minSavedTokens;
+  return elisions > 0 ? recalls / elisions : 0;
 }
 
 type Candidate = {
@@ -548,12 +521,12 @@ export function makeContextHook(
       totalPromptTokens += estimateMessageTokens(msg);
     }
 
-    const contextUsage = ctx.getContextUsage?.();
+    const usage = captureContextUsage(pruningState, ctx);
     const isEmergency =
-      typeof contextUsage?.tokens === "number" &&
-      typeof contextUsage.contextWindow === "number" &&
-      contextUsage.tokens >=
-        contextUsage.contextWindow - config.emergencyContextReserveTokens;
+      typeof usage?.tokens === "number" &&
+      typeof usage.contextWindow === "number" &&
+      usage.tokens >=
+        usage.contextWindow - config.emergencyContextReserveTokens;
 
     const candidates: Candidate[] = [];
 
@@ -744,9 +717,14 @@ export function makeContextHook(
       });
     }
 
+    const samples = pruningState?.recentCacheSamples ?? [];
+    const lastSample = samples[samples.length - 1];
+    const recentCacheHit = config.adaptivePolicyEnabled
+      ? computeRecentCacheHit(samples, lastSample?.provider, lastSample?.model)
+      : 0.5;
     const cachePenalty = Math.max(
       0.25,
-      Math.min(1.0, 0.25 + 0.75 * computeRecentCacheHit(pruningState)),
+      Math.min(1.0, 0.25 + 0.75 * recentCacheHit),
     );
     const lowValueToolTokens = candidates.reduce(
       (s, c) => s + c.originalTokens,
@@ -756,6 +734,9 @@ export function makeContextHook(
       1,
       lowValueToolTokens / Math.max(totalPromptTokens, 1),
     );
+    if (pruningState) {
+      pruningState.lastRotPressure = rotPressure;
+    }
     const expectedFutureTurns = 2 + 3 * rotPressure;
 
     const deferred: Candidate[] = [];
@@ -769,10 +750,7 @@ export function makeContextHook(
         primaryReason === "standard-stale" ? "batch-pressure" : primaryReason,
       );
 
-      const recallRate = smoothedRecallRateForReason(
-        pruningState,
-        primaryReason,
-      );
+      const recallRate = recallRateForScoring(pruningState, primaryReason);
       const recallPenaltyTokens = 6000 * recallRate;
       const semanticPenaltyTokens = 4000 * cand.semanticRisk;
 
@@ -783,8 +761,14 @@ export function makeContextHook(
         recallPenaltyTokens -
         semanticPenaltyTokens;
 
-      const minSaved = effectiveMinSavedTokens(profile);
-      const suffixBudget = effectiveSuffixBudget(profile);
+      const eff = getEffectiveProfile(
+        pruningState,
+        primaryReason,
+        profile,
+        config.adaptivePolicyEnabled,
+      );
+      const minSaved = eff.minSavedTokens;
+      const suffixBudget = eff.suffixBudget;
 
       const nearTail = cand.suffixTokens <= profile.minSuffixBudget;
       const scorePositive = cand.savedTokens >= minSaved && netValue >= 1000;
@@ -837,7 +821,7 @@ export function makeContextHook(
           estimateSuffixTokens(messages, earliest.index) * cachePenalty;
         const batchRisk = selected.reduce((s, c) => {
           const reason = getPrimaryReason(c.reasons) ?? c.reasons[0];
-          const rate = smoothedRecallRateForReason(pruningState, reason);
+          const rate = recallRateForScoring(pruningState, reason);
           return s + 4000 * c.semanticRisk + 6000 * rate;
         }, 0);
         const batchBenefit =
@@ -857,7 +841,10 @@ export function makeContextHook(
           isEmergency ||
           !pruningState ||
           currentTurnCount - pruningState.lastBatchUserTurnCount >=
-            config.batchCooldownTurns;
+            config.batchCooldownTurns +
+              (config.adaptivePolicyEnabled
+                ? pruningState.batchCooldownExtraTurns
+                : 0);
 
         if (
           (isEmergency || batchSavedTokens >= config.batchMinSavedTokens) &&
@@ -880,6 +867,9 @@ export function makeContextHook(
           }
           if (pruningState) {
             pruningState.lastBatchUserTurnCount = currentTurnCount;
+            if (!isEmergency && config.adaptivePolicyEnabled) {
+              pruningState.nonEmergencyBatchSinceLastUsage = true;
+            }
           }
         }
       }

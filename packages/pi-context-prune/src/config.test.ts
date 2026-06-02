@@ -149,6 +149,10 @@ describe("loadConfig", () => {
 });
 
 describe("defaultConfig", () => {
+  it("enables adaptive policy feedback by default", () => {
+    expect(DEFAULTS.adaptivePolicyEnabled).toBe(true);
+  });
+
   it("returns a copy of DEFAULTS", () => {
     const c = defaultConfig();
     expect(c).toEqual(DEFAULTS);

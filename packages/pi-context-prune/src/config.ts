@@ -24,7 +24,7 @@ export const DEFAULTS: Config = {
   minTokens: 256,
   supersededReadsEnabled: true,
   duplicateReadsEnabled: true,
-  adaptivePolicyEnabled: false,
+  adaptivePolicyEnabled: true,
   afterConsumptionBashEnabled: true,
   emergencyContextReserveTokens: 16000,
   batchMinCandidates: 2,

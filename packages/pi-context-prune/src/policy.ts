@@ -198,6 +198,17 @@ export type PruningState = {
     totalTokens: number;
   }>;
   lastBatchUserTurnCount: number;
+  recentCacheSamples: import("./telemetry.ts").CacheSample[];
+  seenUsageKeys: Set<string>;
+  aggressivenessByReason: Map<ElisionReason, number>;
+  contextUsage?: {
+    tokens: number | null;
+    contextWindow: number;
+    percent: number | null;
+  };
+  lastRotPressure?: number;
+  nonEmergencyBatchSinceLastUsage: boolean;
+  batchCooldownExtraTurns: number;
 };
 
 export function createPruningState(): PruningState {
@@ -209,6 +220,11 @@ export function createPruningState(): PruningState {
     activeProfile: { ...DEFAULT_PROFILE },
     usageHistory: [],
     lastBatchUserTurnCount: -Infinity,
+    recentCacheSamples: [],
+    seenUsageKeys: new Set(),
+    aggressivenessByReason: new Map(),
+    nonEmergencyBatchSinceLastUsage: false,
+    batchCooldownExtraTurns: 0,
   };
 }
 
@@ -252,6 +268,13 @@ export function resetPruningState(state: PruningState): void {
   state.activeProfile = { ...DEFAULT_PROFILE };
   state.usageHistory = [];
   state.lastBatchUserTurnCount = -Infinity;
+  state.recentCacheSamples = [];
+  state.seenUsageKeys.clear();
+  state.aggressivenessByReason.clear();
+  state.contextUsage = undefined;
+  state.lastRotPressure = undefined;
+  state.nonEmergencyBatchSinceLastUsage = false;
+  state.batchCooldownExtraTurns = 0;
 }
 
 export function setActiveProfile(
