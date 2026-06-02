@@ -90,6 +90,6 @@ The implementer chooses task-appropriate checks and is instructed to err toward 
 
 ## Recovery
 
-Use `/implement stop` to halt local orchestration and request that active subagents stop. If a run is blocked or stopped, inspect the worktree, fix or revert as needed, return to a clean state (except for intended plan checkbox state), then rerun `/implement <plan.md>`.
+Use `/implement stop` to halt local orchestration and request that active subagents stop. If a run is blocked or stopped, run `/implement inspect` to locate the worktree, fix or revert as needed, return to a clean state (except for intended plan checkbox state), then rerun `/implement <plan.md>`.
 
 Use `/implement cleanup` to remove durable state and worktrees left behind by failed, blocked, or stopped runs. Successful runs are cleaned up automatically.
