@@ -16,6 +16,8 @@ export type LatchedElision = {
   // Populated for superseded/duplicate stubs so the exact stub text is latched.
   normalizedPath?: string;
   keptUserTurnIndex?: number;
+  // Populated for after-consumption-bash stubs.
+  command?: string;
 };
 
 export type PolicyProfile = {

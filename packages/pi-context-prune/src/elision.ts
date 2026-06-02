@@ -7,6 +7,7 @@ import type { ElisionReason, PruningState } from "./policy.ts";
 import { getLatchedElision, recordElision } from "./policy.ts";
 import { DEFAULTS, type Config } from "./config.ts";
 import { normalizePath, extractFilePath } from "./paths.ts";
+import { classifyBashOutput } from "./bash-classifier.ts";
 
 type AgentMsg = ContextEvent["messages"][number];
 type ToolResultMsg = Extract<AgentMsg, { role: "toolResult" }>;
@@ -80,6 +81,23 @@ export function formatSupersededStub({
   return `[${toolName} result elided (superseded by later edit/write of ${normalizedPath}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve original.]`;
 }
 
+export function formatAfterConsumptionBashStub({
+  tokenCount,
+  toolCallId,
+  command,
+  preview,
+}: {
+  tokenCount: number;
+  toolCallId: string;
+  command?: string | null;
+  preview?: string | null;
+}): string {
+  const cmdSegment =
+    command && command.length > 0 ? ` Command: ${command}.` : "";
+  const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
+  return `[bash output compacted after assistant consumption: ${formatTokenCount(tokenCount)}.${cmdSegment} Status: success.${previewSegment} Call context_recall("${toolCallId}") to retrieve full output.]`;
+}
+
 export function formatDuplicateStub({
   toolName,
   normalizedPath,
@@ -124,6 +142,21 @@ export function userTurnsAfterEachPosition(messages: AgentMsg[]): number[] {
     }
   }
   return distances;
+}
+
+export function assistantAfterEachPosition(messages: AgentMsg[]): boolean[] {
+  const hasAssistant: boolean[] = Array.from(
+    { length: messages.length },
+    () => false,
+  );
+  let seen = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    hasAssistant[i] = seen;
+    if (messages[i].role === "assistant") {
+      seen = true;
+    }
+  }
+  return hasAssistant;
 }
 
 // Returns, for each position i, the count of user messages at index <= i (1-indexed).
@@ -315,7 +348,11 @@ export function makeContextHook(
 
     let toolCallInfoMap: Map<string, ToolCallInfo> | undefined;
     let supersededPaths: Map<string, number> | undefined;
-    if (config.supersededReadsEnabled || config.duplicateReadsEnabled) {
+    if (
+      config.supersededReadsEnabled ||
+      config.duplicateReadsEnabled ||
+      config.afterConsumptionBashEnabled
+    ) {
       ({ toolCallInfoMap, supersededPaths } = buildSupersededMaps(
         messages,
         cwd,
@@ -326,6 +363,10 @@ export function makeContextHook(
     if (config.duplicateReadsEnabled && toolCallInfoMap) {
       duplicateReadMap = buildDuplicateReadMap(messages, cwd, toolCallInfoMap);
     }
+
+    const hasAssistantAfter = config.afterConsumptionBashEnabled
+      ? assistantAfterEachPosition(messages)
+      : [];
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
@@ -407,10 +448,40 @@ export function makeContextHook(
         duplicateInfo = duplicateReadMap.get(msg.toolCallId) ?? null;
       }
 
+      let afterConsumptionBash = false;
+      let bashCommand: string | undefined;
+      if (
+        config.afterConsumptionBashEnabled &&
+        !msg.isError &&
+        msg.toolName === "bash" &&
+        hasAssistantAfter[i]
+      ) {
+        const classification = classifyBashOutput(
+          msg.content,
+          tokenCount,
+          config.minTokens,
+        );
+        if (classification.lowRisk) {
+          afterConsumptionBash = true;
+          const callInfo = toolCallInfoMap?.get(msg.toolCallId);
+          if (
+            callInfo &&
+            typeof callInfo.input === "object" &&
+            callInfo.input !== null
+          ) {
+            const input = callInfo.input as Record<string, unknown>;
+            if (typeof input.command === "string") {
+              bashCommand = input.command;
+            }
+          }
+        }
+      }
+
       const shouldElide =
         isGenericStale ||
         supersededNormalizedPath !== null ||
-        duplicateInfo !== null;
+        duplicateInfo !== null ||
+        afterConsumptionBash;
 
       if (!shouldElide) {
         result.push(msg);
@@ -439,6 +510,14 @@ export function makeContextHook(
           keptUserTurnIndex: duplicateInfo.keptUserTurnIndex,
           tokenCount,
           toolCallId: msg.toolCallId,
+          preview,
+        });
+      } else if (afterConsumptionBash) {
+        reason = "after-consumption-bash";
+        stub = formatAfterConsumptionBashStub({
+          tokenCount,
+          toolCallId: msg.toolCallId,
+          command: bashCommand,
           preview,
         });
       } else {
@@ -472,6 +551,9 @@ export function makeContextHook(
         if (reason === "duplicate-read-young" && duplicateInfo) {
           latched.normalizedPath = duplicateInfo.normalizedPath;
           latched.keptUserTurnIndex = duplicateInfo.keptUserTurnIndex;
+        }
+        if (reason === "after-consumption-bash" && bashCommand) {
+          latched.command = bashCommand;
         }
         recordElision(pruningState, latched);
       }
@@ -528,6 +610,14 @@ function buildStubFromLatched(
       keptUserTurnIndex: latched.keptUserTurnIndex,
       tokenCount: latched.originalTokens,
       toolCallId: latched.toolCallId,
+      preview,
+    });
+  }
+  if (latched.reason === "after-consumption-bash") {
+    return formatAfterConsumptionBashStub({
+      tokenCount: latched.originalTokens,
+      toolCallId: latched.toolCallId,
+      command: latched.command,
       preview,
     });
   }

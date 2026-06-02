@@ -9,6 +9,7 @@ export type Config = {
   supersededReadsEnabled: boolean;
   duplicateReadsEnabled: boolean;
   adaptivePolicyEnabled: boolean;
+  afterConsumptionBashEnabled: boolean;
 };
 
 export const DEFAULTS: Config = {
@@ -17,6 +18,7 @@ export const DEFAULTS: Config = {
   supersededReadsEnabled: true,
   duplicateReadsEnabled: true,
   adaptivePolicyEnabled: false,
+  afterConsumptionBashEnabled: true,
 };
 
 type Notifier = ExtensionUIContext["notify"];
@@ -100,11 +102,15 @@ export function loadConfig(
   }
 
   const boolKeys: Array<
-    "supersededReadsEnabled" | "duplicateReadsEnabled" | "adaptivePolicyEnabled"
+    | "supersededReadsEnabled"
+    | "duplicateReadsEnabled"
+    | "adaptivePolicyEnabled"
+    | "afterConsumptionBashEnabled"
   > = [
     "supersededReadsEnabled",
     "duplicateReadsEnabled",
     "adaptivePolicyEnabled",
+    "afterConsumptionBashEnabled",
   ];
   for (const key of boolKeys) {
     if (!(key in obj)) {

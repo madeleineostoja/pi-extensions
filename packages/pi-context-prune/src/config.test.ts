@@ -24,7 +24,7 @@ describe("loadConfig", () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
-  it("returns all four keys from a valid JSON file", () => {
+  it("returns all keys from a valid JSON file", () => {
     const notify = vi.fn();
     const config = loadConfig(
       notify,
@@ -34,6 +34,7 @@ describe("loadConfig", () => {
           minTokens: 512,
           supersededReadsEnabled: false,
           duplicateReadsEnabled: false,
+          afterConsumptionBashEnabled: false,
         }),
       ),
     );
@@ -41,6 +42,7 @@ describe("loadConfig", () => {
     expect(config.minTokens).toBe(512);
     expect(config.supersededReadsEnabled).toBe(false);
     expect(config.duplicateReadsEnabled).toBe(false);
+    expect(config.afterConsumptionBashEnabled).toBe(false);
     expect(notify).not.toHaveBeenCalled();
   });
 
@@ -54,6 +56,9 @@ describe("loadConfig", () => {
     expect(config.minTokens).toBe(DEFAULTS.minTokens);
     expect(config.supersededReadsEnabled).toBe(DEFAULTS.supersededReadsEnabled);
     expect(config.duplicateReadsEnabled).toBe(DEFAULTS.duplicateReadsEnabled);
+    expect(config.afterConsumptionBashEnabled).toBe(
+      DEFAULTS.afterConsumptionBashEnabled,
+    );
     expect(notify).not.toHaveBeenCalled();
   });
 
