@@ -3,6 +3,7 @@ import type {
   ExtensionContext,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
+import { getFooterCostInfo } from "./cost.js";
 import {
   buildFooterLines,
   buildLeftSegment,
@@ -29,24 +30,11 @@ export default function (pi: ExtensionAPI) {
 
             const model = ctx.model;
             const thinkingLevel = pi.getThinkingLevel();
-            const usingSubscription = model
-              ? ctx.modelRegistry.isUsingOAuth(model)
-              : false;
-
-            let totalCost = 0;
-            for (const entry of ctx.sessionManager.getEntries()) {
-              if (
-                entry.type === "message" &&
-                entry.message.role === "assistant"
-              ) {
-                const total = (
-                  entry.message as { usage?: { cost?: { total?: number } } }
-                ).usage?.cost?.total;
-                if (typeof total === "number") {
-                  totalCost += total;
-                }
-              }
-            }
+            const { totalCost, hideCost } = getFooterCostInfo(
+              ctx.sessionManager.getBranch(),
+              ctx.modelRegistry,
+              model,
+            );
 
             const contextUsage = ctx.getContextUsage();
             const footerModel = model
@@ -57,7 +45,7 @@ export default function (pi: ExtensionAPI) {
               thinkingLevel,
               totalCost,
               contextUsage,
-              usingSubscription,
+              hideCost,
               theme,
               true,
               false,
@@ -68,7 +56,7 @@ export default function (pi: ExtensionAPI) {
               thinkingLevel,
               totalCost,
               contextUsage,
-              usingSubscription,
+              hideCost,
               theme,
               false,
               false,

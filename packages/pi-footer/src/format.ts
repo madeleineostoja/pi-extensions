@@ -103,7 +103,7 @@ export function buildRightSegment(
   thinkingLevel: ThinkingLevel,
   cost: number,
   contextUsage: ContextUsageInfo,
-  usingSubscription: boolean,
+  hideCost: boolean,
   theme: Theme,
   includeWindow: boolean,
   includeProvider = false,
@@ -113,7 +113,7 @@ export function buildRightSegment(
     `${theme.fg("muted", formatModelName(model, includeProvider))} ${formatThinking(thinkingLevel, theme)}`,
   );
 
-  if (!usingSubscription) {
+  if (!hideCost) {
     parts.push(theme.fg("muted", formatCost(cost)));
   }
 
