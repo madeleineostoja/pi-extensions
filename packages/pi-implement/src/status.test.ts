@@ -27,7 +27,7 @@ describe("status formatting", () => {
         totalTasks: 7,
         attempt: 1,
       }),
-    ).toBe("implement 2/7 · coding · attempt 1");
+    ).toBe("󰚩 implement 2/7");
   });
 
   it("summarizes parallel task state without depending on every line", () => {
@@ -74,6 +74,6 @@ describe("status formatting", () => {
         landedCount: 1,
         totalCount: 3,
       }),
-    ).toBe("implement 1/3 landed · scheduling");
+    ).toBe("󰚩 implement 1/3");
   });
 });

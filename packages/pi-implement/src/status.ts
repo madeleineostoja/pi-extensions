@@ -61,33 +61,35 @@ export type RunState = {
 
 export const idleState: RunState = { phase: "idle" };
 
+const FOOTER_GLYPH = "󰚩";
+
 export function formatFooterStatus(state: RunState): string {
   if (state.phase === "idle") {
     return "";
   }
   if (state.phase === "blocked") {
-    return `implement blocked${state.lastReason ? ` · ${shorten(state.lastReason, 32)}` : ""}`;
+    return withFooterGlyph(
+      `implement blocked${state.lastReason ? ` · ${shorten(state.lastReason, 32)}` : ""}`,
+    );
   }
   if (state.phase === "done") {
-    return "implement done";
+    return withFooterGlyph("implement done");
   }
   if (state.phase === "stopped") {
-    return "implement stopped";
+    return withFooterGlyph("implement stopped");
   }
 
-  // Parallel run footer
   if (state.tasks && state.totalCount !== undefined) {
     const landed = state.landedCount ?? 0;
     const total = state.totalCount ?? 0;
-    return `implement ${landed}/${total} landed · ${state.phase}`;
+    return withFooterGlyph(`implement ${landed}/${total}`);
   }
 
   const progress =
     state.taskIndex && state.totalTasks
       ? `${state.taskIndex}/${state.totalTasks}`
       : "…";
-  const attempt = state.attempt ? ` · attempt ${state.attempt}` : "";
-  return `implement ${progress} · ${state.phase}${attempt}`;
+  return withFooterGlyph(`implement ${progress}`);
 }
 
 export function formatRunStatus(state: RunState): string {
@@ -151,6 +153,10 @@ export function formatRunStatus(state: RunState): string {
   }
 
   return lines.join("\n");
+}
+
+function withFooterGlyph(status: string): string {
+  return `${FOOTER_GLYPH} ${status}`;
 }
 
 function shorten(value: string, max: number): string {
