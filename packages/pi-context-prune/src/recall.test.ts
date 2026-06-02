@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseLineRange, registerRecallTool } from "./recall.ts";
+import { createPruningState, recordElision } from "./policy.ts";
 
 function makeSessionEntry(toolCallId: string, text: string) {
   return {
@@ -245,6 +246,92 @@ describe("context_recall execute", () => {
     const result = await executeRecall(entries as any, { id: "call-mixed" });
     expect(result.isError).toBeFalsy();
     expect(result.content).toEqual([{ type: "text", text: "target content" }]);
+  });
+});
+
+describe("registerRecallTool recall attribution", () => {
+  it("updates pruningState recall counters when reason is latched", async () => {
+    const pruningState = createPruningState();
+    recordElision(pruningState, {
+      toolCallId: "call-abc",
+      reason: "superseded-read-young",
+      toolName: "read",
+      originalTokens: 100,
+    });
+
+    const entries = [makeSessionEntry("call-abc", "original content")];
+
+    let capturedDef: any = null;
+    const fakePI = {
+      registerTool(def: any) {
+        capturedDef = def;
+      },
+    };
+
+    registerRecallTool(fakePI as any, () => {}, pruningState);
+
+    const result = await capturedDef.execute(
+      "recall-id",
+      { id: "call-abc" },
+      undefined,
+      undefined,
+      {
+        sessionManager: {
+          getEntries: () => entries,
+        },
+      },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(pruningState.recallCountByReason.get("superseded-read-young")).toBe(
+      1,
+    );
+  });
+
+  it("does not double-count recalls for the same toolCallId", async () => {
+    const pruningState = createPruningState();
+    recordElision(pruningState, {
+      toolCallId: "call-abc",
+      reason: "duplicate-read-young",
+      toolName: "read",
+      originalTokens: 100,
+    });
+
+    const entries = [makeSessionEntry("call-abc", "original content")];
+
+    let capturedDef: any = null;
+    const fakePI = {
+      registerTool(def: any) {
+        capturedDef = def;
+      },
+    };
+
+    registerRecallTool(fakePI as any, () => {}, pruningState);
+
+    const ctx = {
+      sessionManager: {
+        getEntries: () => entries,
+      },
+    };
+
+    await capturedDef.execute(
+      "recall-id",
+      { id: "call-abc" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await capturedDef.execute(
+      "recall-id",
+      { id: "call-abc" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    expect(pruningState.recallCountByReason.get("duplicate-read-young")).toBe(
+      1,
+    );
   });
 });
 

@@ -7,6 +7,7 @@ import {
   extractPreview,
   estimateContentTokens,
   userTurnsAfterEachPosition,
+  estimateSuffixTokens,
   makeContextHook,
 } from "./elision.ts";
 import { defaultConfig, DEFAULTS } from "./config.ts";
@@ -625,7 +626,7 @@ describe("context hook", () => {
     const elided = result.messages!.find(
       (m: any) => m.role === "toolResult",
     ) as any;
-    expect(elided.content[0].text).toContain('"' + "y".repeat(100) + "…" + '"');
+    expect(elided.content[0].text).toContain(`"${"y".repeat(100)}…"`);
   });
 
   it("stub preview escapes special characters", () => {
@@ -1908,5 +1909,91 @@ describe("duplicate-read detection", () => {
       (m: any) => m.toolCallId === readId,
     ) as any;
     expect(read.content[0].text).toBe("only read");
+  });
+});
+
+function makeTextMsg(role: string, text: string): any {
+  return {
+    role,
+    content: [{ type: "text", text }],
+    timestamp: Date.now(),
+  };
+}
+
+function makeToolResultMsg2(toolCallId: string, text: string): any {
+  return {
+    role: "toolResult",
+    toolCallId,
+    toolName: "read",
+    content: [{ type: "text", text }],
+    isError: false,
+    timestamp: Date.now(),
+  };
+}
+
+describe("estimateSuffixTokens", () => {
+  it("counts user and assistant text blocks", () => {
+    const messages = [
+      makeTextMsg("user", "hello"),
+      makeTextMsg("assistant", "world"),
+    ];
+    expect(estimateSuffixTokens(messages, -1)).toBe(
+      Math.ceil(("hello".length + "world".length) / 4),
+    );
+  });
+
+  it("counts toolResult text blocks", () => {
+    const messages = [
+      makeToolResultMsg2("call-1", "alpha"),
+      makeToolResultMsg2("call-2", "beta"),
+    ];
+    expect(estimateSuffixTokens(messages, -1)).toBe(
+      Math.ceil(("alpha".length + "beta".length) / 4),
+    );
+  });
+
+  it("ignores messages at or before afterIndex", () => {
+    const messages = [
+      makeTextMsg("user", "first"),
+      makeTextMsg("user", "second"),
+      makeTextMsg("user", "third"),
+    ];
+    expect(estimateSuffixTokens(messages, 1)).toBe(
+      Math.ceil("third".length / 4),
+    );
+  });
+
+  it("ignores non-text blocks within toolResult content", () => {
+    const messages = [
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "read",
+        content: [{ type: "image", data: "ignored" }],
+        isError: false,
+        timestamp: Date.now(),
+      },
+      makeTextMsg("user", "after"),
+    ];
+    expect(estimateSuffixTokens(messages, -1)).toBe(
+      Math.ceil("after".length / 4),
+    );
+  });
+
+  it("returns 0 when afterIndex is the last message", () => {
+    const messages = [makeTextMsg("user", "only")];
+    expect(estimateSuffixTokens(messages, 0)).toBe(0);
+  });
+
+  it("includes mixed user, assistant, and toolResult blocks", () => {
+    const messages = [
+      makeTextMsg("user", "a"),
+      makeToolResultMsg2("c1", "bb"),
+      makeTextMsg("assistant", "ccc"),
+      makeToolResultMsg2("c2", "dddd"),
+    ];
+    expect(estimateSuffixTokens(messages, 1)).toBe(
+      Math.ceil(("ccc".length + "dddd".length) / 4),
+    );
   });
 });

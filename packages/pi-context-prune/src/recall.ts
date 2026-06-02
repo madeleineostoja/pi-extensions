@@ -3,6 +3,8 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { PruningState } from "./policy.ts";
+import { getLatchedElision, recordRecall } from "./policy.ts";
 
 const RecallParams = Type.Object({
   id: Type.String({ description: "The toolCallId from an elision stub" }),
@@ -48,7 +50,8 @@ function sliceLines(text: string, start: number, end: number): string {
 
 export function registerRecallTool(
   pi: ExtensionAPI,
-  onRecall?: (toolName: string) => void,
+  onRecall?: (toolName: string, toolCallId?: string, reason?: string) => void,
+  pruningState?: PruningState,
 ): void {
   pi.registerTool({
     name: "context_recall",
@@ -91,7 +94,13 @@ export function registerRecallTool(
         entry?.type === "message"
           ? ((entry.message as { toolName?: string }).toolName ?? "unknown")
           : "unknown";
-      onRecall?.(recalledToolName);
+      const reason = pruningState
+        ? getLatchedElision(pruningState, id)?.reason
+        : undefined;
+      onRecall?.(recalledToolName, id, reason);
+      if (pruningState && reason) {
+        recordRecall(pruningState, id, reason);
+      }
 
       if (!entry || entry.type !== "message") {
         const wasCompacted = entries.some((e) => e.type === "compaction");

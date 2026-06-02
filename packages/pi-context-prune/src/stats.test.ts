@@ -2,6 +2,23 @@ import { describe, it, expect } from "vitest";
 import { createStatsStore, formatStats } from "./stats.ts";
 import { formatTokenCount } from "./elision.ts";
 
+function entry(
+  toolCallId: string,
+  tokenCount: number,
+  toolName: string,
+  savedTokens = tokenCount - 10,
+): import("./stats.ts").ElisionPassEntry {
+  return {
+    toolCallId,
+    tokenCount,
+    toolName,
+    reason: "standard-stale",
+    savedTokens,
+    stubTokens: tokenCount - savedTokens,
+    suffixTokens: 5,
+  };
+}
+
 describe("createStatsStore", () => {
   it("initial snapshot has all zeros", () => {
     const store = createStatsStore();
@@ -15,49 +32,35 @@ describe("createStatsStore", () => {
 
   it("accumulates tokensElidedCumulative across elision passes with distinct ids", () => {
     const store = createStatsStore();
-    store.onElisionPass({
-      entries: [{ toolCallId: "id-1", tokenCount: 100, toolName: "read" }],
-    });
-    store.onElisionPass({
-      entries: [{ toolCallId: "id-2", tokenCount: 200, toolName: "read" }],
-    });
-    expect(store.snapshot().tokensElidedCumulative).toBe(300);
+    store.onElisionPass({ entries: [entry("id-1", 100, "read")] });
+    store.onElisionPass({ entries: [entry("id-2", 200, "read")] });
+    expect(store.snapshot().tokensElidedCumulative).toBe(280);
   });
 
   it("same toolCallId elided twice counts only once in tokensElidedCumulative", () => {
     const store = createStatsStore();
-    store.onElisionPass({
-      entries: [{ toolCallId: "id-1", tokenCount: 100, toolName: "read" }],
-    });
-    store.onElisionPass({
-      entries: [{ toolCallId: "id-1", tokenCount: 100, toolName: "read" }],
-    });
-    expect(store.snapshot().tokensElidedCumulative).toBe(100);
+    store.onElisionPass({ entries: [entry("id-1", 100, "read")] });
+    store.onElisionPass({ entries: [entry("id-1", 100, "read")] });
+    expect(store.snapshot().tokensElidedCumulative).toBe(90);
   });
 
   it("two distinct ids across two passes sum to both sizes", () => {
     const store = createStatsStore();
-    store.onElisionPass({
-      entries: [{ toolCallId: "id-a", tokenCount: 400, toolName: "bash" }],
-    });
-    store.onElisionPass({
-      entries: [{ toolCallId: "id-b", tokenCount: 600, toolName: "bash" }],
-    });
-    expect(store.snapshot().tokensElidedCumulative).toBe(1000);
+    store.onElisionPass({ entries: [entry("id-a", 400, "bash")] });
+    store.onElisionPass({ entries: [entry("id-b", 600, "bash")] });
+    expect(store.snapshot().tokensElidedCumulative).toBe(980);
   });
 
   it("elidedCountLatest reflects only the most recent pass, not cumulative", () => {
     const store = createStatsStore();
     store.onElisionPass({
       entries: [
-        { toolCallId: "id-1", tokenCount: 500, toolName: "read" },
-        { toolCallId: "id-2", tokenCount: 100, toolName: "read" },
-        { toolCallId: "id-3", tokenCount: 200, toolName: "bash" },
+        entry("id-1", 500, "read"),
+        entry("id-2", 100, "read"),
+        entry("id-3", 200, "bash"),
       ],
     });
-    store.onElisionPass({
-      entries: [{ toolCallId: "id-4", tokenCount: 100, toolName: "bash" }],
-    });
+    store.onElisionPass({ entries: [entry("id-4", 100, "bash")] });
     expect(store.snapshot().elidedCountLatest).toBe(1);
   });
 
@@ -65,19 +68,16 @@ describe("createStatsStore", () => {
     const store = createStatsStore();
     store.onElisionPass({
       entries: [
-        { toolCallId: "a", tokenCount: 10, toolName: "read" },
-        { toolCallId: "b", tokenCount: 20, toolName: "read" },
-        { toolCallId: "c", tokenCount: 30, toolName: "bash" },
-        { toolCallId: "d", tokenCount: 40, toolName: "bash" },
-        { toolCallId: "e", tokenCount: 50, toolName: "bash" },
+        entry("a", 10, "read"),
+        entry("b", 20, "read"),
+        entry("c", 30, "bash"),
+        entry("d", 40, "bash"),
+        entry("e", 50, "bash"),
       ],
     });
     expect(store.snapshot().elidedCountLatest).toBe(5);
     store.onElisionPass({
-      entries: [
-        { toolCallId: "f", tokenCount: 10, toolName: "read" },
-        { toolCallId: "g", tokenCount: 20, toolName: "bash" },
-      ],
+      entries: [entry("f", 10, "read"), entry("g", 20, "bash")],
     });
     expect(store.snapshot().elidedCountLatest).toBe(2);
   });
@@ -94,10 +94,10 @@ describe("createStatsStore", () => {
     const store = createStatsStore();
     store.onElisionPass({
       entries: [
-        { toolCallId: "id-1", tokenCount: 2048, toolName: "read" },
-        { toolCallId: "id-2", tokenCount: 100, toolName: "bash" },
-        { toolCallId: "id-3", tokenCount: 200, toolName: "bash" },
-        { toolCallId: "id-4", tokenCount: 300, toolName: "read" },
+        entry("id-1", 2048, "read"),
+        entry("id-2", 100, "bash"),
+        entry("id-3", 200, "bash"),
+        entry("id-4", 300, "read"),
       ],
     });
     store.onRecall("read");
@@ -119,53 +119,39 @@ describe("createStatsStore", () => {
   it("snapshot is a value copy that does not change when store mutates", () => {
     const store = createStatsStore();
     const snap1 = store.snapshot();
-    store.onElisionPass({
-      entries: [{ toolCallId: "id-1", tokenCount: 512, toolName: "read" }],
-    });
+    store.onElisionPass({ entries: [entry("id-1", 512, "read")] });
     expect(snap1.tokensElidedCumulative).toBe(0);
   });
 
   it("per-tool bytes accumulate correctly across multiple passes", () => {
     const store = createStatsStore();
     store.onElisionPass({
-      entries: [
-        { toolCallId: "r1", tokenCount: 10000, toolName: "read" },
-        { toolCallId: "r2", tokenCount: 14000, toolName: "read" },
-      ],
+      entries: [entry("r1", 10000, "read"), entry("r2", 14000, "read")],
     });
-    store.onElisionPass({
-      entries: [{ toolCallId: "b1", tokenCount: 10000, toolName: "bash" }],
-    });
+    store.onElisionPass({ entries: [entry("b1", 10000, "bash")] });
     const snap = store.snapshot();
     const readTool = snap.byTool.find((t) => t.toolName === "read");
     const bashTool = snap.byTool.find((t) => t.toolName === "bash");
-    expect(readTool?.tokens).toBe(24000);
+    expect(readTool?.tokens).toBe(23980);
     expect(readTool?.entries).toBe(2);
-    expect(bashTool?.tokens).toBe(10000);
+    expect(bashTool?.tokens).toBe(9990);
     expect(bashTool?.entries).toBe(1);
   });
 
   it("dedup-by-toolCallId carries over to per-tool counts", () => {
     const store = createStatsStore();
-    store.onElisionPass({
-      entries: [{ toolCallId: "r1", tokenCount: 5000, toolName: "read" }],
-    });
-    store.onElisionPass({
-      entries: [{ toolCallId: "r1", tokenCount: 5000, toolName: "read" }],
-    });
+    store.onElisionPass({ entries: [entry("r1", 5000, "read")] });
+    store.onElisionPass({ entries: [entry("r1", 5000, "read")] });
     const snap = store.snapshot();
     const readTool = snap.byTool.find((t) => t.toolName === "read");
-    expect(readTool?.tokens).toBe(5000);
+    expect(readTool?.tokens).toBe(4990);
     expect(readTool?.entries).toBe(1);
   });
 
   it("per-tool recall counter increments only for the tool of the recalled result", () => {
     const store = createStatsStore();
     store.onElisionPass({
-      entries: [
-        { toolCallId: "r1", tokenCount: 1000, toolName: "read" },
-        { toolCallId: "b1", tokenCount: 500, toolName: "bash" },
-      ],
+      entries: [entry("r1", 1000, "read"), entry("b1", 500, "bash")],
     });
     store.onRecall("read");
     const snap = store.snapshot();
@@ -179,9 +165,9 @@ describe("createStatsStore", () => {
     const store = createStatsStore();
     store.onElisionPass({
       entries: [
-        { toolCallId: "b1", tokenCount: 10000, toolName: "bash" },
-        { toolCallId: "r1", tokenCount: 24000, toolName: "read" },
-        { toolCallId: "w1", tokenCount: 10000, toolName: "write" },
+        entry("b1", 10000, "bash"),
+        entry("r1", 24000, "read"),
+        entry("w1", 10000, "write"),
       ],
     });
     const snap = store.snapshot();
@@ -234,8 +220,8 @@ describe("formatStats", () => {
       elidedCountLatest: 15,
       recallCount: 1,
       byTool: [
-        { toolName: "read", tokens: 24000, entries: 12, recalls: 1 },
-        { toolName: "bash", tokens: 10000, entries: 3, recalls: 0 },
+        { toolName: "read", tokens: 23980, entries: 12, recalls: 1 },
+        { toolName: "bash", tokens: 9990, entries: 3, recalls: 0 },
       ],
     });
     expect(output).toContain("by tool:");
@@ -263,7 +249,7 @@ describe("formatStats", () => {
       tokensElidedCumulative: 256,
       elidedCountLatest: 1,
       recallCount: 1,
-      byTool: [{ toolName: "read", tokens: 256, entries: 1, recalls: 1 }],
+      byTool: [{ toolName: "read", tokens: 246, entries: 1, recalls: 1 }],
     });
     expect(output).toContain("1 entry");
     expect(output).not.toContain("1 entries");
@@ -276,7 +262,7 @@ describe("formatStats", () => {
       tokensElidedCumulative: 3000,
       elidedCountLatest: 3,
       recallCount: 2,
-      byTool: [{ toolName: "bash", tokens: 3000, entries: 3, recalls: 2 }],
+      byTool: [{ toolName: "bash", tokens: 2970, entries: 3, recalls: 2 }],
     });
     expect(output).toContain("3 entries");
     expect(output).toContain("2 recalls");
@@ -287,7 +273,7 @@ describe("formatStats", () => {
       tokensElidedCumulative: 34000,
       elidedCountLatest: 3,
       recallCount: 1,
-      byTool: [{ toolName: "read", tokens: 34000, entries: 3, recalls: 1 }],
+      byTool: [{ toolName: "read", tokens: 33970, entries: 3, recalls: 1 }],
     });
     const lines = output.split("\n");
     expect(lines[0]).toBe(

@@ -3,6 +3,8 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { ElisionPassResult } from "./stats.ts";
+import type { ElisionReason, PruningState } from "./policy.ts";
+import { getLatchedElision, recordElision } from "./policy.ts";
 import { DEFAULTS, type Config } from "./config.ts";
 import { normalizePath, extractFilePath } from "./paths.ts";
 
@@ -137,6 +139,41 @@ export function userTurnsUpToEachPosition(messages: AgentMsg[]): number[] {
   return counts;
 }
 
+// Estimate tokens in the suffix of the conversation (all messages after a candidate index).
+// Includes text blocks from user, assistant, and toolResult messages.
+// Used for relative scoring, not exact accounting.
+export function estimateSuffixTokens(
+  messages: AgentMsg[],
+  afterIndex: number,
+): number {
+  let chars = 0;
+  for (let i = afterIndex + 1; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === "user" || msg.role === "assistant") {
+      const content = (msg as any).content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block?.type === "text" && typeof block.text === "string") {
+            chars += block.text.length;
+          }
+        }
+      } else if (typeof content === "string") {
+        chars += content.length;
+      }
+    } else if (msg.role === "toolResult") {
+      const content = (msg as any).content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block?.type === "text" && typeof block.text === "string") {
+            chars += block.text.length;
+          }
+        }
+      }
+    }
+  }
+  return Math.ceil(chars / 4);
+}
+
 function isToolResult(msg: AgentMsg) {
   return msg.role === "toolResult";
 }
@@ -263,6 +300,7 @@ function buildDuplicateReadMap(
 export function makeContextHook(
   config: Config,
   onElisionPass?: (result: ElisionPassResult) => void,
+  pruningState?: PruningState,
 ) {
   return function handleContext(
     event: ContextEvent,
@@ -295,6 +333,36 @@ export function makeContextHook(
       if (!isToolResult(msg)) {
         result.push(msg);
         continue;
+      }
+
+      // Latch: if already elided, re-use the exact same stub.
+      if (pruningState) {
+        const latched = getLatchedElision(pruningState, msg.toolCallId);
+        if (latched) {
+          const stub = buildStubFromLatched(msg, latched);
+          const elided: ToolResultMsg = {
+            role: "toolResult",
+            toolCallId: msg.toolCallId,
+            toolName: msg.toolName,
+            content: [{ type: "text", text: stub }],
+            isError: msg.isError ?? false,
+            timestamp: msg.timestamp,
+          };
+          result.push(elided);
+          entries.push({
+            toolCallId: msg.toolCallId,
+            tokenCount: latched.originalTokens,
+            toolName: latched.toolName,
+            reason: latched.reason,
+            savedTokens: Math.max(
+              0,
+              latched.originalTokens - (latched.stubTokens ?? 0),
+            ),
+            stubTokens: latched.stubTokens ?? 0,
+            suffixTokens: estimateSuffixTokens(messages, i),
+          });
+          continue;
+        }
       }
 
       const tokenCount = estimateContentTokens(msg.content);
@@ -339,11 +407,12 @@ export function makeContextHook(
         duplicateInfo = duplicateReadMap.get(msg.toolCallId) ?? null;
       }
 
-      if (
-        !isGenericStale &&
-        supersededNormalizedPath === null &&
-        duplicateInfo === null
-      ) {
+      const shouldElide =
+        isGenericStale ||
+        supersededNormalizedPath !== null ||
+        duplicateInfo !== null;
+
+      if (!shouldElide) {
         result.push(msg);
         continue;
       }
@@ -352,7 +421,9 @@ export function makeContextHook(
       const preview = extractPreview(msg.content);
 
       let stub: string;
+      let reason: ElisionReason;
       if (supersededNormalizedPath !== null) {
+        reason = "superseded-read-young";
         stub = formatSupersededStub({
           toolName,
           normalizedPath: supersededNormalizedPath,
@@ -361,6 +432,7 @@ export function makeContextHook(
           preview,
         });
       } else if (duplicateInfo !== null) {
+        reason = "duplicate-read-young";
         stub = formatDuplicateStub({
           toolName,
           normalizedPath: duplicateInfo.normalizedPath,
@@ -370,12 +442,38 @@ export function makeContextHook(
           preview,
         });
       } else {
+        reason = "standard-stale";
         stub = formatStub({
           toolName,
           tokenCount,
           toolCallId: msg.toolCallId,
           preview,
         });
+      }
+
+      const stubTokens = estimateContentTokens([
+        { type: "text" as const, text: stub },
+      ]);
+      const savedTokens = Math.max(0, tokenCount - stubTokens);
+      const suffixTokens = estimateSuffixTokens(messages, i);
+
+      if (pruningState) {
+        const latched: import("./policy.ts").LatchedElision = {
+          toolCallId: msg.toolCallId,
+          reason,
+          toolName,
+          originalTokens: tokenCount,
+          stubTokens,
+          firstElidedTurnIndex: distance,
+        };
+        if (reason === "superseded-read-young" && supersededNormalizedPath) {
+          latched.normalizedPath = supersededNormalizedPath;
+        }
+        if (reason === "duplicate-read-young" && duplicateInfo) {
+          latched.normalizedPath = duplicateInfo.normalizedPath;
+          latched.keptUserTurnIndex = duplicateInfo.keptUserTurnIndex;
+        }
+        recordElision(pruningState, latched);
       }
 
       const elided: ToolResultMsg = {
@@ -388,11 +486,55 @@ export function makeContextHook(
       };
 
       result.push(elided);
-      entries.push({ toolCallId: msg.toolCallId, tokenCount, toolName });
+      entries.push({
+        toolCallId: msg.toolCallId,
+        tokenCount,
+        toolName,
+        reason,
+        savedTokens,
+        stubTokens,
+        suffixTokens,
+      });
     }
 
     onElisionPass?.({ entries });
 
     return { messages: result };
   };
+}
+
+function buildStubFromLatched(
+  msg: ToolResultMsg,
+  latched: import("./policy.ts").LatchedElision,
+): string {
+  const preview = extractPreview(msg.content);
+  if (latched.reason === "superseded-read-young" && latched.normalizedPath) {
+    return formatSupersededStub({
+      toolName: latched.toolName,
+      normalizedPath: latched.normalizedPath,
+      tokenCount: latched.originalTokens,
+      toolCallId: latched.toolCallId,
+      preview,
+    });
+  }
+  if (
+    latched.reason === "duplicate-read-young" &&
+    latched.normalizedPath &&
+    latched.keptUserTurnIndex != null
+  ) {
+    return formatDuplicateStub({
+      toolName: latched.toolName,
+      normalizedPath: latched.normalizedPath,
+      keptUserTurnIndex: latched.keptUserTurnIndex,
+      tokenCount: latched.originalTokens,
+      toolCallId: latched.toolCallId,
+      preview,
+    });
+  }
+  return formatStub({
+    toolName: latched.toolName,
+    tokenCount: latched.originalTokens,
+    toolCallId: latched.toolCallId,
+    preview,
+  });
 }

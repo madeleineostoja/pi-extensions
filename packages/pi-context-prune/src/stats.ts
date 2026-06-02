@@ -16,6 +16,10 @@ export type ElisionPassEntry = {
   toolCallId: string;
   tokenCount: number;
   toolName: string;
+  reason: string;
+  savedTokens: number;
+  stubTokens: number;
+  suffixTokens: number;
 };
 
 export type ElisionPassResult = {
@@ -24,7 +28,7 @@ export type ElisionPassResult = {
 
 export type StatsStore = {
   onElisionPass(result: ElisionPassResult): void;
-  onRecall(toolName: string): void;
+  onRecall(toolName: string, toolCallId?: string, reason?: string): void;
   reset(): void;
   snapshot(): StatsSnapshot;
 };
@@ -32,7 +36,7 @@ export type StatsStore = {
 export function createStatsStore(): StatsStore {
   const elidedById = new Map<
     string,
-    { tokenCount: number; toolName: string }
+    { savedTokens: number; toolName: string }
   >();
   let elidedCountLatest = 0;
   let recallCount = 0;
@@ -40,12 +44,12 @@ export function createStatsStore(): StatsStore {
 
   return {
     onElisionPass({ entries }: ElisionPassResult): void {
-      for (const { toolCallId, tokenCount, toolName } of entries) {
-        elidedById.set(toolCallId, { tokenCount, toolName });
+      for (const { toolCallId, savedTokens, toolName } of entries) {
+        elidedById.set(toolCallId, { savedTokens, toolName });
       }
       elidedCountLatest = entries.length;
     },
-    onRecall(toolName: string): void {
+    onRecall(toolName: string, _toolCallId?: string, _reason?: string): void {
       recallCount += 1;
       recallsByTool.set(toolName, (recallsByTool.get(toolName) ?? 0) + 1);
     },
@@ -60,11 +64,11 @@ export function createStatsStore(): StatsStore {
       const toolTokensMap = new Map<string, number>();
       const toolEntriesMap = new Map<string, number>();
 
-      for (const { tokenCount, toolName } of elidedById.values()) {
-        tokensElidedCumulative += tokenCount;
+      for (const { savedTokens, toolName } of elidedById.values()) {
+        tokensElidedCumulative += savedTokens;
         toolTokensMap.set(
           toolName,
-          (toolTokensMap.get(toolName) ?? 0) + tokenCount,
+          (toolTokensMap.get(toolName) ?? 0) + savedTokens,
         );
         toolEntriesMap.set(toolName, (toolEntriesMap.get(toolName) ?? 0) + 1);
       }

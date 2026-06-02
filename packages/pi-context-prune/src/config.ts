@@ -8,6 +8,7 @@ export type Config = {
   minTokens: number;
   supersededReadsEnabled: boolean;
   duplicateReadsEnabled: boolean;
+  adaptivePolicyEnabled: boolean;
 };
 
 export const DEFAULTS: Config = {
@@ -15,6 +16,7 @@ export const DEFAULTS: Config = {
   minTokens: 256,
   supersededReadsEnabled: true,
   duplicateReadsEnabled: true,
+  adaptivePolicyEnabled: false,
 };
 
 type Notifier = ExtensionUIContext["notify"];
@@ -97,9 +99,12 @@ export function loadConfig(
     }
   }
 
-  const boolKeys: Array<"supersededReadsEnabled" | "duplicateReadsEnabled"> = [
+  const boolKeys: Array<
+    "supersededReadsEnabled" | "duplicateReadsEnabled" | "adaptivePolicyEnabled"
+  > = [
     "supersededReadsEnabled",
     "duplicateReadsEnabled",
+    "adaptivePolicyEnabled",
   ];
   for (const key of boolKeys) {
     if (!(key in obj)) {
