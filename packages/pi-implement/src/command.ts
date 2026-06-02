@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
 import {
@@ -45,6 +45,7 @@ import {
   createRunState,
   writeRunJson,
   readRunJson,
+  readTaskJson,
   appendEvent,
   cleanupRun,
   listRunIds,
@@ -227,6 +228,50 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             `Created global review agent at ${result.path}. Configure pi-implement with reviewer.type = "review" to use it.`,
             "info",
           );
+          return;
+        }
+
+        if (parsed.name === "inspect") {
+          const git = new ExecGitClient(ctx.cwd);
+          const repoRoot = await git.root();
+          let runId: string | undefined;
+          if (active.state.runId) {
+            runId = active.state.runId;
+          } else {
+            const runIds = listRunIds(repoRoot);
+            if (runIds.length > 0) {
+              runId = runIds.reduce((a, b) => (a > b ? a : b));
+            }
+          }
+          if (!runId) {
+            ctx.ui.notify("pi-implement inspect: no run found.", "info");
+            return;
+          }
+          const paths = getStatePaths(repoRoot, runId);
+          const run = readRunJson(paths);
+          if (!run) {
+            ctx.ui.notify(
+              `pi-implement inspect: run ${runId} metadata not found.`,
+              "warning",
+            );
+            return;
+          }
+          const lines: string[] = [];
+          lines.push(`Run: ${runId}`);
+          lines.push(`Run dir: ${paths.runDir}`);
+          lines.push(`Worktrees dir: ${paths.worktreesDir}`);
+          if (existsSync(paths.tasksDir)) {
+            const taskIds = readdirSync(paths.tasksDir, { withFileTypes: true })
+              .filter((d) => d.isDirectory())
+              .map((d) => d.name);
+            for (const taskId of taskIds) {
+              const task = readTaskJson(paths, taskId);
+              if (!task) continue;
+              const wt = task.worktreePath ?? "—";
+              lines.push(`${task.id} [${task.status}] → ${wt}`);
+            }
+          }
+          ctx.ui.notify(lines.join("\n"), "info");
           return;
         }
 
