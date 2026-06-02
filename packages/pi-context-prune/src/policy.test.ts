@@ -111,37 +111,38 @@ describe("clampProfile", () => {
     });
   });
 
-  it("clamps minSavedTokens to [0, 1024]", () => {
+  it("clamps minSavedTokens to [0, 10000]", () => {
     expect(
       clampProfile({ ...DEFAULT_PROFILE, minSavedTokens: -1 }).minSavedTokens,
     ).toBe(0);
     expect(
-      clampProfile({ ...DEFAULT_PROFILE, minSavedTokens: 2048 }).minSavedTokens,
-    ).toBe(1024);
+      clampProfile({ ...DEFAULT_PROFILE, minSavedTokens: 20_000 })
+        .minSavedTokens,
+    ).toBe(10_000);
   });
 
-  it("clamps baselineSuffixBudget to [0, 16384]", () => {
+  it("clamps baselineSuffixBudget to [0, 100000]", () => {
     expect(
       clampProfile({ ...DEFAULT_PROFILE, baselineSuffixBudget: -10 })
         .baselineSuffixBudget,
     ).toBe(0);
     expect(
-      clampProfile({ ...DEFAULT_PROFILE, baselineSuffixBudget: 20000 })
+      clampProfile({ ...DEFAULT_PROFILE, baselineSuffixBudget: 200_000 })
         .baselineSuffixBudget,
-    ).toBe(16384);
+    ).toBe(100_000);
   });
 
-  it("clamps minSuffixBudget to [0, 32768]", () => {
+  it("clamps minSuffixBudget to [0, 100000]", () => {
     expect(
       clampProfile({ ...DEFAULT_PROFILE, minSuffixBudget: -5 }).minSuffixBudget,
     ).toBe(0);
     expect(
-      clampProfile({ ...DEFAULT_PROFILE, minSuffixBudget: 50000 })
+      clampProfile({ ...DEFAULT_PROFILE, minSuffixBudget: 200_000 })
         .minSuffixBudget,
-    ).toBe(32768);
+    ).toBe(100_000);
   });
 
-  it("clamps maxSuffixBudget to [minSuffixBudget, 32768]", () => {
+  it("clamps maxSuffixBudget to [minSuffixBudget, 100000]", () => {
     const p = clampProfile({
       ...DEFAULT_PROFILE,
       minSuffixBudget: 1000,
@@ -164,9 +165,9 @@ describe("profile constants", () => {
   it("DEFAULT_PROFILE values are clamped and within bounds", () => {
     const p = DEFAULT_PROFILE;
     expect(p.minSavedTokens).toBeGreaterThanOrEqual(0);
-    expect(p.minSavedTokens).toBeLessThanOrEqual(1024);
+    expect(p.minSavedTokens).toBeLessThanOrEqual(10_000);
     expect(p.baselineSuffixBudget).toBeGreaterThanOrEqual(0);
-    expect(p.baselineSuffixBudget).toBeLessThanOrEqual(16384);
+    expect(p.baselineSuffixBudget).toBeLessThanOrEqual(100_000);
     expect(p.minSuffixBudget).toBeLessThanOrEqual(p.maxSuffixBudget);
     expect(p.semanticRisk).toBeGreaterThanOrEqual(0);
     expect(p.semanticRisk).toBeLessThanOrEqual(1);

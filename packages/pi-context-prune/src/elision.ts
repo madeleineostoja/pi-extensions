@@ -4,7 +4,13 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { ElisionPassResult } from "./stats.ts";
 import type { ElisionReason, PruningState } from "./policy.ts";
-import { getLatchedElision, recordElision } from "./policy.ts";
+import {
+  getLatchedElision,
+  recordElision,
+  getPrimaryReason,
+  getProfileForReason,
+  BATCH_PRIORITY,
+} from "./policy.ts";
 import { DEFAULTS, type Config } from "./config.ts";
 import { normalizePath, extractFilePath } from "./paths.ts";
 import { classifyBashOutput } from "./bash-classifier.ts";
@@ -117,9 +123,6 @@ export function formatDuplicateStub({
   return `[${toolName} result elided (superseded by later read of ${normalizedPath} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
 }
 
-// Image blocks intentionally contribute 0 tokens: elision eligibility is based on text payload only.
-// (Pi's own estimateTokens adds ~1200 tokens per image, but we're deciding whether to elide text,
-// so only the text cost matters here.)
 export function estimateContentTokens(content: ToolResultContent): number {
   let chars = 0;
   for (const block of content) {
@@ -130,8 +133,27 @@ export function estimateContentTokens(content: ToolResultContent): number {
   return Math.ceil(chars / 4);
 }
 
-// Returns, for each position i, the count of user messages strictly after index i.
-// Only meaningful for toolResult slots; non-toolResult positions carry the value but it is unused.
+function estimateMessageTokens(msg: AgentMsg): number {
+  if (msg.role === "user" || msg.role === "assistant") {
+    const content = (msg as any).content;
+    let chars = 0;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block?.type === "text" && typeof block.text === "string") {
+          chars += block.text.length;
+        }
+      }
+    } else if (typeof content === "string") {
+      chars += content.length;
+    }
+    return Math.ceil(chars / 4);
+  }
+  if (msg.role === "toolResult") {
+    return estimateContentTokens(msg.content);
+  }
+  return 0;
+}
+
 export function userTurnsAfterEachPosition(messages: AgentMsg[]): number[] {
   const distances: number[] = Array.from({ length: messages.length }, () => 0);
   let userCount = 0;
@@ -159,7 +181,6 @@ export function assistantAfterEachPosition(messages: AgentMsg[]): boolean[] {
   return hasAssistant;
 }
 
-// Returns, for each position i, the count of user messages at index <= i (1-indexed).
 export function userTurnsUpToEachPosition(messages: AgentMsg[]): number[] {
   const counts: number[] = Array.from({ length: messages.length }, () => 0);
   let userCount = 0;
@@ -172,9 +193,6 @@ export function userTurnsUpToEachPosition(messages: AgentMsg[]): number[] {
   return counts;
 }
 
-// Estimate tokens in the suffix of the conversation (all messages after a candidate index).
-// Includes text blocks from user, assistant, and toolResult messages.
-// Used for relative scoring, not exact accounting.
 export function estimateSuffixTokens(
   messages: AgentMsg[],
   afterIndex: number,
@@ -207,7 +225,7 @@ export function estimateSuffixTokens(
   return Math.ceil(chars / 4);
 }
 
-function isToolResult(msg: AgentMsg) {
+function isToolResult(msg: AgentMsg): msg is ToolResultMsg {
   return msg.role === "toolResult";
 }
 
@@ -263,8 +281,6 @@ type DuplicateInfo = {
   keptUserTurnIndex: number;
 };
 
-// Groups successful reads by (normalizedPath, offset, limit) — reads of the same file at different
-// ranges are not duplicates since they may capture non-overlapping content.
 function buildDuplicateReadMap(
   messages: AgentMsg[],
   cwd: string,
@@ -311,7 +327,6 @@ function buildDuplicateReadMap(
     groups.set(groupKey, entries);
   }
 
-  // Map each duplicate toolCallId directly to the info needed for its stub.
   const result = new Map<string, DuplicateInfo>();
 
   for (const entries of groups.values()) {
@@ -330,6 +345,174 @@ function buildDuplicateReadMap(
   return result;
 }
 
+function computeRecentCacheHit(pruningState: PruningState | undefined): number {
+  if (!pruningState || pruningState.usageHistory.length === 0) {
+    return 0.5;
+  }
+  const recent = pruningState.usageHistory.slice(-5);
+  let total = 0;
+  for (const u of recent) {
+    const hitRate =
+      u.totalTokens > 0 ? (u.cacheRead + u.cacheWrite) / u.totalTokens : 0;
+    total += hitRate;
+  }
+  return total / recent.length;
+}
+
+function smoothedRecallRateForReason(
+  pruningState: PruningState | undefined,
+  reason: ElisionReason,
+): number {
+  if (!pruningState) {
+    return 0;
+  }
+  const elisions = pruningState.elisionCountByReason.get(reason) ?? 0;
+  if (elisions === 0) {
+    return 0;
+  }
+  const recalls = pruningState.recallCountByReason.get(reason) ?? 0;
+  return recalls / elisions;
+}
+
+function effectiveSuffixBudget(profile: {
+  baselineSuffixBudget: number;
+  minSuffixBudget: number;
+  maxSuffixBudget: number;
+}): number {
+  return Math.max(
+    profile.minSuffixBudget,
+    Math.min(profile.maxSuffixBudget, profile.baselineSuffixBudget),
+  );
+}
+
+function effectiveMinSavedTokens(profile: { minSavedTokens: number }): number {
+  return profile.minSavedTokens;
+}
+
+type Candidate = {
+  index: number;
+  msg: ToolResultMsg;
+  reasons: ElisionReason[];
+  originalTokens: number;
+  estimatedStubTokens: number;
+  savedTokens: number;
+  suffixTokens: number;
+  semanticRisk: number;
+  priority: number;
+  isOrdinarySourceRead: boolean;
+  supersededPath?: string;
+  duplicateInfo?: DuplicateInfo;
+  bashCommand?: string;
+};
+
+function buildStubTextForCandidate(
+  cand: Candidate,
+  reason: ElisionReason,
+  tokenCount: number,
+  preview: string | null,
+): string {
+  const toolName = cand.msg.toolName ?? "unknown";
+  if (reason === "superseded-read-young" && cand.supersededPath) {
+    return formatSupersededStub({
+      toolName,
+      normalizedPath: cand.supersededPath,
+      tokenCount,
+      toolCallId: cand.msg.toolCallId,
+      preview,
+    });
+  }
+  if (reason === "duplicate-read-young" && cand.duplicateInfo) {
+    return formatDuplicateStub({
+      toolName,
+      normalizedPath: cand.duplicateInfo.normalizedPath,
+      keptUserTurnIndex: cand.duplicateInfo.keptUserTurnIndex,
+      tokenCount,
+      toolCallId: cand.msg.toolCallId,
+      preview,
+    });
+  }
+  if (reason === "after-consumption-bash") {
+    return formatAfterConsumptionBashStub({
+      tokenCount,
+      toolCallId: cand.msg.toolCallId,
+      command: cand.bashCommand,
+      preview,
+    });
+  }
+  return formatStub({
+    toolName,
+    tokenCount,
+    toolCallId: cand.msg.toolCallId,
+    preview,
+  });
+}
+
+function applyElision(
+  cand: Candidate,
+  actionReason: ElisionReason,
+  entries: ElisionPassResult["entries"],
+  result: AgentMsg[],
+  pruningState: PruningState | undefined,
+  distances: number[],
+): void {
+  const msg = cand.msg;
+  const preview = extractPreview(msg.content);
+  const primaryReason = getPrimaryReason(cand.reasons) ?? cand.reasons[0];
+
+  const stubText = buildStubTextForCandidate(
+    cand,
+    primaryReason,
+    cand.originalTokens,
+    preview,
+  );
+  const stubTokens = estimateContentTokens([{ type: "text", text: stubText }]);
+  const savedTokens = Math.max(0, cand.originalTokens - stubTokens);
+
+  const elided: ToolResultMsg = {
+    role: "toolResult",
+    toolCallId: msg.toolCallId,
+    toolName: msg.toolName,
+    content: [{ type: "text", text: stubText }],
+    isError: msg.isError ?? false,
+    timestamp: msg.timestamp,
+  };
+
+  result[cand.index] = elided;
+
+  entries.push({
+    toolCallId: msg.toolCallId,
+    tokenCount: cand.originalTokens,
+    toolName: msg.toolName ?? "unknown",
+    reason: actionReason,
+    savedTokens,
+    stubTokens,
+    suffixTokens: cand.suffixTokens,
+  });
+
+  if (pruningState) {
+    const latched: import("./policy.ts").LatchedElision = {
+      toolCallId: msg.toolCallId,
+      reason: actionReason,
+      toolName: msg.toolName ?? "unknown",
+      originalTokens: cand.originalTokens,
+      stubTokens,
+      firstElidedTurnIndex: distances[cand.index],
+      sourceReason: primaryReason !== actionReason ? primaryReason : undefined,
+    };
+    if (primaryReason === "superseded-read-young" && cand.supersededPath) {
+      latched.normalizedPath = cand.supersededPath;
+    }
+    if (primaryReason === "duplicate-read-young" && cand.duplicateInfo) {
+      latched.normalizedPath = cand.duplicateInfo.normalizedPath;
+      latched.keptUserTurnIndex = cand.duplicateInfo.keptUserTurnIndex;
+    }
+    if (primaryReason === "after-consumption-bash" && cand.bashCommand) {
+      latched.command = cand.bashCommand;
+    }
+    recordElision(pruningState, latched);
+  }
+}
+
 export function makeContextHook(
   config: Config,
   onElisionPass?: (result: ElisionPassResult) => void,
@@ -340,43 +523,46 @@ export function makeContextHook(
     ctx: ExtensionContext,
   ): { messages: AgentMsg[] } {
     const messages = event.messages;
-    const distances = userTurnsAfterEachPosition(messages);
-    const result: AgentMsg[] = [];
+    const result: AgentMsg[] = messages.slice();
     const entries: ElisionPassResult["entries"] = [];
 
     const cwd = (ctx as { cwd?: string }).cwd ?? process.cwd();
 
-    let toolCallInfoMap: Map<string, ToolCallInfo> | undefined;
-    let supersededPaths: Map<string, number> | undefined;
-    if (
-      config.supersededReadsEnabled ||
-      config.duplicateReadsEnabled ||
-      config.afterConsumptionBashEnabled
-    ) {
-      ({ toolCallInfoMap, supersededPaths } = buildSupersededMaps(
-        messages,
-        cwd,
-      ));
-    }
-
-    let duplicateReadMap: Map<string, DuplicateInfo> | undefined;
-    if (config.duplicateReadsEnabled && toolCallInfoMap) {
-      duplicateReadMap = buildDuplicateReadMap(messages, cwd, toolCallInfoMap);
-    }
-
+    const { toolCallInfoMap, supersededPaths } = buildSupersededMaps(
+      messages,
+      cwd,
+    );
+    const duplicateReadMap = buildDuplicateReadMap(
+      messages,
+      cwd,
+      toolCallInfoMap,
+    );
     const hasAssistantAfter = config.afterConsumptionBashEnabled
       ? assistantAfterEachPosition(messages)
       : [];
+    const distances = userTurnsAfterEachPosition(messages);
+    const userTurnCounts = userTurnsUpToEachPosition(messages);
+
+    let totalPromptTokens = 0;
+    for (const msg of messages) {
+      totalPromptTokens += estimateMessageTokens(msg);
+    }
+
+    const contextUsage = ctx.getContextUsage?.();
+    const isEmergency =
+      typeof contextUsage?.tokens === "number" &&
+      typeof contextUsage.contextWindow === "number" &&
+      contextUsage.tokens >=
+        contextUsage.contextWindow - config.emergencyContextReserveTokens;
+
+    const candidates: Candidate[] = [];
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-
       if (!isToolResult(msg)) {
-        result.push(msg);
         continue;
       }
 
-      // Latch: if already elided, re-use the exact same stub.
       if (pruningState) {
         const latched = getLatchedElision(pruningState, msg.toolCallId);
         if (latched) {
@@ -389,7 +575,7 @@ export function makeContextHook(
             isError: msg.isError ?? false,
             timestamp: msg.timestamp,
           };
-          result.push(elided);
+          result[i] = elided;
           entries.push({
             toolCallId: msg.toolCallId,
             tokenCount: latched.originalTokens,
@@ -408,48 +594,60 @@ export function makeContextHook(
 
       const tokenCount = estimateContentTokens(msg.content);
       const distance = distances[i];
-      // Error results are never elided by the standard rule — the LLM needs to see failures.
-      const isGenericStale =
+
+      const reasons: ElisionReason[] = [];
+      let supersededPath: string | undefined;
+      let duplicateInfo: DuplicateInfo | undefined;
+      let bashCommand: string | undefined;
+      let readPath: string | null = null;
+
+      if (msg.toolName === "read" && toolCallInfoMap) {
+        const callInfo = toolCallInfoMap.get(msg.toolCallId);
+        if (callInfo) {
+          readPath = normalizePath(
+            extractFilePath("read", callInfo.input),
+            cwd,
+          );
+        }
+      }
+
+      if (
         !msg.isError &&
         isEligibleForElision(
           distance,
           tokenCount,
           config.staleTurns,
           config.minTokens,
-        );
+        )
+      ) {
+        reasons.push("standard-stale");
+      }
 
-      let supersededNormalizedPath: string | null = null;
       if (
         config.supersededReadsEnabled &&
         msg.toolName === "read" &&
-        toolCallInfoMap &&
+        readPath !== null &&
         supersededPaths
       ) {
-        const callInfo = toolCallInfoMap.get(msg.toolCallId);
-        if (callInfo) {
-          const rawPath = extractFilePath("read", callInfo.input);
-          const normalized = normalizePath(rawPath, cwd);
-          if (normalized !== null) {
-            const supersedingPos = supersededPaths.get(normalized);
-            if (supersedingPos !== undefined && supersedingPos > i) {
-              supersededNormalizedPath = normalized;
-            }
-          }
+        const supersedingPos = supersededPaths.get(readPath);
+        if (supersedingPos !== undefined && supersedingPos > i) {
+          reasons.push("superseded-read-young");
+          supersededPath = readPath;
         }
       }
 
-      let duplicateInfo: DuplicateInfo | null = null;
       if (
         config.duplicateReadsEnabled &&
         msg.toolName === "read" &&
         !msg.isError &&
         duplicateReadMap
       ) {
-        duplicateInfo = duplicateReadMap.get(msg.toolCallId) ?? null;
+        duplicateInfo = duplicateReadMap.get(msg.toolCallId) ?? undefined;
+        if (duplicateInfo) {
+          reasons.push("duplicate-read-young");
+        }
       }
 
-      let afterConsumptionBash = false;
-      let bashCommand: string | undefined;
       if (
         config.afterConsumptionBashEnabled &&
         !msg.isError &&
@@ -462,7 +660,7 @@ export function makeContextHook(
           config.minTokens,
         );
         if (classification.lowRisk) {
-          afterConsumptionBash = true;
+          reasons.push("after-consumption-bash");
           const callInfo = toolCallInfoMap?.get(msg.toolCallId);
           if (
             callInfo &&
@@ -477,110 +675,217 @@ export function makeContextHook(
         }
       }
 
-      const shouldElide =
-        isGenericStale ||
-        supersededNormalizedPath !== null ||
-        duplicateInfo !== null ||
-        afterConsumptionBash;
-
-      if (!shouldElide) {
-        result.push(msg);
+      if (reasons.length === 0) {
         continue;
       }
 
-      const toolName = msg.toolName ?? "unknown";
+      const primaryReason = getPrimaryReason(reasons) ?? reasons[0];
       const preview = extractPreview(msg.content);
-
-      let stub: string;
-      let reason: ElisionReason;
-      if (supersededNormalizedPath !== null) {
-        reason = "superseded-read-young";
-        stub = formatSupersededStub({
-          toolName,
-          normalizedPath: supersededNormalizedPath,
-          tokenCount,
-          toolCallId: msg.toolCallId,
-          preview,
-        });
-      } else if (duplicateInfo !== null) {
-        reason = "duplicate-read-young";
-        stub = formatDuplicateStub({
-          toolName,
-          normalizedPath: duplicateInfo.normalizedPath,
-          keptUserTurnIndex: duplicateInfo.keptUserTurnIndex,
-          tokenCount,
-          toolCallId: msg.toolCallId,
-          preview,
-        });
-      } else if (afterConsumptionBash) {
-        reason = "after-consumption-bash";
-        stub = formatAfterConsumptionBashStub({
-          tokenCount,
-          toolCallId: msg.toolCallId,
-          command: bashCommand,
-          preview,
-        });
-      } else {
-        reason = "standard-stale";
-        stub = formatStub({
-          toolName,
-          tokenCount,
-          toolCallId: msg.toolCallId,
-          preview,
-        });
-      }
-
+      const stubText = buildStubTextForCandidate(
+        {
+          index: i,
+          msg,
+          reasons,
+          originalTokens: tokenCount,
+          estimatedStubTokens: 0,
+          savedTokens: 0,
+          suffixTokens: 0,
+          semanticRisk: 0,
+          priority: 0,
+          isOrdinarySourceRead: false,
+          supersededPath,
+          duplicateInfo,
+          bashCommand,
+        },
+        primaryReason,
+        tokenCount,
+        preview,
+      );
       const stubTokens = estimateContentTokens([
-        { type: "text" as const, text: stub },
+        { type: "text", text: stubText },
       ]);
       const savedTokens = Math.max(0, tokenCount - stubTokens);
       const suffixTokens = estimateSuffixTokens(messages, i);
 
-      if (pruningState) {
-        const latched: import("./policy.ts").LatchedElision = {
-          toolCallId: msg.toolCallId,
-          reason,
-          toolName,
-          originalTokens: tokenCount,
-          stubTokens,
-          firstElidedTurnIndex: distance,
-        };
-        if (reason === "superseded-read-young" && supersededNormalizedPath) {
-          latched.normalizedPath = supersededNormalizedPath;
-        }
-        if (reason === "duplicate-read-young" && duplicateInfo) {
-          latched.normalizedPath = duplicateInfo.normalizedPath;
-          latched.keptUserTurnIndex = duplicateInfo.keptUserTurnIndex;
-        }
-        if (reason === "after-consumption-bash" && bashCommand) {
-          latched.command = bashCommand;
-        }
-        recordElision(pruningState, latched);
-      }
+      const isOrdinarySourceRead =
+        msg.toolName === "read" &&
+        readPath !== null &&
+        !reasons.includes("duplicate-read-young") &&
+        !reasons.includes("superseded-read-young");
+      const profile = getProfileForReason(
+        primaryReason === "standard-stale"
+          ? "batch-pressure"
+          : (primaryReason as Exclude<ElisionReason, "emergency-pressure">),
+      );
 
-      const elided: ToolResultMsg = {
-        role: "toolResult",
-        toolCallId: msg.toolCallId,
-        toolName: msg.toolName,
-        content: [{ type: "text", text: stub }],
-        isError: msg.isError ?? false,
-        timestamp: msg.timestamp,
-      };
-
-      result.push(elided);
-      entries.push({
-        toolCallId: msg.toolCallId,
-        tokenCount,
-        toolName,
-        reason,
+      candidates.push({
+        index: i,
+        msg,
+        reasons,
+        originalTokens: tokenCount,
+        estimatedStubTokens: stubTokens,
         savedTokens,
-        stubTokens,
         suffixTokens,
+        semanticRisk: isOrdinarySourceRead ? 1 : profile.semanticRisk,
+        priority: isOrdinarySourceRead
+          ? BATCH_PRIORITY["batch-pressure"]
+          : (BATCH_PRIORITY[
+              primaryReason === "standard-stale"
+                ? "batch-pressure"
+                : (primaryReason as Exclude<
+                    ElisionReason,
+                    "emergency-pressure"
+                  >)
+            ] ?? 5),
+        isOrdinarySourceRead,
+        supersededPath,
+        duplicateInfo,
+        bashCommand,
       });
     }
 
-    onElisionPass?.({ entries });
+    const cachePenalty = Math.max(
+      0.25,
+      Math.min(1.0, 0.25 + 0.75 * computeRecentCacheHit(pruningState)),
+    );
+    const lowValueToolTokens = candidates.reduce(
+      (s, c) => s + c.originalTokens,
+      0,
+    );
+    const rotPressure = Math.min(
+      1,
+      lowValueToolTokens / Math.max(totalPromptTokens, 1),
+    );
+    const expectedFutureTurns = 2 + 3 * rotPressure;
 
+    const deferred: Candidate[] = [];
+    const elidedIndices = new Set<number>();
+
+    for (const cand of candidates) {
+      const primaryReason: Exclude<ElisionReason, "emergency-pressure"> =
+        getPrimaryReason(cand.reasons) ??
+        (cand.reasons[0] as Exclude<ElisionReason, "emergency-pressure">);
+      const profile = getProfileForReason(
+        primaryReason === "standard-stale" ? "batch-pressure" : primaryReason,
+      );
+
+      const recallRate = smoothedRecallRateForReason(
+        pruningState,
+        primaryReason,
+      );
+      const recallPenaltyTokens = 6000 * recallRate;
+      const semanticPenaltyTokens = 4000 * cand.semanticRisk;
+
+      const netValue =
+        cand.savedTokens * expectedFutureTurns +
+        cand.savedTokens * rotPressure -
+        cand.suffixTokens * cachePenalty -
+        recallPenaltyTokens -
+        semanticPenaltyTokens;
+
+      const minSaved = effectiveMinSavedTokens(profile);
+      const suffixBudget = effectiveSuffixBudget(profile);
+
+      const nearTail = cand.suffixTokens <= profile.minSuffixBudget;
+      const scorePositive = cand.savedTokens >= minSaved && netValue >= 1000;
+      const qualifiesYoung =
+        cand.suffixTokens <= suffixBudget && (nearTail || scorePositive);
+
+      if (qualifiesYoung && !isEmergency && !cand.isOrdinarySourceRead) {
+        applyElision(
+          cand,
+          primaryReason,
+          entries,
+          result,
+          pruningState,
+          distances,
+        );
+        elidedIndices.add(cand.index);
+      } else {
+        deferred.push(cand);
+      }
+    }
+
+    if (deferred.length > 0) {
+      deferred.sort((a, b) => {
+        if (a.priority !== b.priority) {
+          return a.priority - b.priority;
+        }
+        return a.index - b.index;
+      });
+
+      const selected: Candidate[] = [];
+      for (const cand of deferred) {
+        if (!isEmergency && cand.isOrdinarySourceRead) {
+          continue;
+        }
+        if (selected.length >= config.batchMaxCandidates) {
+          break;
+        }
+        selected.push(cand);
+      }
+
+      if (selected.length >= (isEmergency ? 1 : config.batchMinCandidates)) {
+        const earliest = selected.reduce((oldest, cand) =>
+          cand.index < oldest.index ? cand : oldest,
+        );
+        const batchSavedTokens = selected.reduce(
+          (s, c) => s + c.savedTokens,
+          0,
+        );
+        const batchDamage =
+          estimateSuffixTokens(messages, earliest.index) * cachePenalty;
+        const batchRisk = selected.reduce((s, c) => {
+          const reason = getPrimaryReason(c.reasons) ?? c.reasons[0];
+          const rate = smoothedRecallRateForReason(pruningState, reason);
+          return s + 4000 * c.semanticRisk + 6000 * rate;
+        }, 0);
+        const batchBenefit =
+          batchSavedTokens * expectedFutureTurns +
+          batchSavedTokens * rotPressure;
+        const batchNetValue = batchBenefit - batchDamage - batchRisk;
+        const totalSemanticRisk = selected.reduce(
+          (s, c) => s + c.semanticRisk,
+          0,
+        );
+
+        const currentTurnCount =
+          userTurnCounts.length > 0
+            ? userTurnCounts[userTurnCounts.length - 1]
+            : 0;
+        const cooldownOk =
+          isEmergency ||
+          !pruningState ||
+          currentTurnCount - pruningState.lastBatchUserTurnCount >=
+            config.batchCooldownTurns;
+
+        if (
+          (isEmergency || batchSavedTokens >= config.batchMinSavedTokens) &&
+          (isEmergency || batchNetValue >= config.batchMinNetValue) &&
+          (isEmergency || totalSemanticRisk <= config.batchMaxSemanticRisk) &&
+          cooldownOk
+        ) {
+          for (const cand of selected) {
+            if (!elidedIndices.has(cand.index)) {
+              applyElision(
+                cand,
+                isEmergency ? "emergency-pressure" : "batch-pressure",
+                entries,
+                result,
+                pruningState,
+                distances,
+              );
+              elidedIndices.add(cand.index);
+            }
+          }
+          if (pruningState) {
+            pruningState.lastBatchUserTurnCount = currentTurnCount;
+          }
+        }
+      }
+    }
+
+    onElisionPass?.({ entries });
     return { messages: result };
   };
 }
@@ -590,7 +895,9 @@ function buildStubFromLatched(
   latched: import("./policy.ts").LatchedElision,
 ): string {
   const preview = extractPreview(msg.content);
-  if (latched.reason === "superseded-read-young" && latched.normalizedPath) {
+  const reason = latched.sourceReason ?? latched.reason;
+
+  if (reason === "superseded-read-young" && latched.normalizedPath) {
     return formatSupersededStub({
       toolName: latched.toolName,
       normalizedPath: latched.normalizedPath,
@@ -600,7 +907,7 @@ function buildStubFromLatched(
     });
   }
   if (
-    latched.reason === "duplicate-read-young" &&
+    reason === "duplicate-read-young" &&
     latched.normalizedPath &&
     latched.keptUserTurnIndex != null
   ) {
@@ -613,7 +920,7 @@ function buildStubFromLatched(
       preview,
     });
   }
-  if (latched.reason === "after-consumption-bash") {
+  if (reason === "after-consumption-bash") {
     return formatAfterConsumptionBashStub({
       tokenCount: latched.originalTokens,
       toolCallId: latched.toolCallId,

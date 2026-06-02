@@ -3,7 +3,7 @@ import { makeContextHook } from "./elision.ts";
 import { defaultConfig } from "./config.ts";
 import { createPruningState } from "./policy.ts";
 
-const BIG = 256 * 4 + 1;
+const HUGE = 12_000;
 
 function makeUserMsg(): any {
   return {
@@ -17,11 +17,12 @@ function makeToolResult(
   toolCallId: string,
   text: string,
   isError = false,
+  toolName = "read",
 ): any {
   return {
     role: "toolResult",
     toolCallId,
-    toolName: "read",
+    toolName,
     content: [{ type: "text", text }],
     isError,
     timestamp: Date.now(),
@@ -40,7 +41,12 @@ describe("elision latching", () => {
   it("reuses latched elision on second pass with same messages", () => {
     const state = createPruningState();
     const hook = makeContextHook(defaultConfig(), undefined, state);
-    const toolResult = makeToolResult("call-1", "x".repeat(BIG));
+    const toolResult = makeToolResult(
+      "call-1",
+      "x".repeat(HUGE),
+      false,
+      "bash",
+    );
     const messages = makeMessages(5, toolResult);
 
     const r1 = hook({ type: "context", messages } as any, {} as any);
@@ -54,7 +60,12 @@ describe("elision latching", () => {
     const state = createPruningState();
     const strictConfig = { ...defaultConfig(), staleTurns: 2, minTokens: 64 };
     const strictHook = makeContextHook(strictConfig, undefined, state);
-    const toolResult = makeToolResult("call-2", "x".repeat(BIG));
+    const toolResult = makeToolResult(
+      "call-2",
+      "x".repeat(HUGE),
+      false,
+      "bash",
+    );
     const messages = makeMessages(3, toolResult);
 
     const r1 = strictHook({ type: "context", messages } as any, {} as any);
@@ -97,7 +108,7 @@ describe("elision latching", () => {
         ],
         timestamp: Date.now(),
       },
-      makeToolResult("r1", "first"),
+      makeToolResult("r1", "first" + "x".repeat(HUGE)),
       makeUserMsg(),
       {
         role: "assistant",
@@ -111,7 +122,7 @@ describe("elision latching", () => {
         ],
         timestamp: Date.now(),
       },
-      makeToolResult("r2", "second"),
+      makeToolResult("r2", "second" + "x".repeat(HUGE)),
     ];
 
     const r1 = hook(
@@ -150,7 +161,7 @@ describe("elision latching", () => {
         ],
         timestamp: Date.now(),
       },
-      makeToolResult("r1", "content"),
+      makeToolResult("r1", "content" + "x".repeat(HUGE)),
       makeUserMsg(),
       {
         role: "assistant",
@@ -190,7 +201,12 @@ describe("elision latching", () => {
   it("is deterministic for identical input plus state", () => {
     const state = createPruningState();
     const hook = makeContextHook(defaultConfig(), undefined, state);
-    const toolResult = makeToolResult("call-3", "x".repeat(BIG));
+    const toolResult = makeToolResult(
+      "call-3",
+      "x".repeat(HUGE),
+      false,
+      "bash",
+    );
     const messages = makeMessages(5, toolResult);
 
     const r1 = hook({ type: "context", messages } as any, {} as any);
@@ -206,11 +222,11 @@ describe("elision latching", () => {
 
     const messages: any[] = [
       makeUserMsg(),
-      makeToolResult("call-a", "x".repeat(BIG)),
+      makeToolResult("call-a", "x".repeat(HUGE), false, "bash"),
       makeUserMsg(),
       makeUserMsg(),
       makeUserMsg(),
-      makeToolResult("call-b", "x".repeat(BIG)),
+      makeToolResult("call-b", "x".repeat(HUGE), false, "bash"),
       makeUserMsg(),
       makeUserMsg(),
     ];
@@ -230,7 +246,12 @@ describe("ElisionPassEntry fields", () => {
     const hook = makeContextHook(defaultConfig(), (result) =>
       passes.push(result),
     );
-    const toolResult = makeToolResult("call-1", "x".repeat(BIG));
+    const toolResult = makeToolResult(
+      "call-1",
+      "x".repeat(HUGE),
+      false,
+      "bash",
+    );
     const messages = makeMessages(5, toolResult);
 
     hook({ type: "context", messages } as any, {} as any);
@@ -286,7 +307,13 @@ describe("ElisionPassEntry fields", () => {
       makeToolResult("r2", "y"),
     ];
 
-    hook({ type: "context", messages } as any, { cwd: "/cwd" } as any);
+    hook(
+      { type: "context", messages } as any,
+      {
+        cwd: "/cwd",
+        getContextUsage: () => ({ tokens: 90_000, contextWindow: 100_000 }),
+      } as any,
+    );
     expect(passes).toHaveLength(1);
     const entry = passes[0].entries[0];
     expect(entry.savedTokens).toBeGreaterThanOrEqual(0);

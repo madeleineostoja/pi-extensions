@@ -14,8 +14,10 @@ import { defaultConfig, DEFAULTS } from "./config.ts";
 
 // Helpers so tests stay robust to threshold changes in DEFAULTS.
 // BIG: a char count guaranteed to produce tokenCount > DEFAULTS.minTokens
+// HUGE: a char count large enough to pass bounded policy min-savings guards
 // SMALL: a char count guaranteed to produce tokenCount < DEFAULTS.minTokens
 const BIG = DEFAULTS.minTokens * 4 + 1;
+const HUGE = 12_000;
 const SMALL = (DEFAULTS.minTokens - 1) * 4;
 
 describe("isEligibleForElision", () => {
@@ -389,19 +391,19 @@ describe("context hook", () => {
   const hook = makeContextHook(defaultConfig());
   const fakeCtx = {} as any;
 
-  it("elides a large, old tool result", () => {
+  it("elides a large, old non-source tool result", () => {
     const toolResult = makeToolResult({
       toolCallId: "call-abc",
-      toolName: "read",
+      toolName: "bash",
       text: "x",
-      repeat: BIG,
+      repeat: HUGE,
     });
     const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
     const result = hook({ type: "context", messages } as any, fakeCtx);
     const elided = result.messages!.find(
       (m: any) => m.role === "toolResult",
     ) as any;
-    expect(elided.content[0].text).toMatch(/^\[read result elided:/);
+    expect(elided.content[0].text).toMatch(/^\[bash result elided:/);
     expect(elided.content[0].text).toMatch(
       /Call context_recall\("call-abc"\) to retrieve\.\]$/,
     );
@@ -427,14 +429,14 @@ describe("context hook", () => {
       toolCallId: "call-young",
       toolName: "read",
       text: "x",
-      repeat: BIG,
+      repeat: HUGE,
     });
     const messages = makeMessages(DEFAULTS.staleTurns - 1, toolResult);
     const result = hook({ type: "context", messages } as any, fakeCtx);
     const found = result.messages!.find(
       (m: any) => m.role === "toolResult",
     ) as any;
-    expect(found.content[0].text).toBe("x".repeat(BIG));
+    expect(found.content[0].text).toBe("x".repeat(HUGE));
   });
 
   it("does not elide a tool result with isError: true even when large and old", () => {
@@ -442,7 +444,7 @@ describe("context hook", () => {
       toolCallId: "call-err",
       toolName: "bash",
       text: "x",
-      repeat: BIG,
+      repeat: HUGE,
       isError: true,
     });
     const messages = makeMessages(DEFAULTS.staleTurns + 5, toolResult);
@@ -450,7 +452,7 @@ describe("context hook", () => {
     const found = result.messages!.find(
       (m: any) => m.role === "toolResult",
     ) as any;
-    expect(found.content[0].text).toBe("x".repeat(BIG));
+    expect(found.content[0].text).toBe("x".repeat(HUGE));
   });
 
   it("is deterministic: two calls on identical input produce identical output", () => {
@@ -458,7 +460,7 @@ describe("context hook", () => {
       toolCallId: "call-det",
       toolName: "bash",
       text: "y",
-      repeat: BIG,
+      repeat: HUGE,
     });
     const messages = makeMessages(DEFAULTS.staleTurns + 2, toolResult);
     const r1 = hook({ type: "context", messages } as any, fakeCtx);
@@ -471,7 +473,7 @@ describe("context hook", () => {
       toolCallId: "call-mut",
       toolName: "read",
       text: "z",
-      repeat: BIG,
+      repeat: HUGE,
     });
     const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
     const originalContent = JSON.stringify(messages);
@@ -482,9 +484,9 @@ describe("context hook", () => {
   it("non-elided messages are the same object references as the input messages", () => {
     const elidedToolResult = makeToolResult({
       toolCallId: "call-elided-ref",
-      toolName: "read",
+      toolName: "bash",
       text: "x",
-      repeat: BIG,
+      repeat: HUGE,
     });
     const keptToolResult = makeToolResult({
       toolCallId: "call-kept-ref",
@@ -551,7 +553,7 @@ describe("context hook", () => {
       role: "toolResult",
       toolCallId: "call-no-name",
       toolName: undefined,
-      content: [{ type: "text", text: "x".repeat(BIG) }],
+      content: [{ type: "text", text: "x".repeat(HUGE) }],
       isError: false,
       timestamp: Date.now(),
     };
@@ -566,9 +568,9 @@ describe("context hook", () => {
   it("stub text matches spec regex", () => {
     const toolResult = makeToolResult({
       toolCallId: "call-regex",
-      toolName: "read",
+      toolName: "bash",
       text: "x",
-      repeat: BIG,
+      repeat: HUGE,
     });
     const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
     const result = hook({ type: "context", messages } as any, fakeCtx);
@@ -584,8 +586,8 @@ describe("context hook", () => {
     const toolResult: any = {
       role: "toolResult",
       toolCallId: "call-details",
-      toolName: "read",
-      content: [{ type: "text", text: "x".repeat(BIG) }],
+      toolName: "bash",
+      content: [{ type: "text", text: "x".repeat(HUGE) }],
       isError: false,
       timestamp: Date.now(),
       details: { rawOutput: "sensitive data", exitCode: 0 },
@@ -602,9 +604,9 @@ describe("context hook", () => {
   it("stub includes Preview segment for text content", () => {
     const toolResult = makeToolResult({
       toolCallId: "call-preview",
-      toolName: "read",
+      toolName: "bash",
       text: "x",
-      repeat: BIG,
+      repeat: HUGE,
     });
     const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
     const result = hook({ type: "context", messages } as any, fakeCtx);
@@ -617,9 +619,9 @@ describe("context hook", () => {
   it("stub preview is truncated to 100 chars with ellipsis", () => {
     const toolResult = makeToolResult({
       toolCallId: "call-preview-trunc",
-      toolName: "read",
+      toolName: "bash",
       text: "y",
-      repeat: BIG,
+      repeat: HUGE,
     });
     const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
     const result = hook({ type: "context", messages } as any, fakeCtx);
@@ -631,11 +633,11 @@ describe("context hook", () => {
 
   it("stub preview escapes special characters", () => {
     const specialText = 'line1\nline2\t"quoted"\\back';
-    const padding = "p".repeat(DEFAULTS.minTokens * 4);
+    const padding = "p".repeat(HUGE);
     const toolResult: any = {
       role: "toolResult",
       toolCallId: "call-escape",
-      toolName: "read",
+      toolName: "bash",
       content: [{ type: "text", text: specialText + padding }],
       isError: false,
       timestamp: Date.now(),
@@ -655,9 +657,9 @@ describe("context hook", () => {
   it("elided message has exactly the canonical keys", () => {
     const toolResult = makeToolResult({
       toolCallId: "call-keys",
-      toolName: "read",
+      toolName: "bash",
       text: "x",
-      repeat: BIG,
+      repeat: HUGE,
     });
     const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
     const result = hook({ type: "context", messages } as any, fakeCtx);
@@ -1995,5 +1997,225 @@ describe("estimateSuffixTokens", () => {
     expect(estimateSuffixTokens(messages, 1)).toBe(
       Math.ceil(("ccc".length + "dddd".length) / 4),
     );
+  });
+});
+
+describe("young-or-batch read pruning", () => {
+  const largeSource = "s".repeat(180_000);
+  const largeSuffix = makeTextMsg("user", "tail".repeat(40_000));
+
+  it("does not immediately stub an old superseded read when suffix cost exceeds its profile budget", () => {
+    const readId = "task3-sup-old";
+    const editId = "task3-sup-edit";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/old.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: largeSource,
+      }),
+      largeSuffix,
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: { path: "src/old.ts", old_string: "a", new_string: "b" },
+        },
+      ]),
+      makeToolResultMsg({ toolCallId: editId, toolName: "edit", text: "ok" }),
+    ];
+
+    const result = makeContextHook(supersededConfig())(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toBe(largeSource);
+  });
+
+  it("does not immediately stub an old duplicate read when suffix cost exceeds its profile budget", () => {
+    const readId1 = "task3-dup-old-1";
+    const readId2 = "task3-dup-old-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId1, name: "read", arguments: { path: "src/dup.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: largeSource,
+      }),
+      largeSuffix,
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/dup.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "latest",
+      }),
+    ];
+
+    const result = makeContextHook(duplicateConfig())(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read.content[0].text).toBe(largeSource);
+  });
+
+  it("does not batch-prune ordinary source reads merely because they are large", () => {
+    const ids = ["task3-source-1", "task3-source-2"];
+    const messages: any[] = [makeUserMsg()];
+    for (const id of ids) {
+      messages.push(
+        makeAssistantMsg([
+          { id, name: "read", arguments: { path: `src/${id}.ts` } },
+        ]),
+        makeToolResultMsg({
+          toolCallId: id,
+          toolName: "read",
+          text: largeSource,
+        }),
+        makeUserMsg(),
+        makeUserMsg(),
+        makeUserMsg(),
+        makeUserMsg(),
+      );
+    }
+
+    const result = makeContextHook({
+      ...defaultConfig(),
+      batchMinSavedTokens: 1,
+      batchMinNetValue: 0,
+    })({ type: "context", messages } as any, fakeCtxWithCwd);
+
+    for (const id of ids) {
+      const read = result.messages!.find(
+        (m: any) => m.toolCallId === id,
+      ) as any;
+      expect(read.content[0].text).toBe(largeSource);
+    }
+  });
+
+  it("uses emergency-pressure only over the hard context reserve", () => {
+    const id = "task3-emergency-read";
+    const passes: any[] = [];
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id, name: "read", arguments: { path: "src/emergency.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: id,
+        toolName: "read",
+        text: largeSource,
+      }),
+      ...Array.from({ length: DEFAULTS.staleTurns + 1 }, () => makeUserMsg()),
+    ];
+
+    const result = makeContextHook(defaultConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      {
+        ...fakeCtxWithCwd,
+        getContextUsage: () => ({ tokens: 90_000, contextWindow: 100_000 }),
+      } as any,
+    );
+    const read = result.messages!.find((m: any) => m.toolCallId === id) as any;
+    expect(read.content[0].text).toMatch(/result elided/);
+    expect(passes[0].entries[0].reason).toBe("emergency-pressure");
+  });
+
+  it("batch selection honors priority when the cap excludes lower-priority candidates", () => {
+    const bashId = "task3-bash";
+    const dup1 = "task3-priority-dup-1";
+    const dup2 = "task3-priority-dup-2";
+    const sup = "task3-priority-sup";
+    const editId = "task3-priority-edit";
+    const passes: any[] = [];
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: bashId, name: "bash", arguments: { command: "echo ok" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: bashId,
+        toolName: "bash",
+        text: "ok\n".repeat(60_000),
+      }),
+      { role: "assistant", content: [{ type: "text", text: "consumed" }] },
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: dup1, name: "read", arguments: { path: "src/dup-priority.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: dup1,
+        toolName: "read",
+        text: largeSource,
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: sup, name: "read", arguments: { path: "src/sup-priority.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: sup,
+        toolName: "read",
+        text: largeSource,
+      }),
+      largeSuffix,
+      makeAssistantMsg([
+        { id: dup2, name: "read", arguments: { path: "src/dup-priority.ts" } },
+      ]),
+      makeToolResultMsg({ toolCallId: dup2, toolName: "read", text: "latest" }),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: {
+            path: "src/sup-priority.ts",
+            old_string: "a",
+            new_string: "b",
+          },
+        },
+      ]),
+      makeToolResultMsg({ toolCallId: editId, toolName: "edit", text: "ok" }),
+    ];
+
+    const result = makeContextHook(
+      {
+        ...defaultConfig(),
+        batchMaxCandidates: 2,
+        batchMinSavedTokens: 1,
+        batchMinNetValue: 0,
+      },
+      (p) => passes.push(p),
+    )({ type: "context", messages } as any, fakeCtxWithCwd);
+
+    const bash = result.messages!.find(
+      (m: any) => m.toolCallId === bashId,
+    ) as any;
+    const dup = result.messages!.find((m: any) => m.toolCallId === dup1) as any;
+    const superseded = result.messages!.find(
+      (m: any) => m.toolCallId === sup,
+    ) as any;
+    expect(bash.content[0].text).toMatch(/bash output compacted/);
+    expect(dup.content[0].text).toMatch(/superseded by later read/);
+    expect(superseded.content[0].text).toBe(largeSource);
+    expect(passes[0].entries.map((e: any) => e.toolCallId)).toEqual([
+      bashId,
+      dup1,
+    ]);
+    expect(passes[0].entries.map((e: any) => e.reason)).toEqual([
+      "batch-pressure",
+      "batch-pressure",
+    ]);
   });
 });

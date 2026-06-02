@@ -6,6 +6,19 @@ export type ElisionReason =
   | "batch-pressure"
   | "emergency-pressure";
 
+export type ElisionCandidate = {
+  index: number;
+  toolCallId: string;
+  toolName: string;
+  originalTokens: number;
+  estimatedStubTokens: number;
+  savedTokens: number;
+  suffixTokens: number;
+  possibleReasons: ElisionReason[];
+  semanticRisk: number;
+  priority: number;
+};
+
 export type LatchedElision = {
   toolCallId: string;
   reason: ElisionReason;
@@ -13,11 +26,10 @@ export type LatchedElision = {
   originalTokens: number;
   stubTokens?: number;
   firstElidedTurnIndex?: number;
-  // Populated for superseded/duplicate stubs so the exact stub text is latched.
   normalizedPath?: string;
   keptUserTurnIndex?: number;
-  // Populated for after-consumption-bash stubs.
   command?: string;
+  sourceReason?: ElisionReason;
 };
 
 export type PolicyProfile = {
@@ -28,13 +40,12 @@ export type PolicyProfile = {
   semanticRisk: number;
 };
 
-// Guardrail ranges prevent noisy telemetry from causing extreme behavior.
 const MIN_MIN_SAVED_TOKENS = 0;
-const MAX_MIN_SAVED_TOKENS = 1024;
+const MAX_MIN_SAVED_TOKENS = 10000;
 const MIN_BASELINE_SUFFIX_BUDGET = 0;
-const MAX_BASELINE_SUFFIX_BUDGET = 16384;
+const MAX_BASELINE_SUFFIX_BUDGET = 100000;
 const MIN_SUFFIX_BUDGET = 0;
-const MAX_SUFFIX_BUDGET = 32768;
+const MAX_SUFFIX_BUDGET = 100000;
 const MIN_SEMANTIC_RISK = 0;
 const MAX_SEMANTIC_RISK = 1;
 
@@ -101,12 +112,92 @@ export const AGGRESSIVE_PROFILE: PolicyProfile = clampProfile({
   semanticRisk: 0.5,
 });
 
+export const DEFAULT_POLICY_PROFILES: Record<
+  Exclude<ElisionReason, "emergency-pressure" | "standard-stale">,
+  PolicyProfile
+> = {
+  "after-consumption-bash": clampProfile({
+    minSavedTokens: 1000,
+    baselineSuffixBudget: 20000,
+    minSuffixBudget: 5000,
+    maxSuffixBudget: 60000,
+    semanticRisk: 0.15,
+  }),
+  "duplicate-read-young": clampProfile({
+    minSavedTokens: 1000,
+    baselineSuffixBudget: 10000,
+    minSuffixBudget: 2000,
+    maxSuffixBudget: 30000,
+    semanticRisk: 0.35,
+  }),
+  "superseded-read-young": clampProfile({
+    minSavedTokens: 2000,
+    baselineSuffixBudget: 8000,
+    minSuffixBudget: 2000,
+    maxSuffixBudget: 25000,
+    semanticRisk: 0.45,
+  }),
+  "batch-pressure": clampProfile({
+    minSavedTokens: 1500,
+    baselineSuffixBudget: 25000,
+    minSuffixBudget: 5000,
+    maxSuffixBudget: 80000,
+    semanticRisk: 0.4,
+  }),
+};
+
+export const BATCH_PRIORITY: Record<
+  Exclude<ElisionReason, "emergency-pressure">,
+  number
+> = {
+  "after-consumption-bash": 1,
+  "duplicate-read-young": 2,
+  "superseded-read-young": 3,
+  "standard-stale": 4,
+  "batch-pressure": 5,
+};
+
+const STUB_PRECEDENCE: Array<
+  Exclude<ElisionReason, "emergency-pressure" | "batch-pressure">
+> = [
+  "superseded-read-young",
+  "duplicate-read-young",
+  "after-consumption-bash",
+  "standard-stale",
+];
+
+export function getPrimaryReason(
+  reasons: ElisionReason[],
+): Exclude<ElisionReason, "emergency-pressure" | "batch-pressure"> | undefined {
+  for (const r of STUB_PRECEDENCE) {
+    if (reasons.includes(r)) {
+      return r;
+    }
+  }
+  return undefined;
+}
+
+export function getProfileForReason(
+  reason: Exclude<ElisionReason, "emergency-pressure">,
+): PolicyProfile {
+  if (reason === "standard-stale") {
+    return DEFAULT_POLICY_PROFILES["batch-pressure"];
+  }
+  return DEFAULT_POLICY_PROFILES[reason] ?? DEFAULT_PROFILE;
+}
+
 export type PruningState = {
   latched: Map<string, LatchedElision>;
   recallsByToolCallId: Set<string>;
   recallCountByReason: Map<ElisionReason, number>;
   elisionCountByReason: Map<ElisionReason, number>;
   activeProfile: PolicyProfile;
+  usageHistory: Array<{
+    cacheRead: number;
+    cacheWrite: number;
+    totalTokens: number;
+  }>;
+  lastBatchUserTurnCount: number;
 };
 
 export function createPruningState(): PruningState {
@@ -116,6 +207,8 @@ export function createPruningState(): PruningState {
     recallCountByReason: new Map(),
     elisionCountByReason: new Map(),
     activeProfile: { ...DEFAULT_PROFILE },
+    usageHistory: [],
+    lastBatchUserTurnCount: -Infinity,
   };
 }
 
@@ -157,6 +250,8 @@ export function resetPruningState(state: PruningState): void {
   state.recallCountByReason.clear();
   state.elisionCountByReason.clear();
   state.activeProfile = { ...DEFAULT_PROFILE };
+  state.usageHistory = [];
+  state.lastBatchUserTurnCount = -Infinity;
 }
 
 export function setActiveProfile(

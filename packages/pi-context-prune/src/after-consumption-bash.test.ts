@@ -4,7 +4,7 @@ import { defaultConfig } from "./config.ts";
 import { createPruningState } from "./policy.ts";
 import { registerRecallTool } from "./recall.ts";
 
-const BIG = 256 * 4 + 1; // guaranteed to exceed DEFAULTS.minTokens
+const BIG = 8_000;
 
 function makeUserMsg(text = "hello"): any {
   return {
@@ -338,7 +338,7 @@ describe("after-consumption bash compaction", () => {
     const bash = result.messages!.find(
       (m: any) => m.toolCallId === "bash-11",
     ) as any;
-    expect(bash.content[0].text).toMatch(/\d+ tokens/);
+    expect(bash.content[0].text).toMatch(/\d+K? tokens/);
   });
 
   it("stub includes preview of original content", () => {

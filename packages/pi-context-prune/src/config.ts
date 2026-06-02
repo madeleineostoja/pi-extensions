@@ -10,6 +10,13 @@ export type Config = {
   duplicateReadsEnabled: boolean;
   adaptivePolicyEnabled: boolean;
   afterConsumptionBashEnabled: boolean;
+  emergencyContextReserveTokens: number;
+  batchMinCandidates: number;
+  batchMinSavedTokens: number;
+  batchMinNetValue: number;
+  batchMaxCandidates: number;
+  batchCooldownTurns: number;
+  batchMaxSemanticRisk: number;
 };
 
 export const DEFAULTS: Config = {
@@ -19,6 +26,13 @@ export const DEFAULTS: Config = {
   duplicateReadsEnabled: true,
   adaptivePolicyEnabled: false,
   afterConsumptionBashEnabled: true,
+  emergencyContextReserveTokens: 16000,
+  batchMinCandidates: 2,
+  batchMinSavedTokens: 8000,
+  batchMinNetValue: 3000,
+  batchMaxCandidates: 8,
+  batchCooldownTurns: 2,
+  batchMaxSemanticRisk: 3.0,
 };
 
 type Notifier = ExtensionUIContext["notify"];
@@ -82,9 +96,26 @@ export function loadConfig(
   const obj = parsed as Record<string, unknown>;
   const config = defaultConfig();
 
-  const numKeys: Array<"staleTurns" | "minTokens"> = [
+  const numKeys: Array<
+    | "staleTurns"
+    | "minTokens"
+    | "emergencyContextReserveTokens"
+    | "batchMinCandidates"
+    | "batchMinSavedTokens"
+    | "batchMinNetValue"
+    | "batchMaxCandidates"
+    | "batchCooldownTurns"
+    | "batchMaxSemanticRisk"
+  > = [
     "staleTurns",
     "minTokens",
+    "emergencyContextReserveTokens",
+    "batchMinCandidates",
+    "batchMinSavedTokens",
+    "batchMinNetValue",
+    "batchMaxCandidates",
+    "batchCooldownTurns",
+    "batchMaxSemanticRisk",
   ];
   for (const key of numKeys) {
     if (!(key in obj)) {
