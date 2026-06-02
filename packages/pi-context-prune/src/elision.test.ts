@@ -1664,4 +1664,186 @@ describe("young-or-batch read pruning", () => {
       "batch-pressure",
     ]);
   });
+
+  it("compacts a young superseded read with reason superseded-read-young", () => {
+    const readId = "young-sup-read";
+    const editId = "young-sup-edit";
+    const passes: any[] = [];
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/young.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: "s".repeat(HUGE),
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: { path: "src/young.ts", old_string: "a", new_string: "b" },
+        },
+      ]),
+      makeToolResultMsg({ toolCallId: editId, toolName: "edit", text: "ok" }),
+    ];
+
+    const result = makeContextHook(supersededConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toMatch(/superseded by later edit\/write/);
+    expect(passes[0].entries[0].reason).toBe("superseded-read-young");
+  });
+
+  it("compacts a young duplicate read with reason duplicate-read-young", () => {
+    const readId1 = "young-dup-1";
+    const readId2 = "young-dup-2";
+    const passes: any[] = [];
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId1, name: "read", arguments: { path: "src/dup.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "s".repeat(HUGE),
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/dup.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "latest",
+      }),
+    ];
+
+    const result = makeContextHook(duplicateConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read.content[0].text).toMatch(/superseded by later read/);
+    expect(passes[0].entries[0].reason).toBe("duplicate-read-young");
+  });
+
+  it("superseded-read stub takes precedence over duplicate-read when both match and young-elided", () => {
+    const readId1 = "both-young-1";
+    const readId2 = "both-young-2";
+    const editId = "both-young-edit";
+    const passes: any[] = [];
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId1, name: "read", arguments: { path: "src/both.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "s".repeat(HUGE),
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/both.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "latest",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: { path: "src/both.ts", old_string: "a", new_string: "b" },
+        },
+      ]),
+      makeToolResultMsg({ toolCallId: editId, toolName: "edit", text: "ok" }),
+    ];
+
+    const result = makeContextHook(bothRulesConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read.content[0].text).toMatch(/superseded by later edit\/write/);
+    expect(read.content[0].text).not.toMatch(/superseded by later read/);
+    expect(passes[0].entries[0].reason).toBe("superseded-read-young");
+  });
+
+  it("does not batch-prune a single old stale candidate when batch score is not positive", () => {
+    const id = "single-stale";
+    const hugeSuffix = makeTextMsg("user", "t".repeat(400_000));
+    const passes: any[] = [];
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([{ id, name: "grep", arguments: { pattern: "foo" } }]),
+      makeToolResultMsg({
+        toolCallId: id,
+        toolName: "grep",
+        text: "s".repeat(HUGE),
+      }),
+      ...Array.from({ length: DEFAULTS.staleTurns }, () => makeUserMsg()),
+      hugeSuffix,
+    ];
+
+    const result = makeContextHook(defaultConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const found = result.messages!.find((m: any) => m.toolCallId === id) as any;
+    expect(found.content[0].text).toBe("s".repeat(HUGE));
+    expect(passes[0].entries.length).toBe(0);
+  });
+
+  it("batch-prunes multiple old candidates in one pass when aggregate value justifies cost", () => {
+    const ids = ["batch-1", "batch-2", "batch-3"];
+    const XLARGE = 300_000;
+    const hugeSuffix = makeTextMsg("user", "t".repeat(400_000));
+    const passes: any[] = [];
+    const messages: any[] = [makeUserMsg()];
+    for (const id of ids) {
+      messages.push(
+        makeAssistantMsg([{ id, name: "grep", arguments: { pattern: "foo" } }]),
+        makeToolResultMsg({
+          toolCallId: id,
+          toolName: "grep",
+          text: "s".repeat(XLARGE),
+        }),
+        makeUserMsg(),
+      );
+    }
+    messages.push(
+      ...Array.from({ length: DEFAULTS.staleTurns - 1 }, () => makeUserMsg()),
+      hugeSuffix,
+    );
+
+    const result = makeContextHook(defaultConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    for (const id of ids) {
+      const found = result.messages!.find(
+        (m: any) => m.toolCallId === id,
+      ) as any;
+      expect(found.content[0].text).toMatch(/result elided/);
+    }
+    expect(passes[0].entries.length).toBe(3);
+    expect(
+      passes[0].entries.every((e: any) => e.reason === "batch-pressure"),
+    ).toBe(true);
+  });
 });
