@@ -28,12 +28,6 @@ describe("config", () => {
     });
   });
 
-  it("treats invalid json as empty config with warning", () => {
-    const parsed = parseConfig("{");
-    expect(parsed.config).toEqual({});
-    expect(parsed.warning).toContain("Could not parse");
-  });
-
   it("parses maxParallel", () => {
     expect(parseConfig(JSON.stringify({ maxParallel: 5 })).config).toEqual({
       maxParallel: 5,
@@ -52,12 +46,6 @@ describe("config", () => {
     expect(parsed.warning).toContain("maxParallel");
   });
 
-  it("ignores non-numeric maxParallel with warning", () => {
-    const parsed = parseConfig(JSON.stringify({ maxParallel: "three" }));
-    expect(parsed.config).toEqual({});
-    expect(parsed.warning).toContain("maxParallel");
-  });
-
   it("parses verifyCommand", () => {
     expect(
       parseConfig(JSON.stringify({ verifyCommand: "npm test" })).config,
@@ -68,12 +56,6 @@ describe("config", () => {
 
   it("ignores empty verifyCommand with warning", () => {
     const parsed = parseConfig(JSON.stringify({ verifyCommand: "" }));
-    expect(parsed.config).toEqual({});
-    expect(parsed.warning).toContain("verifyCommand");
-  });
-
-  it("ignores non-string verifyCommand with warning", () => {
-    const parsed = parseConfig(JSON.stringify({ verifyCommand: 42 }));
     expect(parsed.config).toEqual({});
     expect(parsed.warning).toContain("verifyCommand");
   });

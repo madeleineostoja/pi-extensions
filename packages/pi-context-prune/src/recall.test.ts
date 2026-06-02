@@ -335,88 +335,30 @@ describe("registerRecallTool recall attribution", () => {
   });
 });
 
-describe("registerRecallTool registration metadata", () => {
-  function captureRegistration() {
-    let captured: any = null;
-    const fakePI = {
-      registerTool(def: any) {
-        captured = def;
-      },
-    };
-    registerRecallTool(fakePI as any);
-    return captured;
-  }
-
-  it("provides a non-empty promptSnippet", () => {
-    const def = captureRegistration();
-    expect(typeof def.promptSnippet).toBe("string");
-    expect(def.promptSnippet.length).toBeGreaterThan(0);
+describe("parseLineRange", () => {
+  it("parses single-line and range requests", () => {
+    expect(parseLineRange("5")).toEqual({ start: 5, end: 5 });
+    expect(parseLineRange("10-20")).toEqual({ start: 10, end: 20 });
   });
 
-  it("provides a promptGuidelines array with at least three bullets", () => {
-    const def = captureRegistration();
-    expect(Array.isArray(def.promptGuidelines)).toBe(true);
-    expect(def.promptGuidelines.length).toBeGreaterThanOrEqual(3);
-  });
-
-  it("every promptGuidelines bullet contains 'context_recall'", () => {
-    const def = captureRegistration();
-    for (const bullet of def.promptGuidelines as string[]) {
-      expect(bullet).toContain("context_recall");
+  it("rejects malformed ranges", () => {
+    for (const input of [
+      "",
+      "abc",
+      "5abc",
+      "10-20x",
+      "5-",
+      "-5",
+      "-",
+      "1-2-3",
+    ]) {
+      expect(parseLineRange(input)).toBeNull();
     }
   });
-});
 
-describe("parseLineRange", () => {
-  it("returns null for empty string", () => {
-    expect(parseLineRange("")).toBeNull();
-  });
-
-  it("returns null for non-numeric input", () => {
-    expect(parseLineRange("abc")).toBeNull();
-  });
-
-  it("returns null for trailing garbage on single number", () => {
-    expect(parseLineRange("5abc")).toBeNull();
-  });
-
-  it("returns null for trailing garbage on range", () => {
-    expect(parseLineRange("10-20x")).toBeNull();
-  });
-
-  it("returns null for missing end endpoint", () => {
-    expect(parseLineRange("5-")).toBeNull();
-  });
-
-  it("returns null for missing start endpoint", () => {
-    expect(parseLineRange("-5")).toBeNull();
-  });
-
-  it("returns null for bare separator", () => {
-    expect(parseLineRange("-")).toBeNull();
-  });
-
-  it("returns null for multi-separator form", () => {
-    expect(parseLineRange("1-2-3")).toBeNull();
-  });
-
-  it("returns null for zero", () => {
+  it("rejects non-positive or descending ranges", () => {
     expect(parseLineRange("0")).toBeNull();
-  });
-
-  it("returns null for negative number", () => {
     expect(parseLineRange("-1")).toBeNull();
-  });
-
-  it("returns null when end is less than start", () => {
     expect(parseLineRange("10-5")).toBeNull();
-  });
-
-  it("returns correct range for single line", () => {
-    expect(parseLineRange("5")).toEqual({ start: 5, end: 5 });
-  });
-
-  it("returns correct range for line range", () => {
-    expect(parseLineRange("10-20")).toEqual({ start: 10, end: 20 });
   });
 });

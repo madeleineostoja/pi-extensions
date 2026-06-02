@@ -1,5 +1,6 @@
 ---
-description: Read-only code reviewer
+description: 'Read-only code-review agent for judging a concrete change set or implementation. Use it for PRs, staged/unstaged diffs, commits, patches, or explicitly named files/components when the goal is to identify material correctness, safety, regression, verification, scope, or maintainability issues. Do NOT use for open-ended discovery, codebase mapping, locating references, or answering "where/how is this implemented?" questions — use Explore for those, then use Review if there is a specific artifact to critique.'
+display_name: Review
 tools: read, bash, grep, find, ls
 extensions: false
 isolated: true

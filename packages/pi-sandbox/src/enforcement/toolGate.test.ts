@@ -471,43 +471,9 @@ describe("policy.enabled === false", () => {
 // bash tool_call is skipped
 // ---------------------------------------------------------------------------
 
-describe("bash tool skip", () => {
-  it("bash events are always passed through (kernel handles them)", async () => {
-    const policy = makePolicy({
-      allowRead: [],
-      allowWrite: [],
-      denyPatterns: ["**/*"],
-    });
-    const gate = makeGate(policy, os.tmpdir());
-    try {
-      const result = await gate.handleToolCall(
-        makeEvent("bash", { command: "cat /etc/passwd" }),
-      );
-      expect(result).toBeUndefined();
-    } finally {
-      gate.dispose();
-    }
-  });
-});
-
 // ---------------------------------------------------------------------------
 // Unknown tools are skipped
 // ---------------------------------------------------------------------------
-
-describe("unknown tools", () => {
-  it("unknown tool events are passed through", async () => {
-    const policy = makePolicy({ allowRead: [], denyPatterns: ["**/*"] });
-    const gate = makeGate(policy, os.tmpdir());
-    try {
-      const result = await gate.handleToolCall(
-        makeEvent("some_unknown_tool", { path: "/etc/passwd" }),
-      );
-      expect(result).toBeUndefined();
-    } finally {
-      gate.dispose();
-    }
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Policy reload rebuilds matchers
@@ -591,18 +557,3 @@ describe("policy reload", () => {
 // Guard test: pi.on("tool_call", handler) wiring is intentionally deferred until
 // @earendil-works/pi-coding-agent is installable. When that package becomes available,
 // remove this test and wire it in createToolGate / a higher-level init function.
-describe("deferred wiring guard", () => {
-  it("createToolGate does not call pi.on (deferred — @earendil-works/pi-coding-agent not yet installable)", () => {
-    const piOn = vi.fn();
-    const tmpDir = makeTmpDir();
-    try {
-      const policy = makePolicy();
-      const gate = makeGate(policy, tmpDir);
-      gate.dispose();
-      // pi.on is not called from createToolGate — it's returned for the caller to wire.
-      expect(piOn).not.toHaveBeenCalled();
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-});

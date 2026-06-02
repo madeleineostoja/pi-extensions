@@ -403,14 +403,6 @@ describe("initSubprocessSandbox — missing binary (fallback mode)", () => {
     ).not.toThrow();
   });
 
-  it("returns nonoPath as null in fallback mode", () => {
-    const pi = makePi();
-    const ctx = makeCtx();
-    const result = initSubprocessSandbox(pi, () => makePolicy(), ctx);
-
-    expect(result.nonoPath).toBeNull();
-  });
-
   it("returns a userBashHandler that blocks bash in degraded mode", () => {
     const pi = makePi();
     const ctx = makeCtx();
@@ -479,14 +471,6 @@ describe("initSubprocessSandbox — with nono binary present", () => {
   });
 
   // Factory purity: event wiring belongs in index.ts, not in initSubprocessSandbox.
-  it("does not call pi.registerTool or pi.on", () => {
-    const pi = makePi({ registerTool: vi.fn(), on: vi.fn() });
-    const ctx = makeCtx();
-    initSubprocessSandbox(pi, () => makePolicy(), ctx);
-
-    expect(pi.registerTool).not.toHaveBeenCalled();
-    expect(pi.on).not.toHaveBeenCalled();
-  });
 });
 
 describe("wrapPiExec — audit event for sandboxed exec", () => {

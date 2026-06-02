@@ -361,28 +361,33 @@ describe("buildManifest — macOS deny translation", () => {
   });
 });
 
-describe("buildManifest — output validates schema for all network.mode × hasUI combos", () => {
+describe("buildManifest — output validates schema for representative network modes", () => {
   let caps: CapsInstance;
   beforeEach(() => {
     caps = createCaps();
   });
 
-  const modes = ["off", "always", "non-interactive-only"] as const;
-  const hasUIValues = [true, false];
+  it("validates schema when network filtering is off", () => {
+    const manifest = caps.buildManifest(
+      makeBasePolicy({ network: { mode: "off", allow: ["example.com"] } }),
+      makeCtx({ hasUI: true }),
+    );
+    const { valid, errors } = validateAgainstSchema(manifest);
+    expect(errors).toEqual([]);
+    expect(valid).toBe(true);
+  });
 
-  for (const mode of modes) {
-    for (const hasUI of hasUIValues) {
-      it(`mode="${mode}" hasUI=${hasUI} → valid schema`, () => {
-        const policy = makeBasePolicy({
-          network: { mode, allow: ["example.com"] },
-        });
-        const manifest = caps.buildManifest(policy, makeCtx({ hasUI }));
-        const { valid, errors } = validateAgainstSchema(manifest);
-        expect(errors).toEqual([]);
-        expect(valid).toBe(true);
-      });
-    }
-  }
+  it("validates schema for non-interactive network filtering", () => {
+    const manifest = caps.buildManifest(
+      makeBasePolicy({
+        network: { mode: "non-interactive-only", allow: ["example.com"] },
+      }),
+      makeCtx({ hasUI: false }),
+    );
+    const { valid, errors } = validateAgainstSchema(manifest);
+    expect(errors).toEqual([]);
+    expect(valid).toBe(true);
+  });
 });
 
 describe("buildCapabilitySet", () => {

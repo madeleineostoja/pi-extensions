@@ -20,7 +20,7 @@ describe("review agent scaffolding", () => {
     });
     expect(globalReviewAgentExists(agentDir)).toBe(true);
     const content = await readFile(getGlobalReviewAgentPath(agentDir), "utf-8");
-    expect(content).toContain("description: Read-only code reviewer");
+    expect(content).toContain("display_name: Review");
     expect(content).toContain("prompt_mode: append");
   });
 

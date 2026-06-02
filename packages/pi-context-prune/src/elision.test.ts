@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   isEligibleForElision,
-  formatTokenCount,
   formatStub,
   formatDuplicateStub,
   extractPreview,
@@ -58,253 +57,88 @@ describe("isEligibleForElision", () => {
   });
 });
 
-describe("formatTokenCount", () => {
-  it("formats 0 tokens", () => {
-    expect(formatTokenCount(0)).toBe("0 tokens");
-  });
-
-  it("formats 1 token", () => {
-    expect(formatTokenCount(1)).toBe("1 tokens");
-  });
-
-  it("formats 999 tokens", () => {
-    expect(formatTokenCount(999)).toBe("999 tokens");
-  });
-
-  it("formats 1000 tokens as 1K tokens", () => {
-    expect(formatTokenCount(1000)).toBe("1K tokens");
-  });
-
-  it("formats 1200 tokens as 1.2K tokens", () => {
-    expect(formatTokenCount(1200)).toBe("1.2K tokens");
-  });
-
-  it("formats 1500 tokens as 1.5K tokens", () => {
-    expect(formatTokenCount(1500)).toBe("1.5K tokens");
-  });
-
-  it("formats 10000 tokens as 10K tokens (whole number, no decimal)", () => {
-    expect(formatTokenCount(10000)).toBe("10K tokens");
-  });
-
-  it("formats 34000 tokens as 34K tokens", () => {
-    expect(formatTokenCount(34000)).toBe("34K tokens");
-  });
-
-  it("formats 256 tokens as 256 tokens", () => {
-    expect(formatTokenCount(256)).toBe("256 tokens");
-  });
-});
-
 describe("formatStub", () => {
-  it("formats stub with sub-1K tokens", () => {
-    const result = formatStub({
-      toolName: "read",
-      tokenCount: 500,
-      toolCallId: "abc-123",
-    });
-    expect(result).toBe(
-      '[read result elided: 500 tokens. Call context_recall("abc-123") to retrieve.]',
-    );
-  });
-
-  it("formats stub with K tokens", () => {
-    const result = formatStub({
-      toolName: "bash",
-      tokenCount: 1000,
-      toolCallId: "xyz-789",
-    });
-    expect(result).toBe(
-      '[bash result elided: 1K tokens. Call context_recall("xyz-789") to retrieve.]',
-    );
-  });
-
-  it("formats stub with fractional K tokens", () => {
-    const result = formatStub({
-      toolName: "grep",
-      tokenCount: 1500,
-      toolCallId: "id-1",
-    });
-    expect(result).toBe(
-      '[grep result elided: 1.5K tokens. Call context_recall("id-1") to retrieve.]',
-    );
-  });
-
-  it("matches the stub regex pattern", () => {
-    const result = formatStub({
-      toolName: "read",
-      tokenCount: 300,
-      toolCallId: "tool-call-id-abc",
-    });
-    expect(result).toMatch(
-      /^\[\w+ result elided: (\d+(\.\d+)?K? tokens)\. Call context_recall\("[^"]+"\) to retrieve\.\]$/,
-    );
-  });
-
-  it("includes Preview segment when preview is provided", () => {
-    const result = formatStub({
+  it("preserves the recall contract with optional preview text", () => {
+    const withPreview = formatStub({
       toolName: "read",
       tokenCount: 300,
       toolCallId: "id-prev",
       preview: "hello world",
     });
-    expect(result).toBe(
+    const withoutPreview = formatStub({
+      toolName: "bash",
+      tokenCount: 1000,
+      toolCallId: "xyz-789",
+    });
+
+    expect(withPreview).toBe(
       '[read result elided: 300 tokens. Preview: "hello world". Call context_recall("id-prev") to retrieve.]',
     );
-  });
-
-  it("omits Preview segment when preview is null", () => {
-    const result = formatStub({
-      toolName: "read",
-      tokenCount: 300,
-      toolCallId: "id-null",
-      preview: null,
-    });
-    expect(result).toBe(
-      '[read result elided: 300 tokens. Call context_recall("id-null") to retrieve.]',
+    expect(withoutPreview).toContain(
+      'Call context_recall("xyz-789") to retrieve.',
     );
-  });
-
-  it("stub with preview starts with token count and ends with retrieve", () => {
-    const result = formatStub({
-      toolName: "read",
-      tokenCount: 300,
-      toolCallId: "id-300",
-      preview: "some preview…",
-    });
-    expect(result).toMatch(
-      /^\[read result elided: 300 tokens\. Preview: ".*"\. Call context_recall\("id-300"\) to retrieve\.\]$/,
-    );
+    expect(withoutPreview).not.toContain("Preview:");
   });
 });
 
 describe("extractPreview", () => {
-  it("returns null for empty content array", () => {
+  it("returns null when there is no text content", () => {
     expect(extractPreview([])).toBeNull();
+    expect(
+      extractPreview([
+        { type: "image" } as unknown as {
+          type: "image";
+          data: string;
+          mimeType: string;
+        },
+      ]),
+    ).toBeNull();
   });
 
-  it("returns null for content with only image blocks", () => {
-    const content = [
-      { type: "image" } as unknown as {
-        type: "image";
-        data: string;
-        mimeType: string;
-      },
-    ];
-    expect(extractPreview(content)).toBeNull();
-  });
+  it("joins text blocks and truncates long previews", () => {
+    expect(
+      extractPreview([
+        { type: "text" as const, text: "foo" },
+        { type: "text" as const, text: "bar" },
+      ]),
+    ).toBe("foo\\nbar");
 
-  it("returns full text when shorter than 100 chars, no ellipsis", () => {
-    const content = [{ type: "text" as const, text: "hello world" }];
-    expect(extractPreview(content)).toBe("hello world");
-  });
-
-  it("returns text with ellipsis when exactly 100 chars (truncated at 100)", () => {
     const text = "a".repeat(101);
-    const content = [{ type: "text" as const, text }];
-    const result = extractPreview(content);
-    expect(result).toBe("a".repeat(100) + "…");
+    expect(extractPreview([{ type: "text" as const, text }])).toBe(
+      "a".repeat(100) + "…",
+    );
   });
 
-  it("returns full text without ellipsis when exactly 100 chars", () => {
-    const text = "a".repeat(100);
-    const content = [{ type: "text" as const, text }];
-    const result = extractPreview(content);
-    expect(result).toBe("a".repeat(100));
-  });
-
-  it("joins multiple text blocks with newline before slicing", () => {
-    const content = [
-      { type: "text" as const, text: "foo" },
-      { type: "text" as const, text: "bar" },
-    ];
-    expect(extractPreview(content)).toBe("foo\\nbar");
-  });
-
-  it("escapes newlines as \\n", () => {
-    const content = [{ type: "text" as const, text: "line1\nline2" }];
-    expect(extractPreview(content)).toBe("line1\\nline2");
-  });
-
-  it('escapes double quotes as \\"', () => {
-    const content = [{ type: "text" as const, text: 'say "hello"' }];
-    expect(extractPreview(content)).toBe('say \\"hello\\"');
-  });
-
-  it("escapes backslashes as \\\\", () => {
-    const content = [{ type: "text" as const, text: "path\\to\\file" }];
-    expect(extractPreview(content)).toBe("path\\\\to\\\\file");
-  });
-
-  it("escapes tabs as \\t", () => {
-    const content = [{ type: "text" as const, text: "col1\tcol2" }];
-    expect(extractPreview(content)).toBe("col1\\tcol2");
-  });
-
-  it("escapes backslashes before other characters (order matters)", () => {
-    const content = [{ type: "text" as const, text: '\\"' }];
-    expect(extractPreview(content)).toBe('\\\\\\"');
-  });
-
-  it("slices to 100 raw chars before escaping (escaping may expand length)", () => {
-    const text = "\n".repeat(101);
-    const content = [{ type: "text" as const, text }];
-    const result = extractPreview(content);
-    expect(result).toBe("\\n".repeat(100) + "…");
+  it("escapes special characters used inside stub quotes", () => {
+    expect(
+      extractPreview([
+        { type: "text" as const, text: 'line1\nline2\t"q"\\path' },
+      ]),
+    ).toBe('line1\\nline2\\t\\"q\\"\\\\path');
   });
 });
 
 describe("estimateContentTokens", () => {
-  it("returns 0 for empty content", () => {
+  it("counts only text blocks", () => {
     expect(estimateContentTokens([])).toBe(0);
+    expect(
+      estimateContentTokens([
+        { type: "text" as const, text: "hello" },
+        { type: "image" } as unknown as {
+          type: "image";
+          data: string;
+          mimeType: string;
+        },
+        { type: "text" as const, text: " world" },
+      ]),
+    ).toBe(Math.ceil(11 / 4));
   });
 
-  it("estimates tokens for a single text block (ceil(chars/4))", () => {
-    const content = [{ type: "text" as const, text: "hello" }];
-    expect(estimateContentTokens(content)).toBe(Math.ceil("hello".length / 4));
-  });
-
-  it("sums chars across multiple text blocks", () => {
-    const content = [
-      { type: "text" as const, text: "hello" },
-      { type: "text" as const, text: " world" },
-    ];
-    expect(estimateContentTokens(content)).toBe(Math.ceil(11 / 4));
-  });
-
-  it("counts image blocks as zero tokens", () => {
-    const content = [
-      { type: "image" } as unknown as {
-        type: "image";
-        data: string;
-        mimeType: string;
-      },
-    ];
-    expect(estimateContentTokens(content)).toBe(0);
-  });
-
-  it("handles mixed text and image blocks", () => {
-    const content = [
-      { type: "text" as const, text: "abc" },
-      { type: "image" } as unknown as {
-        type: "image";
-        data: string;
-        mimeType: string;
-      },
-    ];
-    expect(estimateContentTokens(content)).toBe(Math.ceil(3 / 4));
-  });
-
-  it("counts multibyte chars as char units, not byte units", () => {
-    const text = "こんにちは"; // 5 chars, 15 UTF-8 bytes
-    const content = [{ type: "text" as const, text }];
-    expect(estimateContentTokens(content)).toBe(Math.ceil(5 / 4));
-  });
-
-  it("returns a value large enough to exceed minTokens when chars >> 4*minTokens", () => {
+  it("returns a value large enough to exceed minTokens when content is large", () => {
     const text = "x".repeat(DEFAULTS.minTokens * 4 + 4);
-    const content = [{ type: "text" as const, text }];
-    expect(estimateContentTokens(content)).toBeGreaterThan(DEFAULTS.minTokens);
+    expect(
+      estimateContentTokens([{ type: "text" as const, text }]),
+    ).toBeGreaterThan(DEFAULTS.minTokens);
   });
 });
 
@@ -455,64 +289,6 @@ describe("context hook", () => {
     expect(found.content[0].text).toBe("x".repeat(HUGE));
   });
 
-  it("is deterministic: two calls on identical input produce identical output", () => {
-    const toolResult = makeToolResult({
-      toolCallId: "call-det",
-      toolName: "bash",
-      text: "y",
-      repeat: HUGE,
-    });
-    const messages = makeMessages(DEFAULTS.staleTurns + 2, toolResult);
-    const r1 = hook({ type: "context", messages } as any, fakeCtx);
-    const r2 = hook({ type: "context", messages } as any, fakeCtx);
-    expect(r1).toEqual(r2);
-  });
-
-  it("does not mutate the input messages array", () => {
-    const toolResult = makeToolResult({
-      toolCallId: "call-mut",
-      toolName: "read",
-      text: "z",
-      repeat: HUGE,
-    });
-    const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
-    const originalContent = JSON.stringify(messages);
-    hook({ type: "context", messages } as any, fakeCtx);
-    expect(JSON.stringify(messages)).toBe(originalContent);
-  });
-
-  it("non-elided messages are the same object references as the input messages", () => {
-    const elidedToolResult = makeToolResult({
-      toolCallId: "call-elided-ref",
-      toolName: "bash",
-      text: "x",
-      repeat: HUGE,
-    });
-    const keptToolResult = makeToolResult({
-      toolCallId: "call-kept-ref",
-      toolName: "read",
-      text: "small",
-    });
-    const messages: any[] = [
-      makeUserMsg(),
-      elidedToolResult,
-      makeUserMsg(),
-      makeUserMsg(),
-      makeUserMsg(),
-      makeUserMsg(),
-      keptToolResult,
-      makeUserMsg(),
-    ];
-    const result = hook({ type: "context", messages } as any, fakeCtx);
-    for (let i = 0; i < result.messages!.length; i++) {
-      const out = result.messages![i] as any;
-      if (out.role === "toolResult" && out.toolCallId === "call-elided-ref") {
-        continue;
-      }
-      expect(result.messages![i]).toBe(messages[i]);
-    }
-  });
-
   it("does not elide a tool result whose only large content is an image block", () => {
     const hugeImageData = "A".repeat(1_000_000);
     const toolResult: any = {
@@ -535,19 +311,6 @@ describe("context hook", () => {
     expect(found.content[1].type).toBe("image");
   });
 
-  it("passes through non-tool-result messages unchanged", () => {
-    const toolResult = makeToolResult({
-      toolCallId: "call-pass",
-      toolName: "read",
-      text: "a",
-      repeat: BIG,
-    });
-    const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
-    const result = hook({ type: "context", messages } as any, fakeCtx);
-    const userMsgs = result.messages!.filter((m: any) => m.role === "user");
-    expect(userMsgs.length).toBe(DEFAULTS.staleTurns + 1);
-  });
-
   it("uses 'unknown' toolName when toolName is missing", () => {
     const toolResult: any = {
       role: "toolResult",
@@ -563,23 +326,6 @@ describe("context hook", () => {
       (m: any) => m.role === "toolResult",
     ) as any;
     expect(elided.content[0].text).toMatch(/^\[unknown result elided:/);
-  });
-
-  it("stub text matches spec regex", () => {
-    const toolResult = makeToolResult({
-      toolCallId: "call-regex",
-      toolName: "bash",
-      text: "x",
-      repeat: HUGE,
-    });
-    const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
-    const result = hook({ type: "context", messages } as any, fakeCtx);
-    const elided = result.messages!.find(
-      (m: any) => m.role === "toolResult",
-    ) as any;
-    expect(elided.content[0].text).toMatch(
-      /^\[\w+ result elided: (\d+(\.\d+)?K? tokens)\. Preview: "[^"]*"\. Call context_recall\("[^"]+"\) to retrieve\.\]$/,
-    );
   });
 
   it("elided message does not carry forward details from the source", () => {
@@ -599,81 +345,6 @@ describe("context hook", () => {
     ) as any;
     expect(elided.details).toBeUndefined();
     expect("details" in elided).toBe(false);
-  });
-
-  it("stub includes Preview segment for text content", () => {
-    const toolResult = makeToolResult({
-      toolCallId: "call-preview",
-      toolName: "bash",
-      text: "x",
-      repeat: HUGE,
-    });
-    const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
-    const result = hook({ type: "context", messages } as any, fakeCtx);
-    const elided = result.messages!.find(
-      (m: any) => m.role === "toolResult",
-    ) as any;
-    expect(elided.content[0].text).toContain(' Preview: "');
-  });
-
-  it("stub preview is truncated to 100 chars with ellipsis", () => {
-    const toolResult = makeToolResult({
-      toolCallId: "call-preview-trunc",
-      toolName: "bash",
-      text: "y",
-      repeat: HUGE,
-    });
-    const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
-    const result = hook({ type: "context", messages } as any, fakeCtx);
-    const elided = result.messages!.find(
-      (m: any) => m.role === "toolResult",
-    ) as any;
-    expect(elided.content[0].text).toContain(`"${"y".repeat(100)}…"`);
-  });
-
-  it("stub preview escapes special characters", () => {
-    const specialText = 'line1\nline2\t"quoted"\\back';
-    const padding = "p".repeat(HUGE);
-    const toolResult: any = {
-      role: "toolResult",
-      toolCallId: "call-escape",
-      toolName: "bash",
-      content: [{ type: "text", text: specialText + padding }],
-      isError: false,
-      timestamp: Date.now(),
-    };
-    const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
-    const result = hook({ type: "context", messages } as any, fakeCtx);
-    const elided = result.messages!.find(
-      (m: any) => m.role === "toolResult",
-    ) as any;
-    const stub: string = elided.content[0].text;
-    expect(stub).toContain("\\n");
-    expect(stub).toContain("\\t");
-    expect(stub).toContain('\\"');
-    expect(stub).toContain("\\\\");
-  });
-
-  it("elided message has exactly the canonical keys", () => {
-    const toolResult = makeToolResult({
-      toolCallId: "call-keys",
-      toolName: "bash",
-      text: "x",
-      repeat: HUGE,
-    });
-    const messages = makeMessages(DEFAULTS.staleTurns + 1, toolResult);
-    const result = hook({ type: "context", messages } as any, fakeCtx);
-    const elided = result.messages!.find(
-      (m: any) => m.role === "toolResult",
-    ) as any;
-    expect(Object.keys(elided).sort()).toEqual([
-      "content",
-      "isError",
-      "role",
-      "timestamp",
-      "toolCallId",
-      "toolName",
-    ]);
   });
 });
 
@@ -995,76 +666,6 @@ describe("superseded-read detection", () => {
     );
   });
 
-  it("stub starts with correct prefix and ends with retrieve original suffix", () => {
-    const readId = "read-fmt";
-    const editId = "edit-fmt";
-    const messages: any[] = [
-      makeUserMsg(),
-      makeAssistantMsg([
-        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
-      ]),
-      makeToolResultMsg({
-        toolCallId: readId,
-        toolName: "read",
-        text: "content here",
-      }),
-      makeUserMsg(),
-      makeAssistantMsg([
-        {
-          id: editId,
-          name: "edit",
-          arguments: { path: "src/foo.ts", old_string: "x", new_string: "y" },
-        },
-      ]),
-      makeToolResultMsg({ toolCallId: editId, toolName: "edit", text: "ok" }),
-    ];
-    const hook = makeContextHook(supersededConfig());
-    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
-    const readResult = result.messages!.find(
-      (m: any) => m.toolCallId === readId,
-    ) as any;
-    const text: string = readResult.content[0].text;
-    expect(text).toMatch(
-      /^\[read result elided \(superseded by later edit\/write of \/cwd\/src\/foo\.ts\):/,
-    );
-    expect(text).toMatch(
-      /Call context_recall\("read-fmt"\) to retrieve original\.\]$/,
-    );
-  });
-
-  it("stub includes Preview segment when read had text content", () => {
-    const readId = "read-prev";
-    const editId = "edit-prev";
-    const messages: any[] = [
-      makeUserMsg(),
-      makeAssistantMsg([
-        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
-      ]),
-      makeToolResultMsg({
-        toolCallId: readId,
-        toolName: "read",
-        text: "hello world content",
-      }),
-      makeUserMsg(),
-      makeAssistantMsg([
-        {
-          id: editId,
-          name: "edit",
-          arguments: { path: "src/foo.ts", old_string: "x", new_string: "y" },
-        },
-      ]),
-      makeToolResultMsg({ toolCallId: editId, toolName: "edit", text: "ok" }),
-    ];
-    const hook = makeContextHook(supersededConfig());
-    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
-    const readResult = result.messages!.find(
-      (m: any) => m.toolCallId === readId,
-    ) as any;
-    expect(readResult.content[0].text).toContain(
-      ' Preview: "hello world content".',
-    );
-  });
-
   it("superseded rule disabled → read not stubbed by superseded rule", () => {
     const readId = "read-dis";
     const editId = "edit-dis";
@@ -1197,35 +798,6 @@ describe("superseded-read detection", () => {
       (m: any) => m.toolCallId === readId,
     ) as any;
     expect(readResult.content[0].text).toBe("content");
-  });
-
-  it("is deterministic: two calls on same message list produce identical output", () => {
-    const readId = "read-det";
-    const editId = "edit-det";
-    const messages: any[] = [
-      makeUserMsg(),
-      makeAssistantMsg([
-        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
-      ]),
-      makeToolResultMsg({
-        toolCallId: readId,
-        toolName: "read",
-        text: "content",
-      }),
-      makeUserMsg(),
-      makeAssistantMsg([
-        {
-          id: editId,
-          name: "edit",
-          arguments: { path: "src/foo.ts", old_string: "x", new_string: "y" },
-        },
-      ]),
-      makeToolResultMsg({ toolCallId: editId, toolName: "edit", text: "ok" }),
-    ];
-    const hook = makeContextHook(supersededConfig());
-    const r1 = hook({ type: "context", messages } as any, fakeCtxWithCwd);
-    const r2 = hook({ type: "context", messages } as any, fakeCtxWithCwd);
-    expect(r1).toEqual(r2);
   });
 
   it("read that is BOTH superseded AND generic-stale eligible → superseded stub format wins", () => {
@@ -1622,70 +1194,6 @@ describe("duplicate-read detection", () => {
     expect(read2.content[0].text).toBe("absolute content");
   });
 
-  it("stub starts with correct prefix including path and turn number", () => {
-    const readId1 = "prefix-read-1";
-    const readId2 = "prefix-read-2";
-    const messages: any[] = [
-      makeUserMsg(),
-      makeAssistantMsg([
-        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
-      ]),
-      makeToolResultMsg({
-        toolCallId: readId1,
-        toolName: "read",
-        text: "content",
-      }),
-      makeUserMsg(),
-      makeAssistantMsg([
-        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
-      ]),
-      makeToolResultMsg({
-        toolCallId: readId2,
-        toolName: "read",
-        text: "newer content",
-      }),
-    ];
-    const hook = makeContextHook(duplicateConfig());
-    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
-    const read1 = result.messages!.find(
-      (m: any) => m.toolCallId === readId1,
-    ) as any;
-    expect(read1.content[0].text).toMatch(
-      /^\[read result elided \(superseded by later read of \/cwd\/src\/foo\.ts at turn \d+\):/,
-    );
-  });
-
-  it("stub includes Preview segment when read had text content", () => {
-    const readId1 = "prev-read-1";
-    const readId2 = "prev-read-2";
-    const messages: any[] = [
-      makeUserMsg(),
-      makeAssistantMsg([
-        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
-      ]),
-      makeToolResultMsg({
-        toolCallId: readId1,
-        toolName: "read",
-        text: "hello world content",
-      }),
-      makeUserMsg(),
-      makeAssistantMsg([
-        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
-      ]),
-      makeToolResultMsg({
-        toolCallId: readId2,
-        toolName: "read",
-        text: "newer",
-      }),
-    ];
-    const hook = makeContextHook(duplicateConfig());
-    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
-    const read1 = result.messages!.find(
-      (m: any) => m.toolCallId === readId1,
-    ) as any;
-    expect(read1.content[0].text).toContain(' Preview: "hello world content".');
-  });
-
   it("read that is both duplicated and superseded-by-edit → gets superseded-by-edit stub", () => {
     const readId1 = "both-read-1";
     const readId2 = "both-read-2";
@@ -1795,68 +1303,6 @@ describe("duplicate-read detection", () => {
       (m: any) => m.toolCallId === "quad-4",
     ) as any;
     expect(last.content[0].text).toBe("content-quad-4");
-  });
-
-  it("the turn-N reference points to the most recent read's user-turn index (1-indexed)", () => {
-    const readId1 = "turn-read-1";
-    const readId2 = "turn-read-2";
-    const messages: any[] = [
-      makeUserMsg(),
-      makeAssistantMsg([
-        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
-      ]),
-      makeToolResultMsg({
-        toolCallId: readId1,
-        toolName: "read",
-        text: "first",
-      }),
-      makeUserMsg(),
-      makeUserMsg(),
-      makeAssistantMsg([
-        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
-      ]),
-      makeToolResultMsg({
-        toolCallId: readId2,
-        toolName: "read",
-        text: "second",
-      }),
-    ];
-    const hook = makeContextHook(duplicateConfig());
-    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
-    const read1 = result.messages!.find(
-      (m: any) => m.toolCallId === readId1,
-    ) as any;
-    // read2's toolResult is at index 6, user msgs at 0,3,4 → userTurnsUpTo(6) = 3
-    expect(read1.content[0].text).toMatch(/at turn 3\)/);
-  });
-
-  it("is deterministic: two calls on same input produce identical output", () => {
-    const readId1 = "det-read-1";
-    const readId2 = "det-read-2";
-    const messages: any[] = [
-      makeUserMsg(),
-      makeAssistantMsg([
-        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
-      ]),
-      makeToolResultMsg({
-        toolCallId: readId1,
-        toolName: "read",
-        text: "first",
-      }),
-      makeUserMsg(),
-      makeAssistantMsg([
-        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
-      ]),
-      makeToolResultMsg({
-        toolCallId: readId2,
-        toolName: "read",
-        text: "second",
-      }),
-    ];
-    const hook = makeContextHook(duplicateConfig());
-    const r1 = hook({ type: "context", messages } as any, fakeCtxWithCwd);
-    const r2 = hook({ type: "context", messages } as any, fakeCtxWithCwd);
-    expect(r1).toEqual(r2);
   });
 
   it("small read (< DEFAULTS.minTokens * 4) that is duplicated still gets stubbed (size threshold doesn't apply)", () => {

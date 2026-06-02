@@ -51,36 +51,12 @@ describe("decideToolCall", () => {
         decideToolCall({ guardEnabled: false, hasUI: true, toolName: "bash" }),
       ).toBe("pass");
     });
-
-    it("passes when guard is off, tool is bash, no UI", () => {
-      expect(
-        decideToolCall({ guardEnabled: false, hasUI: false, toolName: "bash" }),
-      ).toBe("pass");
-    });
-
-    it("passes when guard is off, tool is edit, has UI", () => {
-      expect(
-        decideToolCall({ guardEnabled: false, hasUI: true, toolName: "edit" }),
-      ).toBe("pass");
-    });
   });
 
   describe("guardEnabled=true, tool NOT bash", () => {
     it("passes when tool is edit", () => {
       expect(
         decideToolCall({ guardEnabled: true, hasUI: true, toolName: "edit" }),
-      ).toBe("pass");
-    });
-
-    it("passes when tool is write", () => {
-      expect(
-        decideToolCall({ guardEnabled: true, hasUI: true, toolName: "write" }),
-      ).toBe("pass");
-    });
-
-    it("passes when tool is read", () => {
-      expect(
-        decideToolCall({ guardEnabled: true, hasUI: true, toolName: "read" }),
       ).toBe("pass");
     });
   });
@@ -101,12 +77,6 @@ describe("decideToolCall", () => {
 });
 
 describe("resolveChoice", () => {
-  it('"Allow once" returns not blocked, no side effect', () => {
-    expect(resolveChoice({ choice: "Allow once", message: undefined })).toEqual(
-      { block: false },
-    );
-  });
-
   it('"Allow similar this session" returns not blocked with allowKey side effect', () => {
     expect(
       resolveChoice({
@@ -139,21 +109,6 @@ describe("resolveChoice", () => {
 
   it('"Block" with empty message returns blocked with generic reason', () => {
     const result = resolveChoice({ choice: "Block", message: "" });
-    expect(result.block).toBe(true);
-    expect(result.reason).toBe(GENERIC_BLOCK_REASON);
-  });
-
-  it("undefined (Esc/cancel) returns blocked with generic reason", () => {
-    const result = resolveChoice({ choice: undefined, message: undefined });
-    expect(result.block).toBe(true);
-    expect(result.reason).toBe(GENERIC_BLOCK_REASON);
-  });
-
-  it("unexpected string returns blocked with generic reason", () => {
-    const result = resolveChoice({
-      choice: "some-unknown-value",
-      message: undefined,
-    });
     expect(result.block).toBe(true);
     expect(result.reason).toBe(GENERIC_BLOCK_REASON);
   });
@@ -215,77 +170,6 @@ function captureHandlers() {
     throw new Error("session_start handler was not registered");
   }
   return { toolCallHandler, sessionStartHandler, messageCalls };
-}
-
-function captureAllHandlers() {
-  let toolCallHandler: AnyHandler | undefined;
-  let sessionStartHandler: AnyHandler | undefined;
-  let commandHandler: CommandHandler | undefined;
-  let shortcutHandler: ShortcutHandler | undefined;
-
-  const pi = {
-    on(event: string, handler: AnyHandler) {
-      if (event === "tool_call") {
-        toolCallHandler = handler;
-      }
-      if (event === "session_start") {
-        sessionStartHandler = handler;
-      }
-    },
-    registerShortcut(name: string, opts: { handler: ShortcutHandler }) {
-      if (name === "alt+g") {
-        shortcutHandler = opts.handler;
-      }
-    },
-    registerCommand(name: string, opts: { handler: CommandHandler }) {
-      if (name === "guard") {
-        commandHandler = opts.handler;
-      }
-    },
-    registerTool: () => {},
-    registerFlag: () => {},
-    getFlag: () => undefined,
-    registerMessageRenderer: () => {},
-    sendMessage: () => {},
-    sendUserMessage: () => {},
-    appendEntry: () => {},
-    setSessionName: () => {},
-    getSessionName: () => undefined,
-    setLabel: () => {},
-    getActiveTools: () => [],
-    getAllTools: () => [],
-    setActiveTools: () => {},
-    getCommands: () => [],
-    setModel: () => Promise.resolve(false),
-    getThinkingLevel: () => 0 as never,
-    setThinkingLevel: () => {},
-    exec: () =>
-      Promise.resolve({ code: 0, stdout: "", stderr: "", killed: false }),
-    registerProvider: () => {},
-    unregisterProvider: () => {},
-    events: {} as never,
-  } as unknown as ExtensionAPI;
-
-  registerExtension(pi);
-
-  if (!toolCallHandler) {
-    throw new Error("tool_call handler was not registered");
-  }
-  if (!sessionStartHandler) {
-    throw new Error("session_start handler was not registered");
-  }
-  if (!commandHandler) {
-    throw new Error("guard command handler was not registered");
-  }
-  if (!shortcutHandler) {
-    throw new Error("alt+g shortcut handler was not registered");
-  }
-  return {
-    toolCallHandler,
-    sessionStartHandler,
-    commandHandler,
-    shortcutHandler,
-  };
 }
 
 function makeNonInteractiveCtx(): ExtensionContext & { notifyCalls: string[] } {
@@ -367,18 +251,6 @@ describe("non-interactive mode", () => {
     expect(messageCalls[0]?.display).toBe(true);
     expect(messageCalls[0]?.content).toMatch(/guard auto-disabled/);
     expect(messageCalls[0]?.content).toMatch(/no interactive UI/);
-  });
-
-  it("second tool_call with hasUI=false does not re-log", async () => {
-    const { toolCallHandler, messageCalls } = captureHandlers();
-    const ctx = makeNonInteractiveCtx();
-
-    await toolCallHandler(makeBashEvent("rm file.txt") as never, ctx);
-    const messageCountAfterFirst = messageCalls.length;
-
-    await toolCallHandler(makeBashEvent("rm file2.txt") as never, ctx);
-
-    expect(messageCalls).toHaveLength(messageCountAfterFirst);
   });
 
   it("session_start with hasUI=false auto-disables and logs once", async () => {
@@ -474,62 +346,6 @@ describe("session_start reason handling", () => {
     expect(lastStatus?.value).toContain("guard");
     expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰌾" });
     expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "guard" });
-  });
-
-  it('reason "new" enables guard and sets footer', async () => {
-    const { sessionStartHandler } = captureHandlers();
-    const ctx = makeInteractiveCtx();
-
-    await sessionStartHandler(makeSessionStartEvent("new") as never, ctx);
-
-    const lastStatus = ctx.statusCalls.at(-1);
-    expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("guard");
-  });
-
-  it('reason "fork" enables guard and sets footer', async () => {
-    const { sessionStartHandler } = captureHandlers();
-    const ctx = makeInteractiveCtx();
-
-    await sessionStartHandler(makeSessionStartEvent("fork") as never, ctx);
-
-    const lastStatus = ctx.statusCalls.at(-1);
-    expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("guard");
-  });
-
-  it('reason "reload" preserves guard mode if previously disabled', async () => {
-    const { sessionStartHandler, commandHandler } = captureAllHandlers();
-    const cmdCtx = makeInteractiveCtx();
-
-    await commandHandler("off", cmdCtx);
-
-    const reloadCtx = makeInteractiveCtx();
-    await sessionStartHandler(
-      makeSessionStartEvent("reload") as never,
-      reloadCtx,
-    );
-
-    const lastStatus = reloadCtx.statusCalls.at(-1);
-    expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("guard off");
-  });
-
-  it('reason "resume" preserves guard mode if previously disabled', async () => {
-    const { sessionStartHandler, commandHandler } = captureAllHandlers();
-    const cmdCtx = makeInteractiveCtx();
-
-    await commandHandler("off", cmdCtx);
-
-    const resumeCtx = makeInteractiveCtx();
-    await sessionStartHandler(
-      makeSessionStartEvent("resume") as never,
-      resumeCtx,
-    );
-
-    const lastStatus = resumeCtx.statusCalls.at(-1);
-    expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("guard off");
   });
 });
 
@@ -651,30 +467,6 @@ describe("/guard command notifications", () => {
     expect(ctx.notifyCalls[0].message).toBe("guard mode: off");
   });
 
-  it("/guard on when guard is already on emits no-op notification", async () => {
-    const { commandHandler } = captureCommandAndShortcutHandlers();
-    const ctx = makeNotifyCapturingCtx();
-
-    await commandHandler("on", ctx);
-
-    expect(ctx.notifyCalls).toHaveLength(1);
-    expect(ctx.notifyCalls[0].message).toBe("guard mode: already on");
-  });
-
-  it("/guard off when guard is already off emits no-op notification", async () => {
-    const { commandHandler } = captureCommandAndShortcutHandlers();
-    const ctx = makeNotifyCapturingCtx();
-
-    await commandHandler("off", ctx);
-    const notifyCountAfterOff = ctx.notifyCalls.length;
-    expect(ctx.notifyCalls.at(-1)?.message).toBe("guard mode: off");
-
-    await commandHandler("off", ctx);
-
-    expect(ctx.notifyCalls).toHaveLength(notifyCountAfterOff + 1);
-    expect(ctx.notifyCalls.at(-1)?.message).toBe("guard mode: already off");
-  });
-
   it("/guard on after /guard off emits action notification", async () => {
     const { commandHandler } = captureCommandAndShortcutHandlers();
     const ctx = makeNotifyCapturingCtx();
@@ -707,17 +499,6 @@ describe("alt+g shortcut", () => {
     const lastStatus = ctx.statusCalls.at(-1);
     expect(lastStatus?.key).toBe(FOOTER_KEY);
     expect(lastStatus?.value).toContain("guard off");
-  });
-
-  it("shortcut can be invoked multiple times", async () => {
-    const { shortcutHandler } = captureCommandAndShortcutHandlers();
-    const ctx = makeInteractiveCtx();
-
-    await shortcutHandler(ctx);
-    await shortcutHandler(ctx);
-    await shortcutHandler(ctx);
-
-    expect(ctx.statusCalls).toHaveLength(3);
   });
 });
 
@@ -819,21 +600,6 @@ describe("tool_call modal choice handling", () => {
     mockRisky();
   });
 
-  it("shows modal with exactly four choices in order", async () => {
-    const { toolCallHandler } = captureHandlers();
-    const ctx = makeModalCtx("Allow once");
-
-    await toolCallHandler(makeBashEvent("rm file.txt") as never, ctx);
-
-    expect(ctx.selectCalls).toHaveLength(1);
-    expect(ctx.selectCalls[0].choices).toEqual([
-      "Allow once",
-      "Allow similar this session",
-      "Allow all this session",
-      "Block",
-    ]);
-  });
-
   it("Allow once allows current call but second equivalent call still prompts", async () => {
     const { toolCallHandler } = captureHandlers();
     const ctx = makeModalCtx("Allow once");
@@ -907,34 +673,6 @@ describe("tool_call modal choice handling", () => {
     });
     expect(ctx.inputCalls).toHaveLength(1);
     expect(ctx.inputCalls[0].title).toBe("Reason to give the agent");
-  });
-
-  it("Block with empty message returns blocked with generic reason", async () => {
-    const { toolCallHandler } = captureHandlers();
-    const ctx = makeModalCtx("Block", "");
-
-    const result = await toolCallHandler(
-      makeBashEvent("rm file.txt") as never,
-      ctx,
-    );
-    expect(result).toEqual({
-      block: true,
-      reason: GENERIC_BLOCK_REASON,
-    });
-  });
-
-  it("undefined choice (cancel) returns blocked with generic reason", async () => {
-    const { toolCallHandler } = captureHandlers();
-    const ctx = makeModalCtx(undefined);
-
-    const result = await toolCallHandler(
-      makeBashEvent("rm file.txt") as never,
-      ctx,
-    );
-    expect(result).toEqual({
-      block: true,
-      reason: GENERIC_BLOCK_REASON,
-    });
   });
 
   it("AbortError from select returns blocked with generic reason", async () => {

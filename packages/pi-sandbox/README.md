@@ -52,11 +52,11 @@ Ask why something would be allowed or blocked:
 
 Pi's built-in filesystem tools are checked before they run:
 
-| Tool | Required access |
-| ---- | --------------- |
-| `read`, `ls`, `find`, `grep` | read |
-| `write` | write |
-| `edit` | read and write |
+| Tool                         | Required access |
+| ---------------------------- | --------------- |
+| `read`, `ls`, `find`, `grep` | read            |
+| `write`                      | write           |
+| `edit`                       | read and write  |
 
 A path must be under the relevant allowlist and must not match a deny pattern.
 
@@ -72,31 +72,31 @@ Network filtering applies to sandboxed subprocesses. It does not inspect trusted
 
 `network.mode` controls when the network allowlist is passed to `nono`:
 
-| Mode | Behaviour |
-| ---- | --------- |
+| Mode                   | Behaviour                                              |
+| ---------------------- | ------------------------------------------------------ |
 | `non-interactive-only` | enforce the allowlist in non-interactive sessions only |
-| `always` | enforce the allowlist in every session |
-| `off` | do not filter subprocess network access |
+| `always`               | enforce the allowlist in every session                 |
+| `off`                  | do not filter subprocess network access                |
 
 Allowed hosts are exact names (`api.github.com`) or wildcard subdomains (`*.github.com`). Wildcards do not match the apex domain, so allow both `github.com` and `*.github.com` if you need both.
 
 ## Day-to-day commands
 
-| Command | Effect |
-| ------- | ------ |
-| `/sandbox` | Show the full policy summary |
-| `/sandbox status` | Show compact status |
-| `/sandbox why <path or host>` | Explain an allow/block decision |
-| `/sandbox allow <host>` | Allow a host for this session |
-| `/sandbox allow --persist <host>` | Add a host to the project config |
-| `/sandbox allow --persist=user <host>` | Add a host to the user config |
-| `/sandbox revoke <host>` | Remove a session host grant |
-| `/sandbox revoke --persist <host>` | Remove a host from persisted config |
-| `/sandbox network off` | Disable network filtering for this session |
-| `/sandbox network on` | Re-enable network filtering from config |
-| `/sandbox off` | Disable all sandbox enforcement for this session |
-| `/sandbox on` | Re-enable sandbox enforcement |
-| `/sandbox reload` | Re-read config files |
+| Command                                | Effect                                           |
+| -------------------------------------- | ------------------------------------------------ |
+| `/sandbox`                             | Show the full policy summary                     |
+| `/sandbox status`                      | Show compact status                              |
+| `/sandbox why <path or host>`          | Explain an allow/block decision                  |
+| `/sandbox allow <host>`                | Allow a host for this session                    |
+| `/sandbox allow --persist <host>`      | Add a host to the project config                 |
+| `/sandbox allow --persist=user <host>` | Add a host to the user config                    |
+| `/sandbox revoke <host>`               | Remove a session host grant                      |
+| `/sandbox revoke --persist <host>`     | Remove a host from persisted config              |
+| `/sandbox network off`                 | Disable network filtering for this session       |
+| `/sandbox network on`                  | Re-enable network filtering from config          |
+| `/sandbox off`                         | Disable all sandbox enforcement for this session |
+| `/sandbox on`                          | Re-enable sandbox enforcement                    |
+| `/sandbox reload`                      | Re-read config files                             |
 
 Session changes are temporary. Persisted changes are written to `.pi/sandbox.json` or `~/.pi/agent/sandbox.json`.
 

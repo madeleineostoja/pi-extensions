@@ -8,34 +8,23 @@ import {
   toAbsolutePath,
 } from "./paths";
 
-describe("toAbsolutePath", () => {
-  it("resolves relative paths against cwd", () => {
+describe("path parsing helpers", () => {
+  it("resolves relative paths against cwd and leaves absolute paths unchanged", () => {
     expect(toAbsolutePath("foo/bar", "/home/user")).toBe("/home/user/foo/bar");
-  });
-
-  it("returns absolute paths unchanged", () => {
     expect(toAbsolutePath("/tmp/foo", "/home/user")).toBe("/tmp/foo");
   });
-});
 
-describe("extractShellWords", () => {
-  it("extracts unquoted words", () => {
+  it("extracts quoted and unquoted shell words", () => {
     expect(extractShellWords("rm file1 file2")).toEqual([
       "rm",
       "file1",
       "file2",
     ]);
-  });
-
-  it("extracts single-quoted words", () => {
     expect(extractShellWords("rm 'file 1' file2")).toEqual([
       "rm",
       "file 1",
       "file2",
     ]);
-  });
-
-  it("extracts double-quoted words", () => {
     expect(extractShellWords('rm "file 1" file2')).toEqual([
       "rm",
       "file 1",
@@ -43,32 +32,18 @@ describe("extractShellWords", () => {
     ]);
   });
 
-  it("returns undefined for semicolon", () => {
-    expect(extractShellWords("rm file1; rm file2")).toBeUndefined();
-  });
-
-  it("returns undefined for &&", () => {
-    expect(extractShellWords("rm file1 && rm file2")).toBeUndefined();
-  });
-
-  it("returns undefined for pipe", () => {
-    expect(extractShellWords("rm file1 | cat")).toBeUndefined();
-  });
-
-  it("returns undefined for command substitution", () => {
-    expect(extractShellWords("rm $(echo file)")).toBeUndefined();
-  });
-
-  it("returns undefined for variable", () => {
-    expect(extractShellWords('rm "$TARGET"')).toBeUndefined();
-  });
-
-  it("returns undefined for globs", () => {
-    expect(extractShellWords("rm *.txt")).toBeUndefined();
-  });
-
-  it("returns undefined for brace expansion", () => {
-    expect(extractShellWords("rm {a,b}.txt")).toBeUndefined();
+  it("refuses shell words requiring expansion or compound command parsing", () => {
+    for (const command of [
+      "rm file1; rm file2",
+      "rm file1 && rm file2",
+      "rm file1 | cat",
+      "rm $(echo file)",
+      'rm "$TARGET"',
+      "rm *.txt",
+      "rm {a,b}.txt",
+    ]) {
+      expect(extractShellWords(command)).toBeUndefined();
+    }
   });
 });
 

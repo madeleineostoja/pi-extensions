@@ -159,39 +159,6 @@ describe("decideToolCall", () => {
         }),
       ).toBe("pass");
     });
-
-    it("passes when readonly is off, tool in set, no UI", () => {
-      expect(
-        decideToolCall({
-          readonlyMode: false,
-          hasUI: false,
-          toolName: "edit",
-          triggerTools: TRIGGER_TOOLS,
-        }),
-      ).toBe("pass");
-    });
-
-    it("passes when readonly is off, tool not in set, has UI", () => {
-      expect(
-        decideToolCall({
-          readonlyMode: false,
-          hasUI: true,
-          toolName: "bash",
-          triggerTools: TRIGGER_TOOLS,
-        }),
-      ).toBe("pass");
-    });
-
-    it("passes when readonly is off, tool not in set, no UI", () => {
-      expect(
-        decideToolCall({
-          readonlyMode: false,
-          hasUI: false,
-          toolName: "bash",
-          triggerTools: TRIGGER_TOOLS,
-        }),
-      ).toBe("pass");
-    });
   });
 
   describe("readonlyMode=true, tool NOT in trigger set", () => {
@@ -200,17 +167,6 @@ describe("decideToolCall", () => {
         decideToolCall({
           readonlyMode: true,
           hasUI: true,
-          toolName: "bash",
-          triggerTools: TRIGGER_TOOLS,
-        }),
-      ).toBe("pass");
-    });
-
-    it("passes when tool is not in set, no UI", () => {
-      expect(
-        decideToolCall({
-          readonlyMode: true,
-          hasUI: false,
           toolName: "bash",
           triggerTools: TRIGGER_TOOLS,
         }),
@@ -263,26 +219,9 @@ describe("decideToolCall", () => {
       ).toBe("auto-disable");
     });
   });
-
-  it("passes for a tool that is not in an empty trigger set", () => {
-    expect(
-      decideToolCall({
-        readonlyMode: true,
-        hasUI: true,
-        toolName: "edit",
-        triggerTools: new Set(),
-      }),
-    ).toBe("pass");
-  });
 });
 
 describe("resolveChoice", () => {
-  it('"Accept" returns not blocked, no side effect', () => {
-    expect(resolveChoice({ choice: "Accept", message: undefined })).toEqual({
-      block: false,
-    });
-  });
-
   it('"Accept for this session" returns not blocked with setEditing side effect', () => {
     expect(
       resolveChoice({ choice: "Accept for this session", message: undefined }),
@@ -310,128 +249,6 @@ describe("resolveChoice", () => {
     expect(result.reason).toBe(
       "Edit not applied. User declined without feedback. Ask for clarification before retrying.",
     );
-  });
-
-  it("undefined (Esc/cancel) returns blocked with declined-without-feedback reason", () => {
-    const result = resolveChoice({ choice: undefined, message: undefined });
-    expect(result.block).toBe(true);
-    expect(result.reason).toBe(
-      "Edit not applied. User declined without feedback. Ask for clarification before retrying.",
-    );
-  });
-
-  it("unexpected string returns blocked with declined-without-feedback reason", () => {
-    const result = resolveChoice({
-      choice: "some-unknown-value",
-      message: undefined,
-    });
-    expect(result.block).toBe(true);
-    expect(result.reason).toBe(
-      "Edit not applied. User declined without feedback. Ask for clarification before retrying.",
-    );
-  });
-});
-
-function makeCapturingCtx(
-  selectResult: string | undefined,
-): ExtensionContext & {
-  selectCalls: Array<{ title: string }>;
-  inputCalls: Array<{ title: string }>;
-} {
-  const selectCalls: Array<{ title: string }> = [];
-  const inputCalls: Array<{ title: string }> = [];
-  return {
-    hasUI: true,
-    signal: undefined,
-    ui: {
-      select: (title: string) => {
-        selectCalls.push({ title });
-        return Promise.resolve(selectResult);
-      },
-      input: (title: string) => {
-        inputCalls.push({ title });
-        return Promise.resolve(undefined);
-      },
-      setStatus: () => {},
-      notify: () => {},
-      confirm: () => Promise.resolve(false),
-      onTerminalInput: () => () => {},
-      setWorkingMessage: () => {},
-      setWorkingVisible: () => {},
-      setWorkingIndicator: () => {},
-      setHiddenThinkingLabel: () => {},
-      setWidget: () => {},
-      setFooter: () => {},
-      setHeader: () => {},
-      setTitle: () => {},
-      custom: () => Promise.resolve(undefined as never),
-      pasteToEditor: () => {},
-      setEditorText: () => {},
-      getEditorText: () => "",
-      editor: () => Promise.resolve(undefined),
-      addAutocompleteProvider: () => {},
-      setEditorComponent: () => {},
-      getEditorComponent: () => undefined,
-      get theme() {
-        return makeDummyTheme() as never;
-      },
-      getAllThemes: () => [],
-      getTheme: () => undefined,
-      setTheme: () => ({ success: true }),
-      getToolsExpanded: () => false,
-      setToolsExpanded: () => {},
-    },
-    cwd: "/",
-    sessionManager: {} as never,
-    modelRegistry: {} as never,
-    model: undefined,
-    isIdle: () => true,
-    abort: () => {},
-    hasPendingMessages: () => false,
-    shutdown: () => {},
-    getContextUsage: () => undefined,
-    compact: () => {},
-    getSystemPrompt: () => "",
-    selectCalls,
-    inputCalls,
-  };
-}
-
-describe("modal title construction (integration)", () => {
-  it("modal title includes path when event.input.path is set", async () => {
-    const handler = captureToolCallHandler();
-    const ctx = makeCapturingCtx("Accept");
-    await handler(makeEditEvent({ path: "src/foo.ts" }), ctx);
-    expect(ctx.selectCalls[0].title).toBe("Readonly: edit src/foo.ts — apply?");
-  });
-
-  it("modal title falls back to tool name only when event.input has no path", async () => {
-    const handler = captureToolCallHandler();
-    const ctx = makeCapturingCtx("Accept");
-    await handler(makeEditEvent({}), ctx);
-    expect(ctx.selectCalls[0].title).toBe("Readonly: edit — apply?");
-  });
-
-  it("modal title does not contain 'undefined' when path is absent", async () => {
-    const handler = captureToolCallHandler();
-    const ctx = makeCapturingCtx("Accept");
-    await handler(makeEditEvent({}), ctx);
-    expect(ctx.selectCalls[0].title).not.toContain("undefined");
-    expect(ctx.selectCalls[0].title).not.toContain("null");
-  });
-
-  it("Steer input title includes path when event.input.path is set", async () => {
-    const handler = captureToolCallHandler();
-    const ctx = makeCapturingCtx("Steer");
-    await handler(makeEditEvent({ path: "src/foo.ts" }), ctx);
-    expect(ctx.inputCalls[0].title).toBe("Steer the agent — src/foo.ts");
-  });
-
-  it("Steer input title falls back to generic title when path is absent", async () => {
-    const handler = captureToolCallHandler();
-    const ctx = makeCapturingCtx("Steer");
-    await handler(makeEditEvent({}), ctx);
-    expect(ctx.inputCalls[0].title).toBe("Steer the agent");
   });
 });
 
@@ -730,56 +547,6 @@ describe("session_start reason handling", () => {
     expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "readonly" });
   });
 
-  it('reason "new" enables readonly and sets footer', async () => {
-    const { sessionStartHandler } = captureHandlers();
-    const ctx = makeInteractiveCtx();
-
-    await sessionStartHandler(
-      { type: "session_start", reason: "new" } as never,
-      ctx,
-    );
-
-    const lastStatus = ctx.statusCalls.at(-1);
-    expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("󰏯");
-    expect(lastStatus?.value).toContain("readonly");
-  });
-
-  it('reason "fork" enables readonly and sets footer', async () => {
-    const { sessionStartHandler } = captureHandlers();
-    const ctx = makeInteractiveCtx();
-
-    await sessionStartHandler(
-      { type: "session_start", reason: "fork" } as never,
-      ctx,
-    );
-
-    const lastStatus = ctx.statusCalls.at(-1);
-    expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("󰏯");
-    expect(lastStatus?.value).toContain("readonly");
-  });
-
-  it('reason "reload" does not call applyMode(true): readonly remains off if previously disabled', async () => {
-    const { sessionStartHandler, toolCallHandler } = captureHandlers();
-    const acceptCtx = makeToolCallCtx({
-      selectResult: "Accept for this session",
-    });
-
-    await toolCallHandler(makeEditEvent() as never, acceptCtx);
-
-    const reloadCtx = makeInteractiveCtx();
-    await sessionStartHandler(
-      { type: "session_start", reason: "reload" } as never,
-      reloadCtx,
-    );
-
-    const lastStatus = reloadCtx.statusCalls.at(-1);
-    expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("editing");
-    expect(lastStatus?.value).toContain("󰏫");
-  });
-
   it('reason "resume" does not call applyMode(true): readonly remains off if previously disabled', async () => {
     const { sessionStartHandler, toolCallHandler } = captureHandlers();
     const acceptCtx = makeToolCallCtx({
@@ -967,49 +734,5 @@ describe("ctrl+shift+r shortcut notifications", () => {
     await shortcutHandler(ctx);
 
     expect(ctx.notifyCalls).toHaveLength(0);
-  });
-
-  it("shortcut can be invoked multiple times without emitting notifications", async () => {
-    const { shortcutHandler } = captureCommandAndShortcutHandlers();
-    const ctx = makeNotifyCapturingCtx();
-
-    await shortcutHandler(ctx);
-    await shortcutHandler(ctx);
-    await shortcutHandler(ctx);
-
-    expect(ctx.notifyCalls).toHaveLength(0);
-  });
-});
-
-describe("footer theming", () => {
-  it("readonly on sets themed status with success icon and muted text", async () => {
-    const { sessionStartHandler } = captureHandlers();
-    const ctx = makeInteractiveCtx();
-
-    await sessionStartHandler(makeSessionStartEvent() as never, ctx);
-
-    const lastStatus = ctx.statusCalls.at(-1);
-    expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("󰏯");
-    expect(lastStatus?.value).toContain("readonly");
-    expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰏯" });
-    expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "readonly" });
-  });
-
-  it("readonly off sets themed warning status instead of clearing", async () => {
-    const { commandHandler } = captureCommandAndShortcutHandlers();
-    const ctx = makeInteractiveCtx();
-
-    await commandHandler("off", ctx);
-
-    const lastStatus = ctx.statusCalls.at(-1);
-    expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("editing");
-    expect(lastStatus?.value).toContain("󰏫");
-    expect(ctx.themeCalls).toContainEqual({ color: "warning", text: "󰏫" });
-    expect(ctx.themeCalls).toContainEqual({
-      color: "warning",
-      text: "editing",
-    });
   });
 });

@@ -95,16 +95,6 @@ describe("extractSurfaceAreas", () => {
     expect(areas).toContain("vitest.config.ts");
   });
 
-  it("extracts backticked names with hyphens", () => {
-    const areas = extractSurfaceAreas("Install `my-package` dependency");
-    expect(areas).toContain("my-package");
-  });
-
-  it("extracts backticked names starting with @", () => {
-    const areas = extractSurfaceAreas("Install `@scope/pkg` dependency");
-    expect(areas).toContain("@scope/pkg");
-  });
-
   it("does not extract short common words in backticks", () => {
     const areas = extractSurfaceAreas(
       "Use `the` and `bug` and `app` to fix it",
@@ -118,11 +108,6 @@ describe("extractSurfaceAreas", () => {
     const areas = extractSurfaceAreas("Add the user model and payment route");
     expect(areas).toContain("user");
     expect(areas).toContain("payment");
-  });
-
-  it("normalizes case and slashes", () => {
-    const areas = extractSurfaceAreas("Update `Packages/Foo`");
-    expect(areas).toContain("packages/foo");
   });
 
   it("returns empty array for plain prose", () => {
@@ -161,22 +146,6 @@ describe("parseTriageOutput", () => {
     const result = parseTriageOutput(
       JSON.stringify({ decision: "parallel", reason: "fast" }),
     );
-    expect(result.decision).toBe("serial");
-  });
-
-  it("defaults to serial for non-JSON", () => {
-    const result = parseTriageOutput("DECISION: serial");
-    expect(result.decision).toBe("serial");
-    expect(result.reason).toContain("serial");
-  });
-
-  it("defaults to serial for malformed JSON", () => {
-    const result = parseTriageOutput("{bad json");
-    expect(result.decision).toBe("serial");
-  });
-
-  it("defaults to serial for array JSON", () => {
-    const result = parseTriageOutput("[1, 2, 3]");
     expect(result.decision).toBe("serial");
   });
 

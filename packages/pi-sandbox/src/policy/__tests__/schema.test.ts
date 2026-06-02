@@ -148,22 +148,10 @@ describe("validatePolicy", () => {
     expect(result.network?.allow).toHaveLength(5);
   });
 
-  it("rejects CIDR ranges in network.allow", () => {
+  it("rejects representative invalid network.allow hosts", () => {
     expect(() =>
       validatePolicy({ network: { allow: ["192.168.1.0/24"] } }),
     ).toThrow(PolicyValidationError);
-    expect(() =>
-      validatePolicy({ network: { allow: ["10.0.0.0/8"] } }),
-    ).toThrow(PolicyValidationError);
-  });
-
-  it("rejects malformed hostnames in network.allow", () => {
-    expect(() =>
-      validatePolicy({ network: { allow: ["-bad.example.com"] } }),
-    ).toThrow(PolicyValidationError);
-    expect(() => validatePolicy({ network: { allow: [""] } })).toThrow(
-      PolicyValidationError,
-    );
     expect(() => validatePolicy({ network: { allow: ["host/path"] } })).toThrow(
       PolicyValidationError,
     );

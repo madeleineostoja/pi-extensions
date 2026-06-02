@@ -1,14 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { registerImplementCommand } from "./command.js";
-import {
-  getStatePaths,
-  createRunState,
-  writeTaskJson,
-} from "./state.js";
+import { getStatePaths, createRunState, writeTaskJson } from "./state.js";
 
 type Handler = (args: string, ctx: FakeContext) => Promise<void>;
 

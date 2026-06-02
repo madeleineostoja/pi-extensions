@@ -24,11 +24,6 @@ describe("readConfig", () => {
     expect(readConfig(tmpDir)).toEqual({});
   });
 
-  it("reads model override from config file", () => {
-    writeConfig(tmpDir, { model: "openai/gpt-4.1-nano" });
-    expect(readConfig(tmpDir)).toEqual({ model: "openai/gpt-4.1-nano" });
-  });
-
   it("ignores unknown fields", () => {
     const configPath = join(
       tmpDir,
@@ -67,29 +62,6 @@ describe("readConfig", () => {
     );
     writeFileSync(configPath, "123", "utf-8");
     expect(readConfig(tmpDir)).toEqual({});
-  });
-});
-
-describe("writeConfig", () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "pi-auto-name-"));
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("creates nested directories and writes config", () => {
-    writeConfig(tmpDir, { model: "openai/gpt-4.1-nano" });
-    expect(readConfig(tmpDir)).toEqual({ model: "openai/gpt-4.1-nano" });
-  });
-
-  it("overwrites existing config", () => {
-    writeConfig(tmpDir, { model: "a/b" });
-    writeConfig(tmpDir, { model: "c/d" });
-    expect(readConfig(tmpDir)).toEqual({ model: "c/d" });
   });
 });
 

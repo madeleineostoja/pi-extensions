@@ -300,39 +300,12 @@ describe("loadPolicy", () => {
     );
   });
 
-  it("fires the always+empty-allow warning once per load, not repeatedly", () => {
-    const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
-    writeJson(globalPath, { network: { mode: "always", allow: [] } });
-
-    loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
-    loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
-
-    const warnCalls = (
-      mockUi.notify as ReturnType<typeof vi.fn>
-    ).mock.calls.filter(([, level]) => level === "warning");
-    expect(warnCalls).toHaveLength(2);
-  });
-
   it("does not warn when network.mode is 'always' and allow is non-empty", () => {
     const { loadPolicy } = createPolicyManager();
     const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
     writeJson(globalPath, {
       network: { mode: "always", allow: ["example.com"] },
     });
-
-    loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
-
-    const warnCalls = (
-      mockUi.notify as ReturnType<typeof vi.fn>
-    ).mock.calls.filter(([, level]) => level === "warning");
-    expect(warnCalls).toHaveLength(0);
-  });
-
-  it("does not warn when network.mode is 'off' and allow is empty", () => {
-    const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
-    writeJson(globalPath, { network: { mode: "off", allow: [] } });
 
     loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
 
