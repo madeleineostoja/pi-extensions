@@ -1,4 +1,5 @@
 import type { ImplementGraph } from "./graph.js";
+import type { AgentDisplayRef } from "./status.js";
 
 export type SchedulerTaskStatus =
   | "pending"
@@ -26,6 +27,7 @@ export type SchedulerTask = {
   taskCommitSha?: string;
   landedCommitSha?: string;
   activeAgentIds: string[];
+  activeAgentRefs: AgentDisplayRef[];
   integrationAttempts: number;
   lastReason?: string;
   approvedCommitMessage?: string;
@@ -59,6 +61,7 @@ export function createSchedulerRun(
       dependsOn: [...node.dependsOn],
       mode: node.mode,
       activeAgentIds: [],
+      activeAgentRefs: [],
       integrationAttempts: 0,
     });
   }
@@ -160,6 +163,7 @@ export function startTask(run: SchedulerRun, taskId: string): void {
   }
   task.status = "coding";
   task.activeAgentIds = [];
+  task.activeAgentRefs = [];
 }
 
 export function nextTaskToLand(run: SchedulerRun): string | undefined {

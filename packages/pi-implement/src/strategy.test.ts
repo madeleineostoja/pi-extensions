@@ -212,6 +212,7 @@ describe("selectStrategy - forced serial", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "serial",
     });
     expect(result.mode).toBe("serial");
@@ -237,6 +238,7 @@ describe("selectStrategy - auto mode deterministic preconditions", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "auto",
     });
     expect(result.mode).toBe("serial");
@@ -259,6 +261,7 @@ describe("selectStrategy - auto mode deterministic preconditions", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "auto",
     });
     expect(result.mode).toBe("serial");
@@ -283,6 +286,7 @@ describe("selectStrategy - auto mode escalation rule", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "auto",
     });
     expect(result.mode).toBe("serial");
@@ -310,6 +314,7 @@ describe("selectStrategy - auto mode escalation rule", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "auto",
     });
     expect(result.mode).toBe("serial");
@@ -337,6 +342,7 @@ describe("selectStrategy - auto mode escalation rule", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "auto",
     });
     expect(result.mode).toBe("serial");
@@ -365,6 +371,7 @@ describe("selectStrategy - auto mode escalation rule", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "auto",
     });
     expect(
@@ -434,6 +441,7 @@ describe("selectStrategy - forced parallel", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "parallel",
       requestedConcurrency: 3,
     });
@@ -463,6 +471,7 @@ describe("selectStrategy - forced parallel", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "parallel",
       requestedConcurrency: 2,
     });
@@ -528,6 +537,7 @@ describe("selectStrategy - forced parallel", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "parallel",
       requestedConcurrency: 2,
     });
@@ -568,6 +578,7 @@ describe("selectStrategy - forced parallel", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "parallel",
       requestedConcurrency: 2,
     });
@@ -641,6 +652,7 @@ describe("selectStrategy - concurrency clamping", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "parallel",
       requestedConcurrency: 5,
     });
@@ -747,6 +759,7 @@ describe("selectStrategy - concurrency clamping", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "auto",
     });
     if (result.mode === "parallel") {
@@ -814,6 +827,7 @@ describe("selectStrategy - validationCommands are advisory only", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "parallel",
       requestedConcurrency: 2,
     });
@@ -889,6 +903,7 @@ describe("selectStrategy - validationCommands are advisory only", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
+      updateState: () => ({}),
       requestedMode: "parallel",
       requestedConcurrency: 2,
     });

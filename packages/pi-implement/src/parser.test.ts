@@ -54,6 +54,13 @@ describe("parseCommand", () => {
     });
   });
 
+  it("parses view subcommand", () => {
+    expect(parseCommand("view")).toEqual({
+      kind: "subcommand",
+      name: "view",
+    });
+  });
+
   it("parses init-agents subcommand", () => {
     expect(parseCommand("init-agents")).toEqual({
       kind: "subcommand",
@@ -172,6 +179,7 @@ describe("parseCommand", () => {
     expect(usage()).toContain("cleanup");
     expect(usage()).toContain("config");
     expect(usage()).toContain("init-agents");
+    expect(usage()).toContain("view");
     expect(usage()).toContain("inspect");
   });
 });

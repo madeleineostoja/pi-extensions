@@ -9,6 +9,7 @@ import { resolveMaxParallel } from "./config.js";
 import type { SubagentClient } from "./subagents.js";
 import type { EffectiveRoles } from "./config.js";
 import type { StatePaths } from "./state.js";
+import type { AgentDisplayRef, RunState, StatePatch } from "./status.js";
 import {
   parseStrategyDecision,
   validateGraph,
@@ -49,6 +50,7 @@ export type StrategyRequest = {
   requestedMode: "auto" | "serial" | "parallel";
   requestedConcurrency?: number;
   signal?: AbortSignal;
+  updateState(state: StatePatch): void;
 };
 
 export async function selectStrategy(
@@ -199,6 +201,44 @@ type TriageResult =
   | { decision: "serial"; reason: string }
   | { decision: "escalate-to-planner"; reason: string };
 
+function addStrategyAgentPatch(
+  prev: RunState,
+  ref: AgentDisplayRef,
+): Partial<RunState> {
+  return {
+    activeSubagentId: ref.id,
+    activeSubagentIds: [
+      ...(prev.activeSubagentIds ?? []).filter((id) => id !== ref.id),
+      ref.id,
+    ],
+    activeAgentRefs: [
+      ...(prev.activeAgentRefs ?? []).filter(
+        (existing) => existing.id !== ref.id,
+      ),
+      ref,
+    ],
+  };
+}
+
+function removeStrategyAgentPatch(
+  prev: RunState,
+  id: string,
+): Partial<RunState> {
+  const activeSubagentIds = (prev.activeSubagentIds ?? []).filter(
+    (existing) => existing !== id,
+  );
+  return {
+    activeSubagentId:
+      prev.activeSubagentId === id
+        ? activeSubagentIds.at(-1)
+        : prev.activeSubagentId,
+    activeSubagentIds,
+    activeAgentRefs: (prev.activeAgentRefs ?? []).filter(
+      (ref) => ref.id !== id,
+    ),
+  };
+}
+
 async function runTriage(
   req: StrategyRequest,
   unchecked: PlanTask[],
@@ -212,7 +252,15 @@ async function runTriage(
       description: "strategy triage: serial vs escalate-to-planner",
       model: req.roles.planner.model,
     });
+    const triageRef: AgentDisplayRef = {
+      id,
+      role: "triage",
+      label: "Triage \u00b7 Analyze plan dependencies",
+      startedAt: new Date().toISOString(),
+    };
+    req.updateState((prev) => addStrategyAgentPatch(prev, triageRef));
     const result = await req.subagents.waitFor(id, req.signal);
+    req.updateState((prev) => removeStrategyAgentPatch(prev, id));
     if (result.status !== "completed") {
       return {
         decision: "serial",
@@ -221,6 +269,7 @@ async function runTriage(
     }
     rawResult = result.result;
   } catch (err) {
+    req.updateState({ activeSubagentIds: [], activeAgentRefs: [] });
     const message = err instanceof Error ? err.message : String(err);
     return {
       decision: "serial",
@@ -331,7 +380,15 @@ async function runGraphPlanner(
       description: "graph planner: build task dependency graph",
       model: req.roles.planner.model,
     });
+    const plannerRef: AgentDisplayRef = {
+      id,
+      role: "planner",
+      label: "Planner \u00b7 Select implementation strategy",
+      startedAt: new Date().toISOString(),
+    };
+    req.updateState((prev) => addStrategyAgentPatch(prev, plannerRef));
     const result = await req.subagents.waitFor(id, req.signal);
+    req.updateState((prev) => removeStrategyAgentPatch(prev, id));
     if (result.status !== "completed") {
       return {
         mode: "serial",
@@ -342,6 +399,7 @@ async function runGraphPlanner(
     }
     rawResult = result.result;
   } catch (err) {
+    req.updateState({ activeSubagentIds: [], activeAgentRefs: [] });
     const message = err instanceof Error ? err.message : String(err);
     return {
       mode: "serial",

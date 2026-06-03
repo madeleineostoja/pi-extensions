@@ -15,6 +15,7 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 /implement cleanup
 /implement config
 /implement init-agents
+/implement view
 ```
 
 Plan paths must not contain spaces. Use a symlink or rename if needed.
@@ -69,6 +70,8 @@ Global config lives at:
 If a role model is omitted, the current session model is used. If a role type is omitted, `general-purpose` is used for implementer and reviewer, and `Explore` is used for the planner. A common setup pairs a cheaper implementer model with a frontier reviewer model, optionally using the bundled `review` subagent type.
 
 Run `/implement init-agents` to scaffold the bundled global `review` agent at `~/.pi/agent/agents/review.md`. The command always asks for confirmation and fails rather than overwriting an existing global `review` agent. Point the reviewer at it with:
+
+Run `/implement view` to inspect active pi-implement subagents. With one active agent it prints fallback instructions to open the agent via `/agents`; with multiple agents it prompts you to pick by pretty label.
 
 ```json
 {

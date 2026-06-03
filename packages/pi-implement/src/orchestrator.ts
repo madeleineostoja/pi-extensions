@@ -19,7 +19,12 @@ import {
 import type { CommandResult, GitClient } from "./git.js";
 import type { SubagentClient } from "./subagents.js";
 import type { EffectiveRoles } from "./config.js";
-import type { RunState, ParallelTaskState } from "./status.js";
+import type {
+  RunState,
+  ParallelTaskState,
+  AgentDisplayRef,
+  StatePatch,
+} from "./status.js";
 import {
   fallbackCommitMessage,
   isValidCommitMessage,
@@ -72,7 +77,7 @@ export type OrchestratorDeps = {
   maxConcurrency?: number;
   runId?: string;
   paths?: StatePaths;
-  updateState(state: Partial<RunState>): void;
+  updateState(state: StatePatch): void;
   shouldStop(): boolean;
   signal?: AbortSignal;
   verifyCommand?: string;
@@ -309,6 +314,7 @@ async function runParallelImplementation(
         task.taskCommitSha = result.outcome.taskCommitSha;
         task.approvedCommitMessage = result.outcome.commitMessage;
         task.activeAgentIds = [];
+        task.activeAgentRefs = [];
         if (deps.paths) {
           const existing = readTaskJson(deps.paths, result.taskId);
           writeTaskJson(deps.paths, result.taskId, {
@@ -328,6 +334,7 @@ async function runParallelImplementation(
         task.status = "failed";
         task.lastReason = result.outcome.reason;
         task.activeAgentIds = [];
+        task.activeAgentRefs = [];
         if (deps.paths) {
           const existing = readTaskJson(deps.paths, result.taskId);
           writeTaskJson(deps.paths, result.taskId, {
@@ -341,6 +348,7 @@ async function runParallelImplementation(
         // stopped
         task.status = "stopped";
         task.activeAgentIds = [];
+        task.activeAgentRefs = [];
         if (deps.paths) {
           const existing = readTaskJson(deps.paths, result.taskId);
           writeTaskJson(deps.paths, result.taskId, {
@@ -395,7 +403,9 @@ async function runParallelImplementation(
         ? "done"
         : (sched.phase as RunState["phase"]),
     landedCount,
+    activeSubagentId: undefined,
     activeSubagentIds: [],
+    activeAgentRefs: [],
   });
 
   if (hasFailure) {
@@ -472,6 +482,7 @@ async function launchTaskWorker(
       branchName,
       baseSha,
       planArtifacts,
+      schedulerTask: task,
     });
 
     if (deps.shouldStop() || deps.signal?.aborted) {
@@ -624,6 +635,7 @@ async function landApprovedTask(
       deps,
       taskId,
       planArtifacts,
+      task,
     );
     if (!validation.ok) {
       return await failForRework("validation", validation.reason);
@@ -786,6 +798,7 @@ async function validateIntegratedTask(
   deps: OrchestratorDeps,
   taskId: string,
   planArtifacts: string[],
+  schedulerTask?: SchedulerTask,
 ): Promise<ValidationResult> {
   const commands = await resolveValidationCommands(deps);
   if (commands.length > 0) {
@@ -817,6 +830,7 @@ async function validateIntegratedTask(
     deps,
     taskId,
     planArtifacts,
+    schedulerTask,
   );
   if (!verdict.ok) {
     return verdict;
@@ -964,6 +978,7 @@ async function runIntegrationReviewFallback(
   deps: OrchestratorDeps,
   taskId: string,
   planArtifacts: string[],
+  schedulerTask?: SchedulerTask,
 ): Promise<ValidationResult> {
   const diff = await deps.git.stagedDiff();
   const prompt = `Review this integrated parallel task diff on the main checkout.
@@ -992,7 +1007,18 @@ Or:
     description: `integration review ${taskId}`,
     model: deps.roles.reviewer.model,
   });
-  const result = await deps.subagents.waitFor(id, deps.signal);
+  const ref: AgentDisplayRef = {
+    id,
+    role: "reviewer",
+    label: `Reviewer · Integration review · ${taskId}`,
+    startedAt: new Date().toISOString(),
+  };
+  setSchedulerActiveAgent(schedulerTask, ref);
+  deps.updateState((prev) => addActiveAgentPatch(prev, ref));
+  const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
+    clearSchedulerActiveAgent(schedulerTask, id);
+    deps.updateState((prev) => removeActiveAgentPatch(prev, id));
+  });
   if (result.status !== "completed") {
     return {
       ok: false,
@@ -1096,18 +1122,90 @@ function updateParallelState(
       worktreePath: task.worktreePath,
       landedCommitSha: task.landedCommitSha,
       activeAgentIds: task.activeAgentIds,
+      activeAgentRefs: task.activeAgentRefs,
     });
     for (const id of task.activeAgentIds) {
       activeAgentIds.push(id);
     }
   }
 
+  const activeAgentRefs = [...sched.tasks.values()].flatMap((task) =>
+    task.activeAgentRefs.filter((ref) => activeAgentIds.includes(ref.id)),
+  );
+
   deps.updateState({
     tasks,
+    activeSubagentId: activeAgentIds.at(-1),
     activeSubagentIds: activeAgentIds,
+    activeAgentRefs,
     landedCount,
     totalCount: sched.tasks.size,
   });
+}
+
+function setSchedulerActiveAgent(
+  task: SchedulerTask | undefined,
+  ref: AgentDisplayRef,
+): void {
+  if (!task) {
+    return;
+  }
+  task.activeAgentIds = [
+    ...task.activeAgentIds.filter((id) => id !== ref.id),
+    ref.id,
+  ];
+  task.activeAgentRefs = [
+    ...task.activeAgentRefs.filter((existing) => existing.id !== ref.id),
+    ref,
+  ];
+}
+
+function clearSchedulerActiveAgent(
+  task: SchedulerTask | undefined,
+  id: string,
+): void {
+  if (!task) {
+    return;
+  }
+  task.activeAgentIds = task.activeAgentIds.filter(
+    (existing) => existing !== id,
+  );
+  task.activeAgentRefs = task.activeAgentRefs.filter((ref) => ref.id !== id);
+}
+
+function addActiveAgentPatch(
+  prev: RunState,
+  ref: AgentDisplayRef,
+): Partial<RunState> {
+  return {
+    activeSubagentId: ref.id,
+    activeSubagentIds: [
+      ...(prev.activeSubagentIds ?? []).filter((id) => id !== ref.id),
+      ref.id,
+    ],
+    activeAgentRefs: [
+      ...(prev.activeAgentRefs ?? []).filter(
+        (existing) => existing.id !== ref.id,
+      ),
+      ref,
+    ],
+  };
+}
+
+function removeActiveAgentPatch(prev: RunState, id: string): Partial<RunState> {
+  const activeSubagentIds = (prev.activeSubagentIds ?? []).filter(
+    (existing) => existing !== id,
+  );
+  return {
+    activeSubagentId:
+      prev.activeSubagentId === id
+        ? activeSubagentIds.at(-1)
+        : prev.activeSubagentId,
+    activeSubagentIds,
+    activeAgentRefs: (prev.activeAgentRefs ?? []).filter(
+      (ref) => ref.id !== id,
+    ),
+  };
 }
 
 function taskToJson(task: SchedulerTask): TaskJson {
@@ -1142,6 +1240,7 @@ async function runTaskWorker(args: {
   branchName: string;
   baseSha: string;
   planArtifacts: string[];
+  schedulerTask?: SchedulerTask;
 }): Promise<boolean> {
   const {
     deps,
@@ -1153,6 +1252,7 @@ async function runTaskWorker(args: {
     branchName,
     baseSha,
     planArtifacts,
+    schedulerTask,
   } = args;
 
   let feedback: RetryFeedback | undefined;
@@ -1192,7 +1292,18 @@ async function runTaskWorker(args: {
       description: `implement task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
       model: deps.roles.implementer.model,
     });
-    deps.updateState({ activeSubagentId: implementerId });
+    const implementerRef: AgentDisplayRef = {
+      id: implementerId,
+      role: "implementer",
+      label: `Task ${task.index}/${plan.tasks.length} implementer \u00b7 ${shortTask(task.text)}`,
+      startedAt: new Date().toISOString(),
+      taskId,
+      taskIndex: task.index,
+      taskTotal: plan.tasks.length,
+      taskTitle: shortTask(task.text),
+    };
+    setSchedulerActiveAgent(schedulerTask, implementerRef);
+    deps.updateState((prev) => addActiveAgentPatch(prev, implementerRef));
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
         id: taskId,
@@ -1213,7 +1324,8 @@ async function runTaskWorker(args: {
       implementerId,
       deps.signal,
     );
-    deps.updateState({ activeSubagentId: undefined });
+    clearSchedulerActiveAgent(schedulerTask, implementerId);
+    deps.updateState((prev) => removeActiveAgentPatch(prev, implementerId));
 
     if (implementation.status === "stopped") {
       throw new StoppedError();
@@ -1331,6 +1443,9 @@ async function runTaskWorker(args: {
       worktreePath: effectiveWorktreePath,
       implementer: parsed.result,
     });
+    if (schedulerTask) {
+      schedulerTask.status = "reviewing";
+    }
     deps.updateState({ phase: "reviewing", activeSubagentId: undefined });
 
     if (deps.paths) {
@@ -1343,7 +1458,18 @@ async function runTaskWorker(args: {
       description: `review task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
       model: deps.roles.reviewer.model,
     });
-    deps.updateState({ activeSubagentId: reviewerId });
+    const reviewerRef: AgentDisplayRef = {
+      id: reviewerId,
+      role: "reviewer",
+      label: `Task ${task.index}/${plan.tasks.length} reviewer \u00b7 ${shortTask(task.text)}`,
+      startedAt: new Date().toISOString(),
+      taskId,
+      taskIndex: task.index,
+      taskTotal: plan.tasks.length,
+      taskTitle: shortTask(task.text),
+    };
+    setSchedulerActiveAgent(schedulerTask, reviewerRef);
+    deps.updateState((prev) => addActiveAgentPatch(prev, reviewerRef));
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
         id: taskId,
@@ -1360,7 +1486,8 @@ async function runTaskWorker(args: {
       });
     }
     const review = await deps.subagents.waitFor(reviewerId, deps.signal);
-    deps.updateState({ activeSubagentId: undefined });
+    clearSchedulerActiveAgent(schedulerTask, reviewerId);
+    deps.updateState((prev) => removeActiveAgentPatch(prev, reviewerId));
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
         id: taskId,

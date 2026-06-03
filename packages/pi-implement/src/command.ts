@@ -30,8 +30,12 @@ import {
   BlockedError,
   StoppedError,
 } from "./orchestrator.js";
-import type { RunState } from "./status.js";
-import { formatFooterStatus, formatRunStatus } from "./status.js";
+import type { RunState, AgentDisplayRef, StatePatch } from "./status.js";
+import {
+  formatFooterStatus,
+  formatRunStatus,
+  formatWidgetLines,
+} from "./status.js";
 import { parseCommand } from "./parser.js";
 import { selectStrategy } from "./strategy.js";
 import type { ExecutionMode } from "./parser.js";
@@ -55,6 +59,7 @@ import {
 } from "./state.js";
 
 const STATUS_KEY = "pi-implement.status";
+const WIDGET_KEY = "pi-implement.progress";
 
 type ActiveRun = {
   state: RunState;
@@ -89,6 +94,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
   const setState = (ctx: ExtensionCommandContext, patch: Partial<RunState>) => {
     active.state = { ...active.state, ...patch };
     syncStatus(ctx, active.state);
+    syncWidget(ctx, active.state);
   };
 
   pi.on("session_shutdown", async (_event, ctx) => {
@@ -105,6 +111,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
     }
     if (ctx.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
+      ctx.ui.setWidget(WIDGET_KEY, undefined);
     }
   });
 
@@ -197,7 +204,43 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           ctx.ui.notify("pi-implement stopped.", "warning");
           if (ctx.hasUI) {
             ctx.ui.setStatus(STATUS_KEY, undefined);
+            ctx.ui.setWidget(WIDGET_KEY, undefined);
           }
+          return;
+        }
+
+        if (parsed.name === "view") {
+          const refs = activeAgentRefs(active.state);
+          if (refs.length === 0) {
+            ctx.ui.notify(
+              `pi-implement view: no active subagents\n\n${formatRunStatus(active.state)}`,
+              "info",
+            );
+            return;
+          }
+          if (refs.length === 1) {
+            const ref = refs[0];
+            ctx.ui.notify(
+              `Active pi-implement agents:\n- ${ref.label}\n  agent id: ${ref.id}\n\nOpen /agents \u2192 Running agents \u2192 select "${ref.label}" or agent id ${ref.id}.`,
+              "info",
+            );
+            return;
+          }
+          const selected = await ctx.ui.select(
+            "Select an active pi-implement agent to view",
+            refs.map((r) => r.label),
+          );
+          if (!selected) {
+            return;
+          }
+          const ref = refs.find((r) => r.label === selected);
+          if (!ref) {
+            return;
+          }
+          ctx.ui.notify(
+            `Active pi-implement agents:\n- ${ref.label}\n  agent id: ${ref.id}\n\nOpen /agents \u2192 Running agents \u2192 select "${ref.label}" or agent id ${ref.id}.`,
+            "info",
+          );
           return;
         }
 
@@ -529,15 +572,17 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
         },
       );
 
-      const updateState = (patch: Partial<RunState>) => {
+      const updateState = (patch: StatePatch) => {
         if (!isCurrentRun()) {
           return;
         }
-        if ("activeSubagentIds" in patch) {
-          active.activeSubagentIds = patch.activeSubagentIds ?? [];
+        const resolved =
+          typeof patch === "function" ? patch(active.state) : patch;
+        if ("activeSubagentIds" in resolved) {
+          active.activeSubagentIds = resolved.activeSubagentIds ?? [];
         }
         const prevState = active.state;
-        setState(ctx, patch);
+        setState(ctx, resolved);
         for (const line of diffProgress(prevState, active.state, taskTitles)) {
           pi.sendMessage({
             customType: "pi-implement-progress",
@@ -549,7 +594,7 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
         if (current) {
           writeRunJson(paths, {
             ...current,
-            currentPhase: patch.phase ?? current.currentPhase,
+            currentPhase: resolved.phase ?? current.currentPhase,
             updatedAt: new Date().toISOString(),
           });
         }
@@ -571,6 +616,7 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
           requestedMode: mode,
           requestedConcurrency,
           signal: abortController.signal,
+          updateState,
         });
         throwIfCommandStopped(isCurrentRun, active, abortController);
         appendEvent(paths, {
@@ -627,6 +673,7 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
           ctx.ui.notify("pi-implement done.", "info");
           if (ctx.hasUI) {
             ctx.ui.setStatus(STATUS_KEY, undefined);
+            ctx.ui.setWidget(WIDGET_KEY, undefined);
           }
           // Auto-clean successful runs
           if (paths) {
@@ -686,6 +733,7 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
           }
           if (ctx.hasUI) {
             ctx.ui.setStatus(STATUS_KEY, undefined);
+            ctx.ui.setWidget(WIDGET_KEY, undefined);
           }
         });
     },
@@ -763,6 +811,34 @@ function syncStatus(ctx: ExtensionCommandContext, state: RunState): void {
   }
   const text = formatFooterStatus(state);
   ctx.ui.setStatus(STATUS_KEY, text || undefined);
+}
+
+function syncWidget(ctx: ExtensionCommandContext, state: RunState): void {
+  if (!ctx.hasUI) {
+    return;
+  }
+  const lines = formatWidgetLines(state);
+  ctx.ui.setWidget(WIDGET_KEY, lines.length > 0 ? lines : undefined);
+}
+
+function activeAgentRefs(state: RunState): AgentDisplayRef[] {
+  const refs = (state.activeAgentRefs ?? []).filter((ref) =>
+    state.activeSubagentIds === undefined
+      ? true
+      : state.activeSubagentIds.includes(ref.id),
+  );
+  const activeIds =
+    state.activeSubagentIds ??
+    (state.activeSubagentId ? [state.activeSubagentId] : []);
+  const missingRefs = activeIds
+    .filter((id) => !refs.some((ref) => ref.id === id))
+    .map((id) => ({
+      id,
+      role: "implementer" as const,
+      label: `Subagent ${id}`,
+      startedAt: new Date(0).toISOString(),
+    }));
+  return [...refs, ...missingRefs];
 }
 
 function modelExists(ctx: ExtensionCommandContext, ref: string): boolean {

@@ -14,8 +14,10 @@ type FakeContext = {
   ui: {
     notifications: Array<{ message: string; level: string }>;
     statuses: Array<{ key: string; text: string | undefined }>;
+    widgets: Array<{ key: string; lines: string[] | undefined }>;
     notify(message: string, level: string): void;
     setStatus(key: string, text: string | undefined): void;
+    setWidget(key: string, lines: string[] | undefined): void;
   };
   model: { provider: string; id: string };
   modelRegistry: { find(provider: string, id: string): unknown };
@@ -44,11 +46,15 @@ function setup() {
     ui: {
       notifications: [],
       statuses: [],
+      widgets: [],
       notify(message: string, level: string) {
         this.notifications.push({ message, level });
       },
       setStatus(key: string, text: string | undefined) {
         this.statuses.push({ key, text });
+      },
+      setWidget(key: string, lines: string[] | undefined) {
+        this.widgets.push({ key, lines });
       },
     },
   };
@@ -91,6 +97,15 @@ describe("/implement command", () => {
     await handler("--parallel abc plan.md", ctx);
     expect(ctx.ui.notifications[0]?.message).toContain("positive integer");
     expect(ctx.ui.notifications[0]?.level).toBe("warning");
+  });
+
+  it("shows view fallback with no active agents", async () => {
+    const { handler, ctx } = setup();
+    await handler("view", ctx);
+    expect(ctx.ui.notifications[0]?.message).toContain(
+      "pi-implement view: no active subagents",
+    );
+    expect(ctx.ui.notifications[0]?.level).toBe("info");
   });
 
   it("inspect reports no run when idle and no history", async () => {

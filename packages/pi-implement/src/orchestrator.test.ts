@@ -170,6 +170,7 @@ describe("runImplementation", () => {
       { status: "completed", result: GOOD_REVIEW },
     ];
     const states: Partial<RunState>[] = [];
+    let currentState: RunState = { phase: "idle" };
 
     await runImplementation({
       git,
@@ -180,7 +181,12 @@ describe("runImplementation", () => {
         reviewer: { model: "p/m", type: "general-purpose" },
         planner: { model: "p/m", type: "Explore" },
       },
-      updateState: (state) => states.push(state),
+      updateState: (patch) => {
+        const resolved =
+          typeof patch === "function" ? patch(currentState) : patch;
+        currentState = { ...currentState, ...resolved };
+        states.push(resolved);
+      },
       shouldStop: () => false,
     });
 
@@ -190,6 +196,30 @@ describe("runImplementation", () => {
       "general-purpose",
       "general-purpose",
     ]);
+    expect(states).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          activeSubagentIds: ["agent-1"],
+          activeAgentRefs: [
+            expect.objectContaining({
+              id: "agent-1",
+              role: "implementer",
+              label: expect.stringContaining("Task 1/1 implementer"),
+            }),
+          ],
+        }),
+        expect.objectContaining({
+          activeSubagentIds: ["agent-2"],
+          activeAgentRefs: [
+            expect.objectContaining({
+              id: "agent-2",
+              role: "reviewer",
+              label: expect.stringContaining("Task 1/1 reviewer"),
+            }),
+          ],
+        }),
+      ]),
+    );
     expect(states.at(-1)).toMatchObject({ phase: "done" });
   });
 
