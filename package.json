@@ -24,7 +24,8 @@
       "./packages/pi-footer/src/index.ts",
       "./packages/pi-auto-name/src/index.ts",
       "./packages/pi-implement/src/index.ts",
-      "./packages/pi-codex-usage/src/index.ts"
+      "./packages/pi-codex-usage/src/index.ts",
+      "./packages/pi-model-handoff/src/index.ts"
     ]
   },
   "scripts": {
