@@ -54,15 +54,45 @@ function makePolicyManager(policy: Policy): PolicyManager {
   };
 }
 
-function makeUI(): {
+function makeUI(dialog?: {
+  selectReturns?: (string | undefined)[];
+  inputReturns?: (string | undefined)[];
+  confirmReturns?: boolean[];
+}): {
   ui: SubcommandContext["ui"];
   messages: Array<{ text: string; level?: string }>;
+  selectCalls: Array<{ title: string; options: string[] }>;
+  inputCalls: Array<{ title: string; placeholder?: string }>;
+  confirmCalls: Array<{ title: string; message: string }>;
 } {
   const messages: Array<{ text: string; level?: string }> = [];
+  const selectCalls: Array<{ title: string; options: string[] }> = [];
+  const inputCalls: Array<{ title: string; placeholder?: string }> = [];
+  const confirmCalls: Array<{ title: string; message: string }> = [];
+
+  let selectIdx = 0;
+  let inputIdx = 0;
+  let confirmIdx = 0;
+
   const ui: SubcommandContext["ui"] = {
     notify: (text, level) => messages.push({ text, level }),
+    select: async (title, options) => {
+      selectCalls.push({ title, options });
+      const result = dialog?.selectReturns?.[selectIdx++];
+      return result === undefined ? undefined : result;
+    },
+    input: async (title, placeholder) => {
+      inputCalls.push({ title, placeholder });
+      const result = dialog?.inputReturns?.[inputIdx++];
+      return result === undefined ? undefined : result;
+    },
+    confirm: async (title, message) => {
+      confirmCalls.push({ title, message });
+      const result = dialog?.confirmReturns?.[confirmIdx++];
+      return result === undefined ? false : result;
+    },
   };
-  return { ui, messages };
+  return { ui, messages, selectCalls, inputCalls, confirmCalls };
 }
 
 function makeEvents() {
@@ -430,7 +460,7 @@ describe("getArgumentCompletions — tab completion", () => {
   it("suggests top-level commands and filters by prefix", () => {
     const pm = makePolicyManager(makePolicy());
     expect(completionValues(getArgumentCompletions("", pm))).toEqual(
-      expect.arrayContaining(["status", "allow", "revoke"]),
+      expect.arrayContaining(["status", "summary", "allow", "revoke"]),
     );
     const filtered = completionValues(getArgumentCompletions("st", pm));
     expect(filtered).toContain("status");
@@ -477,53 +507,66 @@ describe("dispatch — subcommand routing", () => {
     cmds = createSlashCommands(createAuditPipeline());
   });
 
-  it("empty args → summary", () => {
-    const { ui, messages } = makeUI();
+  it("empty args → opens menu", async () => {
+    const { ui, messages, selectCalls } = makeUI({
+      selectReturns: ["Show policy summary"],
+    });
     const ctx = makeCtx({ ui });
-    cmds.dispatch("", ctx);
+    await cmds.dispatch("", ctx);
+    expect(selectCalls[0].title).toBe("Sandbox");
+    expect(selectCalls[0].options).toContain("Status");
+    expect(selectCalls[0].options).toContain("Show policy summary");
+    expect(selectCalls[0].options).toContain("Explain path/host");
     expect(messages[0].text).toMatch(/Sandbox Policy Summary/);
   });
 
-  it("'status' → one-liner", () => {
+  it("'summary' → prints summary", async () => {
     const { ui, messages } = makeUI();
     const ctx = makeCtx({ ui });
-    cmds.dispatch("status", ctx);
+    await cmds.dispatch("summary", ctx);
+    expect(messages[0].text).toMatch(/Sandbox Policy Summary/);
+  });
+
+  it("'status' → one-liner", async () => {
+    const { ui, messages } = makeUI();
+    const ctx = makeCtx({ ui });
+    await cmds.dispatch("status", ctx);
     expect(messages[0].text).toMatch(/sandbox:/i);
     expect(messages[0].text).not.toMatch(/\n/);
   });
 
-  it("'off' → disables sandbox", () => {
+  it("'off' → disables sandbox", async () => {
     const ctx = makeCtx();
-    cmds.dispatch("off", ctx);
+    await cmds.dispatch("off", ctx);
     expect(cmds.getSessionState().sandboxOff).toBe(true);
   });
 
-  it("'network off' → disables network", () => {
+  it("'network off' → disables network", async () => {
     const ctx = makeCtx();
-    cmds.dispatch("network off", ctx);
+    await cmds.dispatch("network off", ctx);
     expect(cmds.getSessionState().networkOff).toBe(true);
   });
 
-  it("'allow github.com' → session grant", () => {
+  it("'allow github.com' → session grant", async () => {
     const ctx = makeCtx();
-    cmds.dispatch("allow github.com", ctx);
+    await cmds.dispatch("allow github.com", ctx);
     expect(cmds.getSessionState().sessionAllowedHosts.has("github.com")).toBe(
       true,
     );
   });
 
-  it("'allow 192.168.0.0/24' → error, no state change", () => {
+  it("'allow 192.168.0.0/24' → error, no state change", async () => {
     const { ui, messages } = makeUI();
     const ctx = makeCtx({ ui });
-    cmds.dispatch("allow 192.168.0.0/24", ctx);
+    await cmds.dispatch("allow 192.168.0.0/24", ctx);
     expect(messages[0].level).toBe("error");
     expect(cmds.getSessionState().sessionAllowedHosts.size).toBe(0);
   });
 
-  it("unknown subcommand → error message", () => {
+  it("unknown subcommand → error message", async () => {
     const { ui, messages } = makeUI();
     const ctx = makeCtx({ ui });
-    cmds.dispatch("notacommand", ctx);
+    await cmds.dispatch("notacommand", ctx);
     expect(messages[0].level).toBe("error");
   });
 });
@@ -783,5 +826,277 @@ describe("registerSandboxCommand", () => {
     await capturedHandler!("status", mockCtx);
 
     expect(notifyMock).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Menu handler
+// ---------------------------------------------------------------------------
+
+describe("handleMenu", () => {
+  let cmds: ReturnType<typeof createSlashCommands>;
+
+  beforeEach(() => {
+    cmds = createSlashCommands(createAuditPipeline());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("cancelling the top-level select makes no state changes and no error", async () => {
+    const { ui, messages, selectCalls } = makeUI({
+      selectReturns: [undefined],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(selectCalls).toHaveLength(1);
+    expect(selectCalls[0].title).toBe("Sandbox");
+    expect(messages).toHaveLength(0);
+  });
+
+  it("menu routes 'Status' to handleStatus", async () => {
+    const { ui, messages } = makeUI({
+      selectReturns: ["Status"],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(messages[0].text).toMatch(/sandbox:/i);
+  });
+
+  it("menu routes 'Show policy summary' to handleSummary", async () => {
+    const { ui, messages } = makeUI({
+      selectReturns: ["Show policy summary"],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(messages[0].text).toMatch(/Sandbox Policy Summary/);
+  });
+
+  it("menu routes 'Explain path/host' via input", async () => {
+    const { ui, messages, inputCalls } = makeUI({
+      selectReturns: ["Explain path/host"],
+      inputReturns: ["/tmp/test.txt"],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(inputCalls).toHaveLength(1);
+    expect(inputCalls[0].title).toBe("Explain sandbox decision");
+    expect(messages[0].text).toMatch(/would be allowed/);
+  });
+
+  it("cancelling 'Explain path/host' input makes no changes and no error", async () => {
+    const { ui, messages, inputCalls } = makeUI({
+      selectReturns: ["Explain path/host"],
+      inputReturns: [undefined],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(inputCalls).toHaveLength(1);
+    expect(messages).toHaveLength(0);
+  });
+
+  it("empty 'Explain path/host' input makes no changes and no error", async () => {
+    const { ui, messages, inputCalls } = makeUI({
+      selectReturns: ["Explain path/host"],
+      inputReturns: ["   "],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(inputCalls).toHaveLength(1);
+    expect(messages).toHaveLength(0);
+  });
+
+  it("menu routes 'Allow host for this session' via input", async () => {
+    const { ui, inputCalls } = makeUI({
+      selectReturns: ["Allow host for this session"],
+      inputReturns: ["example.com"],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(inputCalls).toHaveLength(1);
+    expect(inputCalls[0].title).toBe("Allow host for this session");
+    expect(cmds.getSessionState().sessionAllowedHosts.has("example.com")).toBe(
+      true,
+    );
+  });
+
+  it("cancelling 'Allow host for this session' input makes no changes and no error", async () => {
+    const { ui, messages, inputCalls } = makeUI({
+      selectReturns: ["Allow host for this session"],
+      inputReturns: [undefined],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(inputCalls).toHaveLength(1);
+    expect(messages).toHaveLength(0);
+    expect(cmds.getSessionState().sessionAllowedHosts.size).toBe(0);
+  });
+
+  it("empty 'Allow host for this session' input makes no changes and no error", async () => {
+    const { ui, messages, inputCalls } = makeUI({
+      selectReturns: ["Allow host for this session"],
+      inputReturns: ["   "],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(inputCalls).toHaveLength(1);
+    expect(messages).toHaveLength(0);
+    expect(cmds.getSessionState().sessionAllowedHosts.size).toBe(0);
+  });
+
+  it("menu routes 'Revoke session host' via select when hosts exist", async () => {
+    cmds.handleAllow(makeCtx(), ["host-a.com", "host-b.com"], false);
+    const state = cmds.getSessionState();
+    expect(state.sessionAllowedHosts.size).toBe(2);
+
+    const { ui, selectCalls } = makeUI({
+      selectReturns: ["Revoke session host", "host-a.com"],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(selectCalls).toHaveLength(2);
+    expect(selectCalls[1].title).toBe("Revoke session host");
+    expect(selectCalls[1].options).toEqual(
+      expect.arrayContaining(["host-a.com", "host-b.com"]),
+    );
+    expect(cmds.getSessionState().sessionAllowedHosts.has("host-a.com")).toBe(
+      false,
+    );
+    expect(cmds.getSessionState().sessionAllowedHosts.has("host-b.com")).toBe(
+      true,
+    );
+  });
+
+  it("'Revoke session host' notifies when no session hosts exist", async () => {
+    const { ui, messages } = makeUI({
+      selectReturns: ["Revoke session host"],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(messages[0].text).toMatch(/no session grants to revoke/i);
+  });
+
+  it("cancelling 'Revoke session host' select makes no changes and no error", async () => {
+    cmds.handleAllow(makeCtx(), ["host-a.com"], false);
+    const { ui, messages } = makeUI({
+      selectReturns: ["Revoke session host", undefined],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(cmds.getSessionState().sessionAllowedHosts.has("host-a.com")).toBe(
+      true,
+    );
+    expect(messages).toHaveLength(0);
+  });
+
+  it("menu disables network filtering via confirm", async () => {
+    const { ui, confirmCalls } = makeUI({
+      selectReturns: ["Disable network filtering this session"],
+      confirmReturns: [true],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(confirmCalls).toHaveLength(1);
+    expect(cmds.getSessionState().networkOff).toBe(true);
+  });
+
+  it("menu re-enables network filtering via confirm when already off", async () => {
+    const { ui: preUi } = makeUI();
+    cmds.handleNetworkOff(makeCtx({ ui: preUi }));
+    expect(cmds.getSessionState().networkOff).toBe(true);
+
+    const { ui, confirmCalls } = makeUI({
+      selectReturns: ["Re-enable network filtering"],
+      confirmReturns: [true],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(confirmCalls).toHaveLength(1);
+    expect(cmds.getSessionState().networkOff).toBe(false);
+  });
+
+  it("declining network toggle confirm makes no changes and no error", async () => {
+    const { ui, messages, confirmCalls } = makeUI({
+      selectReturns: ["Disable network filtering this session"],
+      confirmReturns: [false],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(confirmCalls).toHaveLength(1);
+    expect(cmds.getSessionState().networkOff).toBe(false);
+    expect(messages).toHaveLength(0);
+  });
+
+  it("menu disables sandbox via confirm", async () => {
+    const { ui, confirmCalls } = makeUI({
+      selectReturns: ["Disable sandbox this session"],
+      confirmReturns: [true],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(confirmCalls).toHaveLength(1);
+    expect(cmds.getSessionState().sandboxOff).toBe(true);
+  });
+
+  it("menu re-enables sandbox via confirm when already off", async () => {
+    const { ui: preUi } = makeUI();
+    cmds.handleOff(makeCtx({ ui: preUi }));
+    expect(cmds.getSessionState().sandboxOff).toBe(true);
+
+    const { ui, confirmCalls } = makeUI({
+      selectReturns: ["Re-enable sandbox"],
+      confirmReturns: [true],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(confirmCalls).toHaveLength(1);
+    expect(cmds.getSessionState().sandboxOff).toBe(false);
+  });
+
+  it("declining sandbox toggle confirm makes no changes and no error", async () => {
+    const { ui, messages, confirmCalls } = makeUI({
+      selectReturns: ["Disable sandbox this session"],
+      confirmReturns: [false],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(confirmCalls).toHaveLength(1);
+    expect(cmds.getSessionState().sandboxOff).toBe(false);
+    expect(messages).toHaveLength(0);
+  });
+
+  it("menu routes 'Reload config' via confirm", async () => {
+    const { ui, messages, confirmCalls } = makeUI({
+      selectReturns: ["Reload config"],
+      confirmReturns: [true],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(confirmCalls).toHaveLength(1);
+    expect(messages[0].text).toMatch(/reloaded/i);
+  });
+
+  it("declining 'Reload config' confirm makes no changes and no error", async () => {
+    const { ui, messages, confirmCalls } = makeUI({
+      selectReturns: ["Reload config"],
+      confirmReturns: [false],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    expect(confirmCalls).toHaveLength(1);
+    expect(messages).toHaveLength(0);
+  });
+
+  it("menu does not include persisted flows", async () => {
+    const { ui, selectCalls } = makeUI({
+      selectReturns: [undefined],
+    });
+    const ctx = makeCtx({ ui });
+    await cmds.handleMenu(ctx);
+    const options = selectCalls[0].options;
+    expect(options).not.toContain("Allow host persistently");
+    expect(options).not.toContain("Revoke persisted host");
+    expect(options).not.toContain(expect.stringMatching(/persist/i));
   });
 });

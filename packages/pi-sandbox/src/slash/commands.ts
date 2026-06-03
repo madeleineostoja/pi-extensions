@@ -134,7 +134,7 @@ function getUserConfigPath(): string {
 // ---------------------------------------------------------------------------
 
 export type SubcommandContext = {
-  ui: Pick<ExtensionUIContext, "notify">;
+  ui: Pick<ExtensionUIContext, "notify" | "select" | "input" | "confirm">;
   policyManager: PolicyManager;
   cwd: string;
   events?: EventsTarget;
@@ -191,6 +191,7 @@ export function parseArgs(rawArgs: string): ParsedArgs {
 
 const SUBCOMMANDS = [
   "status",
+  "summary",
   "reload",
   "why",
   "allow",
@@ -279,6 +280,7 @@ export type SlashCommandsInstance = {
   handleNetworkOn: (ctx: SubcommandContext) => void;
   handleOff: (ctx: SubcommandContext) => void;
   handleOn: (ctx: SubcommandContext) => void;
+  handleMenu: (ctx: SubcommandContext) => Promise<void>;
   dispatch: (rawArgs: string, ctx: SubcommandContext) => Promise<void>;
   registerSandboxCommand: (
     pi: ExtensionAPI,
@@ -625,6 +627,127 @@ export function createSlashCommands(
     notifySessionChange();
   }
 
+  async function handleMenu(ctx: SubcommandContext): Promise<void> {
+    const s = getSessionState();
+
+    const networkLabel = s.networkOff
+      ? "Re-enable network filtering"
+      : "Disable network filtering this session";
+
+    const sandboxLabel = s.sandboxOff
+      ? "Re-enable sandbox"
+      : "Disable sandbox this session";
+
+    const choice = await ctx.ui.select("Sandbox", [
+      "Status",
+      "Show policy summary",
+      "Explain path/host",
+      "Allow host for this session",
+      "Revoke session host",
+      networkLabel,
+      sandboxLabel,
+      "Reload config",
+    ]);
+
+    if (choice === undefined) {
+      return;
+    }
+
+    switch (choice) {
+      case "Status":
+        handleStatus(ctx);
+        break;
+
+      case "Show policy summary":
+        handleSummary(ctx);
+        break;
+
+      case "Explain path/host": {
+        const target = await ctx.ui.input(
+          "Explain sandbox decision",
+          "path or host",
+        );
+        if (target === undefined || target.trim().length === 0) {
+          return;
+        }
+        await handleWhy(ctx, target.trim());
+        break;
+      }
+
+      case "Allow host for this session": {
+        const host = await ctx.ui.input(
+          "Allow host for this session",
+          "github.com",
+        );
+        if (host === undefined || host.trim().length === 0) {
+          return;
+        }
+        handleAllow(ctx, [host.trim()], false);
+        break;
+      }
+
+      case "Revoke session host": {
+        const hosts = [...s.sessionAllowedHosts];
+        if (hosts.length === 0) {
+          ctx.ui.notify("There are no session grants to revoke.");
+          return;
+        }
+        const selected = await ctx.ui.select("Revoke session host", hosts);
+        if (selected === undefined) {
+          return;
+        }
+        handleRevoke(ctx, selected, false);
+        break;
+      }
+
+      case networkLabel: {
+        const action = s.networkOff ? "re-enable" : "disable";
+        const confirmed = await ctx.ui.confirm(
+          `${action === "disable" ? "Disable" : "Re-enable"} network filtering`,
+          `Are you sure you want to ${action} network filtering for this session?`,
+        );
+        if (!confirmed) {
+          return;
+        }
+        if (s.networkOff) {
+          handleNetworkOn(ctx);
+        } else {
+          handleNetworkOff(ctx);
+        }
+        break;
+      }
+
+      case sandboxLabel: {
+        const action = s.sandboxOff ? "re-enable" : "disable";
+        const confirmed = await ctx.ui.confirm(
+          `${action === "disable" ? "Disable" : "Re-enable"} sandbox`,
+          `Are you sure you want to ${action} the sandbox for this session?`,
+        );
+        if (!confirmed) {
+          return;
+        }
+        if (s.sandboxOff) {
+          handleOn(ctx);
+        } else {
+          handleOff(ctx);
+        }
+        break;
+      }
+
+      case "Reload config": {
+        const confirmed = await ctx.ui.confirm(
+          "Reload config",
+          "Reloading may change the effective policy. Continue?",
+        );
+        if (!confirmed) {
+          return;
+        }
+        handleReload(ctx);
+        break;
+      }
+    }
+  }
+
   async function dispatch(
     rawArgs: string,
     ctx: SubcommandContext,
@@ -634,11 +757,15 @@ export function createSlashCommands(
 
     switch (subcommand) {
       case "":
-        handleSummary(ctx);
+        await handleMenu(ctx);
         break;
 
       case "status":
         handleStatus(ctx);
+        break;
+
+      case "summary":
+        handleSummary(ctx);
         break;
 
       case "reload":
@@ -727,6 +854,7 @@ export function createSlashCommands(
     handleNetworkOn,
     handleOff,
     handleOn,
+    handleMenu,
     dispatch,
     registerSandboxCommand,
   };
