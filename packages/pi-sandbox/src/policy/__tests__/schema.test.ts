@@ -182,7 +182,14 @@ describe("loadPolicy — darwin unanchored denyPattern warning", () => {
 
   it("darwin + unanchored pattern → ui.notify warning fires once per unanchored pattern", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, {
       fs: { denyPatterns: ["**/.env", "**/.secret"] },
     });
@@ -202,7 +209,14 @@ describe("loadPolicy — darwin unanchored denyPattern warning", () => {
 
   it("linux + unanchored pattern → no darwin-specific warning", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, {
       fs: { denyPatterns: ["**/.env"] },
     });
@@ -220,7 +234,14 @@ describe("loadPolicy — darwin unanchored denyPattern warning", () => {
 
   it("darwin + anchored pattern → no warning", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, {
       fs: { denyPatterns: ["<cwd>/**/.env", "~/.ssh/**"] },
     });
@@ -238,7 +259,14 @@ describe("loadPolicy — darwin unanchored denyPattern warning", () => {
 
   it("darwin + unanchored pattern warning message is actionable", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, {
       fs: { denyPatterns: ["**/.env"] },
     });

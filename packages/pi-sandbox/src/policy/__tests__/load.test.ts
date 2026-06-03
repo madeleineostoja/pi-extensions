@@ -159,7 +159,14 @@ describe("loadPolicy", () => {
 
   it("merges global config over defaults", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, { network: { mode: "always" } });
 
     const policy = loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
@@ -172,7 +179,14 @@ describe("loadPolicy", () => {
 
   it("merges project config over global config", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, { network: { mode: "always" } });
 
     const projectPath = path.join(tmpCwd, ".pi", "sandbox.json");
@@ -186,7 +200,14 @@ describe("loadPolicy", () => {
 
   it("array fields are replaced, not concatenated", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, { network: { allow: ["custom.example.com"] } });
 
     const policy = loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
@@ -197,7 +218,14 @@ describe("loadPolicy", () => {
 
   it("project config array overrides global config array", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, { network: { allow: ["global.example.com"] } });
 
     const projectPath = path.join(tmpCwd, ".pi", "sandbox.json");
@@ -231,9 +259,44 @@ describe("loadPolicy", () => {
     expect(policy.fs.allowWrite).toContain(tmpCwd);
   });
 
+  it("always allows reads and writes in the OS temp directory", () => {
+    const { loadPolicy } = createPolicyManager();
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
+    writeJson(globalPath, {
+      fs: { allowRead: ["/custom-read"], allowWrite: ["/custom-write"] },
+    });
+
+    const policy = loadPolicy(tmpCwd, { home: tmpHome });
+
+    expect(policy.fs.allowRead).toContain(os.tmpdir());
+    expect(policy.fs.allowWrite).toContain(os.tmpdir());
+  });
+
+  it("allows /tmp on macOS", () => {
+    const { loadPolicy } = createPolicyManager();
+    const policy = loadPolicy(tmpCwd, { home: tmpHome, platform: "darwin" });
+
+    expect(policy.fs.allowRead).toContain("/tmp");
+    expect(policy.fs.allowWrite).toContain("/tmp");
+  });
+
   it("falls back to defaults and emits error on invalid JSON", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeRaw(globalPath, "{ this is not json");
 
     const policy = loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
@@ -247,7 +310,14 @@ describe("loadPolicy", () => {
 
   it("falls back to defaults and emits error on schema violation", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, { unknownField: true });
 
     const policy = loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
@@ -261,7 +331,14 @@ describe("loadPolicy", () => {
 
   it("falls back to defaults and emits error on wrong type", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, { network: { mode: "bad-mode" } });
 
     const policy = loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
@@ -275,7 +352,14 @@ describe("loadPolicy", () => {
 
   it("invalid file that is a non-object JSON is rejected gracefully", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeRaw(globalPath, '"just a string"');
 
     const policy = loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
@@ -289,7 +373,14 @@ describe("loadPolicy", () => {
 
   it("emits warn when network.mode is 'always' and allow is empty", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, { network: { mode: "always", allow: [] } });
 
     loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
@@ -302,7 +393,14 @@ describe("loadPolicy", () => {
 
   it("does not warn when network.mode is 'always' and allow is non-empty", () => {
     const { loadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, {
       network: { mode: "always", allow: ["example.com"] },
     });
@@ -333,7 +431,14 @@ describe("reloadPolicy", () => {
 
   it("returns updated policy after file changes on disk", () => {
     const { reloadPolicy } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
 
     writeJson(globalPath, { network: { mode: "always" } });
     const first = reloadPolicy(tmpCwd, { home: tmpHome });
@@ -346,7 +451,14 @@ describe("reloadPolicy", () => {
 
   it("notifies subscribers on reload", () => {
     const { reloadPolicy, subscribe } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, { network: { mode: "always" } });
 
     const received: string[] = [];
@@ -366,7 +478,14 @@ describe("reloadPolicy", () => {
 
   it("subscriber receives the new policy after disk change", () => {
     const { reloadPolicy, subscribe } = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, { network: { mode: "always" } });
 
     let lastMode = "";
@@ -387,7 +506,14 @@ describe("reloadPolicy", () => {
   it("subscribers from separate manager instances do not cross-notify", () => {
     const managerA = createPolicyManager();
     const managerB = createPolicyManager();
-    const globalPath = path.join(tmpHome, ".pi", "agent", "sandbox.json");
+    const globalPath = path.join(
+      tmpHome,
+      ".pi",
+      "agent",
+      "extensions",
+      "pi-sandbox",
+      "config.json",
+    );
     writeJson(globalPath, { network: { mode: "always" } });
 
     const receivedA: string[] = [];

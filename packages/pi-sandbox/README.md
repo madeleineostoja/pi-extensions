@@ -98,14 +98,14 @@ Allowed hosts are exact names (`api.github.com`) or wildcard subdomains (`*.gith
 | `/sandbox on`                          | Re-enable sandbox enforcement                    |
 | `/sandbox reload`                      | Re-read config files                             |
 
-Session changes are temporary. Persisted changes are written to `.pi/sandbox.json` or `~/.pi/agent/sandbox.json`.
+Session changes are temporary. Persisted changes are written to `.pi/sandbox.json` or `~/.pi/agent/extensions/pi-sandbox/config.json`.
 
 ## Configuration
 
 Policy is loaded in this order:
 
 1. built-in defaults
-2. `~/.pi/agent/sandbox.json`
+2. `~/.pi/agent/extensions/pi-sandbox/config.json`
 3. `<cwd>/.pi/sandbox.json`
 
 Project config overrides user config. You only need to specify fields you want to change.
@@ -150,8 +150,8 @@ Arrays are replaced, not merged. For example, if project config sets `network.al
 ### Important options
 
 - `enabled: false` disables the sandbox from config.
-- `fs.allowRead` controls where agents can inspect files.
-- `fs.allowWrite` controls where agents can write or edit files.
+- `fs.allowRead` controls where agents can inspect files. The OS temp directory is always allowed.
+- `fs.allowWrite` controls where agents can write or edit files. The OS temp directory is always allowed.
 - `fs.denyPatterns` wins over allowlists and is a good place for secrets.
 - `network.allow` is the subprocess network allowlist.
 - `audit.log` writes JSONL audit entries to `audit.logFile`.

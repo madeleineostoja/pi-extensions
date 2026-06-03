@@ -24,6 +24,44 @@ export type LoadPolicyOptions = {
   platform?: NodeJS.Platform;
 };
 
+export function getUserConfigPath(homeDir = os.homedir()): string {
+  return path.join(
+    homeDir,
+    ".pi",
+    "agent",
+    "extensions",
+    "pi-sandbox",
+    "config.json",
+  );
+}
+
+function getDefaultTempDirs(platform: NodeJS.Platform): string[] {
+  const dirs = new Set<string>([os.tmpdir()]);
+
+  if (platform !== "win32") {
+    dirs.add("/tmp");
+  }
+
+  if (platform === "darwin") {
+    dirs.add("/private/tmp");
+  }
+
+  return [...dirs];
+}
+
+function ensureAllowedPath(entries: string[], entry: string): void {
+  if (!entries.includes(entry)) {
+    entries.push(entry);
+  }
+}
+
+function allowDefaultTempDirs(policy: Policy, platform: NodeJS.Platform): void {
+  for (const tempDir of getDefaultTempDirs(platform)) {
+    ensureAllowedPath(policy.fs.allowRead, tempDir);
+    ensureAllowedPath(policy.fs.allowWrite, tempDir);
+  }
+}
+
 export type PolicyManager = {
   loadPolicy(cwd: string, uiOrOpts?: NotifyTarget | LoadPolicyOptions): Policy;
   reloadPolicy(
@@ -175,7 +213,7 @@ export function createPolicyManager(): PolicyManager {
     const platform = opts.platform ?? process.platform;
     const homeDir = home ?? os.homedir();
 
-    const globalPath = path.join(homeDir, ".pi", "agent", "sandbox.json");
+    const globalPath = getUserConfigPath(homeDir);
     const projectPath = path.join(cwd, ".pi", "sandbox.json");
 
     let policy: Policy = structuredClone(DEFAULT_POLICY);
@@ -191,6 +229,7 @@ export function createPolicyManager(): PolicyManager {
     }
 
     policy = expandPathsInPolicy(policy, cwd, homeDir);
+    allowDefaultTempDirs(policy, platform);
 
     const hostDocsDir = resolveHostDocsDir();
     if (hostDocsDir && !policy.fs.allowRead.includes(hostDocsDir)) {

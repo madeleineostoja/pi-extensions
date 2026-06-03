@@ -7,7 +7,6 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
 
 import type {
   ExtensionAPI,
@@ -17,7 +16,10 @@ import type {
 import type { AutocompleteItem } from "../types/pi-tui.js";
 import type { AuditPipeline } from "../audit/audit.js";
 import { isValidNetworkAllowEntry, matchHost } from "../policy/schema.js";
-import type { PolicyManager } from "../policy/load.js";
+import {
+  getUserConfigPath as getPolicyUserConfigPath,
+  type PolicyManager,
+} from "../policy/load.js";
 import type { EventsTarget } from "../audit/events.js";
 import { decideFsAccess } from "../enforcement/decide.js";
 import { applySessionOverrides } from "../policy/effective.js";
@@ -124,7 +126,7 @@ function getProjectConfigPath(cwd: string): string {
 }
 
 function getUserConfigPath(): string {
-  return path.join(os.homedir(), ".pi", "agent", "sandbox.json");
+  return getPolicyUserConfigPath();
 }
 
 // ---------------------------------------------------------------------------
