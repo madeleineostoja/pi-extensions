@@ -77,11 +77,14 @@ export type RunState = {
   tasks?: ParallelTaskState[];
   landedCount?: number;
   totalCount?: number;
+  checkpointQueue?: string[];
+  checkpointSequence?: number;
 };
 
 export const idleState: RunState = { phase: "idle" };
 
 const FOOTER_GLYPH = "󰚩";
+const MAX_RECENT_CHECKPOINTS = 25;
 
 export function formatFooterStatus(state: RunState): string {
   if (state.phase === "idle") {
@@ -195,6 +198,20 @@ function shorten(value: string, max: number): string {
 
 function shortenSha(sha: string): string {
   return sha.slice(0, 7);
+}
+
+export function checkpointPatch(
+  prev: RunState,
+  message: string,
+): Partial<RunState> {
+  const sequence =
+    (prev.checkpointSequence ?? prev.checkpointQueue?.length ?? 0) + 1;
+  return {
+    checkpointQueue: [...(prev.checkpointQueue ?? []), message].slice(
+      -MAX_RECENT_CHECKPOINTS,
+    ),
+    checkpointSequence: sequence,
+  };
 }
 
 export function makeAgentLabel(ref: AgentDisplayRef): string {

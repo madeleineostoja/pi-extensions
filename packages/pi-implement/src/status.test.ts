@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  checkpointPatch,
   formatFooterStatus,
   formatRunStatus,
   makeAgentLabel,
   formatWidgetLines,
+  type RunState,
 } from "./status.js";
 
 describe("status formatting", () => {
@@ -206,5 +208,16 @@ describe("status formatting", () => {
     expect(status).toContain("Active agents:");
     expect(status).toContain("Task 3/7 implementer \u00b7 Add retry handling");
     expect(status).toContain("agent id: a1");
+  });
+
+  it("keeps checkpoint history bounded while preserving emission sequence", () => {
+    let state: RunState = { phase: "coding" };
+    for (let i = 1; i <= 30; i++) {
+      Object.assign(state, checkpointPatch(state, `checkpoint ${i}`));
+    }
+    expect(state.checkpointSequence).toBe(30);
+    expect(state.checkpointQueue).toHaveLength(25);
+    expect(state.checkpointQueue?.[0]).toBe("checkpoint 6");
+    expect(state.checkpointQueue?.at(-1)).toBe("checkpoint 30");
   });
 });

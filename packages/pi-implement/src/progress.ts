@@ -51,7 +51,17 @@ export function diffProgress(
   }
 
   lines.push(...runLevelNotes(prev, next));
+  lines.push(...checkpointNotes(prev, next));
   return lines;
+}
+
+function checkpointNotes(prev: RunState, next: RunState): string[] {
+  const nextQueue = next.checkpointQueue ?? [];
+  const prevSequence =
+    prev.checkpointSequence ?? prev.checkpointQueue?.length ?? 0;
+  const nextSequence = next.checkpointSequence ?? nextQueue.length;
+  const newCount = Math.max(0, nextSequence - prevSequence);
+  return newCount === 0 ? [] : nextQueue.slice(-newCount);
 }
 
 function serialNotes(

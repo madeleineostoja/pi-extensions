@@ -220,6 +220,17 @@ describe("runImplementation", () => {
         }),
       ]),
     );
+    expect(currentState.checkpointQueue).toEqual(
+      expect.arrayContaining([
+        "\u00b7 Task 1/1 implementer \u00b7 Do thing started",
+        "\u00b7 Task 1/1 implementation finished: done",
+        "\u00b7 Task 1/1 verification: tests: passed",
+        "\u00b7 Task 1/1 reviewer \u00b7 Do thing started",
+        "\u2713 Task 1/1 review approved",
+        "\u00b7 Task 1/1 committing: feat: do thing",
+        "\u2713 Task 1/1 landed @ h1-comm",
+      ]),
+    );
     expect(states.at(-1)).toMatchObject({ phase: "done" });
   });
 
@@ -252,6 +263,8 @@ describe("runImplementation", () => {
       },
     ];
 
+    let currentState: RunState = { phase: "idle" };
+
     await runImplementation({
       git,
       subagents,
@@ -261,10 +274,22 @@ describe("runImplementation", () => {
         reviewer: { model: "p/m", type: "general-purpose" },
         planner: { model: "p/m", type: "Explore" },
       },
-      updateState: () => {},
+      updateState: (patch) => {
+        currentState =
+          typeof patch === "function"
+            ? { ...currentState, ...patch(currentState) }
+            : { ...currentState, ...patch };
+      },
       shouldStop: () => false,
     });
 
+    expect(currentState.checkpointQueue).toEqual(
+      expect.arrayContaining([
+        "\u00b7 Task 1/1 implementation finished: Response did not include <pi-implement-result> output.",
+        "\u00b7 Task 1/1 review changes requested: tighten it",
+        "\u00b7 Task 1/1 review changes requested: tighten it again",
+      ]),
+    );
     expect(git.commits).toEqual(["fix: do thing"]);
     expect(subagents.spawns).toHaveLength(7);
   });

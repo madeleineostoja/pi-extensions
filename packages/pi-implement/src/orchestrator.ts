@@ -53,6 +53,7 @@ import {
   type SchedulerRun,
   type SchedulerTask,
 } from "./scheduler.js";
+import { checkpointPatch } from "./status.js";
 
 const MAX_REVIEWER_REQUESTS = 5;
 const MAX_SYSTEM_FAILURES = 2;
@@ -703,7 +704,13 @@ async function landApprovedTask(
       });
     }
 
-    deps.updateState({ currentMainHead: landedHead });
+    deps.updateState((prev) => ({
+      currentMainHead: landedHead,
+      ...checkpointPatch(
+        prev,
+        `\u2713 Task ${task.planIndex + 1}/${plan.tasks.length} landed @ ${landedHead.slice(0, 7)}`,
+      ),
+    }));
     return "landed";
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -1303,7 +1310,10 @@ async function runTaskWorker(args: {
       taskTitle: shortTask(task.text),
     };
     setSchedulerActiveAgent(schedulerTask, implementerRef);
-    deps.updateState((prev) => addActiveAgentPatch(prev, implementerRef));
+    deps.updateState((prev) => ({
+      ...addActiveAgentPatch(prev, implementerRef),
+      ...checkpointPatch(prev, `\u00b7 ${implementerRef.label} started`),
+    }));
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
         id: taskId,
@@ -1404,6 +1414,23 @@ async function runTaskWorker(args: {
     }
 
     const parsed = parseImplementerResult(implementation.result);
+    deps.updateState((prev) =>
+      checkpointPatch(
+        prev,
+        `\u00b7 Task ${task.index}/${plan.tasks.length} implementation finished: ${parsed.ok ? parsed.result.summary : parsed.reason}`,
+      ),
+    );
+    if (parsed.ok) {
+      const verificationSummary = parsed.result.verification
+        .map((v) => `${v.command}: ${v.result}`)
+        .join("; ");
+      deps.updateState((prev) =>
+        checkpointPatch(
+          prev,
+          `\u00b7 Task ${task.index}/${plan.tasks.length} verification: ${verificationSummary}`,
+        ),
+      );
+    }
     if (!parsed.ok) {
       feedback = recordSystemFailure(
         task.index,
@@ -1469,7 +1496,10 @@ async function runTaskWorker(args: {
       taskTitle: shortTask(task.text),
     };
     setSchedulerActiveAgent(schedulerTask, reviewerRef);
-    deps.updateState((prev) => addActiveAgentPatch(prev, reviewerRef));
+    deps.updateState((prev) => ({
+      ...addActiveAgentPatch(prev, reviewerRef),
+      ...checkpointPatch(prev, `\u00b7 ${reviewerRef.label} started`),
+    }));
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
         id: taskId,
@@ -1551,6 +1581,14 @@ async function runTaskWorker(args: {
       worktreeFingerprintBefore,
     });
     const verdict = parseReviewerVerdict(review.result);
+    deps.updateState((prev) =>
+      checkpointPatch(
+        prev,
+        verdict.verdict === "approved"
+          ? `\u2713 Task ${task.index}/${plan.tasks.length} review approved`
+          : `\u00b7 Task ${task.index}/${plan.tasks.length} review changes requested: ${formatRequiredChanges(verdict.requiredChanges)}`,
+      ),
+    );
     if (verdict.verdict === "changes_requested") {
       await taskGit.reset();
       feedback = recordReviewerRequest(
@@ -1582,7 +1620,14 @@ async function runTaskWorker(args: {
     const approvedMessage = isValidCommitMessage(parsed.result.commitMessage)
       ? parsed.result.commitMessage.trim()
       : fallbackCommitMessage(task.text);
-    deps.updateState({ phase: "committing", lastReason: undefined });
+    deps.updateState((prev) => ({
+      phase: "committing" as const,
+      lastReason: undefined,
+      ...checkpointPatch(
+        prev,
+        `\u00b7 Task ${task.index}/${plan.tasks.length} committing: ${approvedMessage}`,
+      ),
+    }));
     await throwIfStoppedAndReset(deps, taskGit);
 
     if (worktreePath) {
@@ -1685,8 +1730,8 @@ async function runTaskWorker(args: {
       if (!(await deps.git.isCleanExcept(planArtifacts))) {
         throw new BlockedError("commit succeeded but worktree is dirty");
       }
+      const head = await deps.git.head();
       if (deps.paths) {
-        const head = await deps.git.head();
         appendEvent(deps.paths, {
           type: "task_approved",
           taskId,
@@ -1709,6 +1754,13 @@ async function runTaskWorker(args: {
           activeSubagentIds: [],
         });
       }
+      deps.updateState((prev) => ({
+        currentMainHead: head,
+        ...checkpointPatch(
+          prev,
+          `\u2713 Task ${task.index}/${plan.tasks.length} landed @ ${head.slice(0, 7)}`,
+        ),
+      }));
       return true;
     }
     const headAfterFailedCommit = await deps.git.head();
@@ -1900,6 +1952,12 @@ function recordReviewerRequest(
 
 function formatFeedback(feedback: RetryFeedback): string {
   return `Source: ${feedback.source}\n${feedback.message}`;
+}
+
+function formatRequiredChanges(requiredChanges: string[]): string {
+  return requiredChanges
+    .map((change) => change.replace(/\s+/g, " ").trim())
+    .join("; ");
 }
 
 function throwIfStopped(deps: OrchestratorDeps): void {
