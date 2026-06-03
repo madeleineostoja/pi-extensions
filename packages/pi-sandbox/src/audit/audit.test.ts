@@ -470,18 +470,18 @@ describe("permission-failure fallback", () => {
 // Recently-blocked hosts ring buffer
 // ---------------------------------------------------------------------------
 
+function makeFullEntry(
+  partial: Parameters<typeof recordAudit>[0],
+): import("./schema.js").AuditEntry {
+  return { ts: Date.now(), ...partial } as import("./schema.js").AuditEntry;
+}
+
 describe("recently-blocked hosts ring buffer", () => {
   let emitter: ReturnType<typeof createAuditEmitter>;
 
   beforeEach(() => {
     emitter = createAuditEmitter();
   });
-
-  function makeFullEntry(
-    partial: Parameters<typeof recordAudit>[0],
-  ): import("./schema.js").AuditEntry {
-    return { ts: Date.now(), ...partial } as import("./schema.js").AuditEntry;
-  }
 
   it("records blocked hosts in the ring buffer", () => {
     const { target } = makeEvents();

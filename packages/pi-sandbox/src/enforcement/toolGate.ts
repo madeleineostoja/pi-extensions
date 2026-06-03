@@ -123,7 +123,7 @@ export function createToolGate(opts: ToolGateOptions): ToolGate {
     return undefined;
   }
 
-  function dispose(): void {}
+  const dispose = (): void => {};
 
   return { handleToolCall, dispose };
 }

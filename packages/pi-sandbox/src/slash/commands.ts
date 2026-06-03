@@ -393,7 +393,7 @@ export function createSlashCommands(
     ctx.ui.notify(lines.join("\n"));
   }
 
-  function handleReload(ctx: SubcommandContext): void {
+  const handleReload = (ctx: SubcommandContext): void => {
     const notifyTarget = {
       notify: (text: string, level: "error" | "warning") =>
         ctx.ui.notify(text, level),
@@ -409,7 +409,7 @@ export function createSlashCommands(
     ctx.ui.notify(
       "Sandbox config reloaded. Run /sandbox status for current state.",
     );
-  }
+  };
 
   async function handleWhy(
     ctx: SubcommandContext,
