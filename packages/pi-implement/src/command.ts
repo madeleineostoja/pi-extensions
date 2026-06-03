@@ -1,11 +1,6 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
-import {
-  getGlobalReviewAgentPath,
-  globalReviewAgentExists,
-  scaffoldGlobalReviewAgent,
-} from "./agents.js";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -17,6 +12,7 @@ import {
   formatConfigStatus,
   isModelRef,
   resolveMaxParallel,
+  reviewerDefaultTypeWarning,
 } from "./config.js";
 import { ExecGitClient } from "./git.js";
 import {
@@ -148,12 +144,12 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         if (parsed.name === "config") {
           const config = readConfig(getAgentDir());
           const effective = resolveEffectiveRoles(config.config, ctx);
+          const roles = effective.ok ? effective.roles : undefined;
           ctx.ui.notify(
-            formatConfigStatus(
-              config,
-              effective.ok ? effective.roles : undefined,
-            ),
-            config.warning ? "warning" : "info",
+            formatConfigStatus(config, roles),
+            config.warning || (roles && reviewerDefaultTypeWarning(roles))
+              ? "warning"
+              : "info",
           );
           return;
         }
@@ -239,36 +235,6 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           }
           ctx.ui.notify(
             `Active pi-implement agents:\n- ${ref.label}\n  agent id: ${ref.id}\n\nOpen /agents \u2192 Running agents \u2192 select "${ref.label}" or agent id ${ref.id}.`,
-            "info",
-          );
-          return;
-        }
-
-        if (parsed.name === "init-agents") {
-          const agentDir = getAgentDir();
-          const targetPath = getGlobalReviewAgentPath(agentDir);
-          if (globalReviewAgentExists(agentDir)) {
-            ctx.ui.notify(
-              `A global review agent already exists at ${targetPath}.`,
-              "warning",
-            );
-            return;
-          }
-          const confirmed = await ctx.ui.confirm(
-            "Install pi-implement review agent?",
-            `Create global pi-subagents agent "review" at ${targetPath}?`,
-          );
-          if (!confirmed) {
-            ctx.ui.notify("pi-implement init-agents cancelled.", "info");
-            return;
-          }
-          const result = scaffoldGlobalReviewAgent(agentDir);
-          if (!result.ok) {
-            ctx.ui.notify(result.reason, "warning");
-            return;
-          }
-          ctx.ui.notify(
-            `Created global review agent at ${result.path}. Configure pi-implement with reviewer.type = "review" to use it.`,
             "info",
           );
           return;
@@ -396,6 +362,10 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       if (!effective.ok) {
         ctx.ui.notify(effective.reason, "warning");
         return;
+      }
+      const reviewerWarning = reviewerDefaultTypeWarning(effective.roles);
+      if (reviewerWarning) {
+        ctx.ui.notify(reviewerWarning, "warning");
       }
 
       const mode = parsed.mode.kind;

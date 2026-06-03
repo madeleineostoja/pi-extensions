@@ -32,7 +32,7 @@ export type EffectiveRoles = {
   planner: EffectiveRole;
 };
 
-const DEFAULT_SUBAGENT_TYPE = "general-purpose";
+export const DEFAULT_SUBAGENT_TYPE = "general-purpose";
 const DEFAULT_PLANNER_TYPE = "Explore";
 const DEFAULT_MAX_PARALLEL = 3;
 const HARD_MAX_PARALLEL = 8;
@@ -202,6 +202,15 @@ export function isModelRef(value: string): boolean {
   return /^[^/\s]+\/.+\S$/.test(value);
 }
 
+export function reviewerDefaultTypeWarning(
+  roles: EffectiveRoles,
+): string | undefined {
+  if (roles.reviewer.type !== DEFAULT_SUBAGENT_TYPE) {
+    return undefined;
+  }
+  return "Reviewer subagent is using the default general-purpose type. Review safety is instruction-enforced only; configure reviewer.type to a dedicated read-only review agent for stronger isolation.";
+}
+
 export function formatConfigStatus(
   result: ConfigReadResult,
   roles?: EffectiveRoles,
@@ -228,6 +237,12 @@ export function formatConfigStatus(
   lines.push(
     `Planner subagent: ${roles?.planner.type ?? result.config.planner?.type ?? DEFAULT_PLANNER_TYPE}`,
   );
+  if (roles) {
+    const defaultReviewerWarning = reviewerDefaultTypeWarning(roles);
+    if (defaultReviewerWarning) {
+      lines.push(`Warning: ${defaultReviewerWarning}`);
+    }
+  }
   if (result.config.maxParallel !== undefined) {
     lines.push(`Max parallel: ${result.config.maxParallel}`);
   }

@@ -115,7 +115,7 @@ export function formatFooterStatus(state: RunState): string {
   return withFooterGlyph(`implement ${progress}`);
 }
 
-export function formatRunStatus(state: RunState): string {
+export function formatRunStatus(state: RunState, nowMs = Date.now()): string {
   if (state.phase === "idle") {
     return "pi-implement: idle";
   }
@@ -140,6 +140,13 @@ export function formatRunStatus(state: RunState): string {
   }
   if (state.maxConcurrency !== undefined) {
     lines.push(`Max concurrency: ${state.maxConcurrency}`);
+  }
+
+  if (state.startedAt) {
+    const elapsed = formatDuration(nowMs - new Date(state.startedAt).getTime());
+    if (elapsed) {
+      lines.push(`Elapsed: ${elapsed}`);
+    }
   }
 
   if (state.tasks && state.tasks.length > 0) {
@@ -173,7 +180,10 @@ export function formatRunStatus(state: RunState): string {
   if (activeRefs.length > 0) {
     lines.push("Active agents:");
     for (const ref of activeRefs) {
-      lines.push(`  ${ref.label}`);
+      const agentElapsed = ref.startedAt
+        ? formatDuration(nowMs - new Date(ref.startedAt).getTime())
+        : "";
+      lines.push(`  ${ref.label}${agentElapsed ? ` · ${agentElapsed}` : ""}`);
       lines.push(`    agent id: ${ref.id}`);
     }
   } else if (state.activeSubagentId) {
@@ -183,6 +193,14 @@ export function formatRunStatus(state: RunState): string {
   }
   if (state.lastReason) {
     lines.push(`Reason: ${state.lastReason}`);
+  }
+
+  const recent = (state.checkpointQueue ?? []).slice(-5);
+  if (recent.length > 0) {
+    lines.push("Recent checkpoints:");
+    for (const cp of recent) {
+      lines.push(`  ${cp}`);
+    }
   }
 
   return lines.join("\n");

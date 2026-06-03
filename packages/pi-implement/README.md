@@ -15,7 +15,6 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 /implement stop
 /implement cleanup
 /implement config
-/implement init-agents
 /implement view
 ```
 
@@ -68,19 +67,9 @@ Global config lives at:
 }
 ```
 
-If a role model is omitted, the current session model is used. If a role type is omitted, `general-purpose` is used for implementer and reviewer, and `Explore` is used for the planner. A common setup pairs a cheaper implementer model with a frontier reviewer model, optionally using the bundled `review` subagent type.
-
-Run `/implement init-agents` to scaffold the bundled global `review` agent at `~/.pi/agent/agents/review.md`. The command always asks for confirmation and fails rather than overwriting an existing global `review` agent. Point the reviewer at it with:
+If a role model is omitted, the current session model is used. If a role type is omitted, `general-purpose` is used for implementer and reviewer, and `Explore` is used for the planner. The runtime prompts are self-contained enough to work with `general-purpose`, but reviewer safety is only instruction-enforced in that mode; configure `reviewer.type` to a dedicated read-only review agent for stronger isolation.
 
 Run `/implement view` to inspect active pi-implement subagents. With one active agent it prints fallback instructions to open the agent via `/agents`; with multiple agents it prompts you to pick by pretty label.
-
-```json
-{
-  "reviewer": {
-    "type": "review"
-  }
-}
-```
 
 `maxParallel` defaults to `3` and is clamped to a hard maximum of `8`. Invalid values are ignored with a warning.
 

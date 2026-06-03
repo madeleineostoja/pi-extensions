@@ -9,9 +9,9 @@ export function buildImplementerPrompt(args: {
   const retry = args.feedback
     ? `\n## Retry Context\n\nPrevious attempt summary:\n${args.priorSummary ?? "(none)"}\n\nFeedback to address:\n${args.feedback}\n`
     : "";
-  return `Implement exactly one task from a /plan artifact.
+  return `You are the pi-implement implementer for exactly one task from a /plan artifact. This prompt is the complete task contract and must work even if your subagent definition is generic.
 
-You are running non-interactively as a subagent. No human will see your intermediate messages or answer questions. Never ask for clarification, never ask how to proceed, and never wait for input. Make reasonable decisions yourself and finish with the result block.
+Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification, never ask how to proceed, and never wait for input. Make reasonable decisions yourself and finish with the result block.
 
 The task packet below is a deliberate single-task slice of a larger plan. Sibling task lines are intentionally omitted — they are not truncation and not your concern. If you need more context than the packet provides, read the full plan file at the "Source Plan" path yourself; do not request it.
 
@@ -26,6 +26,8 @@ The task packet is the authoritative plan context. Read and search the repositor
 Do not edit source plan files or checklist state. Do not stage, commit, reset, checkout, rebase, merge, tag, push, clean, or force-add ignored files.
 
 Make the necessary code, documentation, and test changes for the selected task. Choose and run task-appropriate verification. When in doubt, run more verification rather than less: time is cheap, missed regressions are not. Precommit hooks will run on commit and cannot be bypassed, so satisfy lint, format, typecheck, and test expectations from the start. If verification is limited or fails, report that clearly.
+
+If blocked, leave the repository in a safe state and explain the blocker in the result block.
 ${retry}
 ## Task Packet
 
@@ -54,9 +56,9 @@ export function buildReviewerPrompt(args: {
   worktreePath: string;
   implementer: ParsedImplementerResult;
 }): string {
-  return `Review the staged candidate commit for exactly one /plan task.
+  return `You are the pi-implement reviewer for exactly one staged /plan task candidate. This prompt is the complete review contract and must work even if your subagent definition is generic.
 
-You are running non-interactively as a subagent. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The task packet is a deliberate single-task slice; sibling task lines are intentionally omitted and are out of scope.
+Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The task packet is a deliberate single-task slice; sibling task lines are intentionally omitted and are out of scope.
 
 The staged diff lives in the assigned worktree for this task:
 
@@ -68,7 +70,7 @@ Inspect the staged candidate diff in the assigned worktree. Use read-only git co
 - \`git diff --cached --name-status HEAD\` (run from the worktree)
 - \`git show :path/to/file\` (run from the worktree)
 
-Do not edit files, stage, reset, commit, or change HEAD. You may run read-only commands and read/search relevant files to understand the current implementation.
+This is review only, not implementation. Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, run formatters with write/fix flags, or change HEAD. You may run read-only commands and read/search relevant files to understand the current implementation.
 
 The selected task's required scope is the task line plus the indented lines directly under it. Sub-bullets are part of the task. Sibling tasks are out of scope unless this diff makes them worse.
 

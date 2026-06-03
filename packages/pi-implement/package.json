@@ -5,7 +5,6 @@
   "type": "module",
   "files": [
     "src",
-    "agents",
     "README.md"
   ],
   "keywords": [

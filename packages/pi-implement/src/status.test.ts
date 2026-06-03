@@ -220,4 +220,74 @@ describe("status formatting", () => {
     expect(state.checkpointQueue?.[0]).toBe("checkpoint 6");
     expect(state.checkpointQueue?.at(-1)).toBe("checkpoint 30");
   });
+
+  it("shows elapsed duration and recent checkpoints in status", () => {
+    const now = new Date("2024-01-01T00:10:00Z").getTime();
+    const status = formatRunStatus(
+      {
+        phase: "coding",
+        taskIndex: 2,
+        totalTasks: 5,
+        startedAt: new Date("2024-01-01T00:00:00Z").toISOString(),
+        checkpointQueue: [
+          "▶ Task 1/5 started: A",
+          "✓ Task 1/5 landed",
+          "▶ Task 2/5 started: B",
+        ],
+      },
+      now,
+    );
+    expect(status).toContain("Elapsed: 10m");
+    expect(status).toContain("Recent checkpoints:");
+    expect(status).toContain("  ▶ Task 1/5 started: A");
+    expect(status).toContain("  ✓ Task 1/5 landed");
+    expect(status).toContain("  ▶ Task 2/5 started: B");
+  });
+
+  it("shows active agent elapsed durations in status", () => {
+    const now = new Date("2024-01-01T00:05:00Z").getTime();
+    const status = formatRunStatus(
+      {
+        phase: "coding",
+        activeSubagentIds: ["a1"],
+        activeAgentRefs: [
+          {
+            id: "a1",
+            role: "implementer",
+            label: "Task 2/5 implementer · Add retry",
+            startedAt: new Date("2024-01-01T00:02:00Z").toISOString(),
+            taskIndex: 2,
+            taskTotal: 5,
+            taskTitle: "Add retry",
+          },
+        ],
+      },
+      now,
+    );
+    expect(status).toContain("Active agents:");
+    expect(status).toContain("  Task 2/5 implementer · Add retry · 3m");
+    expect(status).toContain("    agent id: a1");
+  });
+
+  it("caps recent checkpoints at 5 entries", () => {
+    const now = new Date("2024-01-01T00:10:00Z").getTime();
+    const status = formatRunStatus(
+      {
+        phase: "coding",
+        checkpointQueue: Array.from(
+          { length: 10 },
+          (_, i) => `checkpoint ${i + 1}`,
+        ),
+      },
+      now,
+    );
+    expect(status).toContain("Recent checkpoints:");
+    expect(status).not.toContain("  checkpoint 1\n");
+    expect(status).toContain("  checkpoint 6\n");
+    expect(status).toContain("  checkpoint 10");
+    const lines = status
+      .split("\n")
+      .filter((l) => l.startsWith("  checkpoint"));
+    expect(lines).toHaveLength(5);
+  });
 });

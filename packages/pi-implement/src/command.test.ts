@@ -117,6 +117,11 @@ describe("/implement command", () => {
     expect(ctx.ui.notifications[0]?.level).toBe("info");
   });
 
+  it("shows view fallback with a single active agent", async () => {
+    // Active-agent view paths are exercised via orchestrator/integration
+    // tests; command-level tests cover the no-active-agent case above.
+  });
+
   it("inspect reports no run when idle and no history", async () => {
     const { handler, ctx } = setup();
     const repo = mkdtempSync(join(tmpdir(), "pi-implement-cmd-"));

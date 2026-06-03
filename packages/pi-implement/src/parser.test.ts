@@ -61,13 +61,6 @@ describe("parseCommand", () => {
     });
   });
 
-  it("parses init-agents subcommand", () => {
-    expect(parseCommand("init-agents")).toEqual({
-      kind: "subcommand",
-      name: "init-agents",
-    });
-  });
-
   it("treats bare 'agents' as plan path", () => {
     expect(parseCommand("agents")).toEqual({
       kind: "execution",
@@ -178,7 +171,6 @@ describe("parseCommand", () => {
     expect(usage()).toContain("stop");
     expect(usage()).toContain("cleanup");
     expect(usage()).toContain("config");
-    expect(usage()).toContain("init-agents");
     expect(usage()).toContain("view");
     expect(usage()).toContain("inspect");
   });

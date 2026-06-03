@@ -5,6 +5,7 @@ import {
   parseConfig,
   resolveEffectiveRoles,
   resolveMaxParallel,
+  reviewerDefaultTypeWarning,
 } from "./config.js";
 
 describe("config", () => {
@@ -92,6 +93,23 @@ describe("config", () => {
     expect(resolveMaxParallel({ maxParallel: 6 }, 10)).toBe(6);
     expect(resolveMaxParallel({ maxParallel: 2 }, 10)).toBe(2);
     expect(resolveMaxParallel({ maxParallel: 10 }, 10)).toBe(8);
+  });
+
+  it("warns when reviewer uses the default general-purpose subagent", () => {
+    expect(
+      reviewerDefaultTypeWarning({
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      }),
+    ).toContain("general-purpose");
+    expect(
+      reviewerDefaultTypeWarning({
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "review" },
+        planner: { model: "p/m", type: "Explore" },
+      }),
+    ).toBeUndefined();
   });
 
   it("formats config status", () => {
