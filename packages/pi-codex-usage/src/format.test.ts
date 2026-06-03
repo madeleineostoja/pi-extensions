@@ -1,3 +1,5 @@
+process.env.TZ = "UTC";
+
 import { describe, it, expect } from "vitest";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { formatStatus } from "./format.js";
@@ -147,6 +149,59 @@ describe("formatStatus", () => {
     expect(theme.calls).toEqual([
       { color: "error", text: ICON },
       { color: "error", text: "codex (100%)" },
+    ]);
+  });
+
+  it("shows reset time instead of 100% for fiveHour when resetAt is present", () => {
+    const theme = makeSpyTheme();
+    const snapshot: UsageSnapshot = {
+      fiveHour: { usedPercent: 100, resetAt: 0 },
+      fetchedAt: Date.now(),
+    };
+    const result = formatStatus(snapshot, theme);
+    expect(result).toContain("codex resets at 00:00");
+    expect(theme.calls).toEqual([
+      { color: "error", text: ICON },
+      { color: "error", text: "codex resets at 00:00" },
+    ]);
+  });
+
+  it("shows reset time instead of 100% for weekly when resetAt is present", () => {
+    const theme = makeSpyTheme();
+    const snapshot: UsageSnapshot = {
+      weekly: { usedPercent: 100, resetAt: 3661 },
+      fetchedAt: Date.now(),
+    };
+    const result = formatStatus(snapshot, theme);
+    expect(result).toContain("codex (resets at 01:01)");
+    expect(theme.calls).toEqual([
+      { color: "error", text: ICON },
+      { color: "error", text: "codex (resets at 01:01)" },
+    ]);
+  });
+
+  it("falls back to 100% when resetAt is missing", () => {
+    const theme = makeSpyTheme();
+    const snapshot: UsageSnapshot = {
+      fiveHour: { usedPercent: 100 },
+      fetchedAt: Date.now(),
+    };
+    const result = formatStatus(snapshot, theme);
+    expect(result).toContain("codex 100%");
+  });
+
+  it("shows reset time for one window and percent for the other", () => {
+    const theme = makeSpyTheme();
+    const snapshot: UsageSnapshot = {
+      fiveHour: { usedPercent: 100, resetAt: 7200 },
+      weekly: { usedPercent: 42 },
+      fetchedAt: Date.now(),
+    };
+    const result = formatStatus(snapshot, theme);
+    expect(result).toContain("codex resets at 02:00 (42%)");
+    expect(theme.calls).toEqual([
+      { color: "error", text: ICON },
+      { color: "error", text: "codex resets at 02:00 (42%)" },
     ]);
   });
 

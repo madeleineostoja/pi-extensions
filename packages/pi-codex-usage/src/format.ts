@@ -6,6 +6,13 @@ function clampPercent(percent: number): number {
   return Math.min(100, Math.max(0, percent));
 }
 
+function formatResetTime(resetAt: number): string {
+  const date = new Date(resetAt * 1000);
+  const h = date.getHours().toString().padStart(2, "0");
+  const m = date.getMinutes().toString().padStart(2, "0");
+  return `${h}:${m}`;
+}
+
 type StatusColor = "success" | "warning" | "error";
 
 type StatusTextColor = StatusColor | "muted";
@@ -43,13 +50,21 @@ export function formatStatus(
 
   if (snapshot.fiveHour !== undefined) {
     const pct = clampPercent(Math.round(snapshot.fiveHour.usedPercent));
-    parts.push(`${pct}%`);
+    if (pct === 100 && snapshot.fiveHour.resetAt !== undefined) {
+      parts.push(`resets at ${formatResetTime(snapshot.fiveHour.resetAt)}`);
+    } else {
+      parts.push(`${pct}%`);
+    }
     percents.push(pct);
   }
 
   if (snapshot.weekly !== undefined) {
     const pct = clampPercent(Math.round(snapshot.weekly.usedPercent));
-    parts.push(`(${pct}%)`);
+    if (pct === 100 && snapshot.weekly.resetAt !== undefined) {
+      parts.push(`(resets at ${formatResetTime(snapshot.weekly.resetAt)})`);
+    } else {
+      parts.push(`(${pct}%)`);
+    }
     percents.push(pct);
   }
 
