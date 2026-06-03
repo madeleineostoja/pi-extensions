@@ -66,6 +66,7 @@ export type RunState = {
   activeSubagentIds?: string[];
   activeAgentRefs?: AgentDisplayRef[];
   lastReason?: string;
+  startedAt?: string;
   // Parallel-run fields
   runId?: string;
   mode?: "auto" | "serial" | "parallel";
@@ -226,14 +227,24 @@ export function formatWidgetLines(
   }
 
   const total = state.totalCount ?? state.totalTasks ?? 0;
-  const landed = state.landedCount ?? 0;
+  const landed =
+    state.landedCount ??
+    (state.taskIndex ? Math.max(0, state.taskIndex - 1) : 0);
   const phaseLabel = state.phase;
   const startedAt = state.activeAgentRefs?.[0]?.startedAt;
   const elapsed = startedAt
     ? formatDuration(nowMs - new Date(startedAt).getTime())
     : "";
 
-  const header = `pi-implement \u00b7 ${landed}/${total} ${state.tasks ? "landed" : ""} \u00b7 ${phaseLabel}${elapsed ? ` \u00b7 ${elapsed}` : ""}`;
+  const headerParts = ["pi-implement", `${landed}/${total}`];
+  if (state.tasks) {
+    headerParts.push("landed");
+  }
+  headerParts.push(phaseLabel);
+  if (elapsed) {
+    headerParts.push(elapsed);
+  }
+  const header = headerParts.join(" \u00b7 ");
   lines.push(header);
 
   const refs = state.activeAgentRefs ?? [];

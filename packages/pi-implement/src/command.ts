@@ -534,6 +534,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           baseSha,
           currentMainHead: baseSha,
           maxConcurrency,
+          startedAt: now,
         },
         stopping: false,
         runId: runIdNum,
