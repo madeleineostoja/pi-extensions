@@ -1,0 +1,19 @@
+{
+  "name": "pi-model-handoff",
+  "description": "Pi extension that offers a low-noise context handoff when switching from a frontier model to a cheaper implementation model.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "model-handoff"
+  ],
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
