@@ -14,11 +14,17 @@ import { decideToolCall, resolveChoice } from "./handler";
 
 const FOOTER_KEY = "pi-readonly.mode";
 const MESSAGE_TYPE = "pi-readonly.status";
+const MODE_EVENT = "pi-readonly.mode:set";
 const READONLY_ICON = "󰏯";
 const EDITING_ICON = "󰏫";
 
 type StatusDetails = {
   message: string;
+};
+
+type ModeEvent = {
+  type: "set";
+  value: boolean;
 };
 
 const NON_INTERACTIVE_MSG =
@@ -36,6 +42,15 @@ const renderStatusMessage: MessageRenderer<StatusDetails> = (
   };
 };
 
+function isModeEvent(value: unknown): value is ModeEvent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { type?: unknown }).type === "set" &&
+    typeof (value as { value?: unknown }).value === "boolean"
+  );
+}
+
 export default function (pi: ExtensionAPI) {
   let readonlyMode = true;
   let nonInteractiveNotified = false;
@@ -43,6 +58,14 @@ export default function (pi: ExtensionAPI) {
 
   function applyMode(next: boolean) {
     readonlyMode = next;
+  }
+
+  function setMode(next: boolean, ctx?: ExtensionContext) {
+    applyMode(next);
+    pi.events.emit(MODE_EVENT, { type: "set", value: next });
+    if (ctx) {
+      syncFooter(ctx);
+    }
   }
 
   function notifyNonInteractive() {
@@ -79,11 +102,16 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerMessageRenderer(MESSAGE_TYPE, renderStatusMessage);
 
-  pi.registerShortcut("ctrl+shift+r", {
+  pi.events.on(MODE_EVENT, (event) => {
+    if (isModeEvent(event)) {
+      applyMode(event.value);
+    }
+  });
+
+  pi.registerShortcut("alt+r", {
     description: "Toggle readonly mode",
     handler: async (ctx) => {
-      applyMode(!readonlyMode);
-      syncFooter(ctx);
+      setMode(!readonlyMode, ctx);
     },
   });
 
@@ -94,12 +122,12 @@ export default function (pi: ExtensionAPI) {
       "fork",
     ]);
     if (FRESH_START_REASONS.has(event.reason)) {
-      applyMode(true);
+      setMode(true);
     }
     nonInteractiveNotified = false;
 
     if (!ctx.hasUI) {
-      applyMode(false);
+      setMode(false);
       notifyNonInteractive();
     }
     syncFooter(ctx);
@@ -114,7 +142,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (action.kind === "toggle") {
-        applyMode(!readonlyMode);
+        setMode(!readonlyMode);
       } else if (action.kind === "set") {
         if (action.value === readonlyMode) {
           ctx.ui.notify(
@@ -123,7 +151,7 @@ export default function (pi: ExtensionAPI) {
           );
           return;
         }
-        applyMode(action.value);
+        setMode(action.value);
       }
       syncFooter(ctx);
       ctx.ui.notify(`readonly mode: ${readonlyMode ? "on" : "off"}`, "info");
@@ -143,8 +171,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (decision === "auto-disable") {
-      applyMode(false);
-      syncFooter(ctx);
+      setMode(false, ctx);
       notifyNonInteractive();
       return undefined;
     }
@@ -177,8 +204,7 @@ export default function (pi: ExtensionAPI) {
     const result = resolveChoice({ choice, message });
 
     if (result.sideEffect === "setEditing") {
-      applyMode(false);
-      syncFooter(ctx);
+      setMode(false, ctx);
     }
 
     return result.block ? { block: true, reason: result.reason } : undefined;

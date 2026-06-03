@@ -10,6 +10,34 @@ import registerExtension from "./index";
 const DECLINED_NO_FEEDBACK =
   "Edit not applied. User declined without feedback. Ask for clarification before retrying.";
 
+type TestEventBus = ExtensionAPI["events"];
+type ToolCallHandler = (
+  event: ToolCallEvent,
+  ctx: ExtensionContext,
+) => Promise<unknown>;
+
+function makeTestEventBus(): TestEventBus {
+  const handlers = new Map<string, Array<(data: unknown) => void>>();
+  return {
+    emit(channel: string, data: unknown) {
+      for (const handler of handlers.get(channel) ?? []) {
+        handler(data);
+      }
+    },
+    on(channel: string, handler: (data: unknown) => void) {
+      const list = handlers.get(channel) ?? [];
+      list.push(handler);
+      handlers.set(channel, list);
+      return () => {
+        const next = (handlers.get(channel) ?? []).filter(
+          (item) => item !== handler,
+        );
+        handlers.set(channel, next);
+      };
+    },
+  };
+}
+
 function makeDummyTheme(): { fg: (color: string, text: string) => string } {
   return { fg: (_color: string, text: string) => text };
 }
@@ -92,9 +120,7 @@ function makeToolCallCtx(
 }
 
 function captureToolCallHandler() {
-  let toolCallHandler:
-    | ((event: ToolCallEvent, ctx: ExtensionContext) => Promise<unknown>)
-    | undefined;
+  let toolCallHandler: ToolCallHandler | undefined;
 
   const pi = {
     on(event: string, handler: (e: never, ctx: never) => Promise<unknown>) {
@@ -125,7 +151,7 @@ function captureToolCallHandler() {
       Promise.resolve({ code: 0, stdout: "", stderr: "", killed: false }),
     registerProvider: () => {},
     unregisterProvider: () => {},
-    events: {} as never,
+    events: makeTestEventBus(),
   } as unknown as ExtensionAPI;
 
   registerExtension(pi);
@@ -340,7 +366,7 @@ function captureHandlers() {
       Promise.resolve({ code: 0, stdout: "", stderr: "", killed: false }),
     registerProvider: () => {},
     unregisterProvider: () => {},
-    events: {} as never,
+    events: makeTestEventBus(),
   } as unknown as ExtensionAPI;
 
   registerExtension(pi);
@@ -571,20 +597,27 @@ describe("session_start reason handling", () => {
 type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>;
 type ShortcutHandler = (ctx: ExtensionContext) => Promise<void>;
 
-function captureCommandAndShortcutHandlers() {
-  let commandHandler: CommandHandler | undefined;
-  let shortcutHandler: ShortcutHandler | undefined;
-
-  const pi = {
-    on: () => {},
+function makeRegistrationPi(params: {
+  eventBus?: TestEventBus;
+  commandHandlers?: CommandHandler[];
+  shortcutHandlers?: ShortcutHandler[];
+  toolCallHandlers?: ToolCallHandler[];
+}) {
+  const eventBus = params.eventBus ?? makeTestEventBus();
+  return {
+    on(event: string, handler: ToolCallHandler) {
+      if (event === "tool_call") {
+        params.toolCallHandlers?.push(handler);
+      }
+    },
     registerShortcut(name: string, opts: { handler: ShortcutHandler }) {
-      if (name === "ctrl+shift+r") {
-        shortcutHandler = opts.handler;
+      if (name === "alt+r") {
+        params.shortcutHandlers?.push(opts.handler);
       }
     },
     registerCommand(name: string, opts: { handler: CommandHandler }) {
       if (name === "readonly") {
-        commandHandler = opts.handler;
+        params.commandHandlers?.push(opts.handler);
       }
     },
     registerTool: () => {},
@@ -608,18 +641,45 @@ function captureCommandAndShortcutHandlers() {
       Promise.resolve({ code: 0, stdout: "", stderr: "", killed: false }),
     registerProvider: () => {},
     unregisterProvider: () => {},
-    events: {} as never,
+    events: eventBus,
   } as unknown as ExtensionAPI;
+}
 
-  registerExtension(pi);
+function captureCommandAndShortcutHandlers() {
+  const commandHandlers: CommandHandler[] = [];
+  const shortcutHandlers: ShortcutHandler[] = [];
 
+  registerExtension(makeRegistrationPi({ commandHandlers, shortcutHandlers }));
+
+  const commandHandler = commandHandlers[0];
+  const shortcutHandler = shortcutHandlers[0];
   if (!commandHandler) {
     throw new Error("readonly command handler was not registered");
   }
   if (!shortcutHandler) {
-    throw new Error("ctrl+shift+r shortcut handler was not registered");
+    throw new Error("alt+r shortcut handler was not registered");
   }
   return { commandHandler, shortcutHandler };
+}
+
+function captureDuplicateReadonlyHandlers() {
+  const eventBus = makeTestEventBus();
+  const shortcutHandlers: ShortcutHandler[] = [];
+  const toolCallHandlers: ToolCallHandler[] = [];
+
+  registerExtension(
+    makeRegistrationPi({ eventBus, shortcutHandlers, toolCallHandlers }),
+  );
+  registerExtension(
+    makeRegistrationPi({ eventBus, shortcutHandlers, toolCallHandlers }),
+  );
+
+  const shortcutHandler = shortcutHandlers.at(-1);
+  if (!shortcutHandler) {
+    throw new Error("alt+r shortcut handler was not registered");
+  }
+  expect(toolCallHandlers).toHaveLength(2);
+  return { shortcutHandler, toolCallHandlers };
 }
 
 function makeNotifyCapturingCtx(
@@ -726,7 +786,7 @@ describe("/readonly command notifications", () => {
   });
 });
 
-describe("ctrl+shift+r shortcut notifications", () => {
+describe("alt+r shortcut notifications", () => {
   it("shortcut toggles readonly and does not emit a notification", async () => {
     const { shortcutHandler } = captureCommandAndShortcutHandlers();
     const ctx = makeNotifyCapturingCtx();
@@ -734,5 +794,19 @@ describe("ctrl+shift+r shortcut notifications", () => {
     await shortcutHandler(ctx);
 
     expect(ctx.notifyCalls).toHaveLength(0);
+  });
+
+  it("shortcut keeps duplicate readonly registrations in sync", async () => {
+    const { shortcutHandler, toolCallHandlers } =
+      captureDuplicateReadonlyHandlers();
+    const ctx = makeNotifyCapturingCtx();
+
+    await shortcutHandler(ctx);
+
+    for (const toolCallHandler of toolCallHandlers) {
+      await expect(
+        toolCallHandler(makeEditEvent() as never, makeToolCallCtx({})),
+      ).resolves.toBeUndefined();
+    }
   });
 });
