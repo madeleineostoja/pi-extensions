@@ -597,6 +597,7 @@ describe("session_before_compact handler", () => {
       message: "Handoff cancelled: No API key",
       type: "error",
     });
+    expect(getPendingHandoff()).toBeUndefined();
   });
 
   it("clears pending state when consumed", async () => {
