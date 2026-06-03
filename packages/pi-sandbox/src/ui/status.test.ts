@@ -90,7 +90,12 @@ function makeSubcommandContext(
   policyManager: PolicyManager,
 ): SubcommandContext {
   return {
-    ui: { notify: () => {} },
+    ui: {
+      notify: () => {},
+      select: async () => undefined,
+      input: async () => undefined,
+      confirm: async () => false,
+    },
     policyManager,
     cwd: "/tmp",
     events: undefined,

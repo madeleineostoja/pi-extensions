@@ -73,7 +73,12 @@ function makeCtx(cwd: string): ManifestContext {
 function makeSubcommandCtx(cwd: string): SubcommandContext {
   const policy = makePolicy();
   return {
-    ui: { notify: vi.fn() },
+    ui: {
+      notify: vi.fn(),
+      select: vi.fn(),
+      input: vi.fn(),
+      confirm: vi.fn(),
+    },
     policyManager: {
       getPolicy: () => policy,
       loadPolicy: () => policy,
