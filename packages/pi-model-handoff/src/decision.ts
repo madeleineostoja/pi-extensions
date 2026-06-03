@@ -1,19 +1,7 @@
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import type { CompactionPreparation } from "./compaction";
 
-export type CompactionPreparation = {
-  firstKeptEntryId: string;
-  messagesToSummarize: { role: string; content: string | unknown[] }[];
-  turnPrefixMessages: { role: string; content: string | unknown[] }[];
-  isSplitTurn: boolean;
-  tokensBefore: number;
-  previousSummary?: string;
-  fileOps: unknown;
-  settings: {
-    enabled: boolean;
-    reserveTokens: number;
-    keepRecentTokens: number;
-  };
-};
+export type { CompactionPreparation } from "./compaction";
 
 export type ModelSelectEvent = {
   type: "model_select";
