@@ -663,7 +663,10 @@ export function createSlashCommands(
         break;
 
       case "Explain path/host": {
-        const target = await ctx.ui.input("Explain sandbox decision", "path or host");
+        const target = await ctx.ui.input(
+          "Explain sandbox decision",
+          "path or host",
+        );
         if (target === undefined || target.trim().length === 0) {
           return;
         }
@@ -672,7 +675,10 @@ export function createSlashCommands(
       }
 
       case "Allow host for this session": {
-        const host = await ctx.ui.input("Allow host for this session", "github.com");
+        const host = await ctx.ui.input(
+          "Allow host for this session",
+          "github.com",
+        );
         if (host === undefined || host.trim().length === 0) {
           return;
         }

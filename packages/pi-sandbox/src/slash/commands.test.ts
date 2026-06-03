@@ -54,13 +54,11 @@ function makePolicyManager(policy: Policy): PolicyManager {
   };
 }
 
-function makeUI(
-  dialog?: {
-    selectReturns?: (string | undefined)[];
-    inputReturns?: (string | undefined)[];
-    confirmReturns?: boolean[];
-  },
-): {
+function makeUI(dialog?: {
+  selectReturns?: (string | undefined)[];
+  inputReturns?: (string | undefined)[];
+  confirmReturns?: boolean[];
+}): {
   ui: SubcommandContext["ui"];
   messages: Array<{ text: string; level?: string }>;
   selectCalls: Array<{ title: string; options: string[] }>;
@@ -918,7 +916,9 @@ describe("handleMenu", () => {
     await cmds.handleMenu(ctx);
     expect(inputCalls).toHaveLength(1);
     expect(inputCalls[0].title).toBe("Allow host for this session");
-    expect(cmds.getSessionState().sessionAllowedHosts.has("example.com")).toBe(true);
+    expect(cmds.getSessionState().sessionAllowedHosts.has("example.com")).toBe(
+      true,
+    );
   });
 
   it("cancelling 'Allow host for this session' input makes no changes and no error", async () => {
@@ -960,8 +960,12 @@ describe("handleMenu", () => {
     expect(selectCalls[1].options).toEqual(
       expect.arrayContaining(["host-a.com", "host-b.com"]),
     );
-    expect(cmds.getSessionState().sessionAllowedHosts.has("host-a.com")).toBe(false);
-    expect(cmds.getSessionState().sessionAllowedHosts.has("host-b.com")).toBe(true);
+    expect(cmds.getSessionState().sessionAllowedHosts.has("host-a.com")).toBe(
+      false,
+    );
+    expect(cmds.getSessionState().sessionAllowedHosts.has("host-b.com")).toBe(
+      true,
+    );
   });
 
   it("'Revoke session host' notifies when no session hosts exist", async () => {
@@ -980,7 +984,9 @@ describe("handleMenu", () => {
     });
     const ctx = makeCtx({ ui });
     await cmds.handleMenu(ctx);
-    expect(cmds.getSessionState().sessionAllowedHosts.has("host-a.com")).toBe(true);
+    expect(cmds.getSessionState().sessionAllowedHosts.has("host-a.com")).toBe(
+      true,
+    );
     expect(messages).toHaveLength(0);
   });
 
