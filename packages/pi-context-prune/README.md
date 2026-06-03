@@ -4,7 +4,7 @@ A Pi extension that keeps the context window small by pruning large, stale tool 
 
 ## What it does
 
-On every context event pi-context-prune scans all `toolResult` messages. Results that meet the staleness and size thresholds are replaced in-context with a reasoned stub. The extension also compacts bash output after assistant consumption, stubs reads that have been superseded by a later edit or written more than once, and runs batch old-history pruning with cache-aware scoring. The original content is never discarded — it remains in the session store and can be retrieved at any time via `context_recall`.
+On every context event pi-context-prune scans all `toolResult` messages. Results that meet the staleness and size thresholds are replaced in-context with a reasoned stub. The extension also compacts bash output after assistant consumption, stubs reads that have been superseded by a later edit or written more than once, and runs batch old-history pruning with cache-aware scoring. The original content remains in the active session store and can be retrieved via `context_recall` while that tool-result message is still retained by Pi.
 
 Error results (`isError: true`) are never elided by the standard or batch rules. They may still be stubbed by rot rules (superseded/duplicate) because the failure semantics do not change.
 
@@ -36,7 +36,7 @@ Emitted when the same file is read more than once with the same `offset`/`limit`
 
 ### After-consumption bash stub
 
-Emitted when a successful, low-risk `bash` result is followed by an assistant message. The command text is included when recoverable from the tool call arguments:
+Emitted when a successful, low-risk `bash` result is followed by an assistant message. The command text is included when recoverable from the tool call arguments; newlines/tabs are escaped and long commands are truncated in the stub:
 
 ```
 [bash output compacted after assistant consumption: SIZE. Command: COMMAND. Status: success. Preview: "PREVIEW". Call context_recall("TOOL_CALL_ID") to retrieve full output.]
@@ -82,7 +82,7 @@ pi-context-prune uses a bounded adaptive pruning policy with several mechanisms 
 
 6. **Guardrails** — Ordinary source reads are never aggressively compacted solely because they are large. Emergency pressure can bypass the cooldown and minimum thresholds, but it still respects the batch candidate cap. Unknown config keys are ignored and malformed values fall back to defaults with a warning.
 
-7. **Recall guarantees** — `context_recall` always returns the original raw tool result content, unchanged. Elision decisions are latched per `toolCallId` and preserved across context passes so that once a result is stubbed it stays stubbed with the same reason until the session ends.
+7. **Recall guarantees** — `context_recall` returns the original raw tool result content, unchanged, as long as Pi still retains the original tool-result message in the active session store. Elision decisions are latched per active `toolCallId` and preserved across context passes so that once a retained result is stubbed it stays stubbed with the same reason.
 
 ## Thresholds
 
@@ -91,7 +91,7 @@ pi-context-prune uses a bounded adaptive pruning policy with several mechanisms 
 | `staleTurns` | `4`     | Elide results later (more context kept live) | Elide results sooner (smaller context, more recall needed) |
 | `minTokens`  | `256`   | Only elide larger results                    | Elide even small results                                   |
 
-Both thresholds must be met simultaneously for a result to be eligible for the **standard-stale** rule. They are retained for backward compatibility and act as a fallback floor when adaptive or batch policies do not select a candidate.
+Both thresholds must be met simultaneously for a result to be eligible for the **standard-stale** rule. They are retained for backward compatibility; the newer rot, bash, batch, and emergency rules use their own profiles and guardrails.
 
 **Rot rules and batch rules bypass these thresholds.** Superseded-read, duplicate-read, after-consumption-bash, and batch-pressure detection stub results based on semantic value and suffix cost, not on age or size alone.
 
@@ -154,7 +154,7 @@ The LLM calls `context_recall` to retrieve an elided result. Parameters:
 - `id` (required) — the `toolCallId` from the stub
 - `lines` (optional) — a 1-indexed line range such as `"10-20"` or `"5"` to fetch only part of the content; only supported for single-text-block results with no image blocks
 
-The tool description mentions that stubs come in several forms (standard, superseded, duplicate, after-consumption, batch-pressure, emergency-pressure) but the recall contract is identical for all of them.
+The tool description mentions that stubs come in several forms (standard, superseded, duplicate, after-consumption, batch-pressure, emergency-pressure) but the recall contract is identical for all of them while the original tool-result message remains in the active session store.
 
 ## `/context-prune` command
 

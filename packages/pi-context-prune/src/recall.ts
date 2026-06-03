@@ -60,19 +60,18 @@ export function registerRecallTool(
       "Retrieve the full content of a tool result that was elided from context. " +
       "When a tool result is large, stale, superseded, duplicated, or compacted after consumption, pi-context-prune replaces it with a reasoned stub that ends with " +
       '`Call context_recall("TOOL_CALL_ID") to retrieve.`. ' +
-      "Call this tool with the toolCallId from the stub to get the original content back. " +
+      "Call this tool with the toolCallId from the stub to get the original content back while the original tool result is still retained in the active session store. " +
       "Stubs may describe the original size, status, path, or pruning reason, but the recall contract is the same for every form.",
     promptSnippet:
       'context_recall("toolCallId") — retrieve a tool result that was replaced with an elision stub',
     promptGuidelines: [
       'Use context_recall when a tool result has been replaced with a stub — every stub ends with Call context_recall("id") to retrieve. and carries the toolCallId you need.',
       'Common stub forms include: standard age/size ("ToolName result elided: SIZE"), superseded-read ("read result elided (superseded by later edit/write of PATH)"), duplicate-read ("read result elided (superseded by later read of PATH at turn N)"), after-consumption-bash ("bash output compacted after assistant consumption..."), batch-pressure ("compacted by cache-aware batch pruning"), and emergency-pressure ("emergency context pressure"). context_recall works the same way for all of them.',
-      "context_recall returns the original content unchanged; pi-context-prune never discards anything.",
+      "context_recall returns retained original content unchanged; if Pi has compacted the underlying tool-result message away, recall may be unavailable.",
       'Pass \'lines\' to context_recall (e.g. "10-20" or "5") to fetch only a line range; only supported for single-text-block results.',
     ],
     parameters: RecallParams,
 
-    // Signature per extensions.md:1217: (toolCallId, params, signal, onUpdate, ctx)
     async execute(
       _toolCallId: string,
       params: { id: string; lines?: string },
@@ -158,6 +157,13 @@ export function registerRecallTool(
           ],
           details: undefined,
           isError: true,
+        };
+      }
+
+      if (blocks.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "" }],
+          details: undefined,
         };
       }
 

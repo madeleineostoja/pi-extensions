@@ -238,6 +238,22 @@ describe("ingestAssistantUsage", () => {
     expect(state.batchCooldownExtraTurns).toBe(0);
     expect(state.nonEmergencyBatchSinceLastUsage).toBe(false);
   });
+
+  it("caps retained telemetry samples and usage dedupe keys", () => {
+    const state = makeState();
+    for (let i = 0; i < 520; i++) {
+      ingestAssistantUsage(state, {
+        role: "assistant",
+        provider: "p",
+        model: "m",
+        timestamp: i,
+        usage: { input: 100 + i, output: 1, cacheRead: i % 2, cacheWrite: 0 },
+      });
+    }
+    expect(state.recentCacheSamples).toHaveLength(100);
+    expect(state.recentCacheSamples[0].input).toBe(520);
+    expect(state.seenUsageKeys.size).toBe(500);
+  });
 });
 
 describe("getEffectiveProfile", () => {

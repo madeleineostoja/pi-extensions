@@ -224,7 +224,7 @@ describe("after-consumption bash compaction", () => {
   it("accepts large repetitive log-like successful output with no failure markers", () => {
     const hook = makeContextHook(bashConfig());
     const text = Array.from(
-      { length: 60 },
+      { length: 240 },
       (_, i) => `Building step ${i + 1}...`,
     ).join("\n");
     const messages: any[] = [
@@ -358,6 +358,25 @@ describe("after-consumption bash compaction", () => {
       (m: any) => m.toolCallId === "bash-12",
     ) as any;
     expect(bash.content[0].text).toContain("Preview:");
+  });
+
+  it("does not compact when the stub would not save tokens", () => {
+    const hook = makeContextHook({ ...bashConfig(), minTokens: 1 });
+    const text = "ok\n".repeat(50);
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "bash-no-save", name: "bash", arguments: { command: "echo hi" } },
+      ]),
+      makeBashResult("bash-no-save", text),
+      makeUserMsg(),
+      makeAssistantMsg([]),
+    ];
+    const result = hook({ type: "context", messages } as any, {} as any);
+    const bash = result.messages!.find(
+      (m: any) => m.toolCallId === "bash-no-save",
+    ) as any;
+    expect(bash.content[0].text).toBe(text);
   });
 
   it("raw output remains recallable via context_recall", () => {
@@ -538,7 +557,7 @@ describe("after-consumption bash compaction", () => {
   it("accepts output with prefix repetition signal", () => {
     const hook = makeContextHook(bashConfig());
     const lines = Array.from(
-      { length: 60 },
+      { length: 240 },
       (_, i) => `  [step ${i + 1}] building...`,
     );
     const text = lines.join("\n");

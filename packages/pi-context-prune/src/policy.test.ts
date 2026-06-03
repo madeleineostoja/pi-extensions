@@ -5,6 +5,7 @@ import {
   recordElision,
   recordRecall,
   resetPruningState,
+  pruneLatchedElisions,
   clampProfile,
   DEFAULT_PROFILE,
   CONSERVATIVE_PROFILE,
@@ -39,6 +40,33 @@ describe("createPruningState", () => {
     expect(state.elisionCountByReason.get("standard-stale")).toBe(1);
     expect(state.elisionCountByReason.get("duplicate-read-young")).toBe(1);
     expect(state.recallCountByReason.get("standard-stale")).toBe(1);
+  });
+});
+
+describe("pruneLatchedElisions", () => {
+  it("drops latched and recalled ids that are no longer active", () => {
+    const state = createPruningState();
+    recordElision(state, {
+      toolCallId: "keep",
+      reason: "standard-stale",
+      toolName: "read",
+      originalTokens: 100,
+    });
+    recordElision(state, {
+      toolCallId: "drop",
+      reason: "standard-stale",
+      toolName: "read",
+      originalTokens: 100,
+    });
+    recordRecall(state, "keep", "standard-stale");
+    recordRecall(state, "drop", "standard-stale");
+
+    pruneLatchedElisions(state, new Set(["keep"]));
+
+    expect(state.latched.has("keep")).toBe(true);
+    expect(state.latched.has("drop")).toBe(false);
+    expect(state.recallsByToolCallId.has("keep")).toBe(true);
+    expect(state.recallsByToolCallId.has("drop")).toBe(false);
   });
 });
 

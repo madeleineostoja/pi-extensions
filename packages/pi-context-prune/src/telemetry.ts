@@ -28,6 +28,8 @@ const REASONS: ElisionReason[] = [
   "batch-pressure",
   "emergency-pressure",
 ];
+const MAX_RECENT_CACHE_SAMPLES = 100;
+const MAX_SEEN_USAGE_KEYS = 500;
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
@@ -68,7 +70,7 @@ function hasEnoughRelevantSamples(state: PruningState): boolean {
 }
 
 function diagnosticProfileForReason(reason: ElisionReason): PolicyProfile {
-  if (reason === "standard-stale" || reason === "emergency-pressure") {
+  if (reason === "emergency-pressure") {
     return getProfileForReason("batch-pressure");
   }
   return getProfileForReason(reason);
@@ -174,6 +176,13 @@ export function ingestAssistantUsage(
     return false;
   }
   state.seenUsageKeys.add(key);
+  while (state.seenUsageKeys.size > MAX_SEEN_USAGE_KEYS) {
+    const oldest = state.seenUsageKeys.values().next().value;
+    if (typeof oldest !== "string") {
+      break;
+    }
+    state.seenUsageKeys.delete(oldest);
+  }
 
   const previous = latestSample(state);
   if (previous && !sameProviderModel(previous, msg)) {
@@ -202,6 +211,12 @@ export function ingestAssistantUsage(
     cacheWrite,
     cacheHit,
   });
+  if (state.recentCacheSamples.length > MAX_RECENT_CACHE_SAMPLES) {
+    state.recentCacheSamples.splice(
+      0,
+      state.recentCacheSamples.length - MAX_RECENT_CACHE_SAMPLES,
+    );
+  }
 
   const newAvg = computeRecentCacheHit(
     state.recentCacheSamples,

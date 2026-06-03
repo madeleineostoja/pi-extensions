@@ -53,6 +53,23 @@ function makeImageEntry(toolCallId: string) {
   };
 }
 
+function makeEmptyContentEntry(toolCallId: string) {
+  return {
+    type: "message" as const,
+    id: `entry-${toolCallId}`,
+    parentId: null,
+    timestamp: new Date().toISOString(),
+    message: {
+      role: "toolResult",
+      toolCallId,
+      toolName: "Read",
+      content: [],
+      isError: false,
+      timestamp: Date.now(),
+    },
+  };
+}
+
 function makeCompactionEntry() {
   return {
     type: "compaction" as const,
@@ -185,6 +202,16 @@ describe("context_recall execute", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/non-text|image/i);
+  });
+
+  it("returns empty text when slicing an empty-content result", async () => {
+    const entries = [makeEmptyContentEntry("call-empty")];
+    const result = await executeRecall(entries as any, {
+      id: "call-empty",
+      lines: "1",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toEqual([{ type: "text", text: "" }]);
   });
 
   it("returns full content when no lines param", async () => {

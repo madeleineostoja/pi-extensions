@@ -10,6 +10,7 @@ import {
   getPrimaryReason,
   getProfileForReason,
   BATCH_PRIORITY,
+  pruneLatchedElisions,
 } from "./policy.ts";
 import { DEFAULTS, type Config } from "./config.ts";
 import { normalizePath, extractFilePath } from "./paths.ts";
@@ -122,6 +123,20 @@ export function formatSupersededStub({
   return `[${toolName} result elided (superseded by later edit/write of ${normalizedPath}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve original.]`;
 }
 
+const MAX_BASH_COMMAND_STUB_CHARS = 120;
+
+function formatCommandForStub(command: string): string {
+  const escaped = command
+    .replace(/\\/g, "\\\\")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t");
+  if (escaped.length <= MAX_BASH_COMMAND_STUB_CHARS) {
+    return escaped;
+  }
+  return escaped.slice(0, MAX_BASH_COMMAND_STUB_CHARS - 1) + "…";
+}
+
 export function formatAfterConsumptionBashStub({
   tokenCount,
   toolCallId,
@@ -134,7 +149,9 @@ export function formatAfterConsumptionBashStub({
   preview?: string | null;
 }): string {
   const cmdSegment =
-    command && command.length > 0 ? ` Command: ${command}.` : "";
+    command && command.length > 0
+      ? ` Command: ${formatCommandForStub(command)}.`
+      : "";
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
   return `[bash output compacted after assistant consumption: ${formatTokenCount(tokenCount)}.${cmdSegment} Status: success.${previewSegment} Call context_recall("${toolCallId}") to retrieve full output.]`;
 }
@@ -158,35 +175,38 @@ export function formatDuplicateStub({
   return `[${toolName} result elided (superseded by later read of ${normalizedPath} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
 }
 
-export function estimateContentTokens(content: ToolResultContent): number {
+function estimateTextBlockChars(content: unknown): number {
+  if (typeof content === "string") {
+    return content.length;
+  }
+  if (!Array.isArray(content)) {
+    return 0;
+  }
   let chars = 0;
   for (const block of content) {
-    if (block.type === "text") {
+    if (block?.type === "text" && typeof block.text === "string") {
       chars += block.text.length;
     }
   }
-  return Math.ceil(chars / 4);
+  return chars;
+}
+
+export function estimateContentTokens(content: ToolResultContent): number {
+  return Math.ceil(estimateTextBlockChars(content) / 4);
+}
+
+function estimateMessageTextChars(msg: AgentMsg): number {
+  if (msg.role === "user" || msg.role === "assistant") {
+    return estimateTextBlockChars(msg.content);
+  }
+  if (msg.role === "toolResult") {
+    return estimateTextBlockChars(msg.content);
+  }
+  return 0;
 }
 
 function estimateMessageTokens(msg: AgentMsg): number {
-  if (msg.role === "user" || msg.role === "assistant") {
-    const content = (msg as any).content;
-    let chars = 0;
-    if (Array.isArray(content)) {
-      for (const block of content) {
-        if (block?.type === "text" && typeof block.text === "string") {
-          chars += block.text.length;
-        }
-      }
-    } else if (typeof content === "string") {
-      chars += content.length;
-    }
-    return Math.ceil(chars / 4);
-  }
-  if (msg.role === "toolResult") {
-    return estimateContentTokens(msg.content);
-  }
-  return 0;
+  return Math.ceil(estimateMessageTextChars(msg) / 4);
 }
 
 export function userTurnsAfterEachPosition(messages: AgentMsg[]): number[] {
@@ -228,36 +248,30 @@ export function userTurnsUpToEachPosition(messages: AgentMsg[]): number[] {
   return counts;
 }
 
+function buildSuffixTokenTable(messages: AgentMsg[]): number[] {
+  const suffixChars: number[] = Array.from(
+    { length: messages.length + 1 },
+    () => 0,
+  );
+  for (let i = messages.length - 1; i >= 0; i--) {
+    suffixChars[i] = suffixChars[i + 1] + estimateMessageTextChars(messages[i]);
+  }
+  return suffixChars.map((chars) => Math.ceil(chars / 4));
+}
+
+function lookupSuffixTokens(
+  suffixTokens: number[],
+  afterIndex: number,
+): number {
+  const idx = Math.max(0, Math.min(suffixTokens.length - 1, afterIndex + 1));
+  return suffixTokens[idx];
+}
+
 export function estimateSuffixTokens(
   messages: AgentMsg[],
   afterIndex: number,
 ): number {
-  let chars = 0;
-  for (let i = afterIndex + 1; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg.role === "user" || msg.role === "assistant") {
-      const content = (msg as any).content;
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block?.type === "text" && typeof block.text === "string") {
-            chars += block.text.length;
-          }
-        }
-      } else if (typeof content === "string") {
-        chars += content.length;
-      }
-    } else if (msg.role === "toolResult") {
-      const content = (msg as any).content;
-      if (Array.isArray(content)) {
-        for (const block of content) {
-          if (block?.type === "text" && typeof block.text === "string") {
-            chars += block.text.length;
-          }
-        }
-      }
-    }
-  }
-  return Math.ceil(chars / 4);
+  return lookupSuffixTokens(buildSuffixTokenTable(messages), afterIndex);
 }
 
 function isToolResult(msg: AgentMsg): msg is ToolResultMsg {
@@ -476,7 +490,7 @@ function applyElision(
 ): void {
   const msg = cand.msg;
   const preview = extractPreview(msg.content);
-  const primaryReason = getPrimaryReason(cand.reasons) ?? cand.reasons[0];
+  const primaryReason = getPrimaryReason(cand.reasons);
 
   const stubText = buildStubTextForCandidate(
     cand,
@@ -561,6 +575,17 @@ export function makeContextHook(
       : [];
     const distances = userTurnsAfterEachPosition(messages);
     const userTurnCounts = userTurnsUpToEachPosition(messages);
+    const suffixTokenTable = buildSuffixTokenTable(messages);
+
+    if (pruningState) {
+      const activeToolCallIds = new Set<string>();
+      for (const msg of messages) {
+        if (isToolResult(msg)) {
+          activeToolCallIds.add(msg.toolCallId);
+        }
+      }
+      pruneLatchedElisions(pruningState, activeToolCallIds);
+    }
 
     let totalPromptTokens = 0;
     for (const msg of messages) {
@@ -605,7 +630,7 @@ export function makeContextHook(
               latched.originalTokens - (latched.stubTokens ?? 0),
             ),
             stubTokens: latched.stubTokens ?? 0,
-            suffixTokens: estimateSuffixTokens(messages, i),
+            suffixTokens: lookupSuffixTokens(suffixTokenTable, i),
           });
           continue;
         }
@@ -673,10 +698,11 @@ export function makeContextHook(
         msg.toolName === "bash" &&
         hasAssistantAfter[i]
       ) {
+        const bashProfile = getProfileForReason("after-consumption-bash");
         const classification = classifyBashOutput(
           msg.content,
           tokenCount,
-          config.minTokens,
+          bashProfile.minSavedTokens,
         );
         if (classification.lowRisk) {
           reasons.push("after-consumption-bash");
@@ -698,7 +724,7 @@ export function makeContextHook(
         continue;
       }
 
-      const primaryReason = getPrimaryReason(reasons) ?? reasons[0];
+      const primaryReason = getPrimaryReason(reasons);
       const preview = extractPreview(msg.content);
       const stubText = buildStubTextForCandidate(
         {
@@ -724,7 +750,7 @@ export function makeContextHook(
         { type: "text", text: stubText },
       ]);
       const savedTokens = Math.max(0, tokenCount - stubTokens);
-      const suffixTokens = estimateSuffixTokens(messages, i);
+      const suffixTokens = lookupSuffixTokens(suffixTokenTable, i);
 
       const isOrdinarySourceRead =
         msg.toolName === "read" &&
@@ -732,9 +758,7 @@ export function makeContextHook(
         !reasons.includes("duplicate-read-young") &&
         !reasons.includes("superseded-read-young");
       const profile = getProfileForReason(
-        primaryReason === "standard-stale"
-          ? "batch-pressure"
-          : (primaryReason as Exclude<ElisionReason, "emergency-pressure">),
+        primaryReason as Exclude<ElisionReason, "emergency-pressure">,
       );
 
       candidates.push({
@@ -749,12 +773,7 @@ export function makeContextHook(
         priority: isOrdinarySourceRead
           ? BATCH_PRIORITY["batch-pressure"]
           : (BATCH_PRIORITY[
-              primaryReason === "standard-stale"
-                ? "batch-pressure"
-                : (primaryReason as Exclude<
-                    ElisionReason,
-                    "emergency-pressure"
-                  >)
+              primaryReason as Exclude<ElisionReason, "emergency-pressure">
             ] ?? 5),
         isOrdinarySourceRead,
         supersededPath,
@@ -789,12 +808,11 @@ export function makeContextHook(
     const elidedIndices = new Set<number>();
 
     for (const cand of candidates) {
-      const primaryReason: Exclude<ElisionReason, "emergency-pressure"> =
-        getPrimaryReason(cand.reasons) ??
-        (cand.reasons[0] as Exclude<ElisionReason, "emergency-pressure">);
-      const profile = getProfileForReason(
-        primaryReason === "standard-stale" ? "batch-pressure" : primaryReason,
-      );
+      const primaryReason = getPrimaryReason(cand.reasons) as Exclude<
+        ElisionReason,
+        "emergency-pressure"
+      >;
+      const profile = getProfileForReason(primaryReason);
 
       const recallRate = recallRateForScoring(pruningState, primaryReason);
       const recallPenaltyTokens = 6000 * recallRate;
@@ -817,9 +835,15 @@ export function makeContextHook(
       const suffixBudget = eff.suffixBudget;
 
       const nearTail = cand.suffixTokens <= profile.minSuffixBudget;
+      const requiresPositiveSavings =
+        primaryReason === "after-consumption-bash";
+      const savingsAllowYoung =
+        !requiresPositiveSavings || cand.savedTokens > 0;
       const scorePositive = cand.savedTokens >= minSaved && netValue >= 1000;
       const qualifiesYoung =
-        cand.suffixTokens <= suffixBudget && (nearTail || scorePositive);
+        savingsAllowYoung &&
+        cand.suffixTokens <= suffixBudget &&
+        (nearTail || scorePositive);
 
       if (qualifiesYoung && !isEmergency && !cand.isOrdinarySourceRead) {
         applyElision(
@@ -864,9 +888,9 @@ export function makeContextHook(
           0,
         );
         const batchDamage =
-          estimateSuffixTokens(messages, earliest.index) * cachePenalty;
+          lookupSuffixTokens(suffixTokenTable, earliest.index) * cachePenalty;
         const batchRisk = selected.reduce((s, c) => {
-          const reason = getPrimaryReason(c.reasons) ?? c.reasons[0];
+          const reason = getPrimaryReason(c.reasons);
           const rate = recallRateForScoring(pruningState, reason);
           return s + 4000 * c.semanticRisk + 6000 * rate;
         }, 0);

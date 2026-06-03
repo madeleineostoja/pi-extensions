@@ -1962,6 +1962,19 @@ describe("formatAfterConsumptionBashStub", () => {
     expect(stub).toContain('Preview: "ok\\nok\\n".');
   });
 
+  it("escapes and truncates command text", () => {
+    const stub = formatAfterConsumptionBashStub({
+      tokenCount: 1200,
+      toolCallId: "bash-id-long",
+      command: `cat <<'EOF'\n${"x".repeat(200)}\nEOF`,
+    });
+    const commandSegment = stub.match(/Command: (.*)\. Status:/)?.[1] ?? "";
+    expect(commandSegment).toContain("\\n");
+    expect(commandSegment).not.toContain("\n");
+    expect(commandSegment).toHaveLength(120);
+    expect(commandSegment.endsWith("…")).toBe(true);
+  });
+
   it("omits command segment when command is missing", () => {
     const stub = formatAfterConsumptionBashStub({
       tokenCount: 800,

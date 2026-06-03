@@ -113,9 +113,16 @@ export const AGGRESSIVE_PROFILE: PolicyProfile = clampProfile({
 });
 
 export const DEFAULT_POLICY_PROFILES: Record<
-  Exclude<ElisionReason, "emergency-pressure" | "standard-stale">,
+  Exclude<ElisionReason, "emergency-pressure">,
   PolicyProfile
 > = {
+  "standard-stale": clampProfile({
+    minSavedTokens: 1500,
+    baselineSuffixBudget: 25000,
+    minSuffixBudget: 5000,
+    maxSuffixBudget: 80000,
+    semanticRisk: 0.4,
+  }),
   "after-consumption-bash": clampProfile({
     minSavedTokens: 1000,
     baselineSuffixBudget: 20000,
@@ -166,23 +173,18 @@ const STUB_PRECEDENCE: Array<
   "standard-stale",
 ];
 
-export function getPrimaryReason(
-  reasons: ElisionReason[],
-): Exclude<ElisionReason, "emergency-pressure" | "batch-pressure"> | undefined {
+export function getPrimaryReason(reasons: ElisionReason[]): ElisionReason {
   for (const r of STUB_PRECEDENCE) {
     if (reasons.includes(r)) {
       return r;
     }
   }
-  return undefined;
+  return reasons[0];
 }
 
 export function getProfileForReason(
   reason: Exclude<ElisionReason, "emergency-pressure">,
 ): PolicyProfile {
-  if (reason === "standard-stale") {
-    return DEFAULT_POLICY_PROFILES["batch-pressure"];
-  }
   return DEFAULT_POLICY_PROFILES[reason] ?? DEFAULT_PROFILE;
 }
 
@@ -244,6 +246,18 @@ export function recordElision(
     elision.reason,
     (state.elisionCountByReason.get(elision.reason) ?? 0) + 1,
   );
+}
+
+export function pruneLatchedElisions(
+  state: PruningState,
+  activeToolCallIds: Set<string>,
+): void {
+  for (const toolCallId of state.latched.keys()) {
+    if (!activeToolCallIds.has(toolCallId)) {
+      state.latched.delete(toolCallId);
+      state.recallsByToolCallId.delete(toolCallId);
+    }
+  }
 }
 
 export function recordRecall(
