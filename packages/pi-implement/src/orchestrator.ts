@@ -49,7 +49,7 @@ import {
   type SchedulerTask,
 } from "./scheduler.js";
 
-const MAX_REVIEWER_REQUESTS = 3;
+const MAX_REVIEWER_REQUESTS = 5;
 const MAX_SYSTEM_FAILURES = 2;
 const MAX_REWORK_ATTEMPTS = 2;
 const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
