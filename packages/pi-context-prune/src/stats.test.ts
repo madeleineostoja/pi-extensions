@@ -26,6 +26,7 @@ describe("createStatsStore", () => {
       tokensElidedCumulative: 0,
       elidedCountLatest: 0,
       recallCount: 0,
+      byReason: [],
       byTool: [],
     });
   });
@@ -106,6 +107,7 @@ describe("createStatsStore", () => {
       tokensElidedCumulative: 0,
       elidedCountLatest: 0,
       recallCount: 0,
+      byReason: [],
       byTool: [],
     });
   });
@@ -183,6 +185,7 @@ describe("formatStats", () => {
       tokensElidedCumulative: 4096,
       elidedCountLatest: 3,
       recallCount: 7,
+      byReason: [],
       byTool: [],
     });
     expect(output).toContain(formatTokenCount(4096));
@@ -198,6 +201,7 @@ describe("formatStats", () => {
       tokensElidedCumulative: 0,
       elidedCountLatest: 0,
       recallCount: 0,
+      byReason: [],
       byTool: [],
     });
     expect(output).toContain("0 tokens");
@@ -209,6 +213,7 @@ describe("formatStats", () => {
       tokensElidedCumulative: 1000,
       elidedCountLatest: 2,
       recallCount: 5,
+      byReason: [],
       byTool: [],
     });
     expect(output.split("\n").length).toBe(3);
@@ -219,6 +224,7 @@ describe("formatStats", () => {
       tokensElidedCumulative: 34000,
       elidedCountLatest: 15,
       recallCount: 1,
+      byReason: [],
       byTool: [
         { toolName: "read", tokens: 23980, entries: 12, recalls: 1 },
         { toolName: "bash", tokens: 9990, entries: 3, recalls: 0 },
@@ -238,6 +244,7 @@ describe("formatStats", () => {
       tokensElidedCumulative: 0,
       elidedCountLatest: 0,
       recallCount: 0,
+      byReason: [],
       byTool: [],
     });
     expect(output).not.toContain("by tool:");
@@ -249,6 +256,9 @@ describe("formatStats", () => {
       tokensElidedCumulative: 256,
       elidedCountLatest: 1,
       recallCount: 1,
+      byReason: [
+        { reason: "standard-stale", tokens: 246, entries: 1, recalls: 1 },
+      ],
       byTool: [{ toolName: "read", tokens: 246, entries: 1, recalls: 1 }],
     });
     expect(output).toContain("1 entry");
@@ -262,6 +272,9 @@ describe("formatStats", () => {
       tokensElidedCumulative: 3000,
       elidedCountLatest: 3,
       recallCount: 2,
+      byReason: [
+        { reason: "batch-pressure", tokens: 2970, entries: 3, recalls: 2 },
+      ],
       byTool: [{ toolName: "bash", tokens: 2970, entries: 3, recalls: 2 }],
     });
     expect(output).toContain("3 entries");
@@ -273,6 +286,9 @@ describe("formatStats", () => {
       tokensElidedCumulative: 34000,
       elidedCountLatest: 3,
       recallCount: 1,
+      byReason: [
+        { reason: "standard-stale", tokens: 33970, entries: 3, recalls: 1 },
+      ],
       byTool: [{ toolName: "read", tokens: 33970, entries: 3, recalls: 1 }],
     });
     const lines = output.split("\n");

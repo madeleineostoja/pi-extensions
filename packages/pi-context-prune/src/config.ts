@@ -10,6 +10,7 @@ export type Config = {
   duplicateReadsEnabled: boolean;
   adaptivePolicyEnabled: boolean;
   afterConsumptionBashEnabled: boolean;
+  batchPruningEnabled: boolean;
   emergencyContextReserveTokens: number;
   batchMinCandidates: number;
   batchMinSavedTokens: number;
@@ -26,6 +27,7 @@ export const DEFAULTS: Config = {
   duplicateReadsEnabled: true,
   adaptivePolicyEnabled: true,
   afterConsumptionBashEnabled: true,
+  batchPruningEnabled: true,
   emergencyContextReserveTokens: 16000,
   batchMinCandidates: 2,
   batchMinSavedTokens: 8000,
@@ -137,11 +139,13 @@ export function loadConfig(
     | "duplicateReadsEnabled"
     | "adaptivePolicyEnabled"
     | "afterConsumptionBashEnabled"
+    | "batchPruningEnabled"
   > = [
     "supersededReadsEnabled",
     "duplicateReadsEnabled",
     "adaptivePolicyEnabled",
     "afterConsumptionBashEnabled",
+    "batchPruningEnabled",
   ];
   for (const key of boolKeys) {
     if (!(key in obj)) {

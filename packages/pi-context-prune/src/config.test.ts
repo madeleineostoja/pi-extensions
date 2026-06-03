@@ -35,6 +35,7 @@ describe("loadConfig", () => {
           supersededReadsEnabled: false,
           duplicateReadsEnabled: false,
           afterConsumptionBashEnabled: false,
+          batchPruningEnabled: false,
         }),
       ),
     );
@@ -43,6 +44,7 @@ describe("loadConfig", () => {
     expect(config.supersededReadsEnabled).toBe(false);
     expect(config.duplicateReadsEnabled).toBe(false);
     expect(config.afterConsumptionBashEnabled).toBe(false);
+    expect(config.batchPruningEnabled).toBe(false);
     expect(notify).not.toHaveBeenCalled();
   });
 
@@ -59,6 +61,7 @@ describe("loadConfig", () => {
     expect(config.afterConsumptionBashEnabled).toBe(
       DEFAULTS.afterConsumptionBashEnabled,
     );
+    expect(config.batchPruningEnabled).toBe(DEFAULTS.batchPruningEnabled);
     expect(notify).not.toHaveBeenCalled();
   });
 
@@ -151,6 +154,10 @@ describe("loadConfig", () => {
 describe("defaultConfig", () => {
   it("enables adaptive policy feedback by default", () => {
     expect(DEFAULTS.adaptivePolicyEnabled).toBe(true);
+  });
+
+  it("enables batch pruning by default", () => {
+    expect(DEFAULTS.batchPruningEnabled).toBe(true);
   });
 
   it("returns a copy of DEFAULTS", () => {

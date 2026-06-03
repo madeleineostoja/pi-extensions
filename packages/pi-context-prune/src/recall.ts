@@ -58,14 +58,15 @@ export function registerRecallTool(
     label: "context_recall",
     description:
       "Retrieve the full content of a tool result that was elided from context. " +
-      "When a tool result is large and old, pi-context-prune replaces it with a stub of the form " +
-      '`[ToolName result elided: SIZE. Call context_recall("TOOL_CALL_ID") to retrieve.]`. ' +
-      "Call this tool with the toolCallId from the stub to get the original content back.",
+      "When a tool result is large, stale, superseded, duplicated, or compacted after consumption, pi-context-prune replaces it with a reasoned stub that ends with " +
+      '`Call context_recall("TOOL_CALL_ID") to retrieve.`. ' +
+      "Call this tool with the toolCallId from the stub to get the original content back. " +
+      "Stubs may describe the original size, status, path, or pruning reason, but the recall contract is the same for every form.",
     promptSnippet:
       'context_recall("toolCallId") — retrieve a tool result that was replaced with an elision stub',
     promptGuidelines: [
-      'Use context_recall when a tool result has been replaced with a stub — all three stub variants end with Call context_recall("id") to retrieve. and carry the toolCallId you need.',
-      'The three stub forms are: standard age/size ("ToolName result elided: SIZE"), superseded-read ("read result elided (superseded by later edit/write of PATH)"), and duplicate-read ("read result elided (superseded by later read of PATH at turn N)"). context_recall works the same way for all three.',
+      'Use context_recall when a tool result has been replaced with a stub — every stub ends with Call context_recall("id") to retrieve. and carries the toolCallId you need.',
+      'Common stub forms include: standard age/size ("ToolName result elided: SIZE"), superseded-read ("read result elided (superseded by later edit/write of PATH)"), duplicate-read ("read result elided (superseded by later read of PATH at turn N)"), after-consumption-bash ("bash output compacted after assistant consumption..."), batch-pressure ("compacted by cache-aware batch pruning"), and emergency-pressure ("emergency context pressure"). context_recall works the same way for all of them.',
       "context_recall returns the original content unchanged; pi-context-prune never discards anything.",
       'Pass \'lines\' to context_recall (e.g. "10-20" or "5") to fetch only a line range; only supported for single-text-block results.',
     ],

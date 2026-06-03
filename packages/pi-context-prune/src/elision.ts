@@ -75,6 +75,36 @@ export function formatStub({
   return `[${toolName} result elided: ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
 }
 
+export function formatBatchPressureStub({
+  toolName,
+  tokenCount,
+  toolCallId,
+  preview,
+}: {
+  toolName: string;
+  tokenCount: number;
+  toolCallId: string;
+  preview?: string | null;
+}): string {
+  const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
+  return `[${toolName} result compacted by cache-aware batch pruning: ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+}
+
+export function formatEmergencyPressureStub({
+  toolName,
+  tokenCount,
+  toolCallId,
+  preview,
+}: {
+  toolName: string;
+  tokenCount: number;
+  toolCallId: string;
+  preview?: string | null;
+}): string {
+  const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
+  return `[${toolName} result elided (emergency context pressure): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+}
+
 export function formatSupersededStub({
   toolName,
   normalizedPath,
@@ -380,12 +410,28 @@ type Candidate = {
 
 function buildStubTextForCandidate(
   cand: Candidate,
-  reason: ElisionReason,
+  actionReason: ElisionReason,
   tokenCount: number,
   preview: string | null,
 ): string {
   const toolName = cand.msg.toolName ?? "unknown";
-  if (reason === "superseded-read-young" && cand.supersededPath) {
+  if (actionReason === "batch-pressure") {
+    return formatBatchPressureStub({
+      toolName,
+      tokenCount,
+      toolCallId: cand.msg.toolCallId,
+      preview,
+    });
+  }
+  if (actionReason === "emergency-pressure") {
+    return formatEmergencyPressureStub({
+      toolName,
+      tokenCount,
+      toolCallId: cand.msg.toolCallId,
+      preview,
+    });
+  }
+  if (actionReason === "superseded-read-young" && cand.supersededPath) {
     return formatSupersededStub({
       toolName,
       normalizedPath: cand.supersededPath,
@@ -394,7 +440,7 @@ function buildStubTextForCandidate(
       preview,
     });
   }
-  if (reason === "duplicate-read-young" && cand.duplicateInfo) {
+  if (actionReason === "duplicate-read-young" && cand.duplicateInfo) {
     return formatDuplicateStub({
       toolName,
       normalizedPath: cand.duplicateInfo.normalizedPath,
@@ -404,7 +450,7 @@ function buildStubTextForCandidate(
       preview,
     });
   }
-  if (reason === "after-consumption-bash") {
+  if (actionReason === "after-consumption-bash") {
     return formatAfterConsumptionBashStub({
       tokenCount,
       toolCallId: cand.msg.toolCallId,
@@ -434,7 +480,7 @@ function applyElision(
 
   const stubText = buildStubTextForCandidate(
     cand,
-    primaryReason,
+    actionReason,
     cand.originalTokens,
     preview,
   );
@@ -790,7 +836,7 @@ export function makeContextHook(
       }
     }
 
-    if (deferred.length > 0) {
+    if (deferred.length > 0 && (config.batchPruningEnabled || isEmergency)) {
       deferred.sort((a, b) => {
         if (a.priority !== b.priority) {
           return a.priority - b.priority;
@@ -885,8 +931,24 @@ function buildStubFromLatched(
   latched: import("./policy.ts").LatchedElision,
 ): string {
   const preview = extractPreview(msg.content);
-  const reason = latched.sourceReason ?? latched.reason;
+  const reason = latched.reason;
 
+  if (reason === "batch-pressure") {
+    return formatBatchPressureStub({
+      toolName: latched.toolName,
+      tokenCount: latched.originalTokens,
+      toolCallId: latched.toolCallId,
+      preview,
+    });
+  }
+  if (reason === "emergency-pressure") {
+    return formatEmergencyPressureStub({
+      toolName: latched.toolName,
+      tokenCount: latched.originalTokens,
+      toolCallId: latched.toolCallId,
+      preview,
+    });
+  }
   if (reason === "superseded-read-young" && latched.normalizedPath) {
     return formatSupersededStub({
       toolName: latched.toolName,

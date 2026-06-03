@@ -2,7 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   isEligibleForElision,
   formatStub,
+  formatSupersededStub,
   formatDuplicateStub,
+  formatAfterConsumptionBashStub,
+  formatBatchPressureStub,
+  formatEmergencyPressureStub,
   extractPreview,
   estimateContentTokens,
   userTurnsAfterEachPosition,
@@ -1577,7 +1581,7 @@ describe("young-or-batch read pruning", () => {
       } as any,
     );
     const read = result.messages!.find((m: any) => m.toolCallId === id) as any;
-    expect(read.content[0].text).toMatch(/result elided/);
+    expect(read.content[0].text).toMatch(/emergency context pressure/);
     expect(passes[0].entries[0].reason).toBe("emergency-pressure");
   });
 
@@ -1653,8 +1657,12 @@ describe("young-or-batch read pruning", () => {
     const superseded = result.messages!.find(
       (m: any) => m.toolCallId === sup,
     ) as any;
-    expect(bash.content[0].text).toMatch(/bash output compacted/);
-    expect(dup.content[0].text).toMatch(/superseded by later read/);
+    expect(bash.content[0].text).toMatch(
+      /compacted by cache-aware batch pruning/,
+    );
+    expect(dup.content[0].text).toMatch(
+      /compacted by cache-aware batch pruning/,
+    );
     expect(superseded.content[0].text).toBe(largeSource);
     expect(passes[0].entries.map((e: any) => e.toolCallId)).toEqual([
       bashId,
@@ -1840,7 +1848,9 @@ describe("young-or-batch read pruning", () => {
       const found = result.messages!.find(
         (m: any) => m.toolCallId === id,
       ) as any;
-      expect(found.content[0].text).toMatch(/result elided/);
+      expect(found.content[0].text).toMatch(
+        /compacted by cache-aware batch pruning/,
+      );
     }
     expect(passes[0].entries.length).toBe(3);
     expect(
@@ -1908,10 +1918,85 @@ describe("young-or-batch read pruning", () => {
       const found = emergency.messages!.find(
         (m: any) => m.toolCallId === id,
       ) as any;
-      expect(found.content[0].text).toMatch(/result elided/);
+      expect(found.content[0].text).toMatch(/emergency context pressure/);
     }
     expect(passes[2].entries.map((e: any) => e.toolCallId)).toEqual(
       expect.arrayContaining(secondIds),
     );
+  });
+});
+
+describe("formatSupersededStub", () => {
+  it("includes normalized path, original wording, and context_recall", () => {
+    const stub = formatSupersededStub({
+      toolName: "read",
+      normalizedPath: "src/foo.ts",
+      tokenCount: 3400,
+      toolCallId: "sup-id",
+      preview: "some preview",
+    });
+    expect(stub).toContain("superseded by later edit/write of src/foo.ts");
+    expect(stub).toContain("3.4K tokens");
+    expect(stub).toContain(
+      'Call context_recall("sup-id") to retrieve original.',
+    );
+    expect(stub).toContain('Preview: "some preview".');
+  });
+});
+
+describe("formatAfterConsumptionBashStub", () => {
+  it("includes command, status, token count, and context_recall", () => {
+    const stub = formatAfterConsumptionBashStub({
+      tokenCount: 1200,
+      toolCallId: "bash-id",
+      command: "pnpm test",
+      preview: "ok\\nok\\n",
+    });
+    expect(stub).toContain("bash output compacted after assistant consumption");
+    expect(stub).toContain("Command: pnpm test.");
+    expect(stub).toContain("Status: success.");
+    expect(stub).toContain("1.2K tokens");
+    expect(stub).toContain(
+      'Call context_recall("bash-id") to retrieve full output.',
+    );
+    expect(stub).toContain('Preview: "ok\\nok\\n".');
+  });
+
+  it("omits command segment when command is missing", () => {
+    const stub = formatAfterConsumptionBashStub({
+      tokenCount: 800,
+      toolCallId: "bash-id2",
+    });
+    expect(stub).not.toContain("Command:");
+    expect(stub).toContain("bash output compacted");
+  });
+});
+
+describe("formatBatchPressureStub", () => {
+  it("includes batch pruning wording and context_recall", () => {
+    const stub = formatBatchPressureStub({
+      toolName: "bash",
+      tokenCount: 5000,
+      toolCallId: "batch-id",
+      preview: "build output",
+    });
+    expect(stub).toContain("compacted by cache-aware batch pruning");
+    expect(stub).toContain("5K tokens");
+    expect(stub).toContain('Call context_recall("batch-id") to retrieve.');
+    expect(stub).toContain('Preview: "build output".');
+  });
+});
+
+describe("formatEmergencyPressureStub", () => {
+  it("includes emergency wording and context_recall", () => {
+    const stub = formatEmergencyPressureStub({
+      toolName: "read",
+      tokenCount: 2100,
+      toolCallId: "em-id",
+    });
+    expect(stub).toContain("emergency context pressure");
+    expect(stub).toContain("2.1K tokens");
+    expect(stub).toContain('Call context_recall("em-id") to retrieve.');
+    expect(stub).not.toContain("Preview:");
   });
 });
