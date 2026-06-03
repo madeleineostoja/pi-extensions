@@ -24,19 +24,19 @@ type FakeContext = {
 };
 
 function setup() {
-  let handler: Handler | undefined;
+  const handlers: Record<string, Handler> = {};
   const pi = {
     events: { on: () => () => {}, emit: () => {} },
     on: () => {},
     registerCommand: (name: string, options: { handler: Handler }) => {
-      if (name === "implement") {
-        handler = options.handler;
-      }
+      handlers[name] = options.handler;
     },
   };
   registerImplementCommand(pi as never);
-  if (!handler) {
-    throw new Error("handler not registered");
+  const handler = handlers.implement;
+  const buildHandler = handlers.build;
+  if (!handler || !buildHandler) {
+    throw new Error("handlers not registered");
   }
   const ctx: FakeContext = {
     cwd: "/repo",
@@ -58,7 +58,7 @@ function setup() {
       },
     },
   };
-  return { handler, ctx };
+  return { handler, buildHandler, ctx };
 }
 
 describe("/implement command", () => {
@@ -67,6 +67,15 @@ describe("/implement command", () => {
     await handler("", ctx);
     expect(ctx.ui.notifications[0]?.message).toContain("Usage: /implement");
     expect(ctx.ui.notifications[0]?.level).toBe("warning");
+  });
+
+  it("registers /build as an alias", async () => {
+    const { buildHandler, ctx } = setup();
+    await buildHandler("status", ctx);
+    expect(ctx.ui.notifications[0]).toEqual({
+      message: "pi-implement: idle",
+      level: "info",
+    });
   });
 
   it("reports idle status", async () => {

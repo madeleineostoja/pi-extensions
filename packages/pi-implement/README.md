@@ -8,6 +8,7 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 
 ```text
 /implement path/to/plan.md          # auto: pick serial or parallel automatically
+/build path/to/plan.md              # alias for /implement
 /implement --serial path/to/plan.md # force one task at a time
 /implement --parallel <n> path/to/plan.md
 /implement status

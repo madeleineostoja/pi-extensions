@@ -115,9 +115,9 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
     }
   });
 
-  pi.registerCommand("implement", {
+  const implementCommand = {
     description: "Implement a /plan markdown file one task at a time",
-    handler: async (args, ctx) => {
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
       const parsed = parseCommand(args.trim());
 
       if (parsed.kind === "error") {
@@ -738,6 +738,12 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
           }
         });
     },
+  };
+
+  pi.registerCommand("implement", implementCommand);
+  pi.registerCommand("build", {
+    ...implementCommand,
+    description: "Alias for /implement",
   });
 }
 
