@@ -201,7 +201,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           return;
         }
 
-        if (parsed.name === "agents") {
+        if (parsed.name === "init-agents") {
           const agentDir = getAgentDir();
           const targetPath = getGlobalReviewAgentPath(agentDir);
           if (globalReviewAgentExists(agentDir)) {
@@ -216,7 +216,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             `Create global pi-subagents agent "review" at ${targetPath}?`,
           );
           if (!confirmed) {
-            ctx.ui.notify("pi-implement agents cancelled.", "info");
+            ctx.ui.notify("pi-implement init-agents cancelled.", "info");
             return;
           }
           const result = scaffoldGlobalReviewAgent(agentDir);
@@ -266,7 +266,9 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
               .map((d) => d.name);
             for (const taskId of taskIds) {
               const task = readTaskJson(paths, taskId);
-              if (!task) continue;
+              if (!task) {
+                continue;
+              }
               const wt = task.worktreePath ?? "—";
               lines.push(`${task.id} [${task.status}] → ${wt}`);
             }
