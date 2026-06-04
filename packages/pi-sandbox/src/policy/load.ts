@@ -62,6 +62,12 @@ function allowDefaultTempDirs(policy: Policy, platform: NodeJS.Platform): void {
   }
 }
 
+function allowNixStore(policy: Policy): void {
+  if (fs.existsSync("/nix/store")) {
+    ensureAllowedPath(policy.fs.allowRead, "/nix/store");
+  }
+}
+
 export type PolicyManager = {
   loadPolicy(cwd: string, uiOrOpts?: NotifyTarget | LoadPolicyOptions): Policy;
   reloadPolicy(
@@ -230,6 +236,7 @@ export function createPolicyManager(): PolicyManager {
 
     policy = expandPathsInPolicy(policy, cwd, homeDir);
     allowDefaultTempDirs(policy, platform);
+    allowNixStore(policy);
 
     const hostDocsDir = resolveHostDocsDir();
     if (hostDocsDir && !policy.fs.allowRead.includes(hostDocsDir)) {
