@@ -24,6 +24,9 @@ class FakeGit implements GitClient {
   async root() {
     return "/repo";
   }
+  async mainRoot() {
+    return "/repo";
+  }
   async head() {
     return this.headValue;
   }

@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -22,6 +22,7 @@ export type CommandResult = {
 
 export type GitClient = {
   root(): Promise<string>;
+  mainRoot(): Promise<string>;
   head(): Promise<string>;
   status(): Promise<string>;
   isClean(): Promise<boolean>;
@@ -55,6 +56,15 @@ export class ExecGitClient implements GitClient {
 
   async root(): Promise<string> {
     return (await this.run(["rev-parse", "--show-toplevel"])).stdout.trim();
+  }
+
+  // Resolves the main checkout even when called from a linked worktree, so
+  // state pathing and cleanup never operate relative to a user-owned worktree.
+  async mainRoot(): Promise<string> {
+    const commonDir = (
+      await this.run(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    ).stdout.trim();
+    return dirname(commonDir);
   }
 
   async head(): Promise<string> {

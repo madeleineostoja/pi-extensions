@@ -242,7 +242,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
 
         if (parsed.name === "inspect") {
           const git = new ExecGitClient(ctx.cwd);
-          const repoRoot = await git.root();
+          const repoRoot = await git.mainRoot();
           let runId: string | undefined;
           if (active.state.runId) {
             runId = active.state.runId;
@@ -295,7 +295,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             return;
           }
           const git = new ExecGitClient(ctx.cwd);
-          const repoRoot = await git.root();
+          const repoRoot = await git.mainRoot();
           const lockCheck = checkRunLock(getStatePaths(repoRoot, "lock-check"));
           if (lockCheck.active) {
             ctx.ui.notify(
@@ -420,7 +420,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       let planHash: string;
       try {
         git = new ExecGitClient(ctx.cwd);
-        repoRoot = await git.root();
+        repoRoot = await git.mainRoot();
         baseSha = await git.head();
         planContent = readFileSync(planPath, "utf-8");
         plan = parsePlanFile(planPath);

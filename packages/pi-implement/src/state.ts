@@ -325,7 +325,6 @@ export function cleanupRun(paths: StatePaths): void {
         ]);
       }
     }
-    runGitCleanup(run.repoRoot, ["worktree", "prune"]);
     for (const entry of cleanupEntries) {
       if (entry.branchName?.startsWith(`pi-implement/${runId}/`)) {
         runGitCleanup(run.repoRoot, ["branch", "-D", entry.branchName]);
