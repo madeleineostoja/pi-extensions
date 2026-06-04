@@ -8,6 +8,8 @@ export type Phase =
   | "committing"
   | "integrating"
   | "reworking"
+  | "final_review"
+  | "followup_required"
   | "blocked"
   | "stopping"
   | "stopped"
@@ -98,6 +100,11 @@ export function formatFooterStatus(state: RunState): string {
   if (state.phase === "done") {
     return withFooterGlyph("implement done");
   }
+  if (state.phase === "followup_required") {
+    return withFooterGlyph(
+      `implement follow-up required${state.lastReason ? ` · ${shorten(state.lastReason, 32)}` : ""}`,
+    );
+  }
   if (state.phase === "stopped") {
     return withFooterGlyph("implement stopped");
   }
@@ -121,6 +128,10 @@ export function formatRunStatus(state: RunState, nowMs = Date.now()): string {
   }
 
   const lines: string[] = [`pi-implement: ${state.phase}`];
+
+  if (state.phase === "followup_required" && state.lastReason) {
+    lines.push(`Follow-up: ${state.lastReason}`);
+  }
 
   if (state.runId) {
     lines.push(`Run ID: ${state.runId}`);
@@ -256,7 +267,8 @@ export function formatWidgetLines(
     state.phase === "idle" ||
     state.phase === "done" ||
     state.phase === "blocked" ||
-    state.phase === "stopped"
+    state.phase === "stopped" ||
+    state.phase === "followup_required"
   ) {
     return lines;
   }

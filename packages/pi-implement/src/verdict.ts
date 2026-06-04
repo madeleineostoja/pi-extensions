@@ -14,6 +14,14 @@ export type ReviewerVerdict =
   | { verdict: "approved" }
   | { verdict: "changes_requested"; requiredChanges: string[] };
 
+export type OverallReviewVerdict =
+  | { verdict: "approved" }
+  | {
+      verdict: "changes_requested";
+      requiredChanges: string[];
+      recommendationMarkdown?: string;
+    };
+
 export function parseImplementerResult(
   text: string,
 ):
@@ -74,6 +82,56 @@ export function parseImplementerResult(
       verification: steps,
       commitMessage: commitMessage.trim(),
     },
+  };
+}
+
+export function parseOverallReviewVerdict(text: string): OverallReviewVerdict {
+  const parsed = parseTaggedJsonObject(text, "pi-overall-review-result");
+  if (!parsed.ok) {
+    return {
+      verdict: "changes_requested",
+      requiredChanges: [parsed.reason],
+    };
+  }
+  const value = parsed.value;
+  if (value.verdict === "approved") {
+    return { verdict: "approved" };
+  }
+  if (value.verdict !== "changes_requested") {
+    return {
+      verdict: "changes_requested",
+      requiredChanges: [
+        "Overall review JSON verdict must be either approved or changes_requested.",
+      ],
+    };
+  }
+  const requiredChanges = value.requiredChanges;
+  if (!Array.isArray(requiredChanges) || requiredChanges.length === 0) {
+    return {
+      verdict: "changes_requested",
+      requiredChanges: [
+        "Overall review requested changes but did not provide requiredChanges.",
+      ],
+    };
+  }
+  const changes = requiredChanges.filter(isNonEmptyString);
+  if (changes.length === 0) {
+    return {
+      verdict: "changes_requested",
+      requiredChanges: [
+        "Overall review requiredChanges must contain non-empty strings.",
+      ],
+    };
+  }
+  const recommendationMarkdown =
+    typeof value.recommendationMarkdown === "string" &&
+    value.recommendationMarkdown.trim()
+      ? value.recommendationMarkdown.trim()
+      : undefined;
+  return {
+    verdict: "changes_requested",
+    requiredChanges: changes,
+    recommendationMarkdown,
   };
 }
 
@@ -152,7 +210,7 @@ function fallbackType(taskText: string): string {
 
 function parseTaggedJsonObject(
   text: string,
-  tag: "pi-implement-result" | "pi-review-result",
+  tag: "pi-implement-result" | "pi-review-result" | "pi-overall-review-result",
 ):
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; reason: string } {

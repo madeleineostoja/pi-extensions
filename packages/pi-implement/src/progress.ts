@@ -9,6 +9,7 @@ const PHASE_LABEL: Partial<Record<Phase, string>> = {
   committing: "committing",
   integrating: "integrating",
   reworking: "reworking",
+  final_review: "running final review",
 };
 
 const STATUS_NOTE: Partial<
@@ -142,6 +143,11 @@ function runLevelNotes(prev: RunState, next: RunState): string[] {
   }
   if (next.phase === "blocked") {
     return [`✗ pi-implement blocked${reasonSuffix(next.lastReason)}`];
+  }
+  if (next.phase === "followup_required") {
+    return [
+      `⚠ pi-implement follow-up required${reasonSuffix(next.lastReason)}`,
+    ];
   }
   if (next.phase === "stopped") {
     return ["⏹ pi-implement stopped"];

@@ -45,6 +45,7 @@ export type GitClient = {
   addWorktree(worktreePath: string, branchName: string): Promise<void>;
   removeWorktree(worktreePath: string): Promise<void>;
   deleteTaskBranch(branchName: string): Promise<void>;
+  diffRange(baseSha: string, headSha: string): Promise<string>;
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient;
 };
 
@@ -62,7 +63,11 @@ export class ExecGitClient implements GitClient {
   // state pathing and cleanup never operate relative to a user-owned worktree.
   async mainRoot(): Promise<string> {
     const commonDir = (
-      await this.run(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+      await this.run([
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      ])
     ).stdout.trim();
     return dirname(commonDir);
   }
@@ -216,6 +221,11 @@ export class ExecGitClient implements GitClient {
 
   async deleteTaskBranch(branchName: string): Promise<void> {
     await this.run(["branch", "-D", branchName], true);
+  }
+
+  async diffRange(baseSha: string, headSha: string): Promise<string> {
+    return (await this.run(["diff", "--binary", `${baseSha}..${headSha}`]))
+      .stdout;
   }
 
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient {

@@ -248,4 +248,20 @@ describe("git helpers", () => {
     await client.removeWorktree(worktreePath);
     await client.deleteTaskBranch(branchName);
   });
+
+  it("returns the diff between two commits", async () => {
+    const cwd = repo();
+    const client = new ExecGitClient(cwd);
+    const baseSha = await client.head();
+
+    writeFileSync(join(cwd, "feature.ts"), "export const feat = true;\n");
+    git(cwd, "add", "feature.ts");
+    git(cwd, "commit", "-m", "feat: add feature");
+
+    const headSha = await client.head();
+    const diff = await client.diffRange(baseSha, headSha);
+
+    expect(diff).toContain("feature.ts");
+    expect(diff).toContain("export const feat = true;");
+  });
 });

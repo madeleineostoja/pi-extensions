@@ -106,6 +106,18 @@ describe("diffProgress", () => {
     expect(lines).toContain("\u00b7 Task 1/1 committing: feat: do thing");
   });
 
+  it("emits run-level followup_required notice with reason", () => {
+    const prev: RunState = { phase: "final_review" };
+    const next: RunState = {
+      phase: "followup_required",
+      lastReason: "missing edge-case tests",
+    };
+    const lines = diffProgress(prev, next, []);
+    expect(lines).toContain(
+      "⚠ pi-implement follow-up required: missing edge-case tests",
+    );
+  });
+
   it("uses checkpointSequence when bounded history drops older entries", () => {
     const prev: RunState = {
       phase: "coding",

@@ -3,6 +3,7 @@ import {
   fallbackCommitMessage,
   isValidCommitMessage,
   parseImplementerResult,
+  parseOverallReviewVerdict,
   parseReviewerVerdict,
 } from "./verdict.js";
 
@@ -75,6 +76,71 @@ describe("parseReviewerVerdict", () => {
 
   it("treats invalid output conservatively", () => {
     expect(parseReviewerVerdict("VERDICT: approved")).toMatchObject({
+      verdict: "changes_requested",
+    });
+  });
+});
+
+describe("parseOverallReviewVerdict", () => {
+  it("accepts approved", () => {
+    expect(
+      parseOverallReviewVerdict(
+        '<pi-overall-review-result>{"verdict":"approved"}</pi-overall-review-result>',
+      ),
+    ).toEqual({ verdict: "approved" });
+  });
+
+  it("extracts required changes and optional recommendation", () => {
+    expect(
+      parseOverallReviewVerdict(
+        '<pi-overall-review-result>{"verdict":"changes_requested","requiredChanges":["fix it"],"recommendationMarkdown":"## Suggested\\n\\nDo X"}</pi-overall-review-result>',
+      ),
+    ).toEqual({
+      verdict: "changes_requested",
+      requiredChanges: ["fix it"],
+      recommendationMarkdown: "## Suggested\n\nDo X",
+    });
+  });
+
+  it("synthesizes a missing recommendation from required changes", () => {
+    const result = parseOverallReviewVerdict(
+      '<pi-overall-review-result>{"verdict":"changes_requested","requiredChanges":["fix it"]}</pi-overall-review-result>',
+    );
+    expect(result).toEqual({
+      verdict: "changes_requested",
+      requiredChanges: ["fix it"],
+      recommendationMarkdown: undefined,
+    });
+  });
+
+  it("treats invalid output conservatively", () => {
+    expect(parseOverallReviewVerdict("VERDICT: approved")).toEqual({
+      verdict: "changes_requested",
+      requiredChanges: [
+        "Response did not include <pi-overall-review-result> output.",
+      ],
+    });
+  });
+
+  it("rejects changes_requested without requiredChanges", () => {
+    expect(
+      parseOverallReviewVerdict(
+        '<pi-overall-review-result>{"verdict":"changes_requested"}</pi-overall-review-result>',
+      ),
+    ).toEqual({
+      verdict: "changes_requested",
+      requiredChanges: [
+        "Overall review requested changes but did not provide requiredChanges.",
+      ],
+    });
+  });
+
+  it("rejects malformed JSON", () => {
+    expect(
+      parseOverallReviewVerdict(
+        "<pi-overall-review-result>not json</pi-overall-review-result>",
+      ),
+    ).toMatchObject({
       verdict: "changes_requested",
     });
   });

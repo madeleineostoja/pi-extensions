@@ -210,6 +210,24 @@ describe("status formatting", () => {
     expect(status).toContain("agent id: a1");
   });
 
+  it("formats followup_required footer and status", () => {
+    expect(
+      formatFooterStatus({
+        phase: "followup_required",
+        lastReason: "missing tests",
+      }),
+    ).toBe("󰚩 implement follow-up required · missing tests");
+
+    const status = formatRunStatus({
+      phase: "followup_required",
+      lastReason: "missing tests",
+      planPath: "/plan.md",
+    });
+    expect(status).toContain("pi-implement: followup_required");
+    expect(status).toContain("Follow-up: missing tests");
+    expect(status).toContain("Plan: /plan.md");
+  });
+
   it("keeps checkpoint history bounded while preserving emission sequence", () => {
     let state: RunState = { phase: "coding" };
     for (let i = 1; i <= 30; i++) {

@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { registerImplementCommand } from "./command.js";
+import { canStartImplementRun, registerImplementCommand } from "./command.js";
 import { getStatePaths, createRunState, writeTaskJson } from "./state.js";
 
 type Handler = (args: string, ctx: FakeContext) => Promise<void>;
@@ -138,6 +138,23 @@ describe("/implement command", () => {
       message: "pi-implement inspect: no run found.",
       level: "info",
     });
+  });
+
+  it("allows a new run to start from followup_required phase", async () => {
+    const { handler, ctx } = setup();
+    const repo = mkdtempSync(join(tmpdir(), "pi-implement-cmd-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@e.com"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "T"], { cwd: repo });
+    writeFileSync(join(repo, "plan.md"), "# Plan\n\n## Tasks\n\n- [ ] Task\n");
+    execFileSync("git", ["add", "plan.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: repo });
+
+    const repoCtx: FakeContext = { ...ctx, cwd: repo };
+    await handler("status", repoCtx);
+
+    expect(canStartImplementRun("followup_required")).toBe(true);
+    expect(canStartImplementRun("final_review")).toBe(false);
   });
 
   it("inspect prints run dirs and task statuses from disk", async () => {

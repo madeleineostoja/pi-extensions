@@ -109,6 +109,68 @@ Or request changes with at most 5 concise required changes:
 `;
 }
 
+export function buildOverallReviewerPrompt(args: {
+  planContent: string;
+  planPath: string;
+  baseSha: string;
+  headSha: string;
+  diff: string;
+  runId?: string;
+  landedTasks?: Array<{ id: string; title: string; commitSha?: string }>;
+}): string {
+  const runSection = args.runId ? `\nRun ID: ${args.runId}\n` : "\n";
+  const taskSection =
+    args.landedTasks && args.landedTasks.length > 0
+      ? `\n## Landed Tasks\n\n${args.landedTasks.map((t) => `- ${t.id}: ${t.title}${t.commitSha ? ` @ ${t.commitSha.slice(0, 7)}` : ""}`).join("\n")}\n`
+      : "";
+  return `You are the pi-implement overall reviewer. This is a read-only whole-feature review after all planned tasks have been implemented and committed.
+
+Assess whether the combined implementation satisfies the original plan, whether cross-task gaps or edge cases were missed, and whether the tasks fit together correctly.
+
+Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, or run any command that changes files or git state. Use read-only commands only.
+
+## Plan
+
+Source: ${args.planPath}
+Base SHA: ${args.baseSha}
+Head SHA: ${args.headSha}${runSection}${taskSection}
+
+${args.planContent}
+
+## Combined Diff
+
+\`\`\`diff
+${args.diff}
+\`\`\`
+
+## Review Rules
+
+- Approve if the feature is complete, correct, and the tasks integrate well.
+- Request changes if there are material gaps, missed edge cases, integration problems, or insufficient verification.
+- Be specific about what must change.
+
+End with exactly one <pi-overall-review-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
+
+Approved:
+<pi-overall-review-result>
+{
+  "verdict": "approved"
+}
+</pi-overall-review-result>
+
+Changes requested:
+<pi-overall-review-result>
+{
+  "verdict": "changes_requested",
+  "requiredChanges": [
+    "Concrete follow-up change required before considering the feature complete."
+  ],
+  "recommendationMarkdown": "## Suggested Follow-up\\n\\n..."
+}
+</pi-overall-review-result>
+`;
+}
+
 function formatVerification(result: ParsedImplementerResult): string {
   return result.verification
     .map(

@@ -25,6 +25,7 @@ import {
   runImplementation,
   BlockedError,
   StoppedError,
+  OverallReviewFollowupError,
 } from "./orchestrator.js";
 import type { RunState, AgentDisplayRef, StatePatch } from "./status.js";
 import {
@@ -75,8 +76,21 @@ const ACTIVE_PHASES = new Set([
   "committing",
   "integrating",
   "reworking",
+  "final_review",
   "stopping",
 ]);
+
+const STARTABLE_PHASES = new Set([
+  "idle",
+  "done",
+  "stopped",
+  "blocked",
+  "followup_required",
+]);
+
+export function canStartImplementRun(phase: RunState["phase"]): boolean {
+  return STARTABLE_PHASES.has(phase);
+}
 
 export function registerImplementCommand(pi: ExtensionAPI): void {
   let active: ActiveRun = {
@@ -335,9 +349,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         return;
       }
 
-      if (
-        !["idle", "done", "stopped", "blocked"].includes(active.state.phase)
-      ) {
+      if (!canStartImplementRun(active.state.phase)) {
         ctx.ui.notify(
           `pi-implement is already running.\n\n${formatRunStatus(active.state)}`,
           "warning",
@@ -680,6 +692,46 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
             if (paths) {
               appendEvent(paths, { type: "run_stopped" });
               releaseRunLock(paths, runId);
+            }
+          } else if (err instanceof OverallReviewFollowupError) {
+            const followupState: RunState = {
+              ...active.state,
+              phase: "followup_required",
+              activeSubagentId: undefined,
+              activeSubagentIds: [],
+              lastReason: err.message,
+            };
+            active.state = followupState;
+            lastStoppedState = followupState;
+            setState(ctx, followupState);
+            ctx.ui.notify(
+              `pi-implement follow-up required: ${err.message}`,
+              "warning",
+            );
+            ctx.ui.notify(`Review artifact: ${err.artifactPath}`, "info");
+            if (paths) {
+              appendEvent(paths, {
+                type: "run_blocked",
+                reason: err.message,
+              });
+              try {
+                cleanupRun(paths);
+              } catch (cleanupErr) {
+                const reason =
+                  cleanupErr instanceof Error
+                    ? cleanupErr.message
+                    : String(cleanupErr);
+                appendEvent(paths, { type: "cleanup_failed", reason });
+                releaseRunLock(paths, runId);
+                ctx.ui.notify(
+                  `pi-implement auto-cleanup warning: ${reason}`,
+                  "warning",
+                );
+              }
+            }
+            if (ctx.hasUI) {
+              ctx.ui.setStatus(STATUS_KEY, undefined);
+              ctx.ui.setWidget(WIDGET_KEY, undefined);
             }
           } else {
             const reason =

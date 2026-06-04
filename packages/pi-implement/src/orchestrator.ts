@@ -8,7 +8,11 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { buildImplementerPrompt, buildReviewerPrompt } from "./prompts.js";
+import {
+  buildImplementerPrompt,
+  buildOverallReviewerPrompt,
+  buildReviewerPrompt,
+} from "./prompts.js";
 import {
   buildTaskPacket,
   markTaskDone,
@@ -29,6 +33,7 @@ import {
   fallbackCommitMessage,
   isValidCommitMessage,
   parseImplementerResult,
+  parseOverallReviewVerdict,
   parseReviewerVerdict,
 } from "./verdict.js";
 import type { StatePaths, TaskJson } from "./state.js";
@@ -37,6 +42,8 @@ import {
   appendEvent,
   taskIdFromTask,
   readTaskJson,
+  readRunJson,
+  readEvents,
 } from "./state.js";
 import type { RunMode } from "./state.js";
 import { readGraphJson } from "./graph.js";
@@ -54,6 +61,7 @@ import {
   type SchedulerTask,
 } from "./scheduler.js";
 import { checkpointPatch } from "./status.js";
+import { dirname } from "node:path";
 
 const MAX_REVIEWER_REQUESTS = 5;
 const MAX_SYSTEM_FAILURES = 2;
@@ -97,8 +105,12 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
     throw new BlockedError("dirty worktree");
   }
 
+  const runBaseSha = deps.paths
+    ? (readRunJson(deps.paths)?.baseSha ?? (await deps.git.head()))
+    : await deps.git.head();
+
   if (deps.mode === "serial") {
-    await runSerialImplementation(deps, plan, planArtifacts);
+    await runSerialImplementation(deps, plan, planArtifacts, runBaseSha);
     return;
   }
 
@@ -110,13 +122,14 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
   }
 
   // Fallback to serial if no graph (shouldn't happen in normal flow)
-  await runSerialImplementation(deps, plan, planArtifacts);
+  await runSerialImplementation(deps, plan, planArtifacts, runBaseSha);
 }
 
 async function runSerialImplementation(
   deps: OrchestratorDeps,
   initialPlan: ReturnType<typeof parsePlanFile>,
   planArtifacts: string[],
+  runBaseSha: string,
 ): Promise<void> {
   let plan = initialPlan;
 
@@ -129,6 +142,7 @@ async function runSerialImplementation(
     const task = nextUncheckedTask(plan);
     deps.updateState({ totalTasks: plan.tasks.length });
     if (!task) {
+      await runOverallReview(deps, plan, planArtifacts, runBaseSha);
       deps.updateState({
         phase: "done",
         taskIndex: plan.tasks.length,
@@ -391,6 +405,7 @@ async function runParallelImplementation(
       });
       throw new BlockedError(finalValidation.reason);
     }
+    await runOverallReview(deps, initialPlan, planArtifacts, graph.baseSha);
   }
 
   const landedCount = [...sched.tasks.values()].filter(
@@ -1084,6 +1099,169 @@ function parseIntegrationReviewVerdict(
   }
 }
 
+export function nextOverallReviewArtifactPath(planPath: string): string {
+  const base = planPath.replace(/\.md$/i, ".overall-review.md");
+  if (!existsSync(base)) {
+    return base;
+  }
+  let suffix = 2;
+  for (;;) {
+    const candidate = base.replace(/\.md$/i, `-${suffix}.md`);
+    if (!existsSync(candidate)) {
+      return candidate;
+    }
+    suffix++;
+  }
+}
+
+async function runOverallReview(
+  deps: OrchestratorDeps,
+  plan: ReturnType<typeof parsePlanFile>,
+  planArtifacts: string[],
+  baseSha: string,
+): Promise<void> {
+  throwIfStopped(deps);
+
+  if (!(await deps.git.isCleanExcept(planArtifacts))) {
+    throw new BlockedError("dirty worktree before final review");
+  }
+
+  const planContent = readFileSync(deps.planPath, "utf-8");
+  const headSha = await deps.git.head();
+
+  if (baseSha === headSha) {
+    return;
+  }
+
+  const diff = await deps.git.diffRange(baseSha, headSha);
+
+  const landedTasks: Array<{ id: string; title: string; commitSha?: string }> =
+    [];
+  if (deps.paths) {
+    const events = readEvents(deps.paths);
+    const landedEvents = events.filter((e) => e.type === "task_landed");
+    const seen = new Set<string>();
+    for (const ev of landedEvents) {
+      if (seen.has(ev.taskId)) {
+        continue;
+      }
+      seen.add(ev.taskId);
+      const taskJson = readTaskJson(deps.paths, ev.taskId);
+      if (taskJson) {
+        landedTasks.push({
+          id: taskJson.id,
+          title: taskJson.title,
+          commitSha: taskJson.landedCommitSha,
+        });
+      }
+    }
+  }
+
+  const prompt = buildOverallReviewerPrompt({
+    planContent,
+    planPath: deps.planPath,
+    baseSha,
+    headSha,
+    diff,
+    runId: deps.runId,
+    landedTasks,
+  });
+
+  deps.updateState({ phase: "final_review", activeSubagentId: undefined });
+
+  const preReviewHead = await deps.git.head();
+  const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
+  const stagedFingerprint = await deps.git.stagedFingerprint();
+  const worktreeFingerprint =
+    await deps.git.worktreeFingerprintExcept(planArtifacts);
+
+  const id = await deps.subagents.spawn({
+    type: deps.roles.reviewer.type,
+    prompt,
+    description: "overall review",
+    model: deps.roles.reviewer.model,
+  });
+  const ref: AgentDisplayRef = {
+    id,
+    role: "reviewer",
+    label: "Reviewer · Overall review",
+    startedAt: new Date().toISOString(),
+  };
+  deps.updateState((prev) => addActiveAgentPatch(prev, ref));
+  const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
+    deps.updateState((prev) => removeActiveAgentPatch(prev, id));
+  });
+
+  if (result.status !== "completed") {
+    throw new BlockedError(`Overall review ${result.status}: ${result.error}`);
+  }
+
+  // Boundary checks
+  if ((await deps.git.head()) !== preReviewHead) {
+    throw new BlockedError("overall reviewer changed HEAD");
+  }
+  const changedPlanArtifact = changedSnapshotPath(
+    planArtifacts,
+    planArtifactSnapshot,
+  );
+  if (changedPlanArtifact) {
+    throw new BlockedError(
+      `overall reviewer changed a plan artifact: ${changedPlanArtifact}`,
+    );
+  }
+  const stagedFingerprintAfter = await deps.git.stagedFingerprint();
+  if (stagedFingerprintAfter !== stagedFingerprint) {
+    throw new BlockedError("overall reviewer changed staged state");
+  }
+  const worktreeFingerprintAfter =
+    await deps.git.worktreeFingerprintExcept(planArtifacts);
+  if (worktreeFingerprintAfter !== worktreeFingerprint) {
+    throw new BlockedError("overall reviewer changed worktree state");
+  }
+
+  const verdict = parseOverallReviewVerdict(result.result);
+  if (verdict.verdict === "approved") {
+    return;
+  }
+
+  const artifactPath = nextOverallReviewArtifactPath(deps.planPath);
+  const recommendation =
+    verdict.recommendationMarkdown ??
+    `## Required Changes\n\n${verdict.requiredChanges.map((c) => `- ${c}`).join("\n")}`;
+  const artifactContent = `# Overall Review: Changes Requested
+
+## Verdict
+
+changes_requested
+
+## Required Changes
+
+${verdict.requiredChanges.map((c) => `- ${c}`).join("\n")}
+
+## Recommendation
+
+${recommendation}
+
+## Context
+
+- Plan: ${deps.planPath}
+- Base SHA: ${baseSha}
+- Head SHA: ${headSha}
+${deps.runId ? `- Run ID: ${deps.runId}\n` : ""}
+## Raw Result
+
+<pi-overall-review-result>
+${JSON.stringify({ verdict: verdict.verdict, requiredChanges: verdict.requiredChanges, recommendationMarkdown: verdict.recommendationMarkdown }, null, 2)}
+</pi-overall-review-result>
+`;
+  mkdirSync(dirname(artifactPath), { recursive: true });
+  writeFileSync(artifactPath, artifactContent, "utf-8");
+  throw new OverallReviewFollowupError(
+    artifactPath,
+    `Overall review requested changes: ${verdict.requiredChanges.join("; ")}`,
+  );
+}
+
 function safeArtifactName(value: string): string {
   return (
     value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-|-$/g, "") ||
@@ -1271,6 +1449,7 @@ async function runTaskWorker(args: {
     throwIfStopped(deps);
     const attempt = reviewerRequests + systemFailures + 1;
     const mainHeadBefore = await deps.git.head();
+    const taskHeadBefore = worktreePath ? await taskGit.head() : undefined;
     const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
     const packet = buildTaskPacket(plan, task);
     const effectiveWorktreePath = worktreePath ?? (await deps.git.root());
@@ -1409,7 +1588,7 @@ async function runTaskWorker(args: {
         "implementer dirtied the main checkout outside the task worktree",
       );
     }
-    if (worktreePath && (await taskGit.head()) !== baseSha) {
+    if (worktreePath && (await taskGit.head()) !== taskHeadBefore) {
       throw new BlockedError("implementer changed task worktree HEAD");
     }
 
@@ -1861,6 +2040,15 @@ export class StoppedError extends Error {
   constructor() {
     super("stopped");
     this.name = "StoppedError";
+  }
+}
+
+export class OverallReviewFollowupError extends Error {
+  readonly artifactPath: string;
+  constructor(artifactPath: string, message: string) {
+    super(message);
+    this.name = "OverallReviewFollowupError";
+    this.artifactPath = artifactPath;
   }
 }
 

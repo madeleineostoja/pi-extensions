@@ -1,8 +1,19 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { runImplementation, BlockedError } from "./orchestrator.js";
+import {
+  runImplementation,
+  BlockedError,
+  OverallReviewFollowupError,
+  nextOverallReviewArtifactPath,
+} from "./orchestrator.js";
 import { writeGraphJson } from "./graph.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SpawnArgs, SubagentClient, SubagentResult } from "./subagents.js";
@@ -20,12 +31,13 @@ class FakeGit implements GitClient {
   removedWorktrees: string[] = [];
   deletedBranches: string[] = [];
   worktreeChild: FakeGit | undefined;
+  rootValue = "/repo";
 
   async root() {
-    return "/repo";
+    return this.rootValue;
   }
   async mainRoot() {
-    return "/repo";
+    return this.rootValue;
   }
   async head() {
     return this.headValue;
@@ -104,11 +116,15 @@ class FakeGit implements GitClient {
   async deleteTaskBranch(branchName: string) {
     this.deletedBranches.push(branchName);
   }
-  forWorktree(_worktreePath: string): GitClient {
+  async diffRange(_baseSha: string, _headSha: string): Promise<string> {
+    return this.diffText;
+  }
+  forWorktree(worktreePath: string): GitClient {
     if (!this.worktreeChild) {
       this.worktreeChild = new FakeGit();
       this.worktreeChild.headValue = this.headValue;
     }
+    this.worktreeChild.rootValue = worktreePath;
     return this.worktreeChild;
   }
 }
@@ -161,6 +177,36 @@ function makePaths(dir: string) {
   };
 }
 
+const GOOD_OVERALL_REVIEW =
+  '<pi-overall-review-result>{"verdict":"approved"}</pi-overall-review-result>';
+const BAD_OVERALL_REVIEW =
+  '<pi-overall-review-result>{"verdict":"changes_requested","requiredChanges":["add integration tests"],"recommendationMarkdown":"## Suggested\\n\\nAdd tests."}</pi-overall-review-result>';
+
+describe("nextOverallReviewArtifactPath", () => {
+  it("returns a sibling path for the first review", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-artifact-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n", "utf-8");
+    expect(nextOverallReviewArtifactPath(planPath)).toBe(
+      join(dir, "plan.overall-review.md"),
+    );
+  });
+
+  it("increments a numeric suffix when the sibling exists", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-artifact-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n", "utf-8");
+    writeFileSync(join(dir, "plan.overall-review.md"), "# First\n", "utf-8");
+    expect(nextOverallReviewArtifactPath(planPath)).toBe(
+      join(dir, "plan.overall-review-2.md"),
+    );
+    writeFileSync(join(dir, "plan.overall-review-2.md"), "# Second\n", "utf-8");
+    expect(nextOverallReviewArtifactPath(planPath)).toBe(
+      join(dir, "plan.overall-review-3.md"),
+    );
+  });
+});
+
 describe("runImplementation", () => {
   it("implements, reviews, marks, and commits one task", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
@@ -171,6 +217,7 @@ describe("runImplementation", () => {
     subagents.results = [
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
     ];
     const states: Partial<RunState>[] = [];
     let currentState: RunState = { phase: "idle" };
@@ -196,6 +243,7 @@ describe("runImplementation", () => {
     expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
     expect(git.commits).toEqual(["feat: do thing"]);
     expect(subagents.spawns.map((spawn) => spawn.type)).toEqual([
+      "general-purpose",
       "general-purpose",
       "general-purpose",
     ]);
@@ -264,6 +312,7 @@ describe("runImplementation", () => {
         status: "completed",
         result: GOOD_REVIEW,
       },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
     ];
 
     let currentState: RunState = { phase: "idle" };
@@ -294,7 +343,7 @@ describe("runImplementation", () => {
       ]),
     );
     expect(git.commits).toEqual(["fix: do thing"]);
-    expect(subagents.spawns).toHaveLength(7);
+    expect(subagents.spawns).toHaveLength(8);
   });
 
   it("creates a task branch and worktree in parallel mode", async () => {
@@ -502,6 +551,7 @@ describe("runImplementation", () => {
           return GOOD_REVIEW;
         },
       },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
     ];
 
     await runImplementation({
@@ -668,6 +718,7 @@ describe("runImplementation", () => {
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
     ];
 
     await runImplementation({
@@ -683,7 +734,7 @@ describe("runImplementation", () => {
       shouldStop: () => false,
     });
 
-    expect(subagents.spawns).toHaveLength(4);
+    expect(subagents.spawns).toHaveLength(5);
     // Second implementer spawn should have feedback in the prompt
     const secondImplPrompt = subagents.spawns[2]?.prompt ?? "";
     expect(secondImplPrompt).toContain("fix the bug");
@@ -864,6 +915,520 @@ describe("runImplementation", () => {
       }),
     ).rejects.toThrow("Worktree setup failed");
     expect(git.deletedBranches).toContain("pi-implement/r1/task-1");
+  });
+
+  it("runs an approved overall review after serial tasks land", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    let currentState: RunState = { phase: "idle" };
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: (patch) => {
+        currentState =
+          typeof patch === "function"
+            ? { ...currentState, ...patch(currentState) }
+            : { ...currentState, ...patch };
+      },
+      shouldStop: () => false,
+    });
+
+    expect(currentState.phase).toBe("done");
+    expect(subagents.spawns).toHaveLength(3);
+    const overallPrompt = subagents.spawns[2]?.prompt ?? "";
+    expect(overallPrompt).toContain("pi-implement overall reviewer");
+    expect(overallPrompt).toContain("old-sha");
+  });
+
+  it("throws OverallReviewFollowupError when overall review requests changes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: BAD_OVERALL_REVIEW },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(OverallReviewFollowupError);
+
+    const artifactPath = join(dir, "plan.overall-review.md");
+    expect(existsSync(artifactPath)).toBe(true);
+    const content = readFileSync(artifactPath, "utf-8");
+    expect(content).toContain("changes_requested");
+    expect(content).toContain("add integration tests");
+    expect(content).toContain("## Suggested");
+    expect(content).toContain("old-sha");
+  });
+
+  it("skips overall review when baseSha equals headSha", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [x] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
+  it("blocks if overall reviewer changes HEAD", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    let waits = 0;
+    subagents.waitFor = async (id, signal) => {
+      waits++;
+      const result = await originalWaitFor(id, signal);
+      if (waits === 3) {
+        git.headValue = "mutated";
+      }
+      return result;
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("overall reviewer changed HEAD");
+  });
+
+  it("blocks if overall reviewer changes a plan artifact", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    let waits = 0;
+    subagents.waitFor = async (id, signal) => {
+      waits++;
+      const result = await originalWaitFor(id, signal);
+      if (waits === 3) {
+        writeFileSync(planPath, "# Mutated\n", "utf-8");
+      }
+      return result;
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("overall reviewer changed a plan artifact");
+  });
+
+  it("blocks if overall reviewer changes staged state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    let waits = 0;
+    subagents.waitFor = async (id, signal) => {
+      waits++;
+      const result = await originalWaitFor(id, signal);
+      if (waits === 3) {
+        git.diffText = "mutated";
+      }
+      return result;
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("overall reviewer changed staged state");
+  });
+
+  it("blocks if overall reviewer changes worktree state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    let waits = 0;
+    subagents.waitFor = async (id, signal) => {
+      waits++;
+      const result = await originalWaitFor(id, signal);
+      if (waits === 3) {
+        git.worktreeFingerprintText = "mutated";
+      }
+      return result;
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("overall reviewer changed worktree state");
+  });
+
+  it("runs an approved overall review after parallel tasks land", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "task-1",
+          planIndex: 1,
+          title: "Do thing",
+          taskHash: "hash",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    let currentState: RunState = { phase: "idle" };
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "parallel",
+      runId: "r1",
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: (patch) => {
+        currentState =
+          typeof patch === "function"
+            ? { ...currentState, ...patch(currentState) }
+            : { ...currentState, ...patch };
+      },
+      shouldStop: () => false,
+      verifyCommand: "echo ok",
+    });
+
+    expect(currentState.phase).toBe("done");
+    expect(subagents.spawns).toHaveLength(3);
+    const overallPrompt = subagents.spawns[2]?.prompt ?? "";
+    expect(overallPrompt).toContain("pi-implement overall reviewer");
+    expect(overallPrompt).toContain("h1");
+  });
+
+  it("throws OverallReviewFollowupError when parallel overall review requests changes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "task-1",
+          planIndex: 1,
+          title: "Do thing",
+          taskHash: "hash",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: BAD_OVERALL_REVIEW },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+        verifyCommand: "echo ok",
+      }),
+    ).rejects.toThrow(OverallReviewFollowupError);
+
+    const artifactPath = join(dir, "plan.overall-review.md");
+    expect(existsSync(artifactPath)).toBe(true);
   });
 
   it("blocks instead of completing when the parallel scheduler stalls", async () => {
