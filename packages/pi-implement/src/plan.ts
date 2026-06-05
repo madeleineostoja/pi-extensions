@@ -135,7 +135,12 @@ export function buildTaskPacket(plan: ParsedPlan, task: PlanTask): TaskPacket {
     .join("\n")
     .trim();
   if (nonTask) {
-    parts.push("## Plan Context", "", nonTask, "");
+    parts.push(
+      "## Background Plan Context (not additional selected-task scope)",
+      "",
+      nonTask,
+      "",
+    );
   }
 
   return {

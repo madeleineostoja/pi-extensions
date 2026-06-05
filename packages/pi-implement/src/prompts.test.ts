@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAlreadySatisfiedReviewerPrompt,
   buildImplementerPrompt,
   buildOverallReviewerPrompt,
   buildReviewerPrompt,
@@ -40,6 +41,36 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
+  it("states the required implementation scope is only the selected task", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).toContain(
+      "**Required implementation scope:** Only the selected task line plus its indented block",
+    );
+    expect(prompt).toContain(
+      "Do not implement sibling tasks or unrelated cleanup, even when global plan context mentions them",
+    );
+  });
+
+  it("documents both outcome values in the result schema", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).toContain('outcome: "changed"');
+    expect(prompt).toContain('outcome: "already_satisfied"');
+    expect(prompt).toContain(
+      "when the current repository state already satisfies the selected task and no file changes are necessary",
+    );
+    expect(prompt).toContain(
+      "You must verify the selected task against current files and tests before claiming",
+    );
+  });
+
   it("includes retry context when reviewer feedback is supplied", () => {
     const prompt = buildImplementerPrompt({
       taskPacket: TASK_PACKET,
@@ -66,6 +97,52 @@ describe("buildReviewerPrompt", () => {
     expect(prompt).toContain("staged candidate diff");
     expect(prompt).toContain("Do not edit files");
     expect(prompt).toContain("change HEAD");
+  });
+});
+
+describe("buildAlreadySatisfiedReviewerPrompt", () => {
+  it("tells the reviewer there is no staged diff and the task is claimed already satisfied", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain("There is no staged candidate diff for this task");
+    expect(prompt).toContain(
+      "The implementer claims the selected task is already satisfied by the current repository state",
+    );
+    expect(prompt).toContain(
+      "Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task",
+    );
+    expect(prompt).toContain(TASK_PACKET.trim());
+    expect(prompt).toContain(WORKTREE_PATH);
+    expect(prompt).toContain("Do not edit files");
+    expect(prompt).toContain("change HEAD");
+  });
+
+  it("includes the accumulated diff when provided", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      accumulatedDiff: "diff --git a/file.ts b/file.ts\n",
+    });
+
+    expect(prompt).toContain("diff --git a/file.ts b/file.ts");
+    expect(prompt).toContain("Accumulated Run Diff");
+  });
+
+  it("omits the accumulated diff and instructs direct inspection when not provided", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain(
+      "Inspect the current repository state directly using read-only git and file commands",
+    );
   });
 });
 

@@ -82,6 +82,9 @@ Important.
     );
     const packet = buildTaskPacket(parsed, parsed.tasks[0]);
     expect(packet.markdown).toContain("## Selected Task\n\n- [ ] Do it");
+    expect(packet.markdown).toContain(
+      "## Background Plan Context (not additional selected-task scope)",
+    );
     expect(packet.markdown).toContain("## Context\n\nImportant.");
   });
 });

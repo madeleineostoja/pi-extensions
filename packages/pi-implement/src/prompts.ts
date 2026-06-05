@@ -21,7 +21,9 @@ You have been assigned a dedicated Git worktree for this task. Read and write on
 
 Do not read or write files outside the assigned worktree. Any shell command that touches project files must run from or explicitly target the assigned worktree path above.
 
-The task packet is the authoritative plan context. Read and search the repository as needed to understand and integrate the change. You may read any file in the repository. Do not implement sibling tasks or unrelated cleanup.
+The task packet is the authoritative plan context. Read and search the repository as needed to understand and integrate the change. You may read any file in the repository.
+
+**Required implementation scope:** Only the selected task line plus its indented block. Other sections in the task packet are background context to help you understand the task, unless the selected task explicitly references them. Do not implement sibling tasks or unrelated cleanup, even when global plan context mentions them.
 
 Do not edit source plan files or checklist state. Do not stage, commit, reset, checkout, rebase, merge, tag, push, clean, or force-add ignored files.
 
@@ -35,8 +37,12 @@ ${args.taskPacket}
 
 End with exactly one <pi-implement-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
 
+Use \`outcome: "changed"\` when you have made new code, test, or documentation changes that require a commit.
+Use \`outcome: "already_satisfied"\` only when the current repository state already satisfies the selected task and no file changes are necessary. You must verify the selected task against current files and tests before claiming \`already_satisfied\`; do not use it to avoid work.
+
 <pi-implement-result>
 {
+  "outcome": "changed",
   "summary": "Briefly describe what changed.",
   "verification": [
     {
@@ -46,6 +52,22 @@ End with exactly one <pi-implement-result> block containing raw JSON matching th
     }
   ],
   "commitMessage": "type: short description\\n\\nOptional body explaining non-obvious context."
+}
+</pi-implement-result>
+
+Or for already-satisfied:
+
+<pi-implement-result>
+{
+  "outcome": "already_satisfied",
+  "summary": "Briefly describe why the task is already satisfied.",
+  "verification": [
+    {
+      "command": "command or check that was run",
+      "result": "passed, failed, or not applicable",
+      "rationale": "why this verification is sufficient or what limitation remains"
+    }
+  ]
 }
 </pi-implement-result>
 `;
@@ -88,6 +110,69 @@ ${args.implementer.summary}
 
 ${formatVerification(args.implementer)}
 
+End with exactly one <pi-review-result> block containing raw JSON. Do not wrap it in a markdown code fence. Approve with:
+
+<pi-review-result>
+{
+  "verdict": "approved"
+}
+</pi-review-result>
+
+Or request changes with at most 5 concise required changes:
+
+<pi-review-result>
+{
+  "verdict": "changes_requested",
+  "requiredChanges": [
+    "Concrete material issue that must be fixed before approval."
+  ]
+}
+</pi-review-result>
+`;
+}
+
+export function buildAlreadySatisfiedReviewerPrompt(args: {
+  taskPacket: string;
+  worktreePath: string;
+  implementer: ParsedImplementerResult;
+  accumulatedDiff?: string;
+}): string {
+  const diffSection = args.accumulatedDiff
+    ? `## Accumulated Run Diff
+
+\`\`\`diff\n${args.accumulatedDiff}\n\`\`\`\n`
+    : `## Accumulated Run Diff
+
+The accumulated diff from the run start to current HEAD was too large to include or was not available. Inspect the current repository state directly using read-only git and file commands.\n`;
+  return `You are the pi-implement reviewer for exactly one /plan task. This prompt is the complete review contract and must work even if your subagent definition is generic.
+
+Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The task packet is a deliberate single-task slice; sibling task lines are intentionally omitted and are out of scope.
+
+There is no staged candidate diff for this task. The implementer claims the selected task is already satisfied by the current repository state. Your job is to verify that claim.
+
+Inspect the current repository state in the assigned worktree:
+
+  ${args.worktreePath}
+
+Use read-only git commands and file inspection to verify the claim. Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, run formatters with write/fix flags, or change HEAD.
+
+The selected task's required scope is the task line plus the indented lines directly under it. Sub-bullets are part of the task. Sibling tasks are out of scope.
+
+Approve only if the selected task line and its indented block are satisfied now. Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task. Block for concrete material issues: incorrect behavior, missing task requirements, regressions, broken or insufficient verification for the changed surface, or unsafe or insecure code. Do not block for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or refactors that would merely be nice.
+
+## Task Packet
+
+${args.taskPacket}
+
+## Implementer Summary
+
+${args.implementer.summary}
+
+## Implementer Verification
+
+${formatVerification(args.implementer)}
+
+${diffSection}
 End with exactly one <pi-review-result> block containing raw JSON. Do not wrap it in a markdown code fence. Approve with:
 
 <pi-review-result>
