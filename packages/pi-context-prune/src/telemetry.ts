@@ -340,10 +340,27 @@ export function getEffectiveProfile(
   };
 }
 
-export function formatTelemetryDiagnostics(
-  state: PruningState,
-  adaptiveEnabled = true,
-): string {
+function appendNonzeroReasonCounts(
+  lines: string[],
+  title: string,
+  counts: Map<ElisionReason, number>,
+): void {
+  const nonzero = REASONS.map((reason) => ({
+    reason,
+    count: counts.get(reason) ?? 0,
+  })).filter(({ count }) => count > 0);
+
+  if (nonzero.length === 0) {
+    return;
+  }
+
+  lines.push(title);
+  for (const { reason, count } of nonzero) {
+    lines.push(`  ${reason}: ${count}`);
+  }
+}
+
+export function formatTelemetryDiagnostics(state: PruningState): string {
   const lines: string[] = [];
   const current = latestSample(state);
   const recentCacheHit = computeRecentCacheHit(
@@ -367,34 +384,16 @@ export function formatTelemetryDiagnostics(
     }
   }
 
-  lines.push("elisions by reason:");
-  for (const reason of REASONS) {
-    const count = state.elisionCountByReason.get(reason) ?? 0;
-    lines.push(`  ${reason}: ${count}`);
-  }
-
-  lines.push("recalls by reason:");
-  for (const reason of REASONS) {
-    const count = state.recallCountByReason.get(reason) ?? 0;
-    lines.push(`  ${reason}: ${count}`);
-  }
-
-  lines.push("effective profiles:");
-  for (const reason of REASONS) {
-    const profile = diagnosticProfileForReason(reason);
-    const agg =
-      state.aggressivenessByReason.get(reason) ??
-      baselineAggressiveness(profile);
-    const effective = getEffectiveProfile(
-      state,
-      reason,
-      profile,
-      adaptiveEnabled,
-    );
-    lines.push(
-      `  ${reason}: aggressiveness=${agg.toFixed(2)}, suffixBudget=${effective.suffixBudget.toLocaleString()}, minSavedTokens=${effective.minSavedTokens.toLocaleString()}`,
-    );
-  }
+  appendNonzeroReasonCounts(
+    lines,
+    "elisions by reason:",
+    state.elisionCountByReason,
+  );
+  appendNonzeroReasonCounts(
+    lines,
+    "recalls by reason:",
+    state.recallCountByReason,
+  );
 
   return lines.join("\n");
 }

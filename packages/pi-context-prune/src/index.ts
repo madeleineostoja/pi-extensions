@@ -83,10 +83,7 @@ export default function (pi: ExtensionAPI) {
         [
           formatStats(stats.snapshot()),
           "",
-          formatTelemetryDiagnostics(
-            pruningState,
-            config.adaptivePolicyEnabled,
-          ),
+          formatTelemetryDiagnostics(pruningState),
         ].join("\n"),
         "info",
       );
