@@ -138,11 +138,12 @@ export function buildAlreadySatisfiedReviewerPrompt(args: {
   headSha: string;
   accumulatedDiff?: string;
 }): string {
-  const diffSection = args.accumulatedDiff
-    ? `## Accumulated Run Diff
+  const diffSection =
+    args.accumulatedDiff !== undefined
+      ? `## Accumulated Run Diff
 
 \`\`\`diff\n${args.accumulatedDiff}\n\`\`\`\n`
-    : `## Accumulated Run Diff
+      : `## Accumulated Run Diff
 
 The accumulated diff from the run start to current HEAD was too large to include or was not available. Inspect the current repository state directly using read-only git and file commands.\n`;
   return `You are the pi-implement reviewer for exactly one /plan task. This prompt is the complete review contract and must work even if your subagent definition is generic.

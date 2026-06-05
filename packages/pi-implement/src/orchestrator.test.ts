@@ -1720,7 +1720,7 @@ describe("runImplementation", () => {
     expect(caught?.message).toContain("Likely causes");
   });
 
-  it("serial already-satisfied with staged changes does conservative retry", async () => {
+  it("serial already-satisfied with staged changes blocks without retrying dirty mutations", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
     const planPath = join(dir, "plan.md");
     writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
@@ -1731,7 +1731,6 @@ describe("runImplementation", () => {
       '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
 
     subagents.results = [
-      { status: "completed", result: ALREADY_SATISFIED_IMPL },
       { status: "completed", result: ALREADY_SATISFIED_IMPL },
     ];
 
@@ -1750,7 +1749,13 @@ describe("runImplementation", () => {
         updateState: () => {},
         shouldStop: () => false,
       }),
-    ).rejects.toThrow("system retry limit reached");
+    ).rejects.toThrow(
+      "Implementer reported already_satisfied but produced staged changes",
+    );
+
+    expect(subagents.spawns).toHaveLength(1);
+    expect(readFileSync(planPath, "utf-8")).toContain("- [ ] Do it");
+    expect(git.commits).toHaveLength(0);
   });
 
   it("serial already-satisfied changes_requested blocks if reviewer dirtied checkout", async () => {

@@ -1641,15 +1641,9 @@ async function runTaskWorker(args: {
     const hasStaged = await taskGit.hasStagedChanges();
 
     if (hasStaged && parsed.result.outcome === "already_satisfied") {
-      await taskGit.reset();
-      feedback = recordSystemFailure(
-        task.index,
-        systemFailures,
-        "system",
-        "Implementer reported already_satisfied but produced staged changes; retrying for a consistent outcome.",
+      throw new BlockedError(
+        "Implementer reported already_satisfied but produced staged changes; blocked to avoid carrying mutations into a retry.",
       );
-      systemFailures++;
-      continue;
     }
 
     let fingerprintBefore: string | undefined;

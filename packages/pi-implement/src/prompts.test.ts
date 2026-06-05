@@ -135,6 +135,20 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
     expect(prompt).toContain("Accumulated Run Diff");
   });
 
+  it("includes an available empty accumulated diff", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+      accumulatedDiff: "",
+    });
+
+    expect(prompt).toContain("Accumulated Run Diff");
+    expect(prompt).toContain("```diff\n\n```");
+    expect(prompt).not.toContain("too large to include or was not available");
+  });
+
   it("omits the accumulated diff and instructs direct inspection when not provided", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
       taskPacket: TASK_PACKET,
