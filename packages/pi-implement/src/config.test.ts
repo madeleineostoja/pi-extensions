@@ -73,16 +73,35 @@ describe("config", () => {
     });
   });
 
-  it("falls back to the current session model and default subagent type", () => {
+  it("falls back to default subagent types without forcing a model", () => {
     const result = resolveEffectiveRoles({}, {
       model: { provider: "p", id: "m" },
     } as never);
     expect(result).toEqual({
       ok: true,
       roles: {
-        implementer: { model: "p/m", type: "general-purpose" },
-        reviewer: { model: "p/m", type: "general-purpose" },
-        planner: { model: "p/m", type: "Explore" },
+        implementer: { model: undefined, type: "general-purpose" },
+        reviewer: { model: undefined, type: "general-purpose" },
+        planner: { model: undefined, type: "Explore" },
+      },
+    });
+  });
+
+  it("uses configured models when provided", () => {
+    const result = resolveEffectiveRoles(
+      {
+        implementer: { model: "p/impl", type: "Implement" },
+        reviewer: { model: "p/review" },
+        planner: { model: "p/plan" },
+      },
+      {} as never,
+    );
+    expect(result).toEqual({
+      ok: true,
+      roles: {
+        implementer: { model: "p/impl", type: "Implement" },
+        reviewer: { model: "p/review", type: "general-purpose" },
+        planner: { model: "p/plan", type: "Explore" },
       },
     });
   });

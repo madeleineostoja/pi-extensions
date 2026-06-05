@@ -67,7 +67,7 @@ Global config lives at:
 }
 ```
 
-If a role model is omitted, the current session model is used. If a role type is omitted, `general-purpose` is used for implementer and reviewer, and `Explore` is used for the planner. The runtime prompts are self-contained enough to work with `general-purpose`, but reviewer safety is only instruction-enforced in that mode; configure `reviewer.type` to a dedicated read-only review agent for stronger isolation.
+If a role model is omitted, pi-implement does not pass a model override, so `pi-subagents` uses the role's subagent type default model (and then the current session model if that type has no default). If a role type is omitted, `general-purpose` is used for implementer and reviewer, and `Explore` is used for the planner. The runtime prompts are self-contained enough to work with `general-purpose`, but reviewer safety is only instruction-enforced in that mode; configure `reviewer.type` to a dedicated read-only review agent for stronger isolation.
 
 Run `/implement view` to inspect active pi-implement subagents. With one active agent it prints fallback instructions to open the agent via `/agents`; with multiple agents it prompts you to pick by pretty label.
 
@@ -75,7 +75,7 @@ Run `/implement view` to inspect active pi-implement subagents. With one active 
 
 `verifyCommand` is an optional non-empty shell command. In parallel mode it runs from the repository root during per-task integration and final validation. If omitted, pi-implement auto-detects `test`, `typecheck`, and `build` package scripts; if none exist, it falls back to an LLM integration review.
 
-Run `/implement config` to print the resolved configuration and effective role models.
+Run `/implement config` to print the resolved configuration and configured role model overrides.
 
 ## Verification
 

@@ -22,7 +22,7 @@ export type ConfigReadResult = {
 };
 
 export type EffectiveRole = {
-  model: string;
+  model?: string;
   type: string;
 };
 
@@ -167,31 +167,21 @@ export function currentModelRef(ctx: ExtensionContext): string | undefined {
 
 export function resolveEffectiveRoles(
   config: ImplementConfig,
-  ctx: ExtensionContext,
+  _ctx: ExtensionContext,
 ): { ok: true; roles: EffectiveRoles } | { ok: false; reason: string } {
-  const current = currentModelRef(ctx);
-  const implementerModel = config.implementer?.model ?? current;
-  const reviewerModel = config.reviewer?.model ?? current;
-  if (!implementerModel || !reviewerModel) {
-    return {
-      ok: false,
-      reason:
-        "No current session model is available and role models are not configured.",
-    };
-  }
   return {
     ok: true,
     roles: {
       implementer: {
-        model: implementerModel,
+        model: config.implementer?.model,
         type: config.implementer?.type ?? DEFAULT_SUBAGENT_TYPE,
       },
       reviewer: {
-        model: reviewerModel,
+        model: config.reviewer?.model,
         type: config.reviewer?.type ?? DEFAULT_SUBAGENT_TYPE,
       },
       planner: {
-        model: config.planner?.model ?? current ?? implementerModel,
+        model: config.planner?.model,
         type: config.planner?.type ?? DEFAULT_PLANNER_TYPE,
       },
     },
@@ -220,19 +210,19 @@ export function formatConfigStatus(
     lines.push(`Warning: ${result.warning}`);
   }
   lines.push(
-    `Implementer model: ${roles?.implementer.model ?? result.config.implementer?.model ?? "(current session)"}`,
+    `Implementer model: ${roles?.implementer.model ?? result.config.implementer?.model ?? "(subagent type default)"}`,
   );
   lines.push(
     `Implementer subagent: ${roles?.implementer.type ?? result.config.implementer?.type ?? DEFAULT_SUBAGENT_TYPE}`,
   );
   lines.push(
-    `Reviewer model: ${roles?.reviewer.model ?? result.config.reviewer?.model ?? "(current session)"}`,
+    `Reviewer model: ${roles?.reviewer.model ?? result.config.reviewer?.model ?? "(subagent type default)"}`,
   );
   lines.push(
     `Reviewer subagent: ${roles?.reviewer.type ?? result.config.reviewer?.type ?? DEFAULT_SUBAGENT_TYPE}`,
   );
   lines.push(
-    `Planner model: ${roles?.planner.model ?? result.config.planner?.model ?? "(current session)"}`,
+    `Planner model: ${roles?.planner.model ?? result.config.planner?.model ?? "(subagent type default)"}`,
   );
   lines.push(
     `Planner subagent: ${roles?.planner.type ?? result.config.planner?.type ?? DEFAULT_PLANNER_TYPE}`,

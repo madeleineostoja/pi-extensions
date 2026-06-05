@@ -383,10 +383,13 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       const mode = parsed.mode.kind;
       const planPath = resolve(ctx.cwd, parsed.mode.planPath);
 
-      const invalid = [
+      const configuredWorkerModels = [
         effective.roles.implementer.model,
         effective.roles.reviewer.model,
-      ].filter((model) => !isModelRef(model));
+      ].filter((model): model is string => model !== undefined);
+      const invalid = configuredWorkerModels.filter(
+        (model) => !isModelRef(model),
+      );
       if (invalid.length) {
         ctx.ui.notify(
           `Invalid model reference(s): ${invalid.join(", ")}. Expected provider/model-id.`,
@@ -394,10 +397,9 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         );
         return;
       }
-      const missing = [
-        effective.roles.implementer.model,
-        effective.roles.reviewer.model,
-      ].filter((model) => !modelExists(ctx, model));
+      const missing = configuredWorkerModels.filter(
+        (model) => !modelExists(ctx, model),
+      );
       if (missing.length) {
         ctx.ui.notify(
           `Model not found: ${[...new Set(missing)].join(", ")}`,
@@ -406,7 +408,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         return;
       }
 
-      if (mode !== "serial") {
+      if (mode !== "serial" && effective.roles.planner.model !== undefined) {
         if (!isModelRef(effective.roles.planner.model)) {
           ctx.ui.notify(
             `Invalid planner model reference: ${effective.roles.planner.model}. Expected provider/model-id.`,

@@ -77,6 +77,31 @@ describe("EventSubagentClient", () => {
     await expect(promise).resolves.toBe("agent-1");
   });
 
+  it("omits model so the subagent type default can be used", async () => {
+    const events = new FakeEvents();
+    const client = new EventSubagentClient(events, 100);
+    const promise = client.spawn({
+      type: "Explore",
+      prompt: "p",
+      description: "d",
+    });
+    const request = events.emitted[0];
+    expect(request.payload).toMatchObject({
+      type: "Explore",
+      prompt: "p",
+      options: { description: "d", isBackground: true },
+    });
+    expect(
+      (request.payload as { options: { model?: string } }).options.model,
+    ).toBeUndefined();
+    const requestId = (request.payload as { requestId: string }).requestId;
+    events.fire(`subagents:rpc:spawn:reply:${requestId}`, {
+      success: true,
+      data: { id: "agent-1" },
+    });
+    await expect(promise).resolves.toBe("agent-1");
+  });
+
   it("waits for matching completion and ignores unrelated agents", async () => {
     const events = new FakeEvents();
     const client = new EventSubagentClient(events, 100);

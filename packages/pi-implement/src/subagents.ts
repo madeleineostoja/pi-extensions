@@ -16,7 +16,7 @@ export type SpawnArgs = {
   type: string;
   prompt: string;
   description: string;
-  model: string;
+  model?: string;
 };
 
 export type SubagentResult =
@@ -46,14 +46,21 @@ export class EventSubagentClient implements SubagentClient {
   }
 
   async spawn(args: SpawnArgs): Promise<string> {
+    const options: {
+      description: string;
+      isBackground: boolean;
+      model?: string;
+    } = {
+      description: args.description,
+      isBackground: true,
+    };
+    if (args.model !== undefined) {
+      options.model = args.model;
+    }
     const data = await this.rpc<{ id?: string }>("spawn", {
       type: args.type,
       prompt: args.prompt,
-      options: {
-        description: args.description,
-        isBackground: true,
-        model: args.model,
-      },
+      options,
     });
     if (!data.id) {
       throw new Error("pi-subagents spawn reply did not include an agent id.");
