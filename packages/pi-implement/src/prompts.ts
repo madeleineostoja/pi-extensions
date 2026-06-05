@@ -135,6 +135,7 @@ export function buildAlreadySatisfiedReviewerPrompt(args: {
   taskPacket: string;
   worktreePath: string;
   implementer: ParsedImplementerResult;
+  headSha: string;
   accumulatedDiff?: string;
 }): string {
   const diffSection = args.accumulatedDiff
@@ -171,6 +172,8 @@ ${args.implementer.summary}
 ## Implementer Verification
 
 ${formatVerification(args.implementer)}
+
+Current HEAD: ${args.headSha}
 
 ${diffSection}
 End with exactly one <pi-review-result> block containing raw JSON. Do not wrap it in a markdown code fence. Approve with:

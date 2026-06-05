@@ -9,6 +9,7 @@ import {
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
+  buildAlreadySatisfiedReviewerPrompt,
   buildImplementerPrompt,
   buildOverallReviewerPrompt,
   buildReviewerPrompt,
@@ -65,6 +66,7 @@ import { dirname } from "node:path";
 
 const MAX_REVIEWER_REQUESTS = 5;
 const MAX_SYSTEM_FAILURES = 2;
+const MAX_ACCUMULATED_DIFF_CHARS = 50000;
 const MAX_REWORK_ATTEMPTS = 2;
 const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -117,7 +119,13 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
   // For auto/parallel: try to load a graph and run the scheduler
   const graph = deps.paths ? readGraphJson(deps.paths.runDir) : undefined;
   if (graph && deps.paths && deps.runId) {
-    await runParallelImplementation(deps, graph, plan, planArtifacts);
+    await runParallelImplementation(
+      deps,
+      graph,
+      plan,
+      planArtifacts,
+      runBaseSha,
+    );
     return;
   }
 
@@ -209,6 +217,7 @@ async function runSerialImplementation(
         branchName,
         baseSha,
         planArtifacts,
+        runBaseSha,
       });
       if (!landed) {
         break;
@@ -243,6 +252,7 @@ async function runParallelImplementation(
   graph: ImplementGraph,
   initialPlan: ReturnType<typeof parsePlanFile>,
   planArtifacts: string[],
+  runBaseSha: string,
 ): Promise<void> {
   const sched = createSchedulerRun(graph, deps.maxConcurrency ?? 1);
   const runningWorkers = new Map<string, Promise<WorkerResult>>();
@@ -291,6 +301,7 @@ async function runParallelImplementation(
         taskId,
         planTask,
         planArtifacts,
+        runBaseSha,
       );
       runningWorkers.set(taskId, promise);
     }
@@ -440,6 +451,7 @@ async function launchTaskWorker(
   taskId: string,
   planTask: ReturnType<typeof parsePlanFile>["tasks"][number],
   planArtifacts: string[],
+  runBaseSha: string,
 ): Promise<WorkerResult> {
   const task = sched.tasks.get(taskId)!;
   const baseSha = await deps.git.head();
@@ -499,6 +511,7 @@ async function launchTaskWorker(
       baseSha,
       planArtifacts,
       schedulerTask: task,
+      runBaseSha,
     });
 
     if (deps.shouldStop() || deps.signal?.aborted) {
@@ -1426,6 +1439,7 @@ async function runTaskWorker(args: {
   baseSha: string;
   planArtifacts: string[];
   schedulerTask?: SchedulerTask;
+  runBaseSha?: string;
 }): Promise<boolean> {
   const {
     deps,
@@ -1438,6 +1452,7 @@ async function runTaskWorker(args: {
     baseSha,
     planArtifacts,
     schedulerTask,
+    runBaseSha,
   } = args;
 
   let feedback: RetryFeedback | undefined;
@@ -1623,32 +1638,80 @@ async function runTaskWorker(args: {
     priorSummary = parsed.result.summary;
 
     await taskGit.stageAllExcept(planArtifacts);
-    if (!(await taskGit.hasStagedChanges())) {
+    const hasStaged = await taskGit.hasStagedChanges();
+
+    if (hasStaged && parsed.result.outcome === "already_satisfied") {
+      await taskGit.reset();
       feedback = recordSystemFailure(
         task.index,
         systemFailures,
         "system",
-        "No committable changes were produced after excluding plan artifacts and ignored files.",
+        "Implementer reported already_satisfied but produced staged changes; retrying for a consistent outcome.",
+      );
+      systemFailures++;
+      continue;
+    }
+
+    let fingerprintBefore: string | undefined;
+    let candidatePatch: string | undefined;
+    let worktreeFingerprintBefore: string | undefined;
+    let reviewHeadBefore: string;
+    let reviewerPrompt: string;
+
+    if (hasStaged) {
+      fingerprintBefore = await taskGit.stagedFingerprint();
+      candidatePatch = await taskGit.stagedDiff();
+      worktreeFingerprintBefore =
+        await taskGit.worktreeFingerprintExcept(planArtifacts);
+
+      if (deps.paths) {
+        persistTaskArtifact(deps.paths, taskId, "diff.patch", candidatePatch);
+      }
+
+      reviewHeadBefore = await taskGit.head();
+      reviewerPrompt = buildReviewerPrompt({
+        taskPacket: packet.markdown,
+        worktreePath: effectiveWorktreePath,
+        implementer: parsed.result,
+      });
+    } else if (parsed.result.outcome === "already_satisfied" && !worktreePath) {
+      await taskGit.reset();
+      reviewHeadBefore = await taskGit.head();
+
+      let accumulatedDiff: string | undefined;
+      if (runBaseSha) {
+        try {
+          const diff = await deps.git.diffRange(
+            runBaseSha,
+            await deps.git.head(),
+          );
+          accumulatedDiff =
+            diff.length <= MAX_ACCUMULATED_DIFF_CHARS ? diff : undefined;
+        } catch {
+          accumulatedDiff = undefined;
+        }
+      }
+
+      reviewerPrompt = buildAlreadySatisfiedReviewerPrompt({
+        taskPacket: packet.markdown,
+        worktreePath: effectiveWorktreePath,
+        implementer: parsed.result,
+        headSha: reviewHeadBefore,
+        accumulatedDiff,
+      });
+    } else {
+      const message =
+        'No committable changes were produced after excluding plan artifacts and ignored files. Likely causes: the implementer produced no candidate code changes, only plan or ignored-file changes were made, or the task may already be satisfied and should be reported with outcome: "already_satisfied".';
+      feedback = recordSystemFailure(
+        task.index,
+        systemFailures,
+        "system",
+        message,
       );
       systemFailures++;
       await taskGit.reset();
       continue;
     }
-    const fingerprintBefore = await taskGit.stagedFingerprint();
-    const candidatePatch = await taskGit.stagedDiff();
-    const worktreeFingerprintBefore =
-      await taskGit.worktreeFingerprintExcept(planArtifacts);
-
-    if (deps.paths) {
-      persistTaskArtifact(deps.paths, taskId, "diff.patch", candidatePatch);
-    }
-
-    const reviewHeadBefore = await taskGit.head();
-    const reviewerPrompt = buildReviewerPrompt({
-      taskPacket: packet.markdown,
-      worktreePath: effectiveWorktreePath,
-      implementer: parsed.result,
-    });
     if (schedulerTask) {
       schedulerTask.status = "reviewing";
     }
@@ -1752,13 +1815,23 @@ async function runTaskWorker(args: {
       throw new BlockedError("reviewer changed HEAD");
     }
 
-    await healReviewerMutations({
-      taskGit,
-      planArtifacts,
-      stagedFingerprintBefore: fingerprintBefore,
-      candidatePatch,
-      worktreeFingerprintBefore,
-    });
+    if (
+      !hasStaged &&
+      !worktreePath &&
+      !(await deps.git.isCleanExcept(planArtifacts))
+    ) {
+      throw new BlockedError("reviewer dirtied the serial checkout");
+    }
+
+    if (hasStaged) {
+      await healReviewerMutations({
+        taskGit,
+        planArtifacts,
+        stagedFingerprintBefore: fingerprintBefore!,
+        candidatePatch: candidatePatch!,
+        worktreeFingerprintBefore: worktreeFingerprintBefore!,
+      });
+    }
     const verdict = parseReviewerVerdict(review.result);
     deps.updateState((prev) =>
       checkpointPatch(
@@ -1780,6 +1853,61 @@ async function runTaskWorker(args: {
     }
 
     // Approved
+    if (
+      !hasStaged &&
+      parsed.result.outcome === "already_satisfied" &&
+      !worktreePath
+    ) {
+      throwIfStopped(deps);
+      if (!(await deps.git.isCleanExcept(planArtifacts))) {
+        throw new BlockedError(
+          "satisfied approval succeeded but worktree is dirty",
+        );
+      }
+      markTaskDone(deps.planPath, task);
+      if (!(await deps.git.isCleanExcept(planArtifacts))) {
+        markTaskUndone(deps.planPath, task);
+        throw new BlockedError(
+          "satisfied task marked done but worktree became dirty",
+        );
+      }
+      try {
+        throwIfStopped(deps);
+      } catch (err) {
+        if (err instanceof StoppedError) {
+          markTaskUndone(deps.planPath, task);
+          await taskGit.reset();
+        }
+        throw err;
+      }
+      if (deps.paths) {
+        appendEvent(deps.paths, { type: "task_satisfied", taskId });
+        writeTaskJson(deps.paths, taskId, {
+          id: taskId,
+          planIndex: task.index - 1,
+          title: task.text,
+          status: "satisfied",
+          dependsOn: [],
+          attempts: attempt,
+          integrationAttempts: 0,
+          baseSha,
+          worktreePath,
+          branchName,
+          activeSubagentIds: [],
+        });
+      }
+      const satisfiedHead = await deps.git.head();
+      deps.updateState((prev) => ({
+        currentMainHead: satisfiedHead,
+        ...checkpointPatch(
+          prev,
+          `\u2713 Task ${task.index}/${plan.tasks.length} satisfied`,
+        ),
+      }));
+      return true;
+    }
+
+    // Approved (changed/legacy)
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
         id: taskId,

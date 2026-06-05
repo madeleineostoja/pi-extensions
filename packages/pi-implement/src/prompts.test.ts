@@ -106,6 +106,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
       taskPacket: TASK_PACKET,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
     });
 
     expect(prompt).toContain("There is no staged candidate diff for this task");
@@ -126,6 +127,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
       taskPacket: TASK_PACKET,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
       accumulatedDiff: "diff --git a/file.ts b/file.ts\n",
     });
 
@@ -138,6 +140,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
       taskPacket: TASK_PACKET,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
     });
 
     expect(prompt).toContain(

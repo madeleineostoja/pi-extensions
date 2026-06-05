@@ -15,6 +15,7 @@ import {
   nextOverallReviewArtifactPath,
 } from "./orchestrator.js";
 import { writeGraphJson } from "./graph.js";
+import { readEvents, readTaskJson } from "./state.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SpawnArgs, SubagentClient, SubagentResult } from "./subagents.js";
 import type { RunState } from "./status.js";
@@ -799,6 +800,9 @@ describe("runImplementation", () => {
 
     // Two implementer attempts, one reviewer
     expect(subagents.spawns).toHaveLength(3);
+    // Second implementer prompt should include the improved diagnostic message
+    const secondImplPrompt = subagents.spawns[1]?.prompt ?? "";
+    expect(secondImplPrompt).toContain("already_satisfied");
   });
 
   it("blocks if integration validation or review mutates the staged diff", async () => {
@@ -1495,5 +1499,354 @@ describe("runImplementation", () => {
         shouldStop: () => false,
       }),
     ).rejects.toThrow("Parallel scheduler stalled");
+  });
+
+  it("serial already-satisfied approved marks done without commit", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const ALREADY_SATISFIED_IMPL =
+      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+    subagents.results = [
+      { status: "completed", result: ALREADY_SATISFIED_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    git.hasStagedChanges = async () => false;
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const updatedPlan = readFileSync(planPath, "utf-8");
+    expect(updatedPlan).toContain("- [x] Do it");
+    expect(git.commits).toHaveLength(0);
+
+    const reviewerPrompt = subagents.spawns[1]?.prompt ?? "";
+    expect(reviewerPrompt).toContain("There is no staged candidate diff");
+    expect(reviewerPrompt).toContain("Current HEAD:");
+
+    const taskJson = readTaskJson(paths, "t001-do-it");
+    expect(taskJson?.status).toBe("satisfied");
+
+    const events = readEvents(paths);
+    expect(
+      events.some(
+        (e) => e.type === "task_satisfied" && e.taskId === "t001-do-it",
+      ),
+    ).toBe(true);
+  });
+
+  it("serial already-satisfied approved blocks and leaves checkbox unchecked when worktree is dirty after approval", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const ALREADY_SATISFIED_IMPL =
+      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+    subagents.results = [
+      { status: "completed", result: ALREADY_SATISFIED_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+    ];
+
+    git.hasStagedChanges = async () => false;
+    git.isCleanExcept = async () => false;
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+
+    const updatedPlan = readFileSync(planPath, "utf-8");
+    expect(updatedPlan).toContain("- [ ] Do it");
+    expect(git.commits).toHaveLength(0);
+  });
+
+  it("serial already-satisfied rejected retries with feedback then commits normally", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const ALREADY_SATISFIED_IMPL =
+      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+    const CHANGES_REQUESTED =
+      '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["Add a missing test case."]}</pi-review-result>';
+    const EXPLICIT_CHANGED_IMPL =
+      '<pi-implement-result>{"outcome":"changed","summary":"fixed","verification":[{"command":"npm test","result":"passed","rationale":"covers change"}],"commitMessage":"feat: do thing"}</pi-implement-result>';
+
+    subagents.results = [
+      { status: "completed", result: ALREADY_SATISFIED_IMPL },
+      { status: "completed", result: CHANGES_REQUESTED },
+      { status: "completed", result: EXPLICIT_CHANGED_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    let stagedCallCount = 0;
+    git.hasStagedChanges = async () => {
+      stagedCallCount++;
+      return stagedCallCount > 1;
+    };
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const updatedPlan = readFileSync(planPath, "utf-8");
+    expect(updatedPlan).toContain("- [x] Do it");
+    expect(git.commits).toHaveLength(1);
+
+    const secondImplPrompt = subagents.spawns[2]?.prompt ?? "";
+    expect(secondImplPrompt).toContain("Add a missing test case.");
+  });
+
+  it("explicit outcome changed still stages reviews and commits", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const EXPLICIT_CHANGED_IMPL =
+      '<pi-implement-result>{"outcome":"changed","summary":"done","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"feat: do thing"}</pi-implement-result>';
+
+    subagents.results = [
+      { status: "completed", result: EXPLICIT_CHANGED_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const updatedPlan = readFileSync(planPath, "utf-8");
+    expect(updatedPlan).toContain("- [x] Do it");
+    expect(git.commits).toHaveLength(1);
+  });
+
+  it("serial no-staged changed blocks with improved message after retries", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const EXPLICIT_CHANGED_IMPL =
+      '<pi-implement-result>{"outcome":"changed","summary":"done","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"feat: do thing"}</pi-implement-result>';
+
+    subagents.results = [
+      { status: "completed", result: EXPLICIT_CHANGED_IMPL },
+      { status: "completed", result: EXPLICIT_CHANGED_IMPL },
+    ];
+
+    git.hasStagedChanges = async () => false;
+
+    let caught: Error | undefined;
+    try {
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+    } catch (err) {
+      caught = err instanceof Error ? err : new Error(String(err));
+    }
+    expect(caught).toBeInstanceOf(BlockedError);
+    expect(caught?.message).toContain("system retry limit reached");
+    expect(caught?.message).toContain("already_satisfied");
+    expect(caught?.message).toContain("Likely causes");
+  });
+
+  it("serial already-satisfied with staged changes does conservative retry", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const ALREADY_SATISFIED_IMPL =
+      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+
+    subagents.results = [
+      { status: "completed", result: ALREADY_SATISFIED_IMPL },
+      { status: "completed", result: ALREADY_SATISFIED_IMPL },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("system retry limit reached");
+  });
+
+  it("serial already-satisfied changes_requested blocks if reviewer dirtied checkout", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const ALREADY_SATISFIED_IMPL =
+      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+    const CHANGES_REQUESTED =
+      '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["Add a missing test case."]}</pi-review-result>';
+
+    subagents.results = [
+      { status: "completed", result: ALREADY_SATISFIED_IMPL },
+      { status: "completed", result: CHANGES_REQUESTED },
+    ];
+
+    git.hasStagedChanges = async () => false;
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    let waits = 0;
+    subagents.waitFor = async (id, signal) => {
+      waits++;
+      const result = await originalWaitFor(id, signal);
+      if (waits === 2) {
+        git.statusText = "M some-file.ts";
+      }
+      return result;
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("reviewer dirtied the serial checkout");
+
+    const updatedPlan = readFileSync(planPath, "utf-8");
+    expect(updatedPlan).toContain("- [ ] Do it");
+    expect(git.commits).toHaveLength(0);
+  });
+
+  it("serial already-satisfied approved rolls back checkbox if worktree becomes dirty after marking done", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const ALREADY_SATISFIED_IMPL =
+      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+
+    subagents.results = [
+      { status: "completed", result: ALREADY_SATISFIED_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+    ];
+
+    git.hasStagedChanges = async () => false;
+    let cleanCallCount = 0;
+    git.isCleanExcept = async () => {
+      cleanCallCount++;
+      // Return true for pre-mark checks (initial + loop start + boundary + pre-mark),
+      // then false after markTaskDone to simulate post-mark dirtiness.
+      return cleanCallCount <= 4;
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("satisfied task marked done but worktree became dirty");
+
+    const updatedPlan = readFileSync(planPath, "utf-8");
+    expect(updatedPlan).toContain("- [ ] Do it");
+    expect(git.commits).toHaveLength(0);
   });
 });
