@@ -8,7 +8,7 @@ import {
   existsSync,
   rmSync,
 } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -21,6 +21,7 @@ export type RunJson = {
   mode: RunMode;
   strategyReason: string;
   repoRoot: string;
+  checkoutRoot?: string;
   planPath: string;
   planHash: string;
   baseSha: string;
@@ -85,6 +86,7 @@ export type RunLock = {
   startedAt: string;
   pid: number;
   hostname: string;
+  checkoutRoot?: string;
 };
 
 export type StatePaths = {
@@ -95,6 +97,7 @@ export type StatePaths = {
   planSnapshot: string;
   tasksDir: string;
   worktreesDir: string;
+  locksDir?: string;
   lockFile: string;
 };
 
@@ -106,6 +109,11 @@ export type AcquireRunLockResult =
   | { ok: true; staleRemoved?: string }
   | { ok: false; reason: string; lock?: Partial<RunLock> };
 
+export type CheckRunLocksResult = {
+  active: Array<{ reason: string; lock?: Partial<RunLock> }>;
+  staleRemoved: string[];
+};
+
 export function encodeRepoRoot(repoRoot: string): string {
   return repoRoot.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
 }
@@ -114,9 +122,14 @@ export function getBaseDir(repoRoot: string): string {
   return join(getAgentDir(), "pi-implement", `--${encodeRepoRoot(repoRoot)}--`);
 }
 
-export function getStatePaths(repoRoot: string, runId: string): StatePaths {
+export function getStatePaths(
+  repoRoot: string,
+  runId: string,
+  checkoutRoot = repoRoot,
+): StatePaths {
   const baseDir = getBaseDir(repoRoot);
   const runDir = join(baseDir, "runs", runId);
+  const locksDir = join(baseDir, "locks");
   return {
     baseDir,
     runDir,
@@ -125,7 +138,8 @@ export function getStatePaths(repoRoot: string, runId: string): StatePaths {
     planSnapshot: join(runDir, "plan.snapshot.md"),
     tasksDir: join(runDir, "tasks"),
     worktreesDir: join(baseDir, "worktrees", runId),
-    lockFile: join(baseDir, "locks", "run.lock"),
+    locksDir,
+    lockFile: join(locksDir, `checkout-${checkoutLockHash(checkoutRoot)}.lock`),
   };
 }
 
@@ -164,9 +178,10 @@ export function createRunState(
   run: RunJson,
   planContent: string,
 ): void {
-  mkdirSync(dirname(paths.runJson), { recursive: true });
+  mkdirSync(dirname(paths.runDir), { recursive: true });
+  mkdirSync(paths.runDir);
   mkdirSync(paths.tasksDir, { recursive: true });
-  mkdirSync(dirname(paths.lockFile), { recursive: true });
+  mkdirSync(getLocksDir(paths), { recursive: true });
   mkdirSync(paths.worktreesDir, { recursive: true });
   writeAtomic(paths.runJson, JSON.stringify(run, null, 2));
   if (!existsSync(paths.lockFile)) {
@@ -182,7 +197,7 @@ export function acquireRunLock(
   paths: StatePaths,
   run: RunJson,
 ): AcquireRunLockResult {
-  mkdirSync(dirname(paths.lockFile), { recursive: true });
+  mkdirSync(getLocksDir(paths), { recursive: true });
   const lock = makeRunLock(paths, run);
   let staleRemoved: string | undefined;
 
@@ -214,27 +229,50 @@ export function acquireRunLock(
 }
 
 export function checkRunLock(paths: StatePaths): LockCheckResult {
-  if (!existsSync(paths.lockFile)) {
+  return checkRunLockFile(paths, paths.lockFile);
+}
+
+export function checkRunLocks(paths: StatePaths): CheckRunLocksResult {
+  const locksDir = getLocksDir(paths);
+  if (!existsSync(locksDir)) {
+    return { active: [], staleRemoved: [] };
+  }
+  const active: Array<{ reason: string; lock?: Partial<RunLock> }> = [];
+  const staleRemoved: string[] = [];
+  for (const dirent of readdirSync(locksDir, { withFileTypes: true })) {
+    if (!dirent.isFile() || !dirent.name.endsWith(".lock")) {
+      continue;
+    }
+    const lockFile = join(locksDir, dirent.name);
+    const result = checkRunLockFile({ ...paths, lockFile }, lockFile);
+    if (result.active) {
+      active.push({ reason: result.reason, lock: result.lock });
+    } else if (result.staleRemoved) {
+      staleRemoved.push(result.staleRemoved);
+    }
+  }
+  return { active, staleRemoved };
+}
+
+function checkRunLockFile(
+  paths: StatePaths,
+  lockFile: string,
+): LockCheckResult {
+  if (!existsSync(lockFile)) {
     return { active: false };
   }
 
-  const staleReason = staleRunLockReason(paths);
+  const lockPaths = { ...paths, lockFile };
+  const staleReason = staleRunLockReason(lockPaths);
   if (staleReason) {
-    rmSync(paths.lockFile, { force: true });
+    rmSync(lockFile, { force: true });
     return { active: false, staleRemoved: staleReason };
   }
 
-  const lock = readRunLock(paths);
-  const details = [
-    lock?.runId ? `run ${lock.runId}` : undefined,
-    typeof lock?.pid === "number" ? `pid ${lock.pid}` : undefined,
-    lock?.hostname ? `host ${lock.hostname}` : undefined,
-  ]
-    .filter(Boolean)
-    .join(", ");
+  const lock = readRunLock(lockPaths);
   return {
     active: true,
-    reason: details || paths.lockFile,
+    reason: formatRunLockReason(lock, lockFile),
     lock,
   };
 }
@@ -339,21 +377,7 @@ export function cleanupRun(paths: StatePaths): void {
   if (existsSync(paths.worktreesDir)) {
     rmSync(paths.worktreesDir, { recursive: true, force: true });
   }
-  if (existsSync(paths.lockFile)) {
-    let lockRunId: string | undefined;
-    try {
-      lockRunId = (
-        JSON.parse(readFileSync(paths.lockFile, "utf-8")) as {
-          runId?: string;
-        }
-      ).runId;
-    } catch {
-      lockRunId = undefined;
-    }
-    if (lockRunId === runId) {
-      rmSync(paths.lockFile, { force: true });
-    }
-  }
+  removeLocksForRun(paths, runId);
 }
 
 export function cleanupAllRuns(
@@ -431,6 +455,7 @@ function makeRunLock(paths: StatePaths, run: RunJson): RunLock {
     startedAt: run.startedAt,
     pid: process.pid,
     hostname: hostname(),
+    checkoutRoot: run.checkoutRoot ?? run.repoRoot,
   };
 }
 
@@ -455,6 +480,46 @@ function readRunLock(paths: StatePaths): Partial<RunLock> | undefined {
   } catch {
     return undefined;
   }
+}
+
+function removeLocksForRun(paths: StatePaths, runId: string): void {
+  const locksDir = getLocksDir(paths);
+  if (!existsSync(locksDir)) {
+    return;
+  }
+  for (const dirent of readdirSync(locksDir, { withFileTypes: true })) {
+    if (!dirent.isFile() || !dirent.name.endsWith(".lock")) {
+      continue;
+    }
+    const lockFile = join(locksDir, dirent.name);
+    const lock = readRunLock({ ...paths, lockFile });
+    if (lock?.runId === runId) {
+      rmSync(lockFile, { force: true });
+    }
+  }
+}
+
+function formatRunLockReason(
+  lock: Partial<RunLock> | undefined,
+  lockFile: string,
+): string {
+  const details = [
+    lock?.runId ? `run ${lock.runId}` : undefined,
+    typeof lock?.pid === "number" ? `pid ${lock.pid}` : undefined,
+    lock?.hostname ? `host ${lock.hostname}` : undefined,
+    lock?.checkoutRoot ? `checkout ${lock.checkoutRoot}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return details || lockFile;
+}
+
+function checkoutLockHash(checkoutRoot: string): string {
+  return createHash("sha256").update(checkoutRoot).digest("hex").slice(0, 16);
+}
+
+function getLocksDir(paths: StatePaths): string {
+  return paths.locksDir ?? dirname(paths.lockFile);
 }
 
 function staleRunLockReason(paths: StatePaths): string | undefined {

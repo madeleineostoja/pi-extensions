@@ -57,7 +57,7 @@ import {
   listRunIds,
   acquireRunLock,
   releaseRunLock,
-  checkRunLock,
+  checkRunLocks,
 } from "./state.js";
 
 const STATUS_KEY = "pi-implement.status";
@@ -315,19 +315,22 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           }
           const git = new ExecGitClient(ctx.cwd);
           const repoRoot = await git.mainRoot();
-          const lockCheck = checkRunLock(getStatePaths(repoRoot, "lock-check"));
-          if (lockCheck.active) {
+          const checkoutRoot = await git.root();
+          const lockCheck = checkRunLocks(
+            getStatePaths(repoRoot, "lock-check", checkoutRoot),
+          );
+          if (lockCheck.active.length > 0) {
+            const activeLocks = lockCheck.active
+              .map((lock) => lock.reason)
+              .join("\n- ");
             ctx.ui.notify(
-              `pi-implement cleanup refused: ${lockCheck.reason}. Use /implement stop in that session first.`,
+              `pi-implement cleanup refused: active run lock(s) found:\n- ${activeLocks}\nUse /implement stop in the owning session first.`,
               "warning",
             );
             return;
           }
-          if (lockCheck.staleRemoved) {
-            ctx.ui.notify(
-              `Removed stale pi-implement lock: ${lockCheck.staleRemoved}.`,
-              "info",
-            );
+          for (const stale of lockCheck.staleRemoved) {
+            ctx.ui.notify(`Removed stale pi-implement lock: ${stale}.`, "info");
           }
           const runIds = listRunIds(repoRoot);
           let cleaned = 0;
@@ -432,6 +435,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
 
       let git: ExecGitClient;
       let repoRoot: string;
+      let checkoutRoot: string;
       let baseSha: string;
       let planContent: string;
       let plan: ReturnType<typeof parsePlanFile>;
@@ -440,6 +444,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       try {
         git = new ExecGitClient(ctx.cwd);
         repoRoot = await git.mainRoot();
+        checkoutRoot = await git.root();
         baseSha = await git.head();
         planContent = readFileSync(planPath, "utf-8");
         plan = parsePlanFile(planPath);
@@ -465,50 +470,64 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         requestedConcurrency,
       );
 
-      const runId = makeRunIdWithSuffix(
-        makeRunId(),
-        new Set(listRunIds(repoRoot)),
-      );
-      const paths = getStatePaths(repoRoot, runId);
-
       const initialStrategyReason = describeStrategy(
         parsed.mode,
         maxConcurrency,
       );
-      const now = new Date().toISOString();
-      const runJson = {
-        version: 1 as const,
-        runId,
-        mode,
-        strategyReason: initialStrategyReason,
-        repoRoot,
-        planPath,
-        planHash,
-        baseSha,
-        currentPhase: "preflight" as const,
-        maxConcurrency,
-        startedAt: now,
-        updatedAt: now,
-      };
+      let runId = "";
+      let paths: ReturnType<typeof getStatePaths> | undefined;
+      let now = "";
+      for (let attempt = 0; attempt < 10; attempt++) {
+        runId = makeRunIdWithSuffix(makeRunId(), new Set(listRunIds(repoRoot)));
+        paths = getStatePaths(repoRoot, runId, checkoutRoot);
+        now = new Date().toISOString();
+        const runJson = {
+          version: 1 as const,
+          runId,
+          mode,
+          strategyReason: initialStrategyReason,
+          repoRoot,
+          checkoutRoot,
+          planPath,
+          planHash,
+          baseSha,
+          currentPhase: "preflight" as const,
+          maxConcurrency,
+          startedAt: now,
+          updatedAt: now,
+        };
 
-      const lock = acquireRunLock(paths, runJson);
-      if (!lock.ok) {
-        ctx.ui.notify(`pi-implement blocked: ${lock.reason}`, "warning");
-        return;
+        const lock = acquireRunLock(paths, runJson);
+        if (!lock.ok) {
+          ctx.ui.notify(`pi-implement blocked: ${lock.reason}`, "warning");
+          return;
+        }
+        if (lock.staleRemoved) {
+          ctx.ui.notify(
+            `Removed stale pi-implement lock: ${lock.staleRemoved}.`,
+            "info",
+          );
+        }
+        try {
+          createRunState(paths, runJson, planContent);
+          appendEvent(paths, { type: "run_started", runId });
+          break;
+        } catch (err) {
+          releaseRunLock(paths, runId);
+          const nodeError = err as NodeJS.ErrnoException;
+          if (nodeError.code === "EEXIST" && attempt < 9) {
+            continue;
+          }
+          const reason = err instanceof Error ? err.message : String(err);
+          ctx.ui.notify(`pi-implement blocked: ${reason}`, "warning");
+          return;
+        }
       }
-      if (lock.staleRemoved) {
+      if (!paths) {
         ctx.ui.notify(
-          `Removed stale pi-implement lock: ${lock.staleRemoved}.`,
-          "info",
+          "pi-implement blocked: could not allocate run state",
+          "warning",
         );
-      }
-      try {
-        createRunState(paths, runJson, planContent);
-        appendEvent(paths, { type: "run_started", runId });
-      } catch (err) {
-        releaseRunLock(paths, runId);
-        const reason = err instanceof Error ? err.message : String(err);
-        ctx.ui.notify(`pi-implement blocked: ${reason}`, "warning");
         return;
       }
 

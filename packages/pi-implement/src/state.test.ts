@@ -28,6 +28,7 @@ import {
   listRunIds,
   acquireRunLock,
   checkRunLock,
+  checkRunLocks,
   releaseRunLock,
 } from "./state.js";
 
@@ -37,6 +38,10 @@ function tempRepo(): string {
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" });
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 describe("state paths", () => {
@@ -60,7 +65,12 @@ describe("state paths", () => {
     expect(paths.worktreesDir).toBe(
       join(expectedBase, "worktrees", "r20240101-120000"),
     );
-    expect(paths.lockFile).toBe(join(expectedBase, "locks", "run.lock"));
+    expect(paths.locksDir).toBe(join(expectedBase, "locks"));
+    expect(paths.lockFile).toMatch(
+      new RegExp(
+        `${escapeRegExp(join(expectedBase, "locks"))}[/\\\\]checkout-[a-f0-9]{16}\\.lock$`,
+      ),
+    );
   });
 
   it("encodes repo root into the base dir", () => {
@@ -138,6 +148,33 @@ describe("run locks", () => {
     releaseRunLock(paths, run.runId);
 
     expect(existsSync(paths.lockFile)).toBe(false);
+  });
+
+  it("uses separate locks for separate checkouts", () => {
+    const repo = tempRepo();
+    const checkoutA = join(repo, "checkout-a");
+    const checkoutB = join(repo, "checkout-b");
+    const pathsA = getStatePaths(repo, "r20240115-120000", checkoutA);
+    const pathsB = getStatePaths(repo, "r20240115-120001", checkoutB);
+    const runA = { ...makeRun(repo), checkoutRoot: checkoutA };
+    const runB = {
+      ...makeRun(repo, "r20240115-120001"),
+      checkoutRoot: checkoutB,
+    };
+
+    expect(pathsA.lockFile).not.toBe(pathsB.lockFile);
+    expect(acquireRunLock(pathsA, runA)).toMatchObject({ ok: true });
+    expect(acquireRunLock(pathsB, runB)).toMatchObject({ ok: true });
+    expect(acquireRunLock(pathsA, runA)).toMatchObject({ ok: false });
+
+    const locks = checkRunLocks(pathsA);
+    expect(locks.active).toHaveLength(2);
+    expect(locks.active.map((entry) => entry.reason).join("\n")).toContain(
+      `checkout ${checkoutA}`,
+    );
+    expect(locks.active.map((entry) => entry.reason).join("\n")).toContain(
+      `checkout ${checkoutB}`,
+    );
   });
 
   it("removes stale locks from dead processes", () => {
