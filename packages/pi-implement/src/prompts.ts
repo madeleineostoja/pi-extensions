@@ -13,17 +13,17 @@ export function buildImplementerPrompt(args: {
 
 Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification, never ask how to proceed, and never wait for input. Make reasonable decisions yourself and finish with the result block.
 
-The task packet below is a deliberate single-task slice of a larger plan. Sibling task lines are intentionally omitted — they are not truncation and not your concern. If you need more context than the packet provides, read the full plan file at the "Source Plan" path yourself; do not request it.
-
 You have been assigned a dedicated Git worktree for this task. Read and write only inside the assigned worktree:
 
   ${args.worktreePath}
 
 Do not read or write files outside the assigned worktree. Any shell command that touches project files must run from or explicitly target the assigned worktree path above.
 
-The task packet is the authoritative plan context. Read and search the repository as needed to understand and integrate the change. You may read any file in the repository.
+The task packet below is the complete, authoritative plan context for this task. Sibling task lines are intentionally omitted — they are not truncation and not your concern. If you need background context, you may read the source plan file, but any sibling tasks you discover there are read-only background, not implementation requirements. They do not expand your scope.
 
 **Required implementation scope:** Only the selected task line plus its indented block. Other sections in the task packet are background context to help you understand the task, unless the selected task explicitly references them. Do not implement sibling tasks or unrelated cleanup, even when global plan context mentions them.
+
+If you notice you are implementing an unselected sibling task, stop and narrow the change to only what is necessary for the selected task. If the selected task is impossible without some prerequisite work from a sibling task, do only the minimal prerequisite and explain it in your summary and verification. Do not complete the sibling task's own deliverable. The task packet is the authoritative scope; the source plan file is not an extension of it.
 
 Do not edit source plan files or checklist state. Do not stage, commit, reset, checkout, rebase, merge, tag, push, clean, or force-add ignored files.
 

@@ -55,6 +55,36 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
+  it("does not invite the implementer to read the full plan as a general scope expansion", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).not.toContain(
+      'read the full plan file at the "Source Plan" path yourself',
+    );
+    expect(prompt).not.toContain("read the full plan file");
+    expect(prompt).toContain(
+      "The task packet below is the complete, authoritative plan context for this task",
+    );
+  });
+
+  it("tells the implementer to stop and narrow when implementing an unselected sibling task", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).toContain(
+      "If you notice you are implementing an unselected sibling task, stop and narrow the change",
+    );
+    expect(prompt).toContain("do only the minimal prerequisite");
+    expect(prompt).toContain(
+      "Do not complete the sibling task's own deliverable",
+    );
+  });
+
   it("documents both outcome values in the result schema", () => {
     const prompt = buildImplementerPrompt({
       taskPacket: TASK_PACKET,
