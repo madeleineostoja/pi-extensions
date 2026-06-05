@@ -8,6 +8,7 @@ export type Config = {
   minTokens: number;
   supersededReadsEnabled: boolean;
   duplicateReadsEnabled: boolean;
+  coveredReadsEnabled: boolean;
   adaptivePolicyEnabled: boolean;
   afterConsumptionBashEnabled: boolean;
   batchPruningEnabled: boolean;
@@ -27,6 +28,7 @@ export const DEFAULTS: Config = {
   minTokens: 256,
   supersededReadsEnabled: true,
   duplicateReadsEnabled: true,
+  coveredReadsEnabled: true,
   adaptivePolicyEnabled: true,
   afterConsumptionBashEnabled: true,
   batchPruningEnabled: true,
@@ -145,12 +147,14 @@ export function loadConfig(
   const boolKeys: Array<
     | "supersededReadsEnabled"
     | "duplicateReadsEnabled"
+    | "coveredReadsEnabled"
     | "adaptivePolicyEnabled"
     | "afterConsumptionBashEnabled"
     | "batchPruningEnabled"
   > = [
     "supersededReadsEnabled",
     "duplicateReadsEnabled",
+    "coveredReadsEnabled",
     "adaptivePolicyEnabled",
     "afterConsumptionBashEnabled",
     "batchPruningEnabled",

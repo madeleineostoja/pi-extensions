@@ -66,7 +66,7 @@ export function registerRecallTool(
       'context_recall("toolCallId") — retrieve a tool result that was replaced with an elision stub',
     promptGuidelines: [
       'Use context_recall when a tool result has been replaced with a stub — every stub ends with Call context_recall("id") to retrieve. and carries the toolCallId you need.',
-      'Common stub forms include: standard age/size ("ToolName result elided: SIZE"), superseded-read ("read result elided (superseded by later edit/write of PATH)"), duplicate-read ("read result elided (superseded by later read of PATH at turn N)"), after-consumption-bash ("bash output compacted after assistant consumption..."), batch-pressure ("compacted by cache-aware batch pruning"), and emergency-pressure ("emergency context pressure"). context_recall works the same way for all of them.',
+      'Common stub forms include: standard age/size ("ToolName result elided: SIZE"), superseded-read ("read result elided (superseded by later edit/write of PATH)"), duplicate-read ("read result elided (superseded by later read of PATH at turn N)"), covered-read ("read result elided (covered by later read of PATH at turn N)"), after-consumption-bash ("bash output compacted after assistant consumption..."), batch-pressure ("compacted by cache-aware batch pruning"), and emergency-pressure ("emergency context pressure"). context_recall works the same way for all of them.',
       "context_recall returns retained original content unchanged; if Pi has compacted the underlying tool-result message away, recall may be unavailable.",
       'Pass \'lines\' to context_recall (e.g. "10-20" or "5") to fetch only a line range; only supported for single-text-block results.',
     ],

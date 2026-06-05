@@ -24,6 +24,7 @@ const REASONS: ElisionReason[] = [
   "standard-stale",
   "after-consumption-bash",
   "duplicate-read-young",
+  "covered-read-young",
   "superseded-read-young",
   "batch-pressure",
   "emergency-pressure",

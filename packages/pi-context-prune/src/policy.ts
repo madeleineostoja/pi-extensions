@@ -2,6 +2,7 @@ export type ElisionReason =
   | "standard-stale"
   | "after-consumption-bash"
   | "duplicate-read-young"
+  | "covered-read-young"
   | "superseded-read-young"
   | "batch-pressure"
   | "emergency-pressure";
@@ -115,10 +116,7 @@ export const AGGRESSIVE_PROFILE: PolicyProfile = clampProfile({
   semanticRisk: 0.5,
 });
 
-export const DEFAULT_POLICY_PROFILES: Record<
-  ElisionReason,
-  PolicyProfile
-> = {
+export const DEFAULT_POLICY_PROFILES: Record<ElisionReason, PolicyProfile> = {
   "standard-stale": clampProfile({
     minSavedTokens: 1500,
     baselineSuffixBudget: 25000,
@@ -134,6 +132,13 @@ export const DEFAULT_POLICY_PROFILES: Record<
     semanticRisk: 0.15,
   }),
   "duplicate-read-young": clampProfile({
+    minSavedTokens: 1000,
+    baselineSuffixBudget: 10000,
+    minSuffixBudget: 2000,
+    maxSuffixBudget: 30000,
+    semanticRisk: 0.35,
+  }),
+  "covered-read-young": clampProfile({
     minSavedTokens: 1000,
     baselineSuffixBudget: 10000,
     minSuffixBudget: 2000,
@@ -166,6 +171,7 @@ export const DEFAULT_POLICY_PROFILES: Record<
 export const BATCH_PRIORITY: Record<ElisionReason, number> = {
   "after-consumption-bash": 1,
   "duplicate-read-young": 2,
+  "covered-read-young": 2,
   "superseded-read-young": 3,
   "standard-stale": 4,
   "batch-pressure": 5,
@@ -175,6 +181,7 @@ export const BATCH_PRIORITY: Record<ElisionReason, number> = {
 const STUB_PRECEDENCE: Array<ElisionReason> = [
   "superseded-read-young",
   "duplicate-read-young",
+  "covered-read-young",
   "after-consumption-bash",
   "standard-stale",
   "emergency-pressure",
@@ -190,9 +197,7 @@ export function getPrimaryReason(reasons: ElisionReason[]): ElisionReason {
   return reasons[0];
 }
 
-export function getProfileForReason(
-  reason: ElisionReason,
-): PolicyProfile {
+export function getProfileForReason(reason: ElisionReason): PolicyProfile {
   return DEFAULT_POLICY_PROFILES[reason] ?? DEFAULT_PROFILE;
 }
 

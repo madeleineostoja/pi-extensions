@@ -240,6 +240,43 @@ export function formatDuplicateStub({
   return `[${toolName} result elided (superseded by later read of ${pathSegment} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
 }
 
+export type CoveredInfo = {
+  normalizedPath: string;
+  keptUserTurnIndex: number;
+};
+
+export function formatCoveredStub({
+  toolName,
+  normalizedPath,
+  keptUserTurnIndex,
+  offset,
+  limit,
+  tokenCount,
+  toolCallId,
+  preview,
+}: {
+  toolName: string;
+  normalizedPath: string;
+  keptUserTurnIndex: number;
+  offset?: number;
+  limit?: number;
+  tokenCount: number;
+  toolCallId: string;
+  preview?: string | null;
+}): string {
+  const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
+  const parts: string[] = [];
+  if (typeof offset === "number") {
+    parts.push(`offset=${offset}`);
+  }
+  if (typeof limit === "number") {
+    parts.push(`limit=${limit}`);
+  }
+  const pathSegment =
+    parts.length > 0 ? `${normalizedPath}, ${parts.join(" ")}` : normalizedPath;
+  return `[${toolName} result elided (covered by later read of ${pathSegment} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+}
+
 function estimateTextBlockChars(content: unknown): number {
   if (typeof content === "string") {
     return content.length;
@@ -354,9 +391,11 @@ function buildSupersededMaps(
 ): {
   toolCallInfoMap: Map<string, ToolCallInfo>;
   supersededPaths: Map<string, number>;
+  mutationPositions: Map<string, number[]>;
 } {
   const toolCallInfoMap = new Map<string, ToolCallInfo>();
   const supersededPaths = new Map<string, number>();
+  const mutationPositions = new Map<string, number[]>();
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -381,13 +420,16 @@ function buildSupersededMaps(
           const normalized = normalizePath(rawPath, cwd);
           if (normalized !== null) {
             supersededPaths.set(normalized, i);
+            const arr = mutationPositions.get(normalized) ?? [];
+            arr.push(i);
+            mutationPositions.set(normalized, arr);
           }
         }
       }
     }
   }
 
-  return { toolCallInfoMap, supersededPaths };
+  return { toolCallInfoMap, supersededPaths, mutationPositions };
 }
 
 type DuplicateInfo = {
@@ -459,6 +501,216 @@ function buildDuplicateReadMap(
   return result;
 }
 
+type ReadRange =
+  | { kind: "full" }
+  | { kind: "partial"; start: number; endExclusive: number }
+  | { kind: "unknown" };
+
+const PI_READ_MAX_LINES = 2000;
+const PI_READ_MAX_BYTES = 50 * 1024;
+
+const READ_TRUNCATION_PATTERNS = [
+  /\[Showing lines \d+-\d+ of \d+/,
+  /exceeds\s+\S+\s+limit\. Use bash:/,
+];
+
+function isReadTruncationNoticeLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  return READ_TRUNCATION_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+function countTextLines(text: string): number {
+  if (text.length === 0) {
+    return 0;
+  }
+  const lines = text.split(/\r?\n/);
+  if (text.endsWith("\n") || text.endsWith("\r")) {
+    lines.pop();
+  }
+  return lines.length;
+}
+
+function estimateDeliveredLines(content: ToolResultContent): number {
+  let lines = 0;
+  for (const block of content) {
+    if (block.type === "text" && typeof block.text === "string") {
+      const textLines = block.text.split(/\r?\n/);
+      if (block.text.endsWith("\n") || block.text.endsWith("\r")) {
+        textLines.pop();
+      }
+      lines += textLines.filter(
+        (line) => !isReadTruncationNoticeLine(line),
+      ).length;
+    }
+  }
+  return lines;
+}
+
+function isPotentiallyTruncatedRead(content: ToolResultContent): boolean {
+  let totalBytes = 0;
+  let totalLines = 0;
+  let hasTruncationNotice = false;
+  for (const block of content) {
+    if (block.type === "text" && typeof block.text === "string") {
+      totalBytes += Buffer.byteLength(block.text, "utf-8");
+      totalLines += countTextLines(block.text);
+      if (!hasTruncationNotice) {
+        for (const pattern of READ_TRUNCATION_PATTERNS) {
+          if (pattern.test(block.text)) {
+            hasTruncationNotice = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  return (
+    totalLines >= PI_READ_MAX_LINES ||
+    totalBytes >= PI_READ_MAX_BYTES ||
+    hasTruncationNotice
+  );
+}
+
+function extractReadRange(
+  input: Record<string, unknown>,
+  content: ToolResultContent,
+): ReadRange {
+  const hasOffset = typeof input.offset === "number";
+  const hasLimit = typeof input.limit === "number";
+
+  if (!hasOffset && !hasLimit) {
+    if (isPotentiallyTruncatedRead(content)) {
+      const deliveredLines = estimateDeliveredLines(content);
+      return { kind: "partial", start: 1, endExclusive: 1 + deliveredLines };
+    }
+    return { kind: "full" };
+  }
+
+  if (hasOffset && hasLimit) {
+    const offset = input.offset as number;
+    const limit = input.limit as number;
+    if (offset >= 1 && limit >= 0) {
+      if (isPotentiallyTruncatedRead(content)) {
+        const deliveredLines = estimateDeliveredLines(content);
+        return {
+          kind: "partial",
+          start: offset,
+          endExclusive: offset + deliveredLines,
+        };
+      }
+      return { kind: "partial", start: offset, endExclusive: offset + limit };
+    }
+  }
+
+  return { kind: "unknown" };
+}
+
+function rangeCovers(later: ReadRange, earlier: ReadRange): boolean {
+  if (earlier.kind === "full") {
+    return later.kind === "full";
+  }
+  if (earlier.kind === "unknown") {
+    return false;
+  }
+  if (later.kind === "full") {
+    return true;
+  }
+  if (later.kind === "unknown") {
+    return false;
+  }
+  return (
+    later.start <= earlier.start && later.endExclusive >= earlier.endExclusive
+  );
+}
+
+function buildCoveredReadMap(
+  messages: AgentMsg[],
+  cwd: string,
+  toolCallInfoMap: Map<string, ToolCallInfo>,
+  mutationPositions: Map<string, number[]>,
+): Map<string, CoveredInfo> {
+  const userTurnCounts = userTurnsUpToEachPosition(messages);
+
+  type ReadEntry = {
+    index: number;
+    toolCallId: string;
+    normalizedPath: string;
+    range: ReadRange;
+    userTurnIndex: number;
+  };
+
+  const pathToReads = new Map<string, ReadEntry[]>();
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!isToolResult(msg) || msg.toolName !== "read" || msg.isError) {
+      continue;
+    }
+
+    const callInfo = toolCallInfoMap.get(msg.toolCallId);
+    if (!callInfo) {
+      continue;
+    }
+
+    const rawPath = extractFilePath("read", callInfo.input);
+    const normalized = normalizePath(rawPath, cwd);
+    if (normalized === null) {
+      continue;
+    }
+
+    const input = callInfo.input as Record<string, unknown>;
+    const range = extractReadRange(input, msg.content);
+
+    const entries = pathToReads.get(normalized) ?? [];
+    entries.push({
+      index: i,
+      toolCallId: msg.toolCallId,
+      normalizedPath: normalized,
+      range,
+      userTurnIndex: userTurnCounts[i],
+    });
+    pathToReads.set(normalized, entries);
+  }
+
+  const result = new Map<string, CoveredInfo>();
+
+  for (const [path, reads] of pathToReads) {
+    const mutations = mutationPositions.get(path) ?? [];
+
+    for (let i = 0; i < reads.length; i++) {
+      const earlier = reads[i];
+
+      for (let j = i + 1; j < reads.length; j++) {
+        const later = reads[j];
+
+        let hasMutation = false;
+        for (const mutPos of mutations) {
+          if (mutPos > earlier.index && mutPos < later.index) {
+            hasMutation = true;
+            break;
+          }
+        }
+        if (hasMutation) {
+          continue;
+        }
+
+        if (rangeCovers(later.range, earlier.range)) {
+          result.set(earlier.toolCallId, {
+            normalizedPath: earlier.normalizedPath,
+            keptUserTurnIndex: later.userTurnIndex,
+          });
+          break;
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
 function recallRateForScoring(
   pruningState: PruningState | undefined,
   reason: ElisionReason,
@@ -484,6 +736,7 @@ type Candidate = {
   isOrdinarySourceRead: boolean;
   supersededPath?: string;
   duplicateInfo?: DuplicateInfo;
+  coveredInfo?: CoveredInfo;
   bashCommand?: string;
   readMetadata?: ReadMetadata;
 };
@@ -529,6 +782,18 @@ function buildStubTextForCandidate(
       toolName,
       normalizedPath: cand.duplicateInfo.normalizedPath,
       keptUserTurnIndex: cand.duplicateInfo.keptUserTurnIndex,
+      offset: cand.readMetadata?.offset,
+      limit: cand.readMetadata?.limit,
+      tokenCount,
+      toolCallId: cand.msg.toolCallId,
+      preview,
+    });
+  }
+  if (actionReason === "covered-read-young" && cand.coveredInfo) {
+    return formatCoveredStub({
+      toolName,
+      normalizedPath: cand.coveredInfo.normalizedPath,
+      keptUserTurnIndex: cand.coveredInfo.keptUserTurnIndex,
       offset: cand.readMetadata?.offset,
       limit: cand.readMetadata?.limit,
       tokenCount,
@@ -612,6 +877,10 @@ function applyElision(
       latched.normalizedPath = cand.duplicateInfo.normalizedPath;
       latched.keptUserTurnIndex = cand.duplicateInfo.keptUserTurnIndex;
     }
+    if (primaryReason === "covered-read-young" && cand.coveredInfo) {
+      latched.normalizedPath = cand.coveredInfo.normalizedPath;
+      latched.keptUserTurnIndex = cand.coveredInfo.keptUserTurnIndex;
+    }
     if (primaryReason === "after-consumption-bash" && cand.bashCommand) {
       latched.command = cand.bashCommand;
     }
@@ -643,18 +912,21 @@ export function makeContextHook(
 
     const cwd = (ctx as { cwd?: string }).cwd ?? process.cwd();
 
-    const { toolCallInfoMap, supersededPaths } = buildSupersededMaps(
-      messages,
-      cwd,
-    );
+    const { toolCallInfoMap, supersededPaths, mutationPositions } =
+      buildSupersededMaps(messages, cwd);
     const duplicateReadMap = buildDuplicateReadMap(
       messages,
       cwd,
       toolCallInfoMap,
     );
+    const coveredReadMap = buildCoveredReadMap(
+      messages,
+      cwd,
+      toolCallInfoMap,
+      mutationPositions,
+    );
     const hasAssistantAfter =
-      config.afterConsumptionBashEnabled ||
-      config.emergencyMaxOrdinaryReads > 0
+      config.afterConsumptionBashEnabled || config.emergencyMaxOrdinaryReads > 0
         ? assistantAfterEachPosition(messages)
         : [];
     const distances = userTurnsAfterEachPosition(messages);
@@ -726,6 +998,7 @@ export function makeContextHook(
       const reasons: ElisionReason[] = [];
       let supersededPath: string | undefined;
       let duplicateInfo: DuplicateInfo | undefined;
+      let coveredInfo: CoveredInfo | undefined;
       let bashCommand: string | undefined;
       let readPath: string | null = null;
       let readMetadata: ReadMetadata | undefined;
@@ -787,6 +1060,18 @@ export function makeContextHook(
         duplicateInfo = duplicateReadMap.get(msg.toolCallId) ?? undefined;
         if (duplicateInfo) {
           reasons.push("duplicate-read-young");
+        }
+      }
+
+      if (
+        config.coveredReadsEnabled &&
+        msg.toolName === "read" &&
+        !msg.isError &&
+        coveredReadMap
+      ) {
+        coveredInfo = coveredReadMap.get(msg.toolCallId) ?? undefined;
+        if (coveredInfo) {
+          reasons.push("covered-read-young");
         }
       }
 
@@ -874,6 +1159,7 @@ export function makeContextHook(
           isOrdinarySourceRead: false,
           supersededPath,
           duplicateInfo,
+          coveredInfo,
           bashCommand,
           readMetadata,
         },
@@ -891,6 +1177,7 @@ export function makeContextHook(
         msg.toolName === "read" &&
         readPath !== null &&
         !reasons.includes("duplicate-read-young") &&
+        !reasons.includes("covered-read-young") &&
         !reasons.includes("superseded-read-young");
       const profile = getProfileForReason(primaryReason);
 
@@ -909,6 +1196,7 @@ export function makeContextHook(
         isOrdinarySourceRead,
         supersededPath,
         duplicateInfo,
+        coveredInfo,
         bashCommand,
         readMetadata,
       });
@@ -1160,6 +1448,22 @@ function buildStubFromLatched(
     latched.keptUserTurnIndex != null
   ) {
     return formatDuplicateStub({
+      toolName: latched.toolName,
+      normalizedPath: latched.normalizedPath,
+      keptUserTurnIndex: latched.keptUserTurnIndex,
+      offset: latched.readOffset,
+      limit: latched.readLimit,
+      tokenCount: latched.originalTokens,
+      toolCallId: latched.toolCallId,
+      preview,
+    });
+  }
+  if (
+    reason === "covered-read-young" &&
+    latched.normalizedPath &&
+    latched.keptUserTurnIndex != null
+  ) {
+    return formatCoveredStub({
       toolName: latched.toolName,
       normalizedPath: latched.normalizedPath,
       keptUserTurnIndex: latched.keptUserTurnIndex,
