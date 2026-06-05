@@ -42,6 +42,15 @@ export type AgentDisplayRef = {
   taskTitle?: string;
 };
 
+export type AgentRuntimeSnapshot = {
+  id: string;
+  status?: string;
+  description?: string;
+  toolUses?: number;
+  tokensTotal?: number;
+  compactionCount?: number;
+};
+
 export type ParallelTaskState = {
   id: string;
   planIndex: number;
@@ -259,8 +268,9 @@ export function makeAgentLabel(ref: AgentDisplayRef): string {
 export function formatWidgetLines(
   state: RunState,
   nowMs = Date.now(),
+  runtimeSnapshots: AgentRuntimeSnapshot[] = [],
 ): string[] {
-  const MAX_LINES = 5;
+  const MAX_LINES = 6;
   const lines: string[] = [];
 
   if (
@@ -273,26 +283,33 @@ export function formatWidgetLines(
     return lines;
   }
 
-  const total = state.totalCount ?? state.totalTasks ?? 0;
-  const landed =
-    state.landedCount ??
-    (state.taskIndex ? Math.max(0, state.taskIndex - 1) : 0);
+  const isParallel =
+    state.tasks !== undefined || state.totalCount !== undefined;
+  let progressText: string;
+  if (isParallel) {
+    const landed = state.landedCount ?? 0;
+    const total = state.totalCount ?? state.totalTasks ?? 0;
+    progressText = `${landed}/${total} landed`;
+  } else if (state.taskIndex !== undefined && state.totalTasks !== undefined) {
+    progressText = `${state.taskIndex}/${state.totalTasks} current`;
+  } else {
+    progressText = "…";
+  }
+
   const phaseLabel = state.phase;
   const startedAt = state.activeAgentRefs?.[0]?.startedAt;
   const elapsed = startedAt
     ? formatDuration(nowMs - new Date(startedAt).getTime())
     : "";
 
-  const headerParts = ["pi-implement", `${landed}/${total}`];
-  if (state.tasks) {
-    headerParts.push("landed");
-  }
-  headerParts.push(phaseLabel);
+  const headerParts = ["pi-implement", progressText, phaseLabel];
   if (elapsed) {
     headerParts.push(elapsed);
   }
   const header = headerParts.join(" \u00b7 ");
   lines.push(header);
+
+  const snapshotMap = new Map(runtimeSnapshots.map((s) => [s.id, s]));
 
   const refs = state.activeAgentRefs ?? [];
   const displayRefs = refs.filter((r) =>
@@ -304,25 +321,53 @@ export function formatWidgetLines(
     state.activeSubagentIds ??
     (state.activeSubagentId ? [state.activeSubagentId] : [])
   ).filter((id) => !displayRefs.some((ref) => ref.id === id));
+
   const entryLines = [
     ...displayRefs.map((ref) => {
       const label = makeAgentLabel(ref);
       const duration = formatDuration(
         nowMs - new Date(ref.startedAt).getTime(),
       );
-      return `${ref.role === "implementer" ? "\u25b6" : "\u00b7"} ${label}${duration ? ` \u00b7 ${duration}` : ""}`;
+      const snapshot = snapshotMap.get(ref.id);
+      const glyph = ref.role === "implementer" ? "\u25b6" : "\u00b7";
+      let line = `${glyph} ${label}${duration ? ` \u00b7 ${duration}` : ""}`;
+      const shortId = ref.id.slice(0, 8);
+      line += ` \u00b7 ${shortId}`;
+      if (snapshot?.status) {
+        line += ` \u00b7 ${snapshot.status}`;
+      }
+      if (snapshot?.toolUses !== undefined) {
+        line += ` \u00b7 ${snapshot.toolUses} tool`;
+      }
+      if (snapshot?.tokensTotal !== undefined) {
+        line += ` \u00b7 ${formatTokenCount(snapshot.tokensTotal)} tok`;
+      }
+      if (snapshot?.compactionCount !== undefined) {
+        line += ` \u00b7 \u21ca${snapshot.compactionCount}`;
+      }
+      line += " \u00b7 /agents";
+      return line;
     }),
-    ...rawActiveIds.map((id) => `· Active subagent · ${id}`),
+    ...rawActiveIds.map((id) => `· Active subagent · ${id} · /agents`),
   ];
 
   const shown = entryLines.slice(0, MAX_LINES - 2);
   lines.push(...shown);
   const hidden = entryLines.length - shown.length;
   if (hidden > 0) {
-    lines.push(`\u2026 ${hidden} more active task${hidden > 1 ? "s" : ""}`);
+    lines.push(
+      `\u2026 ${hidden} more active task${hidden > 1 ? "s" : ""} · /agents`,
+    );
   }
 
   return lines;
+}
+
+function formatTokenCount(n: number): string {
+  if (n >= 1000) {
+    return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  }
+  return `${n}`;
 }
 
 function formatDuration(ms: number): string {

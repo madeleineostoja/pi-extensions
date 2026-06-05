@@ -188,6 +188,112 @@ describe("status formatting", () => {
     expect(widget).toEqual(
       expect.arrayContaining([expect.stringContaining("raw-1")]),
     );
+    expect(widget).toEqual(
+      expect.arrayContaining([expect.stringContaining("/agents")]),
+    );
+  });
+
+  it("serial widget progress shows currently active task", () => {
+    const lines = formatWidgetLines({
+      phase: "coding",
+      taskIndex: 3,
+      totalTasks: 7,
+    });
+    expect(lines[0]).toContain("3/7");
+    expect(lines[0]).toContain("current");
+  });
+
+  it("parallel widget progress shows landed tasks", () => {
+    const lines = formatWidgetLines({
+      phase: "coding",
+      tasks: [
+        { id: "t1", planIndex: 1, title: "T1", status: "landed" },
+        { id: "t2", planIndex: 2, title: "T2", status: "coding" },
+      ],
+      landedCount: 2,
+      totalCount: 7,
+    });
+    expect(lines[0]).toContain("2/7");
+    expect(lines[0]).toContain("landed");
+  });
+
+  it("widget active-agent entries include label, short id, and /agents hint", () => {
+    const now = new Date("2024-01-01T00:10:00Z").getTime();
+    const lines = formatWidgetLines(
+      {
+        phase: "coding",
+        taskIndex: 3,
+        totalTasks: 7,
+        activeSubagentIds: ["agent-123456789"],
+        activeAgentRefs: [
+          {
+            id: "agent-123456789",
+            role: "implementer",
+            label: "Task 3/7 implementer \u00b7 Add retry handling",
+            startedAt: "2024-01-01T00:04:00Z",
+            taskIndex: 3,
+            taskTotal: 7,
+            taskTitle: "Add retry handling",
+          },
+        ],
+      },
+      now,
+    );
+    const agentLine = lines.find((l) => l.includes("Task 3/7 implementer"));
+    expect(agentLine).toBeDefined();
+    expect(agentLine).toContain("agent-12");
+    expect(agentLine).toContain("/agents");
+  });
+
+  it("includes runtime snapshot details in widget lines", () => {
+    const now = new Date("2024-01-01T00:10:00Z").getTime();
+    const lines = formatWidgetLines(
+      {
+        phase: "coding",
+        taskIndex: 3,
+        totalTasks: 7,
+        activeSubagentIds: ["agent-123456789"],
+        activeAgentRefs: [
+          {
+            id: "agent-123456789",
+            role: "implementer",
+            label: "Task 3/7 implementer \u00b7 Add retry handling",
+            startedAt: "2024-01-01T00:04:00Z",
+            taskIndex: 3,
+            taskTotal: 7,
+            taskTitle: "Add retry handling",
+          },
+        ],
+      },
+      now,
+      [
+        {
+          id: "agent-123456789",
+          status: "running",
+          toolUses: 4,
+          tokensTotal: 12300,
+          compactionCount: 2,
+        },
+      ],
+    );
+    const agentLine = lines.find((l) => l.includes("Task 3/7 implementer"));
+    expect(agentLine).toBeDefined();
+    expect(agentLine).toContain("running");
+    expect(agentLine).toContain("4 tool");
+    expect(agentLine).toContain("12.3k");
+    expect(agentLine).toContain("\u21ca2");
+    expect(agentLine).toContain("/agents");
+    expect(agentLine).toContain("agent-12");
+  });
+
+  it("does not throw when runtime snapshots are absent", () => {
+    expect(() =>
+      formatWidgetLines({
+        phase: "coding",
+        taskIndex: 1,
+        totalTasks: 2,
+      }),
+    ).not.toThrow();
   });
 
   it("shows active agents in run status with pretty labels", () => {

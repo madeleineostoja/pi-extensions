@@ -27,7 +27,12 @@ import {
   StoppedError,
   OverallReviewFollowupError,
 } from "./orchestrator.js";
-import type { RunState, AgentDisplayRef, StatePatch } from "./status.js";
+import type {
+  RunState,
+  AgentDisplayRef,
+  StatePatch,
+  AgentRuntimeSnapshot,
+} from "./status.js";
 import {
   formatFooterStatus,
   formatRunStatus,
@@ -848,8 +853,72 @@ function syncWidget(ctx: ExtensionCommandContext, state: RunState): void {
   if (!ctx.hasUI) {
     return;
   }
-  const lines = formatWidgetLines(state);
+  const ids = [
+    ...(state.activeSubagentIds ?? []),
+    ...(state.activeSubagentId ? [state.activeSubagentId] : []),
+  ].filter((id, index, arr) => arr.indexOf(id) === index);
+  const snapshots = collectRuntimeSnapshots(ids);
+  const lines = formatWidgetLines(state, Date.now(), snapshots);
   ctx.ui.setWidget(WIDGET_KEY, lines.length > 0 ? lines : undefined);
+}
+
+function collectRuntimeSnapshots(ids: string[]): AgentRuntimeSnapshot[] {
+  const snapshots: AgentRuntimeSnapshot[] = [];
+  const manager = (globalThis as Record<symbol, unknown>)[
+    Symbol.for("pi-subagents:manager")
+  ];
+  if (!manager || typeof manager !== "object" || !("getRecord" in manager)) {
+    return snapshots;
+  }
+  const getRecord = (manager as Record<string, unknown>).getRecord;
+  if (typeof getRecord !== "function") {
+    return snapshots;
+  }
+  for (const id of ids) {
+    try {
+      const record = (getRecord as (id: string) => unknown)(id);
+      if (!record || typeof record !== "object") {
+        continue;
+      }
+      const r = record as Record<string, unknown>;
+      const snapshot: AgentRuntimeSnapshot = { id };
+      if (typeof r.status === "string") {
+        snapshot.status = r.status;
+      }
+      if (typeof r.description === "string") {
+        snapshot.description = r.description;
+      }
+      if (typeof r.toolUses === "number" && Number.isFinite(r.toolUses)) {
+        snapshot.toolUses = r.toolUses;
+      }
+      if (
+        typeof r.compactionCount === "number" &&
+        Number.isFinite(r.compactionCount)
+      ) {
+        snapshot.compactionCount = r.compactionCount;
+      }
+      if (typeof r.lifetimeUsage === "object" && r.lifetimeUsage !== null) {
+        const lu = r.lifetimeUsage as Record<string, unknown>;
+        const input = typeof lu.input === "number" ? lu.input : 0;
+        const output = typeof lu.output === "number" ? lu.output : 0;
+        const cacheWrite =
+          typeof lu.cacheWrite === "number" ? lu.cacheWrite : 0;
+        const total = input + output + cacheWrite;
+        if (Number.isFinite(total)) {
+          snapshot.tokensTotal = total;
+        }
+      } else if (
+        typeof r.totalTokens === "number" &&
+        Number.isFinite(r.totalTokens)
+      ) {
+        snapshot.tokensTotal = r.totalTokens;
+      }
+      snapshots.push(snapshot);
+    } catch {
+      // Best-effort: skip records that throw
+    }
+  }
+  return snapshots;
 }
 
 function activeAgentRefs(state: RunState): AgentDisplayRef[] {
