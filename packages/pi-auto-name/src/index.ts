@@ -13,6 +13,7 @@ import {
 import { buildTitlePrompt, parseModelRef, sanitizeTitle } from "./utils.js";
 
 export default function (pi: ExtensionAPI) {
+  const titlePromptsThisSession: string[] = [];
   let warnedThisSession = false;
   let attemptedThisSession = false;
 
@@ -27,6 +28,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async () => {
+    titlePromptsThisSession.length = 0;
     warnedThisSession = false;
     attemptedThisSession = false;
   });
@@ -78,19 +80,26 @@ export default function (pi: ExtensionAPI) {
     if (!prompt) {
       return;
     }
+    if (titlePromptsThisSession.length < 3) {
+      titlePromptsThisSession.push(prompt);
+    }
     if (attemptedThisSession) {
       return;
     }
+    attemptedThisSession = true;
 
     const agentDir = getAgentDir();
-    void generateNameAsync(ctx, agentDir, prompt, maybeWarn).then((result) => {
+    void generateNameAsync(
+      ctx,
+      agentDir,
+      [...titlePromptsThisSession],
+      maybeWarn,
+    ).then((result) => {
       if (result.outcome === "success" && !pi.getSessionName()) {
         pi.setSessionName(result.title);
       }
-      // Only block future attempts when we succeeded or hit a known
-      // pre-flight failure. Transient/unknown errors stay retryable.
-      if (result.outcome !== "unknown-error") {
-        attemptedThisSession = true;
+      if (result.outcome === "unknown-error") {
+        attemptedThisSession = false;
       }
       if (result.outcome !== "success") {
         const msg =
@@ -117,7 +126,7 @@ type GenerateResult =
 async function generateNameAsync(
   ctx: ExtensionContext,
   agentDir: string,
-  promptText: string,
+  promptText: string | readonly string[],
   warn: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<GenerateResult> {
   try {

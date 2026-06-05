@@ -54,4 +54,17 @@ describe("buildTitlePrompt", () => {
     expect(result.userText).toContain("max 40 characters");
     expect(result.systemPrompt).toContain("No quotes");
   });
+
+  it("formats multiple early prompts as title context", () => {
+    const result = buildTitlePrompt([
+      "Help me debug this",
+      "The auto-name extension uses the second prompt",
+    ]);
+
+    expect(result.userText).toContain("early user prompts");
+    expect(result.userText).toContain("Prompt 1:\nHelp me debug this");
+    expect(result.userText).toContain(
+      "Prompt 2:\nThe auto-name extension uses the second prompt",
+    );
+  });
 });

@@ -51,12 +51,37 @@ export function sanitizeTitle(raw: string): string | null {
   return s;
 }
 
-export function buildTitlePrompt(firstPrompt: string): {
+const MAX_PROMPTS_FOR_TITLE = 3;
+const MAX_PROMPT_CONTEXT_CHARS = 2000;
+
+export function buildTitlePrompt(promptContext: string | readonly string[]): {
   systemPrompt: string;
   userText: string;
 } {
+  const prompts = (
+    Array.isArray(promptContext) ? promptContext : [promptContext]
+  )
+    .map((prompt) => prompt.trim())
+    .filter(Boolean)
+    .slice(0, MAX_PROMPTS_FOR_TITLE);
+  const promptText = formatPromptContext(prompts);
+  const basis =
+    prompts.length === 1 ? "the first user prompt" : "early user prompts";
   const systemPrompt =
     "You name coding sessions. Reply with a concise title only. No quotes, no punctuation at the end.";
-  const userText = `Give this session a short descriptive title (3–6 words, max 40 characters) based on the first user prompt:\n\n${firstPrompt}`;
+  const userText = `Give this session a short descriptive title (3–6 words, max 40 characters) based on ${basis}:\n\n${promptText}`;
   return { systemPrompt, userText };
+}
+
+function formatPromptContext(prompts: string[]): string {
+  const text =
+    prompts.length <= 1
+      ? prompts[0] || ""
+      : prompts.map((prompt, i) => `Prompt ${i + 1}:\n${prompt}`).join("\n\n");
+
+  if (text.length <= MAX_PROMPT_CONTEXT_CHARS) {
+    return text;
+  }
+
+  return text.slice(0, MAX_PROMPT_CONTEXT_CHARS).trimEnd();
 }
