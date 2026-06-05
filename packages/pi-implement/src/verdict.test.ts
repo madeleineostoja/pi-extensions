@@ -8,7 +8,7 @@ import {
 } from "./verdict.js";
 
 describe("parseImplementerResult", () => {
-  it("extracts structured JSON result", () => {
+  it("extracts structured JSON result (legacy, no outcome)", () => {
     const result = parseImplementerResult(`extra prose
 
 <pi-implement-result>
@@ -28,6 +28,7 @@ describe("parseImplementerResult", () => {
     expect(result).toEqual({
       ok: true,
       result: {
+        outcome: "changed",
         summary: "changed files",
         verification: [
           {
@@ -38,6 +39,120 @@ describe("parseImplementerResult", () => {
         ],
         commitMessage: "feat: add thing\n\nExplain the body.",
       },
+    });
+  });
+
+  it("parses outcome: changed explicitly", () => {
+    const result = parseImplementerResult(
+      '<pi-implement-result>{"outcome":"changed","summary":"did stuff","verification":[{"command":"npm test","result":"passed","rationale":"covers it"}],"commitMessage":"feat: do stuff"}</pi-implement-result>',
+    );
+    expect(result).toEqual({
+      ok: true,
+      result: {
+        outcome: "changed",
+        summary: "did stuff",
+        verification: [
+          { command: "npm test", result: "passed", rationale: "covers it" },
+        ],
+        commitMessage: "feat: do stuff",
+      },
+    });
+  });
+
+  it("parses outcome: already_satisfied with optional commitMessage", () => {
+    const result = parseImplementerResult(
+      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>',
+    );
+    expect(result).toEqual({
+      ok: true,
+      result: {
+        outcome: "already_satisfied",
+        summary: "already done",
+        verification: [
+          {
+            command: "npm test",
+            result: "passed",
+            rationale: "task already satisfied",
+          },
+        ],
+        commitMessage: undefined,
+      },
+    });
+  });
+
+  it("parses outcome: already_satisfied with commitMessage present", () => {
+    const result = parseImplementerResult(
+      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}],"commitMessage":"feat: already done"}</pi-implement-result>',
+    );
+    expect(result).toEqual({
+      ok: true,
+      result: {
+        outcome: "already_satisfied",
+        summary: "already done",
+        verification: [
+          {
+            command: "npm test",
+            result: "passed",
+            rationale: "task already satisfied",
+          },
+        ],
+        commitMessage: "feat: already done",
+      },
+    });
+  });
+
+  it("rejects unknown outcome values", () => {
+    expect(
+      parseImplementerResult(
+        '<pi-implement-result>{"outcome":"unknown","summary":"x","verification":[{"command":"c","result":"r","rationale":"r"}],"commitMessage":"m"}</pi-implement-result>',
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: /invalid outcome/,
+    });
+  });
+
+  it("rejects changed outcome missing commitMessage", () => {
+    expect(
+      parseImplementerResult(
+        '<pi-implement-result>{"outcome":"changed","summary":"x","verification":[{"command":"c","result":"r","rationale":"r"}]}</pi-implement-result>',
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: /missing commitMessage/,
+    });
+  });
+
+  it("rejects legacy result missing commitMessage", () => {
+    expect(
+      parseImplementerResult(
+        '<pi-implement-result>{"summary":"only","verification":[{"command":"c","result":"r","rationale":"r"}]}</pi-implement-result>',
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: /missing commitMessage/,
+    });
+  });
+
+  it("rejects already_satisfied with empty verification", () => {
+    expect(
+      parseImplementerResult(
+        '<pi-implement-result>{"outcome":"already_satisfied","summary":"x","verification":[]}</pi-implement-result>',
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: /non-empty verification array/,
+    });
+  });
+
+  it("rejects already_satisfied with missing verification", () => {
+    expect(
+      parseImplementerResult(
+        '<pi-implement-result>{"outcome":"already_satisfied","summary":"x"}</pi-implement-result>',
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: /non-empty verification array/,
     });
   });
 

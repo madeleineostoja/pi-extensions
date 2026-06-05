@@ -4,11 +4,19 @@ export type VerificationStep = {
   rationale: string;
 };
 
-export type ParsedImplementerResult = {
-  summary: string;
-  verification: VerificationStep[];
-  commitMessage: string;
-};
+export type ParsedImplementerResult =
+  | {
+      outcome: "changed";
+      summary: string;
+      verification: VerificationStep[];
+      commitMessage: string;
+    }
+  | {
+      outcome: "already_satisfied";
+      summary: string;
+      verification: VerificationStep[];
+      commitMessage?: string;
+    };
 
 export type ReviewerVerdict =
   | { verdict: "approved" }
@@ -35,6 +43,22 @@ export function parseImplementerResult(
   const summary = value.summary;
   const verification = value.verification;
   const commitMessage = value.commitMessage;
+
+  const rawOutcome = value.outcome;
+  const outcome =
+    rawOutcome === undefined
+      ? "changed"
+      : rawOutcome === "changed" || rawOutcome === "already_satisfied"
+        ? rawOutcome
+        : undefined;
+
+  if (outcome === undefined) {
+    return {
+      ok: false,
+      reason: `Implementer JSON has invalid outcome "${String(rawOutcome)}". Expected "changed" or "already_satisfied" (or omit outcome for backward compatibility).`,
+    };
+  }
+
   if (!isNonEmptyString(summary)) {
     return { ok: false, reason: "Implementer JSON is missing summary." };
   }
@@ -69,18 +93,34 @@ export function parseImplementerResult(
       rationale: step.rationale,
     });
   }
-  if (!isNonEmptyString(commitMessage)) {
+
+  if (outcome === "changed") {
+    if (!isNonEmptyString(commitMessage)) {
+      return {
+        ok: false,
+        reason: "Implementer JSON is missing commitMessage.",
+      };
+    }
     return {
-      ok: false,
-      reason: "Implementer JSON is missing commitMessage.",
+      ok: true,
+      result: {
+        outcome: "changed",
+        summary,
+        verification: steps,
+        commitMessage: commitMessage.trim(),
+      },
     };
   }
+
+  // outcome === "already_satisfied"
   return {
     ok: true,
     result: {
+      outcome: "already_satisfied",
       summary,
       verification: steps,
-      commitMessage: commitMessage.trim(),
+      commitMessage:
+        typeof commitMessage === "string" ? commitMessage.trim() : undefined,
     },
   };
 }

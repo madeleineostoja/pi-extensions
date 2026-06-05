@@ -1796,8 +1796,10 @@ async function runTaskWorker(args: {
       });
     }
 
-    const approvedMessage = isValidCommitMessage(parsed.result.commitMessage)
-      ? parsed.result.commitMessage.trim()
+    const commitMessage =
+      parsed.result.outcome === "changed" ? parsed.result.commitMessage : "";
+    const approvedMessage = isValidCommitMessage(commitMessage)
+      ? commitMessage.trim()
       : fallbackCommitMessage(task.text);
     deps.updateState((prev) => ({
       phase: "committing" as const,

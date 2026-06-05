@@ -15,6 +15,7 @@ const TASK_PACKET = `# Task Packet
 `;
 
 const IMPLEMENTER_RESULT = {
+  outcome: "changed" as const,
   summary: "Did the thing",
   verification: [
     { command: "npm test", result: "passed", rationale: "covers change" },
