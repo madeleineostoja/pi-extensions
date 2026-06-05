@@ -77,7 +77,12 @@ export function buildReviewerPrompt(args: {
   taskPacket: string;
   worktreePath: string;
   implementer: ParsedImplementerResult;
+  outOfScopeTasks?: string[];
 }): string {
+  const siblingSection =
+    args.outOfScopeTasks && args.outOfScopeTasks.length > 0
+      ? `\n## Out-of-Scope Sibling Tasks\n\nThe following unselected sibling tasks are out of scope for this candidate. They are listed here as a scope guard; do not treat them as requirements to satisfy.\n\n${args.outOfScopeTasks.map((t) => `- ${t}`).join("\n")}\n`
+      : "";
   return `You are the pi-implement reviewer for exactly one staged /plan task candidate. This prompt is the complete review contract and must work even if your subagent definition is generic.
 
 Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The task packet is a deliberate single-task slice; sibling task lines are intentionally omitted and are out of scope.
@@ -97,6 +102,12 @@ This is review only, not implementation. Do not edit files, stage, reset, commit
 The selected task's required scope is the task line plus the indented lines directly under it. Sub-bullets are part of the task. Sibling tasks are out of scope unless this diff makes them worse.
 
 Approve only if the selected task is satisfied, the implementation is correct, the scope is appropriate, and quality and verification are acceptable. Block for concrete material issues: incorrect behavior, missing task requirements, regressions, broken or insufficient verification for the changed surface, unsafe or insecure code, maintainability problems that will cause real trouble, or unnecessary scope. Do not block for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or refactors that would merely be nice. If an issue is not material enough to require another implementation attempt, do not list it.
+
+## Scope Review Rules
+
+- Small prerequisite changes needed for the selected task may be approved.
+- Request changes if the staged diff substantially implements an unselected sibling task, broad remaining-plan work, or unrelated cleanup that is not a necessary minimal prerequisite for the selected task.
+- Completing a sibling task's own deliverable is scope creep, even if it seems convenient.${siblingSection}
 
 ## Task Packet
 

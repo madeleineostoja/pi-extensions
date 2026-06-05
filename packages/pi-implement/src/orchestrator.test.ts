@@ -286,6 +286,47 @@ describe("runImplementation", () => {
     expect(states.at(-1)).toMatchObject({ phase: "done" });
   });
 
+  it("reviewer prompt includes sibling tasks as out-of-scope context but implementer prompt does not", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task one\n- [x] Task two\n",
+      "utf-8",
+    );
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns).toHaveLength(3);
+    const implPrompt = subagents.spawns[0]?.prompt ?? "";
+    const reviewerPrompt = subagents.spawns[1]?.prompt ?? "";
+
+    expect(implPrompt).not.toContain("Task two");
+    expect(reviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(reviewerPrompt).toContain("- [x] Task two");
+    expect(reviewerPrompt).toContain(
+      "Completing a sibling task's own deliverable is scope creep",
+    );
+  });
+
   it("tracks reviewer requests separately from system failures", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");

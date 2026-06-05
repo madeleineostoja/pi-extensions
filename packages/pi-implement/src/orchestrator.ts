@@ -1663,10 +1663,14 @@ async function runTaskWorker(args: {
       }
 
       reviewHeadBefore = await taskGit.head();
+      const outOfScopeTasks = plan.tasks
+        .filter((t) => t.index !== task.index)
+        .map((t) => t.originalLine);
       reviewerPrompt = buildReviewerPrompt({
         taskPacket: packet.markdown,
         worktreePath: effectiveWorktreePath,
         implementer: parsed.result,
+        outOfScopeTasks,
       });
     } else if (parsed.result.outcome === "already_satisfied" && !worktreePath) {
       await taskGit.reset();

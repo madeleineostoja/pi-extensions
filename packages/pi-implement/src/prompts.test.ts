@@ -128,6 +128,48 @@ describe("buildReviewerPrompt", () => {
     expect(prompt).toContain("Do not edit files");
     expect(prompt).toContain("change HEAD");
   });
+
+  it("includes out-of-scope sibling tasks when provided", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      outOfScopeTasks: ["- [ ] Sibling task A", "- [ ] Sibling task B"],
+    });
+
+    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(prompt).toContain("- [ ] Sibling task A");
+    expect(prompt).toContain("- [ ] Sibling task B");
+  });
+
+  it("omits the sibling section when no out-of-scope tasks are provided", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
+  });
+
+  it("tells reviewers to request changes for substantial sibling-task implementation", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      outOfScopeTasks: ["- [ ] Sibling task"],
+    });
+
+    expect(prompt).toContain(
+      "Request changes if the staged diff substantially implements an unselected sibling task",
+    );
+    expect(prompt).toContain(
+      "Completing a sibling task's own deliverable is scope creep",
+    );
+    expect(prompt).toContain(
+      "Small prerequisite changes needed for the selected task may be approved",
+    );
+  });
 });
 
 describe("buildAlreadySatisfiedReviewerPrompt", () => {
