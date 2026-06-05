@@ -166,4 +166,31 @@ describe("diffProgress", () => {
       "checkpoint 31",
     ]);
   });
+
+  it("emits strategy selection note for serial mode", () => {
+    const prev: RunState = { phase: "strategy" };
+    const next: RunState = {
+      phase: "preflight",
+      mode: "serial",
+      lastReason: "Only one unchecked task; no parallelism needed.",
+    };
+    const lines = diffProgress(prev, next, ["A"]);
+    expect(lines).toContain(
+      "✓ selected serial implementation: Only one unchecked task; no parallelism needed.",
+    );
+  });
+
+  it("emits strategy selection note for parallel mode with concurrency", () => {
+    const prev: RunState = { phase: "strategy" };
+    const next: RunState = {
+      phase: "preflight",
+      mode: "parallel",
+      maxConcurrency: 3,
+      lastReason: "Planner recommended parallel: independent task groups",
+    };
+    const lines = diffProgress(prev, next, ["A"]);
+    expect(lines).toContain(
+      "✓ selected parallel implementation (max 3): Planner recommended parallel: independent task groups",
+    );
+  });
 });

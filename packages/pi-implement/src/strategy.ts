@@ -98,17 +98,6 @@ export async function selectStrategy(
     return runGraphPlanner(req, unchecked, maxConcurrency);
   }
 
-  // Auto mode: apply the cheap escalation rule
-  const escalationResult = checkEscalationRule(unchecked);
-  if (!escalationResult.escalate) {
-    return {
-      mode: "serial",
-      reason: escalationResult.reason,
-      maxConcurrency,
-      ...outcomeMeta,
-    };
-  }
-
   // Auto mode: run cheap triage call
   const triageResult = await runTriage(req, unchecked);
   if (triageResult.decision === "serial") {
@@ -121,30 +110,6 @@ export async function selectStrategy(
   }
 
   return runGraphPlanner(req, unchecked, maxConcurrency);
-}
-
-type EscalationCheck = { escalate: true } | { escalate: false; reason: string };
-
-function checkEscalationRule(unchecked: PlanTask[]): EscalationCheck {
-  if (unchecked.length < 3) {
-    return {
-      escalate: false,
-      reason: `Fewer than 3 unchecked tasks (${unchecked.length}); selecting serial.`,
-    };
-  }
-
-  const perTask = unchecked.map((t) => extractSurfaceAreas(t.text));
-  const tasksWithAreas = perTask.filter((a) => a.length > 0).length;
-  const allAreas = new Set(perTask.flat());
-  if (tasksWithAreas < 2 || allAreas.size < 2) {
-    return {
-      escalate: false,
-      reason:
-        "Fewer than 2 tasks with distinct surface areas detected; selecting serial.",
-    };
-  }
-
-  return { escalate: true };
 }
 
 export function extractSurfaceAreas(taskText: string): string[] {

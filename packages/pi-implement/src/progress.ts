@@ -46,6 +46,8 @@ export function diffProgress(
 ): string[] {
   const lines: string[] = [];
 
+  lines.push(...strategyNotes(prev, next));
+
   if (next.tasks) {
     lines.push(...parallelNotes(prev, next));
   } else {
@@ -55,6 +57,20 @@ export function diffProgress(
   lines.push(...runLevelNotes(prev, next));
   lines.push(...checkpointNotes(prev, next));
   return lines;
+}
+
+function strategyNotes(prev: RunState, next: RunState): string[] {
+  if (prev.phase !== "strategy" || next.phase === "strategy") {
+    return [];
+  }
+  if (!next.mode) {
+    return [];
+  }
+  const modeLabel =
+    next.mode === "parallel"
+      ? `parallel implementation (max ${next.maxConcurrency ?? "?"})`
+      : "serial implementation";
+  return [`✓ selected ${modeLabel}${reasonSuffix(next.lastReason)}`];
 }
 
 function checkpointNotes(prev: RunState, next: RunState): string[] {

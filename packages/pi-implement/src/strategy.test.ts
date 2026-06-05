@@ -271,9 +271,11 @@ describe("selectStrategy - auto mode deterministic preconditions", () => {
   });
 });
 
-describe("selectStrategy - auto mode escalation rule", () => {
-  it("selects serial for fewer than 3 unchecked tasks", async () => {
-    const subagents = makeSubagents();
+describe("selectStrategy - auto mode triage", () => {
+  it("calls triage for 2 unchecked tasks in auto mode", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({ decision: "serial", reason: "too coupled" }),
+    );
     const plan = makePlan(["packages/foo task", "packages/bar task"]);
     const result = await selectStrategy({
       plan,
@@ -289,15 +291,16 @@ describe("selectStrategy - auto mode escalation rule", () => {
       updateState: () => ({}),
       requestedMode: "auto",
     });
-    expect(result.mode).toBe("serial");
     expect(
       (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
-    ).toHaveLength(0);
+    ).toHaveLength(1);
+    expect(result.mode).toBe("serial");
   });
 
-  it("selects serial for 3+ tasks but fewer than 2 distinct surface areas (one noun yields 1 area)", async () => {
-    const subagents = makeSubagents();
-    // All tasks reference the same "auth" noun → 1 distinct area, not 2
+  it("calls triage for 3+ tasks even with no detectable surface areas", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({ decision: "serial", reason: "no distinct areas" }),
+    );
     const plan = makePlan([
       "Add the auth model",
       "Test the auth model",
@@ -317,67 +320,97 @@ describe("selectStrategy - auto mode escalation rule", () => {
       updateState: () => ({}),
       requestedMode: "auto",
     });
-    expect(result.mode).toBe("serial");
-    expect(
-      (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
-    ).toHaveLength(0);
-  });
-
-  it("selects serial when only one task names areas (others name none), even if union has 2+ areas", async () => {
-    const subagents = makeSubagents();
-    // Only task 1 names areas; tasks 2 and 3 name no areas → tasksWithAreas < 2
-    const plan = makePlan([
-      "Add the user model and payment route",
-      "Update configuration settings",
-      "Refactor utilities",
-    ]);
-    const result = await selectStrategy({
-      plan,
-      planContent: plan.content,
-      planHash: "hash",
-      repoRoot: "/repo",
-      baseSha: "abc",
-      config: {},
-      roles: makeRoles(),
-      subagents,
-      paths: makeStatePaths(),
-      runId: "r1",
-      updateState: () => ({}),
-      requestedMode: "auto",
-    });
-    expect(result.mode).toBe("serial");
-    expect(
-      (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
-    ).toHaveLength(0);
-  });
-
-  it("calls triage for 3+ tasks with 2+ distinct surface areas", async () => {
-    const subagents = makeSubagents(
-      JSON.stringify({ decision: "serial", reason: "too coupled" }),
-    );
-    const plan = makePlan([
-      "Update packages/auth/login.ts for auth",
-      "Update src/routes/api.ts for API route",
-      "Update docs/reference.md documentation",
-    ]);
-    const result = await selectStrategy({
-      plan,
-      planContent: plan.content,
-      planHash: "hash",
-      repoRoot: "/repo",
-      baseSha: "abc",
-      config: {},
-      roles: makeRoles(),
-      subagents,
-      paths: makeStatePaths(),
-      runId: "r1",
-      updateState: () => ({}),
-      requestedMode: "auto",
-    });
     expect(
       (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
     ).toHaveLength(1);
     expect(result.mode).toBe("serial");
+  });
+
+  it("escalates to planner when triage says escalate-to-planner", async () => {
+    const graph: ImplementGraph = {
+      version: 1,
+      runId: "",
+      baseSha: "",
+      planPath: "",
+      planHash: "",
+      nodes: [
+        {
+          id: "t1",
+          planIndex: 1,
+          title: "Task A",
+          taskHash: "a",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: ["packages/foo"],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "t2",
+          planIndex: 2,
+          title: "Task B",
+          taskHash: "b",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: ["packages/bar"],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    };
+    const plannerOutput = JSON.stringify({
+      mode: "parallel",
+      reason: "Independent areas",
+      confidence: "high",
+      maxConcurrency: 2,
+      graph,
+    });
+    const spawnFn = vi
+      .fn()
+      .mockResolvedValueOnce("agent-triage")
+      .mockResolvedValueOnce("agent-planner");
+    const waitForFn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "completed",
+        result: JSON.stringify({
+          decision: "escalate-to-planner",
+          reason: "distinct areas",
+        }),
+      })
+      .mockResolvedValueOnce({
+        status: "completed",
+        result: plannerOutput,
+      });
+    const subagents: SubagentClient = {
+      probe: vi.fn().mockResolvedValue({ ok: true }),
+      spawn: spawnFn,
+      stop: vi.fn().mockResolvedValue(undefined),
+      waitFor: waitForFn,
+    };
+    const plan = makePlan(["Task A", "Task B"]);
+    const result = await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "auto",
+    });
+    expect(spawnFn.mock.calls).toHaveLength(2);
+    expect(result.mode).toBe("parallel");
   });
 });
 
