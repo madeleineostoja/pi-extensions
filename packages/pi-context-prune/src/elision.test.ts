@@ -2270,3 +2270,167 @@ describe("read stub metadata in context hook", () => {
     );
   });
 });
+
+describe("emergency ordinary-read pruning", () => {
+  const largeText = "x".repeat(20_000);
+  const emergencyCtx = {
+    ...fakeCtxWithCwd,
+    getContextUsage: () => ({ tokens: 90_000, contextWindow: 100_000 }),
+  } as any;
+  const normalCtx = {
+    ...fakeCtxWithCwd,
+    getContextUsage: () => ({ tokens: 70_000, contextWindow: 100_000 }),
+  } as any;
+
+  it("elides a consumed young ordinary read in emergency pressure", () => {
+    const readId = "em-ord-1";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: largeText,
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "other", name: "bash", arguments: { command: "echo hi" } },
+      ]),
+    ];
+    const passes: any[] = [];
+    const result = makeContextHook(defaultConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toMatch(/emergency context pressure/);
+    expect(passes[0].entries[0].reason).toBe("emergency-pressure");
+  });
+
+  it("does not emergency-prune when context usage is below the reserve threshold", () => {
+    const readId = "em-ord-below";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: largeText,
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "other", name: "bash", arguments: { command: "echo hi" } },
+      ]),
+    ];
+    const result = makeContextHook(defaultConfig())(
+      { type: "context", messages } as any,
+      normalCtx,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toBe(largeText);
+  });
+
+  it("does not emergency-prune an unconsumed ordinary read", () => {
+    const readId = "em-ord-unconsumed";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: largeText,
+      }),
+      makeUserMsg(),
+    ];
+    const result = makeContextHook(defaultConfig())(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toBe(largeText);
+  });
+
+  it("does not emergency-prune an error read", () => {
+    const readId = "em-ord-error";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: largeText,
+        isError: true,
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "other", name: "bash", arguments: { command: "echo hi" } },
+      ]),
+    ];
+    const result = makeContextHook(defaultConfig())(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toBe(largeText);
+  });
+
+  it("bounds emergency ordinary-read pruning by emergencyMaxOrdinaryReads", () => {
+    const ids = ["em-cap-1", "em-cap-2", "em-cap-3"];
+    const messages: any[] = [makeUserMsg()];
+    for (const id of ids) {
+      messages.push(
+        makeAssistantMsg([
+          { id, name: "read", arguments: { path: `src/${id}.ts` } },
+        ]),
+        makeToolResultMsg({
+          toolCallId: id,
+          toolName: "read",
+          text: largeText,
+        }),
+        makeUserMsg(),
+      );
+    }
+    messages.push(
+      makeAssistantMsg([
+        { id: "final", name: "bash", arguments: { command: "echo done" } },
+      ]),
+    );
+
+    const passes: any[] = [];
+    const config = {
+      ...defaultConfig(),
+      emergencyMaxOrdinaryReads: 2,
+    };
+    const result = makeContextHook(config, (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+
+    const elidedIds = passes[0].entries.map((e: any) => e.toolCallId);
+    expect(elidedIds).toHaveLength(2);
+    expect(elidedIds).toContain("em-cap-1");
+    expect(elidedIds).toContain("em-cap-2");
+    expect(elidedIds).not.toContain("em-cap-3");
+
+    const read3 = result.messages!.find(
+      (m: any) => m.toolCallId === "em-cap-3",
+    ) as any;
+    expect(read3.content[0].text).toBe(largeText);
+  });
+});

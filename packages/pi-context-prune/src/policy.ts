@@ -116,7 +116,7 @@ export const AGGRESSIVE_PROFILE: PolicyProfile = clampProfile({
 });
 
 export const DEFAULT_POLICY_PROFILES: Record<
-  Exclude<ElisionReason, "emergency-pressure">,
+  ElisionReason,
   PolicyProfile
 > = {
   "standard-stale": clampProfile({
@@ -154,26 +154,31 @@ export const DEFAULT_POLICY_PROFILES: Record<
     maxSuffixBudget: 80000,
     semanticRisk: 0.4,
   }),
+  "emergency-pressure": clampProfile({
+    minSavedTokens: 1500,
+    baselineSuffixBudget: 25000,
+    minSuffixBudget: 5000,
+    maxSuffixBudget: 80000,
+    semanticRisk: 0.4,
+  }),
 };
 
-export const BATCH_PRIORITY: Record<
-  Exclude<ElisionReason, "emergency-pressure">,
-  number
-> = {
+export const BATCH_PRIORITY: Record<ElisionReason, number> = {
   "after-consumption-bash": 1,
   "duplicate-read-young": 2,
   "superseded-read-young": 3,
   "standard-stale": 4,
   "batch-pressure": 5,
+  "emergency-pressure": 6,
 };
 
-const STUB_PRECEDENCE: Array<
-  Exclude<ElisionReason, "emergency-pressure" | "batch-pressure">
-> = [
+const STUB_PRECEDENCE: Array<ElisionReason> = [
   "superseded-read-young",
   "duplicate-read-young",
   "after-consumption-bash",
   "standard-stale",
+  "emergency-pressure",
+  "batch-pressure",
 ];
 
 export function getPrimaryReason(reasons: ElisionReason[]): ElisionReason {
@@ -186,7 +191,7 @@ export function getPrimaryReason(reasons: ElisionReason[]): ElisionReason {
 }
 
 export function getProfileForReason(
-  reason: Exclude<ElisionReason, "emergency-pressure">,
+  reason: ElisionReason,
 ): PolicyProfile {
   return DEFAULT_POLICY_PROFILES[reason] ?? DEFAULT_PROFILE;
 }

@@ -652,9 +652,11 @@ export function makeContextHook(
       cwd,
       toolCallInfoMap,
     );
-    const hasAssistantAfter = config.afterConsumptionBashEnabled
-      ? assistantAfterEachPosition(messages)
-      : [];
+    const hasAssistantAfter =
+      config.afterConsumptionBashEnabled ||
+      config.emergencyMaxOrdinaryReads > 0
+        ? assistantAfterEachPosition(messages)
+        : [];
     const distances = userTurnsAfterEachPosition(messages);
     const userTurnCounts = userTurnsUpToEachPosition(messages);
     const suffixTokenTable = buildSuffixTokenTable(messages);
@@ -816,6 +818,42 @@ export function makeContextHook(
         }
       }
 
+      if (
+        isEmergency &&
+        reasons.length === 0 &&
+        msg.toolName === "read" &&
+        !msg.isError &&
+        readPath !== null &&
+        hasAssistantAfter[i]
+      ) {
+        const preview = extractPreview(msg.content);
+        const stubText = buildStubTextForCandidate(
+          {
+            index: i,
+            msg,
+            reasons,
+            originalTokens: tokenCount,
+            estimatedStubTokens: 0,
+            savedTokens: 0,
+            suffixTokens: 0,
+            semanticRisk: 0,
+            priority: 0,
+            isOrdinarySourceRead: false,
+            readMetadata,
+          },
+          "emergency-pressure",
+          tokenCount,
+          preview,
+        );
+        const stubTokens = estimateContentTokens([
+          { type: "text", text: stubText },
+        ]);
+        const savedTokens = Math.max(0, tokenCount - stubTokens);
+        if (savedTokens >= config.emergencyOrdinaryReadMinSavedTokens) {
+          reasons.push("emergency-pressure");
+        }
+      }
+
       if (reasons.length === 0) {
         continue;
       }
@@ -854,9 +892,7 @@ export function makeContextHook(
         readPath !== null &&
         !reasons.includes("duplicate-read-young") &&
         !reasons.includes("superseded-read-young");
-      const profile = getProfileForReason(
-        primaryReason as Exclude<ElisionReason, "emergency-pressure">,
-      );
+      const profile = getProfileForReason(primaryReason);
 
       candidates.push({
         index: i,
@@ -869,9 +905,7 @@ export function makeContextHook(
         semanticRisk: isOrdinarySourceRead ? 1 : profile.semanticRisk,
         priority: isOrdinarySourceRead
           ? BATCH_PRIORITY["batch-pressure"]
-          : (BATCH_PRIORITY[
-              primaryReason as Exclude<ElisionReason, "emergency-pressure">
-            ] ?? 5),
+          : (BATCH_PRIORITY[primaryReason] ?? 5),
         isOrdinarySourceRead,
         supersededPath,
         duplicateInfo,
@@ -906,10 +940,7 @@ export function makeContextHook(
     const elidedIndices = new Set<number>();
 
     for (const cand of candidates) {
-      const primaryReason = getPrimaryReason(cand.reasons) as Exclude<
-        ElisionReason,
-        "emergency-pressure"
-      >;
+      const primaryReason = getPrimaryReason(cand.reasons);
       const profile = getProfileForReason(primaryReason);
 
       const recallRate = recallRateForScoring(pruningState, primaryReason);
@@ -966,8 +997,21 @@ export function makeContextHook(
         return a.index - b.index;
       });
 
-      const selected: Candidate[] = [];
+      const emergencyOrdinaryCandidates: Candidate[] = [];
+      const otherDeferred: Candidate[] = [];
       for (const cand of deferred) {
+        if (
+          cand.reasons.length === 1 &&
+          cand.reasons[0] === "emergency-pressure"
+        ) {
+          emergencyOrdinaryCandidates.push(cand);
+        } else {
+          otherDeferred.push(cand);
+        }
+      }
+
+      const selected: Candidate[] = [];
+      for (const cand of otherDeferred) {
         if (!isEmergency && cand.isOrdinarySourceRead) {
           continue;
         }
@@ -975,6 +1019,20 @@ export function makeContextHook(
           break;
         }
         selected.push(cand);
+      }
+
+      if (isEmergency) {
+        let emergencyOrdinarySelected = 0;
+        for (const cand of emergencyOrdinaryCandidates) {
+          if (selected.length >= config.batchMaxCandidates) {
+            break;
+          }
+          if (emergencyOrdinarySelected >= config.emergencyMaxOrdinaryReads) {
+            break;
+          }
+          selected.push(cand);
+          emergencyOrdinarySelected++;
+        }
       }
 
       if (selected.length >= (isEmergency ? 1 : config.batchMinCandidates)) {

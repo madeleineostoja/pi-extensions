@@ -12,6 +12,8 @@ export type Config = {
   afterConsumptionBashEnabled: boolean;
   batchPruningEnabled: boolean;
   emergencyContextReserveTokens: number;
+  emergencyOrdinaryReadMinSavedTokens: number;
+  emergencyMaxOrdinaryReads: number;
   batchMinCandidates: number;
   batchMinSavedTokens: number;
   batchMinNetValue: number;
@@ -29,6 +31,8 @@ export const DEFAULTS: Config = {
   afterConsumptionBashEnabled: true,
   batchPruningEnabled: true,
   emergencyContextReserveTokens: 16000,
+  emergencyOrdinaryReadMinSavedTokens: 4000,
+  emergencyMaxOrdinaryReads: 2,
   batchMinCandidates: 2,
   batchMinSavedTokens: 8000,
   batchMinNetValue: 3000,
@@ -102,6 +106,8 @@ export function loadConfig(
     | "staleTurns"
     | "minTokens"
     | "emergencyContextReserveTokens"
+    | "emergencyOrdinaryReadMinSavedTokens"
+    | "emergencyMaxOrdinaryReads"
     | "batchMinCandidates"
     | "batchMinSavedTokens"
     | "batchMinNetValue"
@@ -112,6 +118,8 @@ export function loadConfig(
     "staleTurns",
     "minTokens",
     "emergencyContextReserveTokens",
+    "emergencyOrdinaryReadMinSavedTokens",
+    "emergencyMaxOrdinaryReads",
     "batchMinCandidates",
     "batchMinSavedTokens",
     "batchMinNetValue",

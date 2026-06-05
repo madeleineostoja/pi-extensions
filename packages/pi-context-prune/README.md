@@ -119,6 +119,8 @@ The file is loaded once at session start. A missing file is silently ignored and
   "afterConsumptionBashEnabled": true,
   "batchPruningEnabled": true,
   "emergencyContextReserveTokens": 16000,
+  "emergencyOrdinaryReadMinSavedTokens": 4000,
+  "emergencyMaxOrdinaryReads": 2,
   "batchCooldownTurns": 2,
   "batchMinCandidates": 2,
   "batchMinSavedTokens": 8000,
@@ -140,6 +142,8 @@ All keys are optional. Any key omitted falls back to the default shown above.
 | `afterConsumptionBashEnabled`   | boolean      | `true`  | Enable after-consumption bash compaction                                                        |
 | `batchPruningEnabled`           | boolean      | `true`  | Enable batch old-history pruning for deferred candidates                                        |
 | `emergencyContextReserveTokens` | number (≥ 0) | `16000` | Context window headroom below which emergency-pressure elision is triggered                     |
+| `emergencyOrdinaryReadMinSavedTokens` | number (≥ 0) | `4000` | Minimum saved tokens for a young, consumed ordinary `read` to be eligible for emergency elision |
+| `emergencyMaxOrdinaryReads`     | number (≥ 0) | `2`     | Maximum number of young ordinary reads that may be elided per emergency pass                  |
 | `batchCooldownTurns`            | number (≥ 0) | `2`     | Minimum turns between non-emergency batch pruning passes                                        |
 | `batchMinCandidates`            | number (≥ 1) | `2`     | Minimum number of deferred candidates required to run a batch pass                              |
 | `batchMinSavedTokens`           | number (≥ 0) | `8000`  | Minimum aggregate saved tokens for a non-emergency batch pass                                   |
