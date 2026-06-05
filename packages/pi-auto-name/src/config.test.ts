@@ -5,8 +5,8 @@ import { join } from "node:path";
 import {
   readConfig,
   writeConfig,
-  resolveEffectiveModel,
-  DEFAULT_MODEL,
+  resolveConfiguredModel,
+  CONFIG_RELATIVE_PATH,
 } from "./config.js";
 
 describe("readConfig", () => {
@@ -25,12 +25,7 @@ describe("readConfig", () => {
   });
 
   it("ignores unknown fields", () => {
-    const configPath = join(
-      tmpDir,
-      "extensions",
-      "pi-auto-name",
-      "config.json",
-    );
+    const configPath = join(tmpDir, CONFIG_RELATIVE_PATH);
     mkdirSync(join(tmpDir, "extensions", "pi-auto-name"), { recursive: true });
     writeFileSync(
       configPath,
@@ -41,12 +36,7 @@ describe("readConfig", () => {
   });
 
   it("returns empty object for malformed json", () => {
-    const configPath = join(
-      tmpDir,
-      "extensions",
-      "pi-auto-name",
-      "config.json",
-    );
+    const configPath = join(tmpDir, CONFIG_RELATIVE_PATH);
     mkdirSync(join(tmpDir, "extensions", "pi-auto-name"), { recursive: true });
     writeFileSync(configPath, "not json", "utf-8");
     expect(readConfig(tmpDir)).toEqual({});
@@ -54,18 +44,13 @@ describe("readConfig", () => {
 
   it("returns empty object for non-object json", () => {
     writeConfig(tmpDir, { model: "x/y" });
-    const configPath = join(
-      tmpDir,
-      "extensions",
-      "pi-auto-name",
-      "config.json",
-    );
+    const configPath = join(tmpDir, CONFIG_RELATIVE_PATH);
     writeFileSync(configPath, "123", "utf-8");
     expect(readConfig(tmpDir)).toEqual({});
   });
 });
 
-describe("resolveEffectiveModel", () => {
+describe("resolveConfiguredModel", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -76,16 +61,12 @@ describe("resolveEffectiveModel", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns default model when no config exists", () => {
-    const result = resolveEffectiveModel(tmpDir);
-    expect(result.model).toBe(DEFAULT_MODEL);
-    expect(result.source).toBe("default");
+  it("returns null when no model is configured", () => {
+    expect(resolveConfiguredModel(tmpDir)).toBeNull();
   });
 
-  it("returns config model when override exists", () => {
+  it("returns config model when configured", () => {
     writeConfig(tmpDir, { model: "openai/gpt-4.1-nano" });
-    const result = resolveEffectiveModel(tmpDir);
-    expect(result.model).toBe("openai/gpt-4.1-nano");
-    expect(result.source).toBe("config");
+    expect(resolveConfiguredModel(tmpDir)).toBe("openai/gpt-4.1-nano");
   });
 });

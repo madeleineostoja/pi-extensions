@@ -5,7 +5,11 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { resolveEffectiveModel } from "./config.js";
+import {
+  CONFIG_RELATIVE_PATH,
+  resolveConfiguredModel,
+  writeConfig,
+} from "./config.js";
 import { buildTitlePrompt, parseModelRef, sanitizeTitle } from "./utils.js";
 
 export default function (pi: ExtensionAPI) {
@@ -25,6 +29,44 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async () => {
     warnedThisSession = false;
     attemptedThisSession = false;
+  });
+
+  pi.registerCommand("auto-name", {
+    description: "Set the pi-auto-name model",
+    handler: async (args, ctx) => {
+      const modelRef = args.trim();
+      if (!modelRef) {
+        const current = resolveConfiguredModel(getAgentDir());
+        ctx.ui.notify(
+          current
+            ? `pi-auto-name model: ${current}`
+            : `usage: /auto-name provider/model-id`,
+          "info",
+        );
+        return;
+      }
+      if (/\s/.test(modelRef)) {
+        ctx.ui.notify("usage: /auto-name provider/model-id", "warning");
+        return;
+      }
+
+      const parsed = parseModelRef(modelRef);
+      if (!parsed) {
+        ctx.ui.notify(`Invalid model reference: ${modelRef}`, "warning");
+        return;
+      }
+
+      const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
+      if (!model) {
+        ctx.ui.notify(`Model not found: ${modelRef}`, "warning");
+        return;
+      }
+
+      writeConfig(getAgentDir(), { model: modelRef });
+      warnedThisSession = false;
+      attemptedThisSession = false;
+      ctx.ui.notify(`pi-auto-name model set: ${modelRef}`, "info");
+    },
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
@@ -79,17 +121,23 @@ async function generateNameAsync(
   warn: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<GenerateResult> {
   try {
-    const effective = resolveEffectiveModel(agentDir);
-    const parsed = parseModelRef(effective.model);
+    const configuredModel = resolveConfiguredModel(agentDir);
+    if (!configuredModel) {
+      const message = `No model configured. Set ${CONFIG_RELATIVE_PATH} with { "model": "provider/model-id" }.`;
+      warn(ctx, message);
+      return { outcome: "preflight-failure", message };
+    }
+
+    const parsed = parseModelRef(configuredModel);
     if (!parsed) {
-      const message = `Invalid model reference: ${effective.model}`;
+      const message = `Invalid model reference: ${configuredModel}`;
       warn(ctx, message);
       return { outcome: "preflight-failure", message };
     }
 
     const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
     if (!model) {
-      const message = `Model not found: ${effective.model}`;
+      const message = `Model not found: ${configuredModel}`;
       warn(ctx, message);
       return { outcome: "preflight-failure", message };
     }

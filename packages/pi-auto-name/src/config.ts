@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
-export const DEFAULT_MODEL = "openrouter/openai/gpt-oss-20b";
+export const CONFIG_RELATIVE_PATH = "extensions/pi-auto-name/config.json";
 
 export type AutoNameConfig = {
   model?: string;
@@ -35,13 +35,7 @@ export function writeConfig(agentDir: string, config: AutoNameConfig): void {
   writeFileSync(path, JSON.stringify(config, null, 2) + "\n", "utf-8");
 }
 
-export function resolveEffectiveModel(agentDir: string): {
-  model: string;
-  source: "default" | "config";
-} {
+export function resolveConfiguredModel(agentDir: string): string | null {
   const config = readConfig(agentDir);
-  if (config.model) {
-    return { model: config.model, source: "config" };
-  }
-  return { model: DEFAULT_MODEL, source: "default" };
+  return config.model || null;
 }
