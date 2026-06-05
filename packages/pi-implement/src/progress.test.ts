@@ -42,6 +42,23 @@ describe("diffProgress", () => {
     expect(lines).toContain("\u2713 pi-implement complete");
   });
 
+  it("uses completed wording for serial task and run completion", () => {
+    const prev: RunState = { phase: "reviewing", taskIndex: 1, totalTasks: 2 };
+    const next: RunState = { phase: "coding", taskIndex: 2, totalTasks: 2 };
+    expect(diffProgress(prev, next, ["A", "B"])).toContain(
+      "\u2713 Task 1/2 completed",
+    );
+
+    const doneLines = diffProgress(
+      { phase: "reviewing" },
+      { phase: "done", totalTasks: 2 },
+      [],
+    );
+    expect(doneLines).toContain(
+      "\u2713 pi-implement complete: 2 task(s) completed",
+    );
+  });
+
   it("emits run-level blocked notice with reason", () => {
     const prev: RunState = { phase: "coding" };
     const next: RunState = { phase: "blocked", lastReason: "dirty worktree" };
@@ -54,6 +71,21 @@ describe("diffProgress", () => {
     const next: RunState = { phase: "stopped" };
     const lines = diffProgress(prev, next, []);
     expect(lines).toContain("\u23f9 pi-implement stopped");
+  });
+
+  it("includes parallel satisfied summary lines", () => {
+    const prev: RunState = {
+      phase: "reviewing",
+      tasks: [{ id: "t1", planIndex: 0, title: "A", status: "reviewing" }],
+      totalCount: 1,
+    };
+    const next: RunState = {
+      ...prev,
+      tasks: [{ id: "t1", planIndex: 0, title: "A", status: "satisfied" }],
+    };
+    expect(diffProgress(prev, next, [])).toContain(
+      "\u2713 Task 1/1 satisfied: A",
+    );
   });
 
   it("includes parallel landed summary lines", () => {

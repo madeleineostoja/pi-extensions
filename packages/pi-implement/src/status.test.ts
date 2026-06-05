@@ -62,6 +62,12 @@ describe("status formatting", () => {
           status: "coding",
           worktreePath: "/wt/t2",
         },
+        {
+          id: "t3",
+          planIndex: 3,
+          title: "Task 3",
+          status: "satisfied",
+        },
       ],
       landedCount: 1,
       totalCount: 3,
@@ -71,17 +77,21 @@ describe("status formatting", () => {
     expect(status).toContain("Mode: parallel (auto)");
     expect(status).toContain("t1 Task 1: landed @ aaa1111");
     expect(status).toContain("t2 Task 2: coding [/wt/t2]");
+    expect(status).toContain("t3 Task 3: satisfied");
+    expect(status).not.toContain("t3 Task 3: satisfied @");
     expect(
       formatFooterStatus({
         phase: "scheduling",
         tasks: [
-          { id: "a", planIndex: 1, title: "A", status: "coding" },
-          { id: "b", planIndex: 2, title: "B", status: "approved" },
+          { id: "a", planIndex: 1, title: "A", status: "landed" },
+          { id: "b", planIndex: 2, title: "B", status: "satisfied" },
+          { id: "c", planIndex: 3, title: "C", status: "approved" },
         ],
         landedCount: 1,
+        satisfiedCount: 1,
         totalCount: 3,
       }),
-    ).toBe("󰚩 implement 1/3");
+    ).toBe("󰚩 implement 2/3");
   });
 
   it("formats pretty agent labels for implementer/reviewer/task roles", () => {
@@ -215,6 +225,22 @@ describe("status formatting", () => {
     });
     expect(lines[0]).toContain("2/7");
     expect(lines[0]).toContain("landed");
+  });
+
+  it("parallel widget progress includes satisfied tasks without landed wording", () => {
+    const lines = formatWidgetLines({
+      phase: "coding",
+      tasks: [
+        { id: "t1", planIndex: 1, title: "T1", status: "landed" },
+        { id: "t2", planIndex: 2, title: "T2", status: "satisfied" },
+      ],
+      landedCount: 1,
+      satisfiedCount: 1,
+      totalCount: 7,
+    });
+    expect(lines[0]).toContain("2/7");
+    expect(lines[0]).toContain("complete");
+    expect(lines[0]).not.toContain("landed");
   });
 
   it("widget active-agent entries include label, short id, and /agents hint", () => {

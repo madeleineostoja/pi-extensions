@@ -20,6 +20,7 @@ const STATUS_NOTE: Partial<
   approved: { icon: "✓", verb: "approved" },
   integrating: { icon: "·", verb: "integrating" },
   landed: { icon: "✓", verb: "landed" },
+  satisfied: { icon: "✓", verb: "satisfied" },
   needs_rework: { icon: "↻", verb: "needs rework", withReason: true },
   integration_failed: {
     icon: "✗",
@@ -79,7 +80,7 @@ function serialNotes(
   const taskChanged = idx !== undefined && prev.taskIndex !== idx;
 
   if (taskChanged && prev.taskIndex && prev.totalTasks) {
-    lines.push(`✓ Task ${prev.taskIndex}/${prev.totalTasks} landed`);
+    lines.push(`✓ Task ${prev.taskIndex}/${prev.totalTasks} completed`);
   }
 
   if (next.phase === "coding") {
@@ -134,10 +135,10 @@ function runLevelNotes(prev: RunState, next: RunState): string[] {
     return [];
   }
   if (next.phase === "done") {
-    const landed = next.landedCount ?? next.totalCount ?? next.totalTasks;
+    const completed = completedTaskCount(next);
     return [
-      landed !== undefined
-        ? `✓ pi-implement complete: ${landed} task(s) landed`
+      completed !== undefined
+        ? `✓ pi-implement complete: ${completed} task(s) completed`
         : "✓ pi-implement complete",
     ];
   }
@@ -153,6 +154,18 @@ function runLevelNotes(prev: RunState, next: RunState): string[] {
     return ["⏹ pi-implement stopped"];
   }
   return [];
+}
+
+function completedTaskCount(state: RunState): number | undefined {
+  if (state.landedCount !== undefined || state.satisfiedCount !== undefined) {
+    return (state.landedCount ?? 0) + (state.satisfiedCount ?? 0);
+  }
+  if (state.tasks) {
+    return state.tasks.filter(
+      (task) => task.status === "landed" || task.status === "satisfied",
+    ).length;
+  }
+  return state.totalCount ?? state.totalTasks;
 }
 
 function reasonSuffix(reason: string | undefined): string {

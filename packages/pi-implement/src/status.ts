@@ -23,6 +23,7 @@ export type TaskStatus =
   | "approved"
   | "integrating"
   | "landed"
+  | "satisfied"
   | "blocked"
   | "needs_rework"
   | "integration_failed"
@@ -87,6 +88,7 @@ export type RunState = {
   maxConcurrency?: number;
   tasks?: ParallelTaskState[];
   landedCount?: number;
+  satisfiedCount?: number;
   totalCount?: number;
   checkpointQueue?: string[];
   checkpointSequence?: number;
@@ -119,9 +121,9 @@ export function formatFooterStatus(state: RunState): string {
   }
 
   if (state.tasks && state.totalCount !== undefined) {
-    const landed = state.landedCount ?? 0;
+    const completed = completedTaskCount(state);
     const total = state.totalCount ?? 0;
-    return withFooterGlyph(`implement ${landed}/${total}`);
+    return withFooterGlyph(`implement ${completed}/${total}`);
   }
 
   const progress =
@@ -230,6 +232,24 @@ function withFooterGlyph(status: string): string {
   return `${FOOTER_GLYPH} ${status}`;
 }
 
+function completedTaskCount(state: RunState): number {
+  return landedTaskCount(state) + satisfiedTaskCount(state);
+}
+
+function landedTaskCount(state: RunState): number {
+  if (state.landedCount !== undefined) {
+    return state.landedCount;
+  }
+  return state.tasks?.filter((task) => task.status === "landed").length ?? 0;
+}
+
+function satisfiedTaskCount(state: RunState): number {
+  if (state.satisfiedCount !== undefined) {
+    return state.satisfiedCount;
+  }
+  return state.tasks?.filter((task) => task.status === "satisfied").length ?? 0;
+}
+
 function shorten(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 }
@@ -288,8 +308,13 @@ export function formatWidgetLines(
   let progressText: string;
   if (isParallel) {
     const landed = state.landedCount ?? 0;
+    const satisfied = satisfiedTaskCount(state);
+    const completed = completedTaskCount(state);
     const total = state.totalCount ?? state.totalTasks ?? 0;
-    progressText = `${landed}/${total} landed`;
+    progressText =
+      satisfied > 0
+        ? `${completed}/${total} complete`
+        : `${landed}/${total} landed`;
   } else if (state.taskIndex !== undefined && state.totalTasks !== undefined) {
     progressText = `${state.taskIndex}/${state.totalTasks} current`;
   } else {

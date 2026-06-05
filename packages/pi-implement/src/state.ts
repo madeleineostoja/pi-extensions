@@ -38,6 +38,7 @@ export type TaskStatus =
   | "approved"
   | "integrating"
   | "landed"
+  | "satisfied"
   | "blocked"
   | "needs_rework"
   | "integration_failed"
@@ -68,6 +69,7 @@ export type EventEntry =
   | { type: "task_approved"; taskId: string; commitSha?: string }
   | { type: "integration_failed"; taskId: string; reason: string }
   | { type: "task_landed"; taskId: string; commitSha: string }
+  | { type: "task_satisfied"; taskId: string }
   | { type: "cleanup_failed"; reason: string }
   | { type: "run_started"; runId: string }
   | { type: "run_stopped" }
