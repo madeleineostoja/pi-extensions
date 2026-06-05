@@ -61,19 +61,46 @@ export function extractPreview(content: ToolResultContent): string | null {
   return truncated ? escaped + "…" : escaped;
 }
 
+export type ReadMetadata = {
+  normalizedPath: string;
+  offset?: number;
+  limit?: number;
+};
+
+function formatReadMetadata(meta: ReadMetadata): string {
+  let segment = ` Path: ${meta.normalizedPath}.`;
+  const parts: string[] = [];
+  if (typeof meta.offset === "number") {
+    parts.push(`offset=${meta.offset}`);
+  }
+  if (typeof meta.limit === "number") {
+    parts.push(`limit=${meta.limit}`);
+  }
+  if (parts.length > 0) {
+    segment += ` ${parts.join(" ")}.`;
+  }
+  return segment;
+}
+
 export function formatStub({
   toolName,
   tokenCount,
   toolCallId,
   preview,
+  readMetadata,
 }: {
   toolName: string;
   tokenCount: number;
   toolCallId: string;
   preview?: string | null;
+  readMetadata?: ReadMetadata;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result elided: ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+  const readSegment = readMetadata ? formatReadMetadata(readMetadata) : "";
+  const recallContract = readMetadata
+    ? ` Call context_recall("${toolCallId}") to retrieve; lines slicing is available for text-only results.`
+    : ` Call context_recall("${toolCallId}") to retrieve.`;
+  return `[${toolName} result elided: ${formatTokenCount(tokenCount)}.${previewSegment}${readSegment}${recallContract}]`;
 }
 
 export function formatBatchPressureStub({
@@ -81,14 +108,20 @@ export function formatBatchPressureStub({
   tokenCount,
   toolCallId,
   preview,
+  readMetadata,
 }: {
   toolName: string;
   tokenCount: number;
   toolCallId: string;
   preview?: string | null;
+  readMetadata?: ReadMetadata;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result compacted by cache-aware batch pruning: ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+  const readSegment = readMetadata ? formatReadMetadata(readMetadata) : "";
+  const recallContract = readMetadata
+    ? ` Call context_recall("${toolCallId}") to retrieve; lines slicing is available for text-only results.`
+    : ` Call context_recall("${toolCallId}") to retrieve.`;
+  return `[${toolName} result compacted by cache-aware batch pruning: ${formatTokenCount(tokenCount)}.${previewSegment}${readSegment}${recallContract}]`;
 }
 
 export function formatEmergencyPressureStub({
@@ -96,31 +129,50 @@ export function formatEmergencyPressureStub({
   tokenCount,
   toolCallId,
   preview,
+  readMetadata,
 }: {
   toolName: string;
   tokenCount: number;
   toolCallId: string;
   preview?: string | null;
+  readMetadata?: ReadMetadata;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result elided (emergency context pressure): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+  const readSegment = readMetadata ? formatReadMetadata(readMetadata) : "";
+  const recallContract = readMetadata
+    ? ` Call context_recall("${toolCallId}") to retrieve; lines slicing is available for text-only results.`
+    : ` Call context_recall("${toolCallId}") to retrieve.`;
+  return `[${toolName} result elided (emergency context pressure): ${formatTokenCount(tokenCount)}.${previewSegment}${readSegment}${recallContract}]`;
 }
 
 export function formatSupersededStub({
   toolName,
   normalizedPath,
+  offset,
+  limit,
   tokenCount,
   toolCallId,
   preview,
 }: {
   toolName: string;
   normalizedPath: string;
+  offset?: number;
+  limit?: number;
   tokenCount: number;
   toolCallId: string;
   preview?: string | null;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result elided (superseded by later edit/write of ${normalizedPath}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve original.]`;
+  const parts: string[] = [];
+  if (typeof offset === "number") {
+    parts.push(`offset=${offset}`);
+  }
+  if (typeof limit === "number") {
+    parts.push(`limit=${limit}`);
+  }
+  const pathSegment =
+    parts.length > 0 ? `${normalizedPath}, ${parts.join(" ")}` : normalizedPath;
+  return `[${toolName} result elided (superseded by later edit/write of ${pathSegment}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve original.]`;
 }
 
 const MAX_BASH_COMMAND_STUB_CHARS = 120;
@@ -160,6 +212,8 @@ export function formatDuplicateStub({
   toolName,
   normalizedPath,
   keptUserTurnIndex,
+  offset,
+  limit,
   tokenCount,
   toolCallId,
   preview,
@@ -167,12 +221,23 @@ export function formatDuplicateStub({
   toolName: string;
   normalizedPath: string;
   keptUserTurnIndex: number;
+  offset?: number;
+  limit?: number;
   tokenCount: number;
   toolCallId: string;
   preview?: string | null;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result elided (superseded by later read of ${normalizedPath} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+  const parts: string[] = [];
+  if (typeof offset === "number") {
+    parts.push(`offset=${offset}`);
+  }
+  if (typeof limit === "number") {
+    parts.push(`limit=${limit}`);
+  }
+  const pathSegment =
+    parts.length > 0 ? `${normalizedPath}, ${parts.join(" ")}` : normalizedPath;
+  return `[${toolName} result elided (superseded by later read of ${pathSegment} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
 }
 
 function estimateTextBlockChars(content: unknown): number {
@@ -420,6 +485,7 @@ type Candidate = {
   supersededPath?: string;
   duplicateInfo?: DuplicateInfo;
   bashCommand?: string;
+  readMetadata?: ReadMetadata;
 };
 
 function buildStubTextForCandidate(
@@ -435,6 +501,7 @@ function buildStubTextForCandidate(
       tokenCount,
       toolCallId: cand.msg.toolCallId,
       preview,
+      readMetadata: cand.readMetadata,
     });
   }
   if (actionReason === "emergency-pressure") {
@@ -443,12 +510,15 @@ function buildStubTextForCandidate(
       tokenCount,
       toolCallId: cand.msg.toolCallId,
       preview,
+      readMetadata: cand.readMetadata,
     });
   }
   if (actionReason === "superseded-read-young" && cand.supersededPath) {
     return formatSupersededStub({
       toolName,
       normalizedPath: cand.supersededPath,
+      offset: cand.readMetadata?.offset,
+      limit: cand.readMetadata?.limit,
       tokenCount,
       toolCallId: cand.msg.toolCallId,
       preview,
@@ -459,6 +529,8 @@ function buildStubTextForCandidate(
       toolName,
       normalizedPath: cand.duplicateInfo.normalizedPath,
       keptUserTurnIndex: cand.duplicateInfo.keptUserTurnIndex,
+      offset: cand.readMetadata?.offset,
+      limit: cand.readMetadata?.limit,
       tokenCount,
       toolCallId: cand.msg.toolCallId,
       preview,
@@ -477,6 +549,7 @@ function buildStubTextForCandidate(
     tokenCount,
     toolCallId: cand.msg.toolCallId,
     preview,
+    readMetadata: cand.readMetadata,
   });
 }
 
@@ -541,6 +614,15 @@ function applyElision(
     }
     if (primaryReason === "after-consumption-bash" && cand.bashCommand) {
       latched.command = cand.bashCommand;
+    }
+    if (cand.readMetadata) {
+      latched.readPath = cand.readMetadata.normalizedPath;
+      if (typeof cand.readMetadata.offset === "number") {
+        latched.readOffset = cand.readMetadata.offset;
+      }
+      if (typeof cand.readMetadata.limit === "number") {
+        latched.readLimit = cand.readMetadata.limit;
+      }
     }
     recordElision(pruningState, latched);
   }
@@ -644,14 +726,28 @@ export function makeContextHook(
       let duplicateInfo: DuplicateInfo | undefined;
       let bashCommand: string | undefined;
       let readPath: string | null = null;
+      let readMetadata: ReadMetadata | undefined;
 
       if (msg.toolName === "read" && toolCallInfoMap) {
         const callInfo = toolCallInfoMap.get(msg.toolCallId);
         if (callInfo) {
-          readPath = normalizePath(
+          const normalized = normalizePath(
             extractFilePath("read", callInfo.input),
             cwd,
           );
+          if (normalized !== null) {
+            readPath = normalized;
+            const input = callInfo.input as Record<string, unknown>;
+            readMetadata = {
+              normalizedPath: normalized,
+              ...(typeof input.offset === "number"
+                ? { offset: input.offset }
+                : {}),
+              ...(typeof input.limit === "number"
+                ? { limit: input.limit }
+                : {}),
+            };
+          }
         }
       }
 
@@ -741,6 +837,7 @@ export function makeContextHook(
           supersededPath,
           duplicateInfo,
           bashCommand,
+          readMetadata,
         },
         primaryReason,
         tokenCount,
@@ -779,6 +876,7 @@ export function makeContextHook(
         supersededPath,
         duplicateInfo,
         bashCommand,
+        readMetadata,
       });
     }
 
@@ -957,12 +1055,25 @@ function buildStubFromLatched(
   const preview = extractPreview(msg.content);
   const reason = latched.reason;
 
+  const readMetadata: ReadMetadata | undefined = latched.readPath
+    ? {
+        normalizedPath: latched.readPath,
+        ...(typeof latched.readOffset === "number"
+          ? { offset: latched.readOffset }
+          : {}),
+        ...(typeof latched.readLimit === "number"
+          ? { limit: latched.readLimit }
+          : {}),
+      }
+    : undefined;
+
   if (reason === "batch-pressure") {
     return formatBatchPressureStub({
       toolName: latched.toolName,
       tokenCount: latched.originalTokens,
       toolCallId: latched.toolCallId,
       preview,
+      readMetadata,
     });
   }
   if (reason === "emergency-pressure") {
@@ -971,12 +1082,15 @@ function buildStubFromLatched(
       tokenCount: latched.originalTokens,
       toolCallId: latched.toolCallId,
       preview,
+      readMetadata,
     });
   }
   if (reason === "superseded-read-young" && latched.normalizedPath) {
     return formatSupersededStub({
       toolName: latched.toolName,
       normalizedPath: latched.normalizedPath,
+      offset: latched.readOffset,
+      limit: latched.readLimit,
       tokenCount: latched.originalTokens,
       toolCallId: latched.toolCallId,
       preview,
@@ -991,6 +1105,8 @@ function buildStubFromLatched(
       toolName: latched.toolName,
       normalizedPath: latched.normalizedPath,
       keptUserTurnIndex: latched.keptUserTurnIndex,
+      offset: latched.readOffset,
+      limit: latched.readLimit,
       tokenCount: latched.originalTokens,
       toolCallId: latched.toolCallId,
       preview,
@@ -1009,5 +1125,6 @@ function buildStubFromLatched(
     tokenCount: latched.originalTokens,
     toolCallId: latched.toolCallId,
     preview,
+    readMetadata,
   });
 }

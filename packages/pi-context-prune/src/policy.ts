@@ -30,6 +30,9 @@ export type LatchedElision = {
   keptUserTurnIndex?: number;
   command?: string;
   sourceReason?: ElisionReason;
+  readPath?: string;
+  readOffset?: number;
+  readLimit?: number;
 };
 
 export type PolicyProfile = {

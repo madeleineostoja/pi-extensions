@@ -2013,3 +2013,260 @@ describe("formatEmergencyPressureStub", () => {
     expect(stub).not.toContain("Preview:");
   });
 });
+
+describe("formatStub with read metadata", () => {
+  it("includes path for read stubs", () => {
+    const stub = formatStub({
+      toolName: "read",
+      tokenCount: 300,
+      toolCallId: "r1",
+      readMetadata: { normalizedPath: "/repo/src/foo.ts" },
+    });
+    expect(stub).toContain("Path: /repo/src/foo.ts.");
+    expect(stub).toContain(
+      'Call context_recall("r1") to retrieve; lines slicing is available for text-only results.',
+    );
+  });
+
+  it("includes offset and limit when present", () => {
+    const stub = formatStub({
+      toolName: "read",
+      tokenCount: 300,
+      toolCallId: "r2",
+      readMetadata: {
+        normalizedPath: "/repo/src/foo.ts",
+        offset: 20,
+        limit: 50,
+      },
+    });
+    expect(stub).toContain("offset=20");
+    expect(stub).toContain("limit=50");
+    expect(stub).not.toContain("source lines");
+  });
+
+  it("omits read metadata when not provided", () => {
+    const stub = formatStub({
+      toolName: "bash",
+      tokenCount: 300,
+      toolCallId: "b1",
+    });
+    expect(stub).not.toContain("Path:");
+    expect(stub).toContain('Call context_recall("b1") to retrieve.');
+    expect(stub).not.toContain("lines slicing");
+  });
+});
+
+describe("formatBatchPressureStub with read metadata", () => {
+  it("includes path and range for read results", () => {
+    const stub = formatBatchPressureStub({
+      toolName: "read",
+      tokenCount: 5000,
+      toolCallId: "batch-read-1",
+      readMetadata: { normalizedPath: "/repo/src/bar.ts", offset: 10 },
+    });
+    expect(stub).toContain("Path: /repo/src/bar.ts.");
+    expect(stub).toContain("offset=10");
+    expect(stub).toContain("compacted by cache-aware batch pruning");
+    expect(stub).toContain(
+      'Call context_recall("batch-read-1") to retrieve; lines slicing is available for text-only results.',
+    );
+  });
+});
+
+describe("formatEmergencyPressureStub with read metadata", () => {
+  it("includes path and range for read results", () => {
+    const stub = formatEmergencyPressureStub({
+      toolName: "read",
+      tokenCount: 2100,
+      toolCallId: "em-read-1",
+      readMetadata: { normalizedPath: "/repo/src/baz.ts", limit: 100 },
+    });
+    expect(stub).toContain("Path: /repo/src/baz.ts.");
+    expect(stub).toContain("limit=100");
+    expect(stub).toContain("emergency context pressure");
+    expect(stub).toContain(
+      'Call context_recall("em-read-1") to retrieve; lines slicing is available for text-only results.',
+    );
+  });
+});
+
+describe("formatSupersededStub with offset/limit", () => {
+  it("preserves wording and appends offset/limit when present", () => {
+    const stub = formatSupersededStub({
+      toolName: "read",
+      normalizedPath: "/repo/src/foo.ts",
+      offset: 20,
+      limit: 50,
+      tokenCount: 3400,
+      toolCallId: "sup-id",
+    });
+    expect(stub).toContain(
+      "superseded by later edit/write of /repo/src/foo.ts, offset=20 limit=50",
+    );
+    expect(stub).toContain(
+      'Call context_recall("sup-id") to retrieve original.',
+    );
+  });
+
+  it("remains unchanged when offset/limit are absent", () => {
+    const stub = formatSupersededStub({
+      toolName: "read",
+      normalizedPath: "/repo/src/foo.ts",
+      tokenCount: 3400,
+      toolCallId: "sup-id2",
+    });
+    expect(stub).toContain(
+      "superseded by later edit/write of /repo/src/foo.ts)",
+    );
+  });
+});
+
+describe("formatDuplicateStub with offset/limit", () => {
+  it("preserves wording and appends offset/limit when present", () => {
+    const stub = formatDuplicateStub({
+      toolName: "read",
+      normalizedPath: "/repo/src/foo.ts",
+      keptUserTurnIndex: 3,
+      offset: 20,
+      limit: 50,
+      tokenCount: 125,
+      toolCallId: "dup-id",
+    });
+    expect(stub).toContain(
+      "superseded by later read of /repo/src/foo.ts, offset=20 limit=50 at turn 3",
+    );
+    expect(stub).toContain('Call context_recall("dup-id") to retrieve.');
+  });
+
+  it("remains unchanged when offset/limit are absent", () => {
+    const stub = formatDuplicateStub({
+      toolName: "read",
+      normalizedPath: "/repo/src/foo.ts",
+      keptUserTurnIndex: 3,
+      tokenCount: 125,
+      toolCallId: "dup-id2",
+    });
+    expect(stub).toContain(
+      "superseded by later read of /repo/src/foo.ts at turn 3",
+    );
+  });
+});
+
+describe("read stub metadata in context hook", () => {
+  const fakeCtx = { cwd: "/cwd" } as any;
+
+  it("emergency-pruned read includes path and offset/limit in stub", () => {
+    const id = "em-read-meta";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 20, limit: 50 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: id,
+        toolName: "read",
+        text: "s".repeat(180_000),
+      }),
+      ...Array.from({ length: DEFAULTS.staleTurns + 1 }, () => makeUserMsg()),
+    ];
+
+    const result = makeContextHook(defaultConfig())(
+      { type: "context", messages } as any,
+      {
+        ...fakeCtx,
+        getContextUsage: () => ({ tokens: 90_000, contextWindow: 100_000 }),
+      } as any,
+    );
+    const read = result.messages!.find((m: any) => m.toolCallId === id) as any;
+    expect(read.content[0].text).toMatch(/emergency context pressure/);
+    expect(read.content[0].text).toContain("Path: /cwd/src/foo.ts.");
+    expect(read.content[0].text).toContain("offset=20");
+    expect(read.content[0].text).toContain("limit=50");
+    expect(read.content[0].text).toContain(
+      "lines slicing is available for text-only results",
+    );
+    expect(read.content[0].text).not.toContain("source lines");
+  });
+
+  it("superseded read stub includes offset/limit from original call", () => {
+    const readId = "sup-read-meta";
+    const editId = "sup-edit-meta";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 20, limit: 50 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: "content",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: { path: "src/foo.ts", old_string: "x", new_string: "y" },
+        },
+      ]),
+      makeToolResultMsg({ toolCallId: editId, toolName: "edit", text: "ok" }),
+    ];
+    const hook = makeContextHook(supersededConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtx);
+    const readResult = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(readResult.content[0].text).toContain(
+      "superseded by later edit/write of /cwd/src/foo.ts, offset=20 limit=50",
+    );
+  });
+
+  it("duplicate read stub includes offset/limit from original call", () => {
+    const readId1 = "dup-read-meta-1";
+    const readId2 = "dup-read-meta-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 20, limit: 50 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 20, limit: 50 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "second",
+      }),
+    ];
+    const hook = makeContextHook(duplicateConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtx);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toContain(
+      "superseded by later read of /cwd/src/foo.ts, offset=20 limit=50",
+    );
+  });
+});
