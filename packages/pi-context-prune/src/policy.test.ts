@@ -11,6 +11,7 @@ import {
   CONSERVATIVE_PROFILE,
   AGGRESSIVE_PROFILE,
   setActiveProfile,
+  DEFAULT_POLICY_PROFILES,
 } from "./policy.ts";
 
 describe("createPruningState", () => {
@@ -147,5 +148,13 @@ describe("setActiveProfile", () => {
     });
     expect(state.activeProfile.semanticRisk).toBe(1);
     expect(state.activeProfile.minSavedTokens).toBe(0);
+  });
+});
+
+describe("DEFAULT_POLICY_PROFILES", () => {
+  it("after-consumption-bash minSavedTokens is 512", () => {
+    expect(
+      DEFAULT_POLICY_PROFILES["after-consumption-bash"].minSavedTokens,
+    ).toBe(512);
   });
 });

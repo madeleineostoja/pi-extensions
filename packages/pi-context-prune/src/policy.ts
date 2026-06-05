@@ -127,7 +127,7 @@ export const DEFAULT_POLICY_PROFILES: Record<
     semanticRisk: 0.4,
   }),
   "after-consumption-bash": clampProfile({
-    minSavedTokens: 1000,
+    minSavedTokens: 512,
     baselineSuffixBudget: 20000,
     minSuffixBudget: 5000,
     maxSuffixBudget: 60000,
