@@ -98,73 +98,9 @@ export async function selectStrategy(
     return runGraphPlanner(req, unchecked, maxConcurrency);
   }
 
-  // Auto mode: run cheap triage call
-  const triageResult = await runTriage(req, unchecked);
-  if (triageResult.decision === "serial") {
-    return {
-      mode: "serial",
-      reason: triageResult.reason,
-      maxConcurrency,
-      ...outcomeMeta,
-    };
-  }
-
+  // Auto mode with two or more unchecked tasks: use the graph planner directly
   return runGraphPlanner(req, unchecked, maxConcurrency);
 }
-
-export function extractSurfaceAreas(taskText: string): string[] {
-  const areas = new Set<string>();
-
-  const pathLike = taskText.match(
-    /(?:^|[\s`(])((?:packages|src|docs|lib|test|tests)\/[\w./-]+|[a-zA-Z][\w/-]*\/[\w./-]+\.\w+)(?=[\s`),\n]|$)/g,
-  );
-  if (pathLike) {
-    for (const match of pathLike) {
-      const cleaned = match
-        .trim()
-        .replace(/^[`(]/, "")
-        .replace(/[`),$]$/, "");
-      if (cleaned) {
-        areas.add(normalizeArea(cleaned));
-      }
-    }
-  }
-
-  const backticked = taskText.match(/`([^`]+)`/g);
-  if (backticked) {
-    for (const match of backticked) {
-      const inner = match.slice(1, -1).trim();
-      if (
-        inner &&
-        (inner.includes("/") ||
-          /\.\w+$/.test(inner) ||
-          inner.startsWith("@") ||
-          inner.includes("-"))
-      ) {
-        areas.add(normalizeArea(inner));
-      }
-    }
-  }
-
-  const surfaceNounTrailer =
-    /\b(\w[\w/-]*)\s+(?:model|route|component|document|command|endpoint|test)s?\b/gi;
-  for (const m of taskText.matchAll(surfaceNounTrailer)) {
-    const noun = m[1];
-    if (noun && noun.length > 1) {
-      areas.add(normalizeArea(noun));
-    }
-  }
-
-  return [...areas];
-}
-
-function normalizeArea(value: string): string {
-  return value.toLowerCase().replaceAll("\\", "/").replace(/\/$/, "");
-}
-
-type TriageResult =
-  | { decision: "serial"; reason: string }
-  | { decision: "escalate-to-planner"; reason: string };
 
 function addStrategyAgentPatch(
   prev: RunState,
@@ -202,116 +138,6 @@ function removeStrategyAgentPatch(
       (ref) => ref.id !== id,
     ),
   };
-}
-
-async function runTriage(
-  req: StrategyRequest,
-  unchecked: PlanTask[],
-): Promise<TriageResult> {
-  const prompt = buildTriagePrompt(req.plan, unchecked);
-  let rawResult: string;
-  try {
-    const id = await req.subagents.spawn({
-      type: req.roles.planner.type,
-      prompt,
-      description: "strategy triage: serial vs escalate-to-planner",
-      model: req.roles.planner.model,
-    });
-    const triageRef: AgentDisplayRef = {
-      id,
-      role: "triage",
-      label: "Triage \u00b7 Analyze plan dependencies",
-      startedAt: new Date().toISOString(),
-    };
-    req.updateState((prev) => addStrategyAgentPatch(prev, triageRef));
-    const result = await req.subagents.waitFor(id, req.signal);
-    req.updateState((prev) => removeStrategyAgentPatch(prev, id));
-    if (result.status !== "completed") {
-      return {
-        decision: "serial",
-        reason: `Triage subagent ${result.status}: ${result.error}; defaulting to serial.`,
-      };
-    }
-    rawResult = result.result;
-  } catch (err) {
-    req.updateState({ activeSubagentIds: [], activeAgentRefs: [] });
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      decision: "serial",
-      reason: `Triage subagent error: ${message}; defaulting to serial.`,
-    };
-  }
-
-  return parseTriageOutput(rawResult);
-}
-
-export function buildTriagePrompt(
-  plan: ParsedPlan,
-  unchecked: PlanTask[],
-): string {
-  const taskLines = unchecked
-    .map((t) => `- [planIndex=${t.index}] ${t.text}`)
-    .join("\n");
-
-  return `You are a strategy triage agent for a code implementation pipeline.
-
-Analyze the following plan tasks and decide whether they should be executed serially (one at a time) or escalated to a graph planner for potential parallel execution.
-
-## Plan
-
-${plan.content}
-
-## Unchecked Tasks (${unchecked.length})
-
-${taskLines}
-
-## Instructions
-
-Respond with strict JSON only (no prose, no markdown fences) matching exactly:
-{"decision":"serial","reason":"..."}
-or
-{"decision":"escalate-to-planner","reason":"..."}
-
-Choose "serial" if:
-- Tasks appear to be tightly coupled or sequential by nature
-- Tasks likely touch the same files or systems
-- There is insufficient evidence of independent work streams
-
-Choose "escalate-to-planner" only if:
-- There are clearly distinct, independent areas of work
-- Tasks could reasonably run in parallel without conflict
-
-When in doubt, choose "serial".`;
-}
-
-export function parseTriageOutput(text: string): TriageResult {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text.trim());
-  } catch {
-    return {
-      decision: "serial",
-      reason: "Triage output is not valid JSON; defaulting to serial.",
-    };
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return {
-      decision: "serial",
-      reason: "Triage JSON must be an object; defaulting to serial.",
-    };
-  }
-  const obj = parsed as Record<string, unknown>;
-  if (obj.decision !== "serial" && obj.decision !== "escalate-to-planner") {
-    return {
-      decision: "serial",
-      reason: `Triage JSON decision must be "serial" or "escalate-to-planner"; defaulting to serial.`,
-    };
-  }
-  const reason =
-    typeof obj.reason === "string" && obj.reason.trim()
-      ? obj.reason.trim()
-      : "Triage selected this strategy.";
-  return { decision: obj.decision, reason };
 }
 
 async function runGraphPlanner(
@@ -744,4 +570,54 @@ function shouldIncludeExcerpt(filePath: string): boolean {
     lower.endsWith(".json") ||
     lower.endsWith(".md")
   );
+}
+
+function extractSurfaceAreas(taskText: string): string[] {
+  const areas = new Set<string>();
+
+  const pathLike = taskText.match(
+    /(?:^|[\s`(])((?:packages|src|docs|lib|test|tests)\/[\w./-]+|[a-zA-Z][\w/-]*\/[\w./-]+\.\w+)(?=[\s`),\n]|$)/g,
+  );
+  if (pathLike) {
+    for (const match of pathLike) {
+      const cleaned = match
+        .trim()
+        .replace(/^[`(]/, "")
+        .replace(/[`),$]$/, "");
+      if (cleaned) {
+        areas.add(normalizeArea(cleaned));
+      }
+    }
+  }
+
+  const backticked = taskText.match(/`([^`]+)`/g);
+  if (backticked) {
+    for (const match of backticked) {
+      const inner = match.slice(1, -1).trim();
+      if (
+        inner &&
+        (inner.includes("/") ||
+          /\.\w+$/.test(inner) ||
+          inner.startsWith("@") ||
+          inner.includes("-"))
+      ) {
+        areas.add(normalizeArea(inner));
+      }
+    }
+  }
+
+  const surfaceNounTrailer =
+    /\b(\w[\w/-]*)\s+(?:model|route|component|document|command|endpoint|test)s?\b/gi;
+  for (const m of taskText.matchAll(surfaceNounTrailer)) {
+    const noun = m[1];
+    if (noun && noun.length > 1) {
+      areas.add(normalizeArea(noun));
+    }
+  }
+
+  return [...areas];
+}
+
+function normalizeArea(value: string): string {
+  return value.toLowerCase().replaceAll("\\", "/").replace(/\/$/, "");
 }

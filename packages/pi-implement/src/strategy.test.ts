@@ -3,12 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  buildTriagePrompt,
-  extractSurfaceAreas,
-  parseTriageOutput,
-  selectStrategy,
-} from "./strategy.js";
+import { selectStrategy } from "./strategy.js";
 import { parsePlan } from "./plan.js";
 import type { SubagentClient } from "./subagents.js";
 import type { StatePaths } from "./state.js";
@@ -78,127 +73,8 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" });
 }
 
-describe("extractSurfaceAreas", () => {
-  it("extracts path-like tokens", () => {
-    const areas = extractSurfaceAreas(
-      "Add packages/foo/bar.ts and src/routes/x",
-    );
-    expect(areas).toContain("packages/foo/bar.ts");
-    expect(areas).toContain("src/routes/x");
-  });
-
-  it("extracts backticked names with extensions", () => {
-    const areas = extractSurfaceAreas(
-      "Update `config.json` and `vitest.config.ts`",
-    );
-    expect(areas).toContain("config.json");
-    expect(areas).toContain("vitest.config.ts");
-  });
-
-  it("does not extract short common words in backticks", () => {
-    const areas = extractSurfaceAreas(
-      "Use `the` and `bug` and `app` to fix it",
-    );
-    expect(areas).not.toContain("the");
-    expect(areas).not.toContain("bug");
-    expect(areas).not.toContain("app");
-  });
-
-  it("extracts leading nouns before surface words", () => {
-    const areas = extractSurfaceAreas("Add the user model and payment route");
-    expect(areas).toContain("user");
-    expect(areas).toContain("payment");
-  });
-
-  it("returns empty array for plain prose", () => {
-    const areas = extractSurfaceAreas("refactor to be cleaner");
-    expect(areas).toHaveLength(0);
-  });
-
-  it("extracts docs path", () => {
-    const areas = extractSurfaceAreas("Write docs/api/reference.md");
-    expect(areas).toContain("docs/api/reference.md");
-  });
-});
-
-describe("parseTriageOutput", () => {
-  it("parses serial decision", () => {
-    const result = parseTriageOutput(
-      JSON.stringify({ decision: "serial", reason: "too coupled" }),
-    );
-    expect(result).toEqual({ decision: "serial", reason: "too coupled" });
-  });
-
-  it("parses escalate-to-planner decision", () => {
-    const result = parseTriageOutput(
-      JSON.stringify({
-        decision: "escalate-to-planner",
-        reason: "distinct areas",
-      }),
-    );
-    expect(result).toEqual({
-      decision: "escalate-to-planner",
-      reason: "distinct areas",
-    });
-  });
-
-  it("defaults to serial for unknown decision", () => {
-    const result = parseTriageOutput(
-      JSON.stringify({ decision: "parallel", reason: "fast" }),
-    );
-    expect(result.decision).toBe("serial");
-  });
-
-  it("rejects decision embedded in prose", () => {
-    const text =
-      'Analysis complete.\n\n{"decision":"escalate-to-planner","reason":"independent"}\n\nDone.';
-    const result = parseTriageOutput(text);
-    expect(result.decision).toBe("serial");
-    expect(result.reason).toBeTruthy();
-  });
-
-  it("uses a fallback reason when reason is missing", () => {
-    const result = parseTriageOutput(JSON.stringify({ decision: "serial" }));
-    expect(result.decision).toBe("serial");
-    expect(typeof result.reason).toBe("string");
-  });
-});
-
-describe("buildTriagePrompt", () => {
-  it("includes task text and plan content", () => {
-    const plan = makePlan(["Task A", "Task B", "Task C"]);
-    const unchecked = plan.tasks;
-    const prompt = buildTriagePrompt(plan, unchecked);
-    expect(prompt).toContain("Task A");
-    expect(prompt).toContain("Task B");
-    expect(prompt).toContain("Task C");
-    expect(prompt).toContain("planIndex=");
-  });
-
-  it("does not include repo root, file tree, package manifests, git status, or file contents", () => {
-    const plan = makePlan(["Task A", "Task B", "Task C"]);
-    const unchecked = plan.tasks;
-    const prompt = buildTriagePrompt(plan, unchecked);
-    expect(prompt).not.toContain("/repo");
-    expect(prompt).not.toContain("node_modules");
-    expect(prompt).not.toContain("package.json content");
-    expect(prompt).not.toContain("git ls-files");
-    expect(prompt).not.toContain("git status");
-    expect(prompt).not.toContain("## File Tree");
-    expect(prompt).not.toContain("## Git Status");
-    expect(prompt).not.toContain("## Package Manifests");
-  });
-
-  it("requests only serial or escalate-to-planner", () => {
-    const plan = makePlan(["Task A", "Task B", "Task C"]);
-    const prompt = buildTriagePrompt(plan, plan.tasks);
-    expect(prompt).toContain("escalate-to-planner");
-    expect(prompt).toContain("serial");
-  });
-});
-
 describe("selectStrategy - forced serial", () => {
-  it("selects serial immediately for --serial without calling triage", async () => {
+  it("selects serial immediately for --serial without calling planner", async () => {
     const subagents = makeSubagents();
     const plan = makePlan(["Task A", "Task B", "Task C"]);
     const result = await selectStrategy({
@@ -271,10 +147,14 @@ describe("selectStrategy - auto mode deterministic preconditions", () => {
   });
 });
 
-describe("selectStrategy - auto mode triage", () => {
-  it("calls triage for 2 unchecked tasks in auto mode", async () => {
+describe("selectStrategy - auto mode planner", () => {
+  it("calls planner directly for 2 unchecked tasks in auto mode", async () => {
     const subagents = makeSubagents(
-      JSON.stringify({ decision: "serial", reason: "too coupled" }),
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequential dependency",
+        confidence: "high",
+      }),
     );
     const plan = makePlan(["packages/foo task", "packages/bar task"]);
     const result = await selectStrategy({
@@ -297,9 +177,13 @@ describe("selectStrategy - auto mode triage", () => {
     expect(result.mode).toBe("serial");
   });
 
-  it("calls triage for 3+ tasks even with no detectable surface areas", async () => {
+  it("calls planner directly for 3+ tasks", async () => {
     const subagents = makeSubagents(
-      JSON.stringify({ decision: "serial", reason: "no distinct areas" }),
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear semantic chain",
+        confidence: "high",
+      }),
     );
     const plan = makePlan([
       "Add the auth model",
@@ -326,7 +210,36 @@ describe("selectStrategy - auto mode triage", () => {
     expect(result.mode).toBe("serial");
   });
 
-  it("escalates to planner when triage says escalate-to-planner", async () => {
+  it("planner can return serial for auto mode", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear semantic sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    const result = await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "auto",
+    });
+    expect(
+      (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(1);
+    expect(result.mode).toBe("serial");
+  });
+
+  it("planner can return parallel for auto mode", async () => {
     const graph: ImplementGraph = {
       version: 1,
       runId: "",
@@ -371,29 +284,7 @@ describe("selectStrategy - auto mode triage", () => {
       maxConcurrency: 2,
       graph,
     });
-    const spawnFn = vi
-      .fn()
-      .mockResolvedValueOnce("agent-triage")
-      .mockResolvedValueOnce("agent-planner");
-    const waitForFn = vi
-      .fn()
-      .mockResolvedValueOnce({
-        status: "completed",
-        result: JSON.stringify({
-          decision: "escalate-to-planner",
-          reason: "distinct areas",
-        }),
-      })
-      .mockResolvedValueOnce({
-        status: "completed",
-        result: plannerOutput,
-      });
-    const subagents: SubagentClient = {
-      probe: vi.fn().mockResolvedValue({ ok: true }),
-      spawn: spawnFn,
-      stop: vi.fn().mockResolvedValue(undefined),
-      waitFor: waitForFn,
-    };
+    const subagents = makeSubagents(plannerOutput);
     const plan = makePlan(["Task A", "Task B"]);
     const result = await selectStrategy({
       plan,
@@ -409,7 +300,9 @@ describe("selectStrategy - auto mode triage", () => {
       updateState: () => ({}),
       requestedMode: "auto",
     });
-    expect(spawnFn.mock.calls).toHaveLength(2);
+    expect(
+      (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(1);
     expect(result.mode).toBe("parallel");
   });
 });
@@ -745,37 +638,15 @@ describe("selectStrategy - concurrency clamping", () => {
         },
       ],
     };
-    // Triage response followed by planner
-    let callCount = 0;
-    const subagents: SubagentClient = {
-      probe: vi.fn().mockResolvedValue({ ok: true }),
-      spawn: vi.fn().mockImplementation(() => {
-        callCount++;
-        return Promise.resolve(`agent-${callCount}`);
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "parallel",
+        reason: "ok",
+        confidence: "high",
+        maxConcurrency: 100,
+        graph,
       }),
-      stop: vi.fn().mockResolvedValue(undefined),
-      waitFor: vi.fn().mockImplementation((id: string) => {
-        if (id === "agent-1") {
-          return Promise.resolve({
-            status: "completed" as const,
-            result: JSON.stringify({
-              decision: "escalate-to-planner",
-              reason: "ok",
-            }),
-          });
-        }
-        return Promise.resolve({
-          status: "completed" as const,
-          result: JSON.stringify({
-            mode: "parallel",
-            reason: "ok",
-            confidence: "high",
-            maxConcurrency: 100,
-            graph,
-          }),
-        });
-      }),
-    };
+    );
     const plan = makePlan([
       "Update packages/auth/login.ts for auth",
       "Update src/routes/api.ts route",
@@ -876,7 +747,7 @@ describe("selectStrategy - validationCommands are advisory only", () => {
   });
 
   it("strategy module never spawns subagents for validationCommands", async () => {
-    // selectStrategy only spawns subagents for triage/planner calls, never to
+    // selectStrategy only spawns subagents for planner calls, never to
     // execute validationCommands. Verify no extra spawn calls occur beyond the
     // single graph planner call.
     const graph: ImplementGraph = {
