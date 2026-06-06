@@ -8,3 +8,4 @@ export {
   estimateMessageTokens,
   estimateSuffixTokens,
 } from "./tokens.js";
+export { normalizePath, extractFilePath } from "./paths.js";
