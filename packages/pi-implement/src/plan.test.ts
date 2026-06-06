@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildTaskPacket, markTaskDoneInContent, parsePlan } from "./plan.js";
+import { computeTaskFingerprint } from "./manifest.js";
 
 const planPath = "/repo/tmp/plans/index.md";
 
@@ -86,5 +87,21 @@ Important.
       "## Background Plan Context (not additional selected-task scope)",
     );
     expect(packet.markdown).toContain("## Context\n\nImportant.");
+  });
+});
+
+describe("computeTaskFingerprint integration", () => {
+  it("computes a stable full-hex fingerprint for parsed tasks", () => {
+    const parsed = parsePlan(planPath, `## Tasks\n\n- [ ] Do it\n  - note\n`);
+    const fp = computeTaskFingerprint(parsed.tasks[0]);
+    expect(fp).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("is stable across checkbox state changes", () => {
+    const unchecked = parsePlan(planPath, `## Tasks\n\n- [ ] Do it\n`);
+    const checked = parsePlan(planPath, `## Tasks\n\n- [x] Do it\n`);
+    expect(computeTaskFingerprint(unchecked.tasks[0])).toBe(
+      computeTaskFingerprint(checked.tasks[0]),
+    );
   });
 });
