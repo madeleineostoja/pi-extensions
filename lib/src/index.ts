@@ -9,3 +9,4 @@ export {
   estimateSuffixTokens,
 } from "./tokens.js";
 export { normalizePath, extractFilePath } from "./paths.js";
+export { extractShellWords } from "./shell.js";
