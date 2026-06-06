@@ -3,6 +3,7 @@ import type {
   ExtensionContext,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
+import { convertCurrency, refreshCurrencyRate } from "@pi-extensions/lib";
 import { getFooterCostInfo } from "./cost.js";
 import {
   buildFooterLines,
@@ -21,6 +22,10 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setFooter((tui, theme, footerData) => {
         const unsub = footerData.onBranchChange(() => tui.requestRender());
 
+        refreshCurrencyRate({ from: "USD", to: "NZD" }).then(() => {
+          tui.requestRender();
+        });
+
         return {
           dispose: unsub,
           invalidate() {},
@@ -35,6 +40,13 @@ export default function (pi: ExtensionAPI) {
               ctx.modelRegistry,
               model,
             );
+            const nzdCost = convertCurrency({
+              amount: totalCost,
+              from: "USD",
+              to: "NZD",
+            });
+            const displayCost = nzdCost ?? 0;
+            const displayHideCost = hideCost || nzdCost === undefined;
 
             const contextUsage = ctx.getContextUsage();
             const footerModel = model
@@ -43,9 +55,9 @@ export default function (pi: ExtensionAPI) {
             const rightWithWindow = buildRightSegment(
               footerModel,
               thinkingLevel,
-              totalCost,
+              displayCost,
               contextUsage,
-              hideCost,
+              displayHideCost,
               theme,
               true,
               false,
@@ -54,9 +66,9 @@ export default function (pi: ExtensionAPI) {
             const rightWithoutWindow = buildRightSegment(
               footerModel,
               thinkingLevel,
-              totalCost,
+              displayCost,
               contextUsage,
-              hideCost,
+              displayHideCost,
               theme,
               false,
               false,
