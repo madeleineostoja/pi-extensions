@@ -188,10 +188,6 @@ export function resolveEffectiveRoles(
   };
 }
 
-export function isModelRef(value: string): boolean {
-  return /^[^/\s]+\/.+\S$/.test(value);
-}
-
 export function reviewerDefaultTypeWarning(
   roles: EffectiveRoles,
 ): string | undefined {

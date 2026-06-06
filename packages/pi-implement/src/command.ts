@@ -6,11 +6,11 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { isModelRef } from "@pi-extensions/lib";
 import {
   readConfig,
   resolveEffectiveRoles,
   formatConfigStatus,
-  isModelRef,
   resolveMaxParallel,
   reviewerDefaultTypeWarning,
 } from "./config.js";
