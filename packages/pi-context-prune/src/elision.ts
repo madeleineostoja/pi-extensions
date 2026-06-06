@@ -441,10 +441,12 @@ function buildDuplicateReadMap(
   messages: AgentMsg[],
   cwd: string,
   toolCallInfoMap: Map<string, ToolCallInfo>,
+  mutationPositions: Map<string, number[]>,
 ): Map<string, DuplicateInfo> {
   const userTurnCounts = userTurnsUpToEachPosition(messages);
 
   type ReadEntry = {
+    index: number;
     toolCallId: string;
     normalizedPath: string;
     userTurnIndex: number;
@@ -476,6 +478,7 @@ function buildDuplicateReadMap(
 
     const entries = groups.get(groupKey) ?? [];
     entries.push({
+      index: i,
       toolCallId: msg.toolCallId,
       normalizedPath: normalized,
       userTurnIndex: userTurnCounts[i],
@@ -489,12 +492,26 @@ function buildDuplicateReadMap(
     if (entries.length < 2) {
       continue;
     }
-    const kept = entries[entries.length - 1];
-    for (const entry of entries.slice(0, -1)) {
-      result.set(entry.toolCallId, {
-        normalizedPath: entry.normalizedPath,
-        keptUserTurnIndex: kept.userTurnIndex,
-      });
+    const mutations = mutationPositions.get(entries[0].normalizedPath) ?? [];
+    for (let i = 0; i < entries.length - 1; i++) {
+      const earlier = entries[i];
+      for (let j = i + 1; j < entries.length; j++) {
+        const later = entries[j];
+        let hasMutation = false;
+        for (const mutPos of mutations) {
+          if (mutPos > earlier.index && mutPos < later.index) {
+            hasMutation = true;
+            break;
+          }
+        }
+        if (!hasMutation) {
+          result.set(earlier.toolCallId, {
+            normalizedPath: earlier.normalizedPath,
+            keptUserTurnIndex: later.userTurnIndex,
+          });
+          break;
+        }
+      }
     }
   }
 
@@ -512,6 +529,7 @@ const PI_READ_MAX_BYTES = 50 * 1024;
 const READ_TRUNCATION_PATTERNS = [
   /\[Showing lines \d+-\d+ of \d+/,
   /exceeds\s+\S+\s+limit\. Use bash:/,
+  /\[\d+ more lines in file\. Use offset=\d+ to continue\.\]/,
 ];
 
 function isReadTruncationNoticeLine(line: string): boolean {
@@ -541,9 +559,22 @@ function estimateDeliveredLines(content: ToolResultContent): number {
       if (block.text.endsWith("\n") || block.text.endsWith("\r")) {
         textLines.pop();
       }
-      lines += textLines.filter(
-        (line) => !isReadTruncationNoticeLine(line),
-      ).length;
+      const skip = new Set<number>();
+      for (let i = 0; i < textLines.length; i++) {
+        if (isReadTruncationNoticeLine(textLines[i])) {
+          skip.add(i);
+          if (i > 0 && textLines[i - 1].trim().length === 0) {
+            skip.add(i - 1);
+          }
+          if (
+            i + 1 < textLines.length &&
+            textLines[i + 1].trim().length === 0
+          ) {
+            skip.add(i + 1);
+          }
+        }
+      }
+      lines += textLines.length - skip.size;
     }
   }
   return lines;
@@ -918,6 +949,7 @@ export function makeContextHook(
       messages,
       cwd,
       toolCallInfoMap,
+      mutationPositions,
     );
     const coveredReadMap = buildCoveredReadMap(
       messages,
@@ -1289,8 +1321,9 @@ export function makeContextHook(
       const otherDeferred: Candidate[] = [];
       for (const cand of deferred) {
         if (
-          cand.reasons.length === 1 &&
-          cand.reasons[0] === "emergency-pressure"
+          isEmergency &&
+          cand.isOrdinarySourceRead &&
+          cand.savedTokens >= config.emergencyOrdinaryReadMinSavedTokens
         ) {
           emergencyOrdinaryCandidates.push(cand);
         } else {
@@ -1300,7 +1333,7 @@ export function makeContextHook(
 
       const selected: Candidate[] = [];
       for (const cand of otherDeferred) {
-        if (!isEmergency && cand.isOrdinarySourceRead) {
+        if (cand.isOrdinarySourceRead) {
           continue;
         }
         if (selected.length >= config.batchMaxCandidates) {

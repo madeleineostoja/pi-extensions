@@ -152,8 +152,8 @@ All keys are optional. Any key omitted falls back to the default shown above.
 | `afterConsumptionBashEnabled`         | boolean      | `true`  | Enable after-consumption bash compaction                                                                            |
 | `batchPruningEnabled`                 | boolean      | `true`  | Enable batch old-history pruning for deferred candidates                                                            |
 | `emergencyContextReserveTokens`       | number (≥ 0) | `16000` | Context window headroom below which emergency-pressure elision is triggered                                         |
-| `emergencyOrdinaryReadMinSavedTokens` | number (≥ 0) | `4000`  | Minimum saved tokens for a young, consumed ordinary `read` to be eligible for emergency elision                     |
-| `emergencyMaxOrdinaryReads`           | number (≥ 0) | `2`     | Maximum number of young ordinary reads that may be elided per emergency pass                                        |
+| `emergencyOrdinaryReadMinSavedTokens` | number (≥ 0) | `4000`  | Minimum saved tokens for a consumed ordinary `read` to be eligible for emergency elision                               |
+| `emergencyMaxOrdinaryReads`           | number (≥ 0) | `2`     | Maximum number of ordinary reads that may be elided per emergency pass                                                |
 | `batchCooldownTurns`                  | number (≥ 0) | `2`     | Minimum turns between non-emergency batch pruning passes                                                            |
 | `batchMinCandidates`                  | number (≥ 1) | `2`     | Minimum number of deferred candidates required to run a batch pass                                                  |
 | `batchMinSavedTokens`                 | number (≥ 0) | `8000`  | Minimum aggregate saved tokens for a non-emergency batch pass                                                       |
@@ -169,6 +169,8 @@ The LLM calls `context_recall` to retrieve an elided result. Parameters:
 - `lines` (optional) — a 1-indexed line range such as `"10-20"` or `"5"` to fetch only part of the content; only supported for single-text-block results with no image blocks
 
 The tool description mentions that stubs come in several forms (standard, superseded, duplicate, covered, after-consumption, batch-pressure, emergency-pressure) but the recall contract is identical for all of them while the original tool-result message remains in the active session store.
+
+On success, the full recalled content is included in the tool result for the model, but the interactive UI renders a compact summary (tool name, size, line count, and slice info if applicable) instead of dumping the raw text. Errors are shown as-is.
 
 ## `/context-prune` command
 

@@ -1368,6 +1368,176 @@ describe("duplicate-read detection", () => {
     ) as any;
     expect(read.content[0].text).toBe("only read");
   });
+
+  it("does not duplicate-prune across an intervening successful edit", () => {
+    const readId1 = "dup-mut-1";
+    const readId2 = "dup-mut-2";
+    const editId = "dup-mut-edit";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: {
+            path: "src/foo.ts",
+            old_string: "a",
+            new_string: "b",
+          },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: editId,
+        toolName: "edit",
+        text: "ok",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "second",
+      }),
+    ];
+    const hook = makeContextHook(duplicateConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("first");
+  });
+
+  it("still duplicate-prunes when the intervening edit failed", () => {
+    const readId1 = "dup-mut-fail-1";
+    const readId2 = "dup-mut-fail-2";
+    const editId = "dup-mut-fail-edit";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: {
+            path: "src/foo.ts",
+            old_string: "a",
+            new_string: "b",
+          },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: editId,
+        toolName: "edit",
+        text: "error",
+        isError: true,
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "second",
+      }),
+    ];
+    const hook = makeContextHook(duplicateConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toMatch(
+      /^\[read result elided \(superseded by later read of/,
+    );
+  });
+
+  it("only duplicate-prunes within the same mutation-free segment", () => {
+    const readId1 = "dup-mut-split-1";
+    const readId2 = "dup-mut-split-2";
+    const readId3 = "dup-mut-split-3";
+    const editId = "dup-mut-split-edit";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "second",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: {
+            path: "src/foo.ts",
+            old_string: "a",
+            new_string: "b",
+          },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: editId,
+        toolName: "edit",
+        text: "ok",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId3, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId3,
+        toolName: "read",
+        text: "third",
+      }),
+    ];
+    const hook = makeContextHook(duplicateConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    const read2 = result.messages!.find(
+      (m: any) => m.toolCallId === readId2,
+    ) as any;
+    const read3 = result.messages!.find(
+      (m: any) => m.toolCallId === readId3,
+    ) as any;
+    expect(read1.content[0].text).toMatch(
+      /^\[read result elided \(superseded by later read of/,
+    );
+    expect(read2.content[0].text).toBe("second");
+    expect(read3.content[0].text).toBe("third");
+  });
 });
 
 // ---- Helpers for covered-read detection tests ----
@@ -3227,6 +3397,83 @@ describe("read stub metadata in context hook", () => {
   });
 });
 
+describe("covered-read truncation handling", () => {
+  const truncatedPartialRead =
+    "line1\nline2\nline3\n\n[2 more lines in file. Use offset=4 to continue.]";
+
+  it("truncated read does not cover a partial read beyond the truncation boundary", () => {
+    const readId1 = "trunc-cover-1";
+    const readId2 = "trunc-cover-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 3, limit: 2 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "line3\nline4",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: truncatedPartialRead,
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("line3\nline4");
+  });
+
+  it("truncated read still covers an earlier partial read within the delivered lines", () => {
+    const readId1 = "trunc-cover-ok-1";
+    const readId2 = "trunc-cover-ok-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 2, limit: 2 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "line2\nline3",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: truncatedPartialRead,
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toMatch(
+      /^\[read result elided \(covered by later read of/,
+    );
+  });
+});
+
 describe("emergency ordinary-read pruning", () => {
   const largeText = "x".repeat(20_000);
   const emergencyCtx = {
@@ -3386,6 +3633,84 @@ describe("emergency ordinary-read pruning", () => {
 
     const read3 = result.messages!.find(
       (m: any) => m.toolCallId === "em-cap-3",
+    ) as any;
+    expect(read3.content[0].text).toBe(largeText);
+  });
+
+  it("does not emergency-prune a stale ordinary read that saves fewer than emergencyOrdinaryReadMinSavedTokens", () => {
+    const readId = "em-stale-below";
+    const smallText = "x".repeat(10_000);
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: smallText,
+      }),
+      makeUserMsg(),
+      makeUserMsg(),
+      makeUserMsg(),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "other", name: "bash", arguments: { command: "echo done" } },
+      ]),
+    ];
+    const result = makeContextHook(defaultConfig())(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toBe(smallText);
+  });
+
+  it("caps stale ordinary-read pruning by emergencyMaxOrdinaryReads in emergency pressure", () => {
+    const ids = ["em-stale-1", "em-stale-2", "em-stale-3"];
+    const messages: any[] = [makeUserMsg()];
+    for (const id of ids) {
+      messages.push(
+        makeAssistantMsg([
+          { id, name: "read", arguments: { path: `src/${id}.ts` } },
+        ]),
+        makeToolResultMsg({
+          toolCallId: id,
+          toolName: "read",
+          text: largeText,
+        }),
+        makeUserMsg(),
+      );
+    }
+    for (let i = 0; i < DEFAULTS.staleTurns - 1; i++) {
+      messages.push(makeUserMsg());
+    }
+    messages.push(
+      makeAssistantMsg([
+        { id: "final", name: "bash", arguments: { command: "echo done" } },
+      ]),
+    );
+
+    const passes: any[] = [];
+    const config = {
+      ...defaultConfig(),
+      emergencyMaxOrdinaryReads: 2,
+    };
+    const result = makeContextHook(config, (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+
+    const elidedIds = passes[0].entries.map((e: any) => e.toolCallId);
+    expect(elidedIds).toHaveLength(2);
+    expect(elidedIds).toContain("em-stale-1");
+    expect(elidedIds).toContain("em-stale-2");
+    expect(elidedIds).not.toContain("em-stale-3");
+
+    const read3 = result.messages!.find(
+      (m: any) => m.toolCallId === "em-stale-3",
     ) as any;
     expect(read3.content[0].text).toBe(largeText);
   });
