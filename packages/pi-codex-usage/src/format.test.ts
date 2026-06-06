@@ -1,8 +1,8 @@
 process.env.TZ = "UTC";
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { formatStatus } from "./format.js";
+import { formatStatus, formatResetMessage } from "./format.js";
 import { ICON } from "./constants.js";
 import type { UsageSnapshot } from "./usage.js";
 
@@ -248,5 +248,41 @@ describe("formatStatus", () => {
     };
     formatStatus(snapshot, theme);
     expect(theme.calls).toHaveLength(2);
+  });
+});
+
+describe("formatResetMessage", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns error text when snapshot is null", () => {
+    expect(formatResetMessage(null)).toBe("Failed to fetch Codex usage data.");
+  });
+
+  it("returns no data text when fiveHour is undefined", () => {
+    const snapshot: UsageSnapshot = { fetchedAt: Date.now() };
+    expect(formatResetMessage(snapshot)).toBe("No 5h window data available.");
+  });
+
+  it("returns reset time and remaining duration when resetAt is present", () => {
+    const resetAt = 3661; // 01:01 UTC
+    const now = (resetAt - 3720) * 1000; // 1h 2m before reset
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const snapshot: UsageSnapshot = {
+      fiveHour: { usedPercent: 42, resetAt },
+      fetchedAt: now,
+    };
+    expect(formatResetMessage(snapshot)).toBe(
+      "Codex 5h window: 42% used. Resets at 01:01 (1h 2m remaining).",
+    );
+  });
+
+  it("returns usage only when resetAt is missing", () => {
+    const snapshot: UsageSnapshot = {
+      fiveHour: { usedPercent: 55 },
+      fetchedAt: Date.now(),
+    };
+    expect(formatResetMessage(snapshot)).toBe("Codex 5h window: 55% used.");
   });
 });

@@ -8,10 +8,10 @@ Pi extension that shows a compact ChatGPT Codex subscription usage footer status
 - Automatically refreshes the usage snapshot on a timer after the TTL expires
 - Detects Codex rate-limit errors in assistant messages (`message_end`) and replaces the raw JSON blob with a readable `🚫 Codex usage limit reached` message that includes the latest usage figures
 - Clears the status and cancels the refresh timer when the session ends or a non-Codex model is selected
+- **`/codex-usage`** — returns the current 5h window usage percentage and reset time (or how long until reset)
 
 ## What it intentionally does NOT do
 
-- **No slash commands** — no `/codex-usage` command or similar
 - **No `setFooter`** — uses `setStatus` only (single status key `codex-usage`)
 - **No CLI fallback auth** — only Pi OAuth auth via `ctx.modelRegistry.getApiKeyAndHeaders`
 - **No `~/.pi/agent/auth.json`** reads

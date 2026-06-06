@@ -5,7 +5,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, AssistantMessage } from "@earendil-works/pi-ai";
 import { getUsage, isCodexProvider } from "./usage.js";
-import { formatStatus } from "./format.js";
+import { formatStatus, formatResetMessage } from "./format.js";
 import { STATUS_KEY, CACHE_TTL_MS } from "./constants.js";
 import {
   isCodexLimitError,
@@ -127,5 +127,21 @@ export default function (pi: ExtensionAPI) {
     cancelTimer();
     ++currentRequestId;
     clearStatus(ctx);
+  });
+
+  pi.registerCommand("codex-usage", {
+    description: "Show the next Codex 5h window reset time",
+    handler: async (_args, ctx) => {
+      if (!ctx.hasUI) {
+        return;
+      }
+      const model = ctx.model;
+      if (!model || !isCodexProvider(model.provider)) {
+        ctx.ui.notify("No Codex model is active.", "warning");
+        return;
+      }
+      const snapshot = await getUsage(model, ctx, true);
+      ctx.ui.notify(formatResetMessage(snapshot), "info");
+    },
   });
 }

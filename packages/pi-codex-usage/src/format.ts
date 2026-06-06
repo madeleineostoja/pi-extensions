@@ -79,3 +79,31 @@ export function formatStatus(
 
   return formatColoredStatus(color, textColor, text, theme);
 }
+
+function formatDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) {
+    return `${h}h ${m}m`;
+  }
+  return `${m}m`;
+}
+
+export function formatResetMessage(snapshot: UsageSnapshot | null): string {
+  if (!snapshot) {
+    return "Failed to fetch Codex usage data.";
+  }
+  if (snapshot.fiveHour === undefined) {
+    return "No 5h window data available.";
+  }
+  const pct = Math.round(clampPercent(snapshot.fiveHour.usedPercent));
+  const resetAt = snapshot.fiveHour.resetAt;
+  if (resetAt !== undefined) {
+    const resetTime = formatResetTime(resetAt);
+    const now = Math.floor(Date.now() / 1000);
+    const remainingSeconds = Math.max(0, resetAt - now);
+    const remaining = formatDuration(remainingSeconds);
+    return `Codex 5h window: ${pct}% used. Resets at ${resetTime} (${remaining} remaining).`;
+  }
+  return `Codex 5h window: ${pct}% used.`;
+}

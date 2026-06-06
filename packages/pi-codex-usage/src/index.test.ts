@@ -6,15 +6,40 @@ type EventHandler = (event: unknown, ctx: unknown) => unknown;
 
 type FakePi = {
   handlers: Map<string, EventHandler>;
+  commands: Map<
+    string,
+    {
+      description: string;
+      handler: (args: string, ctx: unknown) => Promise<void>;
+    }
+  >;
   on(event: string, handler: EventHandler): void;
+  registerCommand(
+    name: string,
+    options: {
+      description: string;
+      handler: (args: string, ctx: unknown) => Promise<void>;
+    },
+  ): void;
 };
 
 function makePi(): FakePi {
   const handlers = new Map<string, EventHandler>();
+  const commands = new Map<
+    string,
+    {
+      description: string;
+      handler: (args: string, ctx: unknown) => Promise<void>;
+    }
+  >();
   return {
     handlers,
+    commands,
     on(event: string, handler: EventHandler) {
       handlers.set(event, handler);
+    },
+    registerCommand(name, options) {
+      commands.set(name, options);
     },
   };
 }
@@ -38,6 +63,7 @@ type FakeCtx = {
       getBashModeBorderColor: () => (s: string) => string;
     };
     setStatus: ReturnType<typeof vi.fn>;
+    notify: ReturnType<typeof vi.fn>;
   };
   modelRegistry: {
     getApiKeyAndHeaders: () => Promise<{ ok: false; error: string }>;
@@ -64,6 +90,7 @@ function makeCtx(provider = "openai-codex", hasUI = true): FakeCtx {
         getBashModeBorderColor: () => (s: string) => s,
       },
       setStatus: vi.fn(),
+      notify: vi.fn(),
     },
     modelRegistry: {
       getApiKeyAndHeaders: async () => ({ ok: false, error: "no auth" }),
@@ -239,5 +266,48 @@ describe("extension lifecycle", () => {
     const handler = pi.handlers.get("session_start")!;
     await handler({}, ctx);
     expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
+  });
+
+  it("registers the codex-usage command", async () => {
+    const { pi, defaultExport } = await loadExtension(async () => fakeSnapshot);
+    defaultExport(pi as never);
+    expect(pi.commands.has("codex-usage")).toBe(true);
+  });
+
+  it("command handler notifies info when Codex model is active and usage is fetched", async () => {
+    const getUsageMock = vi.fn(async () => fakeSnapshot);
+    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("codex-usage")!;
+    const ctx = makeCtx("openai-codex");
+    await cmd.handler("", ctx);
+    expect(getUsageMock).toHaveBeenCalledWith(ctx.model, ctx, true);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Codex 5h window"),
+      "info",
+    );
+  });
+
+  it("command handler warns when no Codex model is active", async () => {
+    const getUsageMock = vi.fn(async () => fakeSnapshot);
+    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("codex-usage")!;
+    const ctx = makeCtx("anthropic");
+    await cmd.handler("", ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      "No Codex model is active.",
+      "warning",
+    );
+  });
+
+  it("command handler does nothing when hasUI is false", async () => {
+    const getUsageMock = vi.fn(async () => fakeSnapshot);
+    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("codex-usage")!;
+    const ctx = makeCtx("openai-codex", false);
+    await cmd.handler("", ctx);
+    expect(ctx.ui.notify).not.toHaveBeenCalled();
   });
 });
