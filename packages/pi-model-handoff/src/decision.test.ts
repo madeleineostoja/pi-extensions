@@ -146,13 +146,25 @@ describe("computeHandoffEstimate", () => {
     expect(estimate.keptTokens).toBe(
       Math.max(10000 - estimate.summarizedTokens, 0),
     );
-    expect(estimate.sourceInputCost).toBeCloseTo((10000 / 1_000_000) * 15, 6);
+    expect(estimate.estimatedSummaryTokens).toBe(
+      Math.ceil(estimate.summarizedTokens * 0.03),
+    );
+    expect(estimate.estimatedHandoffTokens).toBe(
+      estimate.keptTokens + estimate.estimatedSummaryTokens,
+    );
+    expect(estimate.estimatedSavingsTokens).toBe(
+      10000 - estimate.estimatedHandoffTokens,
+    );
     expect(estimate.targetFullContextInputCost).toBeCloseTo(
       (10000 / 1_000_000) * 5,
       6,
     );
-    expect(estimate.targetKeptContextInputCost).toBeCloseTo(
-      (estimate.keptTokens / 1_000_000) * 5,
+    expect(estimate.estimatedHandoffCost).toBeCloseTo(
+      (estimate.estimatedHandoffTokens / 1_000_000) * 5,
+      6,
+    );
+    expect(estimate.estimatedSavingsCost).toBeCloseTo(
+      estimate.targetFullContextInputCost! - estimate.estimatedHandoffCost!,
       6,
     );
   });
@@ -172,9 +184,9 @@ describe("computeHandoffEstimate", () => {
     );
 
     const estimate = computeHandoffEstimate(preparation, sourceRef, targetRef);
-    expect(estimate.sourceInputCost).toBeUndefined();
     expect(estimate.targetFullContextInputCost).toBeUndefined();
-    expect(estimate.targetKeptContextInputCost).toBeUndefined();
+    expect(estimate.estimatedHandoffCost).toBeUndefined();
+    expect(estimate.estimatedSavingsCost).toBeUndefined();
   });
 });
 
