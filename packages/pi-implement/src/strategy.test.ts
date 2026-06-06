@@ -518,6 +518,79 @@ describe("selectStrategy - forced parallel", () => {
   });
 });
 
+describe("selectStrategy - planner prompt content", () => {
+  it("does not contain old eager-context section headings", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "auto",
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).not.toContain("File Tree");
+    expect(prompt).not.toContain("Package Manifests");
+    expect(prompt).not.toContain("Targeted Evidence");
+  });
+
+  it("contains the deterministic context packet", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "planhash123",
+      repoRoot: "/repo",
+      baseSha: "abc123",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "auto",
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain("Repo root: /repo");
+    expect(prompt).toContain("Base SHA: abc123");
+    expect(prompt).toContain("Plan path: /repo/plan.md");
+    expect(prompt).toContain("Plan hash: planhash123");
+    expect(prompt).toContain("Current Git Status");
+    expect(prompt).toContain("- [planIndex=1] Task A");
+    expect(prompt).toContain("- [planIndex=2] Task B");
+    expect(prompt).toContain("Task hashes:");
+  });
+});
+
 describe("selectStrategy - concurrency clamping", () => {
   it("clamps effective concurrency to min(requested, config.maxParallel, 8)", async () => {
     const graph: ImplementGraph = {

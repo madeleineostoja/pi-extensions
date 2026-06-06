@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { isAbsolute, join as joinPath, relative } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import { promisify } from "node:util";
 import type { ParsedPlan, PlanTask } from "./plan.js";
 import type { ImplementConfig } from "./config.js";
@@ -306,10 +305,7 @@ async function buildGraphPlannerPrompt(
     .map((t) => `- [planIndex=${t.index}] ${t.text}`)
     .join("\n");
 
-  const fileTree = await getFileTreeSummary(req.repoRoot);
-  const manifests = await getManifestContents(req.repoRoot);
   const gitStatus = await getFilteredGitStatus(req.repoRoot, req.plan.path);
-  const evidence = await getTargetedEvidence(req.repoRoot, unchecked);
 
   const taskHashes = unchecked
     .map(
@@ -332,26 +328,15 @@ ${taskLines}
 
 Task hashes: ${taskHashes}
 
-## Repository Info
+## Context
 
 Repo root: ${req.repoRoot}
 Base SHA: ${req.baseSha}
+Plan path: ${req.plan.path}
+Plan hash: ${req.planHash}
 
-## File Tree (capped at 2000 paths)
-
-${fileTree}
-
-## Package Manifests and Config Files
-
-${manifests}
-
-## Current Git Status (excluding .pi/** and plan artifacts)
-
+Current Git Status (excluding .pi/** and plan artifacts):
 ${gitStatus}
-
-## Targeted Evidence for Task Areas
-
-${evidence}
 
 ## Instructions
 
@@ -397,63 +382,6 @@ If you are not confident in parallel execution, set mode to "serial" and omit th
 When in doubt, choose "serial".`;
 }
 
-async function getFileTreeSummary(repoRoot: string): Promise<string> {
-  const CAP = 2000;
-  try {
-    const result = await execFileAsync("git", ["ls-files"], {
-      cwd: repoRoot,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    const paths = result.stdout.split("\n").filter(Boolean);
-    if (paths.length <= CAP) {
-      return paths.join("\n");
-    }
-    const shown = paths.slice(0, CAP);
-    const omitted = paths.length - CAP;
-    return `${shown.join("\n")}\n... (${omitted} more paths omitted)`;
-  } catch {
-    return "(could not list files)";
-  }
-}
-
-const MANIFEST_PATTERNS = [
-  "package.json",
-  "tsconfig*.json",
-  "vitest.config.*",
-  ".eslintrc*",
-  ".prettierrc*",
-  "eslint.config.*",
-  "prettier.config.*",
-  "oxlint*",
-  ".oxlintrc*",
-];
-
-async function getManifestContents(repoRoot: string): Promise<string> {
-  try {
-    const result = await execFileAsync(
-      "git",
-      ["ls-files", ...MANIFEST_PATTERNS],
-      {
-        cwd: repoRoot,
-        maxBuffer: 1 * 1024 * 1024,
-      },
-    );
-    const files = result.stdout.split("\n").filter(Boolean).slice(0, 20);
-    const contents = files.map((file) => {
-      try {
-        const content = readFileSync(joinPath(repoRoot, file), "utf-8");
-        return `### ${file}\n\`\`\`\n${content.trim()}\n\`\`\``;
-      } catch {
-        return null;
-      }
-    });
-    const parts = contents.filter((c): c is string => c !== null);
-    return parts.length ? parts.join("\n\n") : "(no manifest files found)";
-  } catch {
-    return "(no manifest files found)";
-  }
-}
-
 async function getFilteredGitStatus(
   repoRoot: string,
   planPath?: string,
@@ -492,132 +420,4 @@ function repoRelativePath(repoRoot: string, path: string): string | undefined {
     return undefined;
   }
   return candidate.replaceAll("\\", "/");
-}
-
-async function getTargetedEvidence(
-  repoRoot: string,
-  unchecked: PlanTask[],
-): Promise<string> {
-  const areas = new Set<string>();
-  for (const task of unchecked) {
-    for (const area of extractSurfaceAreas(task.text)) {
-      areas.add(area);
-    }
-  }
-
-  if (areas.size === 0) {
-    return "(no distinct surface areas identified)";
-  }
-
-  const areaList = [...areas].slice(0, 10);
-  const areaResults = await Promise.all(
-    areaList.map((area) => getAreaEvidence(repoRoot, area)),
-  );
-  const parts = areaResults.filter((p): p is string => p !== null);
-  return parts.length
-    ? parts.join("\n\n")
-    : "(no evidence found for identified areas)";
-}
-
-async function getAreaEvidence(
-  repoRoot: string,
-  area: string,
-): Promise<string | null> {
-  try {
-    const result = await execFileAsync("git", ["ls-files", "--", `*${area}*`], {
-      cwd: repoRoot,
-      maxBuffer: 256 * 1024,
-    });
-    const paths = result.stdout.split("\n").filter(Boolean).slice(0, 20);
-    if (!paths.length) {
-      return null;
-    }
-    const header = `### Area: ${area}\nMatching paths:\n${paths.map((p) => `  ${p}`).join("\n")}`;
-    const excerptPaths = paths.slice(0, 5).filter(shouldIncludeExcerpt);
-    const excerpts = await Promise.all(
-      excerptPaths.map((filePath) => getFileExcerpt(repoRoot, filePath)),
-    );
-    const excerptParts = excerpts.filter((e): e is string => e !== null);
-    return [header, ...excerptParts].join("\n\n");
-  } catch {
-    return null;
-  }
-}
-
-async function getFileExcerpt(
-  repoRoot: string,
-  filePath: string,
-): Promise<string | null> {
-  try {
-    const content = await execFileAsync("git", ["show", `HEAD:${filePath}`], {
-      cwd: repoRoot,
-      maxBuffer: 32 * 1024,
-    });
-    const excerpt = content.stdout.split("\n").slice(0, 30).join("\n").trim();
-    return excerpt
-      ? `#### Excerpt: ${filePath}\n\`\`\`\n${excerpt}\n\`\`\``
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function shouldIncludeExcerpt(filePath: string): boolean {
-  const lower = filePath.toLowerCase();
-  return (
-    lower.endsWith(".ts") ||
-    lower.endsWith(".js") ||
-    lower.endsWith(".json") ||
-    lower.endsWith(".md")
-  );
-}
-
-function extractSurfaceAreas(taskText: string): string[] {
-  const areas = new Set<string>();
-
-  const pathLike = taskText.match(
-    /(?:^|[\s`(])((?:packages|src|docs|lib|test|tests)\/[\w./-]+|[a-zA-Z][\w/-]*\/[\w./-]+\.\w+)(?=[\s`),\n]|$)/g,
-  );
-  if (pathLike) {
-    for (const match of pathLike) {
-      const cleaned = match
-        .trim()
-        .replace(/^[`(]/, "")
-        .replace(/[`),$]$/, "");
-      if (cleaned) {
-        areas.add(normalizeArea(cleaned));
-      }
-    }
-  }
-
-  const backticked = taskText.match(/`([^`]+)`/g);
-  if (backticked) {
-    for (const match of backticked) {
-      const inner = match.slice(1, -1).trim();
-      if (
-        inner &&
-        (inner.includes("/") ||
-          /\.\w+$/.test(inner) ||
-          inner.startsWith("@") ||
-          inner.includes("-"))
-      ) {
-        areas.add(normalizeArea(inner));
-      }
-    }
-  }
-
-  const surfaceNounTrailer =
-    /\b(\w[\w/-]*)\s+(?:model|route|component|document|command|endpoint|test)s?\b/gi;
-  for (const m of taskText.matchAll(surfaceNounTrailer)) {
-    const noun = m[1];
-    if (noun && noun.length > 1) {
-      areas.add(normalizeArea(noun));
-    }
-  }
-
-  return [...areas];
-}
-
-function normalizeArea(value: string): string {
-  return value.toLowerCase().replaceAll("\\", "/").replace(/\/$/, "");
 }
