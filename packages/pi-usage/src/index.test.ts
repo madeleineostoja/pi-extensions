@@ -268,17 +268,17 @@ describe("extension lifecycle", () => {
     expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
   });
 
-  it("registers the codex-usage command", async () => {
+  it("registers the usage command", async () => {
     const { pi, defaultExport } = await loadExtension(async () => fakeSnapshot);
     defaultExport(pi as never);
-    expect(pi.commands.has("codex-usage")).toBe(true);
+    expect(pi.commands.has("usage")).toBe(true);
   });
 
   it("command handler notifies info when Codex model is active and usage is fetched", async () => {
     const getUsageMock = vi.fn(async () => fakeSnapshot);
     const { pi, defaultExport } = await loadExtension(getUsageMock);
     defaultExport(pi as never);
-    const cmd = pi.commands.get("codex-usage")!;
+    const cmd = pi.commands.get("usage")!;
     const ctx = makeCtx("openai-codex");
     await cmd.handler("", ctx);
     expect(getUsageMock).toHaveBeenCalledWith(ctx.model, ctx, true);
@@ -292,7 +292,7 @@ describe("extension lifecycle", () => {
     const getUsageMock = vi.fn(async () => fakeSnapshot);
     const { pi, defaultExport } = await loadExtension(getUsageMock);
     defaultExport(pi as never);
-    const cmd = pi.commands.get("codex-usage")!;
+    const cmd = pi.commands.get("usage")!;
     const ctx = makeCtx("anthropic");
     await cmd.handler("", ctx);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -305,7 +305,7 @@ describe("extension lifecycle", () => {
     const getUsageMock = vi.fn(async () => fakeSnapshot);
     const { pi, defaultExport } = await loadExtension(getUsageMock);
     defaultExport(pi as never);
-    const cmd = pi.commands.get("codex-usage")!;
+    const cmd = pi.commands.get("usage")!;
     const ctx = makeCtx("openai-codex", false);
     await cmd.handler("", ctx);
     expect(ctx.ui.notify).not.toHaveBeenCalled();

@@ -129,7 +129,7 @@ export default function (pi: ExtensionAPI) {
     clearStatus(ctx);
   });
 
-  pi.registerCommand("codex-usage", {
+  pi.registerCommand("usage", {
     description: "Show the next Codex 5h window reset time",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI) {

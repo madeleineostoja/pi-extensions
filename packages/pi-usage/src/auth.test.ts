@@ -84,7 +84,7 @@ describe("buildHeaders", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.headers["Accept"]).toBe("application/json");
-      expect(result.headers["User-Agent"]).toBe("codex-usage/0.1.0");
+      expect(result.headers["User-Agent"]).toBe("pi-usage/0.1.0");
     }
   });
 
