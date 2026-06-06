@@ -1,0 +1,16 @@
+{
+  "name": "@pi-extensions/lib",
+  "version": "0.1.0",
+  "description": "Shared library for pi-extensions workspace packages.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.75.5"
+  }
+}
