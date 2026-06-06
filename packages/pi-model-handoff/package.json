@@ -11,6 +11,9 @@
     "src",
     "README.md"
   ],
+  "dependencies": {
+    "@pi-extensions/lib": "0.1.0"
+  },
   "pi": {
     "extensions": [
       "./src/index.ts"

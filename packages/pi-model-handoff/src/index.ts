@@ -4,6 +4,7 @@ import {
   getAgentDir,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { refreshCurrencyRate } from "@pi-extensions/lib";
 import { prepareCompaction } from "./compaction";
 import {
   buildModelRef,
@@ -49,6 +50,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    await refreshCurrencyRate({ from: "USD", to: "NZD" });
     const prompt = formatHandoffPrompt(sourceRef, targetRef, decision.estimate);
     const choice = await ctx.ui.select(prompt, [
       OPTION_CREATE_HANDOFF,

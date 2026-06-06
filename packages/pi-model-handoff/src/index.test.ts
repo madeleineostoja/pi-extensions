@@ -41,6 +41,15 @@ vi.mock("./compaction", async () => {
   };
 });
 
+const refreshCurrencyRateMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@pi-extensions/lib", () => {
+  return {
+    refreshCurrencyRate: refreshCurrencyRateMock,
+    convertCurrency: vi.fn(),
+  };
+});
+
 function makeFakeExtensionAPI() {
   const handlers: Record<
     string,
@@ -352,6 +361,42 @@ describe("model_select handler", () => {
       model: makeModel("openai", "gpt-4o", 5),
     });
     await handler(event as never, ctx);
+    expect(selectCalled).toBe(true);
+  });
+
+  it("awaits refreshCurrencyRate before formatting the prompt", async () => {
+    let refreshed = false;
+    refreshCurrencyRateMock.mockImplementation(async () => {
+      refreshed = true;
+    });
+    const { handlers } = captureHandlers();
+    const handler = handlers["model_select"][0];
+    let selectCalled = false;
+    const ctx = makeFakeCtx({ selectResult: undefined });
+    const originalSelect = ctx.ui.select;
+    ctx.ui.select = async (...args: Parameters<typeof ctx.ui.select>) => {
+      selectCalled = true;
+      return originalSelect(...args);
+    };
+    vi.mocked(prepareCompaction).mockReturnValue({
+      firstKeptEntryId: "keep-1",
+      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore: 1000,
+      fileOps: {} as never,
+      settings: {
+        enabled: true,
+        reserveTokens: 16384,
+        keepRecentTokens: 20000,
+      },
+    } as never);
+    const event = makeModelSelectEvent({
+      previousModel: makeModel("anthropic", "opus", 15),
+      model: makeModel("openai", "gpt-4o", 5),
+    });
+    await handler(event as never, ctx);
+    expect(refreshed).toBe(true);
     expect(selectCalled).toBe(true);
   });
 

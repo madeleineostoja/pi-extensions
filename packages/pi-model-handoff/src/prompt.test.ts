@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   formatHandoffPrompt,
   HANDOFF_INSTRUCTIONS,
@@ -6,6 +6,15 @@ import {
   OPTION_CONTINUE_FULL_CONTEXT,
 } from "./prompt";
 import type { HandoffEstimate, ModelRef } from "./decision";
+
+const convertCurrencyMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@pi-extensions/lib", () => {
+  return {
+    convertCurrency: convertCurrencyMock,
+    refreshCurrencyRate: vi.fn(),
+  };
+});
 
 function makeRef(overrides: Partial<ModelRef> = {}): ModelRef {
   return {
@@ -49,6 +58,10 @@ describe("option labels", () => {
 });
 
 describe("formatHandoffPrompt", () => {
+  beforeEach(() => {
+    convertCurrencyMock.mockReset();
+  });
+
   it("includes source and target model names", () => {
     const prompt = formatHandoffPrompt(
       makeRef({ name: "Claude 3 Opus" }),
@@ -77,7 +90,8 @@ describe("formatHandoffPrompt", () => {
     expect(prompt).toContain("6.8k");
   });
 
-  it("shows cost estimates when available", () => {
+  it("shows converted cost estimates when a rate is available", () => {
+    convertCurrencyMock.mockImplementation(({ amount }) => amount * 1.7);
     const prompt = formatHandoffPrompt(
       makeRef(),
       makeRef(),
@@ -87,9 +101,9 @@ describe("formatHandoffPrompt", () => {
         estimatedSavingsCost: 0.034,
       }),
     );
-    expect(prompt).toContain("$0.0500");
-    expect(prompt).toContain("$0.0160");
-    expect(prompt).toContain("$0.0340");
+    expect(prompt).toContain("$0.0850");
+    expect(prompt).toContain("$0.0272");
+    expect(prompt).toContain("$0.0578");
   });
 
   it("omits costs when unavailable", () => {
@@ -105,6 +119,20 @@ describe("formatHandoffPrompt", () => {
     expect(prompt).not.toContain("$");
   });
 
+  it("omits costs when no converted rate is available", () => {
+    convertCurrencyMock.mockReturnValue(undefined);
+    const prompt = formatHandoffPrompt(
+      makeRef(),
+      makeRef(),
+      makeEstimate({
+        targetFullContextInputCost: 0.05,
+        estimatedHandoffCost: 0.016,
+        estimatedSavingsCost: 0.034,
+      }),
+    );
+    expect(prompt).not.toContain("$");
+  });
+
   it("does not mention break-even turns or ROI", () => {
     const prompt = formatHandoffPrompt(makeRef(), makeRef(), makeEstimate());
     expect(prompt).not.toMatch(/break.?even/i);
@@ -113,6 +141,7 @@ describe("formatHandoffPrompt", () => {
   });
 
   it("labels costs as estimates", () => {
+    convertCurrencyMock.mockImplementation(({ amount }) => amount * 1.7);
     const prompt = formatHandoffPrompt(
       makeRef(),
       makeRef(),

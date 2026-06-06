@@ -1,3 +1,4 @@
+import { convertCurrency } from "@pi-extensions/lib";
 import type { HandoffEstimate, ModelRef } from "./decision.ts";
 
 export const OPTION_CREATE_HANDOFF = "Create handoff";
@@ -18,6 +19,17 @@ function roundTo2SigFigs(n: number): number {
   const d = Math.ceil(Math.log10(n));
   const power = Math.pow(10, d - 2);
   return Math.round(n / power) * power;
+}
+
+function formatConvertedCost(usd: number | undefined): string | undefined {
+  if (usd === undefined) {
+    return undefined;
+  }
+  const nzd = convertCurrency({ amount: usd, from: "USD", to: "NZD" });
+  if (nzd === undefined) {
+    return undefined;
+  }
+  return `~$${nzd.toFixed(4)}`;
 }
 
 function formatTokens(n: number): string {
@@ -42,20 +54,23 @@ export function formatHandoffPrompt(
 
   let prompt = `Model handoff: ${sourceName} -> ${targetName}\n`;
   prompt += `- Full context: ~${formatTokens(estimate.currentTokens)}`;
-  if (estimate.targetFullContextInputCost !== undefined) {
-    prompt += ` (~$${estimate.targetFullContextInputCost.toFixed(4)})`;
+  const fullCost = formatConvertedCost(estimate.targetFullContextInputCost);
+  if (fullCost !== undefined) {
+    prompt += ` (${fullCost})`;
   }
   prompt += `\n`;
 
   prompt += `- Estimated handoff context: ~${formatTokens(estimate.estimatedHandoffTokens)}`;
-  if (estimate.estimatedHandoffCost !== undefined) {
-    prompt += ` (~$${estimate.estimatedHandoffCost.toFixed(4)})`;
+  const handoffCost = formatConvertedCost(estimate.estimatedHandoffCost);
+  if (handoffCost !== undefined) {
+    prompt += ` (${handoffCost})`;
   }
   prompt += `\n`;
 
   prompt += `- Estimated savings: ~${formatTokens(estimate.estimatedSavingsTokens)}`;
-  if (estimate.estimatedSavingsCost !== undefined) {
-    prompt += ` (~$${estimate.estimatedSavingsCost.toFixed(4)})`;
+  const savingsCost = formatConvertedCost(estimate.estimatedSavingsCost);
+  if (savingsCost !== undefined) {
+    prompt += ` (${savingsCost})`;
   }
 
   return prompt;

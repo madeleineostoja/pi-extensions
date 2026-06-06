@@ -8,9 +8,14 @@ When you switch models inside Pi, `pi-model-handoff` analyses whether sending th
 
 ```
 Model handoff: source-model → target-model
+- Full context: ~10k (~$0.0850)
+- Estimated handoff context: ~3.2k (~$0.0272)
+- Estimated savings: ~6.8k (~$0.0578)
 Create handoff
 Continue full context
 ```
+
+Cost estimates are converted to NZD when the shared rate cache is available; they are omitted when no rate is cached.
 
 - **Create handoff** — triggers Pi's manual compaction using the _previous_ model to write an implementation-focused summary, then resumes with the new model.
 - **Continue full context** — leaves the conversation untouched and proceeds normally.
@@ -31,6 +36,7 @@ If pricing is missing or the source is subscription/OAuth, the token-reduction g
 - The handoff runs immediately after the model switch, not on the next user prompt.
 - No automatic handoff based on context-window pressure; this is about cost/noise after model switching.
 - No custom session rewriting, prompt replay, or input queue implementation.
+- Subscription/OAuth model costs remain excluded from the prompt.
 
 ## License
 
