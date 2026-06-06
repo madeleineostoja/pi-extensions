@@ -125,4 +125,30 @@ describe("estimateSuffixTokens", () => {
       Math.ceil(("ccc".length + "dddd".length) / 4),
     );
   });
+
+  it("reuses the suffix table for repeated lookups on the same messages array", () => {
+    let contentReads = 0;
+    const messages = [
+      {
+        role: "user",
+        get content() {
+          contentReads++;
+          return "abcd";
+        },
+      },
+      {
+        role: "assistant",
+        get content() {
+          contentReads++;
+          return "abcdefgh";
+        },
+      },
+    ];
+
+    expect(estimateSuffixTokens(messages, -1)).toBe(3);
+    expect(contentReads).toBe(2);
+    expect(estimateSuffixTokens(messages, 0)).toBe(2);
+    expect(estimateSuffixTokens(messages, 1)).toBe(0);
+    expect(contentReads).toBe(2);
+  });
 });

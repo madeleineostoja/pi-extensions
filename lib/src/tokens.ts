@@ -39,9 +39,11 @@ export function estimateMessageTokens(message: {
   return Math.ceil(estimateMessageTextChars(message) / 4);
 }
 
-function buildSuffixTokenTable(
-  messages: readonly { role?: string; content?: unknown }[],
-): number[] {
+type TokenMessage = { role?: string; content?: unknown };
+
+const suffixTokenTableCache = new WeakMap<readonly TokenMessage[], number[]>();
+
+function buildSuffixTokenTable(messages: readonly TokenMessage[]): number[] {
   const suffixChars: number[] = Array.from(
     { length: messages.length + 1 },
     () => 0,
@@ -50,6 +52,16 @@ function buildSuffixTokenTable(
     suffixChars[i] = suffixChars[i + 1] + estimateMessageTextChars(messages[i]);
   }
   return suffixChars.map((chars) => Math.ceil(chars / 4));
+}
+
+function getSuffixTokenTable(messages: readonly TokenMessage[]): number[] {
+  const cached = suffixTokenTableCache.get(messages);
+  if (cached) {
+    return cached;
+  }
+  const suffixTokens = buildSuffixTokenTable(messages);
+  suffixTokenTableCache.set(messages, suffixTokens);
+  return suffixTokens;
 }
 
 function lookupSuffixTokens(
@@ -61,8 +73,8 @@ function lookupSuffixTokens(
 }
 
 export function estimateSuffixTokens(
-  messages: readonly { role?: string; content?: unknown }[],
+  messages: readonly TokenMessage[],
   afterIndex: number,
 ): number {
-  return lookupSuffixTokens(buildSuffixTokenTable(messages), afterIndex);
+  return lookupSuffixTokens(getSuffixTokenTable(messages), afterIndex);
 }
