@@ -99,38 +99,55 @@ export const idleState: RunState = { phase: "idle" };
 const FOOTER_GLYPH = "󰚩";
 const MAX_RECENT_CHECKPOINTS = 25;
 
-export function formatFooterStatus(state: RunState): string {
+export type FooterStatusTone = "active" | "warning" | "success";
+
+export type FooterStatusParts = {
+  glyph: string;
+  text: string;
+  tone: FooterStatusTone;
+};
+
+export function formatFooterStatusParts(
+  state: RunState,
+): FooterStatusParts | undefined {
   if (state.phase === "idle") {
-    return "";
+    return undefined;
   }
   if (state.phase === "blocked") {
-    return withFooterGlyph(
+    return footerStatusParts(
       `implement blocked${state.lastReason ? ` · ${shorten(state.lastReason, 32)}` : ""}`,
+      "warning",
     );
   }
   if (state.phase === "done") {
-    return withFooterGlyph("implement done");
+    return footerStatusParts("implement done", "success");
   }
   if (state.phase === "followup_required") {
-    return withFooterGlyph(
+    return footerStatusParts(
       `implement follow-up required${state.lastReason ? ` · ${shorten(state.lastReason, 32)}` : ""}`,
+      "warning",
     );
   }
   if (state.phase === "stopped") {
-    return withFooterGlyph("implement stopped");
+    return footerStatusParts("implement stopped", "warning");
   }
 
   if (state.tasks && state.totalCount !== undefined) {
     const completed = completedTaskCount(state);
     const total = state.totalCount ?? 0;
-    return withFooterGlyph(`implement ${completed}/${total}`);
+    return footerStatusParts(`implement ${completed}/${total}`, "active");
   }
 
   const progress =
     state.taskIndex && state.totalTasks
       ? `${state.taskIndex}/${state.totalTasks}`
       : "…";
-  return withFooterGlyph(`implement ${progress}`);
+  return footerStatusParts(`implement ${progress}`, "active");
+}
+
+export function formatFooterStatus(state: RunState): string {
+  const parts = formatFooterStatusParts(state);
+  return parts ? `${parts.glyph} ${parts.text}` : "";
 }
 
 export function formatRunStatus(state: RunState, nowMs = Date.now()): string {
@@ -228,8 +245,11 @@ export function formatRunStatus(state: RunState, nowMs = Date.now()): string {
   return lines.join("\n");
 }
 
-function withFooterGlyph(status: string): string {
-  return `${FOOTER_GLYPH} ${status}`;
+function footerStatusParts(
+  text: string,
+  tone: FooterStatusTone,
+): FooterStatusParts {
+  return { glyph: FOOTER_GLYPH, text, tone };
 }
 
 function completedTaskCount(state: RunState): number {

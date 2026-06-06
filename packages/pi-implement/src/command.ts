@@ -34,7 +34,7 @@ import type {
   AgentRuntimeSnapshot,
 } from "./status.js";
 import {
-  formatFooterStatus,
+  formatFooterStatusParts,
   formatRunStatus,
   formatWidgetLines,
 } from "./status.js";
@@ -97,6 +97,12 @@ export function canStartImplementRun(phase: RunState["phase"]): boolean {
   return STARTABLE_PHASES.has(phase);
 }
 
+function isWarningTerminalPhase(phase: RunState["phase"]): boolean {
+  return (
+    phase === "blocked" || phase === "followup_required" || phase === "stopped"
+  );
+}
+
 export function registerImplementCommand(pi: ExtensionAPI): void {
   let active: ActiveRun = {
     state: { phase: "idle" },
@@ -127,6 +133,12 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
     if (ctx.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
       ctx.ui.setWidget(WIDGET_KEY, undefined);
+    }
+  });
+
+  pi.on("turn_start", async (_event, ctx) => {
+    if (ctx.hasUI && isWarningTerminalPhase(active.state.phase)) {
+      ctx.ui.setStatus(STATUS_KEY, undefined);
     }
   });
 
@@ -218,7 +230,6 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           }
           ctx.ui.notify("pi-implement stopped.", "warning");
           if (ctx.hasUI) {
-            ctx.ui.setStatus(STATUS_KEY, undefined);
             ctx.ui.setWidget(WIDGET_KEY, undefined);
           }
           return;
@@ -756,7 +767,6 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
               }
             }
             if (ctx.hasUI) {
-              ctx.ui.setStatus(STATUS_KEY, undefined);
               ctx.ui.setWidget(WIDGET_KEY, undefined);
             }
           } else {
@@ -781,7 +791,6 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
             }
           }
           if (ctx.hasUI) {
-            ctx.ui.setStatus(STATUS_KEY, undefined);
             ctx.ui.setWidget(WIDGET_KEY, undefined);
           }
         });
@@ -864,8 +873,16 @@ function syncStatus(ctx: ExtensionCommandContext, state: RunState): void {
   if (!ctx.hasUI) {
     return;
   }
-  const text = formatFooterStatus(state);
-  ctx.ui.setStatus(STATUS_KEY, text || undefined);
+  const parts = formatFooterStatusParts(state);
+  if (!parts) {
+    ctx.ui.setStatus(STATUS_KEY, undefined);
+    return;
+  }
+  const color = parts.tone === "warning" ? "warning" : "success";
+  ctx.ui.setStatus(
+    STATUS_KEY,
+    `${ctx.ui.theme.fg(color, parts.glyph)} ${parts.text}`,
+  );
 }
 
 function syncWidget(ctx: ExtensionCommandContext, state: RunState): void {

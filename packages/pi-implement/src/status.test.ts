@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkpointPatch,
   formatFooterStatus,
+  formatFooterStatusParts,
   formatRunStatus,
   makeAgentLabel,
   formatWidgetLines,
@@ -27,14 +28,18 @@ describe("status formatting", () => {
     expect(runStatus).toContain("Task: 2/7");
     expect(runStatus).toContain("Plan: /plan.md");
     expect(runStatus).toContain("Active subagents: agent-1, agent-2");
-    expect(
-      formatFooterStatus({
-        phase: "coding",
-        taskIndex: 2,
-        totalTasks: 7,
-        attempt: 1,
-      }),
-    ).toBe("󰚩 implement 2/7");
+    const footerState: RunState = {
+      phase: "coding",
+      taskIndex: 2,
+      totalTasks: 7,
+      attempt: 1,
+    };
+    expect(formatFooterStatus(footerState)).toBe("󰚩 implement 2/7");
+    expect(formatFooterStatusParts(footerState)).toMatchObject({
+      glyph: "󰚩",
+      text: "implement 2/7",
+      tone: "active",
+    });
   });
 
   it("summarizes parallel task state without depending on every line", () => {
@@ -343,12 +348,18 @@ describe("status formatting", () => {
   });
 
   it("formats followup_required footer and status", () => {
-    expect(
-      formatFooterStatus({
-        phase: "followup_required",
-        lastReason: "missing tests",
-      }),
-    ).toBe("󰚩 implement follow-up required · missing tests");
+    const footerState: RunState = {
+      phase: "followup_required",
+      lastReason: "missing tests",
+    };
+    expect(formatFooterStatus(footerState)).toBe(
+      "󰚩 implement follow-up required · missing tests",
+    );
+    expect(formatFooterStatusParts(footerState)).toMatchObject({
+      glyph: "󰚩",
+      text: "implement follow-up required · missing tests",
+      tone: "warning",
+    });
 
     const status = formatRunStatus({
       phase: "followup_required",

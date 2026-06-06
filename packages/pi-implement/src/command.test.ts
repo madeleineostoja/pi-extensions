@@ -18,6 +18,7 @@ type FakeContext = {
     notify(message: string, level: string): void;
     setStatus(key: string, text: string | undefined): void;
     setWidget(key: string, lines: string[] | undefined): void;
+    theme: { fg(color: string, text: string): string };
   };
   model: { provider: string; id: string };
   modelRegistry: { find(provider: string, id: string): unknown };
@@ -55,6 +56,11 @@ function setup() {
       },
       setWidget(key: string, lines: string[] | undefined) {
         this.widgets.push({ key, lines });
+      },
+      theme: {
+        fg(color: string, text: string) {
+          return `<${color}>${text}</${color}>`;
+        },
       },
     },
   };
