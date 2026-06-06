@@ -4,8 +4,12 @@ import type {
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, AssistantMessage } from "@earendil-works/pi-ai";
-import { getUsage, providerForModel } from "./provider.js";
-import { formatStatus, formatResetMessage } from "./format.js";
+import {
+  getUsage,
+  providerForModel,
+  enumerateAvailableProviders,
+} from "./provider.js";
+import { formatStatus, formatUsageSummary } from "./format.js";
 import { STATUS_KEY, CACHE_TTL_MS } from "./constants.js";
 import {
   isCodexLimitError,
@@ -68,9 +72,25 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    ctx.ui.setStatus(STATUS_KEY, formatStatus(snapshot, ctx.ui.theme));
+    const providerLabel = providerForModel(model) ?? undefined;
+    ctx.ui.setStatus(
+      STATUS_KEY,
+      formatStatus(snapshot, ctx.ui.theme, providerLabel),
+    );
 
-    scheduleRefresh(model, ctx);
+    if (snapshot?.stale) {
+      cancelTimer();
+      const timer = setTimeout(() => {
+        refreshTimer = null;
+        void refreshStatus(model, ctx, true);
+      }, 5000);
+      if (typeof timer === "object" && timer !== null && "unref" in timer) {
+        (timer as { unref(): void }).unref();
+      }
+      refreshTimer = timer;
+    } else {
+      scheduleRefresh(model, ctx);
+    }
   }
 
   function scheduleRefresh(model: Model<Api>, ctx: ExtensionContext) {
@@ -87,7 +107,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event: SessionStartEvent, ctx) => {
     const model = ctx.model;
-    if (model && providerForModel(model) === "codex") {
+    const provider = providerForModel(model);
+    if (model && provider) {
       await refreshStatus(model, ctx);
     } else {
       cancelTimer();
@@ -98,7 +119,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("model_select", async (event, ctx) => {
     const model = event.model;
-    if (providerForModel(model) === "codex") {
+    const provider = providerForModel(model);
+    if (provider) {
       await refreshStatus(model, ctx);
     } else {
       cancelTimer();
@@ -136,17 +158,33 @@ export default function (pi: ExtensionAPI) {
       if (!ctx.hasUI) {
         return;
       }
-      if (args.trim() === "auth") {
+      const subcommand = args.trim();
+      if (subcommand === "auth") {
         await runOpencodeAuthSetup(ctx);
         return;
       }
-      const model = ctx.model;
-      if (!model || !providerForModel(model)) {
-        ctx.ui.notify("No supported model is active.", "warning");
+      if (subcommand) {
+        ctx.ui.notify("usage: /usage [auth]", "warning");
         return;
       }
-      const snapshot = await getUsage(model, ctx, true);
-      ctx.ui.notify(formatResetMessage(snapshot), "info");
+
+      const available = enumerateAvailableProviders(ctx);
+      if (available.length === 0) {
+        ctx.ui.notify(
+          "No usage providers configured. Sign in via /login.",
+          "warning",
+        );
+        return;
+      }
+
+      const results = await Promise.all(
+        available.map(async ({ provider, model }) => ({
+          provider: provider.id,
+          snapshot: await getUsage(model, ctx, true),
+        })),
+      );
+
+      ctx.ui.notify(formatUsageSummary(results), "info");
     },
   });
 }

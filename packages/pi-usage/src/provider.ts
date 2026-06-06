@@ -105,6 +105,8 @@ const opencodeProvider: UsageProvider = {
   },
 };
 
+export const allProviders: UsageProvider[] = [codexProvider, opencodeProvider];
+
 const providers: Record<UsageProviderId, UsageProvider> = {
   codex: codexProvider,
   opencode: opencodeProvider,
@@ -114,6 +116,17 @@ export function getProviderById(
   id: UsageProviderId,
 ): UsageProvider | undefined {
   return providers[id];
+}
+
+export function enumerateAvailableProviders(
+  ctx: ExtensionContext,
+): Array<{ provider: UsageProvider; model: Model<Api> }> {
+  return allProviders
+    .map((provider) => ({ provider, model: provider.resolveFetchModel(ctx) }))
+    .filter(
+      (entry): entry is { provider: UsageProvider; model: Model<Api> } =>
+        entry.model !== null,
+    );
 }
 
 export function getUsageProvider(

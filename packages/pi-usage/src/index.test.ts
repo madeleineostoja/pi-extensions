@@ -44,9 +44,11 @@ function makePi(): FakePi {
   };
 }
 
+type FakeModel = { provider: string; id: string; name?: string };
+
 type FakeCtx = {
   hasUI: boolean;
-  model: { provider: string; id: string; name?: string } | null;
+  model: FakeModel | null;
   ui: {
     theme: {
       fg(color: string, text: string): string;
@@ -66,15 +68,19 @@ type FakeCtx = {
     notify: ReturnType<typeof vi.fn>;
   };
   modelRegistry: {
-    getAvailable: () => Array<{ provider: string; id: string }>;
+    getAvailable: () => FakeModel[];
     getApiKeyAndHeaders: () => Promise<{ ok: false; error: string }>;
   };
 };
 
-function makeCtx(provider = "openai-codex", hasUI = true): FakeCtx {
+function makeCtx(
+  provider = "openai-codex",
+  hasUI = true,
+  available: FakeModel[] = [],
+): FakeCtx {
   return {
     hasUI,
-    model: { provider, id: "model-1" },
+    model: provider ? { provider, id: "model-1" } : null,
     ui: {
       theme: {
         fg: (_color: string, text: string) => text,
@@ -94,7 +100,7 @@ function makeCtx(provider = "openai-codex", hasUI = true): FakeCtx {
       notify: vi.fn(),
     },
     modelRegistry: {
-      getAvailable: () => [],
+      getAvailable: () => available,
       getApiKeyAndHeaders: async () => ({ ok: false, error: "no auth" }),
     },
   };
@@ -158,6 +164,22 @@ describe("extension lifecycle", () => {
     );
   });
 
+  it("calls setStatus after session_start with Opencode model", async () => {
+    const { pi, defaultExport } = await loadExtension(async () => ({
+      provider: "opencode" as const,
+      primary: { usedPercent: 42 },
+      fetchedAt: Date.now(),
+    }));
+    defaultExport(pi as never);
+    const ctx = makeCtx("opencode");
+    const handler = pi.handlers.get("session_start")!;
+    await handler({}, ctx);
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+      STATUS_KEY,
+      expect.any(String),
+    );
+  });
+
   it("clears status after session_start with non-supported model", async () => {
     const { pi, defaultExport } = await loadExtension(async () => fakeSnapshot);
     defaultExport(pi as never);
@@ -173,6 +195,22 @@ describe("extension lifecycle", () => {
     const ctx = makeCtx("openai-codex");
     const handler = pi.handlers.get("model_select")!;
     await handler({ model: { provider: "openai-codex", id: "codex-1" } }, ctx);
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+      STATUS_KEY,
+      expect.any(String),
+    );
+  });
+
+  it("calls setStatus after model_select switches to Opencode", async () => {
+    const { pi, defaultExport } = await loadExtension(async () => ({
+      provider: "opencode" as const,
+      primary: { usedPercent: 42 },
+      fetchedAt: Date.now(),
+    }));
+    defaultExport(pi as never);
+    const ctx = makeCtx("opencode");
+    const handler = pi.handlers.get("model_select")!;
+    await handler({ model: { provider: "opencode", id: "go-1" } }, ctx);
     expect(ctx.ui.setStatus).toHaveBeenCalledWith(
       STATUS_KEY,
       expect.any(String),
@@ -277,40 +315,129 @@ describe("extension lifecycle", () => {
     expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
   });
 
+  it("sets opencode usage ? footer when opencode model is active and usage is null", async () => {
+    const { pi, defaultExport } = await loadExtension(async () => null);
+    defaultExport(pi as never);
+    const ctx = makeCtx("opencode");
+    const handler = pi.handlers.get("session_start")!;
+    await handler({}, ctx);
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+      STATUS_KEY,
+      expect.stringContaining("opencode usage ?"),
+    );
+  });
+
+  it("shows actionable error footer when opencode credentials are missing", async () => {
+    const { pi, defaultExport } = await loadExtension(async () => ({
+      provider: "opencode" as const,
+      fetchedAt: Date.now(),
+      error:
+        "Opencode credentials not configured. Run /usage auth to set them up.",
+    }));
+    defaultExport(pi as never);
+    const ctx = makeCtx("opencode");
+    const handler = pi.handlers.get("session_start")!;
+    await handler({}, ctx);
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+      STATUS_KEY,
+      expect.stringContaining("/usage auth"),
+    );
+  });
+
+  it("triggers background refresh after stale snapshot", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let callCount = 0;
+    const getUsageMock = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          provider: "opencode" as const,
+          primary: { usedPercent: 42 },
+          fetchedAt: Date.now(),
+          stale: true,
+        };
+      }
+      return {
+        provider: "opencode" as const,
+        primary: { usedPercent: 42 },
+        fetchedAt: Date.now(),
+      };
+    });
+    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    defaultExport(pi as never);
+    const ctx = makeCtx("opencode");
+    const handler = pi.handlers.get("session_start")!;
+    await handler({}, ctx);
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+      STATUS_KEY,
+      expect.stringContaining("opencode"),
+    );
+    expect(getUsageMock).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(5000);
+    await vi.waitFor(() => expect(getUsageMock).toHaveBeenCalledTimes(2));
+    vi.useRealTimers();
+  });
+
+  it("cancels stale retry timer when switching to unsupported provider", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let callCount = 0;
+    const getUsageMock = vi.fn(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          provider: "opencode" as const,
+          primary: { usedPercent: 42 },
+          fetchedAt: Date.now(),
+          stale: true,
+        };
+      }
+      return null;
+    });
+    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    defaultExport(pi as never);
+    const ctx = makeCtx("opencode");
+    const handler = pi.handlers.get("session_start")!;
+    await handler({}, ctx);
+    expect(getUsageMock).toHaveBeenCalledTimes(1);
+
+    const modelSelectHandler = pi.handlers.get("model_select")!;
+    await modelSelectHandler(
+      { model: { provider: "anthropic", id: "claude-1" } },
+      makeCtx("anthropic"),
+    );
+
+    vi.advanceTimersByTime(5000);
+    expect(getUsageMock).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+});
+
+describe("command registration", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
   it("registers the usage command", async () => {
     const { pi, defaultExport } = await loadExtension(async () => fakeSnapshot);
     defaultExport(pi as never);
     expect(pi.commands.has("usage")).toBe(true);
   });
 
-  it("command handler notifies info when Codex model is active and usage is fetched", async () => {
-    const getUsageMock = vi.fn(async () => fakeSnapshot);
-    const { pi, defaultExport } = await loadExtension(getUsageMock);
+  it("does not register the codex-usage command", async () => {
+    const { pi, defaultExport } = await loadExtension(async () => fakeSnapshot);
     defaultExport(pi as never);
-    const cmd = pi.commands.get("usage")!;
-    const ctx = makeCtx("openai-codex");
-    await cmd.handler("", ctx);
-    expect(getUsageMock).toHaveBeenCalledWith(ctx.model, ctx, true);
-    expect(ctx.ui.notify).toHaveBeenCalledWith(
-      expect.stringContaining("codex 5h window"),
-      "info",
-    );
+    expect(pi.commands.has("codex-usage")).toBe(false);
+  });
+});
+
+describe("command handler", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
   });
 
-  it("command handler warns when no supported model is active", async () => {
-    const getUsageMock = vi.fn(async () => fakeSnapshot);
-    const { pi, defaultExport } = await loadExtension(getUsageMock);
-    defaultExport(pi as never);
-    const cmd = pi.commands.get("usage")!;
-    const ctx = makeCtx("anthropic");
-    await cmd.handler("", ctx);
-    expect(ctx.ui.notify).toHaveBeenCalledWith(
-      "No supported model is active.",
-      "warning",
-    );
-  });
-
-  it("command handler does nothing when hasUI is false", async () => {
+  it("does nothing when hasUI is false", async () => {
     const getUsageMock = vi.fn(async () => fakeSnapshot);
     const { pi, defaultExport } = await loadExtension(getUsageMock);
     defaultExport(pi as never);
@@ -320,7 +447,7 @@ describe("extension lifecycle", () => {
     expect(ctx.ui.notify).not.toHaveBeenCalled();
   });
 
-  it("command handler runs auth setup when args is 'auth'", async () => {
+  it("runs auth setup when args is 'auth'", async () => {
     const authMock = vi.fn();
     const { pi, defaultExport } = await loadExtension(
       async () => fakeSnapshot,
@@ -334,20 +461,108 @@ describe("extension lifecycle", () => {
     expect(ctx.ui.notify).not.toHaveBeenCalled();
   });
 
-  it("command handler notifies info when Opencode model is active and usage is fetched", async () => {
+  it("warns for unknown subcommands", async () => {
+    const { pi, defaultExport } = await loadExtension(async () => fakeSnapshot);
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("usage")!;
+    const ctx = makeCtx("openai-codex");
+    await cmd.handler("foo", ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      "usage: /usage [auth]",
+      "warning",
+    );
+  });
+
+  it("warns when no providers are available", async () => {
+    const { pi, defaultExport } = await loadExtension(async () => fakeSnapshot);
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("usage")!;
+    const ctx = makeCtx("anthropic", true, []);
+    await cmd.handler("", ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      "No usage providers configured. Sign in via /login.",
+      "warning",
+    );
+  });
+
+  it("notifies summary for a single available Codex provider", async () => {
+    const getUsageMock = vi.fn(async () => fakeSnapshot);
+    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("usage")!;
+    const ctx = makeCtx("anthropic", true, [
+      { provider: "openai-codex", id: "c1" },
+    ]);
+    await cmd.handler("", ctx);
+    expect(getUsageMock).toHaveBeenCalledTimes(1);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Codex"),
+      "info",
+    );
+  });
+
+  it("notifies summary for a single available Opencode provider", async () => {
     const getUsageMock = vi.fn(async () => ({
       provider: "opencode" as const,
-      primary: { usedPercent: 42 },
+      primary: { usedPercent: 12, resetInSec: 3600 },
       fetchedAt: Date.now(),
     }));
     const { pi, defaultExport } = await loadExtension(getUsageMock);
     defaultExport(pi as never);
     const cmd = pi.commands.get("usage")!;
-    const ctx = makeCtx("opencode");
+    const ctx = makeCtx("anthropic", true, [
+      { provider: "opencode", id: "o1" },
+    ]);
     await cmd.handler("", ctx);
-    expect(getUsageMock).toHaveBeenCalledWith(ctx.model, ctx, true);
+    expect(getUsageMock).toHaveBeenCalledTimes(1);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      expect.stringContaining("opencode 5h window"),
+      expect.stringContaining("Opencode"),
+      "info",
+    );
+  });
+
+  it("notifies summary for both available providers", async () => {
+    const getUsageMock = vi.fn(async (...args: unknown[]) => {
+      const model = args[0] as FakeModel;
+      if (model.provider === "openai-codex") {
+        return fakeSnapshot;
+      }
+      return {
+        provider: "opencode" as const,
+        primary: { usedPercent: 12, resetInSec: 3600 },
+        fetchedAt: Date.now(),
+      };
+    });
+    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("usage")!;
+    const ctx = makeCtx("anthropic", true, [
+      { provider: "openai-codex", id: "c1" },
+      { provider: "opencode", id: "o1" },
+    ]);
+    await cmd.handler("", ctx);
+    expect(getUsageMock).toHaveBeenCalledTimes(2);
+    const notified = ctx.ui.notify.mock.calls[0][0] as string;
+    expect(notified).toContain("Codex");
+    expect(notified).toContain("Opencode");
+  });
+
+  it("shows missing-auth message for Opencode when config is invalid", async () => {
+    const getUsageMock = vi.fn(async () => ({
+      provider: "opencode" as const,
+      fetchedAt: Date.now(),
+      error:
+        "Opencode credentials not configured. Run /usage auth to set them up.",
+    }));
+    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("usage")!;
+    const ctx = makeCtx("anthropic", true, [
+      { provider: "opencode", id: "o1" },
+    ]);
+    await cmd.handler("", ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Run /usage auth"),
       "info",
     );
   });

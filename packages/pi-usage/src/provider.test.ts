@@ -5,6 +5,7 @@ import {
   getUsageProvider,
   getUsage,
   resolveFetchModel,
+  enumerateAvailableProviders,
 } from "./provider.js";
 import { CACHE_TTL_MS } from "./constants.js";
 
@@ -161,6 +162,47 @@ describe("provider availability via matches", () => {
     const ctx = makeCtxWithAvailable([{ provider: "openai-codex", id: "a" }]);
     const provider = getProviderById("opencode")!;
     expect(provider.resolveFetchModel(ctx as never)).toBeNull();
+  });
+});
+
+describe("enumerateAvailableProviders", () => {
+  it("returns both providers when both are available", () => {
+    const ctx = makeCtxWithAvailable([
+      { provider: "openai-codex", id: "c1" },
+      { provider: "opencode", id: "o1" },
+    ]);
+    const result = enumerateAvailableProviders(ctx as never);
+    expect(result).toHaveLength(2);
+    expect(result[0]!.provider.id).toBe("codex");
+    expect(result[0]!.model.id).toBe("c1");
+    expect(result[1]!.provider.id).toBe("opencode");
+    expect(result[1]!.model.id).toBe("o1");
+  });
+
+  it("returns only codex when only codex is available", () => {
+    const ctx = makeCtxWithAvailable([{ provider: "openai-codex", id: "c1" }]);
+    const result = enumerateAvailableProviders(ctx as never);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.provider.id).toBe("codex");
+  });
+
+  it("returns only opencode when only opencode is available", () => {
+    const ctx = makeCtxWithAvailable([{ provider: "opencode", id: "o1" }]);
+    const result = enumerateAvailableProviders(ctx as never);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.provider.id).toBe("opencode");
+  });
+
+  it("returns empty array when no providers are available", () => {
+    const ctx = makeCtxWithAvailable([{ provider: "anthropic", id: "a1" }]);
+    const result = enumerateAvailableProviders(ctx as never);
+    expect(result).toHaveLength(0);
+  });
+
+  it("returns empty array when getAvailable is empty", () => {
+    const ctx = makeCtxWithAvailable([]);
+    const result = enumerateAvailableProviders(ctx as never);
+    expect(result).toHaveLength(0);
   });
 });
 

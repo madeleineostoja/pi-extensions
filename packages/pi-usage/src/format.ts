@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { UsageSnapshot } from "./provider.js";
+import type { UsageSnapshot, UsageProviderId } from "./provider.js";
 import { ICON } from "./constants.js";
 
 function clampPercent(percent: number): number {
@@ -40,9 +40,10 @@ function formatColoredStatus(
 export function formatStatus(
   snapshot: UsageSnapshot | null,
   theme: Theme,
+  providerLabel?: UsageProviderId,
 ): string | undefined {
   if (!snapshot) {
-    const label = "codex usage ?";
+    const label = `${providerLabel ?? "codex"} usage ?`;
     return formatColoredStatus("warning", "warning", label, theme);
   }
 
@@ -72,7 +73,7 @@ export function formatStatus(
 
   if (parts.length === 0) {
     if (snapshot.error) {
-      return formatColoredStatus("error", "error", `${label} usage ?`, theme);
+      return formatColoredStatus("error", "error", snapshot.error, theme);
     }
     return undefined;
   }
@@ -118,4 +119,123 @@ export function formatResetMessage(snapshot: UsageSnapshot | null): string {
     return `${snapshot.provider} 5h window: ${pct}% used. Resets at ${resetTime} (${remaining} remaining).`;
   }
   return `${snapshot.provider} 5h window: ${pct}% used.`;
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function formatResetInSec(
+  resetInSec: number | undefined,
+  fetchedAt: number,
+): string | undefined {
+  if (resetInSec === undefined) {
+    return undefined;
+  }
+  const elapsed = Math.floor((Date.now() - fetchedAt) / 1000);
+  const remaining = Math.max(0, resetInSec - elapsed);
+  return formatDurationLong(remaining);
+}
+
+function formatDurationLong(seconds: number): string {
+  const days = Math.floor(seconds / 86400);
+  const remaining = seconds % 86400;
+  const h = Math.floor(remaining / 3600);
+  const m = Math.floor((remaining % 3600) / 60);
+
+  if (days > 0) {
+    return `${days}d`;
+  }
+  if (h > 0) {
+    return `${h}h ${m}m`;
+  }
+  return `${m}m`;
+}
+
+export function formatUsageSummary(
+  entries: Array<{ provider: UsageProviderId; snapshot: UsageSnapshot | null }>,
+): string {
+  if (entries.length === 0) {
+    return "No usage providers configured.";
+  }
+
+  const lines: string[] = [];
+
+  for (const { provider, snapshot } of entries) {
+    if (lines.length > 0) {
+      lines.push("");
+    }
+    lines.push(capitalize(provider));
+
+    if (!snapshot) {
+      lines.push("Failed to fetch usage data.");
+      continue;
+    }
+
+    if (snapshot.error) {
+      lines.push(snapshot.error);
+      continue;
+    }
+
+    if (provider === "codex") {
+      if (snapshot.primary !== undefined) {
+        const pct = Math.round(clampPercent(snapshot.primary.usedPercent));
+        const resetAt = snapshot.primary.resetAt;
+        if (resetAt !== undefined) {
+          const resetTime = formatResetTime(resetAt);
+          const now = Math.floor(Date.now() / 1000);
+          const remainingSeconds = Math.max(0, resetAt - now);
+          const remaining = formatDuration(remainingSeconds);
+          lines.push(
+            `5h: ${pct}% used. Resets at ${resetTime} (${remaining} remaining).`,
+          );
+        } else {
+          lines.push(`5h: ${pct}% used.`);
+        }
+      }
+      if (snapshot.secondary !== undefined) {
+        const pct = Math.round(clampPercent(snapshot.secondary.usedPercent));
+        lines.push(`Weekly: ${pct}% used.`);
+      }
+    } else {
+      if (snapshot.primary !== undefined) {
+        const pct = Math.round(clampPercent(snapshot.primary.usedPercent));
+        const remaining = formatResetInSec(
+          snapshot.primary.resetInSec,
+          snapshot.fetchedAt,
+        );
+        if (remaining) {
+          lines.push(`Rolling: ${pct}% used. Resets in ${remaining}.`);
+        } else {
+          lines.push(`Rolling: ${pct}% used.`);
+        }
+      }
+      if (snapshot.secondary !== undefined) {
+        const pct = Math.round(clampPercent(snapshot.secondary.usedPercent));
+        const remaining = formatResetInSec(
+          snapshot.secondary.resetInSec,
+          snapshot.fetchedAt,
+        );
+        if (remaining) {
+          lines.push(`Weekly: ${pct}% used. Resets in ${remaining}.`);
+        } else {
+          lines.push(`Weekly: ${pct}% used.`);
+        }
+      }
+      if (snapshot.monthly !== undefined) {
+        const pct = Math.round(clampPercent(snapshot.monthly.usedPercent));
+        const remaining = formatResetInSec(
+          snapshot.monthly.resetInSec,
+          snapshot.fetchedAt,
+        );
+        if (remaining) {
+          lines.push(`Monthly: ${pct}% used. Resets in ${remaining}.`);
+        } else {
+          lines.push(`Monthly: ${pct}% used.`);
+        }
+      }
+    }
+  }
+
+  return lines.join("\n");
 }
