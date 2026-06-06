@@ -280,6 +280,37 @@ describe("formatStatus", () => {
     formatStatus(snapshot, theme);
     expect(theme.calls).toHaveLength(2);
   });
+
+  it("forces muted text color when stale, keeping icon color from percent", () => {
+    const theme = makeSpyTheme();
+    const snapshot: UsageSnapshot = {
+      provider: "opencode",
+      primary: { usedPercent: 95 },
+      fetchedAt: Date.now(),
+      stale: true,
+    };
+    formatStatus(snapshot, theme);
+    expect(theme.calls).toEqual([
+      { color: "error", text: ICON },
+      { color: "muted", text: "opencode 95%" },
+    ]);
+  });
+
+  it("forces muted text color when stale even at low percent", () => {
+    const theme = makeSpyTheme();
+    const snapshot: UsageSnapshot = {
+      provider: "opencode",
+      primary: { usedPercent: 10 },
+      secondary: { usedPercent: 20 },
+      fetchedAt: Date.now(),
+      stale: true,
+    };
+    formatStatus(snapshot, theme);
+    expect(theme.calls).toEqual([
+      { color: "success", text: ICON },
+      { color: "muted", text: "opencode 10% (20%)" },
+    ]);
+  });
 });
 
 describe("formatResetMessage", () => {

@@ -102,6 +102,7 @@ function makeCtx(provider = "openai-codex", hasUI = true): FakeCtx {
 
 async function loadExtension(
   getUsageMock: (...args: unknown[]) => Promise<UsageSnapshot | null>,
+  runOpencodeAuthSetupMock = vi.fn(),
 ): Promise<{ pi: FakePi; defaultExport: (pi: FakePi) => void }> {
   vi.resetModules();
   vi.doMock("./provider.js", async (importOriginal) => {
@@ -109,6 +110,11 @@ async function loadExtension(
     return {
       ...actual,
       getUsage: getUsageMock,
+    };
+  });
+  vi.doMock("./config.js", async () => {
+    return {
+      runOpencodeAuthSetup: runOpencodeAuthSetupMock,
     };
   });
   const mod = await import("./index.js");
@@ -312,5 +318,37 @@ describe("extension lifecycle", () => {
     const ctx = makeCtx("openai-codex", false);
     await cmd.handler("", ctx);
     expect(ctx.ui.notify).not.toHaveBeenCalled();
+  });
+
+  it("command handler runs auth setup when args is 'auth'", async () => {
+    const authMock = vi.fn();
+    const { pi, defaultExport } = await loadExtension(
+      async () => fakeSnapshot,
+      authMock,
+    );
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("usage")!;
+    const ctx = makeCtx("openai-codex");
+    await cmd.handler("auth", ctx);
+    expect(authMock).toHaveBeenCalledWith(ctx);
+    expect(ctx.ui.notify).not.toHaveBeenCalled();
+  });
+
+  it("command handler notifies info when Opencode model is active and usage is fetched", async () => {
+    const getUsageMock = vi.fn(async () => ({
+      provider: "opencode" as const,
+      primary: { usedPercent: 42 },
+      fetchedAt: Date.now(),
+    }));
+    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("usage")!;
+    const ctx = makeCtx("opencode");
+    await cmd.handler("", ctx);
+    expect(getUsageMock).toHaveBeenCalledWith(ctx.model, ctx, true);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("opencode 5h window"),
+      "info",
+    );
   });
 });

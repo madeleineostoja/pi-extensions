@@ -80,7 +80,11 @@ export function formatStatus(
   const text = `${label} ${parts.join(" ")}`;
   const worst = Math.max(...percents);
   const color = statusColor(worst);
-  const textColor = color === "success" ? "muted" : color;
+  const textColor = snapshot.stale
+    ? "muted"
+    : color === "success"
+      ? "muted"
+      : color;
 
   return formatColoredStatus(color, textColor, text, theme);
 }

@@ -11,6 +11,7 @@ import {
   isCodexLimitError,
   buildLimitReplacementMessage,
 } from "./limit-error.js";
+import { runOpencodeAuthSetup } from "./config.js";
 
 export { buildHeaders } from "./auth.js";
 export { getUsage, providerForModel } from "./provider.js";
@@ -130,13 +131,17 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("usage", {
-    description: "Show the next usage window reset time",
-    handler: async (_args, ctx) => {
+    description: "Show usage window reset time or run auth setup",
+    handler: async (args, ctx) => {
       if (!ctx.hasUI) {
         return;
       }
+      if (args.trim() === "auth") {
+        await runOpencodeAuthSetup(ctx);
+        return;
+      }
       const model = ctx.model;
-      if (!model || providerForModel(model) !== "codex") {
+      if (!model || !providerForModel(model)) {
         ctx.ui.notify("No supported model is active.", "warning");
         return;
       }
