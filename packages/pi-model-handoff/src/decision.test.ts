@@ -298,6 +298,55 @@ describe("makeHandoffDecision", () => {
     expect(decision.kind).toBe("offer");
   });
 
+  it("skips when converted full-context cost is at or below the NZD threshold", () => {
+    const preparation = makePreparation({
+      tokensBefore: 40000,
+      messagesToSummarize: [{ role: "user", content: "a".repeat(100000) }],
+    });
+    const sourceRef = buildModelRef(
+      makeModel("openai", "expensive", 10),
+      false,
+    );
+    const targetRef = buildModelRef(makeModel("openai", "cheap", 5), false);
+    const decision = makeHandoffDecision(preparation, sourceRef, targetRef, {
+      convertFullContextCostToNzd: (usd) => usd * 2,
+    });
+    expect(decision.kind).toBe("skip");
+    expect((decision as { reason: string }).reason).toContain("threshold");
+  });
+
+  it("offers when converted full-context cost exceeds the NZD threshold", () => {
+    const preparation = makePreparation({
+      tokensBefore: 60000,
+      messagesToSummarize: [{ role: "user", content: "a".repeat(200000) }],
+    });
+    const sourceRef = buildModelRef(
+      makeModel("openai", "expensive", 10),
+      false,
+    );
+    const targetRef = buildModelRef(makeModel("openai", "cheap", 5), false);
+    const decision = makeHandoffDecision(preparation, sourceRef, targetRef, {
+      convertFullContextCostToNzd: (usd) => usd * 2,
+    });
+    expect(decision.kind).toBe("offer");
+  });
+
+  it("offers when NZD conversion is unavailable", () => {
+    const preparation = makePreparation({
+      tokensBefore: 40000,
+      messagesToSummarize: [{ role: "user", content: "a".repeat(100000) }],
+    });
+    const sourceRef = buildModelRef(
+      makeModel("openai", "expensive", 10),
+      false,
+    );
+    const targetRef = buildModelRef(makeModel("openai", "cheap", 5), false);
+    const decision = makeHandoffDecision(preparation, sourceRef, targetRef, {
+      convertFullContextCostToNzd: () => undefined,
+    });
+    expect(decision.kind).toBe("offer");
+  });
+
   it("includes turnPrefixMessages in summarized tokens", () => {
     const preparation = makePreparation({
       tokensBefore: 500,

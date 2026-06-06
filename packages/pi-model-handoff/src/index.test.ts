@@ -42,12 +42,18 @@ vi.mock("./compaction", async () => {
 });
 
 const refreshCurrencyRateMock = vi.hoisted(() => vi.fn());
+const convertCurrencyMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@pi-extensions/lib", () => {
   return {
     refreshCurrencyRate: refreshCurrencyRateMock,
-    convertCurrency: vi.fn(),
+    convertCurrency: convertCurrencyMock,
   };
+});
+
+beforeEach(() => {
+  refreshCurrencyRateMock.mockReset();
+  convertCurrencyMock.mockReset();
 });
 
 function makeFakeExtensionAPI() {
@@ -398,6 +404,49 @@ describe("model_select handler", () => {
     await handler(event as never, ctx);
     expect(refreshed).toBe(true);
     expect(selectCalled).toBe(true);
+  });
+
+  it("skips prompting when converted full-context cost is below threshold", async () => {
+    convertCurrencyMock.mockReturnValue(0.4);
+    const { handlers } = captureHandlers();
+    const handler = handlers["model_select"][0];
+    let selectCalled = false;
+    const ctx = makeFakeCtx({ selectResult: "Create handoff" });
+    const originalSelect = ctx.ui.select;
+    ctx.ui.select = async (...args: Parameters<typeof ctx.ui.select>) => {
+      selectCalled = true;
+      return originalSelect(...args);
+    };
+    vi.mocked(prepareCompaction).mockReturnValue({
+      firstKeptEntryId: "keep-1",
+      messagesToSummarize: [{ role: "user", content: "a".repeat(100000) }],
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore: 40000,
+      fileOps: {} as never,
+      settings: {
+        enabled: true,
+        reserveTokens: 16384,
+        keepRecentTokens: 20000,
+      },
+    } as never);
+    const event = makeModelSelectEvent({
+      previousModel: makeModel("anthropic", "opus", 10),
+      model: makeModel("openai", "gpt-4o", 5),
+    });
+    await handler(event as never, ctx);
+    expect(refreshCurrencyRateMock).toHaveBeenCalledWith({
+      from: "USD",
+      to: "NZD",
+    });
+    expect(convertCurrencyMock).toHaveBeenCalledWith({
+      amount: 0.2,
+      from: "USD",
+      to: "NZD",
+    });
+    expect(selectCalled).toBe(false);
+    expect(ctx.compactCalls).toHaveLength(0);
+    expect(getPendingHandoff()).toBeUndefined();
   });
 
   it("dismissal/undefined behaves like continue full context", async () => {

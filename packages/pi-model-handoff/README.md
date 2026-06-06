@@ -28,8 +28,9 @@ The extension only prompts when:
 
 1. Pi would summarize more old messages than it keeps live (`summarizedTokens > keptTokens`).
 2. If pricing is available for both models and the source is not subscription/OAuth, the target input price must be lower than the source input price (an apparent downshift).
+3. If the full-context cost can be converted to NZD, sending the full context to the target model would cost more than NZD $0.50.
 
-If pricing is missing or the source is subscription/OAuth, the token-reduction gate alone decides.
+If pricing is missing, the source is subscription/OAuth, or NZD conversion is unavailable, the earlier token/pricing gates decide.
 
 ## Limitations
 

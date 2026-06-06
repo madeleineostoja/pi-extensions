@@ -4,7 +4,7 @@ import {
   getAgentDir,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { refreshCurrencyRate } from "@pi-extensions/lib";
+import { convertCurrency, refreshCurrencyRate } from "@pi-extensions/lib";
 import { prepareCompaction } from "./compaction";
 import {
   buildModelRef,
@@ -45,12 +45,23 @@ export default function (pi: ExtensionAPI) {
       ctx.modelRegistry.isUsingOAuth(event.model),
     );
 
-    const decision = makeHandoffDecision(preparation, sourceRef, targetRef);
-    if (decision.kind === "skip") {
+    const initialDecision = makeHandoffDecision(
+      preparation,
+      sourceRef,
+      targetRef,
+    );
+    if (initialDecision.kind === "skip") {
       return;
     }
 
     await refreshCurrencyRate({ from: "USD", to: "NZD" });
+    const decision = makeHandoffDecision(preparation, sourceRef, targetRef, {
+      convertFullContextCostToNzd: (amount) =>
+        convertCurrency({ amount, from: "USD", to: "NZD" }),
+    });
+    if (decision.kind === "skip") {
+      return;
+    }
     const prompt = formatHandoffPrompt(sourceRef, targetRef, decision.estimate);
     const choice = await ctx.ui.select(prompt, [
       OPTION_CREATE_HANDOFF,

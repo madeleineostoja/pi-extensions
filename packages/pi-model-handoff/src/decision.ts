@@ -31,9 +31,16 @@ export type HandoffEstimate = {
   estimatedSavingsCost?: number;
 };
 
+export const FULL_CONTEXT_HANDOFF_COST_THRESHOLD_NZD = 0.5;
+
 export type HandoffDecision =
   | { kind: "skip"; reason: string }
   | { kind: "offer"; estimate: HandoffEstimate };
+
+export type HandoffDecisionOptions = {
+  convertFullContextCostToNzd?: (usd: number) => number | undefined;
+  fullContextCostThresholdNzd?: number;
+};
 
 export function isEligibleSwitch(
   event: ModelSelectEvent,
@@ -130,6 +137,7 @@ export function makeHandoffDecision(
   preparation: CompactionPreparation | undefined,
   sourceRef: ModelRef,
   targetRef: ModelRef,
+  options: HandoffDecisionOptions = {},
 ): HandoffDecision {
   if (!preparation) {
     return { kind: "skip", reason: "No compaction preparation available" };
@@ -172,5 +180,22 @@ export function makeHandoffDecision(
   }
 
   const estimate = computeHandoffEstimate(preparation, sourceRef, targetRef);
+  const fullContextCostNzd =
+    estimate.targetFullContextInputCost === undefined
+      ? undefined
+      : options.convertFullContextCostToNzd?.(
+          estimate.targetFullContextInputCost,
+        );
+  const thresholdNzd =
+    options.fullContextCostThresholdNzd ??
+    FULL_CONTEXT_HANDOFF_COST_THRESHOLD_NZD;
+
+  if (fullContextCostNzd !== undefined && fullContextCostNzd <= thresholdNzd) {
+    return {
+      kind: "skip",
+      reason: "Full context cost is below handoff warning threshold",
+    };
+  }
+
   return { kind: "offer", estimate };
 }
