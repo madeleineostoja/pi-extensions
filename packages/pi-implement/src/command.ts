@@ -879,9 +879,10 @@ function syncStatus(ctx: ExtensionCommandContext, state: RunState): void {
     return;
   }
   const color = parts.tone === "warning" ? "warning" : "success";
+  const textColor = parts.tone === "warning" ? "warning" : "muted";
   ctx.ui.setStatus(
     STATUS_KEY,
-    `${ctx.ui.theme.fg(color, parts.glyph)} ${parts.text}`,
+    `${ctx.ui.theme.fg(color, parts.glyph)} ${ctx.ui.theme.fg(textColor, parts.text)}`,
   );
 }
 
