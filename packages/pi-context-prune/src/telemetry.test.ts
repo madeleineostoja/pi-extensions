@@ -563,7 +563,7 @@ describe("adaptive policy update rules", () => {
 });
 
 describe("formatTelemetryDiagnostics", () => {
-  it("includes recent cache hit and nonzero reason counts", () => {
+  it("includes recent cache hit without duplicate reason sections", () => {
     const state = makeState();
     ingestAssistantUsage(state, {
       role: "assistant",
@@ -583,19 +583,13 @@ describe("formatTelemetryDiagnostics", () => {
     const text = formatTelemetryDiagnostics(state);
 
     expect(text).toContain("recent cache hit:");
-    expect(text).toContain("elisions by reason:\n  standard-stale: 1");
-    expect(text).toContain("recalls by reason:\n  duplicate-read-young: 1");
-    expect(text).not.toContain("after-consumption-bash: 0");
+    expect(text).not.toContain("elisions by reason:");
+    expect(text).not.toContain("recalls by reason:");
+    expect(text).not.toContain("standard-stale: 1");
+    expect(text).not.toContain("duplicate-read-young: 1");
     expect(text).not.toContain("effective profiles:");
     expect(text).not.toContain("suffixBudget=");
     expect(text).not.toContain("minSavedTokens=");
-  });
-
-  it("omits reason sections when every count is zero", () => {
-    const text = formatTelemetryDiagnostics(makeState());
-
-    expect(text).not.toContain("elisions by reason:");
-    expect(text).not.toContain("recalls by reason:");
   });
 
   it("includes context usage when available", () => {

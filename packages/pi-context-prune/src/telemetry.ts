@@ -341,26 +341,6 @@ export function getEffectiveProfile(
   };
 }
 
-function appendNonzeroReasonCounts(
-  lines: string[],
-  title: string,
-  counts: Map<ElisionReason, number>,
-): void {
-  const nonzero = REASONS.map((reason) => ({
-    reason,
-    count: counts.get(reason) ?? 0,
-  })).filter(({ count }) => count > 0);
-
-  if (nonzero.length === 0) {
-    return;
-  }
-
-  lines.push(title);
-  for (const { reason, count } of nonzero) {
-    lines.push(`  ${reason}: ${count}`);
-  }
-}
-
 export function formatTelemetryDiagnostics(state: PruningState): string {
   const lines: string[] = [];
   const current = latestSample(state);
@@ -384,17 +364,6 @@ export function formatTelemetryDiagnostics(state: PruningState): string {
       );
     }
   }
-
-  appendNonzeroReasonCounts(
-    lines,
-    "elisions by reason:",
-    state.elisionCountByReason,
-  );
-  appendNonzeroReasonCounts(
-    lines,
-    "recalls by reason:",
-    state.recallCountByReason,
-  );
 
   return lines.join("\n");
 }
