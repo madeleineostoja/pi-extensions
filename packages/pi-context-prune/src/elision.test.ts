@@ -4,6 +4,7 @@ import {
   formatStub,
   formatSupersededStub,
   formatDuplicateStub,
+  formatCoveredStub,
   formatAfterConsumptionBashStub,
   formatBatchPressureStub,
   formatEmergencyPressureStub,
@@ -1241,7 +1242,7 @@ describe("duplicate-read detection", () => {
     expect(read1.content[0].text).not.toMatch(/superseded by later read/);
   });
 
-  it("duplicate rule disabled via config → no read stubbed by duplicate rule", () => {
+  it("duplicate rule disabled via config → exact duplicate stubbed by covered-read instead", () => {
     const readId1 = "dis-read-1";
     const readId2 = "dis-read-2";
     const messages: any[] = [
@@ -1264,7 +1265,10 @@ describe("duplicate-read detection", () => {
         text: "second",
       }),
     ];
-    const hook = makeContextHook(duplicateDisabledConfig());
+    const passes: any[] = [];
+    const hook = makeContextHook(duplicateDisabledConfig(), (p) =>
+      passes.push(p),
+    );
     const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
     const read1 = result.messages!.find(
       (m: any) => m.toolCallId === readId1,
@@ -1272,8 +1276,9 @@ describe("duplicate-read detection", () => {
     const read2 = result.messages!.find(
       (m: any) => m.toolCallId === readId2,
     ) as any;
-    expect(read1.content[0].text).toBe("first");
+    expect(read1.content[0].text).toMatch(/covered by later read of/);
     expect(read2.content[0].text).toBe("second");
+    expect(passes[0].entries[0].reason).toBe("covered-read-young");
   });
 
   it("earliest read in a group of 4 is still stubbed (not just second-to-last)", () => {
@@ -1362,6 +1367,1127 @@ describe("duplicate-read detection", () => {
       (m: any) => m.toolCallId === readId,
     ) as any;
     expect(read.content[0].text).toBe("only read");
+  });
+
+  it("does not duplicate-prune across an intervening successful edit", () => {
+    const readId1 = "dup-mut-1";
+    const readId2 = "dup-mut-2";
+    const editId = "dup-mut-edit";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: {
+            path: "src/foo.ts",
+            old_string: "a",
+            new_string: "b",
+          },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: editId,
+        toolName: "edit",
+        text: "ok",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "second",
+      }),
+    ];
+    const hook = makeContextHook(duplicateConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("first");
+  });
+
+  it("still duplicate-prunes when the intervening edit failed", () => {
+    const readId1 = "dup-mut-fail-1";
+    const readId2 = "dup-mut-fail-2";
+    const editId = "dup-mut-fail-edit";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: {
+            path: "src/foo.ts",
+            old_string: "a",
+            new_string: "b",
+          },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: editId,
+        toolName: "edit",
+        text: "error",
+        isError: true,
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "second",
+      }),
+    ];
+    const hook = makeContextHook(duplicateConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toMatch(
+      /^\[read result elided \(superseded by later read of/,
+    );
+  });
+
+  it("only duplicate-prunes within the same mutation-free segment", () => {
+    const readId1 = "dup-mut-split-1";
+    const readId2 = "dup-mut-split-2";
+    const readId3 = "dup-mut-split-3";
+    const editId = "dup-mut-split-edit";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "second",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: {
+            path: "src/foo.ts",
+            old_string: "a",
+            new_string: "b",
+          },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: editId,
+        toolName: "edit",
+        text: "ok",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId3, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId3,
+        toolName: "read",
+        text: "third",
+      }),
+    ];
+    const hook = makeContextHook(duplicateConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    const read2 = result.messages!.find(
+      (m: any) => m.toolCallId === readId2,
+    ) as any;
+    const read3 = result.messages!.find(
+      (m: any) => m.toolCallId === readId3,
+    ) as any;
+    expect(read1.content[0].text).toMatch(
+      /^\[read result elided \(superseded by later read of/,
+    );
+    expect(read2.content[0].text).toBe("second");
+    expect(read3.content[0].text).toBe("third");
+  });
+});
+
+// ---- Helpers for covered-read detection tests ----
+
+function coveredConfig() {
+  return {
+    ...defaultConfig(),
+    coveredReadsEnabled: true,
+    duplicateReadsEnabled: false,
+    supersededReadsEnabled: false,
+  };
+}
+
+function coveredDisabledConfig() {
+  return {
+    ...defaultConfig(),
+    coveredReadsEnabled: false,
+    duplicateReadsEnabled: false,
+    supersededReadsEnabled: false,
+  };
+}
+
+describe("formatCoveredStub", () => {
+  it("formats stub with correct prefix and turn reference", () => {
+    const result = formatCoveredStub({
+      toolName: "read",
+      normalizedPath: "/cwd/src/foo.ts",
+      keptUserTurnIndex: 3,
+      tokenCount: 125,
+      toolCallId: "read-1",
+    });
+    expect(result).toBe(
+      '[read result elided (covered by later read of /cwd/src/foo.ts at turn 3): 125 tokens. Call context_recall("read-1") to retrieve.]',
+    );
+  });
+
+  it("includes offset and limit when present", () => {
+    const result = formatCoveredStub({
+      toolName: "read",
+      normalizedPath: "/cwd/src/foo.ts",
+      keptUserTurnIndex: 2,
+      offset: 20,
+      limit: 50,
+      tokenCount: 256,
+      toolCallId: "read-2",
+    });
+    expect(result).toContain(
+      "covered by later read of /cwd/src/foo.ts, offset=20 limit=50 at turn 2",
+    );
+    expect(result).toContain('Call context_recall("read-2") to retrieve.');
+  });
+});
+
+describe("covered-read detection", () => {
+  it("earlier partial read covered by later full read → stubbed", () => {
+    const readId1 = "cov-partial-1";
+    const readId2 = "cov-partial-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 10, limit: 20 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "partial content",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "full content",
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    const read2 = result.messages!.find(
+      (m: any) => m.toolCallId === readId2,
+    ) as any;
+    expect(read1.content[0].text).toMatch(
+      /^\[read result elided \(covered by later read of/,
+    );
+    expect(read2.content[0].text).toBe("full content");
+  });
+
+  it("earlier full read covered by later full read → stubbed", () => {
+    const readId1 = "cov-full-1";
+    const readId2 = "cov-full-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first full",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "second full",
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toMatch(
+      /^\[read result elided \(covered by later read of/,
+    );
+  });
+
+  it("earlier partial covered by later broader partial → stubbed", () => {
+    const readId1 = "cov-partial-narrow";
+    const readId2 = "cov-partial-broad";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 20, limit: 10 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "narrow",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 10, limit: 50 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "broad",
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toMatch(/covered by later read of/);
+  });
+
+  it("earlier full + later partial → NOT covered", () => {
+    const readId1 = "cov-full-partial-1";
+    const readId2 = "cov-full-partial-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId1, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "full content",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 1, limit: 5 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "partial",
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("full content");
+  });
+
+  it("intervening edit blocks covered-read pruning", () => {
+    const readId1 = "cov-edit-block-1";
+    const readId2 = "cov-edit-block-2";
+    const editId = "cov-edit-block-e";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 10, limit: 20 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: {
+            path: "src/foo.ts",
+            old_string: "a",
+            new_string: "b",
+          },
+        },
+      ]),
+      makeToolResultMsg({ toolCallId: editId, toolName: "edit", text: "ok" }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "after edit",
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("first");
+  });
+
+  it("intervening write blocks covered-read pruning", () => {
+    const readId1 = "cov-write-block-1";
+    const readId2 = "cov-write-block-2";
+    const writeId = "cov-write-block-w";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 10, limit: 20 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: writeId,
+          name: "write",
+          arguments: { path: "src/foo.ts", content: "new" },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: writeId,
+        toolName: "write",
+        text: "written",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "after write",
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("first");
+  });
+
+  it("ambiguous range (offset present, limit missing) → not covered by partial", () => {
+    const readId1 = "cov-ambiguous-1";
+    const readId2 = "cov-ambiguous-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 10 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "offset only",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 5, limit: 100 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "limited",
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("offset only");
+  });
+
+  it("ambiguous range (limit present, offset missing) → not covered by partial", () => {
+    const readId1 = "cov-ambiguous-lim-1";
+    const readId2 = "cov-ambiguous-lim-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", limit: 20 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "limit only",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 1, limit: 100 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "limited",
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("limit only");
+  });
+
+  it("covered rule disabled → no read stubbed by covered rule", () => {
+    const readId1 = "cov-dis-1";
+    const readId2 = "cov-dis-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 10, limit: 20 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "second",
+      }),
+    ];
+    const hook = makeContextHook(coveredDisabledConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("first");
+  });
+
+  it("exact duplicate still uses duplicate-read-young when both enabled", () => {
+    const readId1 = "cov-dup-both-1";
+    const readId2 = "cov-dup-both-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 10, limit: 20 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 10, limit: 20 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "second",
+      }),
+    ];
+    const config = {
+      ...defaultConfig(),
+      duplicateReadsEnabled: true,
+      coveredReadsEnabled: true,
+      supersededReadsEnabled: false,
+    };
+    const passes: any[] = [];
+    const hook = makeContextHook(config, (p) => passes.push(p));
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toMatch(/superseded by later read of/);
+    expect(read1.content[0].text).not.toMatch(/covered by later read of/);
+    expect(passes[0].entries[0].reason).toBe("duplicate-read-young");
+  });
+
+  it("does not immediately stub an old covered read when suffix cost exceeds budget", () => {
+    const readId1 = "cov-old-1";
+    const readId2 = "cov-old-2";
+    const bigSource = "s".repeat(180_000);
+    const bigSuffix = makeTextMsg("user", "tail".repeat(40_000));
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/old-cov.ts", offset: 10, limit: 20 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: bigSource,
+      }),
+      bigSuffix,
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/old-cov.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "latest",
+      }),
+    ];
+
+    const result = makeContextHook(coveredConfig())(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read.content[0].text).toBe(bigSource);
+  });
+
+  it("compacts a young covered read with reason covered-read-young", () => {
+    const readId1 = "young-cov-1";
+    const readId2 = "young-cov-2";
+    const passes: any[] = [];
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/young-cov.ts", offset: 10, limit: 20 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "s".repeat(HUGE),
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/young-cov.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "latest",
+      }),
+    ];
+
+    const result = makeContextHook(coveredConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read.content[0].text).toMatch(/covered by later read of/);
+    expect(passes[0].entries[0].reason).toBe("covered-read-young");
+  });
+
+  it("earlier intervening edit is still blocked when a later edit also exists after the covering read", () => {
+    const readId1 = "cov-mut-multi-1";
+    const readId2 = "cov-mut-multi-2";
+    const editId1 = "cov-mut-multi-e1";
+    const editId2 = "cov-mut-multi-e2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 10, limit: 20 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId1,
+          name: "edit",
+          arguments: {
+            path: "src/foo.ts",
+            old_string: "a",
+            new_string: "b",
+          },
+        },
+      ]),
+      makeToolResultMsg({ toolCallId: editId1, toolName: "edit", text: "ok" }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "after first edit",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId2,
+          name: "edit",
+          arguments: {
+            path: "src/foo.ts",
+            old_string: "b",
+            new_string: "c",
+          },
+        },
+      ]),
+      makeToolResultMsg({ toolCallId: editId2, toolName: "edit", text: "ok" }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("first");
+  });
+
+  it("latches covered-read reason and preserves it across passes", () => {
+    const state = createPruningState();
+    const config = {
+      ...defaultConfig(),
+      coveredReadsEnabled: true,
+      duplicateReadsEnabled: false,
+      supersededReadsEnabled: false,
+    };
+    const hook = makeContextHook(config, undefined, state);
+
+    const messages: any[] = [
+      makeUserMsg(),
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "r1",
+            name: "read",
+            arguments: { path: "src/foo.ts", offset: 10, limit: 20 },
+          },
+        ],
+        timestamp: Date.now(),
+      },
+      makeToolResultMsg({
+        toolCallId: "r1",
+        toolName: "read",
+        text: "first" + "x".repeat(HUGE),
+      }),
+      makeUserMsg(),
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "r2",
+            name: "read",
+            arguments: { path: "src/foo.ts" },
+          },
+        ],
+        timestamp: Date.now(),
+      },
+      makeToolResultMsg({
+        toolCallId: "r2",
+        toolName: "read",
+        text: "second",
+      }),
+    ];
+
+    const r1 = hook(
+      { type: "context", messages } as any,
+      { cwd: "/cwd" } as any,
+    );
+    expect(state.latched.get("r1")?.reason).toBe("covered-read-young");
+    expect(state.latched.get("r1")?.normalizedPath).toBe("/cwd/src/foo.ts");
+    expect(state.latched.get("r1")?.keptUserTurnIndex).toBe(2);
+
+    const r2 = hook(
+      { type: "context", messages } as any,
+      { cwd: "/cwd" } as any,
+    );
+    expect(r1).toEqual(r2);
+  });
+
+  it("later truncated full read does not cover earlier partial beyond delivered range", () => {
+    const readId1 = "cov-trunc-full-1";
+    const readId2 = "cov-trunc-full-2";
+    const passes: any[] = [];
+    const truncatedContent =
+      "line\n".repeat(2000) +
+      "[Showing lines 1-2000 of 5000. Use offset=2001 to continue.]";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/trunc.ts", offset: 3000, limit: 50 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "s".repeat(HUGE),
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/trunc.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: truncatedContent,
+      }),
+    ];
+
+    const result = makeContextHook(coveredConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("s".repeat(HUGE));
+    expect(passes[0].entries.length).toBe(0);
+  });
+
+  it("later high-limit partial read of truncated file does not cover earlier partial beyond delivered range", () => {
+    const readId1 = "cov-trunc-high-1";
+    const readId2 = "cov-trunc-high-2";
+    const passes: any[] = [];
+    const truncatedContent =
+      "line\n".repeat(2000) +
+      "[Showing lines 1-2000 of 5000. Use offset=2001 to continue.]";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/high.ts", offset: 3000, limit: 50 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "s".repeat(HUGE),
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/high.ts", offset: 1, limit: 999999 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: truncatedContent,
+      }),
+    ];
+
+    const result = makeContextHook(coveredConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("s".repeat(HUGE));
+    expect(passes[0].entries.length).toBe(0);
+  });
+
+  it("later truncated full read does not count the continuation notice as a delivered line", () => {
+    const readId1 = "cov-trunc-notice-boundary-1";
+    const readId2 = "cov-trunc-notice-boundary-2";
+    const passes: any[] = [];
+    const truncatedContent =
+      "line\n".repeat(2000) +
+      "[Showing lines 1-2000 of 5000. Use offset=2001 to continue.]";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/trunc-boundary.ts", offset: 2001, limit: 1 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "s".repeat(HUGE),
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/trunc-boundary.ts" },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: truncatedContent,
+      }),
+    ];
+
+    const result = makeContextHook(coveredConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("s".repeat(HUGE));
+    expect(passes[0].entries.length).toBe(0);
+  });
+
+  it("later first-line-exceeds-limit notice does not cover any earlier source line", () => {
+    const readId1 = "cov-first-line-notice-1";
+    const readId2 = "cov-first-line-notice-2";
+    const passes: any[] = [];
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/too-large-line.ts", offset: 1, limit: 1 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "s".repeat(HUGE),
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/too-large-line.ts", offset: 1, limit: 10 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "File exceeds 50KB limit. Use bash: sed -n '1,10p' src/too-large-line.ts",
+      }),
+    ];
+
+    const result = makeContextHook(coveredConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("s".repeat(HUGE));
+    expect(passes[0].entries.length).toBe(0);
+  });
+
+  it("later byte-truncated partial read with limit < 2000 does not cover earlier partial beyond delivered range", () => {
+    const readId1 = "cov-byte-trunc-1";
+    const readId2 = "cov-byte-trunc-2";
+    const passes: any[] = [];
+    // 60KB single line + one more line; byte-truncated but only 2 delivered lines
+    const byteTruncatedContent = `${"x".repeat(60_000)}\ntruncated`;
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/byte.ts", offset: 10, limit: 5 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "s".repeat(HUGE),
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/byte.ts", offset: 1, limit: 100 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: byteTruncatedContent,
+      }),
+    ];
+
+    const result = makeContextHook(coveredConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      fakeCtxWithCwd,
+    );
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("s".repeat(HUGE));
+    expect(passes[0].entries.length).toBe(0);
+  });
+
+  it("later byte-truncated partial read with limit < 2000 covers earlier partial within delivered range", () => {
+    const readId1 = "cov-byte-trunc-cover-1";
+    const readId2 = "cov-byte-trunc-cover-2";
+    const byteTruncatedContent = `${"x".repeat(60_000)}\ntruncated`;
+    const state = createPruningState();
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/byte2.ts", offset: 2, limit: 1 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "s".repeat(50_000),
+      }),
+      makeUserMsg(),
+      makeUserMsg(),
+      makeUserMsg(),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/byte2.ts", offset: 1, limit: 100 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: byteTruncatedContent,
+      }),
+    ];
+
+    const config = {
+      ...coveredConfig(),
+      batchMinSavedTokens: 1,
+      batchMinNetValue: 0,
+      batchMinCandidates: 1,
+    };
+    const result = makeContextHook(
+      config,
+      undefined,
+      state,
+    )({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toMatch(
+      /compacted by cache-aware batch pruning/,
+    );
+    expect(state.latched.get(readId1)?.sourceReason).toBe("covered-read-young");
   });
 });
 
@@ -2011,5 +3137,581 @@ describe("formatEmergencyPressureStub", () => {
     expect(stub).toContain("2.1K tokens");
     expect(stub).toContain('Call context_recall("em-id") to retrieve.');
     expect(stub).not.toContain("Preview:");
+  });
+});
+
+describe("formatStub with read metadata", () => {
+  it("includes path for read stubs", () => {
+    const stub = formatStub({
+      toolName: "read",
+      tokenCount: 300,
+      toolCallId: "r1",
+      readMetadata: { normalizedPath: "/repo/src/foo.ts" },
+    });
+    expect(stub).toContain("Path: /repo/src/foo.ts.");
+    expect(stub).toContain(
+      'Call context_recall("r1") to retrieve; lines slicing is available for text-only results.',
+    );
+  });
+
+  it("includes offset and limit when present", () => {
+    const stub = formatStub({
+      toolName: "read",
+      tokenCount: 300,
+      toolCallId: "r2",
+      readMetadata: {
+        normalizedPath: "/repo/src/foo.ts",
+        offset: 20,
+        limit: 50,
+      },
+    });
+    expect(stub).toContain("offset=20");
+    expect(stub).toContain("limit=50");
+    expect(stub).not.toContain("source lines");
+  });
+
+  it("omits read metadata when not provided", () => {
+    const stub = formatStub({
+      toolName: "bash",
+      tokenCount: 300,
+      toolCallId: "b1",
+    });
+    expect(stub).not.toContain("Path:");
+    expect(stub).toContain('Call context_recall("b1") to retrieve.');
+    expect(stub).not.toContain("lines slicing");
+  });
+});
+
+describe("formatBatchPressureStub with read metadata", () => {
+  it("includes path and range for read results", () => {
+    const stub = formatBatchPressureStub({
+      toolName: "read",
+      tokenCount: 5000,
+      toolCallId: "batch-read-1",
+      readMetadata: { normalizedPath: "/repo/src/bar.ts", offset: 10 },
+    });
+    expect(stub).toContain("Path: /repo/src/bar.ts.");
+    expect(stub).toContain("offset=10");
+    expect(stub).toContain("compacted by cache-aware batch pruning");
+    expect(stub).toContain(
+      'Call context_recall("batch-read-1") to retrieve; lines slicing is available for text-only results.',
+    );
+  });
+});
+
+describe("formatEmergencyPressureStub with read metadata", () => {
+  it("includes path and range for read results", () => {
+    const stub = formatEmergencyPressureStub({
+      toolName: "read",
+      tokenCount: 2100,
+      toolCallId: "em-read-1",
+      readMetadata: { normalizedPath: "/repo/src/baz.ts", limit: 100 },
+    });
+    expect(stub).toContain("Path: /repo/src/baz.ts.");
+    expect(stub).toContain("limit=100");
+    expect(stub).toContain("emergency context pressure");
+    expect(stub).toContain(
+      'Call context_recall("em-read-1") to retrieve; lines slicing is available for text-only results.',
+    );
+  });
+});
+
+describe("formatSupersededStub with offset/limit", () => {
+  it("preserves wording and appends offset/limit when present", () => {
+    const stub = formatSupersededStub({
+      toolName: "read",
+      normalizedPath: "/repo/src/foo.ts",
+      offset: 20,
+      limit: 50,
+      tokenCount: 3400,
+      toolCallId: "sup-id",
+    });
+    expect(stub).toContain(
+      "superseded by later edit/write of /repo/src/foo.ts, offset=20 limit=50",
+    );
+    expect(stub).toContain(
+      'Call context_recall("sup-id") to retrieve original.',
+    );
+  });
+
+  it("remains unchanged when offset/limit are absent", () => {
+    const stub = formatSupersededStub({
+      toolName: "read",
+      normalizedPath: "/repo/src/foo.ts",
+      tokenCount: 3400,
+      toolCallId: "sup-id2",
+    });
+    expect(stub).toContain(
+      "superseded by later edit/write of /repo/src/foo.ts)",
+    );
+  });
+});
+
+describe("formatDuplicateStub with offset/limit", () => {
+  it("preserves wording and appends offset/limit when present", () => {
+    const stub = formatDuplicateStub({
+      toolName: "read",
+      normalizedPath: "/repo/src/foo.ts",
+      keptUserTurnIndex: 3,
+      offset: 20,
+      limit: 50,
+      tokenCount: 125,
+      toolCallId: "dup-id",
+    });
+    expect(stub).toContain(
+      "superseded by later read of /repo/src/foo.ts, offset=20 limit=50 at turn 3",
+    );
+    expect(stub).toContain('Call context_recall("dup-id") to retrieve.');
+  });
+
+  it("remains unchanged when offset/limit are absent", () => {
+    const stub = formatDuplicateStub({
+      toolName: "read",
+      normalizedPath: "/repo/src/foo.ts",
+      keptUserTurnIndex: 3,
+      tokenCount: 125,
+      toolCallId: "dup-id2",
+    });
+    expect(stub).toContain(
+      "superseded by later read of /repo/src/foo.ts at turn 3",
+    );
+  });
+});
+
+describe("read stub metadata in context hook", () => {
+  const fakeCtx = { cwd: "/cwd" } as any;
+
+  it("emergency-pruned read includes path and offset/limit in stub", () => {
+    const id = "em-read-meta";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 20, limit: 50 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: id,
+        toolName: "read",
+        text: "s".repeat(180_000),
+      }),
+      ...Array.from({ length: DEFAULTS.staleTurns + 1 }, () => makeUserMsg()),
+    ];
+
+    const result = makeContextHook(defaultConfig())(
+      { type: "context", messages } as any,
+      {
+        ...fakeCtx,
+        getContextUsage: () => ({ tokens: 90_000, contextWindow: 100_000 }),
+      } as any,
+    );
+    const read = result.messages!.find((m: any) => m.toolCallId === id) as any;
+    expect(read.content[0].text).toMatch(/emergency context pressure/);
+    expect(read.content[0].text).toContain("Path: /cwd/src/foo.ts.");
+    expect(read.content[0].text).toContain("offset=20");
+    expect(read.content[0].text).toContain("limit=50");
+    expect(read.content[0].text).toContain(
+      "lines slicing is available for text-only results",
+    );
+    expect(read.content[0].text).not.toContain("source lines");
+  });
+
+  it("superseded read stub includes offset/limit from original call", () => {
+    const readId = "sup-read-meta";
+    const editId = "sup-edit-meta";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 20, limit: 50 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: "content",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: editId,
+          name: "edit",
+          arguments: { path: "src/foo.ts", old_string: "x", new_string: "y" },
+        },
+      ]),
+      makeToolResultMsg({ toolCallId: editId, toolName: "edit", text: "ok" }),
+    ];
+    const hook = makeContextHook(supersededConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtx);
+    const readResult = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(readResult.content[0].text).toContain(
+      "superseded by later edit/write of /cwd/src/foo.ts, offset=20 limit=50",
+    );
+  });
+
+  it("duplicate read stub includes offset/limit from original call", () => {
+    const readId1 = "dup-read-meta-1";
+    const readId2 = "dup-read-meta-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 20, limit: 50 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "first",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId2,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 20, limit: 50 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: "second",
+      }),
+    ];
+    const hook = makeContextHook(duplicateConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtx);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toContain(
+      "superseded by later read of /cwd/src/foo.ts, offset=20 limit=50",
+    );
+  });
+});
+
+describe("covered-read truncation handling", () => {
+  const truncatedPartialRead =
+    "line1\nline2\nline3\n\n[2 more lines in file. Use offset=4 to continue.]";
+
+  it("truncated read does not cover a partial read beyond the truncation boundary", () => {
+    const readId1 = "trunc-cover-1";
+    const readId2 = "trunc-cover-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 3, limit: 2 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "line3\nline4",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: truncatedPartialRead,
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toBe("line3\nline4");
+  });
+
+  it("truncated read still covers an earlier partial read within the delivered lines", () => {
+    const readId1 = "trunc-cover-ok-1";
+    const readId2 = "trunc-cover-ok-2";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        {
+          id: readId1,
+          name: "read",
+          arguments: { path: "src/foo.ts", offset: 2, limit: 2 },
+        },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId1,
+        toolName: "read",
+        text: "line2\nline3",
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId2, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId2,
+        toolName: "read",
+        text: truncatedPartialRead,
+      }),
+    ];
+    const hook = makeContextHook(coveredConfig());
+    const result = hook({ type: "context", messages } as any, fakeCtxWithCwd);
+    const read1 = result.messages!.find(
+      (m: any) => m.toolCallId === readId1,
+    ) as any;
+    expect(read1.content[0].text).toMatch(
+      /^\[read result elided \(covered by later read of/,
+    );
+  });
+});
+
+describe("emergency ordinary-read pruning", () => {
+  const largeText = "x".repeat(20_000);
+  const emergencyCtx = {
+    ...fakeCtxWithCwd,
+    getContextUsage: () => ({ tokens: 90_000, contextWindow: 100_000 }),
+  } as any;
+  const normalCtx = {
+    ...fakeCtxWithCwd,
+    getContextUsage: () => ({ tokens: 70_000, contextWindow: 100_000 }),
+  } as any;
+
+  it("elides a consumed young ordinary read in emergency pressure", () => {
+    const readId = "em-ord-1";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: largeText,
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "other", name: "bash", arguments: { command: "echo hi" } },
+      ]),
+    ];
+    const passes: any[] = [];
+    const result = makeContextHook(defaultConfig(), (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toMatch(/emergency context pressure/);
+    expect(passes[0].entries[0].reason).toBe("emergency-pressure");
+  });
+
+  it("does not emergency-prune when context usage is below the reserve threshold", () => {
+    const readId = "em-ord-below";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: largeText,
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "other", name: "bash", arguments: { command: "echo hi" } },
+      ]),
+    ];
+    const result = makeContextHook(defaultConfig())(
+      { type: "context", messages } as any,
+      normalCtx,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toBe(largeText);
+  });
+
+  it("does not emergency-prune an unconsumed ordinary read", () => {
+    const readId = "em-ord-unconsumed";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: largeText,
+      }),
+      makeUserMsg(),
+    ];
+    const result = makeContextHook(defaultConfig())(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toBe(largeText);
+  });
+
+  it("does not emergency-prune an error read", () => {
+    const readId = "em-ord-error";
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: largeText,
+        isError: true,
+      }),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "other", name: "bash", arguments: { command: "echo hi" } },
+      ]),
+    ];
+    const result = makeContextHook(defaultConfig())(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toBe(largeText);
+  });
+
+  it("bounds emergency ordinary-read pruning by emergencyMaxOrdinaryReads", () => {
+    const ids = ["em-cap-1", "em-cap-2", "em-cap-3"];
+    const messages: any[] = [makeUserMsg()];
+    for (const id of ids) {
+      messages.push(
+        makeAssistantMsg([
+          { id, name: "read", arguments: { path: `src/${id}.ts` } },
+        ]),
+        makeToolResultMsg({
+          toolCallId: id,
+          toolName: "read",
+          text: largeText,
+        }),
+        makeUserMsg(),
+      );
+    }
+    messages.push(
+      makeAssistantMsg([
+        { id: "final", name: "bash", arguments: { command: "echo done" } },
+      ]),
+    );
+
+    const passes: any[] = [];
+    const config = {
+      ...defaultConfig(),
+      emergencyMaxOrdinaryReads: 2,
+    };
+    const result = makeContextHook(config, (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+
+    const elidedIds = passes[0].entries.map((e: any) => e.toolCallId);
+    expect(elidedIds).toHaveLength(2);
+    expect(elidedIds).toContain("em-cap-1");
+    expect(elidedIds).toContain("em-cap-2");
+    expect(elidedIds).not.toContain("em-cap-3");
+
+    const read3 = result.messages!.find(
+      (m: any) => m.toolCallId === "em-cap-3",
+    ) as any;
+    expect(read3.content[0].text).toBe(largeText);
+  });
+
+  it("does not emergency-prune a stale ordinary read that saves fewer than emergencyOrdinaryReadMinSavedTokens", () => {
+    const readId = "em-stale-below";
+    const smallText = "x".repeat(10_000);
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: readId, name: "read", arguments: { path: "src/foo.ts" } },
+      ]),
+      makeToolResultMsg({
+        toolCallId: readId,
+        toolName: "read",
+        text: smallText,
+      }),
+      makeUserMsg(),
+      makeUserMsg(),
+      makeUserMsg(),
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "other", name: "bash", arguments: { command: "echo done" } },
+      ]),
+    ];
+    const result = makeContextHook(defaultConfig())(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+    const read = result.messages!.find(
+      (m: any) => m.toolCallId === readId,
+    ) as any;
+    expect(read.content[0].text).toBe(smallText);
+  });
+
+  it("caps stale ordinary-read pruning by emergencyMaxOrdinaryReads in emergency pressure", () => {
+    const ids = ["em-stale-1", "em-stale-2", "em-stale-3"];
+    const messages: any[] = [makeUserMsg()];
+    for (const id of ids) {
+      messages.push(
+        makeAssistantMsg([
+          { id, name: "read", arguments: { path: `src/${id}.ts` } },
+        ]),
+        makeToolResultMsg({
+          toolCallId: id,
+          toolName: "read",
+          text: largeText,
+        }),
+        makeUserMsg(),
+      );
+    }
+    for (let i = 0; i < DEFAULTS.staleTurns - 1; i++) {
+      messages.push(makeUserMsg());
+    }
+    messages.push(
+      makeAssistantMsg([
+        { id: "final", name: "bash", arguments: { command: "echo done" } },
+      ]),
+    );
+
+    const passes: any[] = [];
+    const config = {
+      ...defaultConfig(),
+      emergencyMaxOrdinaryReads: 2,
+    };
+    const result = makeContextHook(config, (p) => passes.push(p))(
+      { type: "context", messages } as any,
+      emergencyCtx,
+    );
+
+    const elidedIds = passes[0].entries.map((e: any) => e.toolCallId);
+    expect(elidedIds).toHaveLength(2);
+    expect(elidedIds).toContain("em-stale-1");
+    expect(elidedIds).toContain("em-stale-2");
+    expect(elidedIds).not.toContain("em-stale-3");
+
+    const read3 = result.messages!.find(
+      (m: any) => m.toolCallId === "em-stale-3",
+    ) as any;
+    expect(read3.content[0].text).toBe(largeText);
   });
 });

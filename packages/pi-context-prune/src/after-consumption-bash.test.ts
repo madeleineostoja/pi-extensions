@@ -627,4 +627,71 @@ describe("after-consumption bash compaction", () => {
     expect(entry.reason).toBe("after-consumption-bash");
     expect(entry.savedTokens).toBeGreaterThan(0);
   });
+
+  it("compacts a consumed successful bash output around 600 estimated tokens", () => {
+    const hook = makeContextHook(bashConfig());
+    // 800 * 3 = 2400 chars => 600 tokens, above the 512 threshold
+    const text = "ok\n".repeat(800);
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "bash-600", name: "bash", arguments: { command: "echo hi" } },
+      ]),
+      makeBashResult("bash-600", text),
+      makeUserMsg(),
+      makeAssistantMsg([]),
+    ];
+    const result = hook({ type: "context", messages } as any, {} as any);
+    const bash = result.messages!.find(
+      (m: any) => m.toolCallId === "bash-600",
+    ) as any;
+    expect(bash.content[0].text).toMatch(/bash output compacted/);
+  });
+
+  it("does not compact a consumed bash output below 512 estimated tokens", () => {
+    const hook = makeContextHook(bashConfig());
+    // 400 * 3 = 1200 chars => 300 tokens, below the 512 threshold
+    const text = "ok\n".repeat(400);
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "bash-300", name: "bash", arguments: { command: "echo hi" } },
+      ]),
+      makeBashResult("bash-300", text),
+      makeUserMsg(),
+      makeAssistantMsg([]),
+    ];
+    const result = hook({ type: "context", messages } as any, {} as any);
+    const bash = result.messages!.find(
+      (m: any) => m.toolCallId === "bash-300",
+    ) as any;
+    expect(bash.content[0].text).toBe(text);
+  });
+
+  it("rejects source-like bash output above 512 estimated tokens", () => {
+    const hook = makeContextHook(bashConfig());
+    // Mix log and source lines to exceed 512 tokens while keeping >30% source-like
+    const lines: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      lines.push(`log line ${i}`);
+    }
+    for (let i = 0; i < 250; i++) {
+      lines.push(`import { foo${i} } from "bar";`);
+    }
+    const text = lines.join("\n");
+    const messages: any[] = [
+      makeUserMsg(),
+      makeAssistantMsg([
+        { id: "bash-src-big", name: "bash", arguments: { command: "cat src" } },
+      ]),
+      makeBashResult("bash-src-big", text),
+      makeUserMsg(),
+      makeAssistantMsg([]),
+    ];
+    const result = hook({ type: "context", messages } as any, {} as any);
+    const bash = result.messages!.find(
+      (m: any) => m.toolCallId === "bash-src-big",
+    ) as any;
+    expect(bash.content[0].text).toBe(text);
+  });
 });

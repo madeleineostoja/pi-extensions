@@ -8,10 +8,13 @@ export type Config = {
   minTokens: number;
   supersededReadsEnabled: boolean;
   duplicateReadsEnabled: boolean;
+  coveredReadsEnabled: boolean;
   adaptivePolicyEnabled: boolean;
   afterConsumptionBashEnabled: boolean;
   batchPruningEnabled: boolean;
   emergencyContextReserveTokens: number;
+  emergencyOrdinaryReadMinSavedTokens: number;
+  emergencyMaxOrdinaryReads: number;
   batchMinCandidates: number;
   batchMinSavedTokens: number;
   batchMinNetValue: number;
@@ -25,10 +28,13 @@ export const DEFAULTS: Config = {
   minTokens: 256,
   supersededReadsEnabled: true,
   duplicateReadsEnabled: true,
+  coveredReadsEnabled: true,
   adaptivePolicyEnabled: true,
   afterConsumptionBashEnabled: true,
   batchPruningEnabled: true,
   emergencyContextReserveTokens: 16000,
+  emergencyOrdinaryReadMinSavedTokens: 4000,
+  emergencyMaxOrdinaryReads: 2,
   batchMinCandidates: 2,
   batchMinSavedTokens: 8000,
   batchMinNetValue: 3000,
@@ -102,6 +108,8 @@ export function loadConfig(
     | "staleTurns"
     | "minTokens"
     | "emergencyContextReserveTokens"
+    | "emergencyOrdinaryReadMinSavedTokens"
+    | "emergencyMaxOrdinaryReads"
     | "batchMinCandidates"
     | "batchMinSavedTokens"
     | "batchMinNetValue"
@@ -112,6 +120,8 @@ export function loadConfig(
     "staleTurns",
     "minTokens",
     "emergencyContextReserveTokens",
+    "emergencyOrdinaryReadMinSavedTokens",
+    "emergencyMaxOrdinaryReads",
     "batchMinCandidates",
     "batchMinSavedTokens",
     "batchMinNetValue",
@@ -137,12 +147,14 @@ export function loadConfig(
   const boolKeys: Array<
     | "supersededReadsEnabled"
     | "duplicateReadsEnabled"
+    | "coveredReadsEnabled"
     | "adaptivePolicyEnabled"
     | "afterConsumptionBashEnabled"
     | "batchPruningEnabled"
   > = [
     "supersededReadsEnabled",
     "duplicateReadsEnabled",
+    "coveredReadsEnabled",
     "adaptivePolicyEnabled",
     "afterConsumptionBashEnabled",
     "batchPruningEnabled",

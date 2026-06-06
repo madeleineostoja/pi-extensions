@@ -93,44 +93,38 @@ function makeBranchSummaryEntry() {
   };
 }
 
+function captureToolDef(
+  onRecall?: (toolName: string, toolCallId?: string, reason?: string) => void,
+  pruningState?: ReturnType<typeof createPruningState>,
+) {
+  let capturedDef: any = null;
+  const fakePI = {
+    registerTool(def: any) {
+      capturedDef = def;
+    },
+  };
+  registerRecallTool(fakePI as any, onRecall, pruningState);
+  return capturedDef;
+}
+
 async function executeRecall(
   entries: ReturnType<typeof makeSessionEntry>[],
   params: { id: string; lines?: string },
 ) {
-  const { registerRecallTool } = await import("./recall.ts");
-
-  let capturedExecute:
-    | ((
-        toolCallId: string,
-        params: any,
-        signal: any,
-        onUpdate: any,
-        ctx: any,
-      ) => Promise<any>)
-    | null = null;
-
-  const fakePI = {
-    registerTool(def: any) {
-      capturedExecute = def.execute;
-    },
-  };
-
-  registerRecallTool(fakePI as any);
-
+  const def = captureToolDef();
   const ctx = {
     sessionManager: {
       getEntries: () => entries,
     },
   };
-
-  return capturedExecute!("recall-call-id", params, undefined, undefined, ctx);
+  return def.execute("recall-call-id", params, undefined, undefined, ctx);
 }
 
 describe("context_recall execute", () => {
   it("returns original content for a known id", async () => {
     const entries = [makeSessionEntry("call-abc", "hello world content")];
     const result = await executeRecall(entries as any, { id: "call-abc" });
-    expect(result.isError).toBeFalsy();
+    expect(result.details.error).toBeUndefined();
     expect(result.content).toEqual([
       { type: "text", text: "hello world content" },
     ]);
@@ -141,7 +135,7 @@ describe("context_recall execute", () => {
     const result = await executeRecall(entries as any, {
       id: "does_not_exist",
     });
-    expect(result.isError).toBe(true);
+    expect(result.details.error).toBeDefined();
     expect(result.content[0].text).toMatch(
       /context_recall: no tool result with id=does_not_exist/,
     );
@@ -154,7 +148,7 @@ describe("context_recall execute", () => {
       id: "call-lines",
       lines: "10-20",
     });
-    expect(result.isError).toBeFalsy();
+    expect(result.details.error).toBeUndefined();
     const returned = result.content[0].text.split("\n");
     expect(returned[0]).toBe("line 10");
     expect(returned[returned.length - 1]).toBe("line 20");
@@ -178,7 +172,7 @@ describe("context_recall execute", () => {
       id: "call-oor",
       lines: "9999-10000",
     });
-    expect(result.isError).toBeFalsy();
+    expect(result.details.error).toBeUndefined();
     expect(result.content[0].text).toBe("");
   });
 
@@ -190,7 +184,7 @@ describe("context_recall execute", () => {
       id: "call-multi",
       lines: "1-1",
     });
-    expect(result.isError).toBe(true);
+    expect(result.details.error).toBeDefined();
     expect(result.content[0].text).toMatch(/multiple text blocks/i);
   });
 
@@ -200,7 +194,7 @@ describe("context_recall execute", () => {
       id: "call-img",
       lines: "1",
     });
-    expect(result.isError).toBe(true);
+    expect(result.details.error).toBeDefined();
     expect(result.content[0].text).toMatch(/non-text|image/i);
   });
 
@@ -210,7 +204,7 @@ describe("context_recall execute", () => {
       id: "call-empty",
       lines: "1",
     });
-    expect(result.isError).toBeFalsy();
+    expect(result.details.error).toBeUndefined();
     expect(result.content).toEqual([{ type: "text", text: "" }]);
   });
 
@@ -227,7 +221,7 @@ describe("context_recall execute", () => {
       id: "call-abc",
       lines: "abc",
     });
-    expect(result.isError).toBe(true);
+    expect(result.details.error).toBeDefined();
     expect(result.content[0].text).toMatch(/abc/);
   });
 
@@ -237,7 +231,7 @@ describe("context_recall execute", () => {
       makeSessionEntry("other-id", "other content"),
     ];
     const result = await executeRecall(entries as any, { id: "missing-id" });
-    expect(result.isError).toBe(true);
+    expect(result.details.error).toBeDefined();
     expect(result.content).toHaveLength(1);
     expect(result.content[0].type).toBe("text");
     expect(result.content[0].text).toMatch(/compacted away/);
@@ -247,7 +241,7 @@ describe("context_recall execute", () => {
   it("returns no-tool-result error when no compactionSummary entry exists and id is not found", async () => {
     const entries = [makeSessionEntry("other-id", "other content")];
     const result = await executeRecall(entries as any, { id: "missing-id" });
-    expect(result.isError).toBe(true);
+    expect(result.details.error).toBeDefined();
     expect(result.content).toHaveLength(1);
     expect(result.content[0].type).toBe("text");
     expect(result.content[0].text).toMatch(/no tool result with id=missing-id/);
@@ -259,7 +253,7 @@ describe("context_recall execute", () => {
       makeSessionEntry("call-exists", "found content"),
     ];
     const result = await executeRecall(entries as any, { id: "call-exists" });
-    expect(result.isError).toBeFalsy();
+    expect(result.details.error).toBeUndefined();
     expect(result.content).toEqual([{ type: "text", text: "found content" }]);
   });
 
@@ -271,8 +265,164 @@ describe("context_recall execute", () => {
       makeBranchSummaryEntry(),
     ];
     const result = await executeRecall(entries as any, { id: "call-mixed" });
-    expect(result.isError).toBeFalsy();
+    expect(result.details.error).toBeUndefined();
     expect(result.content).toEqual([{ type: "text", text: "target content" }]);
+  });
+});
+
+describe("context_recall details", () => {
+  it("includes details for a successful full recall", async () => {
+    const entries = [makeSessionEntry("call-abc", "hello world")];
+    const def = captureToolDef();
+    const result = await def.execute(
+      "recall-id",
+      { id: "call-abc" },
+      undefined,
+      undefined,
+      {
+        sessionManager: {
+          getEntries: () => entries,
+        },
+      },
+    );
+    expect(result.details.error).toBeUndefined();
+    expect(result.details).toBeDefined();
+    expect(result.details.id).toBe("call-abc");
+    expect(result.details.recalledToolName).toBe("Read");
+    expect(result.details.sliced).toBe(false);
+    expect(result.details.original.tokens).toBeGreaterThan(0);
+    expect(result.details.returned.tokens).toBe(result.details.original.tokens);
+  });
+
+  it("includes details for a sliced recall", async () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+    const entries = [makeSessionEntry("call-lines", lines.join("\n"))];
+    const def = captureToolDef();
+    const result = await def.execute(
+      "recall-id",
+      { id: "call-lines", lines: "10-20" },
+      undefined,
+      undefined,
+      {
+        sessionManager: {
+          getEntries: () => entries,
+        },
+      },
+    );
+    expect(result.details).toBeDefined();
+    expect(result.details.sliced).toBe(true);
+    expect(result.details.requestedLines).toBe("10-20");
+    expect(result.details.original.lines).toBe(30);
+    expect(result.details.returned.lines).toBe(11);
+    expect(result.details.original.tokens).toBeGreaterThan(
+      result.details.returned.tokens,
+    );
+  });
+
+  it("details include error for failure cases", async () => {
+    const entries = [makeSessionEntry("call-abc", "content")];
+    const def = captureToolDef();
+    const result = await def.execute(
+      "recall-id",
+      { id: "missing" },
+      undefined,
+      undefined,
+      {
+        sessionManager: {
+          getEntries: () => entries,
+        },
+      },
+    );
+    expect(result.details.error).toBeDefined();
+    expect(result.details.id).toBe("missing");
+  });
+});
+
+describe("context_recall renderResult", () => {
+  const mockTheme = {
+    fg: (_color: string, text: string) => text,
+  } as any;
+
+  it("renders a summary without dumping raw recalled content", async () => {
+    const entries = [makeSessionEntry("call-abc", "hello world")];
+    const def = captureToolDef();
+    const result = await def.execute(
+      "recall-id",
+      { id: "call-abc" },
+      undefined,
+      undefined,
+      {
+        sessionManager: {
+          getEntries: () => entries,
+        },
+      },
+    );
+    const component = def.renderResult(
+      result,
+      { expanded: false, isPartial: false },
+      mockTheme,
+      {},
+    );
+    const lines = component.render(80);
+    expect(lines.some((l: string) => l.includes("Recalled Read result"))).toBe(
+      true,
+    );
+    expect(lines.some((l: string) => l.includes("hello world"))).toBe(false);
+  });
+
+  it("renders expanded metadata for sliced recall", async () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+    const entries = [makeSessionEntry("call-lines", lines.join("\n"))];
+    const def = captureToolDef();
+    const result = await def.execute(
+      "recall-id",
+      { id: "call-lines", lines: "10-20" },
+      undefined,
+      undefined,
+      {
+        sessionManager: {
+          getEntries: () => entries,
+        },
+      },
+    );
+    const component = def.renderResult(
+      result,
+      { expanded: true, isPartial: false },
+      mockTheme,
+      {},
+    );
+    const rendered = component.render(80);
+    expect(rendered.some((l: string) => l.includes("sliced to 10-20"))).toBe(
+      true,
+    );
+    expect(rendered.some((l: string) => l.includes("ID: call-lines"))).toBe(
+      true,
+    );
+    expect(rendered.some((l: string) => l.includes("Original:"))).toBe(true);
+  });
+
+  it("renders error text for failed recall", async () => {
+    const entries = [makeSessionEntry("call-abc", "content")];
+    const def = captureToolDef();
+    const result = await def.execute(
+      "recall-id",
+      { id: "missing" },
+      undefined,
+      undefined,
+      {
+        sessionManager: {
+          getEntries: () => entries,
+        },
+      },
+    );
+    const component = def.renderResult(
+      result,
+      { expanded: false, isPartial: false },
+      mockTheme,
+      {},
+    );
+    const lines = component.render(80);
+    expect(lines.some((l: string) => l.includes("no tool result"))).toBe(true);
   });
 });
 
@@ -287,17 +437,9 @@ describe("registerRecallTool recall attribution", () => {
     });
 
     const entries = [makeSessionEntry("call-abc", "original content")];
+    const def = captureToolDef(() => {}, pruningState);
 
-    let capturedDef: any = null;
-    const fakePI = {
-      registerTool(def: any) {
-        capturedDef = def;
-      },
-    };
-
-    registerRecallTool(fakePI as any, () => {}, pruningState);
-
-    const result = await capturedDef.execute(
+    const result = await def.execute(
       "recall-id",
       { id: "call-abc" },
       undefined,
@@ -309,7 +451,7 @@ describe("registerRecallTool recall attribution", () => {
       },
     );
 
-    expect(result.isError).toBeFalsy();
+    expect(result.details.error).toBeUndefined();
     expect(pruningState.recallCountByReason.get("superseded-read-young")).toBe(
       1,
     );
@@ -325,15 +467,7 @@ describe("registerRecallTool recall attribution", () => {
     });
 
     const entries = [makeSessionEntry("call-abc", "original content")];
-
-    let capturedDef: any = null;
-    const fakePI = {
-      registerTool(def: any) {
-        capturedDef = def;
-      },
-    };
-
-    registerRecallTool(fakePI as any, () => {}, pruningState);
+    const def = captureToolDef(() => {}, pruningState);
 
     const ctx = {
       sessionManager: {
@@ -341,14 +475,14 @@ describe("registerRecallTool recall attribution", () => {
       },
     };
 
-    await capturedDef.execute(
+    await def.execute(
       "recall-id",
       { id: "call-abc" },
       undefined,
       undefined,
       ctx,
     );
-    await capturedDef.execute(
+    await def.execute(
       "recall-id",
       { id: "call-abc" },
       undefined,

@@ -26,6 +26,9 @@ function makeEstimate(
     currentTokens: 10000,
     summarizedTokens: 7000,
     keptTokens: 3000,
+    estimatedSummaryTokens: 210,
+    estimatedHandoffTokens: 3210,
+    estimatedSavingsTokens: 6790,
     ...overrides,
   };
 }
@@ -54,7 +57,7 @@ describe("formatHandoffPrompt", () => {
     );
     expect(prompt).toContain("Claude 3 Opus");
     expect(prompt).toContain("GPT-4o Mini");
-    expect(prompt).toContain("→");
+    expect(prompt).toContain("->");
   });
 
   it("falls back to provider/id when name is absent", () => {
@@ -67,11 +70,11 @@ describe("formatHandoffPrompt", () => {
     expect(prompt).toContain("openai/gpt-4o");
   });
 
-  it("shows token estimates", () => {
+  it("shows rounded token estimates", () => {
     const prompt = formatHandoffPrompt(makeRef(), makeRef(), makeEstimate());
-    expect(prompt).toContain("10,000");
-    expect(prompt).toContain("7,000");
-    expect(prompt).toContain("3,000");
+    expect(prompt).toContain("10k");
+    expect(prompt).toContain("3.2k");
+    expect(prompt).toContain("6.8k");
   });
 
   it("shows cost estimates when available", () => {
@@ -79,14 +82,14 @@ describe("formatHandoffPrompt", () => {
       makeRef(),
       makeRef(),
       makeEstimate({
-        sourceInputCost: 0.15,
         targetFullContextInputCost: 0.05,
-        targetKeptContextInputCost: 0.015,
+        estimatedHandoffCost: 0.016,
+        estimatedSavingsCost: 0.034,
       }),
     );
-    expect(prompt).toContain("$0.1500");
     expect(prompt).toContain("$0.0500");
-    expect(prompt).toContain("$0.0150");
+    expect(prompt).toContain("$0.0160");
+    expect(prompt).toContain("$0.0340");
   });
 
   it("omits costs when unavailable", () => {
@@ -94,12 +97,11 @@ describe("formatHandoffPrompt", () => {
       makeRef(),
       makeRef(),
       makeEstimate({
-        sourceInputCost: undefined,
         targetFullContextInputCost: undefined,
-        targetKeptContextInputCost: undefined,
+        estimatedHandoffCost: undefined,
+        estimatedSavingsCost: undefined,
       }),
     );
-    expect(prompt).not.toContain("cost");
     expect(prompt).not.toContain("$");
   });
 
@@ -114,8 +116,8 @@ describe("formatHandoffPrompt", () => {
     const prompt = formatHandoffPrompt(
       makeRef(),
       makeRef(),
-      makeEstimate({ sourceInputCost: 0.1 }),
+      makeEstimate({ targetFullContextInputCost: 0.1 }),
     );
-    expect(prompt).toMatch(/Estimated.*cost/);
+    expect(prompt).toMatch(/\(~\$.*\)/);
   });
 });

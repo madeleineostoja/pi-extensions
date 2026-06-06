@@ -34,6 +34,14 @@ Emitted when the same file is read more than once with the same `offset`/`limit`
 [read result elided (superseded by later read of PATH at turn TURN): SIZE. Preview: "PREVIEW". Call context_recall("TOOL_CALL_ID") to retrieve.]
 ```
 
+### Covered-read stub
+
+Emitted when an earlier read of a file is completely contained by a later read of the same file and there is no intervening `edit` or `write`. This includes an earlier partial read covered by a later full read, or an earlier partial read covered by a later broader partial read with confirmed `offset`/`limit` line ranges. The stub references the kept read's turn:
+
+```
+[read result elided (covered by later read of PATH at turn TURN): SIZE. Preview: "PREVIEW". Call context_recall("TOOL_CALL_ID") to retrieve.]
+```
+
 ### After-consumption bash stub
 
 Emitted when a successful, low-risk `bash` result is followed by an assistant message. The command text is included when recoverable from the tool call arguments; newlines/tabs are escaped and long commands are truncated in the stub:
@@ -58,7 +66,7 @@ Emitted when the context window is within `emergencyContextReserveTokens` of its
 [ToolName result elided (emergency context pressure): SIZE. Preview: "PREVIEW". Call context_recall("TOOL_CALL_ID") to retrieve.]
 ```
 
-When multiple reasons apply to the same result, the most semantically specific stub takes precedence: superseded-read > duplicate-read > after-consumption-bash > standard-stale.
+When multiple reasons apply to the same result, the most semantically specific stub takes precedence: superseded-read > duplicate-read > covered-read > after-consumption-bash > standard-stale.
 
 ### Preview segment
 
@@ -72,7 +80,7 @@ pi-context-prune uses a bounded adaptive pruning policy with several mechanisms 
 
 1. **After-consumption compaction** — Large, low-risk successful `bash` outputs that have already been consumed by an assistant message are compacted immediately. This saves tokens for completed work without hurting the cache because the assistant turn already broke the prefix.
 
-2. **Young-or-batch read rot** — Superseded and duplicate reads are stubbed immediately when the suffix cost is low enough, or deferred to batch pruning when the suffix is large. This avoids expensive cache invalidations near the tail while still reclaiming rot tokens in old history.
+2. **Young-or-batch read rot** — Superseded, duplicate, and covered reads are stubbed immediately when the suffix cost is low enough, or deferred to batch pruning when the suffix is large. This avoids expensive cache invalidations near the tail while still reclaiming rot tokens in old history.
 
 3. **Batch old-history pruning** — Deferred candidates are sorted by semantic risk and evaluated as a batch. A candidate is selected only when the aggregate saved tokens exceed a minimum, the net value (saved tokens minus suffix damage and recall risk) is positive, and semantic risk is within bounds. A configurable cooldown prevents batch pruning from running every turn.
 
@@ -115,10 +123,13 @@ The file is loaded once at session start. A missing file is silently ignored and
   "minTokens": 256,
   "supersededReadsEnabled": true,
   "duplicateReadsEnabled": true,
+  "coveredReadsEnabled": true,
   "adaptivePolicyEnabled": true,
   "afterConsumptionBashEnabled": true,
   "batchPruningEnabled": true,
   "emergencyContextReserveTokens": 16000,
+  "emergencyOrdinaryReadMinSavedTokens": 4000,
+  "emergencyMaxOrdinaryReads": 2,
   "batchCooldownTurns": 2,
   "batchMinCandidates": 2,
   "batchMinSavedTokens": 8000,
@@ -130,22 +141,25 @@ The file is loaded once at session start. A missing file is silently ignored and
 
 All keys are optional. Any key omitted falls back to the default shown above.
 
-| Key                             | Type         | Default | Description                                                                                     |
-| ------------------------------- | ------------ | ------- | ----------------------------------------------------------------------------------------------- |
-| `staleTurns`                    | number (≥ 0) | `4`     | Minimum user turns before a result is eligible for standard elision (compatibility fallback)    |
-| `minTokens`                     | number (≥ 0) | `256`   | Minimum estimated tokens before a result is eligible for standard elision (compatibility floor) |
-| `supersededReadsEnabled`        | boolean      | `true`  | Enable superseded-read young-or-batch rot detection                                             |
-| `duplicateReadsEnabled`         | boolean      | `true`  | Enable duplicate-read young-or-batch rot detection                                              |
-| `adaptivePolicyEnabled`         | boolean      | `true`  | Adjust per-reason profiles from cache/recall telemetry                                          |
-| `afterConsumptionBashEnabled`   | boolean      | `true`  | Enable after-consumption bash compaction                                                        |
-| `batchPruningEnabled`           | boolean      | `true`  | Enable batch old-history pruning for deferred candidates                                        |
-| `emergencyContextReserveTokens` | number (≥ 0) | `16000` | Context window headroom below which emergency-pressure elision is triggered                     |
-| `batchCooldownTurns`            | number (≥ 0) | `2`     | Minimum turns between non-emergency batch pruning passes                                        |
-| `batchMinCandidates`            | number (≥ 1) | `2`     | Minimum number of deferred candidates required to run a batch pass                              |
-| `batchMinSavedTokens`           | number (≥ 0) | `8000`  | Minimum aggregate saved tokens for a non-emergency batch pass                                   |
-| `batchMinNetValue`              | number       | `3000`  | Minimum aggregate net value (benefit minus damage and risk) for a non-emergency batch pass      |
-| `batchMaxCandidates`            | number (≥ 1) | `8`     | Maximum number of candidates selected per batch pass                                            |
-| `batchMaxSemanticRisk`          | number (≥ 0) | `3.0`   | Maximum total semantic risk allowed for a non-emergency batch pass                              |
+| Key                                   | Type         | Default | Description                                                                                                         |
+| ------------------------------------- | ------------ | ------- | ------------------------------------------------------------------------------------------------------------------- |
+| `staleTurns`                          | number (≥ 0) | `4`     | Minimum user turns before a result is eligible for standard elision (compatibility fallback)                        |
+| `minTokens`                           | number (≥ 0) | `256`   | Minimum estimated tokens before a result is eligible for standard elision (compatibility floor)                     |
+| `supersededReadsEnabled`              | boolean      | `true`  | Enable superseded-read young-or-batch rot detection                                                                 |
+| `duplicateReadsEnabled`               | boolean      | `true`  | Enable duplicate-read young-or-batch rot detection                                                                  |
+| `coveredReadsEnabled`                 | boolean      | `true`  | Enable covered-read young-or-batch rot detection (earlier reads superseded by later reads that contain their range) |
+| `adaptivePolicyEnabled`               | boolean      | `true`  | Adjust per-reason profiles from cache/recall telemetry                                                              |
+| `afterConsumptionBashEnabled`         | boolean      | `true`  | Enable after-consumption bash compaction                                                                            |
+| `batchPruningEnabled`                 | boolean      | `true`  | Enable batch old-history pruning for deferred candidates                                                            |
+| `emergencyContextReserveTokens`       | number (≥ 0) | `16000` | Context window headroom below which emergency-pressure elision is triggered                                         |
+| `emergencyOrdinaryReadMinSavedTokens` | number (≥ 0) | `4000`  | Minimum saved tokens for a consumed ordinary `read` to be eligible for emergency elision                               |
+| `emergencyMaxOrdinaryReads`           | number (≥ 0) | `2`     | Maximum number of ordinary reads that may be elided per emergency pass                                                |
+| `batchCooldownTurns`                  | number (≥ 0) | `2`     | Minimum turns between non-emergency batch pruning passes                                                            |
+| `batchMinCandidates`                  | number (≥ 1) | `2`     | Minimum number of deferred candidates required to run a batch pass                                                  |
+| `batchMinSavedTokens`                 | number (≥ 0) | `8000`  | Minimum aggregate saved tokens for a non-emergency batch pass                                                       |
+| `batchMinNetValue`                    | number       | `3000`  | Minimum aggregate net value (benefit minus damage and risk) for a non-emergency batch pass                          |
+| `batchMaxCandidates`                  | number (≥ 1) | `8`     | Maximum number of candidates selected per batch pass                                                                |
+| `batchMaxSemanticRisk`                | number (≥ 0) | `3.0`   | Maximum total semantic risk allowed for a non-emergency batch pass                                                  |
 
 ## `context_recall` tool
 
@@ -154,7 +168,9 @@ The LLM calls `context_recall` to retrieve an elided result. Parameters:
 - `id` (required) — the `toolCallId` from the stub
 - `lines` (optional) — a 1-indexed line range such as `"10-20"` or `"5"` to fetch only part of the content; only supported for single-text-block results with no image blocks
 
-The tool description mentions that stubs come in several forms (standard, superseded, duplicate, after-consumption, batch-pressure, emergency-pressure) but the recall contract is identical for all of them while the original tool-result message remains in the active session store.
+The tool description mentions that stubs come in several forms (standard, superseded, duplicate, covered, after-consumption, batch-pressure, emergency-pressure) but the recall contract is identical for all of them while the original tool-result message remains in the active session store.
+
+On success, the full recalled content is included in the tool result for the model, but the interactive UI renders a compact summary (tool name, size, line count, and slice info if applicable) instead of dumping the raw text. Errors are shown as-is.
 
 ## `/context-prune` command
 

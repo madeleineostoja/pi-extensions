@@ -238,6 +238,78 @@ describe("elision latching", () => {
     const r2 = hook({ type: "context", messages } as any, {} as any);
     expect(r1).toEqual(r2);
   });
+
+  it("latches read path and offset/limit and preserves them across passes", () => {
+    const state = createPruningState();
+    const config = {
+      ...defaultConfig(),
+      supersededReadsEnabled: true,
+      duplicateReadsEnabled: false,
+    };
+    const hook = makeContextHook(config, undefined, state);
+
+    const messages: any[] = [
+      makeUserMsg(),
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "read-latch",
+            name: "read",
+            arguments: { path: "src/foo.ts", offset: 20, limit: 50 },
+          },
+        ],
+        timestamp: Date.now(),
+      },
+      makeToolResult("read-latch", "x".repeat(HUGE)),
+      makeUserMsg(),
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "edit-latch",
+            name: "edit",
+            arguments: {
+              path: "src/foo.ts",
+              old_string: "x",
+              new_string: "y",
+            },
+          },
+        ],
+        timestamp: Date.now(),
+      },
+      {
+        role: "toolResult",
+        toolCallId: "edit-latch",
+        toolName: "edit",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+        timestamp: Date.now(),
+      },
+    ];
+
+    const r1 = hook(
+      { type: "context", messages } as any,
+      { cwd: "/cwd" } as any,
+    );
+    const latched = state.latched.get("read-latch");
+    expect(latched?.readPath).toBe("/cwd/src/foo.ts");
+    expect(latched?.readOffset).toBe(20);
+    expect(latched?.readLimit).toBe(50);
+
+    const r2 = hook(
+      { type: "context", messages } as any,
+      { cwd: "/cwd" } as any,
+    );
+    expect(r1).toEqual(r2);
+    const readResult = (r2.messages as any[]).find(
+      (m: any) => m.toolCallId === "read-latch",
+    );
+    expect(readResult.content[0].text).toContain("offset=20");
+    expect(readResult.content[0].text).toContain("limit=50");
+  });
 });
 
 describe("ElisionPassEntry fields", () => {

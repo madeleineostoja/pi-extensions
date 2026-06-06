@@ -61,19 +61,46 @@ export function extractPreview(content: ToolResultContent): string | null {
   return truncated ? escaped + "…" : escaped;
 }
 
+export type ReadMetadata = {
+  normalizedPath: string;
+  offset?: number;
+  limit?: number;
+};
+
+function formatReadMetadata(meta: ReadMetadata): string {
+  let segment = ` Path: ${meta.normalizedPath}.`;
+  const parts: string[] = [];
+  if (typeof meta.offset === "number") {
+    parts.push(`offset=${meta.offset}`);
+  }
+  if (typeof meta.limit === "number") {
+    parts.push(`limit=${meta.limit}`);
+  }
+  if (parts.length > 0) {
+    segment += ` ${parts.join(" ")}.`;
+  }
+  return segment;
+}
+
 export function formatStub({
   toolName,
   tokenCount,
   toolCallId,
   preview,
+  readMetadata,
 }: {
   toolName: string;
   tokenCount: number;
   toolCallId: string;
   preview?: string | null;
+  readMetadata?: ReadMetadata;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result elided: ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+  const readSegment = readMetadata ? formatReadMetadata(readMetadata) : "";
+  const recallContract = readMetadata
+    ? ` Call context_recall("${toolCallId}") to retrieve; lines slicing is available for text-only results.`
+    : ` Call context_recall("${toolCallId}") to retrieve.`;
+  return `[${toolName} result elided: ${formatTokenCount(tokenCount)}.${previewSegment}${readSegment}${recallContract}]`;
 }
 
 export function formatBatchPressureStub({
@@ -81,14 +108,20 @@ export function formatBatchPressureStub({
   tokenCount,
   toolCallId,
   preview,
+  readMetadata,
 }: {
   toolName: string;
   tokenCount: number;
   toolCallId: string;
   preview?: string | null;
+  readMetadata?: ReadMetadata;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result compacted by cache-aware batch pruning: ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+  const readSegment = readMetadata ? formatReadMetadata(readMetadata) : "";
+  const recallContract = readMetadata
+    ? ` Call context_recall("${toolCallId}") to retrieve; lines slicing is available for text-only results.`
+    : ` Call context_recall("${toolCallId}") to retrieve.`;
+  return `[${toolName} result compacted by cache-aware batch pruning: ${formatTokenCount(tokenCount)}.${previewSegment}${readSegment}${recallContract}]`;
 }
 
 export function formatEmergencyPressureStub({
@@ -96,31 +129,50 @@ export function formatEmergencyPressureStub({
   tokenCount,
   toolCallId,
   preview,
+  readMetadata,
 }: {
   toolName: string;
   tokenCount: number;
   toolCallId: string;
   preview?: string | null;
+  readMetadata?: ReadMetadata;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result elided (emergency context pressure): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+  const readSegment = readMetadata ? formatReadMetadata(readMetadata) : "";
+  const recallContract = readMetadata
+    ? ` Call context_recall("${toolCallId}") to retrieve; lines slicing is available for text-only results.`
+    : ` Call context_recall("${toolCallId}") to retrieve.`;
+  return `[${toolName} result elided (emergency context pressure): ${formatTokenCount(tokenCount)}.${previewSegment}${readSegment}${recallContract}]`;
 }
 
 export function formatSupersededStub({
   toolName,
   normalizedPath,
+  offset,
+  limit,
   tokenCount,
   toolCallId,
   preview,
 }: {
   toolName: string;
   normalizedPath: string;
+  offset?: number;
+  limit?: number;
   tokenCount: number;
   toolCallId: string;
   preview?: string | null;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result elided (superseded by later edit/write of ${normalizedPath}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve original.]`;
+  const parts: string[] = [];
+  if (typeof offset === "number") {
+    parts.push(`offset=${offset}`);
+  }
+  if (typeof limit === "number") {
+    parts.push(`limit=${limit}`);
+  }
+  const pathSegment =
+    parts.length > 0 ? `${normalizedPath}, ${parts.join(" ")}` : normalizedPath;
+  return `[${toolName} result elided (superseded by later edit/write of ${pathSegment}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve original.]`;
 }
 
 const MAX_BASH_COMMAND_STUB_CHARS = 120;
@@ -160,6 +212,8 @@ export function formatDuplicateStub({
   toolName,
   normalizedPath,
   keptUserTurnIndex,
+  offset,
+  limit,
   tokenCount,
   toolCallId,
   preview,
@@ -167,12 +221,60 @@ export function formatDuplicateStub({
   toolName: string;
   normalizedPath: string;
   keptUserTurnIndex: number;
+  offset?: number;
+  limit?: number;
   tokenCount: number;
   toolCallId: string;
   preview?: string | null;
 }): string {
   const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
-  return `[${toolName} result elided (superseded by later read of ${normalizedPath} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+  const parts: string[] = [];
+  if (typeof offset === "number") {
+    parts.push(`offset=${offset}`);
+  }
+  if (typeof limit === "number") {
+    parts.push(`limit=${limit}`);
+  }
+  const pathSegment =
+    parts.length > 0 ? `${normalizedPath}, ${parts.join(" ")}` : normalizedPath;
+  return `[${toolName} result elided (superseded by later read of ${pathSegment} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
+}
+
+export type CoveredInfo = {
+  normalizedPath: string;
+  keptUserTurnIndex: number;
+};
+
+export function formatCoveredStub({
+  toolName,
+  normalizedPath,
+  keptUserTurnIndex,
+  offset,
+  limit,
+  tokenCount,
+  toolCallId,
+  preview,
+}: {
+  toolName: string;
+  normalizedPath: string;
+  keptUserTurnIndex: number;
+  offset?: number;
+  limit?: number;
+  tokenCount: number;
+  toolCallId: string;
+  preview?: string | null;
+}): string {
+  const previewSegment = preview != null ? ` Preview: "${preview}".` : "";
+  const parts: string[] = [];
+  if (typeof offset === "number") {
+    parts.push(`offset=${offset}`);
+  }
+  if (typeof limit === "number") {
+    parts.push(`limit=${limit}`);
+  }
+  const pathSegment =
+    parts.length > 0 ? `${normalizedPath}, ${parts.join(" ")}` : normalizedPath;
+  return `[${toolName} result elided (covered by later read of ${pathSegment} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
 }
 
 function estimateTextBlockChars(content: unknown): number {
@@ -289,9 +391,11 @@ function buildSupersededMaps(
 ): {
   toolCallInfoMap: Map<string, ToolCallInfo>;
   supersededPaths: Map<string, number>;
+  mutationPositions: Map<string, number[]>;
 } {
   const toolCallInfoMap = new Map<string, ToolCallInfo>();
   const supersededPaths = new Map<string, number>();
+  const mutationPositions = new Map<string, number[]>();
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -316,13 +420,16 @@ function buildSupersededMaps(
           const normalized = normalizePath(rawPath, cwd);
           if (normalized !== null) {
             supersededPaths.set(normalized, i);
+            const arr = mutationPositions.get(normalized) ?? [];
+            arr.push(i);
+            mutationPositions.set(normalized, arr);
           }
         }
       }
     }
   }
 
-  return { toolCallInfoMap, supersededPaths };
+  return { toolCallInfoMap, supersededPaths, mutationPositions };
 }
 
 type DuplicateInfo = {
@@ -334,10 +441,12 @@ function buildDuplicateReadMap(
   messages: AgentMsg[],
   cwd: string,
   toolCallInfoMap: Map<string, ToolCallInfo>,
+  mutationPositions: Map<string, number[]>,
 ): Map<string, DuplicateInfo> {
   const userTurnCounts = userTurnsUpToEachPosition(messages);
 
   type ReadEntry = {
+    index: number;
     toolCallId: string;
     normalizedPath: string;
     userTurnIndex: number;
@@ -369,6 +478,7 @@ function buildDuplicateReadMap(
 
     const entries = groups.get(groupKey) ?? [];
     entries.push({
+      index: i,
       toolCallId: msg.toolCallId,
       normalizedPath: normalized,
       userTurnIndex: userTurnCounts[i],
@@ -382,12 +492,250 @@ function buildDuplicateReadMap(
     if (entries.length < 2) {
       continue;
     }
-    const kept = entries[entries.length - 1];
-    for (const entry of entries.slice(0, -1)) {
-      result.set(entry.toolCallId, {
-        normalizedPath: entry.normalizedPath,
-        keptUserTurnIndex: kept.userTurnIndex,
-      });
+    const mutations = mutationPositions.get(entries[0].normalizedPath) ?? [];
+    for (let i = 0; i < entries.length - 1; i++) {
+      const earlier = entries[i];
+      for (let j = i + 1; j < entries.length; j++) {
+        const later = entries[j];
+        let hasMutation = false;
+        for (const mutPos of mutations) {
+          if (mutPos > earlier.index && mutPos < later.index) {
+            hasMutation = true;
+            break;
+          }
+        }
+        if (!hasMutation) {
+          result.set(earlier.toolCallId, {
+            normalizedPath: earlier.normalizedPath,
+            keptUserTurnIndex: later.userTurnIndex,
+          });
+          break;
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+type ReadRange =
+  | { kind: "full" }
+  | { kind: "partial"; start: number; endExclusive: number }
+  | { kind: "unknown" };
+
+const PI_READ_MAX_LINES = 2000;
+const PI_READ_MAX_BYTES = 50 * 1024;
+
+const READ_TRUNCATION_PATTERNS = [
+  /\[Showing lines \d+-\d+ of \d+/,
+  /exceeds\s+\S+\s+limit\. Use bash:/,
+  /\[\d+ more lines in file\. Use offset=\d+ to continue\.\]/,
+];
+
+function isReadTruncationNoticeLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  return READ_TRUNCATION_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+function countTextLines(text: string): number {
+  if (text.length === 0) {
+    return 0;
+  }
+  const lines = text.split(/\r?\n/);
+  if (text.endsWith("\n") || text.endsWith("\r")) {
+    lines.pop();
+  }
+  return lines.length;
+}
+
+function estimateDeliveredLines(content: ToolResultContent): number {
+  let lines = 0;
+  for (const block of content) {
+    if (block.type === "text" && typeof block.text === "string") {
+      const textLines = block.text.split(/\r?\n/);
+      if (block.text.endsWith("\n") || block.text.endsWith("\r")) {
+        textLines.pop();
+      }
+      const skip = new Set<number>();
+      for (let i = 0; i < textLines.length; i++) {
+        if (isReadTruncationNoticeLine(textLines[i])) {
+          skip.add(i);
+          if (i > 0 && textLines[i - 1].trim().length === 0) {
+            skip.add(i - 1);
+          }
+          if (
+            i + 1 < textLines.length &&
+            textLines[i + 1].trim().length === 0
+          ) {
+            skip.add(i + 1);
+          }
+        }
+      }
+      lines += textLines.length - skip.size;
+    }
+  }
+  return lines;
+}
+
+function isPotentiallyTruncatedRead(content: ToolResultContent): boolean {
+  let totalBytes = 0;
+  let totalLines = 0;
+  let hasTruncationNotice = false;
+  for (const block of content) {
+    if (block.type === "text" && typeof block.text === "string") {
+      totalBytes += Buffer.byteLength(block.text, "utf-8");
+      totalLines += countTextLines(block.text);
+      if (!hasTruncationNotice) {
+        for (const pattern of READ_TRUNCATION_PATTERNS) {
+          if (pattern.test(block.text)) {
+            hasTruncationNotice = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  return (
+    totalLines >= PI_READ_MAX_LINES ||
+    totalBytes >= PI_READ_MAX_BYTES ||
+    hasTruncationNotice
+  );
+}
+
+function extractReadRange(
+  input: Record<string, unknown>,
+  content: ToolResultContent,
+): ReadRange {
+  const hasOffset = typeof input.offset === "number";
+  const hasLimit = typeof input.limit === "number";
+
+  if (!hasOffset && !hasLimit) {
+    if (isPotentiallyTruncatedRead(content)) {
+      const deliveredLines = estimateDeliveredLines(content);
+      return { kind: "partial", start: 1, endExclusive: 1 + deliveredLines };
+    }
+    return { kind: "full" };
+  }
+
+  if (hasOffset && hasLimit) {
+    const offset = input.offset as number;
+    const limit = input.limit as number;
+    if (offset >= 1 && limit >= 0) {
+      if (isPotentiallyTruncatedRead(content)) {
+        const deliveredLines = estimateDeliveredLines(content);
+        return {
+          kind: "partial",
+          start: offset,
+          endExclusive: offset + deliveredLines,
+        };
+      }
+      return { kind: "partial", start: offset, endExclusive: offset + limit };
+    }
+  }
+
+  return { kind: "unknown" };
+}
+
+function rangeCovers(later: ReadRange, earlier: ReadRange): boolean {
+  if (earlier.kind === "full") {
+    return later.kind === "full";
+  }
+  if (earlier.kind === "unknown") {
+    return false;
+  }
+  if (later.kind === "full") {
+    return true;
+  }
+  if (later.kind === "unknown") {
+    return false;
+  }
+  return (
+    later.start <= earlier.start && later.endExclusive >= earlier.endExclusive
+  );
+}
+
+function buildCoveredReadMap(
+  messages: AgentMsg[],
+  cwd: string,
+  toolCallInfoMap: Map<string, ToolCallInfo>,
+  mutationPositions: Map<string, number[]>,
+): Map<string, CoveredInfo> {
+  const userTurnCounts = userTurnsUpToEachPosition(messages);
+
+  type ReadEntry = {
+    index: number;
+    toolCallId: string;
+    normalizedPath: string;
+    range: ReadRange;
+    userTurnIndex: number;
+  };
+
+  const pathToReads = new Map<string, ReadEntry[]>();
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!isToolResult(msg) || msg.toolName !== "read" || msg.isError) {
+      continue;
+    }
+
+    const callInfo = toolCallInfoMap.get(msg.toolCallId);
+    if (!callInfo) {
+      continue;
+    }
+
+    const rawPath = extractFilePath("read", callInfo.input);
+    const normalized = normalizePath(rawPath, cwd);
+    if (normalized === null) {
+      continue;
+    }
+
+    const input = callInfo.input as Record<string, unknown>;
+    const range = extractReadRange(input, msg.content);
+
+    const entries = pathToReads.get(normalized) ?? [];
+    entries.push({
+      index: i,
+      toolCallId: msg.toolCallId,
+      normalizedPath: normalized,
+      range,
+      userTurnIndex: userTurnCounts[i],
+    });
+    pathToReads.set(normalized, entries);
+  }
+
+  const result = new Map<string, CoveredInfo>();
+
+  for (const [path, reads] of pathToReads) {
+    const mutations = mutationPositions.get(path) ?? [];
+
+    for (let i = 0; i < reads.length; i++) {
+      const earlier = reads[i];
+
+      for (let j = i + 1; j < reads.length; j++) {
+        const later = reads[j];
+
+        let hasMutation = false;
+        for (const mutPos of mutations) {
+          if (mutPos > earlier.index && mutPos < later.index) {
+            hasMutation = true;
+            break;
+          }
+        }
+        if (hasMutation) {
+          continue;
+        }
+
+        if (rangeCovers(later.range, earlier.range)) {
+          result.set(earlier.toolCallId, {
+            normalizedPath: earlier.normalizedPath,
+            keptUserTurnIndex: later.userTurnIndex,
+          });
+          break;
+        }
+      }
     }
   }
 
@@ -419,7 +767,9 @@ type Candidate = {
   isOrdinarySourceRead: boolean;
   supersededPath?: string;
   duplicateInfo?: DuplicateInfo;
+  coveredInfo?: CoveredInfo;
   bashCommand?: string;
+  readMetadata?: ReadMetadata;
 };
 
 function buildStubTextForCandidate(
@@ -435,6 +785,7 @@ function buildStubTextForCandidate(
       tokenCount,
       toolCallId: cand.msg.toolCallId,
       preview,
+      readMetadata: cand.readMetadata,
     });
   }
   if (actionReason === "emergency-pressure") {
@@ -443,12 +794,15 @@ function buildStubTextForCandidate(
       tokenCount,
       toolCallId: cand.msg.toolCallId,
       preview,
+      readMetadata: cand.readMetadata,
     });
   }
   if (actionReason === "superseded-read-young" && cand.supersededPath) {
     return formatSupersededStub({
       toolName,
       normalizedPath: cand.supersededPath,
+      offset: cand.readMetadata?.offset,
+      limit: cand.readMetadata?.limit,
       tokenCount,
       toolCallId: cand.msg.toolCallId,
       preview,
@@ -459,6 +813,20 @@ function buildStubTextForCandidate(
       toolName,
       normalizedPath: cand.duplicateInfo.normalizedPath,
       keptUserTurnIndex: cand.duplicateInfo.keptUserTurnIndex,
+      offset: cand.readMetadata?.offset,
+      limit: cand.readMetadata?.limit,
+      tokenCount,
+      toolCallId: cand.msg.toolCallId,
+      preview,
+    });
+  }
+  if (actionReason === "covered-read-young" && cand.coveredInfo) {
+    return formatCoveredStub({
+      toolName,
+      normalizedPath: cand.coveredInfo.normalizedPath,
+      keptUserTurnIndex: cand.coveredInfo.keptUserTurnIndex,
+      offset: cand.readMetadata?.offset,
+      limit: cand.readMetadata?.limit,
       tokenCount,
       toolCallId: cand.msg.toolCallId,
       preview,
@@ -477,6 +845,7 @@ function buildStubTextForCandidate(
     tokenCount,
     toolCallId: cand.msg.toolCallId,
     preview,
+    readMetadata: cand.readMetadata,
   });
 }
 
@@ -539,8 +908,21 @@ function applyElision(
       latched.normalizedPath = cand.duplicateInfo.normalizedPath;
       latched.keptUserTurnIndex = cand.duplicateInfo.keptUserTurnIndex;
     }
+    if (primaryReason === "covered-read-young" && cand.coveredInfo) {
+      latched.normalizedPath = cand.coveredInfo.normalizedPath;
+      latched.keptUserTurnIndex = cand.coveredInfo.keptUserTurnIndex;
+    }
     if (primaryReason === "after-consumption-bash" && cand.bashCommand) {
       latched.command = cand.bashCommand;
+    }
+    if (cand.readMetadata) {
+      latched.readPath = cand.readMetadata.normalizedPath;
+      if (typeof cand.readMetadata.offset === "number") {
+        latched.readOffset = cand.readMetadata.offset;
+      }
+      if (typeof cand.readMetadata.limit === "number") {
+        latched.readLimit = cand.readMetadata.limit;
+      }
     }
     recordElision(pruningState, latched);
   }
@@ -561,18 +943,24 @@ export function makeContextHook(
 
     const cwd = (ctx as { cwd?: string }).cwd ?? process.cwd();
 
-    const { toolCallInfoMap, supersededPaths } = buildSupersededMaps(
-      messages,
-      cwd,
-    );
+    const { toolCallInfoMap, supersededPaths, mutationPositions } =
+      buildSupersededMaps(messages, cwd);
     const duplicateReadMap = buildDuplicateReadMap(
       messages,
       cwd,
       toolCallInfoMap,
+      mutationPositions,
     );
-    const hasAssistantAfter = config.afterConsumptionBashEnabled
-      ? assistantAfterEachPosition(messages)
-      : [];
+    const coveredReadMap = buildCoveredReadMap(
+      messages,
+      cwd,
+      toolCallInfoMap,
+      mutationPositions,
+    );
+    const hasAssistantAfter =
+      config.afterConsumptionBashEnabled || config.emergencyMaxOrdinaryReads > 0
+        ? assistantAfterEachPosition(messages)
+        : [];
     const distances = userTurnsAfterEachPosition(messages);
     const userTurnCounts = userTurnsUpToEachPosition(messages);
     const suffixTokenTable = buildSuffixTokenTable(messages);
@@ -642,16 +1030,31 @@ export function makeContextHook(
       const reasons: ElisionReason[] = [];
       let supersededPath: string | undefined;
       let duplicateInfo: DuplicateInfo | undefined;
+      let coveredInfo: CoveredInfo | undefined;
       let bashCommand: string | undefined;
       let readPath: string | null = null;
+      let readMetadata: ReadMetadata | undefined;
 
       if (msg.toolName === "read" && toolCallInfoMap) {
         const callInfo = toolCallInfoMap.get(msg.toolCallId);
         if (callInfo) {
-          readPath = normalizePath(
+          const normalized = normalizePath(
             extractFilePath("read", callInfo.input),
             cwd,
           );
+          if (normalized !== null) {
+            readPath = normalized;
+            const input = callInfo.input as Record<string, unknown>;
+            readMetadata = {
+              normalizedPath: normalized,
+              ...(typeof input.offset === "number"
+                ? { offset: input.offset }
+                : {}),
+              ...(typeof input.limit === "number"
+                ? { limit: input.limit }
+                : {}),
+            };
+          }
         }
       }
 
@@ -693,6 +1096,18 @@ export function makeContextHook(
       }
 
       if (
+        config.coveredReadsEnabled &&
+        msg.toolName === "read" &&
+        !msg.isError &&
+        coveredReadMap
+      ) {
+        coveredInfo = coveredReadMap.get(msg.toolCallId) ?? undefined;
+        if (coveredInfo) {
+          reasons.push("covered-read-young");
+        }
+      }
+
+      if (
         config.afterConsumptionBashEnabled &&
         !msg.isError &&
         msg.toolName === "bash" &&
@@ -720,6 +1135,42 @@ export function makeContextHook(
         }
       }
 
+      if (
+        isEmergency &&
+        reasons.length === 0 &&
+        msg.toolName === "read" &&
+        !msg.isError &&
+        readPath !== null &&
+        hasAssistantAfter[i]
+      ) {
+        const preview = extractPreview(msg.content);
+        const stubText = buildStubTextForCandidate(
+          {
+            index: i,
+            msg,
+            reasons,
+            originalTokens: tokenCount,
+            estimatedStubTokens: 0,
+            savedTokens: 0,
+            suffixTokens: 0,
+            semanticRisk: 0,
+            priority: 0,
+            isOrdinarySourceRead: false,
+            readMetadata,
+          },
+          "emergency-pressure",
+          tokenCount,
+          preview,
+        );
+        const stubTokens = estimateContentTokens([
+          { type: "text", text: stubText },
+        ]);
+        const savedTokens = Math.max(0, tokenCount - stubTokens);
+        if (savedTokens >= config.emergencyOrdinaryReadMinSavedTokens) {
+          reasons.push("emergency-pressure");
+        }
+      }
+
       if (reasons.length === 0) {
         continue;
       }
@@ -740,7 +1191,9 @@ export function makeContextHook(
           isOrdinarySourceRead: false,
           supersededPath,
           duplicateInfo,
+          coveredInfo,
           bashCommand,
+          readMetadata,
         },
         primaryReason,
         tokenCount,
@@ -756,10 +1209,9 @@ export function makeContextHook(
         msg.toolName === "read" &&
         readPath !== null &&
         !reasons.includes("duplicate-read-young") &&
+        !reasons.includes("covered-read-young") &&
         !reasons.includes("superseded-read-young");
-      const profile = getProfileForReason(
-        primaryReason as Exclude<ElisionReason, "emergency-pressure">,
-      );
+      const profile = getProfileForReason(primaryReason);
 
       candidates.push({
         index: i,
@@ -772,13 +1224,13 @@ export function makeContextHook(
         semanticRisk: isOrdinarySourceRead ? 1 : profile.semanticRisk,
         priority: isOrdinarySourceRead
           ? BATCH_PRIORITY["batch-pressure"]
-          : (BATCH_PRIORITY[
-              primaryReason as Exclude<ElisionReason, "emergency-pressure">
-            ] ?? 5),
+          : (BATCH_PRIORITY[primaryReason] ?? 5),
         isOrdinarySourceRead,
         supersededPath,
         duplicateInfo,
+        coveredInfo,
         bashCommand,
+        readMetadata,
       });
     }
 
@@ -808,10 +1260,7 @@ export function makeContextHook(
     const elidedIndices = new Set<number>();
 
     for (const cand of candidates) {
-      const primaryReason = getPrimaryReason(cand.reasons) as Exclude<
-        ElisionReason,
-        "emergency-pressure"
-      >;
+      const primaryReason = getPrimaryReason(cand.reasons);
       const profile = getProfileForReason(primaryReason);
 
       const recallRate = recallRateForScoring(pruningState, primaryReason);
@@ -868,15 +1317,43 @@ export function makeContextHook(
         return a.index - b.index;
       });
 
-      const selected: Candidate[] = [];
+      const emergencyOrdinaryCandidates: Candidate[] = [];
+      const otherDeferred: Candidate[] = [];
       for (const cand of deferred) {
-        if (!isEmergency && cand.isOrdinarySourceRead) {
+        if (
+          isEmergency &&
+          cand.isOrdinarySourceRead &&
+          cand.savedTokens >= config.emergencyOrdinaryReadMinSavedTokens
+        ) {
+          emergencyOrdinaryCandidates.push(cand);
+        } else {
+          otherDeferred.push(cand);
+        }
+      }
+
+      const selected: Candidate[] = [];
+      for (const cand of otherDeferred) {
+        if (cand.isOrdinarySourceRead) {
           continue;
         }
         if (selected.length >= config.batchMaxCandidates) {
           break;
         }
         selected.push(cand);
+      }
+
+      if (isEmergency) {
+        let emergencyOrdinarySelected = 0;
+        for (const cand of emergencyOrdinaryCandidates) {
+          if (selected.length >= config.batchMaxCandidates) {
+            break;
+          }
+          if (emergencyOrdinarySelected >= config.emergencyMaxOrdinaryReads) {
+            break;
+          }
+          selected.push(cand);
+          emergencyOrdinarySelected++;
+        }
       }
 
       if (selected.length >= (isEmergency ? 1 : config.batchMinCandidates)) {
@@ -957,12 +1434,25 @@ function buildStubFromLatched(
   const preview = extractPreview(msg.content);
   const reason = latched.reason;
 
+  const readMetadata: ReadMetadata | undefined = latched.readPath
+    ? {
+        normalizedPath: latched.readPath,
+        ...(typeof latched.readOffset === "number"
+          ? { offset: latched.readOffset }
+          : {}),
+        ...(typeof latched.readLimit === "number"
+          ? { limit: latched.readLimit }
+          : {}),
+      }
+    : undefined;
+
   if (reason === "batch-pressure") {
     return formatBatchPressureStub({
       toolName: latched.toolName,
       tokenCount: latched.originalTokens,
       toolCallId: latched.toolCallId,
       preview,
+      readMetadata,
     });
   }
   if (reason === "emergency-pressure") {
@@ -971,12 +1461,15 @@ function buildStubFromLatched(
       tokenCount: latched.originalTokens,
       toolCallId: latched.toolCallId,
       preview,
+      readMetadata,
     });
   }
   if (reason === "superseded-read-young" && latched.normalizedPath) {
     return formatSupersededStub({
       toolName: latched.toolName,
       normalizedPath: latched.normalizedPath,
+      offset: latched.readOffset,
+      limit: latched.readLimit,
       tokenCount: latched.originalTokens,
       toolCallId: latched.toolCallId,
       preview,
@@ -991,6 +1484,24 @@ function buildStubFromLatched(
       toolName: latched.toolName,
       normalizedPath: latched.normalizedPath,
       keptUserTurnIndex: latched.keptUserTurnIndex,
+      offset: latched.readOffset,
+      limit: latched.readLimit,
+      tokenCount: latched.originalTokens,
+      toolCallId: latched.toolCallId,
+      preview,
+    });
+  }
+  if (
+    reason === "covered-read-young" &&
+    latched.normalizedPath &&
+    latched.keptUserTurnIndex != null
+  ) {
+    return formatCoveredStub({
+      toolName: latched.toolName,
+      normalizedPath: latched.normalizedPath,
+      keptUserTurnIndex: latched.keptUserTurnIndex,
+      offset: latched.readOffset,
+      limit: latched.readLimit,
       tokenCount: latched.originalTokens,
       toolCallId: latched.toolCallId,
       preview,
@@ -1009,5 +1520,6 @@ function buildStubFromLatched(
     tokenCount: latched.originalTokens,
     toolCallId: latched.toolCallId,
     preview,
+    readMetadata,
   });
 }

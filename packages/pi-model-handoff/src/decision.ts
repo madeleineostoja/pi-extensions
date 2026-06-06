@@ -23,9 +23,12 @@ export type HandoffEstimate = {
   currentTokens: number;
   summarizedTokens: number;
   keptTokens: number;
-  sourceInputCost?: number;
+  estimatedSummaryTokens: number;
+  estimatedHandoffTokens: number;
+  estimatedSavingsTokens: number;
   targetFullContextInputCost?: number;
-  targetKeptContextInputCost?: number;
+  estimatedHandoffCost?: number;
+  estimatedSavingsCost?: number;
 };
 
 export type HandoffDecision =
@@ -83,7 +86,7 @@ export function buildModelRef(
 
 export function computeHandoffEstimate(
   preparation: CompactionPreparation,
-  sourceRef: ModelRef,
+  _sourceRef: ModelRef,
   targetRef: ModelRef,
 ): HandoffEstimate {
   const allMessages = [
@@ -95,22 +98,29 @@ export function computeHandoffEstimate(
     0,
   );
   const keptTokens = Math.max(preparation.tokensBefore - summarizedTokens, 0);
+  const estimatedSummaryTokens = Math.ceil(summarizedTokens * 0.03);
+  const estimatedHandoffTokens = keptTokens + estimatedSummaryTokens;
+  const estimatedSavingsTokens = Math.max(
+    preparation.tokensBefore - estimatedHandoffTokens,
+    0,
+  );
 
   const estimate: HandoffEstimate = {
     currentTokens: preparation.tokensBefore,
     summarizedTokens,
     keptTokens,
+    estimatedSummaryTokens,
+    estimatedHandoffTokens,
+    estimatedSavingsTokens,
   };
 
-  if (sourceRef.inputCostPerMillion !== undefined) {
-    estimate.sourceInputCost =
-      (preparation.tokensBefore / 1_000_000) * sourceRef.inputCostPerMillion;
-  }
   if (targetRef.inputCostPerMillion !== undefined) {
     estimate.targetFullContextInputCost =
       (preparation.tokensBefore / 1_000_000) * targetRef.inputCostPerMillion;
-    estimate.targetKeptContextInputCost =
-      (keptTokens / 1_000_000) * targetRef.inputCostPerMillion;
+    estimate.estimatedHandoffCost =
+      (estimatedHandoffTokens / 1_000_000) * targetRef.inputCostPerMillion;
+    estimate.estimatedSavingsCost =
+      estimate.targetFullContextInputCost - estimate.estimatedHandoffCost;
   }
 
   return estimate;
