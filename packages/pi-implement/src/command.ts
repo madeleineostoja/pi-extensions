@@ -41,8 +41,8 @@ import {
 import { parseCommand } from "./parser.js";
 import { selectStrategy } from "./strategy.js";
 import type { ExecutionMode } from "./parser.js";
-import { resolvePlanArtifacts } from "./artifacts.js";
 import { parsePlanFile } from "./plan.js";
+import { buildPlanBundleManifest } from "./manifest.js";
 import { diffProgress } from "./progress.js";
 import {
   getStatePaths,
@@ -452,6 +452,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       let plan: ReturnType<typeof parsePlanFile>;
       let planArtifacts: string[];
       let planHash: string;
+      let manifest: ReturnType<typeof buildPlanBundleManifest>;
       try {
         git = new ExecGitClient(ctx.cwd);
         repoRoot = await git.mainRoot();
@@ -459,7 +460,15 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         baseSha = await git.head();
         planContent = readFileSync(planPath, "utf-8");
         plan = parsePlanFile(planPath);
-        planArtifacts = resolvePlanArtifacts(planPath, plan);
+        manifest = buildPlanBundleManifest(planPath, plan);
+        if (manifest.validationErrors.length > 0) {
+          ctx.ui.notify(
+            `pi-implement blocked: plan bundle validation failed:\n${manifest.validationErrors.join("\n")}`,
+            "warning",
+          );
+          return;
+        }
+        planArtifacts = manifest.allArtifactPaths;
         planHash = createHash("sha256").update(planContent).digest("hex");
         if (!(await git.isCleanExcept(planArtifacts))) {
           ctx.ui.notify("pi-implement blocked: dirty worktree", "warning");
@@ -667,6 +676,7 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
           subagents: client,
           planPath,
           planArtifacts,
+          manifest,
           roles: effective.roles,
           mode: strategy.mode,
           maxConcurrency: strategy.maxConcurrency,

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -944,5 +948,13 @@ describe("selectStrategy - validationCommands are advisory only", () => {
     expect(
       (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
     ).toHaveLength(1);
+  });
+});
+
+describe("buildTriagePrompt", () => {
+  it("does not include a bundle material section", () => {
+    const plan = makePlan(["Task A", "Task B"]);
+    const prompt = buildTriagePrompt(plan, plan.tasks);
+    expect(prompt).not.toContain("## Referenced Plan Material");
   });
 });

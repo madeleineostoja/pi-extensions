@@ -4,8 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildPlanBundleManifest,
+  checkPlanMaterialSize,
   computeTaskFingerprint,
   extractPlanReference,
+  formatBundleMaterial,
+  formatReferencedMaterial,
   isPlanLinkageLine,
   MAX_PLAN_MATERIAL_CHARS,
 } from "./manifest.js";
@@ -324,5 +327,135 @@ describe("buildPlanBundleManifest", () => {
     const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
     const manifest = buildPlanBundleManifest(planPath, plan);
     expect(manifest.tasks[0].fingerprint).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("does not treat non-reference Plan: notes as malformed", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: review this with the team\n  - Plan: schedule a follow-up meeting\n",
+      "utf-8",
+    );
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    expect(manifest.validationErrors).toHaveLength(0);
+    expect(manifest.isIndexStyle).toBe(false);
+    expect(manifest.tasks[0].referencedMaterials).toHaveLength(0);
+  });
+
+  it("blocks empty backtick reference attempts", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: ``\n",
+      "utf-8",
+    );
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    expect(manifest.validationErrors.length).toBeGreaterThan(0);
+    expect(manifest.validationErrors[0]).toContain("malformed");
+  });
+
+  it("blocks empty angle-bracket reference attempts", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: <>\n",
+      "utf-8",
+    );
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    expect(manifest.validationErrors.length).toBeGreaterThan(0);
+    expect(manifest.validationErrors[0]).toContain("malformed");
+  });
+});
+
+describe("formatReferencedMaterial", () => {
+  it("returns empty string for no materials", () => {
+    expect(formatReferencedMaterial([])).toBe("");
+  });
+
+  it("includes raw content with display label headings", () => {
+    const materials = [
+      { absolutePath: "/a.md", displayLabel: "a.md", content: "# A\n" },
+      { absolutePath: "/b.md", displayLabel: "b.md", content: "# B\n" },
+    ];
+    const formatted = formatReferencedMaterial(materials);
+    expect(formatted).toContain("### a.md");
+    expect(formatted).toContain("# A");
+    expect(formatted).toContain("### b.md");
+    expect(formatted).toContain("# B");
+  });
+
+  it("throws when content exceeds maxChars", () => {
+    expect(() =>
+      formatReferencedMaterial(
+        [{ absolutePath: "/a.md", displayLabel: "a.md", content: "x" }],
+        1,
+      ),
+    ).toThrow("Plan material exceeds maximum size");
+  });
+});
+
+describe("formatBundleMaterial", () => {
+  const makeTmpDir = () => mkdtempSync(join(tmpdir(), "pi-manifest-fmt-"));
+
+  it("returns empty string for a manifest with no references", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Task\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    expect(formatBundleMaterial(manifest)).toBe("");
+  });
+
+  it("deduplicates referenced materials across tasks", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plan.md");
+    const sharedPath = join(dir, "shared.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task A\n  - Plan: `shared.md`\n- [ ] Task B\n  - Plan: `shared.md`\n",
+      "utf-8",
+    );
+    writeFileSync(sharedPath, "# Shared\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const formatted = formatBundleMaterial(manifest);
+    const occurrences = formatted.split("### shared.md").length - 1;
+    expect(occurrences).toBe(1);
+    expect(formatted).toContain("# Shared");
+  });
+
+  it("throws when content exceeds maxChars", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plan.md");
+    const subPath = join(dir, "sub.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `sub.md`\n",
+      "utf-8",
+    );
+    writeFileSync(subPath, "# Sub\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    expect(() => formatBundleMaterial(manifest, 1)).toThrow(
+      "Plan material exceeds maximum size",
+    );
+  });
+});
+
+describe("checkPlanMaterialSize", () => {
+  it("does not throw for content within limit", () => {
+    expect(() => checkPlanMaterialSize("abc", 100)).not.toThrow();
+  });
+
+  it("throws for content exceeding limit", () => {
+    expect(() => checkPlanMaterialSize("abc", 2)).toThrow(
+      "Plan material exceeds maximum size",
+    );
   });
 });

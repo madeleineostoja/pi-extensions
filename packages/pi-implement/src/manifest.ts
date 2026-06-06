@@ -39,6 +39,10 @@ export function isPlanLinkageLine(line: string): boolean {
   return /^[ \t]*(?:[-*][ \t]+)?Plan:/.test(line);
 }
 
+function looksLikeAttemptedPlanReference(line: string): boolean {
+  return /^[ \t]*(?:[-*][ \t]+)?Plan:\s*[`<>]/.test(line);
+}
+
 export function extractPlanReference(
   line: string,
 ): { target: string } | undefined {
@@ -111,6 +115,66 @@ function validatePlanTarget(
   return { absolutePath, content };
 }
 
+export function formatReferencedMaterial(
+  materials: ReferencedMaterial[],
+  maxChars = MAX_PLAN_MATERIAL_CHARS,
+): string {
+  if (materials.length === 0) {
+    return "";
+  }
+
+  const intro =
+    "The following raw plan material is included to help implement the selected task. It may contain context, decisions, acceptance criteria, or requirements used by multiple tasks.\n\nImplement only the selected task above. Do not implement unrelated requirements merely because they appear in referenced material.";
+
+  const parts: string[] = [intro];
+
+  for (const mat of materials) {
+    parts.push(`\n### ${mat.displayLabel}\n\n${mat.content}`);
+  }
+
+  const result = parts.join("\n");
+  checkPlanMaterialSize(result, maxChars);
+  return result;
+}
+
+export function formatBundleMaterial(
+  manifest: PlanBundleManifest,
+  maxChars = MAX_PLAN_MATERIAL_CHARS,
+): string {
+  const seen = new Set<string>();
+  const materials: ReferencedMaterial[] = [];
+
+  for (const task of manifest.tasks) {
+    for (const mat of task.referencedMaterials) {
+      if (!seen.has(mat.absolutePath)) {
+        seen.add(mat.absolutePath);
+        materials.push(mat);
+      }
+    }
+  }
+
+  if (materials.length === 0) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  for (const mat of materials) {
+    parts.push(`### ${mat.displayLabel}\n\n${mat.content}`);
+  }
+
+  const result = parts.join("\n\n");
+  checkPlanMaterialSize(result, maxChars);
+  return result;
+}
+
+export function checkPlanMaterialSize(content: string, maxChars: number): void {
+  if (content.length > maxChars) {
+    throw new Error(
+      `Plan material exceeds maximum size of ${maxChars} characters (${content.length} characters). Reduce plan size or increase the limit.`,
+    );
+  }
+}
+
 export function buildPlanBundleManifest(
   sourcePlanPath: string,
   plan: ParsedPlan,
@@ -134,34 +198,38 @@ export function buildPlanBundleManifest(
     let hasLinkage = false;
 
     for (const line of task.blockLines) {
-      if (!isPlanLinkageLine(line)) {
+      const ref = extractPlanReference(line);
+      if (ref) {
+        hasLinkage = true;
+
+        const validation = validatePlanTarget(sourceDir, ref.target);
+        if (typeof validation === "string") {
+          manifest.validationErrors.push(`Task ${task.index}: ${validation}`);
+          continue;
+        }
+
+        entry.referencedMaterials.push({
+          absolutePath: validation.absolutePath,
+          displayLabel: basename(validation.absolutePath),
+          content: validation.content,
+        });
+
+        if (!manifest.allArtifactPaths.includes(validation.absolutePath)) {
+          manifest.allArtifactPaths.push(validation.absolutePath);
+        }
+
         continue;
       }
-      hasLinkage = true;
 
-      const ref = extractPlanReference(line);
-      if (!ref) {
+      if (looksLikeAttemptedPlanReference(line)) {
+        hasLinkage = true;
         manifest.validationErrors.push(
           `Task ${task.index}: unsupported or malformed Plan: line: ${line.trim()}`,
         );
         continue;
       }
 
-      const validation = validatePlanTarget(sourceDir, ref.target);
-      if (typeof validation === "string") {
-        manifest.validationErrors.push(`Task ${task.index}: ${validation}`);
-        continue;
-      }
-
-      entry.referencedMaterials.push({
-        absolutePath: validation.absolutePath,
-        displayLabel: basename(validation.absolutePath),
-        content: validation.content,
-      });
-
-      if (!manifest.allArtifactPaths.includes(validation.absolutePath)) {
-        manifest.allArtifactPaths.push(validation.absolutePath);
-      }
+      // Natural-language Plan: notes are ignored
     }
 
     if (hasLinkage) {

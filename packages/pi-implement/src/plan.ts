@@ -1,4 +1,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import type { PlanBundleManifest, ReferencedMaterial } from "./manifest.js";
+import {
+  computeTaskFingerprint,
+  extractPlanReference,
+  formatReferencedMaterial,
+} from "./manifest.js";
 
 export type PlanTask = {
   index: number;
@@ -111,22 +117,49 @@ export function nextUncheckedTask(plan: ParsedPlan): PlanTask | undefined {
   return plan.tasks.find((task) => !task.checked);
 }
 
-export function buildTaskPacket(plan: ParsedPlan, task: PlanTask): TaskPacket {
+export function buildTaskPacket(
+  plan: ParsedPlan,
+  task: PlanTask,
+  manifest?: PlanBundleManifest,
+): TaskPacket {
   const parts: string[] = [
     "# Task Packet",
-    "",
-    "## Source Plan",
-    "",
-    plan.path,
     "",
     "## Selected Task",
     "",
     task.originalLine,
   ];
-  if (task.blockLines.length) {
-    parts.push(...task.blockLines);
+
+  const consumedReferences = manifest
+    ? task.blockLines.filter((line) => extractPlanReference(line) !== undefined)
+    : [];
+  const notesLines =
+    consumedReferences.length > 0
+      ? task.blockLines.filter((line) => extractPlanReference(line) === undefined)
+      : task.blockLines;
+  if (notesLines.some((line) => line.trim() !== "")) {
+    parts.push("## Selected Task Notes", "", ...notesLines);
   }
   parts.push("");
+
+  let materials: ReferencedMaterial[] = [];
+  if (manifest) {
+    const entry = manifest.tasks.find((t) => t.planIndex === task.index);
+    if (entry) {
+      const currentFingerprint = computeTaskFingerprint(task);
+      if (entry.fingerprint !== currentFingerprint) {
+        throw new Error(
+          `Task fingerprint mismatch for task ${task.index}: plan may have changed since manifest was built.`,
+        );
+      }
+      materials = entry.referencedMaterials;
+    }
+  }
+
+  if (materials.length > 0) {
+    const referencedSection = formatReferencedMaterial(materials);
+    parts.push("## Referenced Plan Material", "", referencedSection, "");
+  }
 
   const nonTask = [
     ...plan.lines.slice(0, plan.tasksStartLine - 1),
@@ -135,12 +168,7 @@ export function buildTaskPacket(plan: ParsedPlan, task: PlanTask): TaskPacket {
     .join("\n")
     .trim();
   if (nonTask) {
-    parts.push(
-      "## Background Plan Context (not additional selected-task scope)",
-      "",
-      nonTask,
-      "",
-    );
+    parts.push("## Background Context", "", nonTask, "");
   }
 
   return {

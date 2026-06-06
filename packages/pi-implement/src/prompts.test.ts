@@ -70,6 +70,16 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
+  it("does not suggest reading the source plan file for background context", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).not.toContain("you may read the source plan file");
+    expect(prompt).not.toContain("source plan file is not an extension of it");
+  });
+
   it("tells the implementer to stop and narrow when implementing an unselected sibling task", () => {
     const prompt = buildImplementerPrompt({
       taskPacket: TASK_PACKET,
@@ -271,5 +281,17 @@ describe("buildOverallReviewerPrompt", () => {
 
     expect(prompt).not.toContain("Run ID:");
     expect(prompt).not.toContain("Landed Tasks");
+  });
+
+  it("does not include a bundle material section", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan\n",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+    });
+
+    expect(prompt).not.toContain("## Referenced Plan Material");
   });
 });

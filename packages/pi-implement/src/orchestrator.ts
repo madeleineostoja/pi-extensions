@@ -63,6 +63,7 @@ import {
 } from "./scheduler.js";
 import { checkpointPatch } from "./status.js";
 import { dirname } from "node:path";
+import type { PlanBundleManifest } from "./manifest.js";
 
 const MAX_REVIEWER_REQUESTS = 5;
 const MAX_SYSTEM_FAILURES = 2;
@@ -83,6 +84,7 @@ export type OrchestratorDeps = {
   subagents: SubagentClient;
   planPath: string;
   planArtifacts?: string[];
+  manifest?: PlanBundleManifest;
   roles: EffectiveRoles;
   mode?: RunMode;
   maxConcurrency?: number;
@@ -1466,7 +1468,7 @@ async function runTaskWorker(args: {
     const mainHeadBefore = await deps.git.head();
     const taskHeadBefore = worktreePath ? await taskGit.head() : undefined;
     const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
-    const packet = buildTaskPacket(plan, task);
+    const packet = buildTaskPacket(plan, task, deps.manifest);
     const effectiveWorktreePath = worktreePath ?? (await deps.git.root());
     const implementerPrompt = buildImplementerPrompt({
       taskPacket: packet.markdown,
