@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { UsageSnapshot } from "./usage.js";
+import type { UsageSnapshot } from "./provider.js";
 import { ICON } from "./constants.js";
 
 function clampPercent(percent: number): number {
@@ -42,26 +42,28 @@ export function formatStatus(
   theme: Theme,
 ): string | undefined {
   if (!snapshot) {
-    return formatColoredStatus("warning", "warning", "codex usage ?", theme);
+    const label = "codex usage ?";
+    return formatColoredStatus("warning", "warning", label, theme);
   }
 
+  const label = snapshot.provider;
   const parts: string[] = [];
   const percents: number[] = [];
 
-  if (snapshot.fiveHour !== undefined) {
-    const pct = clampPercent(Math.round(snapshot.fiveHour.usedPercent));
-    if (pct === 100 && snapshot.fiveHour.resetAt !== undefined) {
-      parts.push(`resets at ${formatResetTime(snapshot.fiveHour.resetAt)}`);
+  if (snapshot.primary !== undefined) {
+    const pct = clampPercent(Math.round(snapshot.primary.usedPercent));
+    if (pct === 100 && snapshot.primary.resetAt !== undefined) {
+      parts.push(`resets at ${formatResetTime(snapshot.primary.resetAt)}`);
     } else {
       parts.push(`${pct}%`);
     }
     percents.push(pct);
   }
 
-  if (snapshot.weekly !== undefined) {
-    const pct = clampPercent(Math.round(snapshot.weekly.usedPercent));
-    if (pct === 100 && snapshot.weekly.resetAt !== undefined) {
-      parts.push(`(resets at ${formatResetTime(snapshot.weekly.resetAt)})`);
+  if (snapshot.secondary !== undefined) {
+    const pct = clampPercent(Math.round(snapshot.secondary.usedPercent));
+    if (pct === 100 && snapshot.secondary.resetAt !== undefined) {
+      parts.push(`(resets at ${formatResetTime(snapshot.secondary.resetAt)})`);
     } else {
       parts.push(`(${pct}%)`);
     }
@@ -69,10 +71,13 @@ export function formatStatus(
   }
 
   if (parts.length === 0) {
+    if (snapshot.error) {
+      return formatColoredStatus("error", "error", `${label} usage ?`, theme);
+    }
     return undefined;
   }
 
-  const text = `codex ${parts.join(" ")}`;
+  const text = `${label} ${parts.join(" ")}`;
   const worst = Math.max(...percents);
   const color = statusColor(worst);
   const textColor = color === "success" ? "muted" : color;
@@ -91,19 +96,22 @@ function formatDuration(seconds: number): string {
 
 export function formatResetMessage(snapshot: UsageSnapshot | null): string {
   if (!snapshot) {
-    return "Failed to fetch Codex usage data.";
+    return "Failed to fetch usage data.";
   }
-  if (snapshot.fiveHour === undefined) {
-    return "No 5h window data available.";
+  if (snapshot.error) {
+    return snapshot.error;
   }
-  const pct = Math.round(clampPercent(snapshot.fiveHour.usedPercent));
-  const resetAt = snapshot.fiveHour.resetAt;
+  if (snapshot.primary === undefined) {
+    return "No window data available.";
+  }
+  const pct = Math.round(clampPercent(snapshot.primary.usedPercent));
+  const resetAt = snapshot.primary.resetAt;
   if (resetAt !== undefined) {
     const resetTime = formatResetTime(resetAt);
     const now = Math.floor(Date.now() / 1000);
     const remainingSeconds = Math.max(0, resetAt - now);
     const remaining = formatDuration(remainingSeconds);
-    return `Codex 5h window: ${pct}% used. Resets at ${resetTime} (${remaining} remaining).`;
+    return `${snapshot.provider} 5h window: ${pct}% used. Resets at ${resetTime} (${remaining} remaining).`;
   }
-  return `Codex 5h window: ${pct}% used.`;
+  return `${snapshot.provider} 5h window: ${pct}% used.`;
 }

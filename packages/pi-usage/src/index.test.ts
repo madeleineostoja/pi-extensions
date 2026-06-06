@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import type { UsageSnapshot } from "./usage.js";
+import type { UsageSnapshot } from "./provider.js";
 import { STATUS_KEY } from "./constants.js";
 
 type EventHandler = (event: unknown, ctx: unknown) => unknown;
@@ -66,6 +66,7 @@ type FakeCtx = {
     notify: ReturnType<typeof vi.fn>;
   };
   modelRegistry: {
+    getAvailable: () => Array<{ provider: string; id: string }>;
     getApiKeyAndHeaders: () => Promise<{ ok: false; error: string }>;
   };
 };
@@ -93,6 +94,7 @@ function makeCtx(provider = "openai-codex", hasUI = true): FakeCtx {
       notify: vi.fn(),
     },
     modelRegistry: {
+      getAvailable: () => [],
       getApiKeyAndHeaders: async () => ({ ok: false, error: "no auth" }),
     },
   };
@@ -102,7 +104,7 @@ async function loadExtension(
   getUsageMock: (...args: unknown[]) => Promise<UsageSnapshot | null>,
 ): Promise<{ pi: FakePi; defaultExport: (pi: FakePi) => void }> {
   vi.resetModules();
-  vi.doMock("./usage.js", async (importOriginal) => {
+  vi.doMock("./provider.js", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
     return {
       ...actual,
@@ -117,8 +119,9 @@ async function loadExtension(
 }
 
 const fakeSnapshot: UsageSnapshot = {
-  fiveHour: { usedPercent: 42 },
-  weekly: { usedPercent: 71 },
+  provider: "codex",
+  primary: { usedPercent: 42 },
+  secondary: { usedPercent: 71 },
   fetchedAt: Date.now(),
 };
 
@@ -149,7 +152,7 @@ describe("extension lifecycle", () => {
     );
   });
 
-  it("clears status after session_start with non-Codex model", async () => {
+  it("clears status after session_start with non-supported model", async () => {
     const { pi, defaultExport } = await loadExtension(async () => fakeSnapshot);
     defaultExport(pi as never);
     const ctx = makeCtx("anthropic");
@@ -170,7 +173,7 @@ describe("extension lifecycle", () => {
     );
   });
 
-  it("clears status after model_select switches away from Codex", async () => {
+  it("clears status after model_select switches away from supported provider", async () => {
     const { pi, defaultExport } = await loadExtension(async () => fakeSnapshot);
     defaultExport(pi as never);
     const ctx = makeCtx("anthropic");
@@ -217,7 +220,7 @@ describe("extension lifecycle", () => {
   it("message_end returns undefined when model is not Codex", async () => {
     const { pi, defaultExport } = await loadExtension(async () => fakeSnapshot);
     defaultExport(pi as never);
-    const ctx = makeCtx("anthropic");
+    const ctx = makeCtx("opencode");
     const handler = pi.handlers.get("message_end")!;
     const result = await handler(
       {
@@ -283,12 +286,12 @@ describe("extension lifecycle", () => {
     await cmd.handler("", ctx);
     expect(getUsageMock).toHaveBeenCalledWith(ctx.model, ctx, true);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      expect.stringContaining("Codex 5h window"),
+      expect.stringContaining("codex 5h window"),
       "info",
     );
   });
 
-  it("command handler warns when no Codex model is active", async () => {
+  it("command handler warns when no supported model is active", async () => {
     const getUsageMock = vi.fn(async () => fakeSnapshot);
     const { pi, defaultExport } = await loadExtension(getUsageMock);
     defaultExport(pi as never);
@@ -296,7 +299,7 @@ describe("extension lifecycle", () => {
     const ctx = makeCtx("anthropic");
     await cmd.handler("", ctx);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      "No Codex model is active.",
+      "No supported model is active.",
       "warning",
     );
   });

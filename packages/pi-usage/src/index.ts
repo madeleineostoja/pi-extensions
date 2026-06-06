@@ -4,7 +4,7 @@ import type {
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, AssistantMessage } from "@earendil-works/pi-ai";
-import { getUsage, isCodexProvider } from "./usage.js";
+import { getUsage, providerForModel } from "./provider.js";
 import { formatStatus, formatResetMessage } from "./format.js";
 import { STATUS_KEY, CACHE_TTL_MS } from "./constants.js";
 import {
@@ -13,8 +13,8 @@ import {
 } from "./limit-error.js";
 
 export { buildHeaders } from "./auth.js";
-export { fetchUsage, getUsage, isCodexProvider } from "./usage.js";
-export type { UsageSnapshot } from "./usage.js";
+export { getUsage, providerForModel } from "./provider.js";
+export type { UsageSnapshot } from "./provider.js";
 export {
   STATUS_KEY,
   CODEX_USAGE_URL,
@@ -86,7 +86,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event: SessionStartEvent, ctx) => {
     const model = ctx.model;
-    if (model && isCodexProvider(model.provider)) {
+    if (model && providerForModel(model) === "codex") {
       await refreshStatus(model, ctx);
     } else {
       cancelTimer();
@@ -97,7 +97,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("model_select", async (event, ctx) => {
     const model = event.model;
-    if (isCodexProvider(model.provider)) {
+    if (providerForModel(model) === "codex") {
       await refreshStatus(model, ctx);
     } else {
       cancelTimer();
@@ -111,7 +111,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     const model = ctx.model;
-    if (!model || !isCodexProvider(model.provider)) {
+    if (!model || providerForModel(model) !== "codex") {
       return;
     }
     const replacement = await buildLimitReplacementMessage(
@@ -130,14 +130,14 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("usage", {
-    description: "Show the next Codex 5h window reset time",
+    description: "Show the next usage window reset time",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI) {
         return;
       }
       const model = ctx.model;
-      if (!model || !isCodexProvider(model.provider)) {
-        ctx.ui.notify("No Codex model is active.", "warning");
+      if (!model || providerForModel(model) !== "codex") {
+        ctx.ui.notify("No supported model is active.", "warning");
         return;
       }
       const snapshot = await getUsage(model, ctx, true);

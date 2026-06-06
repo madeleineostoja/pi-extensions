@@ -1,6 +1,6 @@
 # pi-usage
 
-Pi extension that shows compact subscription usage in the Pi footer for supported providers (ChatGPT Codex, Opencode Go), and replaces limit-error messages with a human-readable summary.
+Pi extension that shows compact subscription usage in the Pi footer for ChatGPT Codex, and replaces limit-error messages with a human-readable summary.
 
 ## What it does
 

@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, AssistantMessage } from "@earendil-works/pi-ai";
-import type { UsageSnapshot } from "./usage.js";
-import { getUsage } from "./usage.js";
+import type { UsageSnapshot } from "./provider.js";
+import { getUsage } from "./provider.js";
 import { ICON } from "./constants.js";
 
 const LIMIT_INDICATORS = [
@@ -45,11 +45,11 @@ export function formatLimitReplacementText(
 
   if (snapshot) {
     const parts: string[] = [];
-    if (snapshot.fiveHour !== undefined) {
-      parts.push(`5h ${Math.round(snapshot.fiveHour.usedPercent)}%`);
+    if (snapshot.primary !== undefined) {
+      parts.push(`5h ${Math.round(snapshot.primary.usedPercent)}%`);
     }
-    if (snapshot.weekly !== undefined) {
-      parts.push(`W ${Math.round(snapshot.weekly.usedPercent)}%`);
+    if (snapshot.secondary !== undefined) {
+      parts.push(`W ${Math.round(snapshot.secondary.usedPercent)}%`);
     }
     if (parts.length > 0) {
       usageLine = `\n${ICON} ${parts.join(" ")}`;
