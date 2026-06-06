@@ -2,6 +2,11 @@ import type {
   ContextEvent,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+  estimateContentTokens,
+  estimateMessageTokens,
+  estimateSuffixTokens,
+} from "@pi-extensions/lib";
 import type { ElisionPassResult } from "./stats.ts";
 import type { ElisionReason, PruningState } from "./policy.ts";
 import {
@@ -277,39 +282,10 @@ export function formatCoveredStub({
   return `[${toolName} result elided (covered by later read of ${pathSegment} at turn ${keptUserTurnIndex}): ${formatTokenCount(tokenCount)}.${previewSegment} Call context_recall("${toolCallId}") to retrieve.]`;
 }
 
-function estimateTextBlockChars(content: unknown): number {
-  if (typeof content === "string") {
-    return content.length;
-  }
-  if (!Array.isArray(content)) {
-    return 0;
-  }
-  let chars = 0;
-  for (const block of content) {
-    if (block?.type === "text" && typeof block.text === "string") {
-      chars += block.text.length;
-    }
-  }
-  return chars;
-}
-
-export function estimateContentTokens(content: ToolResultContent): number {
-  return Math.ceil(estimateTextBlockChars(content) / 4);
-}
-
-function estimateMessageTextChars(msg: AgentMsg): number {
-  if (msg.role === "user" || msg.role === "assistant") {
-    return estimateTextBlockChars(msg.content);
-  }
-  if (msg.role === "toolResult") {
-    return estimateTextBlockChars(msg.content);
-  }
-  return 0;
-}
-
-function estimateMessageTokens(msg: AgentMsg): number {
-  return Math.ceil(estimateMessageTextChars(msg) / 4);
-}
+export {
+  estimateContentTokens,
+  estimateSuffixTokens,
+} from "@pi-extensions/lib";
 
 export function userTurnsAfterEachPosition(messages: AgentMsg[]): number[] {
   const distances: number[] = Array.from({ length: messages.length }, () => 0);
@@ -348,32 +324,6 @@ export function userTurnsUpToEachPosition(messages: AgentMsg[]): number[] {
     counts[i] = userCount;
   }
   return counts;
-}
-
-function buildSuffixTokenTable(messages: AgentMsg[]): number[] {
-  const suffixChars: number[] = Array.from(
-    { length: messages.length + 1 },
-    () => 0,
-  );
-  for (let i = messages.length - 1; i >= 0; i--) {
-    suffixChars[i] = suffixChars[i + 1] + estimateMessageTextChars(messages[i]);
-  }
-  return suffixChars.map((chars) => Math.ceil(chars / 4));
-}
-
-function lookupSuffixTokens(
-  suffixTokens: number[],
-  afterIndex: number,
-): number {
-  const idx = Math.max(0, Math.min(suffixTokens.length - 1, afterIndex + 1));
-  return suffixTokens[idx];
-}
-
-export function estimateSuffixTokens(
-  messages: AgentMsg[],
-  afterIndex: number,
-): number {
-  return lookupSuffixTokens(buildSuffixTokenTable(messages), afterIndex);
 }
 
 function isToolResult(msg: AgentMsg): msg is ToolResultMsg {
@@ -963,7 +913,6 @@ export function makeContextHook(
         : [];
     const distances = userTurnsAfterEachPosition(messages);
     const userTurnCounts = userTurnsUpToEachPosition(messages);
-    const suffixTokenTable = buildSuffixTokenTable(messages);
 
     if (pruningState) {
       const activeToolCallIds = new Set<string>();
@@ -1018,7 +967,7 @@ export function makeContextHook(
               latched.originalTokens - (latched.stubTokens ?? 0),
             ),
             stubTokens: latched.stubTokens ?? 0,
-            suffixTokens: lookupSuffixTokens(suffixTokenTable, i),
+            suffixTokens: estimateSuffixTokens(messages, i),
           });
           continue;
         }
@@ -1203,7 +1152,7 @@ export function makeContextHook(
         { type: "text", text: stubText },
       ]);
       const savedTokens = Math.max(0, tokenCount - stubTokens);
-      const suffixTokens = lookupSuffixTokens(suffixTokenTable, i);
+      const suffixTokens = estimateSuffixTokens(messages, i);
 
       const isOrdinarySourceRead =
         msg.toolName === "read" &&
@@ -1365,7 +1314,7 @@ export function makeContextHook(
           0,
         );
         const batchDamage =
-          lookupSuffixTokens(suffixTokenTable, earliest.index) * cachePenalty;
+          estimateSuffixTokens(messages, earliest.index) * cachePenalty;
         const batchRisk = selected.reduce((s, c) => {
           const reason = getPrimaryReason(c.reasons);
           const rate = recallRateForScoring(pruningState, reason);
