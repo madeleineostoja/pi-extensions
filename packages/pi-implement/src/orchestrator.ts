@@ -1692,12 +1692,16 @@ async function runTaskWorker(args: {
         }
       }
 
+      const outOfScopeTasks = plan.tasks
+        .filter((t) => t.index !== task.index)
+        .map((t) => t.originalLine);
       reviewerPrompt = buildAlreadySatisfiedReviewerPrompt({
         taskPacket: packet.markdown,
         worktreePath: effectiveWorktreePath,
         implementer: parsed.result,
         headSha: reviewHeadBefore,
         accumulatedDiff,
+        outOfScopeTasks,
       });
     } else {
       const message =

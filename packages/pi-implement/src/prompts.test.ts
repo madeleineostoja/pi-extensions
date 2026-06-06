@@ -95,6 +95,23 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
+  it("tells the implementer to use referenced material only for selected-task context", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).toContain(
+      "The packet may contain referenced plan material that is broader than the selected task",
+    );
+    expect(prompt).toContain(
+      "Use that material only for context directly relevant to the selected task",
+    );
+    expect(prompt).toContain(
+      "Do not implement unrelated requirements merely because they appear in referenced material",
+    );
+  });
+
   it("documents both outcome values in the result schema", () => {
     const prompt = buildImplementerPrompt({
       taskPacket: TASK_PACKET,
@@ -180,6 +197,19 @@ describe("buildReviewerPrompt", () => {
       "Small prerequisite changes needed for the selected task may be approved",
     );
   });
+
+  it("uses the target sibling-task wording in the out-of-scope section", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      outOfScopeTasks: ["- [ ] Sibling task"],
+    });
+
+    expect(prompt).toContain(
+      "The following tasks are not selected. Use them only to identify scope creep in the candidate diff.",
+    );
+  });
 });
 
 describe("buildAlreadySatisfiedReviewerPrompt", () => {
@@ -242,6 +272,34 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
     expect(prompt).toContain(
       "Inspect the current repository state directly using read-only git and file commands",
     );
+  });
+
+  it("includes out-of-scope sibling tasks when provided", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+      outOfScopeTasks: ["- [ ] Sibling task A", "- [ ] Sibling task B"],
+    });
+
+    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(prompt).toContain("- [ ] Sibling task A");
+    expect(prompt).toContain("- [ ] Sibling task B");
+    expect(prompt).toContain(
+      "The following tasks are not selected. Use them only to identify scope creep in the candidate diff.",
+    );
+  });
+
+  it("omits the sibling section when no out-of-scope tasks are provided", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+    });
+
+    expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
   });
 });
 
