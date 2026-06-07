@@ -147,15 +147,18 @@ export function buildTaskPacket(
   let materials: ReferencedMaterial[] = [];
   if (manifest) {
     const entry = manifest.tasks.find((t) => t.planIndex === task.index);
-    if (entry) {
-      const currentFingerprint = computeTaskFingerprint(task);
-      if (entry.fingerprint !== currentFingerprint) {
-        throw new Error(
-          `Task fingerprint mismatch for task ${task.index}: plan may have changed since manifest was built.`,
-        );
-      }
-      materials = entry.referencedMaterials;
+    if (!entry) {
+      throw new Error(
+        `Task ${task.index} is missing from the plan bundle manifest: plan may have changed since manifest was built.`,
+      );
     }
+    const currentFingerprint = computeTaskFingerprint(task);
+    if (entry.fingerprint !== currentFingerprint) {
+      throw new Error(
+        `Task fingerprint mismatch for task ${task.index}: plan may have changed since manifest was built.`,
+      );
+    }
+    materials = entry.referencedMaterials;
   }
 
   if (materials.length > 0) {

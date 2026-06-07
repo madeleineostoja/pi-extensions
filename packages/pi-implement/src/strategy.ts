@@ -493,7 +493,10 @@ async function buildGraphPlannerPrompt(
 
   const fileTree = await getFileTreeSummary(req.repoRoot);
   const manifests = await getManifestContents(req.repoRoot);
-  const gitStatus = await getFilteredGitStatus(req.repoRoot, req.plan.path);
+  const gitStatus = await getFilteredGitStatus(
+    req.repoRoot,
+    req.manifest?.allArtifactPaths ?? [req.plan.path],
+  );
   const evidence = await getTargetedEvidence(req.repoRoot, unchecked);
 
   const taskHashes = unchecked
@@ -649,11 +652,13 @@ async function getManifestContents(repoRoot: string): Promise<string> {
 
 async function getFilteredGitStatus(
   repoRoot: string,
-  planPath?: string,
+  planArtifacts: string[] = [],
 ): Promise<string> {
-  const repoPlanPath = planPath
-    ? repoRelativePath(repoRoot, planPath)
-    : undefined;
+  const repoPlanArtifacts = new Set(
+    planArtifacts
+      .map((path) => repoRelativePath(repoRoot, path))
+      .filter((path): path is string => path !== undefined),
+  );
   try {
     const result = await execFileAsync(
       "git",
@@ -668,7 +673,7 @@ async function getFilteredGitStatus(
       if (filePath.startsWith(".pi/")) {
         return false;
       }
-      if (repoPlanPath && filePath === repoPlanPath) {
+      if (repoPlanArtifacts.has(filePath)) {
         return false;
       }
       return true;

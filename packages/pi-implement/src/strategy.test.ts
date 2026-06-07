@@ -1076,6 +1076,66 @@ describe("selectStrategy - graph planner bundle material", () => {
     expect(sharedOccurrences).toBe(1);
   });
 
+  it("filters all plan artifacts from graph planner git status", async () => {
+    const repoRoot = join(tmpRunDir, "repo");
+    mkdirSync(join(repoRoot, "src"), { recursive: true });
+    git(repoRoot, "init");
+    git(repoRoot, "config", "user.email", "test@example.com");
+    git(repoRoot, "config", "user.name", "Test");
+
+    const planPath = join(repoRoot, "plan.md");
+    const subPath = join(repoRoot, "sub.md");
+    const sourcePath = join(repoRoot, "src", "file.ts");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Update src/file.ts\n  - Plan: `sub.md`\n- [ ] Update docs/readme.md\n",
+    );
+    writeFileSync(subPath, "# Subplan\n\nDetails here.\n");
+    writeFileSync(sourcePath, "export const value = 1;\n");
+
+    git(repoRoot, "add", ".");
+    git(repoRoot, "commit", "-m", "chore: init");
+
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    writeFileSync(
+      planPath,
+      `${readFileSync(planPath, "utf-8")}\nDirty plan note.\n`,
+    );
+    writeFileSync(subPath, "# Subplan\n\nDirty details.\n");
+    writeFileSync(sourcePath, "export const value = 2;\n");
+
+    const subagents = makeSubagents("not valid json");
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot,
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "parallel",
+      requestedConcurrency: 2,
+      manifest,
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    const statusSection =
+      prompt
+        .split("## Current Git Status (excluding .pi/** and plan artifacts)")[1]
+        ?.split("## Targeted Evidence for Task Areas")[0] ?? "";
+    expect(statusSection).toContain("src/file.ts");
+    expect(statusSection).not.toContain("plan.md");
+    expect(statusSection).not.toContain("sub.md");
+  });
+
   it("does not include a bundle material section for single-file plans", async () => {
     const repoRoot = join(tmpRunDir, "repo");
     mkdirSync(join(repoRoot, "src"), { recursive: true });

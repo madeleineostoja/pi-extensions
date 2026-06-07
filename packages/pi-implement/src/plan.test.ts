@@ -282,6 +282,45 @@ Shared background.
     );
   });
 
+  it("throws when a manifest is missing the selected task", () => {
+    const dir = makeTmpDir();
+    const planPathLocal = join(dir, "plan.md");
+    const subPath = join(dir, "sub.md");
+    writeFileSync(
+      planPathLocal,
+      `# Plan
+
+## Tasks
+
+- [ ] First task
+  - Plan: \`sub.md\`
+`,
+      "utf-8",
+    );
+    writeFileSync(subPath, "# Sub\n", "utf-8");
+    const parsed = parsePlan(
+      planPathLocal,
+      readFileSync(planPathLocal, "utf-8"),
+    );
+    const manifest = buildPlanBundleManifest(planPathLocal, parsed);
+    const altered = parsePlan(
+      planPathLocal,
+      `# Plan
+
+## Tasks
+
+- [x] First task
+  - Plan: \`sub.md\`
+- [ ] Added task
+  - Plan: \`sub.md\`
+`,
+    );
+
+    expect(() => buildTaskPacket(altered, altered.tasks[1], manifest)).toThrow(
+      "missing from the plan bundle manifest",
+    );
+  });
+
   it("preserves single-file behavior without manifest", () => {
     const parsed = parsePlan(
       planPath,
