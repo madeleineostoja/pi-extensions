@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildTaskPacket, markTaskDoneInContent, parsePlan } from "./plan.js";
@@ -160,6 +160,64 @@ Important.
     expect(packet.markdown).toContain("## Referenced Plan Material");
     expect(packet.markdown).toContain("### sub.md");
     expect(packet.markdown).toContain("# Subplan content");
+  });
+
+  it("builds an index task packet with exact raw material and no sibling escape hatches", () => {
+    const dir = makeTmpDir();
+    const planPathLocal = join(dir, "plan.md");
+    const aDir = join(dir, "a");
+    const bDir = join(dir, "b");
+    const aPath = join(aDir, "spec.md");
+    const bPath = join(bDir, "spec.md");
+    mkdirSync(aDir, { recursive: true });
+    mkdirSync(bDir, { recursive: true });
+    writeFileSync(
+      planPathLocal,
+      `# Plan
+
+## Context
+
+Shared background.
+
+## Tasks
+
+- [ ] Implement selected slice
+  - Plan: \`a/spec.md\`
+  - Plan: \`b/spec.md\`
+  - Keep this selected-task note.
+- [ ] Implement sibling slice
+  - Sibling-only requirement.
+`,
+      "utf-8",
+    );
+    writeFileSync(aPath, "# A Spec\n\nExact **markdown** A.\n", "utf-8");
+    writeFileSync(bPath, "# B Spec\n\nExact `markdown` B.\n", "utf-8");
+    const parsed = parsePlan(
+      planPathLocal,
+      readFileSync(planPathLocal, "utf-8"),
+    );
+    const manifest = buildPlanBundleManifest(planPathLocal, parsed);
+
+    const packet = buildTaskPacket(parsed, parsed.tasks[0], manifest);
+
+    expect(packet.markdown).toContain(
+      "## Selected Task\n\n- [ ] Implement selected slice",
+    );
+    expect(packet.markdown).toContain("  - Keep this selected-task note.");
+    expect(packet.markdown).toContain(
+      "### a/spec.md\n\n# A Spec\n\nExact **markdown** A.\n",
+    );
+    expect(packet.markdown).toContain(
+      "### b/spec.md\n\n# B Spec\n\nExact `markdown` B.\n",
+    );
+    expect(packet.markdown).toContain("## Background Context");
+    expect(packet.markdown).toContain("Shared background.");
+    expect(packet.markdown).not.toContain("Plan: `a/spec.md`");
+    expect(packet.markdown).not.toContain("Plan: `b/spec.md`");
+    expect(packet.markdown).not.toContain("Implement sibling slice");
+    expect(packet.markdown).not.toContain("Sibling-only requirement");
+    expect(packet.markdown).not.toContain("## Source Plan");
+    expect(packet.markdown).not.toContain(planPathLocal);
   });
 
   it("omits selected task notes section when there are no non-Plan notes", () => {

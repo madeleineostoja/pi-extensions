@@ -15,6 +15,21 @@ const TASK_PACKET = `# Task Packet
 - [ ] My task
 `;
 
+const REFERENCED_TASK_PACKET = `# Task Packet
+
+## Selected Task
+
+- [ ] My task
+
+## Referenced Plan Material
+
+### auth.md
+
+# Auth Plan
+
+Raw auth requirement.
+`;
+
 const IMPLEMENTER_RESULT = {
   outcome: "changed" as const,
   summary: "Did the thing",
@@ -110,6 +125,19 @@ describe("buildImplementerPrompt", () => {
     expect(prompt).toContain(
       "Do not implement unrelated requirements merely because they appear in referenced material",
     );
+  });
+
+  it("includes referenced material without adding sibling task scope", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: REFERENCED_TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).toContain("## Referenced Plan Material");
+    expect(prompt).toContain("### auth.md");
+    expect(prompt).toContain("Raw auth requirement.");
+    expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
+    expect(prompt).not.toContain("Sibling task A");
   });
 
   it("documents both outcome values in the result schema", () => {
@@ -210,6 +238,21 @@ describe("buildReviewerPrompt", () => {
       "The following tasks are not selected. Use them only to identify scope creep in the candidate diff.",
     );
   });
+
+  it("retains referenced material and reviewer-only sibling context together", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: REFERENCED_TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      outOfScopeTasks: ["- [ ] Sibling task A"],
+    });
+
+    expect(prompt).toContain("## Referenced Plan Material");
+    expect(prompt).toContain("### auth.md");
+    expect(prompt).toContain("Raw auth requirement.");
+    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(prompt).toContain("- [ ] Sibling task A");
+  });
 });
 
 describe("buildAlreadySatisfiedReviewerPrompt", () => {
@@ -300,6 +343,22 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
     });
 
     expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
+  });
+
+  it("retains referenced material and reviewer-only sibling context together", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: REFERENCED_TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+      outOfScopeTasks: ["- [ ] Sibling task A"],
+    });
+
+    expect(prompt).toContain("## Referenced Plan Material");
+    expect(prompt).toContain("### auth.md");
+    expect(prompt).toContain("Raw auth requirement.");
+    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(prompt).toContain("- [ ] Sibling task A");
   });
 });
 

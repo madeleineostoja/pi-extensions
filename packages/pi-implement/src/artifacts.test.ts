@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolvePlanArtifacts } from "./artifacts.js";
+import { buildPlanBundleManifest } from "./manifest.js";
 import { parsePlan } from "./plan.js";
 
 describe("resolvePlanArtifacts", () => {
@@ -36,6 +37,24 @@ describe("resolvePlanArtifacts", () => {
     expect(artifacts).toContain(planPath);
     expect(artifacts).toContain(subPath);
     expect(artifacts).toContain(otherPath);
+  });
+
+  it("uses the same validated artifact paths as the plan bundle manifest", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    const sharedPath = join(dir, "shared.md");
+    writeFileSync(
+      planPath,
+      `# Plan\n\n## Tasks\n\n- [ ] Task one\n  - Plan: \`shared.md\`\n- [ ] Task two\n  - Plan: \`shared.md\`\n`,
+      "utf-8",
+    );
+    writeFileSync(sharedPath, "# Shared\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+
+    expect(resolvePlanArtifacts(planPath, plan)).toEqual(
+      manifest.allArtifactPaths,
+    );
   });
 
   it("throws for URL targets", () => {
@@ -118,5 +137,32 @@ describe("resolvePlanArtifacts", () => {
     );
     const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
     expect(() => resolvePlanArtifacts(planPath, plan)).toThrow("missing");
+  });
+
+  it("throws for empty referenced files", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    const emptyPath = join(dir, "empty.md");
+    writeFileSync(
+      planPath,
+      `# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: \`empty.md\`\n`,
+      "utf-8",
+    );
+    writeFileSync(emptyPath, " \n\t", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    expect(() => resolvePlanArtifacts(planPath, plan)).toThrow("empty");
+  });
+
+  it("throws for directory targets", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    mkdirSync(join(dir, "subdir"));
+    writeFileSync(
+      planPath,
+      `# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: \`subdir\`\n`,
+      "utf-8",
+    );
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    expect(() => resolvePlanArtifacts(planPath, plan)).toThrow("directory");
   });
 });

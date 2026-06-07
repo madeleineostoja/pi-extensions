@@ -200,6 +200,29 @@ describe("/implement command", () => {
     );
   });
 
+  it("blocks during command preflight when referenced plan files are invalid", async () => {
+    const { handler, ctx } = setup();
+    const repo = mkdtempSync(join(tmpdir(), "pi-implement-cmd-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@e.com"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "T"], { cwd: repo });
+    writeFileSync(
+      join(repo, "plan.md"),
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `missing.md`\n",
+    );
+    execFileSync("git", ["add", "plan.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: repo });
+
+    const repoCtx: FakeContext = { ...ctx, cwd: repo };
+    await handler("plan.md", repoCtx);
+
+    expect(repoCtx.ui.notifications[0]?.level).toBe("warning");
+    expect(repoCtx.ui.notifications[0]?.message).toContain(
+      "pi-implement blocked: plan bundle validation failed",
+    );
+    expect(repoCtx.ui.notifications[0]?.message).toContain("missing.md");
+  });
+
   it("allows a new run to start from followup_required phase", async () => {
     const { handler, ctx } = setup();
     const repo = mkdtempSync(join(tmpdir(), "pi-implement-cmd-"));

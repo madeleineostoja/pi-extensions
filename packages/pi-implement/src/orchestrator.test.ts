@@ -241,6 +241,43 @@ describe("runImplementation", () => {
     expect(subagents.spawns).toHaveLength(0);
   });
 
+  it("blocks if a task fingerprint changes after manifest preflight", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const subPath = join(dir, "sub.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `sub.md`\n  - Keep this note\n",
+      "utf-8",
+    );
+    writeFileSync(subPath, "# Subplan\n", "utf-8");
+    const manifest = buildPlanBundleManifest(planPath, parsePlanFile(planPath));
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `sub.md`\n  - Edited after preflight\n",
+      "utf-8",
+    );
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("fingerprint mismatch");
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
   it("implements, reviews, marks, and commits one task", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
