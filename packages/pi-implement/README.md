@@ -30,15 +30,33 @@ Trivial cases short-circuit: zero or one unchecked task always runs serially.
 
 ## How it works
 
-- Requires the current directory to be inside a git repo with a clean worktree, ignoring the source plan artifact.
+- Requires the current directory to be inside a git repo with a clean worktree, ignoring the source plan artifact and any validated supporting plan artifacts.
 - Parses only the `## Tasks` section for executable checklist state.
 - Requires `@tintinweb/pi-subagents` and drives implementer, reviewer, and planner roles through its cross-extension RPC/event interfaces.
 - For each task, spawns an implementer subagent, stages the candidate commit, then spawns a reviewer subagent. Staging before review lets the reviewer see new untracked files via `git diff --cached HEAD`.
-- Excludes the source plan artifact from staging and never force-adds ignored files.
+- Excludes plan artifacts from staging and never force-adds ignored files.
 - In parallel mode, tasks run in isolated git worktrees and are integrated back into the main branch one at a time, with verification at each integration step and a final validation pass.
 - The parent extension marks the approved checkbox as local run state and makes one commit per task.
 
 Plan checkbox updates are intentionally not part of any commit. Plan files may be gitignored or live outside the repository, as long as `/implement` is run from inside the target repository.
+
+## Plan format and task scope
+
+Executable work comes from top-level checkbox tasks under `## Tasks`. `/implement` runs the next unchecked top-level task and updates that same checkbox when the task is approved.
+
+For index-style plans, a task can reference supporting markdown files with indented `Plan:` linkage lines:
+
+```markdown
+## Tasks
+
+- [ ] Implement auth storage
+  - Plan: `auth-storage.md`
+  - Plan: <shared-decisions.md>
+```
+
+Supported references contain exactly one `Plan:` target per line, written as either a backticked or angle-bracketed local markdown path. Multiple `Plan:` lines under one task are allowed. URLs, non-markdown targets, directories, missing files, empty files, malformed references, and multiple references on one line block execution before implementation.
+
+Referenced supporting file contents are inlined as raw markdown in the implementer's task packet under `Referenced Plan Material`. The selected checkbox remains the only unit of work: implementers are instructed to use referenced material only for requirements directly relevant to the selected task, and they are not directed to read the whole source plan. Sibling task lines are omitted from implementer packets; reviewers receive sibling task context only as a scope-creep guard.
 
 ## Config
 
