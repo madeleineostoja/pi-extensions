@@ -4,7 +4,7 @@ import {
   formatLimitReplacementText,
   buildLimitReplacementMessage,
 } from "./limit-error.js";
-import type { UsageSnapshot } from "./usage.js";
+import type { UsageSnapshot } from "./provider.js";
 
 function makeMsg(text: string, role = "assistant"): unknown {
   return { role, content: [{ type: "text", text }] };
@@ -69,8 +69,9 @@ describe("isCodexLimitError", () => {
 describe("formatLimitReplacementText", () => {
   it("includes both window percentages when snapshot has both", () => {
     const snapshot: UsageSnapshot = {
-      fiveHour: { usedPercent: 42 },
-      weekly: { usedPercent: 71 },
+      provider: "codex",
+      primary: { usedPercent: 42 },
+      secondary: { usedPercent: 71 },
       fetchedAt: Date.now(),
     };
     const text = formatLimitReplacementText(snapshot);
@@ -78,9 +79,10 @@ describe("formatLimitReplacementText", () => {
     expect(text).toContain("W 71%");
   });
 
-  it("includes only fiveHour when weekly is absent", () => {
+  it("includes only primary when secondary is absent", () => {
     const snapshot: UsageSnapshot = {
-      fiveHour: { usedPercent: 55 },
+      provider: "codex",
+      primary: { usedPercent: 55 },
       fetchedAt: Date.now(),
     };
     const text = formatLimitReplacementText(snapshot);
@@ -88,9 +90,10 @@ describe("formatLimitReplacementText", () => {
     expect(text).not.toContain("W");
   });
 
-  it("includes only weekly when fiveHour is absent", () => {
+  it("includes only secondary when primary is absent", () => {
     const snapshot: UsageSnapshot = {
-      weekly: { usedPercent: 88 },
+      provider: "codex",
+      secondary: { usedPercent: 88 },
       fetchedAt: Date.now(),
     };
     const text = formatLimitReplacementText(snapshot);
@@ -105,7 +108,10 @@ describe("formatLimitReplacementText", () => {
   });
 
   it("does not include usage line when both windows are absent", () => {
-    const snapshot: UsageSnapshot = { fetchedAt: Date.now() };
+    const snapshot: UsageSnapshot = {
+      provider: "codex",
+      fetchedAt: Date.now(),
+    };
     const text = formatLimitReplacementText(snapshot);
     expect(text).toContain("Codex usage limit reached");
     expect(text).not.toContain("%");
@@ -118,8 +124,9 @@ describe("formatLimitReplacementText", () => {
 
   it("rounds percentages to whole numbers", () => {
     const snapshot: UsageSnapshot = {
-      fiveHour: { usedPercent: 42.7 },
-      weekly: { usedPercent: 71.2 },
+      provider: "codex",
+      primary: { usedPercent: 42.7 },
+      secondary: { usedPercent: 71.2 },
       fetchedAt: Date.now(),
     };
     const text = formatLimitReplacementText(snapshot);
@@ -146,6 +153,7 @@ describe("buildLimitReplacementMessage", () => {
       };
       const ctx = {
         modelRegistry: {
+          getAvailable: () => [],
           getApiKeyAndHeaders: async () => ({ ok: true, headers: {} }),
         },
       };

@@ -37,7 +37,7 @@ export async function buildHeaders(
   const headers: Record<string, string> = {
     ...auth.headers,
     Accept: "application/json",
-    "User-Agent": "codex-usage/0.1.0",
+    "User-Agent": "pi-usage/0.1.0",
   };
 
   if (auth.apiKey) {

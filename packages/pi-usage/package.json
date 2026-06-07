@@ -1,6 +1,6 @@
 {
-  "name": "pi-codex-usage",
-  "description": "Pi extension that shows ChatGPT Codex subscription usage in the Pi footer while a Codex model is active.",
+  "name": "pi-usage",
+  "description": "Pi extension that shows ChatGPT Codex and Opencode Go subscription usage in the Pi footer.",
   "license": "MIT",
   "type": "module",
   "keywords": [

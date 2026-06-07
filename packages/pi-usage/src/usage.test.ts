@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { fetchUsage, getUsage, isCodexProvider } from "./usage.js";
+import { fetchUsage, getUsage } from "./providers/codex.js";
 import { CACHE_TTL_MS } from "./constants.js";
 
 type FakeModel = { provider: string; id: string };
@@ -31,27 +31,6 @@ function makeJsonResponse(body: unknown, status = 200): Response {
     json: async () => body,
   } as Response;
 }
-
-describe("isCodexProvider", () => {
-  it("returns true for exact openai-codex provider", () => {
-    expect(isCodexProvider("openai-codex")).toBe(true);
-  });
-
-  it("returns true for openai-codex- prefixed providers", () => {
-    expect(isCodexProvider("openai-codex-plus")).toBe(true);
-    expect(isCodexProvider("openai-codex-enterprise")).toBe(true);
-  });
-
-  it("returns false for unrelated providers", () => {
-    expect(isCodexProvider("openai")).toBe(false);
-    expect(isCodexProvider("anthropic")).toBe(false);
-    expect(isCodexProvider("codex")).toBe(false);
-  });
-
-  it("returns false for undefined", () => {
-    expect(isCodexProvider(undefined)).toBe(false);
-  });
-});
 
 describe("fetchUsage", () => {
   let originalFetch: typeof globalThis.fetch;
@@ -112,7 +91,7 @@ describe("fetchUsage", () => {
     expect(result).toBeNull();
   });
 
-  it("normalizes primary_window into fiveHour", async () => {
+  it("normalizes primary_window into primary", async () => {
     globalThis.fetch = async () =>
       makeJsonResponse({
         rate_limit: {
@@ -129,14 +108,15 @@ describe("fetchUsage", () => {
       makeOkHeaders() as never,
     );
     expect(result).not.toBeNull();
-    expect(result!.fiveHour).toEqual({
+    expect(result!.provider).toBe("codex");
+    expect(result!.primary).toEqual({
       usedPercent: 42,
       windowSeconds: 18000,
       resetAt: 9999,
     });
   });
 
-  it("normalizes secondary_window into weekly", async () => {
+  it("normalizes secondary_window into secondary", async () => {
     globalThis.fetch = async () =>
       makeJsonResponse({
         rate_limit: {
@@ -152,7 +132,7 @@ describe("fetchUsage", () => {
       makeOkHeaders() as never,
     );
     expect(result).not.toBeNull();
-    expect(result!.weekly).toEqual({
+    expect(result!.secondary).toEqual({
       usedPercent: 71,
       windowSeconds: 604800,
     });
@@ -170,10 +150,10 @@ describe("fetchUsage", () => {
       fakeCtx,
       makeOkHeaders() as never,
     );
-    expect(result!.fiveHour!.usedPercent).toBe(0);
+    expect(result!.primary!.usedPercent).toBe(0);
   });
 
-  it("leaves fiveHour undefined when primary_window is absent", async () => {
+  it("leaves primary undefined when primary_window is absent", async () => {
     globalThis.fetch = async () =>
       makeJsonResponse({
         rate_limit: {
@@ -185,11 +165,11 @@ describe("fetchUsage", () => {
       fakeCtx,
       makeOkHeaders() as never,
     );
-    expect(result!.fiveHour).toBeUndefined();
-    expect(result!.weekly).toBeDefined();
+    expect(result!.primary).toBeUndefined();
+    expect(result!.secondary).toBeDefined();
   });
 
-  it("leaves weekly undefined when secondary_window is absent", async () => {
+  it("leaves secondary undefined when secondary_window is absent", async () => {
     globalThis.fetch = async () =>
       makeJsonResponse({
         rate_limit: {
@@ -201,8 +181,8 @@ describe("fetchUsage", () => {
       fakeCtx,
       makeOkHeaders() as never,
     );
-    expect(result!.weekly).toBeUndefined();
-    expect(result!.fiveHour).toBeDefined();
+    expect(result!.secondary).toBeUndefined();
+    expect(result!.primary).toBeDefined();
   });
 
   it("ignores additional_rate_limits when present", async () => {
@@ -218,7 +198,7 @@ describe("fetchUsage", () => {
       fakeCtx,
       makeOkHeaders() as never,
     );
-    expect(result!.fiveHour!.usedPercent).toBe(10);
+    expect(result!.primary!.usedPercent).toBe(10);
     expect(result).not.toHaveProperty("additional_rate_limits");
   });
 
@@ -237,7 +217,7 @@ describe("fetchUsage", () => {
   });
 });
 
-describe("getUsage", () => {
+describe("getUsage (codex provider)", () => {
   let originalFetch: typeof globalThis.fetch;
 
   beforeEach(() => {
