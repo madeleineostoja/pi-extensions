@@ -10,7 +10,7 @@ type Handler = (args: string, ctx: FakeContext) => Promise<void>;
 
 type FakeContext = {
   cwd: string;
-  hasUI: boolean;
+  mode: "tui" | "rpc" | "json" | "print";
   ui: {
     notifications: Array<{ message: string; level: string }>;
     statuses: Array<{ key: string; text: string | undefined }>;
@@ -41,7 +41,7 @@ function setup(events = createPingOnlyEventBus()) {
   }
   const ctx: FakeContext = {
     cwd: "/repo",
-    hasUI: true,
+    mode: "tui",
     model: { provider: "p", id: "m" },
     modelRegistry: { find: () => ({}) },
     ui: {

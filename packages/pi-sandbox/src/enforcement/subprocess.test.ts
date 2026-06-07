@@ -52,7 +52,7 @@ function makePolicy(overrides: Partial<Policy> = {}): Policy {
 
 function makeCtx(overrides: Partial<ManifestContext> = {}): ManifestContext {
   return {
-    hasUI: false,
+    mode: "rpc",
     cwd: process.cwd(),
     platform: "linux",
     ui: { notify: vi.fn() },

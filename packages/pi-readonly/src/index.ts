@@ -83,7 +83,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   function syncFooter(ctx: ExtensionContext) {
-    if (!ctx.hasUI) {
+    if (ctx.mode !== "tui") {
       return;
     }
     const theme = ctx.ui.theme;
@@ -126,7 +126,7 @@ export default function (pi: ExtensionAPI) {
     }
     nonInteractiveNotified = false;
 
-    if (!ctx.hasUI) {
+    if (ctx.mode !== "tui") {
       setMode(false);
       notifyNonInteractive();
     }
@@ -161,7 +161,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     const decision = decideToolCall({
       readonlyMode,
-      hasUI: ctx.hasUI,
+      mode: ctx.mode,
       toolName: event.toolName,
       triggerTools,
     });

@@ -4,19 +4,19 @@ export type GuardDecision = "pass" | "auto-disable" | "prompt";
 
 export type DecideToolCallParams = {
   guardEnabled: boolean;
-  hasUI: boolean;
+  mode: "tui" | "rpc" | "json" | "print";
   toolName: string;
 };
 
 export function decideToolCall(params: DecideToolCallParams): GuardDecision {
-  const { guardEnabled, hasUI, toolName } = params;
+  const { guardEnabled, mode, toolName } = params;
   if (!guardEnabled) {
     return "pass";
   }
   if (toolName !== "bash") {
     return "pass";
   }
-  if (!hasUI) {
+  if (mode !== "tui") {
     return "auto-disable";
   }
   return "prompt";

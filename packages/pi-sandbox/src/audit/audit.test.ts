@@ -619,7 +619,7 @@ describe("toolGate onAudit hook", () => {
           enforcement: { requireKernelSandbox: false },
         }),
         ctx: {
-          hasUI: false,
+          mode: "rpc",
           cwd: tmpDir,
           platform: "linux",
           ui: { notify: () => {} },
@@ -664,7 +664,7 @@ describe("toolGate onAudit hook", () => {
           enforcement: { requireKernelSandbox: false },
         }),
         ctx: {
-          hasUI: false,
+          mode: "rpc",
           cwd: tmpDir,
           platform: "linux",
           ui: { notify: () => {} },

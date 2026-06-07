@@ -44,7 +44,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   function clearStatus(ctx: ExtensionContext) {
-    if (!ctx.hasUI) {
+    if (ctx.mode !== "tui") {
       return;
     }
     ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -55,7 +55,7 @@ export default function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
     force = false,
   ) {
-    if (!ctx.hasUI) {
+    if (ctx.mode !== "tui") {
       return;
     }
 
@@ -68,7 +68,7 @@ export default function (pi: ExtensionAPI) {
     if (requestId !== currentRequestId) {
       return;
     }
-    if (!ctx.hasUI) {
+    if (ctx.mode !== "tui") {
       return;
     }
 
@@ -155,7 +155,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("usage", {
     description: "Show usage window reset time or run auth setup",
     handler: async (args, ctx) => {
-      if (!ctx.hasUI) {
+      if (ctx.mode !== "tui") {
         return;
       }
       const subcommand = args.trim();

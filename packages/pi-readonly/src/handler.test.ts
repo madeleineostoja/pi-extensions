@@ -65,7 +65,7 @@ function makeToolCallCtx(
   }>,
 ): ExtensionContext {
   return {
-    hasUI: true,
+    mode: "tui",
     signal: undefined,
     ui: {
       select:
@@ -116,7 +116,7 @@ function makeToolCallCtx(
     getContextUsage: () => undefined,
     compact: () => {},
     getSystemPrompt: () => "",
-  };
+  } as unknown as ExtensionContext;
 }
 
 function captureToolCallHandler() {
@@ -175,11 +175,11 @@ const TRIGGER_TOOLS = new Set(["edit", "write"]);
 
 describe("decideToolCall", () => {
   describe("readonlyMode=false", () => {
-    it("passes when readonly is off, tool in set, has UI", () => {
+    it("passes when readonly is off, tool in set, TUI mode", () => {
       expect(
         decideToolCall({
           readonlyMode: false,
-          hasUI: true,
+          mode: "tui",
           toolName: "edit",
           triggerTools: TRIGGER_TOOLS,
         }),
@@ -188,11 +188,11 @@ describe("decideToolCall", () => {
   });
 
   describe("readonlyMode=true, tool NOT in trigger set", () => {
-    it("passes when tool is not in set, has UI", () => {
+    it("passes when tool is not in set, TUI mode", () => {
       expect(
         decideToolCall({
           readonlyMode: true,
-          hasUI: true,
+          mode: "tui",
           toolName: "bash",
           triggerTools: TRIGGER_TOOLS,
         }),
@@ -201,44 +201,44 @@ describe("decideToolCall", () => {
   });
 
   describe("readonlyMode=true, tool IN trigger set", () => {
-    it("prompts when tool is 'edit' and has UI", () => {
+    it("prompts when tool is 'edit' and TUI mode", () => {
       expect(
         decideToolCall({
           readonlyMode: true,
-          hasUI: true,
+          mode: "tui",
           toolName: "edit",
           triggerTools: TRIGGER_TOOLS,
         }),
       ).toBe("prompt");
     });
 
-    it("prompts when tool is 'write' and has UI", () => {
+    it("prompts when tool is 'write' and TUI mode", () => {
       expect(
         decideToolCall({
           readonlyMode: true,
-          hasUI: true,
+          mode: "tui",
           toolName: "write",
           triggerTools: TRIGGER_TOOLS,
         }),
       ).toBe("prompt");
     });
 
-    it("auto-disables when tool is 'edit' and no UI", () => {
+    it("auto-disables when tool is 'edit' and non-TUI mode", () => {
       expect(
         decideToolCall({
           readonlyMode: true,
-          hasUI: false,
+          mode: "rpc",
           toolName: "edit",
           triggerTools: TRIGGER_TOOLS,
         }),
       ).toBe("auto-disable");
     });
 
-    it("auto-disables when tool is 'write' and no UI", () => {
+    it("auto-disables when tool is 'write' and non-TUI mode", () => {
       expect(
         decideToolCall({
           readonlyMode: true,
-          hasUI: false,
+          mode: "rpc",
           toolName: "write",
           triggerTools: TRIGGER_TOOLS,
         }),
@@ -383,7 +383,7 @@ function captureHandlers() {
 function makeNonInteractiveCtx(): ExtensionContext & { notifyCalls: string[] } {
   const notifyCalls: string[] = [];
   return {
-    hasUI: false,
+    mode: "rpc",
     signal: undefined,
     ui: {
       select: () => Promise.resolve(undefined),
@@ -431,7 +431,7 @@ function makeNonInteractiveCtx(): ExtensionContext & { notifyCalls: string[] } {
     compact: () => {},
     getSystemPrompt: () => "",
     notifyCalls,
-  };
+  } as unknown as ExtensionContext & { notifyCalls: string[] };
 }
 
 import type { SessionStartEvent } from "@earendil-works/pi-coding-agent";
@@ -441,7 +441,7 @@ function makeSessionStartEvent(): SessionStartEvent {
 }
 
 describe("non-interactive mode (tool_call handler)", () => {
-  it("tool_call with hasUI=false → returns undefined, disables readonly, logs status once", async () => {
+  it("tool_call with mode=rpc → returns undefined, disables readonly, logs status once", async () => {
     const { toolCallHandler, messageCalls } = captureHandlers();
     const ctx = makeNonInteractiveCtx();
 
@@ -456,7 +456,7 @@ describe("non-interactive mode (tool_call handler)", () => {
     expect(messageCalls[0]?.content).toMatch(/no interactive UI/);
   });
 
-  it("second tool_call with hasUI=false does not re-log", async () => {
+  it("second tool_call with mode=rpc does not re-log", async () => {
     const { toolCallHandler, messageCalls } = captureHandlers();
     const ctx = makeNonInteractiveCtx();
 
@@ -468,7 +468,7 @@ describe("non-interactive mode (tool_call handler)", () => {
     expect(messageCalls).toHaveLength(messageCountAfterFirst);
   });
 
-  it("tool_call with hasUI=true still prompts (interactive behavior unchanged)", async () => {
+  it("tool_call with mode=tui still prompts (interactive behavior unchanged)", async () => {
     const { toolCallHandler } = captureHandlers();
     const ctx = makeToolCallCtx({ selectResult: "Accept" });
 
@@ -477,7 +477,7 @@ describe("non-interactive mode (tool_call handler)", () => {
     expect(result).toBeUndefined();
   });
 
-  it("session_start with hasUI=false auto-disables and logs once", async () => {
+  it("session_start with mode=rpc auto-disables and logs once", async () => {
     const { sessionStartHandler, toolCallHandler, messageCalls } =
       captureHandlers();
     const ctx = makeNonInteractiveCtx();
@@ -501,7 +501,7 @@ function makeInteractiveCtx(): ExtensionContext & {
   const statusCalls: Array<{ key: string; value: string | undefined }> = [];
   const { theme, calls: themeCalls } = makeThemeSpy();
   return {
-    hasUI: true,
+    mode: "tui",
     signal: undefined,
     ui: {
       select: () => Promise.resolve("Accept"),
@@ -550,6 +550,9 @@ function makeInteractiveCtx(): ExtensionContext & {
     getSystemPrompt: () => "",
     statusCalls,
     themeCalls,
+  } as unknown as ExtensionContext & {
+    statusCalls: Array<{ key: string; value: string | undefined }>;
+    themeCalls: Array<{ color: string; text: string }>;
   };
 }
 
@@ -689,7 +692,7 @@ function makeNotifyCapturingCtx(
 } {
   const notifyCalls: Array<{ message: string; level: string }> = [];
   return {
-    hasUI: true,
+    mode: "tui",
     signal: undefined,
     ui: {
       select: () => Promise.resolve("Accept"),
@@ -737,6 +740,8 @@ function makeNotifyCapturingCtx(
     compact: () => {},
     getSystemPrompt: () => "",
     notifyCalls,
+  } as unknown as ExtensionContext & {
+    notifyCalls: Array<{ message: string; level: string }>;
   };
 }
 

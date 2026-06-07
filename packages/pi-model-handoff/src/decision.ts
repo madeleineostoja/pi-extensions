@@ -44,7 +44,7 @@ export type HandoffDecisionOptions = {
 
 export function isEligibleSwitch(
   event: ModelSelectEvent,
-  hasUI: boolean,
+  mode: "tui" | "rpc" | "json" | "print",
 ): boolean {
   if (event.source === "restore") {
     return false;
@@ -52,7 +52,7 @@ export function isEligibleSwitch(
   if (!event.previousModel) {
     return false;
   }
-  if (!hasUI) {
+  if (mode !== "tui") {
     return false;
   }
   if (

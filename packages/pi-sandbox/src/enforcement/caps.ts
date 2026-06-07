@@ -5,8 +5,10 @@ import * as os from "node:os";
 import type { Policy } from "../policy/defaults.js";
 import { literalPrefix } from "./glob-prefix.js";
 
+export type SandboxMode = "tui" | "rpc" | "json" | "print";
+
 export type ManifestContext = {
-  hasUI: boolean;
+  mode: SandboxMode;
   cwd: string;
   platform?: NodeJS.Platform;
   ui: {
@@ -156,7 +158,7 @@ export function createCaps(): CapsInstance {
     if (mode === "always") {
       applyAllowlist = true;
     } else if (mode === "non-interactive-only") {
-      applyAllowlist = !ctx.hasUI;
+      applyAllowlist = ctx.mode !== "tui";
     }
 
     if (applyAllowlist) {

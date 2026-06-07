@@ -89,7 +89,7 @@ function makeCommandCtx(options: { modelFound: boolean }) {
 function makeExtensionCtx() {
   const notifications: { message: string; type?: "info" | "warning" }[] = [];
   const ctx = {
-    hasUI: true,
+    mode: "tui",
     ui: {
       notify: (message: string, type?: "info" | "warning") => {
         notifications.push({ message, type });

@@ -22,7 +22,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     warnedThisSession = true;
-    if (ctx.hasUI) {
+    if (ctx.mode === "tui") {
       ctx.ui.notify(`[pi-auto-name] ${message}`, "warning");
     }
   }

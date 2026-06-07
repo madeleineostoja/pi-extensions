@@ -111,25 +111,25 @@ describe("renderStatus — pure renderer", () => {
     enabled: true,
     networkOff: false,
     networkMode: "non-interactive-only",
-    hasUI: false,
+    mode: "rpc",
   };
 
-  it("non-interactive-only + hasUI=false → sandbox (network)", () => {
-    expect(renderStatus({ ...baseState, hasUI: false })).toBe(
+  it("non-interactive-only + mode=rpc → sandbox (network)", () => {
+    expect(renderStatus({ ...baseState, mode: "rpc" })).toBe(
       "🔒 sandbox (network)",
     );
   });
 
-  it("non-interactive-only + hasUI=true → sandbox (file only)", () => {
-    expect(renderStatus({ ...baseState, hasUI: true })).toBe("🔒 sandbox");
+  it("non-interactive-only + mode=tui → sandbox (file only)", () => {
+    expect(renderStatus({ ...baseState, mode: "tui" })).toBe("🔒 sandbox");
   });
 
-  it("network mode 'always' → sandbox (network) regardless of hasUI", () => {
+  it("network mode 'always' → sandbox (network) regardless of mode", () => {
     expect(
-      renderStatus({ ...baseState, networkMode: "always", hasUI: true }),
+      renderStatus({ ...baseState, networkMode: "always", mode: "tui" }),
     ).toBe("🔒 sandbox (network)");
     expect(
-      renderStatus({ ...baseState, networkMode: "always", hasUI: false }),
+      renderStatus({ ...baseState, networkMode: "always", mode: "rpc" }),
     ).toBe("🔒 sandbox (network)");
   });
 
@@ -186,7 +186,7 @@ describe("subscribeStatus — integration", () => {
     const dispose = subscribeStatus({
       policyManager,
       getSessionState: () => cmds.getSessionState(),
-      hasUI: false,
+      mode: "rpc",
       ui,
       onSessionMutation,
     });
@@ -196,7 +196,7 @@ describe("subscribeStatus — integration", () => {
     dispose();
   });
 
-  it("initial state mode=always hasUI=false → sandbox (network)", () => {
+  it("initial state mode=always mode=rpc → sandbox (network)", () => {
     const policy = makePolicy({
       network: { mode: "always", allow: ["a.com", "b.com", "c.com"] },
       fs: {
@@ -212,7 +212,7 @@ describe("subscribeStatus — integration", () => {
     const dispose = subscribeStatus({
       policyManager,
       getSessionState: () => cmds.getSessionState(),
-      hasUI: false,
+      mode: "rpc",
       ui,
       onSessionMutation,
     });
@@ -235,7 +235,7 @@ describe("subscribeStatus — integration", () => {
     const dispose = subscribeStatus({
       policyManager,
       getSessionState: () => cmds.getSessionState(),
-      hasUI: false,
+      mode: "rpc",
       ui,
       onSessionMutation,
     });
@@ -261,7 +261,7 @@ describe("subscribeStatus — integration", () => {
     const dispose = subscribeStatus({
       policyManager,
       getSessionState: () => cmds.getSessionState(),
-      hasUI: false,
+      mode: "rpc",
       ui,
       onSessionMutation,
     });
@@ -289,7 +289,7 @@ describe("subscribeStatus — integration", () => {
     const dispose = subscribeStatus({
       policyManager,
       getSessionState: () => cmds.getSessionState(),
-      hasUI: false,
+      mode: "rpc",
       ui,
       onSessionMutation,
     });
@@ -315,7 +315,7 @@ describe("subscribeStatus — integration", () => {
     const dispose = subscribeStatus({
       policyManager,
       getSessionState: () => cmds.getSessionState(),
-      hasUI: false,
+      mode: "rpc",
       ui,
       onSessionMutation,
     });
@@ -330,7 +330,7 @@ describe("subscribeStatus — integration", () => {
     dispose();
   });
 
-  it("non-interactive-only + hasUI=true → bare sandbox (network unrestricted)", () => {
+  it("non-interactive-only + mode=tui → bare sandbox (network unrestricted)", () => {
     const policy = makePolicy({
       network: { mode: "non-interactive-only", allow: [] },
     });
@@ -341,7 +341,7 @@ describe("subscribeStatus — integration", () => {
     const dispose = subscribeStatus({
       policyManager,
       getSessionState: () => cmds.getSessionState(),
-      hasUI: true,
+      mode: "tui",
       ui,
       onSessionMutation,
     });
@@ -379,7 +379,7 @@ describe("subscribeStatus — integration", () => {
     const dispose = subscribeStatus({
       policyManager,
       getSessionState: () => cmds.getSessionState(),
-      hasUI: false,
+      mode: "rpc",
       ui,
       onSessionMutation,
     });
@@ -406,7 +406,7 @@ describe("subscribeStatus — integration", () => {
     const dispose = subscribeStatus({
       policyManager,
       getSessionState: () => cmds.getSessionState(),
-      hasUI: false,
+      mode: "rpc",
       ui,
       onSessionMutation,
     });
@@ -431,7 +431,7 @@ describe("subscribeStatus — integration", () => {
     const dispose = subscribeStatus({
       policyManager,
       getSessionState: () => cmds.getSessionState(),
-      hasUI: false,
+      mode: "rpc",
       ui,
       onSessionMutation,
       inProcessOnly: true,
@@ -465,12 +465,12 @@ describe("renderStatusThemed", () => {
     enabled: true,
     networkOff: false,
     networkMode: "non-interactive-only",
-    hasUI: false,
+    mode: "rpc",
   };
 
   it("bare sandbox (network unrestricted) → success icon and muted text", () => {
     const { theme, calls } = makeThemeSpy();
-    const result = renderStatusThemed({ ...baseState, hasUI: true }, theme);
+    const result = renderStatusThemed({ ...baseState, mode: "tui" }, theme);
     expect(result).toContain("󰒃");
     expect(result).toContain("sandbox");
     expect(calls).toContainEqual({ color: "success", text: "󰒃" });
@@ -481,7 +481,7 @@ describe("renderStatusThemed", () => {
 
   it("network sandboxed → success icon and muted (network) text", () => {
     const { theme, calls } = makeThemeSpy();
-    const result = renderStatusThemed({ ...baseState, hasUI: false }, theme);
+    const result = renderStatusThemed({ ...baseState, mode: "rpc" }, theme);
     expect(result).toContain("sandbox (network)");
     expect(calls).toContainEqual({ color: "success", text: "󰒃" });
     expect(calls).toContainEqual({
@@ -546,10 +546,10 @@ describe("renderStatusThemed", () => {
     expect(result).not.toContain("\n");
   });
 
-  it("non-interactive-only + hasUI=true → bare sandbox, no (network)", () => {
+  it("non-interactive-only + mode=tui → bare sandbox, no (network)", () => {
     const { theme, calls } = makeThemeSpy();
     const result = renderStatusThemed(
-      { ...baseState, networkMode: "non-interactive-only", hasUI: true },
+      { ...baseState, networkMode: "non-interactive-only", mode: "tui" },
       theme,
     );
     expect(result).not.toContain("(network)");
@@ -572,7 +572,7 @@ describe("renderStatusThemed", () => {
     const dispose = subscribeStatus({
       policyManager,
       getSessionState: () => localCmds.getSessionState(),
-      hasUI: false,
+      mode: "rpc",
       ui,
       onSessionMutation,
       theme,

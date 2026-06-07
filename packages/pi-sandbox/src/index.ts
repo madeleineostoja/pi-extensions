@@ -104,7 +104,7 @@ const _registered = new WeakSet<ExtensionAPI>();
  * Wire the sandbox extension into a Pi instance.
  *
  * Conforms to `ExtensionFactory = (pi: ExtensionAPI) => void`. Initialization
- * that requires an `ExtensionContext` (cwd, ui, hasUI) runs inside the
+ * that requires an `ExtensionContext` (cwd, ui, mode) runs inside the
  * `session_start` handler, where Pi provides `ctx` as the second argument.
  *
  * Safe to load multiple times: a second `session_start` on the same `pi`
@@ -146,7 +146,7 @@ function sandboxExtension(pi: ExtensionAPI): void {
       }
 
       const manifestCtx: ManifestContext = {
-        hasUI: ctx.hasUI,
+        mode: ctx.mode,
         cwd: ctx.cwd,
         platform: process.platform,
         ui: {
@@ -255,13 +255,13 @@ function sandboxExtension(pi: ExtensionAPI): void {
       const unsubStatus = subscribeStatus({
         policyManager,
         getSessionState: () => cmds.getSessionState(),
-        hasUI: ctx.hasUI,
+        mode: ctx.mode,
         ui: { setStatus: (key, text) => ctx.ui.setStatus(key, text) },
         onSessionMutation: (fn: () => void) => {
           return cmds.subscribeSessionChange(fn);
         },
         inProcessOnly: nonoPath === null,
-        theme: ctx.hasUI ? ctx.ui.theme : undefined,
+        theme: ctx.mode === "tui" ? ctx.ui.theme : undefined,
       });
 
       pi.on(

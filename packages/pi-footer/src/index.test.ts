@@ -35,7 +35,7 @@ function makeFakePi() {
 
 function makeFakeCtx(
   overrides: {
-    hasUI?: boolean;
+    mode?: "tui" | "rpc" | "json" | "print";
     branch?: unknown[];
     model?: { name?: string; id?: string; provider?: string } | undefined;
     modelRegistry?: unknown;
@@ -47,7 +47,7 @@ function makeFakeCtx(
   > = [];
 
   const ctx = {
-    hasUI: overrides.hasUI ?? true,
+    mode: overrides.mode ?? "tui",
     cwd: "/test",
     model: overrides.model,
     modelRegistry: overrides.modelRegistry ?? {

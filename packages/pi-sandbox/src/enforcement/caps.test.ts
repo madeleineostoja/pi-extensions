@@ -63,7 +63,7 @@ function makeBasePolicy(overrides: Partial<Policy> = {}): Policy {
 
 function makeCtx(overrides: Partial<ManifestContext> = {}): ManifestContext {
   return {
-    hasUI: false,
+    mode: "rpc",
     cwd: process.cwd(),
     platform: "linux",
     ui: { notify: vi.fn() },
@@ -108,7 +108,7 @@ describe("buildManifest — schema conformance", () => {
   });
 });
 
-describe("buildManifest — network.mode × hasUI", () => {
+describe("buildManifest — network.mode × mode", () => {
   let caps: CapsInstance;
   beforeEach(() => {
     caps = createCaps();
@@ -118,71 +118,71 @@ describe("buildManifest — network.mode × hasUI", () => {
     const policy = makeBasePolicy({
       network: { mode: "off", allow: ["example.com"] },
     });
-    const manifest = caps.buildManifest(policy, makeCtx({ hasUI: false }));
+    const manifest = caps.buildManifest(policy, makeCtx({ mode: "rpc" }));
     expect(manifest.network).toBeUndefined();
   });
 
-  it('mode "off" + hasUI → still omits network section', () => {
+  it('mode "off" + mode → still omits network section', () => {
     const policy = makeBasePolicy({
       network: { mode: "off", allow: ["example.com"] },
     });
-    const manifest = caps.buildManifest(policy, makeCtx({ hasUI: true }));
+    const manifest = caps.buildManifest(policy, makeCtx({ mode: "tui" }));
     expect(manifest.network).toBeUndefined();
   });
 
-  it('mode "always" + hasUI=false → strict allowlist', () => {
+  it('mode "always" + mode=rpc → strict allowlist', () => {
     const policy = makeBasePolicy({
       network: { mode: "always", allow: ["example.com"] },
     });
-    const manifest = caps.buildManifest(policy, makeCtx({ hasUI: false }));
+    const manifest = caps.buildManifest(policy, makeCtx({ mode: "rpc" }));
     expect(manifest.network?.allow_domain).toEqual(["example.com"]);
   });
 
-  it('mode "always" + hasUI=true → strict allowlist regardless of hasUI', () => {
+  it('mode "always" + mode=tui → strict allowlist regardless of mode', () => {
     const policy = makeBasePolicy({
       network: { mode: "always", allow: ["example.com"] },
     });
-    const manifest = caps.buildManifest(policy, makeCtx({ hasUI: true }));
+    const manifest = caps.buildManifest(policy, makeCtx({ mode: "tui" }));
     expect(manifest.network?.allow_domain).toEqual(["example.com"]);
   });
 
-  it('mode "non-interactive-only" + hasUI=false → strict allowlist', () => {
+  it('mode "non-interactive-only" + mode=rpc → strict allowlist', () => {
     const policy = makeBasePolicy({
       network: { mode: "non-interactive-only", allow: ["api.example.com"] },
     });
-    const manifest = caps.buildManifest(policy, makeCtx({ hasUI: false }));
+    const manifest = caps.buildManifest(policy, makeCtx({ mode: "rpc" }));
     expect(manifest.network?.allow_domain).toEqual(["api.example.com"]);
   });
 
-  it('mode "non-interactive-only" + hasUI=true → no network restriction', () => {
+  it('mode "non-interactive-only" + mode=tui → no network restriction', () => {
     const policy = makeBasePolicy({
       network: { mode: "non-interactive-only", allow: ["api.example.com"] },
     });
-    const manifest = caps.buildManifest(policy, makeCtx({ hasUI: true }));
+    const manifest = caps.buildManifest(policy, makeCtx({ mode: "tui" }));
     expect(manifest.network).toBeUndefined();
   });
 
   it('empty allowlist + mode "always" → deny-all network shape', () => {
     const policy = makeBasePolicy({ network: { mode: "always", allow: [] } });
-    const manifest = caps.buildManifest(policy, makeCtx({ hasUI: false }));
+    const manifest = caps.buildManifest(policy, makeCtx({ mode: "rpc" }));
     expect(manifest.network).toBeDefined();
     expect(manifest.network?.allow_domain).toEqual([]);
   });
 
-  it('empty allowlist + mode "non-interactive-only" + hasUI=false → deny-all network shape', () => {
+  it('empty allowlist + mode "non-interactive-only" + mode=rpc → deny-all network shape', () => {
     const policy = makeBasePolicy({
       network: { mode: "non-interactive-only", allow: [] },
     });
-    const manifest = caps.buildManifest(policy, makeCtx({ hasUI: false }));
+    const manifest = caps.buildManifest(policy, makeCtx({ mode: "rpc" }));
     expect(manifest.network).toBeDefined();
     expect(manifest.network?.allow_domain).toEqual([]);
   });
 
-  it('empty allowlist + mode "non-interactive-only" + hasUI=true → no network field (interactive bypass)', () => {
+  it('empty allowlist + mode "non-interactive-only" + mode=tui → no network field (interactive bypass)', () => {
     const policy = makeBasePolicy({
       network: { mode: "non-interactive-only", allow: [] },
     });
-    const manifest = caps.buildManifest(policy, makeCtx({ hasUI: true }));
+    const manifest = caps.buildManifest(policy, makeCtx({ mode: "tui" }));
     expect(manifest.network).toBeUndefined();
   });
 });
@@ -203,7 +203,7 @@ describe("buildManifest — networkOff session override allows all network", () 
       sessionAllowedHosts: new Set(),
     };
     const effective = applySessionOverrides(basePolicy, session);
-    const manifest = caps.buildManifest(effective, makeCtx({ hasUI: false }));
+    const manifest = caps.buildManifest(effective, makeCtx({ mode: "rpc" }));
     expect(manifest.network).toBeUndefined();
   });
 });
@@ -370,7 +370,7 @@ describe("buildManifest — output validates schema for representative network m
   it("validates schema when network filtering is off", () => {
     const manifest = caps.buildManifest(
       makeBasePolicy({ network: { mode: "off", allow: ["example.com"] } }),
-      makeCtx({ hasUI: true }),
+      makeCtx({ mode: "tui" }),
     );
     const { valid, errors } = validateAgainstSchema(manifest);
     expect(errors).toEqual([]);
@@ -382,7 +382,7 @@ describe("buildManifest — output validates schema for representative network m
       makeBasePolicy({
         network: { mode: "non-interactive-only", allow: ["example.com"] },
       }),
-      makeCtx({ hasUI: false }),
+      makeCtx({ mode: "rpc" }),
     );
     const { valid, errors } = validateAgainstSchema(manifest);
     expect(errors).toEqual([]);

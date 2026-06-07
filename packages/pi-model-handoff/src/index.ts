@@ -25,7 +25,7 @@ import {
 
 export default function (pi: ExtensionAPI) {
   pi.on("model_select", async (event, ctx) => {
-    if (!isEligibleSwitch(event, ctx.hasUI)) {
+    if (!isEligibleSwitch(event, ctx.mode)) {
       return;
     }
 

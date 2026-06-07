@@ -212,8 +212,8 @@ describe("writeConfig", () => {
 });
 
 describe("runOpencodeAuthSetup", () => {
-  it("does nothing when hasUI is false", async () => {
-    const ctx = { hasUI: false, ui: { input: vi.fn(), notify: vi.fn() } };
+  it("does nothing when mode is not tui", async () => {
+    const ctx = { mode: "rpc", ui: { input: vi.fn(), notify: vi.fn() } };
     await runOpencodeAuthSetup(ctx as never, makeTempDir());
     expect(ctx.ui.input).not.toHaveBeenCalled();
     expect(ctx.ui.notify).not.toHaveBeenCalled();
@@ -222,7 +222,7 @@ describe("runOpencodeAuthSetup", () => {
   it("cancels when first prompt returns undefined", async () => {
     const tmpDir = makeTempDir();
     const ctx = {
-      hasUI: true,
+      mode: "tui",
       ui: { input: vi.fn().mockResolvedValue(undefined), notify: vi.fn() },
     };
     await runOpencodeAuthSetup(ctx as never, tmpDir);
@@ -236,7 +236,7 @@ describe("runOpencodeAuthSetup", () => {
   it("cancels when first prompt returns whitespace", async () => {
     const tmpDir = makeTempDir();
     const ctx = {
-      hasUI: true,
+      mode: "tui",
       ui: { input: vi.fn().mockResolvedValue("   "), notify: vi.fn() },
     };
     await runOpencodeAuthSetup(ctx as never, tmpDir);
@@ -253,7 +253,7 @@ describe("runOpencodeAuthSetup", () => {
       name: "AbortError",
     });
     const ctx = {
-      hasUI: true,
+      mode: "tui",
       ui: { input: vi.fn().mockRejectedValue(abortError), notify: vi.fn() },
     };
     await runOpencodeAuthSetup(ctx as never, tmpDir);
@@ -267,7 +267,7 @@ describe("runOpencodeAuthSetup", () => {
   it("cancels when second prompt returns undefined", async () => {
     const tmpDir = makeTempDir();
     const ctx = {
-      hasUI: true,
+      mode: "tui",
       ui: {
         input: vi
           .fn()
@@ -287,7 +287,7 @@ describe("runOpencodeAuthSetup", () => {
   it("cancels when second prompt returns whitespace", async () => {
     const tmpDir = makeTempDir();
     const ctx = {
-      hasUI: true,
+      mode: "tui",
       ui: {
         input: vi
           .fn()
@@ -307,7 +307,7 @@ describe("runOpencodeAuthSetup", () => {
   it("writes config and notifies when both prompts succeed", async () => {
     const tmpDir = makeTempDir();
     const ctx = {
-      hasUI: true,
+      mode: "tui",
       ui: {
         input: vi
           .fn()
@@ -332,7 +332,7 @@ describe("runOpencodeAuthSetup", () => {
   it("shows hints when values do not match expected shapes", async () => {
     const tmpDir = makeTempDir();
     const ctx = {
-      hasUI: true,
+      mode: "tui",
       ui: {
         input: vi
           .fn()
@@ -366,7 +366,7 @@ describe("runOpencodeAuthSetup", () => {
       }),
     );
     const ctx = {
-      hasUI: true,
+      mode: "tui",
       ui: {
         input: vi
           .fn()

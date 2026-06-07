@@ -46,7 +46,7 @@ function makePolicy(overrides: Partial<Policy["fs"]> = {}): Policy {
 
 function makeCtx(cwd: string): ManifestContext {
   return {
-    hasUI: false,
+    mode: "rpc",
     cwd,
     platform: "linux",
     ui: { notify: vi.fn() },

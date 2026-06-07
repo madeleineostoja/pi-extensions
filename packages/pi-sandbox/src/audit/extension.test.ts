@@ -84,7 +84,7 @@ function makeCtx(
   const notifyFn = vi.fn();
   return {
     cwd: "/tmp/test-cwd",
-    hasUI: false,
+    mode: "rpc",
     ui: {
       notify: notifyFn,
       setStatus: setStatusFn,

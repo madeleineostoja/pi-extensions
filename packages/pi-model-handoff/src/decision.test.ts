@@ -61,25 +61,25 @@ describe("isEligibleSwitch", () => {
       source: "restore",
       previousModel: makeModel("anthropic", "claude-3-opus", 15),
     });
-    expect(isEligibleSwitch(event, true)).toBe(false);
+    expect(isEligibleSwitch(event, "tui")).toBe(false);
   });
 
   it("ignores missing previousModel", () => {
     const event = makeEvent({ previousModel: undefined });
-    expect(isEligibleSwitch(event, true)).toBe(false);
+    expect(isEligibleSwitch(event, "tui")).toBe(false);
   });
 
-  it("ignores when hasUI is false", () => {
+  it("ignores when mode is not tui", () => {
     const event = makeEvent({
       previousModel: makeModel("anthropic", "claude-3-opus", 15),
     });
-    expect(isEligibleSwitch(event, false)).toBe(false);
+    expect(isEligibleSwitch(event, "rpc")).toBe(false);
   });
 
   it("ignores same model", () => {
     const model = makeModel("openai", "gpt-4o", 5);
     const event = makeEvent({ previousModel: model, model });
-    expect(isEligibleSwitch(event, true)).toBe(false);
+    expect(isEligibleSwitch(event, "tui")).toBe(false);
   });
 
   it("allows different models with UI", () => {
@@ -87,7 +87,7 @@ describe("isEligibleSwitch", () => {
       previousModel: makeModel("anthropic", "claude-3-opus", 15),
       model: makeModel("openai", "gpt-4o", 5),
     });
-    expect(isEligibleSwitch(event, true)).toBe(true);
+    expect(isEligibleSwitch(event, "tui")).toBe(true);
   });
 });
 

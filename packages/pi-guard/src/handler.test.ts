@@ -46,9 +46,9 @@ function makeBashEvent(command: string): ToolCallEvent {
 
 describe("decideToolCall", () => {
   describe("guardEnabled=false", () => {
-    it("passes when guard is off, tool is bash, has UI", () => {
+    it("passes when guard is off, tool is bash, TUI mode", () => {
       expect(
-        decideToolCall({ guardEnabled: false, hasUI: true, toolName: "bash" }),
+        decideToolCall({ guardEnabled: false, mode: "tui", toolName: "bash" }),
       ).toBe("pass");
     });
   });
@@ -56,21 +56,21 @@ describe("decideToolCall", () => {
   describe("guardEnabled=true, tool NOT bash", () => {
     it("passes when tool is edit", () => {
       expect(
-        decideToolCall({ guardEnabled: true, hasUI: true, toolName: "edit" }),
+        decideToolCall({ guardEnabled: true, mode: "tui", toolName: "edit" }),
       ).toBe("pass");
     });
   });
 
   describe("guardEnabled=true, tool IS bash", () => {
-    it("prompts when has UI", () => {
+    it("prompts when TUI mode", () => {
       expect(
-        decideToolCall({ guardEnabled: true, hasUI: true, toolName: "bash" }),
+        decideToolCall({ guardEnabled: true, mode: "tui", toolName: "bash" }),
       ).toBe("prompt");
     });
 
-    it("auto-disables when no UI", () => {
+    it("auto-disables when non-TUI mode", () => {
       expect(
-        decideToolCall({ guardEnabled: true, hasUI: false, toolName: "bash" }),
+        decideToolCall({ guardEnabled: true, mode: "rpc", toolName: "bash" }),
       ).toBe("auto-disable");
     });
   });
@@ -175,7 +175,7 @@ function captureHandlers() {
 function makeNonInteractiveCtx(): ExtensionContext & { notifyCalls: string[] } {
   const notifyCalls: string[] = [];
   return {
-    hasUI: false,
+    mode: "rpc",
     signal: undefined,
     ui: {
       select: () => Promise.resolve(undefined),
@@ -223,7 +223,7 @@ function makeNonInteractiveCtx(): ExtensionContext & { notifyCalls: string[] } {
     compact: () => {},
     getSystemPrompt: () => "",
     notifyCalls,
-  };
+  } as unknown as ExtensionContext & { notifyCalls: string[] };
 }
 
 import type { SessionStartEvent } from "@earendil-works/pi-coding-agent";
@@ -235,7 +235,7 @@ function makeSessionStartEvent(
 }
 
 describe("non-interactive mode", () => {
-  it("tool_call with hasUI=false returns undefined, disables guard, logs status once", async () => {
+  it("tool_call with mode=rpc returns undefined, disables guard, logs status once", async () => {
     const { toolCallHandler, messageCalls } = captureHandlers();
     const ctx = makeNonInteractiveCtx();
 
@@ -253,7 +253,7 @@ describe("non-interactive mode", () => {
     expect(messageCalls[0]?.content).toMatch(/no interactive UI/);
   });
 
-  it("session_start with hasUI=false auto-disables and logs once", async () => {
+  it("session_start with mode=rpc auto-disables and logs once", async () => {
     const { sessionStartHandler, toolCallHandler, messageCalls } =
       captureHandlers();
     const ctx = makeNonInteractiveCtx();
@@ -280,7 +280,7 @@ function makeInteractiveCtx(): ExtensionContext & {
   const statusCalls: Array<{ key: string; value: string | undefined }> = [];
   const { theme, calls: themeCalls } = makeThemeSpy();
   return {
-    hasUI: true,
+    mode: "tui",
     signal: undefined,
     ui: {
       select: () => Promise.resolve("Allow once"),
@@ -329,6 +329,9 @@ function makeInteractiveCtx(): ExtensionContext & {
     getSystemPrompt: () => "",
     statusCalls,
     themeCalls,
+  } as unknown as ExtensionContext & {
+    statusCalls: Array<{ key: string; value: string | undefined }>;
+    themeCalls: Array<{ color: string; text: string }>;
   };
 }
 
@@ -405,7 +408,7 @@ function makeNotifyCapturingCtx(): ExtensionContext & {
 } {
   const notifyCalls: Array<{ message: string; level: string }> = [];
   return {
-    hasUI: true,
+    mode: "tui",
     signal: undefined,
     ui: {
       select: () => Promise.resolve("Allow once"),
@@ -453,6 +456,8 @@ function makeNotifyCapturingCtx(): ExtensionContext & {
     compact: () => {},
     getSystemPrompt: () => "",
     notifyCalls,
+  } as unknown as ExtensionContext & {
+    notifyCalls: Array<{ message: string; level: string }>;
   };
 }
 
@@ -536,7 +541,7 @@ function makeModalCtx(
   const statusCalls: Array<{ key: string; value: string | undefined }> = [];
   const { theme } = makeThemeSpy();
   return {
-    hasUI: true,
+    mode: "tui",
     signal: undefined,
     ui: {
       select: (title: string, choices: string[], options?: unknown) => {

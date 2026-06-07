@@ -63,7 +63,7 @@ function makeTmpDir(): string {
 
 function makeCtx(cwd: string): ManifestContext {
   return {
-    hasUI: false,
+    mode: "rpc",
     cwd,
     platform: "linux",
     ui: { notify: vi.fn() },

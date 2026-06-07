@@ -47,7 +47,7 @@ function makePi(): FakePi {
 type FakeModel = { provider: string; id: string; name?: string };
 
 type FakeCtx = {
-  hasUI: boolean;
+  mode: "tui" | "rpc" | "json" | "print";
   model: FakeModel | null;
   ui: {
     theme: {
@@ -75,11 +75,13 @@ type FakeCtx = {
 
 function makeCtx(
   provider = "openai-codex",
-  hasUI = true,
+  modeOrTui: "tui" | "rpc" | "json" | "print" | boolean = "tui",
   available: FakeModel[] = [],
 ): FakeCtx {
+  const mode =
+    typeof modeOrTui === "boolean" ? (modeOrTui ? "tui" : "rpc") : modeOrTui;
   return {
-    hasUI,
+    mode,
     model: provider ? { provider, id: "model-1" } : null,
     ui: {
       theme: {
@@ -235,7 +237,7 @@ describe("extension lifecycle", () => {
     expect(ctx.ui.setStatus).toHaveBeenCalledWith(STATUS_KEY, undefined);
   });
 
-  it("does not call setStatus when hasUI is false", async () => {
+  it("does not call setStatus when mode is not tui", async () => {
     const { pi, defaultExport } = await loadExtension(async () => fakeSnapshot);
     defaultExport(pi as never);
     const ctx = makeCtx("openai-codex", false);
@@ -437,7 +439,7 @@ describe("command handler", () => {
     vi.resetModules();
   });
 
-  it("does nothing when hasUI is false", async () => {
+  it("does nothing when mode is not tui", async () => {
     const getUsageMock = vi.fn(async () => fakeSnapshot);
     const { pi, defaultExport } = await loadExtension(getUsageMock);
     defaultExport(pi as never);

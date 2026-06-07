@@ -4,20 +4,20 @@ export type ToolCallDecision = "pass" | "auto-disable" | "prompt";
 
 export type DecideToolCallParams = {
   readonlyMode: boolean;
-  hasUI: boolean;
+  mode: "tui" | "rpc" | "json" | "print";
   toolName: string;
   triggerTools: Set<string>;
 };
 
 export function decideToolCall(params: DecideToolCallParams): ToolCallDecision {
-  const { readonlyMode, hasUI, toolName, triggerTools } = params;
+  const { readonlyMode, mode, toolName, triggerTools } = params;
   if (!readonlyMode) {
     return "pass";
   }
   if (!triggerTools.has(toolName)) {
     return "pass";
   }
-  if (!hasUI) {
+  if (mode !== "tui") {
     return "auto-disable";
   }
   return "prompt";

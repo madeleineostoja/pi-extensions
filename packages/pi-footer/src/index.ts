@@ -15,7 +15,7 @@ export default function (pi: ExtensionAPI) {
   pi.on(
     "session_start",
     async (_event: SessionStartEvent, ctx: ExtensionContext) => {
-      if (!ctx.hasUI) {
+      if (ctx.mode !== "tui") {
         return;
       }
 

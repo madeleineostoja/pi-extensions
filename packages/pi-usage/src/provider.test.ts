@@ -9,6 +9,14 @@ import {
 } from "./provider.js";
 import { CACHE_TTL_MS } from "./constants.js";
 
+vi.mock("./config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./config.js")>();
+  return {
+    ...actual,
+    readConfig: vi.fn(() => null),
+  };
+});
+
 type FakeModel = { provider: string; id: string };
 
 function makeCtxWithAvailable(models: FakeModel[]): {

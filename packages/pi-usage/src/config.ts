@@ -78,7 +78,7 @@ export async function runOpencodeAuthSetup(
   ctx: ExtensionContext,
   agentDir?: string,
 ): Promise<boolean> {
-  if (!ctx.hasUI) {
+  if (ctx.mode !== "tui") {
     return false;
   }
 

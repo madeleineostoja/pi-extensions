@@ -2,6 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Policy } from "../policy/defaults.js";
 import type { PolicyManager } from "../policy/load.js";
 import type { SessionState } from "../slash/commands.js";
+import type { SandboxMode } from "../enforcement/caps.js";
 
 // ---------------------------------------------------------------------------
 // Status state shape
@@ -11,7 +12,7 @@ export type StatusState = {
   enabled: boolean;
   networkOff: boolean;
   networkMode: Policy["network"]["mode"];
-  hasUI: boolean;
+  mode: SandboxMode;
   inProcessOnly?: boolean;
 };
 
@@ -26,7 +27,7 @@ function isNetworkSandboxed(state: StatusState): boolean {
   if (state.networkMode === "off" || state.networkMode === "always") {
     return true;
   }
-  return state.networkMode === "non-interactive-only" && !state.hasUI;
+  return state.networkMode === "non-interactive-only" && state.mode !== "tui";
 }
 
 export function renderStatus(state: StatusState): string {
@@ -74,7 +75,7 @@ export type StatusUI = {
 export type StatusSubscribeOptions = {
   policyManager: PolicyManager;
   getSessionState: () => SessionState;
-  hasUI: boolean;
+  mode: SandboxMode;
   ui: StatusUI;
   /** Subscribe to session mutation events (sandbox:policy-changed). Returns unsubscribe fn. */
   onSessionMutation: (fn: () => void) => () => void;
@@ -86,7 +87,7 @@ export function subscribeStatus(opts: StatusSubscribeOptions): () => void {
   const {
     policyManager,
     getSessionState,
-    hasUI,
+    mode,
     ui,
     onSessionMutation,
     inProcessOnly,
@@ -100,7 +101,7 @@ export function subscribeStatus(opts: StatusSubscribeOptions): () => void {
       enabled: policy.enabled && !session.sandboxOff,
       networkOff: session.networkOff,
       networkMode: policy.network.mode,
-      hasUI,
+      mode,
       inProcessOnly,
     };
   }

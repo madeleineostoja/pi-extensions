@@ -137,7 +137,7 @@ function makeModelSelectEvent(overrides: {
 
 function makeFakeCtx(
   overrides: {
-    hasUI?: boolean;
+    mode?: "tui" | "rpc" | "json" | "print";
     selectResult?: string | undefined;
     modelRegistry?: ExtensionContext["modelRegistry"];
   } = {},
@@ -152,7 +152,7 @@ function makeFakeCtx(
   }[] = [];
 
   return {
-    hasUI: overrides.hasUI ?? true,
+    mode: overrides.mode ?? "tui",
     signal: undefined,
     ui: {
       select: () => Promise.resolve(overrides.selectResult),
@@ -276,10 +276,10 @@ describe("model_select handler", () => {
     expect(ctx.compactCalls).toHaveLength(0);
   });
 
-  it("ignores when hasUI is false", async () => {
+  it("ignores when mode is not tui", async () => {
     const { handlers } = captureHandlers();
     const handler = handlers["model_select"][0];
-    const ctx = makeFakeCtx({ hasUI: false });
+    const ctx = makeFakeCtx({ mode: "rpc" });
     const event = makeModelSelectEvent({
       previousModel: makeModel("anthropic", "opus", 15),
       model: makeModel("openai", "gpt-4o", 5),

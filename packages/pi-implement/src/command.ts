@@ -133,14 +133,14 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         // Best-effort: session is shutting down anyway.
       }
     }
-    if (ctx.hasUI) {
+    if (ctx.mode === "tui") {
       ctx.ui.setStatus(STATUS_KEY, undefined);
       ctx.ui.setWidget(WIDGET_KEY, undefined);
     }
   });
 
   pi.on("turn_start", async (_event, ctx) => {
-    if (ctx.hasUI && isWarningTerminalPhase(active.state.phase)) {
+    if (ctx.mode === "tui" && isWarningTerminalPhase(active.state.phase)) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
     }
   });
@@ -232,7 +232,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             );
           }
           ctx.ui.notify("pi-implement stopped.", "warning");
-          if (ctx.hasUI) {
+          if (ctx.mode === "tui") {
             ctx.ui.setWidget(WIDGET_KEY, undefined);
           }
           return;
@@ -713,7 +713,7 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
             activeSubagentIds: [],
           });
           ctx.ui.notify("pi-implement done.", "info");
-          if (ctx.hasUI) {
+          if (ctx.mode === "tui") {
             ctx.ui.setStatus(STATUS_KEY, undefined);
             ctx.ui.setWidget(WIDGET_KEY, undefined);
           }
@@ -788,7 +788,7 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
                 );
               }
             }
-            if (ctx.hasUI) {
+            if (ctx.mode === "tui") {
               ctx.ui.setWidget(WIDGET_KEY, undefined);
             }
           } else {
@@ -812,7 +812,7 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
               releaseRunLock(paths, runId);
             }
           }
-          if (ctx.hasUI) {
+          if (ctx.mode === "tui") {
             ctx.ui.setWidget(WIDGET_KEY, undefined);
           }
         });
@@ -892,7 +892,7 @@ function describeStrategy(mode: ExecutionMode, maxConcurrency: number): string {
 }
 
 function syncStatus(ctx: ExtensionCommandContext, state: RunState): void {
-  if (!ctx.hasUI) {
+  if (ctx.mode !== "tui") {
     return;
   }
   const parts = formatFooterStatusParts(state);
@@ -909,7 +909,7 @@ function syncStatus(ctx: ExtensionCommandContext, state: RunState): void {
 }
 
 function syncWidget(ctx: ExtensionCommandContext, state: RunState): void {
-  if (!ctx.hasUI) {
+  if (ctx.mode !== "tui") {
     return;
   }
   const ids = [
