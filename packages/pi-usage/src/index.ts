@@ -160,7 +160,10 @@ export default function (pi: ExtensionAPI) {
       }
       const subcommand = args.trim();
       if (subcommand === "auth") {
-        await runOpencodeAuthSetup(ctx);
+        const saved = await runOpencodeAuthSetup(ctx);
+        if (saved && ctx.model && providerForModel(ctx.model) === "opencode") {
+          await refreshStatus(ctx.model, ctx, true);
+        }
         return;
       }
       if (subcommand) {

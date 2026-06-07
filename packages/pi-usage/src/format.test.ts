@@ -116,7 +116,7 @@ describe("formatStatus", () => {
     expect(theme.calls).toHaveLength(0);
   });
 
-  it("shows error text when snapshot has an error and no windows", () => {
+  it("shows provider-labelled error text when snapshot has an error and no windows", () => {
     const theme = makeSpyTheme();
     const snapshot: UsageSnapshot = {
       provider: "opencode",
@@ -126,13 +126,13 @@ describe("formatStatus", () => {
     };
     const result = formatStatus(snapshot, theme);
     expect(result).toBe(
-      `[error:${ICON}] [error:Opencode credentials not configured. Run /usage auth to set them up.]`,
+      `[error:${ICON}] [error:opencode: Opencode credentials not configured. Run /usage auth to set them up.]`,
     );
     expect(theme.calls).toEqual([
       { color: "error", text: ICON },
       {
         color: "error",
-        text: "Opencode credentials not configured. Run /usage auth to set them up.",
+        text: "opencode: Opencode credentials not configured. Run /usage auth to set them up.",
       },
     ]);
   });

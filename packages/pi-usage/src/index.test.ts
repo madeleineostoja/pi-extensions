@@ -448,17 +448,52 @@ describe("command handler", () => {
   });
 
   it("runs auth setup when args is 'auth'", async () => {
-    const authMock = vi.fn();
-    const { pi, defaultExport } = await loadExtension(
-      async () => fakeSnapshot,
-      authMock,
-    );
+    const authMock = vi.fn(async () => true);
+    const getUsageMock = vi.fn(async () => fakeSnapshot);
+    const { pi, defaultExport } = await loadExtension(getUsageMock, authMock);
     defaultExport(pi as never);
     const cmd = pi.commands.get("usage")!;
     const ctx = makeCtx("openai-codex");
     await cmd.handler("auth", ctx);
     expect(authMock).toHaveBeenCalledWith(ctx);
+    expect(getUsageMock).not.toHaveBeenCalled();
     expect(ctx.ui.notify).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the Opencode footer after auth setup", async () => {
+    const authMock = vi.fn(async () => true);
+    const getUsageMock = vi.fn(async () => ({
+      provider: "opencode" as const,
+      primary: { usedPercent: 12 },
+      fetchedAt: Date.now(),
+    }));
+    const { pi, defaultExport } = await loadExtension(getUsageMock, authMock);
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("usage")!;
+    const ctx = makeCtx("opencode");
+    await cmd.handler("auth", ctx);
+    expect(authMock).toHaveBeenCalledWith(ctx);
+    expect(getUsageMock).toHaveBeenCalledWith(ctx.model, ctx, true);
+    expect(ctx.ui.setStatus).toHaveBeenCalledWith(
+      STATUS_KEY,
+      expect.stringContaining("opencode 12%"),
+    );
+  });
+
+  it("does not refresh the Opencode footer when auth setup is cancelled", async () => {
+    const authMock = vi.fn(async () => false);
+    const getUsageMock = vi.fn(async () => ({
+      provider: "opencode" as const,
+      primary: { usedPercent: 12 },
+      fetchedAt: Date.now(),
+    }));
+    const { pi, defaultExport } = await loadExtension(getUsageMock, authMock);
+    defaultExport(pi as never);
+    const cmd = pi.commands.get("usage")!;
+    const ctx = makeCtx("opencode");
+    await cmd.handler("auth", ctx);
+    expect(getUsageMock).not.toHaveBeenCalled();
+    expect(ctx.ui.setStatus).not.toHaveBeenCalled();
   });
 
   it("warns for unknown subcommands", async () => {

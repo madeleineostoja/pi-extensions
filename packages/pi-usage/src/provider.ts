@@ -162,7 +162,7 @@ export async function getUsage(
   }
 
   const snapshot = await provider.getUsage(model, ctx, force);
-  if (snapshot) {
+  if (snapshot && !snapshot.error && !snapshot.stale) {
     cache.set(key, { snapshot, fetchedAt: Date.now() });
   }
   return snapshot;

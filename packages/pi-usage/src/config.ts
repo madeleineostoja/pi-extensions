@@ -77,9 +77,9 @@ export function writeConfig(agentDir: string, config: UsageConfig): void {
 export async function runOpencodeAuthSetup(
   ctx: ExtensionContext,
   agentDir?: string,
-): Promise<void> {
+): Promise<boolean> {
   if (!ctx.hasUI) {
-    return;
+    return false;
   }
 
   let workspaceId: string | undefined;
@@ -88,13 +88,13 @@ export async function runOpencodeAuthSetup(
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       ctx.ui.notify("Opencode auth cancelled. No changes made.", "info");
-      return;
+      return false;
     }
     throw err;
   }
   if (workspaceId === undefined || workspaceId.trim().length === 0) {
     ctx.ui.notify("Opencode auth cancelled. No changes made.", "info");
-    return;
+    return false;
   }
 
   let authCookie: string | undefined;
@@ -103,13 +103,13 @@ export async function runOpencodeAuthSetup(
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       ctx.ui.notify("Opencode auth cancelled. No changes made.", "info");
-      return;
+      return false;
     }
     throw err;
   }
   if (authCookie === undefined || authCookie.trim().length === 0) {
     ctx.ui.notify("Opencode auth cancelled. No changes made.", "info");
-    return;
+    return false;
   }
 
   const hints: string[] = [];
@@ -142,4 +142,5 @@ export async function runOpencodeAuthSetup(
   } else {
     ctx.ui.notify("Opencode auth saved to ~/.pi/agent/pi-usage.json", "info");
   }
+  return true;
 }

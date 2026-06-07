@@ -1,29 +1,62 @@
 # pi-usage
 
-Pi extension that shows compact subscription usage in the Pi footer for ChatGPT Codex, and replaces limit-error messages with a human-readable summary.
+Pi extension that shows compact subscription usage in the Pi footer for ChatGPT Codex and Opencode Go. It also rewrites raw Codex limit-error messages into a readable summary.
 
-## What it does
+## Supported providers
 
-- Displays a compact usage status in the Pi footer (e.g. `󰍛 42% (71%)`) whenever a supported provider model is selected
-- Automatically refreshes the usage snapshot on a timer after the TTL expires
-- Detects rate-limit errors in assistant messages (`message_end`) and replaces the raw JSON blob with a readable `🚫 usage limit reached` message that includes the latest usage figures
-- Clears the status and cancels the refresh timer when the session ends or a non-supported model is selected
-- **`/usage`** — returns the current usage percentage and reset time (or how long until reset)
+- **Codex**: models whose provider is `openai-codex` or starts with `openai-codex-`. Credentials come from Pi via `ctx.modelRegistry.getApiKeyAndHeaders`.
+- **Opencode Go**: models whose provider is `opencode`. Pi model availability enables the provider, but dashboard credentials are read from `~/.pi/agent/pi-usage.json`.
 
-## What it intentionally does NOT do
+## Footer
 
-- **No `setFooter`** — uses `setStatus` only (single status key `pi-usage`)
-- **No CLI fallback auth** — only Pi OAuth auth via `ctx.modelRegistry.getApiKeyAndHeaders`
-- **No `~/.pi/agent/auth.json`** reads
-- **No `additional_rate_limits`** — only `rate_limit.primary_window` (5h) and `rate_limit.secondary_window` (weekly) are surfaced
-- **No credits, plan, pace, or progress bars** — percentage figures only
-- **No unsupported providers** — silently clears the status when an unsupported model is active
-- **No config or settings** — no user-configurable options
+When the current model is supported, the footer status uses the `pi-usage` key and renders:
+
+```txt
+󰍛 codex 42% (71%)
+󰍛 opencode 42% (17%)
+```
+
+The first percentage is the primary/rolling window. The parenthesized percentage is the secondary/weekly window. Opencode monthly usage is intentionally omitted from the footer and shown only by `/usage`.
+
+Unsupported models clear the status and cancel the refresh timer.
+
+## Commands
+
+- **`/usage`**: reports all currently available supported providers from Pi's model registry.
+- **`/usage auth`**: prompts for Opencode Go dashboard credentials and writes them to `~/.pi/agent/pi-usage.json`.
+
+Example `/usage` output:
+
+```txt
+Codex
+5h: 42% used. Resets at 14:20 (2h 11m remaining).
+Weekly: 71% used.
+
+Opencode
+Rolling: 12% used. Resets in 3h 40m.
+Weekly: 18% used. Resets in 4d.
+Monthly: 8% used. Resets in 21d.
+```
+
+If Opencode is available but credentials are missing or invalid, the footer and `/usage` entry tell you to run `/usage auth`.
+
+## Opencode config
+
+`/usage auth` stores:
+
+```json
+{
+  "opencode": {
+    "workspaceId": "wrk_...",
+    "authCookie": "Fe26.2**..."
+  }
+}
+```
+
+The config file is written under `~/.pi/agent/pi-usage.json` with restricted permissions where supported. The extension does not read Opencode environment variables or alternate config paths.
+
+Opencode usage is currently scraped from `https://opencode.ai/workspace/{workspaceId}/go` using the saved `auth` cookie. The fetch/parsing code is isolated so it can be replaced when the official usage API lands; the current proposed endpoint is tracked in https://github.com/anomalyco/opencode/pull/16513.
 
 ## Limit-error detection
 
-The limit-error detector is intentionally **heuristic** and uses a **conservative false-negative-preferred approach**: it requires both a limit indicator (`limit`, `quota`, `rate_limit`, `too many requests`, `429`) _and_ a provider indicator (`codex`, `chatgpt`, `openai`, `wham`) to be present before replacing the message. Ambiguous or incomplete errors are left untouched.
-
-## Auth
-
-Only Pi OAuth authentication is supported for Codex. The extension reads the bearer token via `ctx.modelRegistry.getApiKeyAndHeaders` and decodes the JWT to extract the `chatgpt_account_id` claim for the `chatgpt-account-id` request header when present.
+Codex limit-error replacement is Codex-only. The detector is intentionally heuristic and false-negative-preferred: it requires both a limit indicator (`limit`, `quota`, `rate_limit`, `too many requests`, `429`) and a provider indicator (`codex`, `chatgpt`, `openai`, `wham`) before replacing a message.

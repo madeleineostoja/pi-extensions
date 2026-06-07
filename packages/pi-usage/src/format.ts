@@ -73,7 +73,12 @@ export function formatStatus(
 
   if (parts.length === 0) {
     if (snapshot.error) {
-      return formatColoredStatus("error", "error", snapshot.error, theme);
+      return formatColoredStatus(
+        "error",
+        "error",
+        `${label}: ${snapshot.error}`,
+        theme,
+      );
     }
     return undefined;
   }
