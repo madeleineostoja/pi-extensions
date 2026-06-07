@@ -15,6 +15,21 @@ const TASK_PACKET = `# Task Packet
 - [ ] My task
 `;
 
+const REFERENCED_TASK_PACKET = `# Task Packet
+
+## Selected Task
+
+- [ ] My task
+
+## Referenced Plan Material
+
+### auth.md
+
+# Auth Plan
+
+Raw auth requirement.
+`;
+
 const IMPLEMENTER_RESULT = {
   outcome: "changed" as const,
   summary: "Did the thing",
@@ -70,6 +85,16 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
+  it("does not suggest reading the source plan file for background context", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).not.toContain("you may read the source plan file");
+    expect(prompt).not.toContain("source plan file is not an extension of it");
+  });
+
   it("tells the implementer to stop and narrow when implementing an unselected sibling task", () => {
     const prompt = buildImplementerPrompt({
       taskPacket: TASK_PACKET,
@@ -83,6 +108,36 @@ describe("buildImplementerPrompt", () => {
     expect(prompt).toContain(
       "Do not complete the sibling task's own deliverable",
     );
+  });
+
+  it("tells the implementer to use referenced material only for selected-task context", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).toContain(
+      "The packet may contain referenced plan material that is broader than the selected task",
+    );
+    expect(prompt).toContain(
+      "Use that material only for context directly relevant to the selected task",
+    );
+    expect(prompt).toContain(
+      "Do not implement unrelated requirements merely because they appear in referenced material",
+    );
+  });
+
+  it("includes referenced material without adding sibling task scope", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: REFERENCED_TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).toContain("## Referenced Plan Material");
+    expect(prompt).toContain("### auth.md");
+    expect(prompt).toContain("Raw auth requirement.");
+    expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
+    expect(prompt).not.toContain("Sibling task A");
   });
 
   it("documents both outcome values in the result schema", () => {
@@ -170,6 +225,34 @@ describe("buildReviewerPrompt", () => {
       "Small prerequisite changes needed for the selected task may be approved",
     );
   });
+
+  it("uses the target sibling-task wording in the out-of-scope section", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      outOfScopeTasks: ["- [ ] Sibling task"],
+    });
+
+    expect(prompt).toContain(
+      "The following tasks are not selected. Use them only to identify scope creep in the candidate diff.",
+    );
+  });
+
+  it("retains referenced material and reviewer-only sibling context together", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: REFERENCED_TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      outOfScopeTasks: ["- [ ] Sibling task A"],
+    });
+
+    expect(prompt).toContain("## Referenced Plan Material");
+    expect(prompt).toContain("### auth.md");
+    expect(prompt).toContain("Raw auth requirement.");
+    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(prompt).toContain("- [ ] Sibling task A");
+  });
 });
 
 describe("buildAlreadySatisfiedReviewerPrompt", () => {
@@ -233,6 +316,50 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
       "Inspect the current repository state directly using read-only git and file commands",
     );
   });
+
+  it("includes out-of-scope sibling tasks when provided", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+      outOfScopeTasks: ["- [ ] Sibling task A", "- [ ] Sibling task B"],
+    });
+
+    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(prompt).toContain("- [ ] Sibling task A");
+    expect(prompt).toContain("- [ ] Sibling task B");
+    expect(prompt).toContain(
+      "The following tasks are not selected. Use them only to identify scope creep in the candidate diff.",
+    );
+  });
+
+  it("omits the sibling section when no out-of-scope tasks are provided", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+    });
+
+    expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
+  });
+
+  it("retains referenced material and reviewer-only sibling context together", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: REFERENCED_TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+      outOfScopeTasks: ["- [ ] Sibling task A"],
+    });
+
+    expect(prompt).toContain("## Referenced Plan Material");
+    expect(prompt).toContain("### auth.md");
+    expect(prompt).toContain("Raw auth requirement.");
+    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(prompt).toContain("- [ ] Sibling task A");
+  });
 });
 
 describe("buildOverallReviewerPrompt", () => {
@@ -271,5 +398,32 @@ describe("buildOverallReviewerPrompt", () => {
 
     expect(prompt).not.toContain("Run ID:");
     expect(prompt).not.toContain("Landed Tasks");
+  });
+
+  it("does not include a bundle material section when not provided", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan\n",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+    });
+
+    expect(prompt).not.toContain("## Referenced Plan Material");
+  });
+
+  it("includes bundle material when provided", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan\n",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      bundleMaterial: "### auth.md\n\n# Auth\n",
+    });
+
+    expect(prompt).toContain("## Referenced Plan Material");
+    expect(prompt).toContain("### auth.md");
+    expect(prompt).toContain("# Auth");
   });
 });

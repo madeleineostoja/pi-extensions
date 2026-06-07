@@ -1,0 +1,294 @@
+import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
+import type { ParsedPlan, PlanTask } from "./plan.js";
+
+export const MAX_PLAN_MATERIAL_CHARS = 100_000;
+
+export type ReferencedMaterial = {
+  absolutePath: string;
+  displayLabel: string;
+  content: string;
+};
+
+export type TaskManifestEntry = {
+  planIndex: number;
+  fingerprint: string;
+  referencedMaterials: ReferencedMaterial[];
+};
+
+export type PlanBundleManifest = {
+  sourcePlanPath: string;
+  tasks: TaskManifestEntry[];
+  allArtifactPaths: string[];
+  isIndexStyle: boolean;
+  validationErrors: string[];
+};
+
+const PLAN_REF_LINE_RE =
+  /^[ \t]*(?:[-*][ \t]+)?Plan:\s*(?:`([^`]+)`|<([^>]+)>)\s*$/;
+
+export function isPlanLinkageLine(line: string): boolean {
+  return /^[ \t]*(?:[-*][ \t]+)?Plan:/.test(line);
+}
+
+function looksLikeAttemptedPlanReference(line: string): boolean {
+  return /^[ \t]*(?:[-*][ \t]+)?Plan:\s*[`<>]/.test(line);
+}
+
+export function extractPlanReference(
+  line: string,
+): { target: string } | undefined {
+  const match = PLAN_REF_LINE_RE.exec(line);
+  if (!match) {
+    return undefined;
+  }
+  const target = (match[1] ?? match[2] ?? "").trim();
+  if (!target) {
+    return undefined;
+  }
+  return { target };
+}
+
+export function computeTaskFingerprint(task: PlanTask): string {
+  const hash = createHash("sha256");
+  hash.update(task.text);
+  for (const line of task.blockLines) {
+    hash.update("\n");
+    hash.update(line);
+  }
+  return hash.digest("hex");
+}
+
+function looksLikeUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+  }
+}
+
+function validatePlanTarget(
+  sourceDir: string,
+  target: string,
+): { absolutePath: string; content: string } | string {
+  if (looksLikeUrl(target)) {
+    return `URL Plan: targets are not supported: ${target}`;
+  }
+
+  const absolutePath = isAbsolute(target)
+    ? resolve(target)
+    : resolve(join(sourceDir, target));
+
+  try {
+    const stat = statSync(absolutePath);
+    if (stat.isDirectory()) {
+      return `Plan: target is a directory: ${target}`;
+    }
+  } catch {
+    return `missing or unreadable Plan: target: ${target}`;
+  }
+
+  if (!target.toLowerCase().endsWith(".md")) {
+    return `non-markdown Plan: target: ${target}`;
+  }
+
+  let content: string;
+  try {
+    content = readFileSync(absolutePath, "utf-8");
+  } catch {
+    return `missing or unreadable Plan: target: ${target}`;
+  }
+
+  if (!content.trim()) {
+    return `empty or whitespace-only Plan: target: ${target}`;
+  }
+
+  return { absolutePath, content };
+}
+
+export function formatReferencedMaterial(
+  materials: ReferencedMaterial[],
+  maxChars = MAX_PLAN_MATERIAL_CHARS,
+): string {
+  if (materials.length === 0) {
+    return "";
+  }
+
+  const intro =
+    "The following raw plan material is included to help implement the selected task. It may contain context, decisions, acceptance criteria, or requirements used by multiple tasks.\n\nImplement only the selected task above. Do not implement unrelated requirements merely because they appear in referenced material.";
+
+  const parts: string[] = [intro];
+
+  for (const mat of materials) {
+    parts.push(`\n### ${mat.displayLabel}\n\n${mat.content}`);
+  }
+
+  const result = parts.join("\n");
+  checkPlanMaterialSize(result, maxChars);
+  return result;
+}
+
+export function formatBundleMaterial(
+  manifest: PlanBundleManifest,
+  maxChars = MAX_PLAN_MATERIAL_CHARS,
+): string {
+  const seen = new Set<string>();
+  const materials: ReferencedMaterial[] = [];
+
+  for (const task of manifest.tasks) {
+    for (const mat of task.referencedMaterials) {
+      if (!seen.has(mat.absolutePath)) {
+        seen.add(mat.absolutePath);
+        materials.push(mat);
+      }
+    }
+  }
+
+  if (materials.length === 0) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  for (const mat of materials) {
+    parts.push(`### ${mat.displayLabel}\n\n${mat.content}`);
+  }
+
+  const result = parts.join("\n\n");
+  checkPlanMaterialSize(result, maxChars);
+  return result;
+}
+
+export class PlanMaterialSizeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlanMaterialSizeError";
+  }
+}
+
+export function checkPlanMaterialSize(content: string, maxChars: number): void {
+  if (content.length > maxChars) {
+    throw new PlanMaterialSizeError(
+      `Plan material exceeds maximum size of ${maxChars} characters (${content.length} characters). Reduce plan size or increase the limit.`,
+    );
+  }
+}
+
+export function validatePlanMaterialSizes(
+  manifest: PlanBundleManifest,
+  maxChars = MAX_PLAN_MATERIAL_CHARS,
+): string[] {
+  const errors: string[] = [];
+
+  try {
+    formatBundleMaterial(manifest, maxChars);
+  } catch (err) {
+    errors.push(`bundle referenced plan material: ${formatSizeError(err)}`);
+  }
+
+  for (const task of manifest.tasks) {
+    try {
+      formatReferencedMaterial(task.referencedMaterials, maxChars);
+    } catch (err) {
+      errors.push(
+        `task ${task.planIndex} referenced plan material: ${formatSizeError(err)}`,
+      );
+    }
+  }
+
+  return errors;
+}
+
+function formatSizeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export function buildPlanBundleManifest(
+  sourcePlanPath: string,
+  plan: ParsedPlan,
+): PlanBundleManifest {
+  const sourceDir = dirname(sourcePlanPath);
+  const manifest: PlanBundleManifest = {
+    sourcePlanPath: resolve(sourcePlanPath),
+    tasks: [],
+    allArtifactPaths: [resolve(sourcePlanPath)],
+    isIndexStyle: false,
+    validationErrors: [],
+  };
+
+  for (const task of plan.tasks) {
+    const entry: TaskManifestEntry = {
+      planIndex: task.index,
+      fingerprint: computeTaskFingerprint(task),
+      referencedMaterials: [],
+    };
+
+    let hasLinkage = false;
+
+    for (const line of task.blockLines) {
+      const ref = extractPlanReference(line);
+      if (ref) {
+        hasLinkage = true;
+
+        const validation = validatePlanTarget(sourceDir, ref.target);
+        if (typeof validation === "string") {
+          manifest.validationErrors.push(`Task ${task.index}: ${validation}`);
+          continue;
+        }
+
+        entry.referencedMaterials.push({
+          absolutePath: validation.absolutePath,
+          displayLabel: basename(validation.absolutePath),
+          content: validation.content,
+        });
+
+        if (!manifest.allArtifactPaths.includes(validation.absolutePath)) {
+          manifest.allArtifactPaths.push(validation.absolutePath);
+        }
+
+        continue;
+      }
+
+      if (looksLikeAttemptedPlanReference(line)) {
+        hasLinkage = true;
+        manifest.validationErrors.push(
+          `Task ${task.index}: unsupported or malformed Plan: line: ${line.trim()}`,
+        );
+        continue;
+      }
+
+      // Natural-language Plan: notes are ignored
+    }
+
+    if (hasLinkage) {
+      manifest.isIndexStyle = true;
+    }
+
+    manifest.tasks.push(entry);
+  }
+
+  for (const entry of manifest.tasks) {
+    const counts = new Map<string, number>();
+    for (const mat of entry.referencedMaterials) {
+      counts.set(mat.displayLabel, (counts.get(mat.displayLabel) ?? 0) + 1);
+    }
+    for (const mat of entry.referencedMaterials) {
+      if (counts.get(mat.displayLabel)! > 1) {
+        mat.displayLabel = relative(
+          dirname(manifest.sourcePlanPath),
+          mat.absolutePath,
+        );
+      }
+    }
+  }
+
+  return manifest;
+}

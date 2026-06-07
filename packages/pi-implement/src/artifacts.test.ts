@@ -1,93 +1,168 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolvePlanArtifacts } from "./artifacts.js";
+import { buildPlanBundleManifest } from "./manifest.js";
 import { parsePlan } from "./plan.js";
 
-const planPath = "/repo/tmp/plans/index.md";
-
 describe("resolvePlanArtifacts", () => {
+  const makeTmpDir = () => mkdtempSync(join(tmpdir(), "pi-artifacts-"));
+
   it("always includes the source plan", () => {
-    const plan = parsePlan(planPath, "# Plan\n\n## Tasks\n\n- [ ] Task\n");
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Task\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
     const artifacts = resolvePlanArtifacts(planPath, plan);
-    expect(artifacts).toContain("/repo/tmp/plans/index.md");
+    expect(artifacts).toContain(planPath);
   });
 
   it("includes referenced markdown files from task blocks", () => {
-    const plan = parsePlan(
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    const subPath = join(dir, "sub", "plan.md");
+    const otherPath = join(dir, "other", "deep.md");
+    mkdirSync(join(dir, "sub"), { recursive: true });
+    mkdirSync(join(dir, "other"), { recursive: true });
+    writeFileSync(
       planPath,
-      `# Plan
-
-## Tasks
-
-- [ ] Task one
-  - Plan: \`sub/plan.md\`
-- [ ] Task two
-  - Plan: <other/deep.md>
-`,
+      `# Plan\n\n## Tasks\n\n- [ ] Task one\n  - Plan: \`sub/plan.md\`\n- [ ] Task two\n  - Plan: <other/deep.md>\n`,
+      "utf-8",
     );
+    writeFileSync(subPath, "# Sub\n", "utf-8");
+    writeFileSync(otherPath, "# Other\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
     const artifacts = resolvePlanArtifacts(planPath, plan);
-    expect(artifacts).toContain("/repo/tmp/plans/index.md");
-    expect(artifacts).toContain("/repo/tmp/plans/sub/plan.md");
-    expect(artifacts).toContain("/repo/tmp/plans/other/deep.md");
+    expect(artifacts).toContain(planPath);
+    expect(artifacts).toContain(subPath);
+    expect(artifacts).toContain(otherPath);
   });
 
-  it("ignores URLs", () => {
-    const plan = parsePlan(
+  it("uses the same validated artifact paths as the plan bundle manifest", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    const sharedPath = join(dir, "shared.md");
+    writeFileSync(
       planPath,
-      `# Plan
-
-## Tasks
-
-- [ ] Task
-  - Plan: \`https://example.com/plan.md\`
-  - Plan: <http://example.com/other.md>
-`,
+      `# Plan\n\n## Tasks\n\n- [ ] Task one\n  - Plan: \`shared.md\`\n- [ ] Task two\n  - Plan: \`shared.md\`\n`,
+      "utf-8",
     );
-    const artifacts = resolvePlanArtifacts(planPath, plan);
-    expect(artifacts).toEqual(["/repo/tmp/plans/index.md"]);
+    writeFileSync(sharedPath, "# Shared\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+
+    expect(resolvePlanArtifacts(planPath, plan)).toEqual(
+      manifest.allArtifactPaths,
+    );
   });
 
-  it("ignores non-markdown references", () => {
-    const plan = parsePlan(
+  it("throws for URL targets", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    writeFileSync(
       planPath,
-      `# Plan
-
-## Tasks
-
-- [ ] Task
-  - Plan: \`notes.txt\`
-`,
+      `# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: \`https://example.com/plan.md\`\n  - Plan: <http://example.com/other.md>\n`,
+      "utf-8",
     );
-    const artifacts = resolvePlanArtifacts(planPath, plan);
-    expect(artifacts).toEqual(["/repo/tmp/plans/index.md"]);
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    expect(() => resolvePlanArtifacts(planPath, plan)).toThrow("URL");
+  });
+
+  it("throws for non-markdown references", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    const txtPath = join(dir, "notes.txt");
+    writeFileSync(
+      planPath,
+      `# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: \`notes.txt\`\n`,
+      "utf-8",
+    );
+    writeFileSync(txtPath, "not markdown", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    expect(() => resolvePlanArtifacts(planPath, plan)).toThrow("non-markdown");
   });
 
   it("resolves absolute paths", () => {
-    const plan = parsePlan(
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    const absPath = join(dir, "absolute", "path.md");
+    mkdirSync(join(dir, "absolute"), { recursive: true });
+    writeFileSync(
       planPath,
-      `# Plan
-
-## Tasks
-
-- [ ] Task
-  - Plan: \`/absolute/path.md\`
-`,
+      `# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: \`${absPath}\`\n`,
+      "utf-8",
     );
+    writeFileSync(absPath, "# Abs\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
     const artifacts = resolvePlanArtifacts(planPath, plan);
-    expect(artifacts).toContain("/absolute/path.md");
+    expect(artifacts).toContain(absPath);
   });
 
-  it("handles artifacts outside the repo", () => {
-    const plan = parsePlan(
+  it("handles artifacts outside the immediate plan dir", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plans", "index.md");
+    const outsidePath = join(dir, "sibling.md");
+    mkdirSync(join(dir, "plans"), { recursive: true });
+    writeFileSync(
       planPath,
-      `# Plan
-
-## Tasks
-
-- [ ] Task
-  - Plan: \`../../outside.md\`
-`,
+      `# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: \`../sibling.md\`\n`,
+      "utf-8",
     );
+    writeFileSync(outsidePath, "# Sibling\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
     const artifacts = resolvePlanArtifacts(planPath, plan);
-    expect(artifacts).toContain("/repo/outside.md");
+    expect(artifacts).toContain(outsidePath);
+  });
+
+  it("throws for multiple references on one line", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    writeFileSync(
+      planPath,
+      `# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: \`a.md\` \`b.md\`\n`,
+      "utf-8",
+    );
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    expect(() => resolvePlanArtifacts(planPath, plan)).toThrow("malformed");
+  });
+
+  it("throws for missing referenced files", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    writeFileSync(
+      planPath,
+      `# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: \`missing.md\`\n`,
+      "utf-8",
+    );
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    expect(() => resolvePlanArtifacts(planPath, plan)).toThrow("missing");
+  });
+
+  it("throws for empty referenced files", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    const emptyPath = join(dir, "empty.md");
+    writeFileSync(
+      planPath,
+      `# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: \`empty.md\`\n`,
+      "utf-8",
+    );
+    writeFileSync(emptyPath, " \n\t", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    expect(() => resolvePlanArtifacts(planPath, plan)).toThrow("empty");
+  });
+
+  it("throws for directory targets", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "index.md");
+    mkdirSync(join(dir, "subdir"));
+    writeFileSync(
+      planPath,
+      `# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: \`subdir\`\n`,
+      "utf-8",
+    );
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    expect(() => resolvePlanArtifacts(planPath, plan)).toThrow("directory");
   });
 });

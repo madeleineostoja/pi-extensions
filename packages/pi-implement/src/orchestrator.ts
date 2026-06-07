@@ -63,6 +63,11 @@ import {
 } from "./scheduler.js";
 import { checkpointPatch } from "./status.js";
 import { dirname } from "node:path";
+import {
+  formatBundleMaterial,
+  validatePlanMaterialSizes,
+  type PlanBundleManifest,
+} from "./manifest.js";
 
 const MAX_REVIEWER_REQUESTS = 5;
 const MAX_SYSTEM_FAILURES = 2;
@@ -83,6 +88,7 @@ export type OrchestratorDeps = {
   subagents: SubagentClient;
   planPath: string;
   planArtifacts?: string[];
+  manifest?: PlanBundleManifest;
   roles: EffectiveRoles;
   mode?: RunMode;
   maxConcurrency?: number;
@@ -101,6 +107,19 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
     lastReason: undefined,
   });
   await deps.git.root();
+  if (deps.manifest) {
+    if (deps.manifest.validationErrors.length > 0) {
+      throw new BlockedError(
+        `plan bundle validation failed:\n${deps.manifest.validationErrors.join("\n")}`,
+      );
+    }
+    const materialSizeErrors = validatePlanMaterialSizes(deps.manifest);
+    if (materialSizeErrors.length > 0) {
+      throw new BlockedError(
+        `plan material too large:\n${materialSizeErrors.join("\n")}`,
+      );
+    }
+  }
   let plan = parsePlanFile(deps.planPath);
   const planArtifacts = deps.planArtifacts ?? [deps.planPath];
   if (!(await deps.git.isCleanExcept(planArtifacts))) {
@@ -1142,6 +1161,11 @@ async function runOverallReview(
   const planContent = readFileSync(deps.planPath, "utf-8");
   const headSha = await deps.git.head();
 
+  let bundleMaterial: string | undefined;
+  if (deps.manifest) {
+    bundleMaterial = formatBundleMaterial(deps.manifest);
+  }
+
   if (baseSha === headSha) {
     return;
   }
@@ -1178,6 +1202,7 @@ async function runOverallReview(
     diff,
     runId: deps.runId,
     landedTasks,
+    bundleMaterial,
   });
 
   deps.updateState({ phase: "final_review", activeSubagentId: undefined });
@@ -1466,7 +1491,7 @@ async function runTaskWorker(args: {
     const mainHeadBefore = await deps.git.head();
     const taskHeadBefore = worktreePath ? await taskGit.head() : undefined;
     const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
-    const packet = buildTaskPacket(plan, task);
+    const packet = buildTaskPacket(plan, task, deps.manifest);
     const effectiveWorktreePath = worktreePath ?? (await deps.git.root());
     const implementerPrompt = buildImplementerPrompt({
       taskPacket: packet.markdown,
@@ -1690,12 +1715,16 @@ async function runTaskWorker(args: {
         }
       }
 
+      const outOfScopeTasks = plan.tasks
+        .filter((t) => t.index !== task.index)
+        .map((t) => t.originalLine);
       reviewerPrompt = buildAlreadySatisfiedReviewerPrompt({
         taskPacket: packet.markdown,
         worktreePath: effectiveWorktreePath,
         implementer: parsed.result,
         headSha: reviewHeadBefore,
         accumulatedDiff,
+        outOfScopeTasks,
       });
     } else {
       const message =

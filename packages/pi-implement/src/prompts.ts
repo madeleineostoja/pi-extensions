@@ -1,5 +1,12 @@
 import type { ParsedImplementerResult } from "./verdict.js";
 
+function buildSiblingTasksSection(outOfScopeTasks?: string[]): string {
+  if (!outOfScopeTasks || outOfScopeTasks.length === 0) {
+    return "";
+  }
+  return `\n## Out-of-Scope Sibling Tasks\n\nThe following tasks are not selected. Use them only to identify scope creep in the candidate diff.\n\n${outOfScopeTasks.join("\n")}\n`;
+}
+
 export function buildImplementerPrompt(args: {
   taskPacket: string;
   worktreePath: string;
@@ -19,11 +26,13 @@ You have been assigned a dedicated Git worktree for this task. Read and write on
 
 Do not read or write files outside the assigned worktree. Any shell command that touches project files must run from or explicitly target the assigned worktree path above.
 
-The task packet below is the complete, authoritative plan context for this task. Sibling task lines are intentionally omitted — they are not truncation and not your concern. If you need background context, you may read the source plan file, but any sibling tasks you discover there are read-only background, not implementation requirements. They do not expand your scope.
+The task packet below is the complete, authoritative plan context for this task. Sibling task lines are intentionally omitted — they are not truncation and not your concern. They do not expand your scope.
 
 **Required implementation scope:** Only the selected task line plus its indented block. Other sections in the task packet are background context to help you understand the task, unless the selected task explicitly references them. Do not implement sibling tasks or unrelated cleanup, even when global plan context mentions them.
 
-If you notice you are implementing an unselected sibling task, stop and narrow the change to only what is necessary for the selected task. If the selected task is impossible without some prerequisite work from a sibling task, do only the minimal prerequisite and explain it in your summary and verification. Do not complete the sibling task's own deliverable. The task packet is the authoritative scope; the source plan file is not an extension of it.
+The packet may contain referenced plan material that is broader than the selected task. Use that material only for context directly relevant to the selected task. Do not implement unrelated requirements merely because they appear in referenced material.
+
+If you notice you are implementing an unselected sibling task, stop and narrow the change to only what is necessary for the selected task. If the selected task is impossible without some prerequisite work from a sibling task, do only the minimal prerequisite and explain it in your summary and verification. Do not complete the sibling task's own deliverable.
 
 Do not edit source plan files or checklist state. Do not stage, commit, reset, checkout, rebase, merge, tag, push, clean, or force-add ignored files.
 
@@ -79,10 +88,7 @@ export function buildReviewerPrompt(args: {
   implementer: ParsedImplementerResult;
   outOfScopeTasks?: string[];
 }): string {
-  const siblingSection =
-    args.outOfScopeTasks && args.outOfScopeTasks.length > 0
-      ? `\n## Out-of-Scope Sibling Tasks\n\nThe following unselected sibling tasks are out of scope for this candidate. They are listed here as a scope guard; do not treat them as requirements to satisfy.\n\n${args.outOfScopeTasks.map((t) => `- ${t}`).join("\n")}\n`
-      : "";
+  const siblingSection = buildSiblingTasksSection(args.outOfScopeTasks);
   return `You are the pi-implement reviewer for exactly one staged /plan task candidate. This prompt is the complete review contract and must work even if your subagent definition is generic.
 
 Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The task packet is a deliberate single-task slice; sibling task lines are intentionally omitted and are out of scope.
@@ -148,7 +154,9 @@ export function buildAlreadySatisfiedReviewerPrompt(args: {
   implementer: ParsedImplementerResult;
   headSha: string;
   accumulatedDiff?: string;
+  outOfScopeTasks?: string[];
 }): string {
+  const siblingSection = buildSiblingTasksSection(args.outOfScopeTasks);
   const diffSection =
     args.accumulatedDiff !== undefined
       ? `## Accumulated Run Diff
@@ -171,7 +179,7 @@ Use read-only git commands and file inspection to verify the claim. Do not edit 
 
 The selected task's required scope is the task line plus the indented lines directly under it. Sub-bullets are part of the task. Sibling tasks are out of scope.
 
-Approve only if the selected task line and its indented block are satisfied now. Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task. Block for concrete material issues: incorrect behavior, missing task requirements, regressions, broken or insufficient verification for the changed surface, or unsafe or insecure code. Do not block for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or refactors that would merely be nice.
+Approve only if the selected task line and its indented block are satisfied now. Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task. Block for concrete material issues: incorrect behavior, missing task requirements, regressions, broken or insufficient verification for the changed surface, or unsafe or insecure code. Do not block for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or refactors that would merely be nice.${siblingSection}
 
 ## Task Packet
 
@@ -217,12 +225,16 @@ export function buildOverallReviewerPrompt(args: {
   diff: string;
   runId?: string;
   landedTasks?: Array<{ id: string; title: string; commitSha?: string }>;
+  bundleMaterial?: string;
 }): string {
   const runSection = args.runId ? `\nRun ID: ${args.runId}\n` : "\n";
   const taskSection =
     args.landedTasks && args.landedTasks.length > 0
       ? `\n## Landed Tasks\n\n${args.landedTasks.map((t) => `- ${t.id}: ${t.title}${t.commitSha ? ` @ ${t.commitSha.slice(0, 7)}` : ""}`).join("\n")}\n`
       : "";
+  const bundleSection = args.bundleMaterial
+    ? `\n\n## Referenced Plan Material\n\n${args.bundleMaterial}`
+    : "";
   return `You are the pi-implement overall reviewer. This is a read-only whole-feature review after all planned tasks have been implemented and committed.
 
 Assess whether the combined implementation satisfies the original plan, whether cross-task gaps or edge cases were missed, and whether the tasks fit together correctly.
@@ -235,7 +247,7 @@ Source: ${args.planPath}
 Base SHA: ${args.baseSha}
 Head SHA: ${args.headSha}${runSection}${taskSection}
 
-${args.planContent}
+${args.planContent}${bundleSection}
 
 ## Combined Diff
 

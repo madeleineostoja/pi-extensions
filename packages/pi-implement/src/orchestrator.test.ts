@@ -19,6 +19,8 @@ import { readEvents, readTaskJson } from "./state.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SpawnArgs, SubagentClient, SubagentResult } from "./subagents.js";
 import type { RunState } from "./status.js";
+import { buildPlanBundleManifest } from "./manifest.js";
+import { parsePlanFile } from "./plan.js";
 
 class FakeGit implements GitClient {
   commits: string[] = [];
@@ -209,6 +211,73 @@ describe("nextOverallReviewArtifactPath", () => {
 });
 
 describe("runImplementation", () => {
+  it("blocks before spawning implementers when manifest validation failed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `missing.md`\n",
+      "utf-8",
+    );
+    const manifest = buildPlanBundleManifest(planPath, parsePlanFile(planPath));
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
+  it("blocks if a task fingerprint changes after manifest preflight", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const subPath = join(dir, "sub.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `sub.md`\n  - Keep this note\n",
+      "utf-8",
+    );
+    writeFileSync(subPath, "# Subplan\n", "utf-8");
+    const manifest = buildPlanBundleManifest(planPath, parsePlanFile(planPath));
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `sub.md`\n  - Edited after preflight\n",
+      "utf-8",
+    );
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("fingerprint mismatch");
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
   it("implements, reviews, marks, and commits one task", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
@@ -325,6 +394,69 @@ describe("runImplementation", () => {
     expect(reviewerPrompt).toContain(
       "Completing a sibling task's own deliverable is scope creep",
     );
+  });
+
+  it("index-style plan: implementer and reviewer prompts include referenced material, implementer does not see sibling tasks", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    const subPath = join(dir, "sub.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task one\n  - Plan: `sub.md`\n- [ ] Task two\n",
+      "utf-8",
+    );
+    writeFileSync(subPath, "# Subplan\n\nAcceptance: do it.\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns).toHaveLength(5);
+    const implPrompt = subagents.spawns[0]?.prompt ?? "";
+    const reviewerPrompt = subagents.spawns[1]?.prompt ?? "";
+    const overallReviewPrompt = subagents.spawns[4]?.prompt ?? "";
+
+    // Implementer prompt
+    expect(implPrompt).toContain("## Referenced Plan Material");
+    expect(implPrompt).toContain("### sub.md");
+    expect(implPrompt).toContain("# Subplan");
+    expect(implPrompt).toContain("Acceptance: do it.");
+    expect(implPrompt).not.toContain("## Out-of-Scope Sibling Tasks");
+    expect(implPrompt).not.toContain("Task two");
+
+    // Reviewer prompt
+    expect(reviewerPrompt).toContain("## Referenced Plan Material");
+    expect(reviewerPrompt).toContain("### sub.md");
+    expect(reviewerPrompt).toContain("# Subplan");
+    expect(reviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(reviewerPrompt).toContain("- [ ] Task two");
+
+    // Overall reviewer prompt
+    expect(overallReviewPrompt).toContain("## Referenced Plan Material");
+    expect(overallReviewPrompt).toContain("### sub.md");
+    expect(overallReviewPrompt).toContain("# Subplan");
   });
 
   it("two unchecked tasks: reviewer prompt lists task 2 as out-of-scope but implementer prompt does not", async () => {

@@ -3,6 +3,8 @@ import { execFile } from "node:child_process";
 import { isAbsolute, relative } from "node:path";
 import { promisify } from "node:util";
 import type { ParsedPlan, PlanTask } from "./plan.js";
+import type { PlanBundleManifest } from "./manifest.js";
+import { formatBundleMaterial, PlanMaterialSizeError } from "./manifest.js";
 import type { ImplementConfig } from "./config.js";
 import { resolveMaxParallel } from "./config.js";
 import type { SubagentClient } from "./subagents.js";
@@ -49,6 +51,7 @@ export type StrategyRequest = {
   requestedMode: "auto" | "serial" | "parallel";
   requestedConcurrency?: number;
   signal?: AbortSignal;
+  manifest?: PlanBundleManifest;
   updateState(state: StatePatch): void;
 };
 
@@ -139,6 +142,50 @@ function removeStrategyAgentPatch(
   };
 }
 
+export function buildTriagePrompt(
+  plan: ParsedPlan,
+  unchecked: PlanTask[],
+  manifest?: PlanBundleManifest,
+): string {
+  const taskLines = unchecked
+    .map((t) => `- [planIndex=${t.index}] ${t.text}`)
+    .join("\n");
+  const bundleMaterial = manifest ? formatBundleMaterial(manifest) : "";
+  const bundleSection = bundleMaterial
+    ? `\n\n## Referenced Plan Material\n\n${bundleMaterial}`
+    : "";
+
+  return `You are a strategy triage agent for a code implementation pipeline.
+
+Analyze the following plan tasks and decide whether they should be executed serially (one at a time) or escalated to a graph planner for potential parallel execution.
+
+## Plan
+
+${plan.content}${bundleSection}
+
+## Unchecked Tasks (${unchecked.length})
+
+${taskLines}
+
+## Instructions
+
+Respond with strict JSON only (no prose, no markdown fences) matching exactly:
+{"decision":"serial","reason":"..."}
+or
+{"decision":"escalate-to-planner","reason":"..."}
+
+Choose "serial" if:
+- Tasks appear to be tightly coupled or sequential by nature
+- Tasks likely touch the same files or systems
+- There is insufficient evidence of independent work streams
+
+Choose "escalate-to-planner" only if:
+- There are clearly distinct, independent areas of work
+- Tasks could reasonably run in parallel without conflict
+
+When in doubt, choose "serial".`;
+}
+
 async function runGraphPlanner(
   req: StrategyRequest,
   unchecked: PlanTask[],
@@ -153,6 +200,9 @@ async function runGraphPlanner(
   try {
     prompt = await buildGraphPlannerPrompt(req, unchecked);
   } catch (err) {
+    if (err instanceof PlanMaterialSizeError) {
+      throw err;
+    }
     const message = err instanceof Error ? err.message : String(err);
     return {
       mode: "serial",
@@ -305,7 +355,10 @@ async function buildGraphPlannerPrompt(
     .map((t) => `- [planIndex=${t.index}] ${t.text}`)
     .join("\n");
 
-  const gitStatus = await getFilteredGitStatus(req.repoRoot, req.plan.path);
+  const gitStatus = await getFilteredGitStatus(
+    req.repoRoot,
+    req.manifest?.allArtifactPaths ?? [req.plan.path],
+  );
 
   const taskHashes = unchecked
     .map(
@@ -314,13 +367,21 @@ async function buildGraphPlannerPrompt(
     )
     .join(" ");
 
+  let bundleSection = "";
+  if (req.manifest) {
+    const bundle = formatBundleMaterial(req.manifest);
+    if (bundle) {
+      bundleSection = `\n\n## Referenced Plan Material\n\n${bundle}`;
+    }
+  }
+
   return `You are a progressive graph planning agent for a parallel code implementation pipeline.
 
 Your job is to analyze the plan and decide whether to run tasks serially or in parallel, and only build a dependency graph when useful independent work exists.
 
 ## Plan
 
-${req.planContent}
+${req.planContent}${bundleSection}
 
 ## Unchecked Tasks (${unchecked.length})
 
@@ -335,7 +396,8 @@ Base SHA: ${req.baseSha}
 Plan path: ${req.plan.path}
 Plan hash: ${req.planHash}
 
-Current Git Status (excluding .pi/** and plan artifacts):
+## Current Git Status (excluding .pi/** and plan artifacts)
+
 ${gitStatus}
 
 ## Safety Constraints
@@ -395,11 +457,13 @@ If the correct strategy is serial, set mode to "serial" and omit the graph.`;
 
 async function getFilteredGitStatus(
   repoRoot: string,
-  planPath?: string,
+  planArtifacts: string[] = [],
 ): Promise<string> {
-  const repoPlanPath = planPath
-    ? repoRelativePath(repoRoot, planPath)
-    : undefined;
+  const repoPlanArtifacts = new Set(
+    planArtifacts
+      .map((path) => repoRelativePath(repoRoot, path))
+      .filter((path): path is string => path !== undefined),
+  );
   try {
     const result = await execFileAsync(
       "git",
@@ -414,7 +478,7 @@ async function getFilteredGitStatus(
       if (filePath.startsWith(".pi/")) {
         return false;
       }
-      if (repoPlanPath && filePath === repoPlanPath) {
+      if (repoPlanArtifacts.has(filePath)) {
         return false;
       }
       return true;
