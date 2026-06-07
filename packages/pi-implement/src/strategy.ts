@@ -314,9 +314,9 @@ async function buildGraphPlannerPrompt(
     )
     .join(" ");
 
-  return `You are a graph planning agent for a parallel code implementation pipeline.
+  return `You are a progressive graph planning agent for a parallel code implementation pipeline.
 
-Your job is to analyze the plan and produce a task dependency graph that enables safe parallel execution.
+Your job is to analyze the plan and decide whether to run tasks serially or in parallel, and only build a dependency graph when useful independent work exists.
 
 ## Plan
 
@@ -338,13 +338,21 @@ Plan hash: ${req.planHash}
 Current Git Status (excluding .pi/** and plan artifacts):
 ${gitStatus}
 
-## Instructions
+## Progressive Decision Process
 
-Analyze which tasks can run in parallel and which have dependencies.
+1. First, analyze ONLY the plan and unchecked task list. If the tasks clearly form a concrete semantic sequence where each task requires the output of the previous one, return "serial" immediately. Do not explore the repository and do not construct a graph.
 
-Dependencies are semantic/business dependencies only — shared files do NOT automatically create dependencies. Use \`conflictHints\` and \`affectedAreas\` to note file overlap without forcing a dependency edge.
+2. If serial is not clear, perform minimal targeted exploration using available repository search and read tools to identify likely task surface areas. Use only a few targeted searches or reads per task unless the ambiguity materially affects the strategy decision.
 
-For each dependency, it MUST point to a task with a LOWER planIndex (earlier in plan order).
+3. Build a dependency graph only if at least two tasks can make independent progress.
+
+## Dependency Rules
+
+- Use \`dependsOn\` only for concrete semantic or business dependencies where a later task genuinely requires an earlier task's output. Each dependency MUST point to a node with a LOWER planIndex.
+- Do NOT add dependency edges merely because tasks share files, packages, subsystems, test suites, or infrastructure. Shared surface areas are not automatic dependencies. Record those as \`conflictHints\`, \`affectedAreas\`, or integration risk in \`reasons\` and \`evidencePaths\` instead.
+- Do not choose serial because of insufficient evidence, possible file conflicts, or shared systems. If uncertainty remains after bounded exploration, prefer the least restrictive graph supported by concrete dependencies, lower confidence, and explain the risk.
+
+## Response Format
 
 Respond with strict JSON only (no prose, no markdown fences) matching:
 {
@@ -377,9 +385,7 @@ Respond with strict JSON only (no prose, no markdown fences) matching:
   }
 }
 
-If you are not confident in parallel execution, set mode to "serial" and omit the graph.
-
-When in doubt, choose "serial".`;
+If the correct strategy is serial, set mode to "serial" and omit the graph.`;
 }
 
 async function getFilteredGitStatus(

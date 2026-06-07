@@ -589,6 +589,209 @@ describe("selectStrategy - planner prompt content", () => {
     expect(prompt).toContain("- [planIndex=2] Task B");
     expect(prompt).toContain("Task hashes:");
   });
+
+  it("does not say 'When in doubt, choose serial'", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "auto",
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).not.toContain("When in doubt, choose serial");
+    expect(prompt).not.toContain('When in doubt, choose "serial"');
+  });
+
+  it("describes progressive decision process with plan-only early serial", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "auto",
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain("Progressive Decision Process");
+    expect(prompt).toContain("First, analyze ONLY the plan");
+    expect(prompt).toContain("concrete semantic sequence");
+    expect(prompt).toContain('return "serial" immediately');
+    expect(prompt).toContain("Do not explore the repository");
+  });
+
+  it("describes bounded targeted exploration for ambiguous cases", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "auto",
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain("minimal targeted exploration");
+    expect(prompt).toContain("available repository search and read tools");
+    expect(prompt).toContain("only a few targeted searches or reads per task");
+  });
+
+  it("requires concrete semantic dependencies for dependsOn", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "auto",
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain("concrete semantic or business dependencies");
+    expect(prompt).toContain("Use `dependsOn` only for concrete semantic");
+  });
+
+  it("treats shared files as conflict hints or risk evidence, not dependencies", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "auto",
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain(
+      "Do NOT add dependency edges merely because tasks share files, packages, subsystems, test suites, or infrastructure",
+    );
+    expect(prompt).toContain("Record those as `conflictHints`");
+    expect(prompt).toContain("not automatic dependencies");
+  });
+
+  it("prefers least restrictive graph over serial when uncertainty remains", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "auto",
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain(
+      "Do not choose serial because of insufficient evidence",
+    );
+    expect(prompt).toContain(
+      "prefer the least restrictive graph supported by concrete dependencies",
+    );
+  });
 });
 
 describe("selectStrategy - concurrency clamping", () => {
