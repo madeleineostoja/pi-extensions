@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, join as joinPath, relative } from "node:path";
 import { promisify } from "node:util";
 import type { ParsedPlan, PlanTask } from "./plan.js";
+import type { PlanBundleManifest } from "./manifest.js";
+import { formatBundleMaterial, PlanMaterialSizeError } from "./manifest.js";
 import type { ImplementConfig } from "./config.js";
 import { resolveMaxParallel } from "./config.js";
 import type { SubagentClient } from "./subagents.js";
@@ -50,6 +52,7 @@ export type StrategyRequest = {
   requestedMode: "auto" | "serial" | "parallel";
   requestedConcurrency?: number;
   signal?: AbortSignal;
+  manifest?: PlanBundleManifest;
   updateState(state: StatePatch): void;
 };
 
@@ -208,7 +211,7 @@ async function runTriage(
   req: StrategyRequest,
   unchecked: PlanTask[],
 ): Promise<TriageResult> {
-  const prompt = buildTriagePrompt(req.plan, unchecked);
+  const prompt = buildTriagePrompt(req.plan, unchecked, req.manifest);
   let rawResult: string;
   try {
     const id = await req.subagents.spawn({
@@ -248,10 +251,15 @@ async function runTriage(
 export function buildTriagePrompt(
   plan: ParsedPlan,
   unchecked: PlanTask[],
+  manifest?: PlanBundleManifest,
 ): string {
   const taskLines = unchecked
     .map((t) => `- [planIndex=${t.index}] ${t.text}`)
     .join("\n");
+  const bundleMaterial = manifest ? formatBundleMaterial(manifest) : "";
+  const bundleSection = bundleMaterial
+    ? `\n\n## Referenced Plan Material\n\n${bundleMaterial}`
+    : "";
 
   return `You are a strategy triage agent for a code implementation pipeline.
 
@@ -259,7 +267,7 @@ Analyze the following plan tasks and decide whether they should be executed seri
 
 ## Plan
 
-${plan.content}
+${plan.content}${bundleSection}
 
 ## Unchecked Tasks (${unchecked.length})
 
@@ -328,6 +336,9 @@ async function runGraphPlanner(
   try {
     prompt = await buildGraphPlannerPrompt(req, unchecked);
   } catch (err) {
+    if (err instanceof PlanMaterialSizeError) {
+      throw err;
+    }
     const message = err instanceof Error ? err.message : String(err);
     return {
       mode: "serial",
@@ -492,13 +503,21 @@ async function buildGraphPlannerPrompt(
     )
     .join(" ");
 
+  let bundleSection = "";
+  if (req.manifest) {
+    const bundle = formatBundleMaterial(req.manifest);
+    if (bundle) {
+      bundleSection = `\n\n## Referenced Plan Material\n\n${bundle}`;
+    }
+  }
+
   return `You are a graph planning agent for a parallel code implementation pipeline.
 
 Your job is to analyze the plan and produce a task dependency graph that enables safe parallel execution.
 
 ## Plan
 
-${req.planContent}
+${req.planContent}${bundleSection}
 
 ## Unchecked Tasks (${unchecked.length})
 

@@ -1,10 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import {
-  mkdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +10,7 @@ import {
   selectStrategy,
 } from "./strategy.js";
 import { parsePlan } from "./plan.js";
+import { buildPlanBundleManifest, PlanMaterialSizeError } from "./manifest.js";
 import type { SubagentClient } from "./subagents.js";
 import type { StatePaths } from "./state.js";
 import type { EffectiveRoles } from "./config.js";
@@ -951,10 +948,223 @@ describe("selectStrategy - validationCommands are advisory only", () => {
   });
 });
 
-describe("buildTriagePrompt", () => {
-  it("does not include a bundle material section", () => {
+describe("buildTriagePrompt - bundle material", () => {
+  it("does not include a bundle material section without a manifest", () => {
     const plan = makePlan(["Task A", "Task B"]);
     const prompt = buildTriagePrompt(plan, plan.tasks);
     expect(prompt).not.toContain("## Referenced Plan Material");
+  });
+
+  it("includes bundle material when a manifest has referenced files", () => {
+    const dir = join(tmpRunDir, "triage-bundle");
+    mkdirSync(dir, { recursive: true });
+    const planPath = join(dir, "plan.md");
+    const subPath = join(dir, "sub.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task A\n  - Plan: `sub.md`\n- [ ] Task B\n",
+    );
+    writeFileSync(subPath, "# Subplan\n\nTriage context.\n");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+
+    const prompt = buildTriagePrompt(plan, plan.tasks, manifest);
+
+    expect(prompt).toContain("## Referenced Plan Material");
+    expect(prompt).toContain("### sub.md");
+    expect(prompt).toContain("Triage context.");
+  });
+
+  it("passes bundle material to the auto-mode triage agent", async () => {
+    const dir = join(tmpRunDir, "triage-select");
+    mkdirSync(dir, { recursive: true });
+    const planPath = join(dir, "plan.md");
+    const subPath = join(dir, "sub.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task A\n  - Plan: `sub.md`\n- [ ] Task B\n",
+    );
+    writeFileSync(subPath, "# Subplan\n\nTriage context.\n");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const subagents = makeSubagents(
+      JSON.stringify({ decision: "serial", reason: "coupled" }),
+    );
+
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: dir,
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      requestedMode: "auto",
+      updateState: () => ({}),
+      manifest,
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain("## Referenced Plan Material");
+    expect(prompt).toContain("Triage context.");
+  });
+});
+
+describe("selectStrategy - graph planner bundle material", () => {
+  it("includes deduplicated bundle material in the graph planner prompt for index-style plans", async () => {
+    const repoRoot = join(tmpRunDir, "repo");
+    mkdirSync(join(repoRoot, "src"), { recursive: true });
+    git(repoRoot, "init");
+    git(repoRoot, "config", "user.email", "test@example.com");
+    git(repoRoot, "config", "user.name", "Test");
+
+    const planPath = join(repoRoot, "plan.md");
+    const subPath = join(repoRoot, "sub.md");
+    const sharedPath = join(repoRoot, "shared.md");
+
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Update src/file.ts\n  - Plan: `sub.md`\n- [ ] Update docs/readme.md\n  - Plan: `shared.md`\n- [ ] Update other.md\n  - Plan: `shared.md`\n",
+    );
+    writeFileSync(
+      join(repoRoot, "src", "file.ts"),
+      "export const value = 1;\n",
+    );
+    writeFileSync(subPath, "# Subplan\n\nDetails here.\n");
+    writeFileSync(sharedPath, "# Shared\n\nShared details.\n");
+
+    git(repoRoot, "add", ".");
+    git(repoRoot, "commit", "-m", "chore: init");
+
+    const subagents = makeSubagents("not valid json");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot,
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "parallel",
+      requestedConcurrency: 2,
+      manifest,
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain("## Referenced Plan Material");
+    expect(prompt).toContain("### sub.md");
+    expect(prompt).toContain("# Subplan");
+    expect(prompt).toContain("### shared.md");
+    expect(prompt).toContain("# Shared");
+    const sharedOccurrences = prompt.split("### shared.md").length - 1;
+    expect(sharedOccurrences).toBe(1);
+  });
+
+  it("does not include a bundle material section for single-file plans", async () => {
+    const repoRoot = join(tmpRunDir, "repo");
+    mkdirSync(join(repoRoot, "src"), { recursive: true });
+    git(repoRoot, "init");
+    git(repoRoot, "config", "user.email", "test@example.com");
+    git(repoRoot, "config", "user.name", "Test");
+
+    const planPath = join(repoRoot, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Update src/file.ts\n- [ ] Update docs/readme.md\n",
+    );
+    writeFileSync(
+      join(repoRoot, "src", "file.ts"),
+      "export const value = 1;\n",
+    );
+
+    git(repoRoot, "add", ".");
+    git(repoRoot, "commit", "-m", "chore: init");
+
+    const subagents = makeSubagents("not valid json");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot,
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "parallel",
+      requestedConcurrency: 2,
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).not.toContain("## Referenced Plan Material");
+  });
+
+  it("throws when bundle material exceeds MAX_PLAN_MATERIAL_CHARS", async () => {
+    const repoRoot = join(tmpRunDir, "repo");
+    mkdirSync(join(repoRoot, "src"), { recursive: true });
+    git(repoRoot, "init");
+    git(repoRoot, "config", "user.email", "test@example.com");
+    git(repoRoot, "config", "user.name", "Test");
+
+    const planPath = join(repoRoot, "plan.md");
+    const hugePath = join(repoRoot, "huge.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Update src/file.ts\n  - Plan: `huge.md`\n- [ ] Update src/other.ts\n",
+    );
+    writeFileSync(
+      join(repoRoot, "src", "file.ts"),
+      "export const value = 1;\n",
+    );
+    writeFileSync(hugePath, "x".repeat(150_000));
+
+    git(repoRoot, "add", ".");
+    git(repoRoot, "commit", "-m", "chore: init");
+
+    const subagents = makeSubagents("not valid json");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+
+    await expect(
+      selectStrategy({
+        plan,
+        planContent: plan.content,
+        planHash: "hash",
+        repoRoot,
+        baseSha: "abc",
+        config: {},
+        roles: makeRoles(),
+        subagents,
+        paths: makeStatePaths(),
+        runId: "r1",
+        updateState: () => ({}),
+        requestedMode: "parallel",
+        requestedConcurrency: 2,
+        manifest,
+      }),
+    ).rejects.toThrow(PlanMaterialSizeError);
   });
 });

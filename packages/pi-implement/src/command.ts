@@ -42,7 +42,10 @@ import { parseCommand } from "./parser.js";
 import { selectStrategy } from "./strategy.js";
 import type { ExecutionMode } from "./parser.js";
 import { parsePlanFile } from "./plan.js";
-import { buildPlanBundleManifest } from "./manifest.js";
+import {
+  buildPlanBundleManifest,
+  validatePlanMaterialSizes,
+} from "./manifest.js";
 import { diffProgress } from "./progress.js";
 import {
   getStatePaths,
@@ -468,6 +471,14 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           );
           return;
         }
+        const materialSizeErrors = validatePlanMaterialSizes(manifest);
+        if (materialSizeErrors.length > 0) {
+          ctx.ui.notify(
+            `pi-implement blocked: plan material too large:\n${materialSizeErrors.join("\n")}`,
+            "warning",
+          );
+          return;
+        }
         planArtifacts = manifest.allArtifactPaths;
         planHash = createHash("sha256").update(planContent).digest("hex");
         if (!(await git.isCleanExcept(planArtifacts))) {
@@ -646,6 +657,7 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
           requestedConcurrency,
           signal: abortController.signal,
           updateState,
+          manifest,
         });
         throwIfCommandStopped(isCurrentRun, active, abortController);
         appendEvent(paths, {

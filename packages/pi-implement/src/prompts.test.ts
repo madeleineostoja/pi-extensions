@@ -341,7 +341,7 @@ describe("buildOverallReviewerPrompt", () => {
     expect(prompt).not.toContain("Landed Tasks");
   });
 
-  it("does not include a bundle material section", () => {
+  it("does not include a bundle material section when not provided", () => {
     const prompt = buildOverallReviewerPrompt({
       planContent: "# Plan\n",
       planPath: "/repo/plans/feature.md",
@@ -351,5 +351,20 @@ describe("buildOverallReviewerPrompt", () => {
     });
 
     expect(prompt).not.toContain("## Referenced Plan Material");
+  });
+
+  it("includes bundle material when provided", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan\n",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      bundleMaterial: "### auth.md\n\n# Auth\n",
+    });
+
+    expect(prompt).toContain("## Referenced Plan Material");
+    expect(prompt).toContain("### auth.md");
+    expect(prompt).toContain("# Auth");
   });
 });

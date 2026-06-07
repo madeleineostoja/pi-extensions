@@ -167,12 +167,48 @@ export function formatBundleMaterial(
   return result;
 }
 
+export class PlanMaterialSizeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlanMaterialSizeError";
+  }
+}
+
 export function checkPlanMaterialSize(content: string, maxChars: number): void {
   if (content.length > maxChars) {
-    throw new Error(
+    throw new PlanMaterialSizeError(
       `Plan material exceeds maximum size of ${maxChars} characters (${content.length} characters). Reduce plan size or increase the limit.`,
     );
   }
+}
+
+export function validatePlanMaterialSizes(
+  manifest: PlanBundleManifest,
+  maxChars = MAX_PLAN_MATERIAL_CHARS,
+): string[] {
+  const errors: string[] = [];
+
+  try {
+    formatBundleMaterial(manifest, maxChars);
+  } catch (err) {
+    errors.push(`bundle referenced plan material: ${formatSizeError(err)}`);
+  }
+
+  for (const task of manifest.tasks) {
+    try {
+      formatReferencedMaterial(task.referencedMaterials, maxChars);
+    } catch (err) {
+      errors.push(
+        `task ${task.planIndex} referenced plan material: ${formatSizeError(err)}`,
+      );
+    }
+  }
+
+  return errors;
+}
+
+function formatSizeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export function buildPlanBundleManifest(

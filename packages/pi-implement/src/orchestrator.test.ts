@@ -211,6 +211,36 @@ describe("nextOverallReviewArtifactPath", () => {
 });
 
 describe("runImplementation", () => {
+  it("blocks before spawning implementers when manifest validation failed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `missing.md`\n",
+      "utf-8",
+    );
+    const manifest = buildPlanBundleManifest(planPath, parsePlanFile(planPath));
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
   it("implements, reviews, marks, and commits one task", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
@@ -369,6 +399,7 @@ describe("runImplementation", () => {
     expect(subagents.spawns).toHaveLength(5);
     const implPrompt = subagents.spawns[0]?.prompt ?? "";
     const reviewerPrompt = subagents.spawns[1]?.prompt ?? "";
+    const overallReviewPrompt = subagents.spawns[4]?.prompt ?? "";
 
     // Implementer prompt
     expect(implPrompt).toContain("## Referenced Plan Material");
@@ -384,6 +415,11 @@ describe("runImplementation", () => {
     expect(reviewerPrompt).toContain("# Subplan");
     expect(reviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(reviewerPrompt).toContain("- [ ] Task two");
+
+    // Overall reviewer prompt
+    expect(overallReviewPrompt).toContain("## Referenced Plan Material");
+    expect(overallReviewPrompt).toContain("### sub.md");
+    expect(overallReviewPrompt).toContain("# Subplan");
   });
 
   it("two unchecked tasks: reviewer prompt lists task 2 as out-of-scope but implementer prompt does not", async () => {

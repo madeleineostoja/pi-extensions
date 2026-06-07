@@ -24,10 +24,10 @@ type FakeContext = {
   modelRegistry: { find(provider: string, id: string): unknown };
 };
 
-function setup() {
+function setup(events = createPingOnlyEventBus()) {
   const handlers: Record<string, Handler> = {};
   const pi = {
-    events: { on: () => () => {}, emit: () => {} },
+    events,
     on: () => {},
     registerCommand: (name: string, options: { handler: Handler }) => {
       handlers[name] = options.handler;
@@ -65,6 +65,34 @@ function setup() {
     },
   };
   return { handler, buildHandler, ctx };
+}
+
+function createPingOnlyEventBus() {
+  const handlers = new Map<string, Array<(payload: unknown) => void>>();
+  return {
+    on(event: string, handler: (payload: unknown) => void) {
+      const existing = handlers.get(event) ?? [];
+      existing.push(handler);
+      handlers.set(event, existing);
+      return () => {
+        handlers.set(
+          event,
+          (handlers.get(event) ?? []).filter((entry) => entry !== handler),
+        );
+      };
+    },
+    emit(event: string, payload: unknown) {
+      if (event !== "subagents:rpc:ping") {
+        return;
+      }
+      const request = payload as { requestId?: string };
+      for (const handler of handlers.get(
+        `subagents:rpc:ping:reply:${request.requestId}`,
+      ) ?? []) {
+        handler({ success: true, data: { version: 1 } });
+      }
+    },
+  };
 }
 
 describe("/implement command", () => {
@@ -144,6 +172,32 @@ describe("/implement command", () => {
       message: "pi-implement inspect: no run found.",
       level: "info",
     });
+  });
+
+  it("blocks during command preflight when referenced plan material exceeds the cap", async () => {
+    const { handler, ctx } = setup();
+    const repo = mkdtempSync(join(tmpdir(), "pi-implement-cmd-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@e.com"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "T"], { cwd: repo });
+    writeFileSync(
+      join(repo, "plan.md"),
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `huge.md`\n",
+    );
+    writeFileSync(join(repo, "huge.md"), "x".repeat(150_000));
+    execFileSync("git", ["add", "plan.md", "huge.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: repo });
+
+    const repoCtx: FakeContext = { ...ctx, cwd: repo };
+    await handler("plan.md", repoCtx);
+
+    expect(repoCtx.ui.notifications[0]?.level).toBe("warning");
+    expect(repoCtx.ui.notifications[0]?.message).toContain(
+      "pi-implement blocked: plan material too large",
+    );
+    expect(repoCtx.ui.notifications[0]?.message).toContain(
+      "Plan material exceeds maximum size",
+    );
   });
 
   it("allows a new run to start from followup_required phase", async () => {

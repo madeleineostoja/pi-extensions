@@ -135,7 +135,9 @@ export function buildTaskPacket(
     : [];
   const notesLines =
     consumedReferences.length > 0
-      ? task.blockLines.filter((line) => extractPlanReference(line) === undefined)
+      ? task.blockLines.filter(
+          (line) => extractPlanReference(line) === undefined,
+        )
       : task.blockLines;
   if (notesLines.some((line) => line.trim() !== "")) {
     parts.push("## Selected Task Notes", "", ...notesLines);

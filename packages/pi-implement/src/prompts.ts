@@ -225,12 +225,16 @@ export function buildOverallReviewerPrompt(args: {
   diff: string;
   runId?: string;
   landedTasks?: Array<{ id: string; title: string; commitSha?: string }>;
+  bundleMaterial?: string;
 }): string {
   const runSection = args.runId ? `\nRun ID: ${args.runId}\n` : "\n";
   const taskSection =
     args.landedTasks && args.landedTasks.length > 0
       ? `\n## Landed Tasks\n\n${args.landedTasks.map((t) => `- ${t.id}: ${t.title}${t.commitSha ? ` @ ${t.commitSha.slice(0, 7)}` : ""}`).join("\n")}\n`
       : "";
+  const bundleSection = args.bundleMaterial
+    ? `\n\n## Referenced Plan Material\n\n${args.bundleMaterial}`
+    : "";
   return `You are the pi-implement overall reviewer. This is a read-only whole-feature review after all planned tasks have been implemented and committed.
 
 Assess whether the combined implementation satisfies the original plan, whether cross-task gaps or edge cases were missed, and whether the tasks fit together correctly.
@@ -243,7 +247,7 @@ Source: ${args.planPath}
 Base SHA: ${args.baseSha}
 Head SHA: ${args.headSha}${runSection}${taskSection}
 
-${args.planContent}
+${args.planContent}${bundleSection}
 
 ## Combined Diff
 

@@ -11,6 +11,8 @@ import {
   formatReferencedMaterial,
   isPlanLinkageLine,
   MAX_PLAN_MATERIAL_CHARS,
+  PlanMaterialSizeError,
+  validatePlanMaterialSizes,
 } from "./manifest.js";
 import { parsePlan } from "./plan.js";
 
@@ -457,5 +459,48 @@ describe("checkPlanMaterialSize", () => {
     expect(() => checkPlanMaterialSize("abc", 2)).toThrow(
       "Plan material exceeds maximum size",
     );
+    expect(() => checkPlanMaterialSize("abc", 2)).toThrow(
+      PlanMaterialSizeError,
+    );
+  });
+});
+
+describe("validatePlanMaterialSizes", () => {
+  it("returns no errors when bundle and task material fit", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-manifest-size-"));
+    const planPath = join(dir, "plan.md");
+    const subPath = join(dir, "sub.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `sub.md`\n",
+      "utf-8",
+    );
+    writeFileSync(subPath, "# Sub\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+
+    expect(validatePlanMaterialSizes(manifest)).toEqual([]);
+  });
+
+  it("returns clear errors when bundle or task material exceeds the cap", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-manifest-size-"));
+    const planPath = join(dir, "plan.md");
+    const subPath = join(dir, "sub.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `sub.md`\n",
+      "utf-8",
+    );
+    writeFileSync(subPath, "# Sub\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+
+    const errors = validatePlanMaterialSizes(manifest, 1);
+
+    expect(errors).toEqual([
+      expect.stringContaining("bundle referenced plan material"),
+      expect.stringContaining("task 1 referenced plan material"),
+    ]);
+    expect(errors.join("\n")).toContain("Plan material exceeds maximum size");
   });
 });
