@@ -590,6 +590,41 @@ describe("selectStrategy - planner prompt content", () => {
     expect(prompt).toContain("Task hashes:");
   });
 
+  it("constrains planner exploration to read-only actions", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+      requestedMode: "auto",
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain("strictly read-only");
+    expect(prompt).toContain("Do not edit, write, stage, reset, commit");
+    expect(prompt).toContain(
+      "Repository exploration must use search/read/status commands only",
+    );
+  });
+
   it("does not say 'When in doubt, choose serial'", async () => {
     const subagents = makeSubagents(
       JSON.stringify({

@@ -338,6 +338,11 @@ Plan hash: ${req.planHash}
 Current Git Status (excluding .pi/** and plan artifacts):
 ${gitStatus}
 
+## Safety Constraints
+
+- This strategy phase is strictly read-only. Do not edit, write, stage, reset, commit, install dependencies, or run mutating commands.
+- Repository exploration must use search/read/status commands only.
+
 ## Progressive Decision Process
 
 1. First, analyze ONLY the plan and unchecked task list. If the tasks clearly form a concrete semantic sequence where each task requires the output of the previous one, return "serial" immediately. Do not explore the repository and do not construct a graph.
