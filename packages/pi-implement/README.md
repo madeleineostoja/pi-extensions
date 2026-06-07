@@ -22,9 +22,9 @@ Plan paths must not contain spaces. Use a symlink or rename if needed.
 
 ## Execution modes
 
-- `auto` (default): a cheap heuristic decides whether parallelism is worth considering. If it is, a planner subagent triages the tasks and, if they look independent, builds a task dependency graph. Anything ambiguous falls back to serial.
+- `auto` (default): zero or one unchecked task short-circuits to serial. Otherwise a progressive planner decides whether the remaining tasks require serial execution or can run from a dependency graph, inspecting the repository only when needed. Invalid planner output, planner failures, invalid graphs, and explicit planner serial decisions fall back to serial execution.
 - `--serial`: run unchecked tasks strictly one at a time in plan order.
-- `--parallel <n>`: ask the planner for a dependency graph and run independent tasks concurrently, up to `n` (clamped by `maxParallel` and a hard maximum of `8`).
+- `--parallel <n>`: ask the same planner for a dependency graph and run independent tasks concurrently, up to `n` (clamped by `maxParallel` and a hard maximum of `8`).
 
 Trivial cases short-circuit: zero or one unchecked task always runs serially.
 
