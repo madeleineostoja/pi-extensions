@@ -54,9 +54,12 @@ describe("providerForModel", () => {
     ).toBe("codex");
   });
 
-  it("returns opencode for opencode provider", () => {
+  it("returns opencode for opencode providers", () => {
     expect(
-      providerForModel({ provider: "opencode", id: "go-1" } as never),
+      providerForModel({ provider: "opencode", id: "zen-1" } as never),
+    ).toBe("opencode");
+    expect(
+      providerForModel({ provider: "opencode-go", id: "go-1" } as never),
     ).toBe("opencode");
   });
 
@@ -103,12 +106,19 @@ describe("getUsageProvider", () => {
     expect(provider?.id).toBe("codex");
   });
 
-  it("returns opencode provider for opencode model", () => {
-    const provider = getUsageProvider({
-      provider: "opencode",
-      id: "1",
-    } as never);
-    expect(provider?.id).toBe("opencode");
+  it("returns opencode provider for opencode models", () => {
+    expect(
+      getUsageProvider({
+        provider: "opencode",
+        id: "1",
+      } as never)?.id,
+    ).toBe("opencode");
+    expect(
+      getUsageProvider({
+        provider: "opencode-go",
+        id: "2",
+      } as never)?.id,
+    ).toBe("opencode");
   });
 
   it("returns null for unsupported model", () => {
@@ -166,6 +176,12 @@ describe("provider availability via matches", () => {
     expect(provider.resolveFetchModel(ctx as never)).not.toBeNull();
   });
 
+  it("opencode provider matches when getAvailable has opencode-go model", () => {
+    const ctx = makeCtxWithAvailable([{ provider: "opencode-go", id: "a" }]);
+    const provider = getProviderById("opencode")!;
+    expect(provider.resolveFetchModel(ctx as never)).not.toBeNull();
+  });
+
   it("opencode provider does not match when getAvailable has no opencode model", () => {
     const ctx = makeCtxWithAvailable([{ provider: "openai-codex", id: "a" }]);
     const provider = getProviderById("opencode")!;
@@ -196,6 +212,13 @@ describe("enumerateAvailableProviders", () => {
 
   it("returns only opencode when only opencode is available", () => {
     const ctx = makeCtxWithAvailable([{ provider: "opencode", id: "o1" }]);
+    const result = enumerateAvailableProviders(ctx as never);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.provider.id).toBe("opencode");
+  });
+
+  it("returns only opencode when only opencode-go is available", () => {
+    const ctx = makeCtxWithAvailable([{ provider: "opencode-go", id: "go1" }]);
     const result = enumerateAvailableProviders(ctx as never);
     expect(result).toHaveLength(1);
     expect(result[0]!.provider.id).toBe("opencode");
@@ -246,7 +269,7 @@ describe("getUsage caching", () => {
     };
 
     const codexModel = { provider: "openai-codex", id: "c1" };
-    const opencodeModel = { provider: "opencode", id: "o1" };
+    const opencodeModel = { provider: "opencode-go", id: "o1" };
     const ctx = makeCtxWithAvailable([codexModel, opencodeModel]);
 
     const r1 = await getUsage(codexModel as never, ctx as never, true);

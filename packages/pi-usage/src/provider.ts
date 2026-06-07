@@ -46,7 +46,7 @@ function isOpencodeProviderString(provider: string | undefined): boolean {
   if (!provider) {
     return false;
   }
-  return provider === "opencode";
+  return provider === "opencode" || provider === "opencode-go";
 }
 
 export function providerForModel(

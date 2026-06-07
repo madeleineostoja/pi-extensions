@@ -5,7 +5,7 @@ Pi extension that shows compact subscription usage in the Pi footer for ChatGPT 
 ## Supported providers
 
 - **Codex**: models whose provider is `openai-codex` or starts with `openai-codex-`. Credentials come from Pi via `ctx.modelRegistry.getApiKeyAndHeaders`.
-- **Opencode Go**: models whose provider is `opencode`. Pi model availability enables the provider, but dashboard credentials are read from `~/.pi/agent/pi-usage.json`.
+- **Opencode Go**: models whose provider is `opencode-go` or `opencode`. Pi model availability enables the provider, but dashboard credentials are read from `~/.pi/agent/pi-usage.json`.
 
 ## Footer
 
