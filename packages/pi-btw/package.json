@@ -1,0 +1,21 @@
+{
+  "name": "pi-btw",
+  "description": "Ask a side question about the current session without adding it to the main transcript.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "btw",
+    "side-question"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
