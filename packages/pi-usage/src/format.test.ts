@@ -371,6 +371,19 @@ describe("formatUsageSummary", () => {
     expect(result).toContain("Weekly: 71% used.");
   });
 
+  it("formats codex weekly reset duration when secondary resetAt is present", () => {
+    const now = Date.UTC(2026, 0, 1, 12, 0, 0);
+    const resetAt = Math.floor(now / 1000) + 3 * 86400 + 2 * 3600;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const snapshot: UsageSnapshot = {
+      provider: "codex",
+      secondary: { usedPercent: 71, resetAt },
+      fetchedAt: now,
+    };
+    const result = formatUsageSummary([{ provider: "codex", snapshot }]);
+    expect(result).toContain("Weekly: 71% used. Resets in 3d.");
+  });
+
   it("formats single opencode entry with resetInSec", () => {
     const now = Date.now();
     vi.spyOn(Date, "now").mockReturnValue(now);

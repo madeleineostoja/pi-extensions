@@ -130,6 +130,17 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+function formatResetAtDurationLong(
+  resetAt: number | undefined,
+): string | undefined {
+  if (resetAt === undefined) {
+    return undefined;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const remaining = Math.max(0, resetAt - now);
+  return formatDurationLong(remaining);
+}
+
 function formatResetInSec(
   resetInSec: number | undefined,
   fetchedAt: number,
@@ -200,7 +211,12 @@ export function formatUsageSummary(
       }
       if (snapshot.secondary !== undefined) {
         const pct = Math.round(clampPercent(snapshot.secondary.usedPercent));
-        lines.push(`Weekly: ${pct}% used.`);
+        const remaining = formatResetAtDurationLong(snapshot.secondary.resetAt);
+        if (remaining) {
+          lines.push(`Weekly: ${pct}% used. Resets in ${remaining}.`);
+        } else {
+          lines.push(`Weekly: ${pct}% used.`);
+        }
       }
     } else {
       if (snapshot.primary !== undefined) {

@@ -30,7 +30,7 @@ Example `/usage` output:
 ```txt
 Codex
 5h: 42% used. Resets at 14:20 (2h 11m remaining).
-Weekly: 71% used.
+Weekly: 71% used. Resets in 4d.
 
 Opencode
 Rolling: 12% used. Resets in 3h 40m.
