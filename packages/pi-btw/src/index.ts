@@ -1,7 +1,13 @@
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { addExchange, getHistory, getSessionKey } from "./state.js";
+import {
+  addExchange,
+  clearHistory,
+  getHistory,
+  getSessionKey,
+} from "./state.js";
 import { buildPrompt } from "./prompt.js";
+import { BtwOverlay } from "./overlay.js";
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("btw", {
@@ -32,54 +38,88 @@ export default function (pi: ExtensionAPI) {
 
       const sessionKey = getSessionKey(ctx.sessionManager);
       const priorExchanges = [...getHistory(sessionKey)];
-      const abortController = new AbortController();
 
-      try {
-        const context = buildPrompt(
-          ctx.sessionManager,
-          priorExchanges,
-          question,
-        );
-        const response = await completeSimple(ctx.model, context, {
-          apiKey: auth.apiKey,
-          headers: auth.headers,
-          signal: abortController.signal,
-        });
-
-        if (response.stopReason === "aborted") {
-          ctx.ui.notify("Aborted", "warning");
-          return;
-        }
-        if (response.stopReason === "error") {
-          ctx.ui.notify(
-            response.errorMessage || "Provider returned an error",
-            "error",
+      await ctx.ui.custom<void>(
+        (tui, theme, _kb, done) => {
+          const abortController = new AbortController();
+          const overlay = new BtwOverlay(
+            tui,
+            theme,
+            done,
+            {
+              question,
+              history: priorExchanges,
+              status: "pending",
+              answerText: "",
+              errorText: "",
+              scrollOffset: 0,
+            },
+            abortController,
           );
-          return;
-        }
 
-        const text = response.content
-          .filter((c): c is { type: "text"; text: string } => c.type === "text")
-          .map((c) => c.text)
-          .join("\n");
+          overlay.onClearHistory = () => clearHistory(sessionKey);
 
-        if (!text.trim()) {
-          ctx.ui.notify("Model returned an empty response", "error");
-          return;
-        }
+          const run = async () => {
+            try {
+              const context = buildPrompt(
+                ctx.sessionManager,
+                priorExchanges,
+                question,
+              );
+              const response = await completeSimple(ctx.model!, context, {
+                apiKey: auth.apiKey,
+                headers: auth.headers,
+                signal: abortController.signal,
+              });
 
-        addExchange(sessionKey, { question, answer: text });
-        ctx.ui.notify(text, "info");
-      } catch (err) {
-        if (err instanceof Error && err.name === "AbortError") {
-          ctx.ui.notify("Aborted", "warning");
-          return;
-        }
-        ctx.ui.notify(
-          err instanceof Error ? err.message : String(err),
-          "error",
-        );
-      }
+              if (response.stopReason === "aborted") {
+                overlay.setState({ status: "error", errorText: "Aborted" });
+                return;
+              }
+              if (response.stopReason === "error") {
+                overlay.setState({
+                  status: "error",
+                  errorText:
+                    response.errorMessage || "Provider returned an error",
+                });
+                return;
+              }
+
+              const text = response.content
+                .filter(
+                  (c): c is { type: "text"; text: string } => c.type === "text",
+                )
+                .map((c) => c.text)
+                .join("\n");
+
+              if (!text.trim()) {
+                overlay.setState({
+                  status: "error",
+                  errorText: "Model returned an empty response",
+                });
+                return;
+              }
+
+              addExchange(sessionKey, { question, answer: text });
+              overlay.setState({ status: "answer", answerText: text });
+            } catch (err) {
+              if (err instanceof Error && err.name === "AbortError") {
+                overlay.setState({ status: "error", errorText: "Aborted" });
+                return;
+              }
+              overlay.setState({
+                status: "error",
+                errorText: err instanceof Error ? err.message : String(err),
+              });
+            }
+          };
+
+          run();
+
+          return overlay;
+        },
+        { overlay: true },
+      );
     },
   });
 }

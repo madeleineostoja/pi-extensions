@@ -2,10 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
+  Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import registerExtension from "./index.js";
-import { clearHistory, getSessionKey } from "./state.js";
+import { clearHistory, getHistory, getSessionKey } from "./state.js";
 
 const completeSimpleMock = vi.hoisted(() => vi.fn());
 const convertToLlmMock = vi.hoisted(() => vi.fn());
@@ -58,6 +60,70 @@ function makeFakePi() {
   return { commands, sendMessage, sendUserMessage, appendEntry };
 }
 
+function makeTheme(): Theme {
+  return {
+    fg: (color: string, text: string) => `[${color}]${text}[/${color}]`,
+    bg: (_color: string, text: string) => text,
+    bold: (text: string) => `**${text}**`,
+    italic: (text: string) => `_${text}_`,
+    underline: (text: string) => `__${text}__`,
+    inverse: (text: string) => text,
+    strikethrough: (text: string) => text,
+    getFgAnsi: (_color: string) => "",
+    getBgAnsi: (_color: string) => "",
+    getColorMode: () => "truecolor",
+    getThinkingBorderColor: () => (text: string) => text,
+    getBashModeBorderColor: () => (text: string) => text,
+  } as unknown as Theme;
+}
+
+function makeFakeCustom() {
+  const requestRender = vi.fn();
+  const tui = {
+    terminal: { rows: 24 },
+    requestRender,
+  } as unknown as TUI;
+
+  const theme = makeTheme();
+
+  let resolveCustom: ((value: unknown) => void) | undefined;
+  let capturedDone: ((result?: unknown) => void) | undefined;
+  let capturedComponent: Component | undefined;
+
+  const custom = vi.fn(
+    (
+      factory: (
+        tui: TUI,
+        theme: Theme,
+        kb: unknown,
+        done: (result: unknown) => void,
+      ) => Component,
+      _options?: unknown,
+    ) => {
+      capturedDone = (result?: unknown) => {
+        resolveCustom?.(result);
+      };
+      capturedComponent = factory(tui, theme, {}, capturedDone);
+      return new Promise((resolve) => {
+        resolveCustom = resolve;
+      });
+    },
+  );
+
+  return {
+    custom,
+    tui,
+    theme,
+    requestRender,
+    get component() {
+      return capturedComponent;
+    },
+    done(result?: unknown) {
+      capturedDone?.(result);
+    },
+  };
+}
+
 type FakeCtxOptions = {
   hasUI?: boolean;
   model?: { provider: string; id: string } | null;
@@ -71,6 +137,7 @@ type FakeCtxOptions = {
   sessionFile?: string;
   sessionId?: string;
   signal?: AbortSignal;
+  custom?: ReturnType<typeof makeFakeCustom>["custom"];
 };
 
 function makeCtx(options: FakeCtxOptions = {}) {
@@ -91,6 +158,7 @@ function makeCtx(options: FakeCtxOptions = {}) {
       notify: (message: string, type?: "info" | "warning" | "error") => {
         notifications.push({ message, type });
       },
+      custom: options.custom ?? vi.fn(),
     },
     modelRegistry: {
       getApiKeyAndHeaders: vi.fn(
@@ -220,10 +288,12 @@ describe("credential failures", () => {
 describe("model request shape", () => {
   it("contains converted session messages, prior exchanges, new question, and tools: []", async () => {
     const { commands } = makeFakePi();
+    const fakeCustom = makeFakeCustom();
     const fakeMessage = { role: "user", content: "hello", timestamp: 1 };
     convertToLlmMock.mockReturnValue([{ role: "user", content: "hello" }]);
 
     const { ctx } = makeCtx({
+      custom: fakeCustom.custom,
       branchEntries: [{ type: "message", message: fakeMessage }],
     });
 
@@ -232,7 +302,7 @@ describe("model request shape", () => {
       content: [{ type: "text", text: "answer" }],
     } as unknown as AssistantMessage);
 
-    await commands["btw"]("explain this", ctx);
+    const promise = commands["btw"]("explain this", ctx);
     await flushPromises();
 
     expect(completeSimpleMock).toHaveBeenCalledTimes(1);
@@ -254,28 +324,33 @@ describe("model request shape", () => {
       content: "hello",
     });
 
-    const lastMessage = context.messages[
-      context.messages.length - 1
-    ] as { role: string; content: unknown };
+    const lastMessage = context.messages[context.messages.length - 1] as {
+      role: string;
+      content: unknown;
+    };
     expect(lastMessage.role).toBe("user");
     expect(lastMessage.content).toEqual([
       { type: "text", text: "explain this" },
     ]);
+
+    fakeCustom.done();
+    await promise;
   });
 
   it("passes a fresh local abort signal, not ctx.signal", async () => {
     const { commands } = makeFakePi();
+    const fakeCustom = makeFakeCustom();
     convertToLlmMock.mockReturnValue([]);
     const ctxSignal = new AbortController().signal;
 
-    const { ctx } = makeCtx({ signal: ctxSignal });
+    const { ctx } = makeCtx({ custom: fakeCustom.custom, signal: ctxSignal });
 
     completeSimpleMock.mockResolvedValue({
       stopReason: "stop",
       content: [{ type: "text", text: "answer" }],
     } as unknown as AssistantMessage);
 
-    await commands["btw"]("question", ctx);
+    const promise = commands["btw"]("question", ctx);
     await flushPromises();
 
     expect(completeSimpleMock).toHaveBeenCalledTimes(1);
@@ -289,6 +364,9 @@ describe("model request shape", () => {
     expect(options.signal).toBeDefined();
     expect(options.signal).not.toBe(ctxSignal);
     expect(options.signal?.aborted).toBe(false);
+
+    fakeCustom.done();
+    await promise;
   });
 });
 
@@ -296,7 +374,8 @@ describe("no transcript mutation", () => {
   it("does not call sendMessage, sendUserMessage, or appendEntry", async () => {
     const { commands, sendMessage, sendUserMessage, appendEntry } =
       makeFakePi();
-    const { ctx } = makeCtx();
+    const fakeCustom = makeFakeCustom();
+    const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
     completeSimpleMock.mockResolvedValue({
@@ -304,37 +383,45 @@ describe("no transcript mutation", () => {
       content: [{ type: "text", text: "answer" }],
     } as unknown as AssistantMessage);
 
-    await commands["btw"]("question", ctx);
+    const promise = commands["btw"]("question", ctx);
     await flushPromises();
 
     expect(sendMessage).not.toHaveBeenCalled();
     expect(sendUserMessage).not.toHaveBeenCalled();
     expect(appendEntry).not.toHaveBeenCalled();
+
+    fakeCustom.done();
+    await promise;
   });
 });
 
 describe("follow-up history", () => {
   it("includes prior side Q&A in the prompt for a second question", async () => {
     const { commands } = makeFakePi();
+    const fakeCustom = makeFakeCustom();
     convertToLlmMock.mockReturnValue([]);
 
-    const { ctx: ctx1 } = makeCtx();
+    const { ctx: ctx1 } = makeCtx({ custom: fakeCustom.custom });
     completeSimpleMock.mockResolvedValue({
       stopReason: "stop",
       content: [{ type: "text", text: "first answer" }],
     } as unknown as AssistantMessage);
 
-    await commands["btw"]("first question", ctx1);
+    const p1 = commands["btw"]("first question", ctx1);
     await flushPromises();
+    fakeCustom.done();
+    await p1;
 
-    const { ctx: ctx2 } = makeCtx();
+    const { ctx: ctx2 } = makeCtx({ custom: fakeCustom.custom });
     completeSimpleMock.mockResolvedValue({
       stopReason: "stop",
       content: [{ type: "text", text: "second answer" }],
     } as unknown as AssistantMessage);
 
-    await commands["btw"]("second question", ctx2);
+    const p2 = commands["btw"]("second question", ctx2);
     await flushPromises();
+    fakeCustom.done();
+    await p2;
 
     expect(completeSimpleMock).toHaveBeenCalledTimes(2);
     const [_model, context] = completeSimpleMock.mock.calls[1] as [
@@ -364,35 +451,72 @@ describe("follow-up history", () => {
   });
 });
 
-describe("aborted response", () => {
-  it("returns gracefully when stopReason is aborted", async () => {
-    const { commands, sendMessage, sendUserMessage, appendEntry } =
-      makeFakePi();
-    const { ctx, notifications } = makeCtx();
+describe("overlay lifecycle", () => {
+  it("shows pending then answer on success", async () => {
+    const { commands } = makeFakePi();
+    const fakeCustom = makeFakeCustom();
+    const { ctx } = makeCtx({ custom: fakeCustom.custom });
+    convertToLlmMock.mockReturnValue([]);
+
+    let resolveModel: (value: AssistantMessage) => void = () => {};
+    completeSimpleMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveModel = resolve;
+        }),
+    );
+
+    const promise = commands["btw"]("question", ctx);
+    await flushPromises();
+
+    const component = fakeCustom.component!;
+    const pendingLines = component.render(80);
+    expect(pendingLines.some((l) => l.includes("Thinking..."))).toBe(true);
+
+    resolveModel({
+      stopReason: "stop",
+      content: [{ type: "text", text: "the answer" }],
+    } as unknown as AssistantMessage);
+    await flushPromises();
+    fakeCustom.done();
+    await promise;
+
+    const answerLines = component.render(80);
+    expect(answerLines.some((l) => l.includes("the answer"))).toBe(true);
+  });
+
+  it("stores exchange after successful non-empty response", async () => {
+    const { commands } = makeFakePi();
+    const fakeCustom = makeFakeCustom();
+    const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
     completeSimpleMock.mockResolvedValue({
-      stopReason: "aborted",
-      content: [],
+      stopReason: "stop",
+      content: [{ type: "text", text: "stored answer" }],
     } as unknown as AssistantMessage);
 
-    await commands["btw"]("question", ctx);
+    const promise = commands["btw"]("question", ctx);
     await flushPromises();
+    fakeCustom.done();
+    await promise;
 
-    expect(notifications).toContainEqual({
-      message: "Aborted",
-      type: "warning",
+    const key = getSessionKey({
+      getSessionFile: () => "/tmp/session.json",
+      getSessionId: () => "session-1",
     });
-    expect(sendMessage).not.toHaveBeenCalled();
-    expect(sendUserMessage).not.toHaveBeenCalled();
-    expect(appendEntry).not.toHaveBeenCalled();
+    const history = getHistory(key);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toEqual({
+      question: "question",
+      answer: "stored answer",
+    });
   });
-});
 
-describe("model error", () => {
-  it("notifies when stopReason is error", async () => {
+  it("shows error state on model error", async () => {
     const { commands } = makeFakePi();
-    const { ctx, notifications } = makeCtx();
+    const fakeCustom = makeFakeCustom();
+    const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
     completeSimpleMock.mockResolvedValue({
@@ -401,20 +525,20 @@ describe("model error", () => {
       content: [],
     } as unknown as AssistantMessage);
 
-    await commands["btw"]("question", ctx);
+    const promise = commands["btw"]("question", ctx);
     await flushPromises();
+    fakeCustom.done();
+    await promise;
 
-    expect(notifications).toContainEqual({
-      message: "provider blew up",
-      type: "error",
-    });
+    const component = fakeCustom.component!;
+    const lines = component.render(80);
+    expect(lines.some((l) => l.includes("provider blew up"))).toBe(true);
   });
-});
 
-describe("empty text response", () => {
-  it("notifies error when no text parts are returned", async () => {
+  it("shows error state on empty text response", async () => {
     const { commands } = makeFakePi();
-    const { ctx, notifications } = makeCtx();
+    const fakeCustom = makeFakeCustom();
+    const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
     completeSimpleMock.mockResolvedValue({
@@ -422,32 +546,199 @@ describe("empty text response", () => {
       content: [],
     } as unknown as AssistantMessage);
 
-    await commands["btw"]("question", ctx);
+    const promise = commands["btw"]("question", ctx);
+    await flushPromises();
+    fakeCustom.done();
+    await promise;
+
+    const component = fakeCustom.component!;
+    const lines = component.render(80);
+    expect(
+      lines.some((l) => l.includes("Model returned an empty response")),
+    ).toBe(true);
+  });
+
+  it("aborts in-flight request on Esc and does not add to history", async () => {
+    const { commands } = makeFakePi();
+    const fakeCustom = makeFakeCustom();
+    const { ctx } = makeCtx({ custom: fakeCustom.custom });
+    convertToLlmMock.mockReturnValue([]);
+
+    completeSimpleMock.mockImplementation((_model, _context, options) => {
+      return new Promise((_resolve, reject) => {
+        options.signal?.addEventListener("abort", () => {
+          const err = new Error("Aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    });
+
+    const promise = commands["btw"]("question", ctx);
     await flushPromises();
 
-    expect(notifications).toContainEqual({
-      message: "Model returned an empty response",
-      type: "error",
-    });
-  });
-});
+    const component = fakeCustom.component!;
+    component.handleInput!("\x1B");
 
-describe("abort error catch", () => {
-  it("notifies aborted when completeSimple throws AbortError", async () => {
+    expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+    const options = completeSimpleMock.mock.calls[0][2] as {
+      signal?: AbortSignal;
+    };
+    expect(options.signal?.aborted).toBe(true);
+
+    fakeCustom.done();
+    await promise;
+
+    const key = getSessionKey({
+      getSessionFile: () => "/tmp/session.json",
+      getSessionId: () => "session-1",
+    });
+    expect(getHistory(key)).toHaveLength(0);
+  });
+
+  it("shows aborted state when completeSimple throws AbortError", async () => {
     const { commands } = makeFakePi();
-    const { ctx, notifications } = makeCtx();
+    const fakeCustom = makeFakeCustom();
+    const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
     const abortError = new Error("Aborted");
     abortError.name = "AbortError";
     completeSimpleMock.mockRejectedValue(abortError);
 
-    await commands["btw"]("question", ctx);
+    const promise = commands["btw"]("question", ctx);
+    await flushPromises();
+    fakeCustom.done();
+    await promise;
+
+    const component = fakeCustom.component!;
+    const lines = component.render(80);
+    expect(lines.some((l) => l.includes("Aborted"))).toBe(true);
+  });
+
+  it("shows prior exchanges in overlay on follow-up", async () => {
+    const { commands } = makeFakePi();
+    const fakeCustom = makeFakeCustom();
+    convertToLlmMock.mockReturnValue([]);
+
+    const { ctx: ctx1 } = makeCtx({ custom: fakeCustom.custom });
+    completeSimpleMock.mockResolvedValue({
+      stopReason: "stop",
+      content: [{ type: "text", text: "first answer" }],
+    } as unknown as AssistantMessage);
+
+    const p1 = commands["btw"]("first question", ctx1);
+    await flushPromises();
+    fakeCustom.done();
+    await p1;
+
+    const { ctx: ctx2 } = makeCtx({ custom: fakeCustom.custom });
+    completeSimpleMock.mockResolvedValue({
+      stopReason: "stop",
+      content: [{ type: "text", text: "second answer" }],
+    } as unknown as AssistantMessage);
+
+    const p2 = commands["btw"]("second question", ctx2);
     await flushPromises();
 
-    expect(notifications).toContainEqual({
-      message: "Aborted",
-      type: "warning",
+    const component = fakeCustom.component!;
+    const lines = component.render(80);
+    expect(lines.some((l) => l.includes("first question"))).toBe(true);
+    expect(lines.some((l) => l.includes("first answer"))).toBe(true);
+    expect(lines.some((l) => l.includes("second answer"))).toBe(true);
+
+    fakeCustom.done();
+    await p2;
+  });
+
+  it("clears history on x and rerenders without earlier entries", async () => {
+    const { commands } = makeFakePi();
+    const fakeCustom = makeFakeCustom();
+    convertToLlmMock.mockReturnValue([]);
+
+    const { ctx: ctx1 } = makeCtx({ custom: fakeCustom.custom });
+    completeSimpleMock.mockResolvedValue({
+      stopReason: "stop",
+      content: [{ type: "text", text: "first answer" }],
+    } as unknown as AssistantMessage);
+
+    const p1 = commands["btw"]("first question", ctx1);
+    await flushPromises();
+    fakeCustom.done();
+    await p1;
+
+    const { ctx: ctx2 } = makeCtx({ custom: fakeCustom.custom });
+    completeSimpleMock.mockResolvedValue({
+      stopReason: "stop",
+      content: [{ type: "text", text: "second answer" }],
+    } as unknown as AssistantMessage);
+
+    const p2 = commands["btw"]("second question", ctx2);
+    await flushPromises();
+
+    const component = fakeCustom.component!;
+    expect(component.render(80).some((l) => l.includes("first question"))).toBe(
+      true,
+    );
+
+    component.handleInput!("x");
+    expect(component.render(80).some((l) => l.includes("first question"))).toBe(
+      false,
+    );
+
+    fakeCustom.done();
+    await p2;
+
+    const key = getSessionKey({
+      getSessionFile: () => "/tmp/session.json",
+      getSessionId: () => "session-1",
     });
+    expect(getHistory(key)).toHaveLength(0);
+  });
+
+  it("scrolls with arrow keys when content overflows", async () => {
+    const { commands } = makeFakePi();
+    const fakeCustom = makeFakeCustom();
+    convertToLlmMock.mockReturnValue([]);
+
+    const history = Array.from({ length: 6 }, (_, i) => ({
+      question: `q${i}`,
+      answer: `a${i}`,
+    }));
+
+    const { ctx } = makeCtx({ custom: fakeCustom.custom });
+    completeSimpleMock.mockResolvedValue({
+      stopReason: "stop",
+      content: [{ type: "text", text: "final answer" }],
+    } as unknown as AssistantMessage);
+
+    // Pre-seed history so the overlay has overflowing content
+    const key = getSessionKey({
+      getSessionFile: () => "/tmp/session.json",
+      getSessionId: () => "session-1",
+    });
+    for (const ex of history) {
+      const { addExchange } = await import("./state.js");
+      addExchange(key, ex);
+    }
+
+    const promise = commands["btw"]("question", ctx);
+    await flushPromises();
+
+    const component = fakeCustom.component!;
+    const initial = component.render(80);
+    expect(initial.some((l) => l.includes("final answer"))).toBe(true);
+    expect(initial.some((l) => l.includes("q0"))).toBe(false);
+
+    component.handleInput!("\x1B[A");
+    const scrolledUp = component.render(80);
+    expect(scrolledUp.some((l) => l.includes("q0"))).toBe(true);
+
+    component.handleInput!("\x1B[B");
+    const scrolledDown = component.render(80);
+    expect(scrolledDown.some((l) => l.includes("final answer"))).toBe(true);
+
+    fakeCustom.done();
+    await promise;
   });
 });
