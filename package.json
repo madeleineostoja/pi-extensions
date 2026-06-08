@@ -26,7 +26,8 @@
       "./packages/pi-auto-name/src/index.ts",
       "./packages/pi-implement/src/index.ts",
       "./packages/pi-usage/src/index.ts",
-      "./packages/pi-model-handoff/src/index.ts"
+      "./packages/pi-model-handoff/src/index.ts",
+      "./packages/pi-btw/src/index.ts"
     ]
   },
   "scripts": {

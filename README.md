@@ -7,6 +7,7 @@ Personal extensions for the [Pi](https://github.com/earendil-works/pi) agent har
 | Package                                       | Description                                                                                       |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | [pi-auto-name](packages/pi-auto-name)         | Name new sessions from the first prompt using a lightweight model.                                |
+| [pi-btw](packages/pi-btw)                     | Ask a side question about the current session without adding it to the main transcript.           |
 | [pi-caffeinate](packages/pi-caffeinate)       | Hold an idle-sleep inhibitor for the session lifetime on macOS and Linux.                         |
 | [pi-usage](packages/pi-usage)                 | Show ChatGPT Codex and Opencode Go subscription usage in the footer and rewrite raw limit errors. |
 | [pi-context-prune](packages/pi-context-prune) | Compact stale or low-value tool results, with `context_recall` for on-demand retrieval.           |
