@@ -1593,6 +1593,7 @@ describe("runImplementation", () => {
     });
 
     expect(currentState.phase).toBe("done");
+    expect(currentState.tasks?.[0]?.planIndex).toBe(0);
     expect(subagents.spawns).toHaveLength(3);
     const overallPrompt = subagents.spawns[2]?.prompt ?? "";
     expect(overallPrompt).toContain("pi-implement overall reviewer");

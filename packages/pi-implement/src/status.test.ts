@@ -222,14 +222,31 @@ describe("status formatting", () => {
     const lines = formatWidgetLines({
       phase: "coding",
       tasks: [
-        { id: "t1", planIndex: 1, title: "T1", status: "landed" },
-        { id: "t2", planIndex: 2, title: "T2", status: "coding" },
+        { id: "t1", planIndex: 0, title: "T1", status: "landed" },
+        { id: "t2", planIndex: 1, title: "T2", status: "coding" },
       ],
       landedCount: 2,
       totalCount: 7,
     });
-    expect(lines[0]).toContain("2/7");
+    expect(lines[0]).toContain("1/7");
     expect(lines[0]).toContain("landed");
+  });
+
+  it("parallel footer and widget expose failed tasks", () => {
+    const state: RunState = {
+      phase: "integrating",
+      tasks: [
+        { id: "t1", planIndex: 0, title: "T1", status: "landed" },
+        { id: "t2", planIndex: 1, title: "T2", status: "failed" },
+        { id: "t3", planIndex: 2, title: "T3", status: "coding" },
+      ],
+      landedCount: 0,
+      totalCount: 3,
+    };
+
+    expect(formatFooterStatus(state)).toBe("󰚩 implement 1/3 · 1 failed");
+    expect(formatFooterStatusParts(state)).toMatchObject({ tone: "warning" });
+    expect(formatWidgetLines(state)[0]).toContain("1/3 landed · 1 failed");
   });
 
   it("parallel widget progress includes satisfied tasks without landed wording", () => {

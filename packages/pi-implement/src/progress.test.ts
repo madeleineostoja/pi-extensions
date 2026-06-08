@@ -94,12 +94,12 @@ describe("diffProgress", () => {
       tasks: [
         {
           id: "t1",
-          planIndex: 1,
+          planIndex: 0,
           title: "A",
           status: "landed",
           landedCommitSha: "aaa",
         },
-        { id: "t2", planIndex: 2, title: "B", status: "coding" },
+        { id: "t2", planIndex: 1, title: "B", status: "coding" },
       ],
       landedCount: 1,
       totalCount: 3,
@@ -109,14 +109,14 @@ describe("diffProgress", () => {
       tasks: [
         {
           id: "t1",
-          planIndex: 1,
+          planIndex: 0,
           title: "A",
           status: "landed",
           landedCommitSha: "aaa",
         },
         {
           id: "t2",
-          planIndex: 2,
+          planIndex: 1,
           title: "B",
           status: "landed",
           landedCommitSha: "bbb",
@@ -125,7 +125,21 @@ describe("diffProgress", () => {
       landedCount: 2,
     };
     const lines = diffProgress(prev, next, []);
-    expect(lines.some((l) => l.includes("landed"))).toBe(true);
+    expect(lines).toContain("✓ Task 2/3 landed: B @ bbb");
+  });
+
+  it("uses the plan task number for parallel status notes", () => {
+    const prev: RunState = {
+      phase: "coding",
+      totalCount: 5,
+      tasks: [{ id: "t1", planIndex: 0, title: "A", status: "coding" }],
+    };
+    const next: RunState = {
+      ...prev,
+      tasks: [{ id: "t1", planIndex: 0, title: "A", status: "approved" }],
+    };
+
+    expect(diffProgress(prev, next, [])).toContain("✓ Task 1/5 approved: A");
   });
 
   it("includes checkpoint notes alongside existing run-level notes", () => {

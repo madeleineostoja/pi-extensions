@@ -1338,7 +1338,7 @@ function updateParallelState(
     }
     tasks.push({
       id: task.id,
-      planIndex: task.planIndex,
+      planIndex: task.planIndex - 1,
       title: task.title,
       status: task.status as ParallelTaskState["status"],
       blockedReason: getBlockedReason(task, sched),

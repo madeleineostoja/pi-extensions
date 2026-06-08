@@ -134,8 +134,13 @@ export function formatFooterStatusParts(
 
   if (state.tasks && state.totalCount !== undefined) {
     const completed = completedTaskCount(state);
+    const failed = failedTaskCount(state);
     const total = state.totalCount ?? 0;
-    return footerStatusParts(`implement ${completed}/${total}`, "active");
+    const failedText = failed > 0 ? ` · ${failed} failed` : "";
+    return footerStatusParts(
+      `implement ${completed}/${total}${failedText}`,
+      failed > 0 ? "warning" : "active",
+    );
   }
 
   const progress =
@@ -257,17 +262,28 @@ function completedTaskCount(state: RunState): number {
 }
 
 function landedTaskCount(state: RunState): number {
-  if (state.landedCount !== undefined) {
-    return state.landedCount;
+  if (state.tasks) {
+    return state.tasks.filter((task) => task.status === "landed").length;
   }
-  return state.tasks?.filter((task) => task.status === "landed").length ?? 0;
+  return state.landedCount ?? 0;
 }
 
 function satisfiedTaskCount(state: RunState): number {
-  if (state.satisfiedCount !== undefined) {
-    return state.satisfiedCount;
+  if (state.tasks) {
+    return state.tasks.filter((task) => task.status === "satisfied").length;
   }
-  return state.tasks?.filter((task) => task.status === "satisfied").length ?? 0;
+  return state.satisfiedCount ?? 0;
+}
+
+function failedTaskCount(state: RunState): number {
+  return (
+    state.tasks?.filter(
+      (task) =>
+        task.status === "failed" ||
+        task.status === "integration_failed" ||
+        task.status === "blocked",
+    ).length ?? 0
+  );
 }
 
 function shorten(value: string, max: number): string {
@@ -327,14 +343,17 @@ export function formatWidgetLines(
     state.tasks !== undefined || state.totalCount !== undefined;
   let progressText: string;
   if (isParallel) {
-    const landed = state.landedCount ?? 0;
+    const landed = landedTaskCount(state);
     const satisfied = satisfiedTaskCount(state);
     const completed = completedTaskCount(state);
+    const failed = failedTaskCount(state);
     const total = state.totalCount ?? state.totalTasks ?? 0;
-    progressText =
+    const baseProgress =
       satisfied > 0
         ? `${completed}/${total} complete`
         : `${landed}/${total} landed`;
+    progressText =
+      failed > 0 ? `${baseProgress} · ${failed} failed` : baseProgress;
   } else if (state.taskIndex !== undefined && state.totalTasks !== undefined) {
     progressText = `${state.taskIndex}/${state.totalTasks} current`;
   } else {
