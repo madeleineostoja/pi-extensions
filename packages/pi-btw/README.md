@@ -2,6 +2,17 @@
 
 Pi extension that adds a `/btw <question>` command for side questions about the current session.
 
+## Install
+
+This extension is part of the `pi-extensions` repo bundle. When you install the bundle from source:
+
+```
+cd /path/to/pi-extensions
+pi install
+```
+
+Pi automatically enables every package listed in the root `package.json` `pi.extensions` array, including `pi-btw`. No additional configuration is required.
+
 ## Usage
 
 ```
