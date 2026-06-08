@@ -1,1 +1,1 @@
-post-switch = "npm install"
+post-switch = "npm i --frozen-lockfile"
