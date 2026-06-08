@@ -35,6 +35,19 @@ describe("diffProgress", () => {
     expect(lines).toContain("\u25b6 Task 1/3 started: A");
   });
 
+  it("emits serial start when the task index was prefilled", () => {
+    const prev: RunState = { phase: "preflight", taskIndex: 3, totalTasks: 5 };
+    const next: RunState = {
+      phase: "coding",
+      taskIndex: 3,
+      totalTasks: 5,
+      attempt: 1,
+    };
+    const lines = diffProgress(prev, next, ["A", "B", "C", "D", "E"]);
+    expect(lines).toContain("\u25b6 Task 3/5 started: C");
+    expect(lines).not.toContain("↻ Task 3/5 retry (attempt 1)");
+  });
+
   it("emits run-level done notice", () => {
     const prev: RunState = { phase: "integrating" };
     const next: RunState = { phase: "done" };

@@ -41,7 +41,7 @@ import {
 import { parseCommand } from "./parser.js";
 import { selectStrategy } from "./strategy.js";
 import type { ExecutionMode } from "./parser.js";
-import { parsePlanFile } from "./plan.js";
+import { nextUncheckedTask, parsePlanFile } from "./plan.js";
 import {
   buildPlanBundleManifest,
   validatePlanMaterialSizes,
@@ -563,6 +563,9 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       }
 
       const modeSource = parsed.mode.kind === "auto" ? "auto" : "cli";
+      const initialTaskIndex =
+        nextUncheckedTask(plan)?.index ??
+        (plan.tasks.length > 0 ? plan.tasks.length : undefined);
       active = {
         state: {
           phase: "preflight",
@@ -574,6 +577,8 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           currentMainHead: baseSha,
           maxConcurrency,
           startedAt: now,
+          taskIndex: initialTaskIndex,
+          totalTasks: plan.tasks.length,
         },
         stopping: false,
         runId: runIdNum,

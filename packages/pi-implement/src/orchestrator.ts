@@ -167,7 +167,10 @@ async function runSerialImplementation(
       throw new BlockedError("dirty worktree");
     }
     const task = nextUncheckedTask(plan);
-    deps.updateState({ totalTasks: plan.tasks.length });
+    deps.updateState({
+      taskIndex: task?.index ?? completedPlanTaskIndex(plan),
+      totalTasks: plan.tasks.length,
+    });
     if (!task) {
       await runOverallReview(deps, plan, planArtifacts, runBaseSha);
       deps.updateState({
@@ -1322,6 +1325,12 @@ function stalledSchedulerReason(sched: SchedulerRun): string {
   return `Parallel scheduler stalled with non-terminal task(s): ${nonTerminal
     .map((task) => `${task.id}:${task.status}`)
     .join(", ")}`;
+}
+
+function completedPlanTaskIndex(
+  plan: ReturnType<typeof parsePlanFile>,
+): number | undefined {
+  return plan.tasks.length > 0 ? plan.tasks.length : undefined;
 }
 
 function updateParallelState(

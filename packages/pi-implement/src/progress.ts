@@ -94,15 +94,19 @@ function serialNotes(
   const title = idx ? taskTitles[idx - 1] : undefined;
 
   const taskChanged = idx !== undefined && prev.taskIndex !== idx;
+  const enteredCoding = next.phase === "coding" && prev.phase !== "coding";
 
   if (taskChanged && prev.taskIndex && prev.totalTasks) {
     lines.push(`✓ Task ${prev.taskIndex}/${prev.totalTasks} completed`);
   }
 
   if (next.phase === "coding") {
-    if (taskChanged) {
+    if (taskChanged || enteredCoding) {
       lines.push(`▶ ${tag} started${title ? `: ${title}` : ""}`);
-    } else if ((next.attempt ?? 0) > (prev.attempt ?? 0)) {
+    } else if (
+      prev.attempt !== undefined &&
+      (next.attempt ?? 0) > prev.attempt
+    ) {
       lines.push(
         `↻ ${tag} retry (attempt ${next.attempt})${reasonSuffix(next.lastReason)}`,
       );

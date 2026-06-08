@@ -355,6 +355,54 @@ describe("runImplementation", () => {
     expect(states.at(-1)).toMatchObject({ phase: "done" });
   });
 
+  it("starts a partially completed serial plan at the next plan task number", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [x] First\n- [x] Second\n- [ ] Third\n- [ ] Fourth\n- [ ] Fifth\n",
+      "utf-8",
+    );
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const states: Partial<RunState>[] = [];
+    let currentState: RunState = { phase: "idle" };
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: (patch) => {
+        const resolved =
+          typeof patch === "function" ? patch(currentState) : patch;
+        currentState = { ...currentState, ...resolved };
+        states.push(resolved);
+      },
+      shouldStop: () => false,
+    });
+
+    expect(states.find((state) => state.taskIndex !== undefined)).toMatchObject(
+      { taskIndex: 3, totalTasks: 5 },
+    );
+    expect(subagents.spawns[0]?.description).toContain("task 3/5");
+    expect(currentState.phase).toBe("done");
+  });
+
   it("reviewer prompt includes sibling tasks as out-of-scope context but implementer prompt does not", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
     const planPath = join(dir, "plan.md");
