@@ -99,7 +99,7 @@ export function buildLeftSegment(
 }
 
 export function formatCacheHitRate(rate: number): string {
-  return `󰃨 ${rate.toFixed(1)}%`;
+  return `󰃨 ${Math.round(rate)}%`;
 }
 
 export function buildRightSegment(

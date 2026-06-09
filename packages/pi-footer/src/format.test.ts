@@ -297,10 +297,10 @@ describe("footer line layout", () => {
 });
 
 describe("cache hit rate formatting", () => {
-  it("formats with the cached icon", () => {
-    expect(formatCacheHitRate(42.5)).toBe("󰃨 42.5%");
-    expect(formatCacheHitRate(0)).toBe("󰃨 0.0%");
-    expect(formatCacheHitRate(99.99)).toBe("󰃨 100.0%");
+  it("formats with the cached icon rounded to a whole percent", () => {
+    expect(formatCacheHitRate(42.5)).toBe("󰃨 43%");
+    expect(formatCacheHitRate(0)).toBe("󰃨 0%");
+    expect(formatCacheHitRate(99.99)).toBe("󰃨 100%");
   });
 
   it("shows cache hit rate between cost and context", () => {
@@ -318,11 +318,11 @@ describe("cache hit rate formatting", () => {
 
     expect(result).toContain("Test (off)");
     expect(result).toContain("$0.01");
-    expect(result).toContain("󰃨 75.5%");
+    expect(result).toContain("󰃨 76%");
     expect(result).toContain("50% (128k)");
 
     const parts = result.split(" · ");
-    expect(parts[2]).toContain("󰃨 75.5%");
+    expect(parts[2]).toContain("󰃨 76%");
     expect(parts[3]).toContain("50%");
   });
 

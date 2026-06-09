@@ -4,7 +4,7 @@ import type {
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { convertCurrency, refreshCurrencyRate } from "@pi-extensions/lib";
-import { getFooterCostInfo, getLatestCacheHitRate } from "./cost.js";
+import { getAverageCacheHitRate, getFooterCostInfo } from "./cost.js";
 import {
   buildFooterLines,
   buildLeftSegment,
@@ -53,7 +53,7 @@ export default function (pi: ExtensionAPI) {
             const footerModel = model
               ? { name: model.name, id: model.id, provider: model.provider }
               : undefined;
-            const cacheHitRate = getLatestCacheHitRate(branchEntries);
+            const cacheHitRate = getAverageCacheHitRate(branchEntries);
 
             const rightWithWindow = buildRightSegment(
               footerModel,

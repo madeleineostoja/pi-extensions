@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getFooterCostInfo, getLatestCacheHitRate } from "./cost.js";
+import { getAverageCacheHitRate, getFooterCostInfo } from "./cost.js";
 
 function assistantEntry(args: {
   provider?: string;
@@ -184,40 +184,38 @@ describe("getFooterCostInfo", () => {
   });
 });
 
-describe("getLatestCacheHitRate", () => {
+describe("getAverageCacheHitRate", () => {
   it("returns undefined when there is no cache activity", () => {
-    expect(getLatestCacheHitRate([])).toBeUndefined();
+    expect(getAverageCacheHitRate([])).toBeUndefined();
     expect(
-      getLatestCacheHitRate([assistantEntry({ input: 100, output: 50 })]),
+      getAverageCacheHitRate([assistantEntry({ input: 100, output: 50 })]),
     ).toBeUndefined();
   });
 
-  it("computes rate from the latest assistant message", () => {
-    const result = getLatestCacheHitRate([
-      assistantEntry({ input: 100, cacheRead: 0, cacheWrite: 0 }),
-      assistantEntry({ input: 80, cacheRead: 20, cacheWrite: 0 }),
+  it("computes a token-weighted average across assistant messages", () => {
+    const result = getAverageCacheHitRate([
+      assistantEntry({ input: 90, cacheRead: 10, cacheWrite: 0 }),
+      assistantEntry({ input: 0, cacheRead: 90, cacheWrite: 10 }),
     ]);
-    // 20 / (80 + 20 + 0) = 0.2 -> 20%
-    expect(result).toBeCloseTo(20);
+    expect(result).toBeCloseTo(50);
   });
 
   it("includes cacheWrite in the denominator", () => {
-    const result = getLatestCacheHitRate([
+    const result = getAverageCacheHitRate([
       assistantEntry({ input: 50, cacheRead: 30, cacheWrite: 20 }),
     ]);
-    // 30 / (50 + 30 + 20) = 0.3 -> 30%
     expect(result).toBeCloseTo(30);
   });
 
   it("returns 0 when prompt tokens are non-zero but cacheRead is zero", () => {
-    const result = getLatestCacheHitRate([
+    const result = getAverageCacheHitRate([
       assistantEntry({ input: 0, cacheRead: 0, cacheWrite: 10 }),
     ]);
     expect(result).toBeCloseTo(0);
   });
 
   it("ignores non-assistant and non-message entries", () => {
-    const result = getLatestCacheHitRate([
+    const result = getAverageCacheHitRate([
       { type: "message", message: { role: "user" } },
       assistantEntry({ input: 100, cacheRead: 50, cacheWrite: 0 }),
     ]);
@@ -225,7 +223,7 @@ describe("getLatestCacheHitRate", () => {
   });
 
   it("shows rate when only cacheWrite exists", () => {
-    const result = getLatestCacheHitRate([
+    const result = getAverageCacheHitRate([
       assistantEntry({ input: 100, cacheRead: 0, cacheWrite: 10 }),
     ]);
     expect(result).toBeCloseTo(0);
