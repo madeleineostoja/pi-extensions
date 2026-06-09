@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -11,6 +12,7 @@ import { promisify } from "node:util";
 import {
   buildAlreadySatisfiedReviewerPrompt,
   buildImplementerPrompt,
+  buildIntegrationSelfHealPrompt,
   buildOverallReviewerPrompt,
   buildReviewerPrompt,
 } from "./prompts.js";
@@ -34,9 +36,11 @@ import {
   fallbackCommitMessage,
   isValidCommitMessage,
   parseImplementerResult,
+  parseIntegrationSelfHealResult,
   parseOverallReviewVerdict,
   parseReviewerVerdict,
 } from "./verdict.js";
+import type { IntegrationSelfHealResult } from "./verdict.js";
 import type { StatePaths, TaskJson } from "./state.js";
 import {
   writeTaskJson,
@@ -73,6 +77,7 @@ const MAX_REVIEWER_REQUESTS = 5;
 const MAX_SYSTEM_FAILURES = 2;
 const MAX_ACCUMULATED_DIFF_CHARS = 50000;
 const MAX_REWORK_ATTEMPTS = 2;
+const MAX_SELF_HEAL_ATTEMPTS = 2;
 const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 
 const execAsync = promisify(exec);
@@ -668,26 +673,145 @@ async function landApprovedTask(
   };
 
   try {
-    const cherryPick = await deps.git.cherryPickNoCommit(task.taskCommitSha);
-    if (cherryPick.exitCode !== 0) {
-      return await failForRework(
+    task.selfHealAttempts = 0;
+
+    // ── Cherry-pick with optional self-heal ──
+    let cherryPick = await deps.git.cherryPickNoCommit(task.taskCommitSha);
+    let cherryPickSucceeded = cherryPick.exitCode === 0;
+    if (!cherryPickSucceeded) {
+      const preHealStagedPaths = parseNameStatusPaths(
+        await deps.git.stagedNameStatus(),
+      );
+      const preHealSnapshot: IntegrationCandidateSnapshot = {
+        head: preIntegrationHead,
+        stagedFingerprint: "",
+        worktreeFingerprint: "",
+        stagedPaths: preHealStagedPaths,
+      };
+      const healResult = await tryIntegrationSelfHeal(
+        deps,
+        task,
+        taskId,
+        plan,
+        planArtifacts,
+        preIntegrationHead,
+        planArtifactSnapshot,
         "cherry-pick",
         cherryPick.stderr ||
           cherryPick.stdout ||
           "git cherry-pick --no-commit failed",
       );
+      // Always verify safety after a self-heal attempt, regardless of whether
+      // the repair agent returned a retryable result.
+      if (task.selfHealAttempts > 0) {
+        const safety = await checkSelfHealSafety(
+          deps,
+          preIntegrationHead,
+          planArtifacts,
+          planArtifactSnapshot,
+          healResult?.result,
+          preHealSnapshot,
+        );
+        if (safety) {
+          return await failBlocked("self-heal", safety);
+        }
+      }
+      if (healResult?.result.retryIntegration) {
+        if (healResult.result.retryMode === "retry_cherry_pick") {
+          await rollbackIntegration(
+            deps,
+            preIntegrationHead,
+            planArtifacts,
+            planArtifactSnapshot,
+          );
+          cherryPick = await deps.git.cherryPickNoCommit(task.taskCommitSha);
+          cherryPickSucceeded = cherryPick.exitCode === 0;
+        } else {
+          cherryPickSucceeded = true;
+        }
+      }
+      if (!cherryPickSucceeded) {
+        return await failForRework(
+          "cherry-pick",
+          cherryPick.stderr ||
+            cherryPick.stdout ||
+            "git cherry-pick --no-commit failed",
+        );
+      }
     }
 
-    const candidateSnapshot = await snapshotIntegrationCandidate(
+    let candidateSnapshot = await snapshotIntegrationCandidate(
       deps,
       planArtifacts,
     );
-    const validation = await validateIntegratedTask(
+
+    // ── Validation with optional self-heal ──
+    let validation = await validateIntegratedTask(
       deps,
       taskId,
       planArtifacts,
       task,
     );
+    while (!validation.ok && task.selfHealAttempts < MAX_SELF_HEAL_ATTEMPTS) {
+      const preHealSnapshot = candidateSnapshot;
+      const healResult = await tryIntegrationSelfHeal(
+        deps,
+        task,
+        taskId,
+        plan,
+        planArtifacts,
+        preIntegrationHead,
+        planArtifactSnapshot,
+        "validation",
+        validation.reason,
+      );
+      // Always verify safety after a self-heal attempt, regardless of whether
+      // the repair agent returned a retryable result.
+      if (task.selfHealAttempts > 0) {
+        const safety = await checkSelfHealSafety(
+          deps,
+          preIntegrationHead,
+          planArtifacts,
+          planArtifactSnapshot,
+          healResult?.result,
+          preHealSnapshot,
+        );
+        if (safety) {
+          return await failBlocked("self-heal", safety);
+        }
+      }
+      if (!healResult?.result.retryIntegration) {
+        break;
+      }
+
+      if (healResult.result.retryMode === "retry_cherry_pick") {
+        await rollbackIntegration(
+          deps,
+          preIntegrationHead,
+          planArtifacts,
+          planArtifactSnapshot,
+        );
+        const cp = await deps.git.cherryPickNoCommit(task.taskCommitSha);
+        if (cp.exitCode !== 0) {
+          return await failForRework(
+            "cherry-pick",
+            cp.stderr || cp.stdout || "git cherry-pick --no-commit failed",
+          );
+        }
+      }
+
+      candidateSnapshot = await snapshotIntegrationCandidate(
+        deps,
+        planArtifacts,
+      );
+      validation = await validateIntegratedTask(
+        deps,
+        taskId,
+        planArtifacts,
+        task,
+      );
+    }
+
     if (!validation.ok) {
       return await failForRework("validation", validation.reason);
     }
@@ -807,18 +931,22 @@ type IntegrationCandidateSnapshot = {
   head: string;
   stagedFingerprint: string;
   worktreeFingerprint: string;
+  stagedPaths: string[];
 };
 
 async function snapshotIntegrationCandidate(
   deps: OrchestratorDeps,
   planArtifacts: string[],
 ): Promise<IntegrationCandidateSnapshot> {
-  const [head, stagedFingerprint, worktreeFingerprint] = await Promise.all([
-    deps.git.head(),
-    deps.git.stagedFingerprint(),
-    deps.git.worktreeFingerprintExcept(planArtifacts),
-  ]);
-  return { head, stagedFingerprint, worktreeFingerprint };
+  const [head, stagedFingerprint, worktreeFingerprint, stagedNameStatus] =
+    await Promise.all([
+      deps.git.head(),
+      deps.git.stagedFingerprint(),
+      deps.git.worktreeFingerprintExcept(planArtifacts),
+      deps.git.stagedNameStatus(),
+    ]);
+  const stagedPaths = parseNameStatusPaths(stagedNameStatus);
+  return { head, stagedFingerprint, worktreeFingerprint, stagedPaths };
 }
 
 async function detectIntegrationMutation(
@@ -847,6 +975,331 @@ async function detectIntegrationMutation(
     return "Validation or integration review changed the integration worktree";
   }
   return undefined;
+}
+
+async function tryIntegrationSelfHeal(
+  deps: OrchestratorDeps,
+  task: SchedulerTask,
+  taskId: string,
+  plan: ReturnType<typeof parsePlanFile>,
+  planArtifacts: string[],
+  preIntegrationHead: string,
+  planArtifactSnapshot: Map<string, string | undefined>,
+  failureSource: "cherry-pick" | "validation",
+  failureDetails: string,
+): Promise<{ ok: true; result: IntegrationSelfHealResult } | undefined> {
+  if (task.selfHealAttempts >= MAX_SELF_HEAL_ATTEMPTS) {
+    return undefined;
+  }
+  task.selfHealAttempts++;
+
+  const landedTasks = deps.paths ? getLandedTasks(deps.paths) : undefined;
+  const graphContext = deps.paths
+    ? buildGraphContext(deps.paths.runDir)
+    : undefined;
+  const runArtifactPaths = deps.paths
+    ? collectRunArtifactPaths(deps.paths, taskId)
+    : undefined;
+  const prompt = buildIntegrationSelfHealPrompt({
+    taskId,
+    title: task.title,
+    planIndex: task.planIndex - 1,
+    taskCommitSha: task.taskCommitSha!,
+    preIntegrationHead,
+    mainCheckoutPath: await deps.git.root(),
+    worktreePath: task.worktreePath,
+    validationCommands: deps.verifyCommand ? [deps.verifyCommand] : undefined,
+    validationFailure:
+      failureSource === "validation" ? failureDetails : undefined,
+    cherryPickFailure:
+      failureSource === "cherry-pick" ? failureDetails : undefined,
+    landedTasks,
+    runArtifactPaths,
+    graphContext,
+  });
+
+  if (deps.paths) {
+    appendEvent(deps.paths, {
+      type: "self_heal_started",
+      taskId,
+      attempt: task.selfHealAttempts,
+    });
+    persistTaskArtifact(
+      deps.paths,
+      taskId,
+      `self-heal-${task.selfHealAttempts}.md`,
+      prompt,
+    );
+  }
+
+  const id = await deps.subagents.spawn({
+    type: deps.roles.implementer.type,
+    prompt,
+    description: `integration self-heal ${taskId}`,
+    model: deps.roles.implementer.model,
+  });
+  const ref: AgentDisplayRef = {
+    id,
+    role: "implementer",
+    label: `Integration self-heal \u00b7 ${taskId}`,
+    startedAt: new Date().toISOString(),
+  };
+  setSchedulerActiveAgent(task, ref);
+  deps.updateState((prev) => addActiveAgentPatch(prev, ref));
+
+  const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
+    clearSchedulerActiveAgent(task, id);
+    deps.updateState((prev) => removeActiveAgentPatch(prev, id));
+  });
+
+  if (result.status !== "completed") {
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "self_heal_failed",
+        taskId,
+        attempt: task.selfHealAttempts,
+        reason: result.status === "stopped" ? "stopped" : result.error,
+      });
+    }
+    return undefined;
+  }
+
+  if (deps.paths) {
+    persistTaskArtifact(
+      deps.paths,
+      taskId,
+      `self-heal-${task.selfHealAttempts}-result.md`,
+      result.result,
+    );
+    appendEvent(deps.paths, {
+      type: "self_heal_completed",
+      taskId,
+      attempt: task.selfHealAttempts,
+      result: result.result,
+    });
+  }
+
+  const parsed = parseIntegrationSelfHealResult(result.result);
+  if (!parsed.ok) {
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "self_heal_failed",
+        taskId,
+        attempt: task.selfHealAttempts,
+        reason: parsed.reason,
+      });
+    }
+    return undefined;
+  }
+
+  return parsed;
+}
+
+async function checkSelfHealSafety(
+  deps: OrchestratorDeps,
+  preIntegrationHead: string,
+  planArtifacts: string[],
+  planArtifactSnapshot: Map<string, string | undefined>,
+  healResult: IntegrationSelfHealResult | undefined,
+  preHealSnapshot?: IntegrationCandidateSnapshot,
+): Promise<string | undefined> {
+  if ((await deps.git.head()) !== preIntegrationHead) {
+    return "Self-heal changed HEAD";
+  }
+  const changedPlanArtifact = changedSnapshotPath(
+    planArtifacts,
+    planArtifactSnapshot,
+  );
+  if (changedPlanArtifact) {
+    return `Self-heal changed a plan artifact: ${changedPlanArtifact}`;
+  }
+  if (preHealSnapshot && (await deps.git.head()) !== preHealSnapshot.head) {
+    return "Self-heal changed HEAD relative to pre-heal snapshot";
+  }
+
+  const { unstaged, untracked } = await collectChangedPaths(deps);
+
+  const allowedUntracked = new Set<string>();
+  const allowedUnstaged = new Set<string>();
+
+  if (indicatesDependencyInstallation(healResult)) {
+    for (const path of untracked) {
+      if (isPackageManagerFile(path)) {
+        allowedUntracked.add(path);
+      }
+    }
+    for (const path of unstaged) {
+      if (isPackageManagerFile(path)) {
+        allowedUnstaged.add(path);
+      }
+    }
+  }
+
+  const disallowedUntracked = untracked.filter((p) => !allowedUntracked.has(p));
+  const disallowedUnstaged = unstaged.filter((p) => !allowedUnstaged.has(p));
+
+  if (disallowedUntracked.length > 0) {
+    return `Self-heal left unexpected untracked files: ${disallowedUntracked.join(", ")}`;
+  }
+  if (disallowedUnstaged.length > 0) {
+    return `Self-heal left unexpected unstaged changes: ${disallowedUnstaged.join(", ")}`;
+  }
+
+  return undefined;
+}
+
+async function collectChangedPaths(deps: OrchestratorDeps): Promise<{
+  staged: string[];
+  unstaged: string[];
+  untracked: string[];
+}> {
+  const status = await deps.git.status();
+  const staged: string[] = [];
+  const unstaged: string[] = [];
+  const untracked: string[] = [];
+
+  for (const line of status.split("\n")) {
+    if (!line.trim()) {
+      continue;
+    }
+    const xy = line.slice(0, 2);
+    const rest = line.slice(3);
+    let path = rest;
+    if (rest.includes(" -> ")) {
+      path = rest.split(" -> ").pop()!;
+    }
+    path = path.trim();
+
+    if (xy[0] !== " " && xy[0] !== "?") {
+      staged.push(path);
+    }
+    if (xy[1] !== " ") {
+      if (xy[1] === "?") {
+        untracked.push(path);
+      } else {
+        unstaged.push(path);
+      }
+    }
+  }
+
+  return { staged, unstaged, untracked };
+}
+
+function parseNameStatusPaths(nameStatus: string): string[] {
+  const paths: string[] = [];
+  for (const line of nameStatus.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const parts = trimmed.split("\t");
+    if (parts.length >= 2) {
+      paths.push(parts[parts.length - 1]!);
+    }
+  }
+  return paths;
+}
+
+function isPackageManagerFile(path: string): boolean {
+  const name = path.split("/").pop() ?? path;
+  return [
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    ".npmrc",
+  ].includes(name);
+}
+
+function indicatesDependencyInstallation(
+  result: IntegrationSelfHealResult | undefined,
+): boolean {
+  if (!result?.commands) {
+    return false;
+  }
+  const installPattern = /^(npm|pnpm|yarn)\s+(install|ci|add)/;
+  return result.commands.some((cmd) => installPattern.test(cmd.trim()));
+}
+
+function getLandedTasks(
+  paths: StatePaths,
+): Array<{ id: string; title: string; commitSha?: string }> {
+  const events = readEvents(paths);
+  const landedEvents = events.filter((e) => e.type === "task_landed");
+  const seen = new Set<string>();
+  const landedTasks: Array<{
+    id: string;
+    title: string;
+    commitSha?: string;
+  }> = [];
+  for (const ev of landedEvents) {
+    if (seen.has(ev.taskId)) {
+      continue;
+    }
+    seen.add(ev.taskId);
+    const taskJson = readTaskJson(paths, ev.taskId);
+    if (taskJson) {
+      landedTasks.push({
+        id: taskJson.id,
+        title: taskJson.title,
+        commitSha: taskJson.landedCommitSha,
+      });
+    }
+  }
+  return landedTasks;
+}
+
+function buildGraphContext(runDir: string): string | undefined {
+  const graph = readGraphJson(runDir);
+  if (!graph) {
+    return undefined;
+  }
+  const lines = [
+    `Run ID: ${graph.runId}`,
+    `Base SHA: ${graph.baseSha}`,
+    `Plan: ${graph.planPath}`,
+    `Nodes (${graph.nodes.length}):`,
+  ];
+  for (const node of graph.nodes) {
+    const deps =
+      node.dependsOn.length > 0
+        ? ` dependsOn: [${node.dependsOn.join(", ")}]`
+        : "";
+    lines.push(
+      `- ${node.id}: ${node.title} (plan ${node.planIndex}, mode: ${node.mode}${deps})`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function collectRunArtifactPaths(
+  paths: StatePaths,
+  taskId: string,
+): string[] | undefined {
+  const artifactPaths: string[] = [];
+  try {
+    if (existsSync(paths.eventsJsonl)) {
+      artifactPaths.push(paths.eventsJsonl);
+    }
+    if (existsSync(paths.runJson)) {
+      artifactPaths.push(paths.runJson);
+    }
+    const graphPath = join(paths.runDir, "graph.json");
+    if (existsSync(graphPath)) {
+      artifactPaths.push(graphPath);
+    }
+    const taskDir = join(paths.tasksDir, taskId);
+    if (existsSync(taskDir)) {
+      for (const entry of readdirSync(taskDir, { withFileTypes: true })) {
+        if (entry.isFile()) {
+          artifactPaths.push(join(taskDir, entry.name));
+        }
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  return artifactPaths.length > 0 ? artifactPaths : undefined;
 }
 
 type ValidationResult = { ok: true } | { ok: false; reason: string };
@@ -1457,6 +1910,7 @@ function taskToJson(task: SchedulerTask): TaskJson {
     activeSubagentIds: task.activeAgentIds,
     lastReason: task.lastReason,
     commitMessage: task.approvedCommitMessage,
+    selfHealAttempts: task.selfHealAttempts,
   };
 }
 

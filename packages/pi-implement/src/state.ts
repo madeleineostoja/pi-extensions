@@ -62,6 +62,7 @@ export type TaskJson = {
   activeSubagentIds?: string[];
   lastReason?: string;
   commitMessage?: string;
+  selfHealAttempts?: number;
 };
 
 export type EventEntry =
@@ -75,7 +76,20 @@ export type EventEntry =
   | { type: "run_started"; runId: string }
   | { type: "run_stopped" }
   | { type: "run_blocked"; reason: string }
-  | { type: "run_done" };
+  | { type: "run_done" }
+  | { type: "self_heal_started"; taskId: string; attempt: number }
+  | {
+      type: "self_heal_completed";
+      taskId: string;
+      attempt: number;
+      result: string;
+    }
+  | {
+      type: "self_heal_failed";
+      taskId: string;
+      attempt: number;
+      reason: string;
+    };
 
 export type DurableEvent = EventEntry & { timestamp: string };
 

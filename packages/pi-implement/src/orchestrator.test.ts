@@ -64,6 +64,9 @@ class FakeGit implements GitClient {
   async stagedNameStatus() {
     return "M\tfile.ts";
   }
+  async unstagedNameStatus() {
+    return "";
+  }
   async stagedDiff() {
     return this.diffText;
   }
@@ -209,6 +212,17 @@ describe("nextOverallReviewArtifactPath", () => {
     );
   });
 });
+
+function makeSelfHealResult(args: {
+  repaired: boolean;
+  retryIntegration: boolean;
+  retryMode?: "continue_candidate" | "retry_cherry_pick" | "retry_validation";
+  summary?: string;
+  commands?: string[];
+  filesChanged?: string[];
+}): string {
+  return `<pi-self-heal-result>${JSON.stringify(args)}</pi-self-heal-result>`;
+}
 
 describe("runImplementation", () => {
   it("blocks before spawning implementers when manifest validation failed", async () => {
@@ -2126,5 +2140,958 @@ describe("runImplementation", () => {
     const updatedPlan = readFileSync(planPath, "utf-8");
     expect(updatedPlan).toContain("- [ ] Do it");
     expect(git.commits).toHaveLength(0);
+  });
+
+  describe("integration self-heal", () => {
+    it("repairs validation failure and lands the task", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const validateScript = join(dir, "validate.sh");
+      writeFileSync(
+        validateScript,
+        `#!/bin/sh\nif [ -f "${join(dir, ".validation-pass")}" ]; then\n  exit 0\nelse\n  echo "validation failed"\n  exit 1\nfi\n`,
+        "utf-8",
+      );
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const subagents = new FakeSubagents();
+
+      let spawnCount = 0;
+      const originalSpawn = subagents.spawn.bind(subagents);
+      subagents.spawn = async (args) => {
+        spawnCount++;
+        return originalSpawn(args);
+      };
+      const originalWaitFor = subagents.waitFor.bind(subagents);
+      subagents.waitFor = async (id, signal) => {
+        const result = await originalWaitFor(id, signal);
+        if (spawnCount === 3 && result.status === "completed") {
+          writeFileSync(join(dir, ".validation-pass"), "ok", "utf-8");
+        }
+        return result;
+      };
+
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: makeSelfHealResult({
+            repaired: true,
+            retryIntegration: true,
+            retryMode: "retry_validation",
+            summary: "installed deps",
+          }),
+        },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: `sh ${validateScript}`,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      const updatedPlan = readFileSync(planPath, "utf-8");
+      expect(updatedPlan).toContain("- [x] Do thing");
+      expect(git.commits).toHaveLength(1);
+
+      const events = readEvents(paths);
+      expect(events.some((e) => e.type === "self_heal_started")).toBe(true);
+      expect(events.some((e) => e.type === "self_heal_completed")).toBe(true);
+    });
+
+    it("self-heal prompt includes diagnosis authority and required fields", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const validateScript = join(dir, "validate.sh");
+      writeFileSync(
+        validateScript,
+        `#!/bin/sh\nif [ -f "${join(dir, ".validation-pass")}" ]; then\n  exit 0\nelse\n  echo "validation failed"\n  exit 1\nfi\n`,
+        "utf-8",
+      );
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const subagents = new FakeSubagents();
+
+      let spawnCount = 0;
+      const originalSpawn = subagents.spawn.bind(subagents);
+      subagents.spawn = async (args) => {
+        spawnCount++;
+        return originalSpawn(args);
+      };
+      const originalWaitFor = subagents.waitFor.bind(subagents);
+      subagents.waitFor = async (id, signal) => {
+        const result = await originalWaitFor(id, signal);
+        if (spawnCount === 3 && result.status === "completed") {
+          writeFileSync(join(dir, ".validation-pass"), "ok", "utf-8");
+        }
+        return result;
+      };
+
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: makeSelfHealResult({
+            repaired: true,
+            retryIntegration: true,
+            retryMode: "retry_validation",
+            summary: "installed deps",
+          }),
+        },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: `sh ${validateScript}`,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      const selfHealSpawn = subagents.spawns.find((s) =>
+        s.description.includes("self-heal"),
+      );
+      expect(selfHealSpawn).toBeDefined();
+      const prompt = selfHealSpawn!.prompt;
+      expect(prompt).toContain("integration self-heal agent");
+      expect(prompt).toContain("Do thing");
+      expect(prompt).toContain("taskCommitSha");
+      expect(prompt).toContain("Pre-integration HEAD");
+      expect(prompt).toContain("Permissions");
+      expect(prompt).toContain("Inspect run artifacts");
+      expect(prompt).toContain("install dependencies");
+      expect(prompt).toContain("must NOT");
+      expect(prompt).toContain("Edit source plan");
+      expect(prompt).toContain("<pi-self-heal-result>");
+      expect(prompt).toContain("retryMode");
+    });
+
+    it("continue_candidate after cherry-pick conflict lands task", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      let cherryPickCount = 0;
+      git.cherryPickNoCommit = async (sha: string) => {
+        cherryPickCount++;
+        if (cherryPickCount === 1) {
+          return {
+            command: "git cherry-pick --no-commit",
+            exitCode: 1,
+            stdout: "",
+            stderr: "conflict",
+          };
+        }
+        git.diffText = `diff --git a/file.ts b/file.ts\n+change ${sha}`;
+        return {
+          command: "git cherry-pick --no-commit",
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+        };
+      };
+
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: makeSelfHealResult({
+            repaired: true,
+            retryIntegration: true,
+            retryMode: "continue_candidate",
+            summary: "resolved conflict",
+          }),
+        },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      const updatedPlan = readFileSync(planPath, "utf-8");
+      expect(updatedPlan).toContain("- [x] Do thing");
+      expect(git.commits).toHaveLength(1);
+    });
+
+    it("stops after MAX_SELF_HEAL_ATTEMPTS and surfaces failure", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: makeSelfHealResult({
+            repaired: true,
+            retryIntegration: true,
+            retryMode: "retry_validation",
+            summary: "attempt 1",
+          }),
+        },
+        {
+          status: "completed",
+          result: makeSelfHealResult({
+            repaired: true,
+            retryIntegration: true,
+            retryMode: "retry_validation",
+            summary: "attempt 2",
+          }),
+        },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          verifyCommand: "exit 1",
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow();
+
+      const events = readEvents(paths);
+      const started = events.filter((e) => e.type === "self_heal_started");
+      expect(started).toHaveLength(2);
+      expect(started[0].attempt).toBe(1);
+      expect(started[1].attempt).toBe(2);
+    });
+
+    it("blocks when self-heal mutates a plan artifact", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const subagents = new FakeSubagents();
+
+      let spawnCount = 0;
+      const originalSpawn = subagents.spawn.bind(subagents);
+      subagents.spawn = async (args) => {
+        spawnCount++;
+        return originalSpawn(args);
+      };
+      const originalWaitFor = subagents.waitFor.bind(subagents);
+      subagents.waitFor = async (id, signal) => {
+        const result = await originalWaitFor(id, signal);
+        if (spawnCount === 3 && result.status === "completed") {
+          writeFileSync(planPath, "# Mutated\n", "utf-8");
+        }
+        return result;
+      };
+
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: makeSelfHealResult({
+            repaired: true,
+            retryIntegration: true,
+            retryMode: "retry_validation",
+            summary: "attempted repair",
+          }),
+        },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          verifyCommand: "exit 1",
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow("plan artifact");
+
+      const updatedPlan = readFileSync(planPath, "utf-8");
+      expect(updatedPlan).toContain("- [ ] Do thing");
+    });
+
+    it("does not land when self-heal claims success but validation still fails", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: makeSelfHealResult({
+            repaired: true,
+            retryIntegration: true,
+            retryMode: "retry_validation",
+            summary: "claimed repair",
+          }),
+        },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          verifyCommand: "exit 1",
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow();
+
+      expect(git.commits).toHaveLength(0);
+      const taskJson = readTaskJson(paths, "task-1");
+      expect(taskJson?.status).not.toBe("landed");
+    });
+
+    it("blocks retry_cherry_pick when self-heal leaves unsafe checkout state", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      let cherryPickCount = 0;
+      git.cherryPickNoCommit = async (sha: string) => {
+        cherryPickCount++;
+        if (cherryPickCount === 1) {
+          return {
+            command: "git cherry-pick --no-commit",
+            exitCode: 1,
+            stdout: "",
+            stderr: "conflict",
+          };
+        }
+        git.diffText = `diff --git a/file.ts b/file.ts\n+change ${sha}`;
+        return {
+          command: "git cherry-pick --no-commit",
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+        };
+      };
+
+      const subagents = new FakeSubagents();
+      let spawnCount = 0;
+      const originalSpawn = subagents.spawn.bind(subagents);
+      subagents.spawn = async (args) => {
+        spawnCount++;
+        return originalSpawn(args);
+      };
+      const originalWaitFor = subagents.waitFor.bind(subagents);
+      subagents.waitFor = async (id, signal) => {
+        const result = await originalWaitFor(id, signal);
+        if (spawnCount === 3 && result.status === "completed") {
+          writeFileSync(planPath, "# Mutated\n", "utf-8");
+        }
+        return result;
+      };
+
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: makeSelfHealResult({
+            repaired: true,
+            retryIntegration: true,
+            retryMode: "retry_cherry_pick",
+            summary: "cleaned up",
+          }),
+        },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          verifyCommand: "echo ok",
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow("plan artifact");
+
+      const updatedPlan = readFileSync(planPath, "utf-8");
+      expect(updatedPlan).toContain("- [ ] Do thing");
+    });
+
+    it("blocks when unparseable self-heal mutates checkout state", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const subagents = new FakeSubagents();
+      let spawnCount = 0;
+      const originalSpawn = subagents.spawn.bind(subagents);
+      subagents.spawn = async (args) => {
+        spawnCount++;
+        return originalSpawn(args);
+      };
+      const originalWaitFor = subagents.waitFor.bind(subagents);
+      subagents.waitFor = async (id, signal) => {
+        const result = await originalWaitFor(id, signal);
+        if (spawnCount === 3 && result.status === "completed") {
+          writeFileSync(planPath, "# Mutated\n", "utf-8");
+        }
+        return result;
+      };
+
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: "garbage output without tag",
+        },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          verifyCommand: "exit 1",
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow("plan artifact");
+
+      const updatedPlan = readFileSync(planPath, "utf-8");
+      expect(updatedPlan).toContain("- [ ] Do thing");
+    });
+
+    it("allows newly staged integration-repair files and lands task", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const validateScript = join(dir, "validate.sh");
+      writeFileSync(
+        validateScript,
+        `#!/bin/sh\nif [ -f "${join(dir, ".validation-pass")}" ]; then\n  exit 0\nelse\n  echo "validation failed"\n  exit 1\nfi\n`,
+        "utf-8",
+      );
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const subagents = new FakeSubagents();
+
+      let spawnCount = 0;
+      const originalSpawn = subagents.spawn.bind(subagents);
+      subagents.spawn = async (args) => {
+        spawnCount++;
+        return originalSpawn(args);
+      };
+      const originalWaitFor = subagents.waitFor.bind(subagents);
+      subagents.waitFor = async (id, signal) => {
+        const result = await originalWaitFor(id, signal);
+        if (spawnCount === 3 && result.status === "completed") {
+          writeFileSync(join(dir, ".validation-pass"), "ok", "utf-8");
+          // Simulate self-heal staging a new integration-repair file
+          git.stagedNameStatus = async () => "M\tfile.ts\nA\tresolved.ts";
+          git.statusText = "A  resolved.ts\nM  file.ts";
+        }
+        return result;
+      };
+      const originalCommit = git.commit.bind(git);
+      git.commit = async (message: string) => {
+        const result = await originalCommit(message);
+        git.statusText = "";
+        return result;
+      };
+
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: makeSelfHealResult({
+            repaired: true,
+            retryIntegration: true,
+            retryMode: "continue_candidate",
+            summary: "resolved conflict and staged fix",
+            filesChanged: ["resolved.ts"],
+          }),
+        },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: `sh ${validateScript}`,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      const updatedPlan = readFileSync(planPath, "utf-8");
+      expect(updatedPlan).toContain("- [x] Do thing");
+      expect(git.commits).toHaveLength(1);
+    });
+
+    it("self-heal prompt includes graph context and run artifact paths", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const validateScript = join(dir, "validate.sh");
+      writeFileSync(
+        validateScript,
+        `#!/bin/sh\nif [ -f "${join(dir, ".validation-pass")}" ]; then\n  exit 0\nelse\n  echo "validation failed"\n  exit 1\nfi\n`,
+        "utf-8",
+      );
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const subagents = new FakeSubagents();
+
+      let spawnCount = 0;
+      const originalSpawn = subagents.spawn.bind(subagents);
+      subagents.spawn = async (args) => {
+        spawnCount++;
+        return originalSpawn(args);
+      };
+      const originalWaitFor = subagents.waitFor.bind(subagents);
+      subagents.waitFor = async (id, signal) => {
+        const result = await originalWaitFor(id, signal);
+        if (spawnCount === 3 && result.status === "completed") {
+          writeFileSync(join(dir, ".validation-pass"), "ok", "utf-8");
+        }
+        return result;
+      };
+
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: makeSelfHealResult({
+            repaired: true,
+            retryIntegration: true,
+            retryMode: "retry_validation",
+            summary: "installed deps",
+          }),
+        },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: `sh ${validateScript}`,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      const selfHealSpawn = subagents.spawns.find((s) =>
+        s.description.includes("self-heal"),
+      );
+      expect(selfHealSpawn).toBeDefined();
+      const prompt = selfHealSpawn!.prompt;
+      expect(prompt).toContain("Graph Context");
+      expect(prompt).toContain("Run ID: r1");
+      expect(prompt).toContain("task-1: Do thing");
+      expect(prompt).toContain("Run Artifacts");
+      expect(prompt).toContain(paths.eventsJsonl);
+      expect(prompt).toContain(join(paths.runDir, "graph.json"));
+    });
   });
 });

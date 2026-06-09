@@ -29,6 +29,7 @@ export type SchedulerTask = {
   activeAgentIds: string[];
   activeAgentRefs: AgentDisplayRef[];
   integrationAttempts: number;
+  selfHealAttempts: number;
   lastReason?: string;
   approvedCommitMessage?: string;
 };
@@ -63,6 +64,7 @@ export function createSchedulerRun(
       activeAgentIds: [],
       activeAgentRefs: [],
       integrationAttempts: 0,
+      selfHealAttempts: 0,
     });
   }
   return {

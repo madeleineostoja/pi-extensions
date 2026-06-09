@@ -129,6 +129,10 @@ export class ExecGitClient implements GitClient {
       .stdout;
   }
 
+  async unstagedNameStatus(): Promise<string> {
+    return (await this.run(["diff", "--name-status"])).stdout;
+  }
+
   async stagedDiff(): Promise<string> {
     return (await this.run(["diff", "--cached", "--binary", "HEAD"])).stdout;
   }

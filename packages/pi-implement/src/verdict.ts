@@ -30,6 +30,16 @@ export type OverallReviewVerdict =
       recommendationMarkdown?: string;
     };
 
+export type IntegrationSelfHealResult = {
+  repaired: boolean;
+  retryIntegration: boolean;
+  retryMode?: "continue_candidate" | "retry_cherry_pick" | "retry_validation";
+  summary?: string;
+  commands?: string[];
+  filesChanged?: string[];
+  remainingBlocker?: string | null;
+};
+
 export function parseImplementerResult(
   text: string,
 ):
@@ -248,9 +258,68 @@ function fallbackType(taskText: string): string {
   return "chore";
 }
 
+export function parseIntegrationSelfHealResult(
+  text: string,
+):
+  | { ok: true; result: IntegrationSelfHealResult }
+  | { ok: false; reason: string } {
+  const parsed = parseTaggedJsonObject(text, "pi-self-heal-result");
+  if (!parsed.ok) {
+    return parsed;
+  }
+  const value = parsed.value;
+  const repaired = value.repaired === true;
+  const retryIntegration = value.retryIntegration === true;
+  const retryMode = parseRetryMode(value.retryMode);
+  if (retryIntegration && retryMode === undefined) {
+    return {
+      ok: false,
+      reason:
+        "Self-heal result missing retryMode when retryIntegration is true.",
+    };
+  }
+  return {
+    ok: true,
+    result: {
+      repaired,
+      retryIntegration,
+      retryMode,
+      summary: typeof value.summary === "string" ? value.summary : undefined,
+      commands: Array.isArray(value.commands)
+        ? value.commands.filter((c): c is string => typeof c === "string")
+        : undefined,
+      filesChanged: Array.isArray(value.filesChanged)
+        ? value.filesChanged.filter((c): c is string => typeof c === "string")
+        : undefined,
+      remainingBlocker:
+        value.remainingBlocker === null ||
+        typeof value.remainingBlocker === "string"
+          ? value.remainingBlocker
+          : undefined,
+    },
+  };
+}
+
+function parseRetryMode(
+  value: unknown,
+): "continue_candidate" | "retry_cherry_pick" | "retry_validation" | undefined {
+  if (
+    value === "continue_candidate" ||
+    value === "retry_cherry_pick" ||
+    value === "retry_validation"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
 function parseTaggedJsonObject(
   text: string,
-  tag: "pi-implement-result" | "pi-review-result" | "pi-overall-review-result",
+  tag:
+    | "pi-implement-result"
+    | "pi-review-result"
+    | "pi-overall-review-result"
+    | "pi-self-heal-result",
 ):
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; reason: string } {

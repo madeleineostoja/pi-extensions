@@ -3,6 +3,7 @@ import {
   fallbackCommitMessage,
   isValidCommitMessage,
   parseImplementerResult,
+  parseIntegrationSelfHealResult,
   parseOverallReviewVerdict,
   parseReviewerVerdict,
 } from "./verdict.js";
@@ -258,6 +259,58 @@ describe("parseOverallReviewVerdict", () => {
     ).toMatchObject({
       verdict: "changes_requested",
     });
+  });
+});
+
+describe("parseIntegrationSelfHealResult", () => {
+  it("parses a valid repair result", () => {
+    const text =
+      '<pi-self-heal-result>{"repaired":true,"retryIntegration":true,"retryMode":"retry_validation","summary":"fixed","commands":["npm install"],"filesChanged":["package-lock.json"],"remainingBlocker":null}</pi-self-heal-result>';
+    const parsed = parseIntegrationSelfHealResult(text);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(parsed.result.repaired).toBe(true);
+    expect(parsed.result.retryIntegration).toBe(true);
+    expect(parsed.result.retryMode).toBe("retry_validation");
+    expect(parsed.result.summary).toBe("fixed");
+    expect(parsed.result.commands).toEqual(["npm install"]);
+    expect(parsed.result.filesChanged).toEqual(["package-lock.json"]);
+    expect(parsed.result.remainingBlocker).toBeNull();
+  });
+
+  it("requires retryMode when retryIntegration is true", () => {
+    const text =
+      '<pi-self-heal-result>{"repaired":true,"retryIntegration":true}</pi-self-heal-result>';
+    const parsed = parseIntegrationSelfHealResult(text);
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      return;
+    }
+  });
+
+  it("parses a non-repair result", () => {
+    const text =
+      '<pi-self-heal-result>{"repaired":false,"retryIntegration":false,"remainingBlocker":"cannot fix"}</pi-self-heal-result>';
+    const parsed = parseIntegrationSelfHealResult(text);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      return;
+    }
+    expect(parsed.result.repaired).toBe(false);
+    expect(parsed.result.retryIntegration).toBe(false);
+    expect(parsed.result.remainingBlocker).toBe("cannot fix");
+  });
+
+  it("rejects invalid retryMode", () => {
+    const text =
+      '<pi-self-heal-result>{"repaired":true,"retryIntegration":true,"retryMode":"bad_mode"}</pi-self-heal-result>';
+    const parsed = parseIntegrationSelfHealResult(text);
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      return;
+    }
   });
 });
 
