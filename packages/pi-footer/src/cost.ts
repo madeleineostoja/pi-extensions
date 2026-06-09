@@ -137,6 +137,39 @@ function getAssistantMessageCost(
   return { cost: storedCost ?? 0, subscription: false };
 }
 
+export function getLatestCacheHitRate(
+  entries: readonly SessionEntryLike[],
+): number | undefined {
+  let totalCacheRead = 0;
+  let totalCacheWrite = 0;
+  let latest: number | undefined;
+
+  for (const entry of entries) {
+    const message = entry.message;
+    if (entry.type !== "message" || message?.role !== "assistant") {
+      continue;
+    }
+    const usage = message.usage;
+    if (!usage) {
+      continue;
+    }
+
+    const cacheRead = finiteNumber(usage.cacheRead) ?? 0;
+    const cacheWrite = finiteNumber(usage.cacheWrite) ?? 0;
+    totalCacheRead += cacheRead;
+    totalCacheWrite += cacheWrite;
+
+    const promptTokens =
+      (finiteNumber(usage.input) ?? 0) + cacheRead + cacheWrite;
+    latest = promptTokens > 0 ? (cacheRead / promptTokens) * 100 : undefined;
+  }
+
+  if (totalCacheRead === 0 && totalCacheWrite === 0) {
+    return undefined;
+  }
+  return latest;
+}
+
 export function getFooterCostInfo(
   entries: readonly SessionEntryLike[],
   modelRegistry: ModelRegistryLike,

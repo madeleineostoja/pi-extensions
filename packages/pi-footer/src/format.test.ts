@@ -5,6 +5,7 @@ import {
   buildLeftSegment,
   buildRightSegment,
   buildStatusLine,
+  formatCacheHitRate,
   formatContextPercent,
   sanitizeStatusText,
 } from "./format.js";
@@ -292,5 +293,51 @@ describe("footer line layout", () => {
 
     expect(firstLine[0]).not.toContain("right-that-is-very-long");
     expect(withStatus[1]).not.toContain("a".repeat(200));
+  });
+});
+
+describe("cache hit rate formatting", () => {
+  it("formats with the cached icon", () => {
+    expect(formatCacheHitRate(42.5)).toBe("󰃨 42.5%");
+    expect(formatCacheHitRate(0)).toBe("󰃨 0.0%");
+    expect(formatCacheHitRate(99.99)).toBe("󰃨 100.0%");
+  });
+
+  it("shows cache hit rate between cost and context", () => {
+    const result = buildRightSegment(
+      { name: "Test" },
+      "off",
+      0.01,
+      { percent: 50, contextWindow: 128000 },
+      false,
+      makePlainTheme(),
+      true,
+      false,
+      75.5,
+    );
+
+    expect(result).toContain("Test (off)");
+    expect(result).toContain("$0.01");
+    expect(result).toContain("󰃨 75.5%");
+    expect(result).toContain("50% (128k)");
+
+    const parts = result.split(" · ");
+    expect(parts[2]).toContain("󰃨 75.5%");
+    expect(parts[3]).toContain("50%");
+  });
+
+  it("omits cache hit rate when undefined", () => {
+    const result = buildRightSegment(
+      { name: "Test" },
+      "off",
+      0.01,
+      { percent: 50, contextWindow: 128000 },
+      false,
+      makePlainTheme(),
+      true,
+      false,
+    );
+
+    expect(result).not.toContain("󰃨");
   });
 });

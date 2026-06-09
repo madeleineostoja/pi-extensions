@@ -98,6 +98,10 @@ export function buildLeftSegment(
   return `${base} ${theme.fg("dim", "on")} ${gitBranch}`;
 }
 
+export function formatCacheHitRate(rate: number): string {
+  return `󰃨 ${rate.toFixed(1)}%`;
+}
+
 export function buildRightSegment(
   model: FooterModel,
   thinkingLevel: ThinkingLevel,
@@ -107,6 +111,7 @@ export function buildRightSegment(
   theme: Theme,
   includeWindow: boolean,
   includeProvider = false,
+  cacheHitRate?: number,
 ): string {
   const parts: string[] = [];
   parts.push(
@@ -115,6 +120,10 @@ export function buildRightSegment(
 
   if (!hideCost) {
     parts.push(theme.fg("muted", formatCost(cost)));
+  }
+
+  if (cacheHitRate !== undefined) {
+    parts.push(theme.fg("muted", formatCacheHitRate(cacheHitRate)));
   }
 
   const percent = contextUsage?.percent ?? null;

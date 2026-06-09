@@ -4,7 +4,7 @@ import type {
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { convertCurrency, refreshCurrencyRate } from "@pi-extensions/lib";
-import { getFooterCostInfo } from "./cost.js";
+import { getFooterCostInfo, getLatestCacheHitRate } from "./cost.js";
 import {
   buildFooterLines,
   buildLeftSegment,
@@ -35,8 +35,9 @@ export default function (pi: ExtensionAPI) {
 
             const model = ctx.model;
             const thinkingLevel = pi.getThinkingLevel();
+            const branchEntries = ctx.sessionManager.getBranch();
             const { totalCost, hideCost } = getFooterCostInfo(
-              ctx.sessionManager.getBranch(),
+              branchEntries,
               ctx.modelRegistry,
               model,
             );
@@ -52,6 +53,8 @@ export default function (pi: ExtensionAPI) {
             const footerModel = model
               ? { name: model.name, id: model.id, provider: model.provider }
               : undefined;
+            const cacheHitRate = getLatestCacheHitRate(branchEntries);
+
             const rightWithWindow = buildRightSegment(
               footerModel,
               thinkingLevel,
@@ -61,6 +64,7 @@ export default function (pi: ExtensionAPI) {
               theme,
               true,
               false,
+              cacheHitRate,
             );
 
             const rightWithoutWindow = buildRightSegment(
@@ -72,6 +76,7 @@ export default function (pi: ExtensionAPI) {
               theme,
               false,
               false,
+              cacheHitRate,
             );
 
             return buildFooterLines(
