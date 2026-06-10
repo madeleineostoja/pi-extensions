@@ -290,4 +290,124 @@ describe("/implement command", () => {
     expect(note!.message).toContain("t001-test [blocked] →");
     expect(note!.level).toBe("info");
   });
+
+  it("inspect includes scout metadata when present", async () => {
+    const { handler, ctx } = setup();
+    const repo = mkdtempSync(join(tmpdir(), "pi-implement-cmd-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@e.com"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "T"], { cwd: repo });
+    writeFileSync(join(repo, "f.md"), "# F\n");
+    execFileSync("git", ["add", "f.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: repo });
+
+    const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: repo,
+      encoding: "utf-8",
+    }).trim();
+
+    const runId = "r20240115-120000";
+    const paths = getStatePaths(repoRoot, runId);
+    const run = {
+      version: 1 as const,
+      runId,
+      mode: "auto" as const,
+      strategyReason: "auto",
+      repoRoot,
+      planPath: join(repoRoot, "plan.md"),
+      planHash: "abc",
+      baseSha: "abc",
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+    createRunState(paths, run, "# Plan\n");
+    writeTaskJson(paths, "t001-test", {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test",
+      status: "approved",
+      dependsOn: [],
+      attempts: 1,
+      integrationAttempts: 0,
+      scout: {
+        calls: 2,
+        lastStatus: "completed",
+        lastReason: "Planner directive suggests Scout",
+      },
+    });
+
+    const repoCtx: FakeContext = { ...ctx, cwd: repoRoot };
+    await handler("inspect", repoCtx);
+
+    const note = repoCtx.ui.notifications.find((n) =>
+      n.message.startsWith("Run:"),
+    );
+    expect(note).toBeDefined();
+    expect(note!.message).toContain("scout: 2 calls, last=completed");
+    expect(note!.message).toContain("(Planner directive suggests Scout)");
+    expect(note!.level).toBe("info");
+  });
+
+  it("inspect truncates long scout lastReason", async () => {
+    const { handler, ctx } = setup();
+    const repo = mkdtempSync(join(tmpdir(), "pi-implement-cmd-"));
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "t@e.com"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "T"], { cwd: repo });
+    writeFileSync(join(repo, "f.md"), "# F\n");
+    execFileSync("git", ["add", "f.md"], { cwd: repo });
+    execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: repo });
+
+    const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: repo,
+      encoding: "utf-8",
+    }).trim();
+
+    const runId = "r20240115-120000";
+    const paths = getStatePaths(repoRoot, runId);
+    const run = {
+      version: 1 as const,
+      runId,
+      mode: "auto" as const,
+      strategyReason: "auto",
+      repoRoot,
+      planPath: join(repoRoot, "plan.md"),
+      planHash: "abc",
+      baseSha: "abc",
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+    createRunState(paths, run, "# Plan\n");
+    const longReason = "b".repeat(100);
+    writeTaskJson(paths, "t001-test", {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test",
+      status: "coding",
+      dependsOn: [],
+      attempts: 1,
+      integrationAttempts: 0,
+      scout: {
+        calls: 1,
+        lastStatus: "failed",
+        lastReason: longReason,
+      },
+    });
+
+    const repoCtx: FakeContext = { ...ctx, cwd: repoRoot };
+    await handler("inspect", repoCtx);
+
+    const note = repoCtx.ui.notifications.find((n) =>
+      n.message.startsWith("Run:"),
+    );
+    expect(note).toBeDefined();
+    expect(note!.message).toContain(
+      "(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb…)",
+    );
+    expect(note!.message).not.toContain(longReason);
+  });
 });

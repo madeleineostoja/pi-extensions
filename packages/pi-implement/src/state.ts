@@ -63,6 +63,11 @@ export type TaskJson = {
   lastReason?: string;
   commitMessage?: string;
   selfHealAttempts?: number;
+  scout?: {
+    calls: number;
+    lastStatus?: "completed" | "failed" | "stopped" | "skipped";
+    lastReason?: string;
+  };
 };
 
 export type EventEntry =

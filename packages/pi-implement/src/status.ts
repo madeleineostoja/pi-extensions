@@ -67,6 +67,11 @@ export type ParallelTaskState = {
   landedCommitSha?: string;
   activeAgentIds?: string[];
   activeAgentRefs?: AgentDisplayRef[];
+  scout?: {
+    calls: number;
+    lastStatus?: "completed" | "failed" | "stopped" | "skipped";
+    lastReason?: string;
+  };
 };
 
 export type StatePatch =
@@ -211,6 +216,13 @@ export function formatRunStatus(state: RunState, nowMs = Date.now()): string {
       }
       if (task.landedCommitSha) {
         line += ` @ ${shortenSha(task.landedCommitSha)}`;
+      }
+      if (task.scout) {
+        let scoutPart = ` · scout: ${task.scout.calls} call${task.scout.calls === 1 ? "" : "s"}${task.scout.lastStatus ? `, last=${task.scout.lastStatus}` : ""}`;
+        if (task.scout.lastReason) {
+          scoutPart += ` (${shorten(task.scout.lastReason, 40)})`;
+        }
+        line += scoutPart;
       }
       lines.push(line);
     }

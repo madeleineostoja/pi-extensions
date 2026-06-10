@@ -340,7 +340,19 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
                 continue;
               }
               const wt = task.worktreePath ?? "—";
-              lines.push(`${task.id} [${task.status}] → ${wt}`);
+              let line = `${task.id} [${task.status}] → ${wt}`;
+              if (task.scout) {
+                let scoutPart = ` · scout: ${task.scout.calls} call${task.scout.calls === 1 ? "" : "s"}${task.scout.lastStatus ? `, last=${task.scout.lastStatus}` : ""}`;
+                if (task.scout.lastReason) {
+                  const reason =
+                    task.scout.lastReason.length <= 60
+                      ? task.scout.lastReason
+                      : `${task.scout.lastReason.slice(0, 59)}…`;
+                  scoutPart += ` (${reason})`;
+                }
+                line += scoutPart;
+              }
+              lines.push(line);
             }
           }
           ctx.ui.notify(lines.join("\n"), "info");

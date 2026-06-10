@@ -417,7 +417,7 @@ async function runParallelImplementation(
         if (deps.paths) {
           const existing = readTaskJson(deps.paths, result.taskId);
           writeTaskJson(deps.paths, result.taskId, {
-            ...(existing ?? taskToJson(task)),
+            ...buildTaskJsonSnapshot(existing, task),
             status: "approved",
             taskCommitSha: result.outcome.taskCommitSha,
             commitMessage: result.outcome.commitMessage,
@@ -437,7 +437,7 @@ async function runParallelImplementation(
         if (deps.paths) {
           const existing = readTaskJson(deps.paths, result.taskId);
           writeTaskJson(deps.paths, result.taskId, {
-            ...(existing ?? taskToJson(task)),
+            ...buildTaskJsonSnapshot(existing, task),
             status: "failed",
             activeSubagentIds: [],
             lastReason: result.outcome.reason,
@@ -451,7 +451,7 @@ async function runParallelImplementation(
         if (deps.paths) {
           const existing = readTaskJson(deps.paths, result.taskId);
           writeTaskJson(deps.paths, result.taskId, {
-            ...(existing ?? taskToJson(task)),
+            ...buildTaskJsonSnapshot(existing, task),
             status: "stopped",
             activeSubagentIds: [],
           });
@@ -564,7 +564,7 @@ async function launchTaskWorker(
       if (deps.paths) {
         const existing = readTaskJson(deps.paths, taskId);
         writeTaskJson(deps.paths, taskId, {
-          ...(existing ?? taskToJson(task)),
+          ...buildTaskJsonSnapshot(existing, task),
           status: "coding",
           baseSha,
           worktreePath,
@@ -732,8 +732,9 @@ async function landApprovedTask(
         taskId,
         reason: task.lastReason,
       });
+      const existing = readTaskJson(deps.paths, taskId);
       writeTaskJson(deps.paths, taskId, {
-        ...taskToJson(task),
+        ...buildTaskJsonSnapshot(existing, task),
         status: "integration_failed",
         lastReason: task.lastReason,
       });
@@ -940,8 +941,9 @@ async function landApprovedTask(
         taskId,
         commitSha: landedHead,
       });
+      const existing = readTaskJson(deps.paths, taskId);
       writeTaskJson(deps.paths, taskId, {
-        ...taskToJson(task),
+        ...buildTaskJsonSnapshot(existing, task),
         status: "landed",
         landedCommitSha: landedHead,
       });
@@ -971,8 +973,9 @@ function markIntegrationFailure(
   task.lastReason = reason;
   if (deps.paths) {
     appendEvent(deps.paths, { type: "integration_failed", taskId, reason });
+    const existing = readTaskJson(deps.paths, taskId);
     writeTaskJson(deps.paths, taskId, {
-      ...taskToJson(task),
+      ...buildTaskJsonSnapshot(existing, task),
       status: "integration_failed",
       lastReason: reason,
     });
@@ -1724,7 +1727,7 @@ function reviveTaskForSchedulerRetry(
   if (deps.paths) {
     const existing = readTaskJson(deps.paths, taskId);
     writeTaskJson(deps.paths, taskId, {
-      ...(existing ?? taskToJson(task)),
+      ...buildTaskJsonSnapshot(existing, task),
       status: "needs_rework",
       activeSubagentIds: [],
       lastReason: task.lastReason,
@@ -2481,6 +2484,9 @@ function updateParallelState(
     if (task.status === "landed") {
       landedCount++;
     }
+    const scoutMeta = deps.paths
+      ? readTaskJson(deps.paths, task.id)?.scout
+      : undefined;
     tasks.push({
       id: task.id,
       planIndex: task.planIndex - 1,
@@ -2491,6 +2497,7 @@ function updateParallelState(
       landedCommitSha: task.landedCommitSha,
       activeAgentIds: task.activeAgentIds,
       activeAgentRefs: task.activeAgentRefs,
+      scout: scoutMeta,
     });
     for (const id of task.activeAgentIds) {
       activeAgentIds.push(id);
@@ -2597,6 +2604,16 @@ function taskToJson(task: SchedulerTask): TaskJson {
   };
 }
 
+function buildTaskJsonSnapshot(
+  existing: TaskJson | undefined,
+  task: SchedulerTask,
+): TaskJson {
+  return {
+    ...taskToJson(task),
+    scout: existing?.scout,
+  };
+}
+
 // ── Task worker (shared serial + parallel) ─────────────────────────────────
 
 async function runTaskWorker(args: {
@@ -2638,6 +2655,10 @@ async function runTaskWorker(args: {
   let systemFailures = 0;
   let anchoredReviewChangeRequests = 0;
   let priorReviewRequiredChanges: string[] | undefined;
+  const existingTaskJson = deps.paths
+    ? readTaskJson(deps.paths, taskId)
+    : undefined;
+  let scoutMeta: TaskJson["scout"] | undefined = existingTaskJson?.scout;
 
   for (;;) {
     throwIfStopped(deps);
@@ -2661,6 +2682,14 @@ async function runTaskWorker(args: {
         taskText: task.text,
         taskPacket: packet.markdown,
       });
+
+      if (!decision.run) {
+        scoutMeta = {
+          calls: scoutMeta?.calls ?? 0,
+          lastStatus: "skipped",
+          lastReason: decision.reason,
+        };
+      }
 
       if (decision.run) {
         const scoutPrompt = buildScoutPrompt({
@@ -2694,6 +2723,12 @@ async function runTaskWorker(args: {
             spawnErr instanceof Error ? spawnErr.message : String(spawnErr),
           );
           scoutContext = note;
+          scoutMeta = {
+            calls: (scoutMeta?.calls ?? 0) + 1,
+            lastStatus: "failed",
+            lastReason:
+              spawnErr instanceof Error ? spawnErr.message : String(spawnErr),
+          };
           if (deps.paths) {
             persistTaskArtifact(
               deps.paths,
@@ -2763,6 +2798,10 @@ async function runTaskWorker(args: {
               scoutResult.result,
               deps.scout.maxResultChars,
             );
+            scoutMeta = {
+              calls: (scoutMeta?.calls ?? 0) + 1,
+              lastStatus: "completed",
+            };
             if (deps.paths) {
               persistTaskArtifact(
                 deps.paths,
@@ -2774,6 +2813,10 @@ async function runTaskWorker(args: {
           } else if (scoutResult.status === "stopped") {
             throwIfStopped(deps);
             scoutContext = buildScoutUnavailableNote("stopped");
+            scoutMeta = {
+              calls: (scoutMeta?.calls ?? 0) + 1,
+              lastStatus: "stopped",
+            };
             if (deps.paths) {
               persistTaskArtifact(
                 deps.paths,
@@ -2788,6 +2831,11 @@ async function runTaskWorker(args: {
                 ? scoutResult.error
                 : "empty result";
             scoutContext = buildScoutUnavailableNote(reason);
+            scoutMeta = {
+              calls: (scoutMeta?.calls ?? 0) + 1,
+              lastStatus: "failed",
+              lastReason: reason,
+            };
             if (deps.paths) {
               persistTaskArtifact(
                 deps.paths,
@@ -2798,6 +2846,14 @@ async function runTaskWorker(args: {
             }
           }
         }
+      }
+
+      if (deps.paths && scoutMeta && scoutMeta.lastStatus !== "skipped") {
+        const scoutNote =
+          scoutMeta.lastStatus === "completed"
+            ? `\u00b7 Task ${task.index}/${plan.tasks.length} scout completed`
+            : `\u00b7 Task ${task.index}/${plan.tasks.length} scout unavailable${scoutMeta.lastReason ? `: ${scoutMeta.lastReason}` : ""}`;
+        deps.updateState((prev) => checkpointPatch(prev, scoutNote));
       }
     }
 
@@ -2852,6 +2908,7 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [implementerId],
+        scout: scoutMeta,
       });
       appendEvent(deps.paths, { type: "task_started", taskId });
     }
@@ -2882,6 +2939,7 @@ async function runTaskWorker(args: {
           branchName,
           activeSubagentIds: [],
           lastReason: implementation.error,
+          scout: scoutMeta,
         });
       }
       feedback = recordSystemFailure(
@@ -2916,6 +2974,7 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [],
+        scout: scoutMeta,
       });
     }
 
@@ -3096,6 +3155,7 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [reviewerId],
+        scout: scoutMeta,
       });
     }
     const review = await deps.subagents.waitFor(reviewerId, deps.signal);
@@ -3115,6 +3175,7 @@ async function runTaskWorker(args: {
         branchName,
         activeSubagentIds: [],
         lastReason: review.status !== "completed" ? review.error : undefined,
+        scout: scoutMeta,
       });
     }
     if (review.status === "stopped") {
@@ -3289,6 +3350,7 @@ async function runTaskWorker(args: {
           worktreePath,
           branchName,
           activeSubagentIds: [],
+          scout: scoutMeta,
         });
       }
       const satisfiedHead = await deps.git.head();
@@ -3316,6 +3378,7 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [],
+        scout: scoutMeta,
       });
     }
 
@@ -3368,6 +3431,7 @@ async function runTaskWorker(args: {
             branchName,
             activeSubagentIds: [],
             lastReason: feedback.message,
+            scout: scoutMeta,
           });
           appendEvent(deps.paths, {
             type: "integration_failed",
@@ -3411,6 +3475,7 @@ async function runTaskWorker(args: {
           taskCommitSha,
           activeSubagentIds: [],
           commitMessage: approvedMessage,
+          scout: scoutMeta,
         });
         appendEvent(deps.paths, {
           type: "task_approved",
@@ -3459,6 +3524,7 @@ async function runTaskWorker(args: {
           integrationAttempts: 0,
           landedCommitSha: head,
           activeSubagentIds: [],
+          scout: scoutMeta,
         });
       }
       deps.updateState((prev) => ({
@@ -3505,6 +3571,7 @@ async function runTaskWorker(args: {
         integrationAttempts: systemFailures,
         activeSubagentIds: [],
         lastReason: feedback.message,
+        scout: scoutMeta,
       });
       appendEvent(deps.paths, {
         type: "integration_failed",

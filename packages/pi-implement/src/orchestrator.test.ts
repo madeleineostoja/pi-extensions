@@ -6542,5 +6542,325 @@ describe("runImplementation", () => {
       expect(implPrompt).toContain("Scout was unavailable");
       expect(implPrompt).toContain("timed out");
     });
+
+    it("persists scout metadata in task.json after successful scout", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      const runJson = makeRunJson(dir, planPath);
+      writeRunJson(paths, runJson);
+      writeTestRunLock(paths);
+      const git = new FakeGit();
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: SCOUT_RESULT },
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+        scout: {
+          enabled: true,
+          mode: "always",
+          type: "Explore",
+          maxResultChars: 50000,
+          timeoutMs: 120000,
+        },
+      });
+
+      const taskJson = readTaskJson(paths, "t001-do-thing");
+      expect(taskJson).toBeDefined();
+      expect(taskJson!.scout).toMatchObject({
+        calls: 1,
+        lastStatus: "completed",
+      });
+    });
+
+    it("persists scout metadata in task.json after failed scout", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      const runJson = makeRunJson(dir, planPath);
+      writeRunJson(paths, runJson);
+      writeTestRunLock(paths);
+      const git = new FakeGit();
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "failed", error: "scout spawn failed" },
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+        scout: {
+          enabled: true,
+          mode: "always",
+          type: "Explore",
+          maxResultChars: 50000,
+          timeoutMs: 120000,
+        },
+      });
+
+      const taskJson = readTaskJson(paths, "t001-do-thing");
+      expect(taskJson).toBeDefined();
+      expect(taskJson!.scout).toMatchObject({
+        calls: 1,
+        lastStatus: "failed",
+        lastReason: "scout spawn failed",
+      });
+    });
+
+    it("persists scout skipped status in task.json when auto skips", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      const runJson = makeRunJson(dir, planPath);
+      writeRunJson(paths, runJson);
+      writeTestRunLock(paths);
+      const git = new FakeGit();
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+        scout: {
+          enabled: true,
+          mode: "auto",
+          type: "Explore",
+          maxResultChars: 50000,
+          timeoutMs: 120000,
+        },
+      });
+
+      const taskJson = readTaskJson(paths, "t001-do-thing");
+      expect(taskJson).toBeDefined();
+      expect(taskJson!.scout).toMatchObject({
+        calls: 0,
+        lastStatus: "skipped",
+        lastReason: expect.stringContaining("skipping Scout in auto mode"),
+      });
+    });
+
+    it("accumulates scout calls across retry attempts", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      const runJson = makeRunJson(dir, planPath);
+      writeRunJson(paths, runJson);
+      writeTestRunLock(paths);
+      const git = new FakeGit();
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: SCOUT_RESULT },
+        { status: "completed", result: GOOD_IMPL },
+        {
+          status: "completed",
+          result:
+            '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"],"recommendationMarkdown":"## Suggested\\n\\nFix it."}</pi-review-result>',
+        },
+        { status: "completed", result: SCOUT_RESULT },
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+        scout: {
+          enabled: true,
+          mode: "always",
+          type: "Explore",
+          maxResultChars: 50000,
+          timeoutMs: 120000,
+        },
+      });
+
+      const taskJson = readTaskJson(paths, "t001-do-thing");
+      expect(taskJson).toBeDefined();
+      expect(taskJson!.scout).toMatchObject({
+        calls: 2,
+        lastStatus: "completed",
+      });
+    });
+
+    it("does not enqueue checkpoint when scout is skipped", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      const runJson = makeRunJson(dir, planPath);
+      writeRunJson(paths, runJson);
+      writeTestRunLock(paths);
+      const git = new FakeGit();
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      const checkpoints: string[] = [];
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: (patch) => {
+          const p =
+            typeof patch === "function" ? patch({ phase: "coding" }) : patch;
+          if (p.checkpointQueue) {
+            checkpoints.push(...p.checkpointQueue);
+          }
+        },
+        shouldStop: () => false,
+        scout: {
+          enabled: true,
+          mode: "auto",
+          type: "Explore",
+          maxResultChars: 50000,
+          timeoutMs: 120000,
+        },
+      });
+
+      expect(checkpoints.some((c) => c.includes("scout"))).toBe(false);
+    });
+  });
+
+  it("preserves scheduler integrationAttempts on integration transition writes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "task-1",
+          planIndex: 1,
+          title: "Do thing",
+          taskHash: "hash",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "exit 1",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow();
+
+    const taskJson = readTaskJson(paths, "task-1");
+    expect(taskJson).toBeDefined();
+    expect(taskJson!.integrationAttempts).toBe(1);
   });
 });

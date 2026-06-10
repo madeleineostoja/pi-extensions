@@ -311,6 +311,82 @@ describe("run state lifecycle", () => {
     expect(read).toEqual(task);
   });
 
+  it("writes and reads task.json with scout metadata", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const run = {
+      version: 1 as const,
+      runId: "r20240115-120000",
+      mode: "auto" as const,
+      strategyReason: "Auto mode selected; effective max concurrency 3.",
+      repoRoot: repo,
+      planPath: "/repo/plan.md",
+      planHash: "abc123",
+      baseSha: "def456",
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+
+    createRunState(paths, run, "# Plan\n");
+    const task = {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test task",
+      status: "pending" as const,
+      dependsOn: [],
+      attempts: 1,
+      integrationAttempts: 0,
+      scout: {
+        calls: 2,
+        lastStatus: "completed" as const,
+        lastReason: "Planner directive suggests Scout",
+      },
+    };
+    writeTaskJson(paths, "t001-test", task);
+
+    const read = readTaskJson(paths, "t001-test");
+    expect(read).toEqual(task);
+    expect(read?.scout?.calls).toBe(2);
+    expect(read?.scout?.lastStatus).toBe("completed");
+  });
+
+  it("reads older task.json without scout field as undefined", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const run = {
+      version: 1 as const,
+      runId: "r20240115-120000",
+      mode: "auto" as const,
+      strategyReason: "Auto mode selected; effective max concurrency 3.",
+      repoRoot: repo,
+      planPath: "/repo/plan.md",
+      planHash: "abc123",
+      baseSha: "def456",
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+
+    createRunState(paths, run, "# Plan\n");
+    const legacyTask = {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test task",
+      status: "pending" as const,
+      dependsOn: [],
+      attempts: 0,
+      integrationAttempts: 0,
+    };
+    writeTaskJson(paths, "t001-test", legacyTask);
+
+    const read = readTaskJson(paths, "t001-test");
+    expect(read).toEqual(legacyTask);
+    expect(read?.scout).toBeUndefined();
+  });
+
   it("appends and reads events", () => {
     const repo = tempRepo();
     const paths = getStatePaths(repo, "r20240115-120000");

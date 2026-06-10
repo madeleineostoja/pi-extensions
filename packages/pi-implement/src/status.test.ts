@@ -364,6 +364,61 @@ describe("status formatting", () => {
     expect(status).toContain("agent id: a1");
   });
 
+  it("shows scout metadata in parallel task status", () => {
+    const status = formatRunStatus({
+      phase: "scheduling",
+      tasks: [
+        {
+          id: "t1",
+          planIndex: 0,
+          title: "T1",
+          status: "approved",
+          scout: { calls: 1, lastStatus: "completed" },
+        },
+        {
+          id: "t2",
+          planIndex: 1,
+          title: "T2",
+          status: "coding",
+          scout: { calls: 2, lastStatus: "failed", lastReason: "timeout" },
+        },
+        {
+          id: "t3",
+          planIndex: 2,
+          title: "T3",
+          status: "landed",
+        },
+      ],
+      totalCount: 3,
+    });
+
+    expect(status).toContain("t1 T1: approved · scout: 1 call, last=completed");
+    expect(status).toContain(
+      "t2 T2: coding · scout: 2 calls, last=failed (timeout)",
+    );
+    expect(status).not.toContain("t3 T3: landed · scout");
+  });
+
+  it("truncates long scout lastReason in parallel task status", () => {
+    const longReason = "a".repeat(100);
+    const status = formatRunStatus({
+      phase: "scheduling",
+      tasks: [
+        {
+          id: "t1",
+          planIndex: 0,
+          title: "T1",
+          status: "coding",
+          scout: { calls: 1, lastStatus: "failed", lastReason: longReason },
+        },
+      ],
+      totalCount: 1,
+    });
+
+    expect(status).toContain("(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…)");
+    expect(status).not.toContain(longReason);
+  });
+
   it("formats followup_required footer and status", () => {
     const footerState: RunState = {
       phase: "followup_required",
