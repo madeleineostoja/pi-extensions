@@ -938,6 +938,23 @@ function syncWidget(ctx: ExtensionCommandContext, state: RunState): void {
   ctx.ui.setWidget(WIDGET_KEY, lines.length > 0 ? lines : undefined);
 }
 
+function resolveUsageTotal(value: unknown): number | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const u = value as Record<string, unknown>;
+  if (typeof u.totalTokens === "number" && Number.isFinite(u.totalTokens)) {
+    return u.totalTokens;
+  }
+  if (typeof u.contextTokens === "number" && Number.isFinite(u.contextTokens)) {
+    return u.contextTokens;
+  }
+  const input = typeof u.input === "number" ? u.input : 0;
+  const output = typeof u.output === "number" ? u.output : 0;
+  const cacheRead = typeof u.cacheRead === "number" ? u.cacheRead : 0;
+  const cacheWrite = typeof u.cacheWrite === "number" ? u.cacheWrite : 0;
+  const total = input + output + cacheRead + cacheWrite;
+  return Number.isFinite(total) && total > 0 ? total : undefined;
+}
+
 function collectRuntimeSnapshots(ids: string[]): AgentRuntimeSnapshot[] {
   const snapshots: AgentRuntimeSnapshot[] = [];
   const manager = (globalThis as Record<symbol, unknown>)[
@@ -973,21 +990,36 @@ function collectRuntimeSnapshots(ids: string[]): AgentRuntimeSnapshot[] {
       ) {
         snapshot.compactionCount = r.compactionCount;
       }
+      let tokensTotal: number | undefined;
       if (typeof r.lifetimeUsage === "object" && r.lifetimeUsage !== null) {
-        const lu = r.lifetimeUsage as Record<string, unknown>;
-        const input = typeof lu.input === "number" ? lu.input : 0;
-        const output = typeof lu.output === "number" ? lu.output : 0;
-        const cacheWrite =
-          typeof lu.cacheWrite === "number" ? lu.cacheWrite : 0;
-        const total = input + output + cacheWrite;
-        if (Number.isFinite(total)) {
-          snapshot.tokensTotal = total;
-        }
-      } else if (
+        tokensTotal = resolveUsageTotal(r.lifetimeUsage);
+      }
+      if (
+        tokensTotal === undefined &&
         typeof r.totalTokens === "number" &&
         Number.isFinite(r.totalTokens)
       ) {
-        snapshot.tokensTotal = r.totalTokens;
+        tokensTotal = r.totalTokens;
+      }
+      if (
+        tokensTotal === undefined &&
+        typeof r.usage === "object" &&
+        r.usage !== null
+      ) {
+        tokensTotal = resolveUsageTotal(r.usage);
+      }
+      if (
+        tokensTotal === undefined &&
+        typeof r.currentResult === "object" &&
+        r.currentResult !== null
+      ) {
+        const cr = r.currentResult as Record<string, unknown>;
+        if (typeof cr.usage === "object" && cr.usage !== null) {
+          tokensTotal = resolveUsageTotal(cr.usage);
+        }
+      }
+      if (tokensTotal !== undefined) {
+        snapshot.tokensTotal = tokensTotal;
       }
       snapshots.push(snapshot);
     } catch {

@@ -412,7 +412,30 @@ export function formatWidgetLines(
       line += " \u00b7 /agents";
       return line;
     }),
-    ...rawActiveIds.map((id) => `· Active subagent · ${id} · /agents`),
+    ...rawActiveIds.map((id) => {
+      const snapshot = snapshotMap.get(id);
+      let line = "·";
+      if (snapshot?.description) {
+        line += ` ${snapshot.description}`;
+      } else {
+        line += " Active subagent";
+      }
+      line += ` · ${id.slice(0, 8)}`;
+      if (snapshot?.status) {
+        line += ` · ${snapshot.status}`;
+      }
+      if (snapshot?.toolUses !== undefined) {
+        line += ` · ${snapshot.toolUses} tool`;
+      }
+      if (snapshot?.tokensTotal !== undefined) {
+        line += ` · ${formatTokenCount(snapshot.tokensTotal)} tok`;
+      }
+      if (snapshot?.compactionCount !== undefined) {
+        line += ` · \u21ca${snapshot.compactionCount}`;
+      }
+      line += " · /agents";
+      return line;
+    }),
   ];
 
   const shown = entryLines.slice(0, MAX_LINES - 2);
