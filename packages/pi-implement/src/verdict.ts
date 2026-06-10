@@ -215,8 +215,7 @@ export function parseReviewerVerdict(text: string): ReviewerVerdict {
   if (!Array.isArray(requiredChanges) || requiredChanges.length === 0) {
     return {
       verdict: "error",
-      reason:
-        "Reviewer requested changes but did not provide requiredChanges.",
+      reason: "Reviewer requested changes but did not provide requiredChanges.",
     };
   }
   const changes = requiredChanges.filter(isNonEmptyString).slice(0, 5);
