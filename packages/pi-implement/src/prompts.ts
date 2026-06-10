@@ -203,6 +203,8 @@ Run non-interactively. No human will see your intermediate messages or answer qu
 
 There is no staged candidate diff for this task. The implementer claims the selected task is already satisfied by the current repository state. Your job is to verify that claim.
 
+The selected task's required scope is the selected task line plus its indented block. Approve when that selected task line and indented block are satisfied now. Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task.
+
 Inspect the current repository state in the assigned worktree:
 
   ${args.worktreePath}

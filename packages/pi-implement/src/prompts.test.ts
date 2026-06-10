@@ -396,6 +396,25 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
     expect(prompt).toContain("change HEAD");
   });
 
+  it("restores the already-satisfied acceptance contract", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+    });
+
+    expect(prompt).toContain(
+      "The selected task's required scope is the selected task line plus its indented block",
+    );
+    expect(prompt).toContain(
+      "Approve when that selected task line and indented block are satisfied now",
+    );
+    expect(prompt).toContain(
+      "Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task",
+    );
+  });
+
   it("includes the accumulated diff when provided", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
       taskPacket: TASK_PACKET,
