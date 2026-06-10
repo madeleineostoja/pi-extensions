@@ -298,6 +298,7 @@ describe("model_select handler", () => {
       turnPrefixMessages: [],
       isSplitTurn: false,
       tokensBefore: 300000,
+      naiveContextTokens: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -324,6 +325,7 @@ describe("model_select handler", () => {
       turnPrefixMessages: [],
       isSplitTurn: false,
       tokensBefore: 1000,
+      naiveContextTokens: 1000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -355,6 +357,7 @@ describe("model_select handler", () => {
       turnPrefixMessages: [],
       isSplitTurn: false,
       tokensBefore: 300000,
+      naiveContextTokens: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -390,6 +393,7 @@ describe("model_select handler", () => {
       turnPrefixMessages: [],
       isSplitTurn: false,
       tokensBefore: 300000,
+      naiveContextTokens: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -423,6 +427,7 @@ describe("model_select handler", () => {
       turnPrefixMessages: [],
       isSplitTurn: false,
       tokensBefore: 40000,
+      naiveContextTokens: 40000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -459,6 +464,7 @@ describe("model_select handler", () => {
       turnPrefixMessages: [],
       isSplitTurn: false,
       tokensBefore: 300000,
+      naiveContextTokens: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -485,6 +491,7 @@ describe("model_select handler", () => {
       turnPrefixMessages: [],
       isSplitTurn: false,
       tokensBefore: 300000,
+      naiveContextTokens: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -511,6 +518,7 @@ describe("model_select handler", () => {
       turnPrefixMessages: [],
       isSplitTurn: false,
       tokensBefore: 300000,
+      naiveContextTokens: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -548,6 +556,7 @@ describe("model_select handler", () => {
       turnPrefixMessages: [],
       isSplitTurn: false,
       tokensBefore: 300000,
+      naiveContextTokens: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -594,6 +603,7 @@ describe("session_before_compact handler", () => {
         turnPrefixMessages: [],
         isSplitTurn: false,
         tokensBefore: 1000,
+        naiveContextTokens: 1000,
         fileOps: {} as never,
         settings: {
           enabled: true,
@@ -622,6 +632,7 @@ describe("session_before_compact handler", () => {
         turnPrefixMessages: [],
         isSplitTurn: false,
         tokensBefore: 1000,
+        naiveContextTokens: 1000,
         fileOps: {} as never,
         settings: {
           enabled: true,
@@ -636,6 +647,7 @@ describe("session_before_compact handler", () => {
       summary: "summary",
       firstKeptEntryId: "keep-1",
       tokensBefore: 1000,
+      naiveContextTokens: 1000,
     } as never);
     const result = await handler(event as never, ctx);
     expect(compact).toHaveBeenCalledWith(
@@ -651,6 +663,7 @@ describe("session_before_compact handler", () => {
         summary: "summary",
         firstKeptEntryId: "keep-1",
         tokensBefore: 1000,
+        naiveContextTokens: 1000,
       },
     });
   });
@@ -675,6 +688,7 @@ describe("session_before_compact handler", () => {
         turnPrefixMessages: [],
         isSplitTurn: false,
         tokensBefore: 1000,
+        naiveContextTokens: 1000,
         fileOps: {} as never,
         settings: {
           enabled: true,
@@ -708,6 +722,7 @@ describe("session_before_compact handler", () => {
         turnPrefixMessages: [],
         isSplitTurn: false,
         tokensBefore: 1000,
+        naiveContextTokens: 1000,
         fileOps: {} as never,
         settings: {
           enabled: true,
@@ -722,6 +737,7 @@ describe("session_before_compact handler", () => {
       summary: "summary",
       firstKeptEntryId: "keep-1",
       tokensBefore: 1000,
+      naiveContextTokens: 1000,
     } as never);
     expect(getPendingHandoff()).toBeDefined();
     await handler(event as never, ctx);
@@ -747,6 +763,7 @@ describe("state clearing", () => {
       turnPrefixMessages: [],
       isSplitTurn: false,
       tokensBefore: 300000,
+      naiveContextTokens: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -780,6 +797,7 @@ describe("state clearing", () => {
       turnPrefixMessages: [],
       isSplitTurn: false,
       tokensBefore: 300000,
+      naiveContextTokens: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,

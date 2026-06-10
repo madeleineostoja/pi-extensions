@@ -43,6 +43,7 @@ function makePreparation(opts: {
   tokensBefore: number;
   messagesToSummarize: { role: string; content: string }[];
   turnPrefixMessages?: { role: string; content: string }[];
+  naiveContextTokens?: number;
 }) {
   return {
     firstKeptEntryId: "keep-1",
@@ -50,6 +51,7 @@ function makePreparation(opts: {
     turnPrefixMessages: (opts.turnPrefixMessages ?? []) as never,
     isSplitTurn: false,
     tokensBefore: opts.tokensBefore,
+    naiveContextTokens: opts.naiveContextTokens ?? opts.tokensBefore,
     fileOps: {} as never,
     settings: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
   };
@@ -142,17 +144,16 @@ describe("computeHandoffEstimate", () => {
 
     expect(estimate.currentTokens).toBe(10000);
     expect(estimate.summarizedTokens).toBeGreaterThan(0);
-    expect(estimate.keptTokens).toBe(
-      Math.max(10000 - estimate.summarizedTokens, 0),
-    );
     expect(estimate.estimatedSummaryTokens).toBe(
       Math.ceil(estimate.summarizedTokens * 0.03),
     );
+    // Savings are projected from naive fraction onto real usage-aware total
+    expect(estimate.estimatedSavingsTokens).toBeGreaterThanOrEqual(0);
     expect(estimate.estimatedHandoffTokens).toBe(
-      estimate.keptTokens + estimate.estimatedSummaryTokens,
+      estimate.currentTokens - estimate.estimatedSavingsTokens,
     );
-    expect(estimate.estimatedSavingsTokens).toBe(
-      10000 - estimate.estimatedHandoffTokens,
+    expect(estimate.keptTokens).toBe(
+      estimate.estimatedHandoffTokens - estimate.estimatedSummaryTokens,
     );
     expect(estimate.targetFullContextInputCost).toBeCloseTo(
       (10000 / 1_000_000) * 5,
@@ -272,7 +273,7 @@ describe("makeHandoffDecision", () => {
     expect(decision.kind).toBe("offer");
   });
 
-  it("skips when USD fallback cost is at or below doubled threshold", () => {
+  it("skips when USD fallback cost is at or below threshold", () => {
     const preparation = makePreparation({
       tokensBefore: 40000,
       messagesToSummarize: [{ role: "user", content: "a".repeat(100000) }],
@@ -283,7 +284,7 @@ describe("makeHandoffDecision", () => {
     expect((decision as { reason: string }).reason).toContain("USD fallback");
   });
 
-  it("offers when USD fallback cost exceeds doubled threshold", () => {
+  it("offers when USD fallback cost exceeds threshold", () => {
     const preparation = makePreparation({
       tokensBefore: 300000,
       messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],

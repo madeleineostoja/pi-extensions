@@ -199,6 +199,7 @@ describe("prepareCompaction tokensBefore", () => {
 
     expect(preparation).toBeDefined();
     expect(preparation!.tokensBefore).toBe(203);
+    expect(preparation!.naiveContextTokens).toBe(6);
   });
 
   it("falls back to estimateTokens when no assistant usage is present", () => {
@@ -227,5 +228,6 @@ describe("prepareCompaction tokensBefore", () => {
 
     expect(preparation).toBeDefined();
     expect(preparation!.tokensBefore).toBe(7);
+    expect(preparation!.naiveContextTokens).toBe(7);
   });
 });

@@ -32,6 +32,7 @@ export type HandoffEstimate = {
 };
 
 export const FULL_CONTEXT_HANDOFF_COST_THRESHOLD_NZD = 0.5;
+export const FULL_CONTEXT_HANDOFF_COST_THRESHOLD_USD = 0.5;
 
 export type HandoffDecision =
   | { kind: "skip"; reason: string }
@@ -103,13 +104,32 @@ export function computeHandoffEstimate(
     (sum, msg) => sum + estimateTokens(msg as never),
     0,
   );
-  const keptTokens = Math.max(preparation.tokensBefore - summarizedTokens, 0);
+
   const estimatedSummaryTokens = Math.ceil(summarizedTokens * 0.03);
-  const estimatedHandoffTokens = keptTokens + estimatedSummaryTokens;
+
+  // Compute savings fraction on the naive scale, then project onto real usage-aware total
+  const naiveTotal = Math.max(
+    preparation.naiveContextTokens,
+    summarizedTokens,
+    1,
+  );
+  const savingsFraction = Math.min(
+    Math.max((summarizedTokens - estimatedSummaryTokens) / naiveTotal, 0),
+    1,
+  );
+
+  const projectedSavingsTokens = Math.round(
+    preparation.tokensBefore * savingsFraction,
+  );
+  const estimatedHandoffTokens = Math.max(
+    preparation.tokensBefore - projectedSavingsTokens,
+    estimatedSummaryTokens,
+  );
   const estimatedSavingsTokens = Math.max(
     preparation.tokensBefore - estimatedHandoffTokens,
     0,
   );
+  const keptTokens = estimatedHandoffTokens - estimatedSummaryTokens;
 
   const estimate: HandoffEstimate = {
     currentTokens: preparation.tokensBefore,
@@ -151,7 +171,22 @@ export function makeHandoffDecision(
 
   const estimate = computeHandoffEstimate(preparation, targetRef);
 
-  if (estimate.estimatedSavingsTokens < estimate.currentTokens * 0.2) {
+  // Compute savings fraction for the gate (same scale as the computation)
+  const naiveTotal = Math.max(
+    preparation.naiveContextTokens,
+    estimate.summarizedTokens,
+    1,
+  );
+  const savingsFraction = Math.min(
+    Math.max(
+      (estimate.summarizedTokens - estimate.estimatedSummaryTokens) /
+        naiveTotal,
+      0,
+    ),
+    1,
+  );
+
+  if (savingsFraction < 0.2) {
     return {
       kind: "skip",
       reason: "Estimated context savings are below 20%",
@@ -179,8 +214,11 @@ export function makeHandoffDecision(
     return { kind: "offer", estimate };
   }
 
-  const usdFallbackThreshold = thresholdNzd * 2;
-  if (estimate.targetFullContextInputCost <= usdFallbackThreshold) {
+  // Fallback: same numeric threshold applied directly to USD
+  if (
+    estimate.targetFullContextInputCost <=
+    FULL_CONTEXT_HANDOFF_COST_THRESHOLD_USD
+  ) {
     return {
       kind: "skip",
       reason:

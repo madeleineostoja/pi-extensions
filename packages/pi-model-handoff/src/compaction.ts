@@ -12,6 +12,7 @@ export type CompactionPreparation = {
   turnPrefixMessages: { role: string; [key: string]: unknown }[];
   isSplitTurn: boolean;
   tokensBefore: number;
+  naiveContextTokens: number;
   previousSummary?: string;
   fileOps: unknown;
   settings: {
@@ -56,12 +57,15 @@ export function prepareCompaction(
   }
 
   const boundaryEnd = pathEntries.length;
-  const tokensBefore = estimateContextTokens(
-    buildSessionContext(pathEntries).messages as unknown as {
-      role: string;
-      [key: string]: unknown;
-    }[],
-  ).tokens;
+  const ctxMessages = buildSessionContext(pathEntries).messages as unknown as {
+    role: string;
+    [key: string]: unknown;
+  }[];
+  const { tokens: tokensBefore } = estimateContextTokens(ctxMessages);
+  const naiveContextTokens = ctxMessages.reduce(
+    (sum, msg) => sum + estimateTokens(msg as never),
+    0,
+  );
 
   const cutPoint = findCutPoint(
     pathEntries,
@@ -107,6 +111,7 @@ export function prepareCompaction(
     turnPrefixMessages,
     isSplitTurn: cutPoint.isSplitTurn,
     tokensBefore,
+    naiveContextTokens,
     previousSummary,
     fileOps: {},
     settings,
