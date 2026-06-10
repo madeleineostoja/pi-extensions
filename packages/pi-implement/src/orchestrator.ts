@@ -2611,12 +2611,13 @@ async function runTaskWorker(args: {
 
   let feedback: RetryFeedback | undefined;
   let priorSummary: string | undefined;
-  let reviewerRequests = 0;
+  let attempt = 1;
   let systemFailures = 0;
+  let reviewerRequests = 0;
+  let priorReviewRequiredChanges: string[] | undefined;
 
   for (;;) {
     throwIfStopped(deps);
-    const attempt = reviewerRequests + systemFailures + 1;
     const mainHeadBefore = await deps.git.head();
     const taskHeadBefore = worktreePath ? await taskGit.head() : undefined;
     const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
@@ -2714,6 +2715,8 @@ async function runTaskWorker(args: {
         `Implementer subagent failed: ${implementation.error}`,
       );
       systemFailures++;
+      priorReviewRequiredChanges = undefined;
+      attempt++;
       continue;
     }
 
@@ -2787,6 +2790,8 @@ async function runTaskWorker(args: {
         parsed.reason,
       );
       systemFailures++;
+      priorReviewRequiredChanges = undefined;
+      attempt++;
       continue;
     }
     priorSummary = parsed.result.summary;
@@ -2825,6 +2830,7 @@ async function runTaskWorker(args: {
         worktreePath: effectiveWorktreePath,
         implementer: parsed.result,
         outOfScopeTasks,
+        priorRequiredChanges: priorReviewRequiredChanges,
       });
     } else if (parsed.result.outcome === "already_satisfied" && !worktreePath) {
       await taskGit.reset();
@@ -2854,6 +2860,7 @@ async function runTaskWorker(args: {
         headSha: reviewHeadBefore,
         accumulatedDiff,
         outOfScopeTasks,
+        priorRequiredChanges: priorReviewRequiredChanges,
       });
     } else {
       const message =
@@ -2866,6 +2873,8 @@ async function runTaskWorker(args: {
       );
       systemFailures++;
       await taskGit.reset();
+      priorReviewRequiredChanges = undefined;
+      attempt++;
       continue;
     }
     if (schedulerTask) {
@@ -2946,6 +2955,8 @@ async function runTaskWorker(args: {
         `Reviewer subagent failed: ${review.error}`,
       );
       systemFailures++;
+      priorReviewRequiredChanges = undefined;
+      attempt++;
       continue;
     }
 
@@ -2989,24 +3000,72 @@ async function runTaskWorker(args: {
       });
     }
     const verdict = parseReviewerVerdict(review.result);
+    if (verdict.verdict === "error") {
+      await taskGit.reset();
+      feedback = recordSystemFailure(
+        task.index,
+        systemFailures,
+        "system",
+        `Reviewer produced invalid verdict: ${verdict.reason}`,
+      );
+      systemFailures++;
+      priorReviewRequiredChanges = undefined;
+      attempt++;
+      continue;
+    }
+    const isAnchoredReview = (priorReviewRequiredChanges?.length ?? 0) > 0;
+    let unresolved: string[] = [];
+    if (verdict.verdict === "changes_requested") {
+      if (isAnchoredReview) {
+        unresolved = verdict.requiredChanges.filter((change: string) =>
+          priorReviewRequiredChanges!.includes(change),
+        );
+      } else {
+        unresolved = verdict.requiredChanges;
+      }
+    }
     deps.updateState((prev) =>
       checkpointPatch(
         prev,
-        verdict.verdict === "approved"
+        verdict.verdict === "approved" || unresolved.length === 0
           ? `\u2713 Task ${task.index}/${plan.tasks.length} review approved`
-          : `\u00b7 Task ${task.index}/${plan.tasks.length} review changes requested: ${formatRequiredChanges(verdict.requiredChanges)}`,
+          : `\u00b7 Task ${task.index}/${plan.tasks.length} review changes requested: ${formatRequiredChanges(unresolved)}`,
       ),
     );
     if (verdict.verdict === "changes_requested") {
-      await taskGit.reset();
-      feedback = recordReviewerRequest(
-        task.index,
-        reviewerRequests,
-        verdict.requiredChanges,
-      );
-      reviewerRequests++;
-      continue;
+      if (!isAnchoredReview) {
+        await taskGit.reset();
+        priorReviewRequiredChanges = verdict.requiredChanges;
+        feedback = recordReviewerRequest(
+          task.index,
+          reviewerRequests,
+          verdict.requiredChanges,
+        );
+        reviewerRequests++;
+        attempt++;
+        continue;
+      }
+      if (unresolved.length === 0) {
+        // Anchored review returned only non-matching items — treat as approved.
+        // Do NOT reset so the approved candidate diff remains staged.
+        priorReviewRequiredChanges = undefined;
+        // Fall through to approval path below
+      } else {
+        await taskGit.reset();
+        priorReviewRequiredChanges = unresolved;
+        feedback = recordReviewerRequest(
+          task.index,
+          reviewerRequests,
+          unresolved,
+        );
+        reviewerRequests++;
+        attempt++;
+        continue;
+      }
     }
+
+    // Clear anchor on any approval path
+    priorReviewRequiredChanges = undefined;
 
     // Approved
     if (
@@ -3112,6 +3171,8 @@ async function runTaskWorker(args: {
           `Commit failed. Fix the issue and try again.\n\n${taskCommit.stderr || taskCommit.stdout}`,
         );
         systemFailures++;
+        priorReviewRequiredChanges = undefined;
+        attempt++;
         if (deps.paths) {
           writeTaskJson(deps.paths, taskId, {
             id: taskId,
@@ -3249,6 +3310,8 @@ async function runTaskWorker(args: {
       `Commit failed. Fix the issue and try again.\n\n${commit.stderr || commit.stdout}`,
     );
     systemFailures++;
+    priorReviewRequiredChanges = undefined;
+    attempt++;
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
         id: taskId,

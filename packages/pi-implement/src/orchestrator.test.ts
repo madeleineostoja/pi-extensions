@@ -673,7 +673,7 @@ describe("runImplementation", () => {
       {
         status: "completed",
         result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it again"]}</pi-review-result>',
+          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it"]}</pi-review-result>',
       },
       { status: "completed", result: implementation },
       {
@@ -707,7 +707,7 @@ describe("runImplementation", () => {
       expect.arrayContaining([
         "\u00b7 Task 1/1 implementation finished: Response did not include <pi-implement-result> output.",
         "\u00b7 Task 1/1 review changes requested: tighten it",
-        "\u00b7 Task 1/1 review changes requested: tighten it again",
+        "\u00b7 Task 1/1 review changes requested: tighten it",
       ]),
     );
     expect(git.commits).toEqual(["fix: do thing"]);
@@ -1110,6 +1110,225 @@ describe("runImplementation", () => {
     const secondImplPrompt = subagents.spawns[2]?.prompt ?? "";
     expect(secondImplPrompt).toContain("fix the bug");
     expect(secondImplPrompt).toContain("done"); // priorSummary
+    // Second reviewer spawn should be an anchored re-review with prior required changes
+    const secondReviewerPrompt = subagents.spawns[3]?.prompt ?? "";
+    expect(secondReviewerPrompt).toContain(
+      "## Review Mode: Anchored Re-review",
+    );
+    expect(secondReviewerPrompt).toContain("## Prior Required Changes");
+    expect(secondReviewerPrompt).toContain("fix the bug");
+  });
+
+  it("approves after first anchored re-review", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      {
+        status: "completed",
+        result:
+          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns).toHaveLength(5);
+    const secondReviewerPrompt = subagents.spawns[3]?.prompt ?? "";
+    expect(secondReviewerPrompt).toContain(
+      "## Review Mode: Anchored Re-review",
+    );
+    expect(secondReviewerPrompt).toContain("fix the bug");
+    expect(git.commits).toEqual(["feat: do thing"]);
+  });
+
+  it("approves after second anchored re-review", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      {
+        status: "completed",
+        result:
+          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+      },
+      { status: "completed", result: GOOD_IMPL },
+      {
+        status: "completed",
+        result:
+          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns).toHaveLength(7);
+    expect(git.commits).toEqual(["feat: do thing"]);
+  });
+
+  it("ignores non-matching anchored reviewer items and proceeds as approved", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      {
+        status: "completed",
+        result:
+          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it"]}</pi-review-result>',
+      },
+      { status: "completed", result: GOOD_IMPL },
+      {
+        status: "completed",
+        result:
+          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it again"]}</pi-review-result>',
+      },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns).toHaveLength(5);
+    expect(git.commits).toEqual(["feat: do thing"]);
+  });
+
+  it("clears anchor after system failure so next reviewer is not anchored", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      {
+        status: "completed",
+        result:
+          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it"]}</pi-review-result>',
+      },
+      { status: "completed", result: "not json" },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns).toHaveLength(6);
+    const postFailureReviewerPrompt = subagents.spawns[4]?.prompt ?? "";
+    expect(postFailureReviewerPrompt).not.toContain(
+      "## Review Mode: Anchored Re-review",
+    );
+    expect(postFailureReviewerPrompt).not.toContain(
+      "## Prior Required Changes",
+    );
+    expect(postFailureReviewerPrompt).toContain(
+      "## Review Mode: Initial Material Review",
+    );
+  });
+
+  it("treats malformed anchored reviewer verdict as system failure and clears anchor", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      {
+        status: "completed",
+        result:
+          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it"]}</pi-review-result>',
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: "not a valid review result" },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns).toHaveLength(7);
+    const thirdReviewerPrompt = subagents.spawns[5]?.prompt ?? "";
+    expect(thirdReviewerPrompt).not.toContain(
+      "## Review Mode: Anchored Re-review",
+    );
+    expect(thirdReviewerPrompt).not.toContain(
+      "## Prior Required Changes",
+    );
+    expect(thirdReviewerPrompt).toContain(
+      "## Review Mode: Initial Material Review",
+    );
+    expect(git.commits).toEqual(["feat: do thing"]);
   });
 
   it("retries as system failure when no committable changes are produced", async () => {

@@ -20,7 +20,8 @@ export type ParsedImplementerResult =
 
 export type ReviewerVerdict =
   | { verdict: "approved" }
-  | { verdict: "changes_requested"; requiredChanges: string[] };
+  | { verdict: "changes_requested"; requiredChanges: string[] }
+  | { verdict: "error"; reason: string };
 
 export type OverallReviewVerdict =
   | { verdict: "approved" }
@@ -197,10 +198,7 @@ export function parseOverallReviewVerdict(text: string): OverallReviewVerdict {
 export function parseReviewerVerdict(text: string): ReviewerVerdict {
   const parsed = parseTaggedJsonObject(text, "pi-review-result");
   if (!parsed.ok) {
-    return {
-      verdict: "changes_requested",
-      requiredChanges: [parsed.reason],
-    };
+    return { verdict: "error", reason: parsed.reason };
   }
   const value = parsed.value;
   if (value.verdict === "approved") {
@@ -208,28 +206,24 @@ export function parseReviewerVerdict(text: string): ReviewerVerdict {
   }
   if (value.verdict !== "changes_requested") {
     return {
-      verdict: "changes_requested",
-      requiredChanges: [
+      verdict: "error",
+      reason:
         "Reviewer JSON verdict must be either approved or changes_requested.",
-      ],
     };
   }
   const requiredChanges = value.requiredChanges;
   if (!Array.isArray(requiredChanges) || requiredChanges.length === 0) {
     return {
-      verdict: "changes_requested",
-      requiredChanges: [
+      verdict: "error",
+      reason:
         "Reviewer requested changes but did not provide requiredChanges.",
-      ],
     };
   }
   const changes = requiredChanges.filter(isNonEmptyString).slice(0, 5);
   if (changes.length === 0) {
     return {
-      verdict: "changes_requested",
-      requiredChanges: [
-        "Reviewer requiredChanges must contain non-empty strings.",
-      ],
+      verdict: "error",
+      reason: "Reviewer requiredChanges must contain non-empty strings.",
     };
   }
   return { verdict: "changes_requested", requiredChanges: changes };

@@ -190,9 +190,10 @@ describe("parseReviewerVerdict", () => {
     });
   });
 
-  it("treats invalid output conservatively", () => {
-    expect(parseReviewerVerdict("VERDICT: approved")).toMatchObject({
-      verdict: "changes_requested",
+  it("returns error for invalid output", () => {
+    expect(parseReviewerVerdict("VERDICT: approved")).toEqual({
+      verdict: "error",
+      reason: "Response did not include <pi-review-result> output.",
     });
   });
 });
