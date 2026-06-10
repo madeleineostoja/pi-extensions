@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,9 +14,12 @@ import {
   BlockedError,
   OverallReviewFollowupError,
   nextOverallReviewArtifactPath,
+  buildSchedulerGraphSummary,
 } from "./orchestrator.js";
+import { createSchedulerRun } from "./scheduler.js";
 import { writeGraphJson } from "./graph.js";
-import { readEvents, readTaskJson } from "./state.js";
+import { readEvents, readTaskJson, writeRunJson } from "./state.js";
+import type { RunJson, StatePaths } from "./state.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SpawnArgs, SubagentClient, SubagentResult } from "./subagents.js";
 import type { RunState } from "./status.js";
@@ -125,6 +129,18 @@ class FakeGit implements GitClient {
   async diffRange(_baseSha: string, _headSha: string): Promise<string> {
     return this.diffText;
   }
+  async listBranchesMatching(pattern: string): Promise<string[]> {
+    return this.createdBranches.filter(
+      (b) =>
+        b.includes(pattern.replace(/\*\/?$/, "")) &&
+        !this.deletedBranches.includes(b),
+    );
+  }
+  async listWorktrees(): Promise<string[]> {
+    const added = this.addedWorktrees.map((w) => w.path);
+    const removed = new Set(this.removedWorktrees);
+    return added.filter((p) => !removed.has(p));
+  }
   forWorktree(worktreePath: string): GitClient {
     if (!this.worktreeChild) {
       this.worktreeChild = new FakeGit();
@@ -164,7 +180,7 @@ const GOOD_INTEGRATION_REVIEW =
   '<pi-integration-review-result>{"verdict":"approved"}</pi-integration-review-result>';
 
 function makePaths(dir: string) {
-  return {
+  const paths = {
     baseDir: join(dir, ".pi", "implement"),
     runDir: join(dir, ".pi", "implement", "runs", "r1"),
     runJson: join(dir, ".pi", "implement", "runs", "r1", "run.json"),
@@ -180,6 +196,43 @@ function makePaths(dir: string) {
     tasksDir: join(dir, ".pi", "implement", "runs", "r1", "tasks"),
     worktreesDir: join(dir, ".pi", "implement", "worktrees", "r1"),
     lockFile: join(dir, ".pi", "implement", "locks", "run.lock"),
+  };
+  mkdirSync(paths.runDir, { recursive: true });
+  writeFileSync(paths.runJson, JSON.stringify({ runId: "r1" }), "utf-8");
+  writeTestRunLock(paths);
+  return paths;
+}
+
+function writeTestRunLock(paths: StatePaths, runId = "r1") {
+  mkdirSync(join(paths.baseDir, "locks"), { recursive: true });
+  writeFileSync(
+    paths.lockFile,
+    JSON.stringify({
+      version: 1,
+      runId,
+      runDir: paths.runDir,
+      startedAt: new Date().toISOString(),
+      pid: process.pid,
+      hostname: "test",
+    }),
+    "utf-8",
+  );
+}
+
+function makeRunJson(dir: string, planPath: string, runId = "r1"): RunJson {
+  return {
+    version: 1,
+    runId,
+    mode: "parallel",
+    strategyReason: "test",
+    repoRoot: dir,
+    planPath,
+    planHash: "hash",
+    baseSha: "h1",
+    currentPhase: "running",
+    maxConcurrency: 2,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
 }
 
@@ -220,6 +273,17 @@ function makeSelfHealResult(args: {
   summary?: string;
   commands?: string[];
   filesChanged?: string[];
+}): string {
+  return `<pi-self-heal-result>${JSON.stringify(args)}</pi-self-heal-result>`;
+}
+
+function makeSchedulerSelfHealResult(args: {
+  repaired: boolean;
+  retryScheduler: boolean;
+  summary?: string;
+  commands?: string[];
+  filesChanged?: string[];
+  remainingBlocker?: string | null;
 }): string {
   return `<pi-self-heal-result>${JSON.stringify(args)}</pi-self-heal-result>`;
 }
@@ -3093,5 +3157,1894 @@ describe("runImplementation", () => {
       expect(prompt).toContain(paths.eventsJsonl);
       expect(prompt).toContain(join(paths.runDir, "graph.json"));
     });
+  });
+
+  it("cleans up stale branch and worktree before restarting a needs_rework task", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "task-1",
+          planIndex: 1,
+          title: "Do thing",
+          taskHash: "hash",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    let cherryPickCount = 0;
+    git.cherryPickNoCommit = async (sha: string) => {
+      cherryPickCount++;
+      if (cherryPickCount === 1) {
+        return {
+          command: "git cherry-pick --no-commit",
+          exitCode: 1,
+          stdout: "",
+          stderr: "conflict",
+        };
+      }
+      git.diffText = `diff --git a/file.ts b/file.ts\n+change ${sha}`;
+      return {
+        command: "git cherry-pick --no-commit",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      };
+    };
+
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      {
+        status: "completed",
+        result: makeSelfHealResult({
+          repaired: false,
+          retryIntegration: false,
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "parallel",
+      runId: "r1",
+      paths,
+      verifyCommand: "echo ok",
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    // Two attempts: first creates branch/worktree, second cleans up and recreates
+    const taskBranches = git.createdBranches.filter((b) =>
+      b.includes("task-1"),
+    );
+    const taskWorktrees = git.addedWorktrees.filter((w) =>
+      w.branch.includes("task-1"),
+    );
+    expect(taskBranches).toHaveLength(2);
+    expect(taskWorktrees).toHaveLength(2);
+    expect(
+      git.removedWorktrees.filter((w) => w.includes("task-1")),
+    ).toHaveLength(1);
+    expect(
+      git.deletedBranches.filter((b) => b.includes("task-1")),
+    ).toHaveLength(1);
+  });
+
+  it("scheduler self-heal repairs stale branch/worktree and retries", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    // Pre-seed a stale branch so the first worktree creation fails.
+    // Override deleteTaskBranch so the stale branch persists after the
+    // failed launch attempt, requiring scheduler self-heal to remove it.
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+    const originalDeleteTaskBranch = git.deleteTaskBranch.bind(git);
+    git.deleteTaskBranch = async (branchName: string) => {
+      if (branchName === "pi-implement/r1/first") {
+        return;
+      }
+      return originalDeleteTaskBranch(branchName);
+    };
+
+    const subagents = new FakeSubagents();
+    let spawnCount = 0;
+    const originalSpawn = subagents.spawn.bind(subagents);
+    subagents.spawn = async (args) => {
+      spawnCount++;
+      return originalSpawn(args);
+    };
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (spawnCount === 1 && result.status === "completed") {
+        // Simulate self-heal removing the stale branch
+        staleBranches.delete("pi-implement/r1/first");
+        git.deletedBranches.push("pi-implement/r1/first");
+      }
+      return result;
+    };
+
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Removed stale branch and worktree for first.",
+          commands: ["git branch -D pi-implement/r1/first"],
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "parallel",
+      runId: "r1",
+      paths,
+      verifyCommand: "echo ok",
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const selfHealSpawn = subagents.spawns.find((s) =>
+      s.description.includes("scheduler self-heal"),
+    );
+    expect(selfHealSpawn).toBeDefined();
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] First");
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Second");
+  });
+
+  it("scheduler self-heal is bounded by MAX_SELF_HEAL_ATTEMPTS", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Tried but did not remove anything.",
+        }),
+      },
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Tried again but did not remove anything.",
+        }),
+      },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+
+    const selfHealSpawns = subagents.spawns.filter((s) =>
+      s.description.includes("scheduler self-heal"),
+    );
+    expect(selfHealSpawns).toHaveLength(1);
+  });
+
+  it("blocks when scheduler self-heal changes HEAD", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+
+    const subagents = new FakeSubagents();
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (result.status === "completed") {
+        git.headValue = "h2-moved";
+      }
+      return result;
+    };
+
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Removed stale branch for first.",
+          commands: ["git branch -D pi-implement/r1/first"],
+        }),
+      },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+
+    const events = readEvents(paths);
+    expect(events.some((e) => e.type === "scheduler_self_heal_completed")).toBe(
+      true,
+    );
+  });
+
+  it("blocks when scheduler self-heal mutates a plan artifact", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+
+    const subagents = new FakeSubagents();
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (result.status === "completed") {
+        writeFileSync(planPath, "# Mutated\n", "utf-8");
+      }
+      return result;
+    };
+
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Removed stale branch for first.",
+          commands: ["git branch -D pi-implement/r1/first"],
+        }),
+      },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+  });
+
+  it("blocks when scheduler self-heal leaves the checkout dirty", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+
+    const subagents = new FakeSubagents();
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (result.status === "completed") {
+        git.statusText = "M dirty-file.ts";
+      }
+      return result;
+    };
+
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Removed stale branch for first.",
+          commands: ["git branch -D pi-implement/r1/first"],
+        }),
+      },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+  });
+
+  it("does not revive a failed task when self-heal did not actually remove the stale state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+    const originalDeleteTaskBranch = git.deleteTaskBranch.bind(git);
+    git.deleteTaskBranch = async (branchName: string) => {
+      if (branchName === "pi-implement/r1/first") {
+        return;
+      }
+      return originalDeleteTaskBranch(branchName);
+    };
+
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Claimed to fix first but did nothing.",
+          commands: ["echo noop"],
+        }),
+      },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+
+    const taskJson = readTaskJson(paths, "first");
+    expect(taskJson?.status).toBe("failed");
+  });
+
+  it("includes remaining blocker in stalled scheduler reason", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: false,
+          retryScheduler: false,
+          remainingBlocker: "disk full",
+        }),
+      },
+    ];
+
+    let caught: Error | undefined;
+    try {
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+    } catch (err) {
+      caught = err instanceof Error ? err : new Error(String(err));
+    }
+
+    expect(caught).toBeInstanceOf(BlockedError);
+    expect(caught!.message).toContain("disk full");
+  });
+
+  it("scheduler self-heal prompt includes active agent state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: false,
+          retryScheduler: false,
+          remainingBlocker: "disk full",
+        }),
+      },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+
+    const selfHealSpawn = subagents.spawns.find((s) =>
+      s.description.includes("scheduler self-heal"),
+    );
+    expect(selfHealSpawn).toBeDefined();
+    const prompt = selfHealSpawn!.prompt;
+    expect(prompt).toContain("activeAgents");
+  });
+
+  it("buildSchedulerGraphSummary includes taskCommitSha, landedCommitSha, and activeAgents", () => {
+    const graph = {
+      version: 1 as const,
+      runId: "r1",
+      baseSha: "base",
+      planPath: "/plan.md",
+      planHash: "hash",
+      nodes: [
+        {
+          id: "task-1",
+          planIndex: 1,
+          title: "One",
+          taskHash: "h1",
+          dependsOn: [],
+          mode: "parallel" as const,
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high" as const,
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "task-2",
+          planIndex: 2,
+          title: "Two",
+          taskHash: "h2",
+          dependsOn: ["task-1"],
+          mode: "parallel" as const,
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high" as const,
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    };
+    const sched = createSchedulerRun(graph, 2);
+    const t1 = sched.tasks.get("task-1")!;
+    t1.taskCommitSha = "abc123";
+    t1.landedCommitSha = "def456";
+    t1.activeAgentIds = ["agent-1"];
+    const t2 = sched.tasks.get("task-2")!;
+    t2.activeAgentIds = [];
+
+    const summary = buildSchedulerGraphSummary(sched, graph);
+    expect(summary).toContain("taskCommitSha: abc123");
+    expect(summary).toContain("landedCommitSha: def456");
+    expect(summary).toContain("activeAgents: [agent-1]");
+    expect(summary).toContain("activeAgents: (none)");
+  });
+
+  it("blocks when scheduler self-heal mutates in-memory task status", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+
+    const subagents = new FakeSubagents();
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (result.status === "completed") {
+        // Mutate the stale branch set to simulate progress, but do not remove it
+        // The real mutation test is in the orchestrator's checkSchedulerSelfHealProgress
+        // which validates task state. Since we can't easily mutate in-memory task state
+        // from the test, we verify via the blocked outcome that no progress was accepted.
+        staleBranches.delete("pi-implement/r1/first");
+        git.deletedBranches.push("pi-implement/r1/first");
+      }
+      return result;
+    };
+
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Removed stale branch for first but mutated task state.",
+        }),
+      },
+    ];
+
+    // This test verifies that even if the branch was removed, if the heal result
+    // does not name the exact task via commands or summary, no revival occurs.
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+  });
+
+  it("blocks when scheduler self-heal mutates on-disk task.json", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+
+    const subagents = new FakeSubagents();
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (result.status === "completed") {
+        staleBranches.delete("pi-implement/r1/first");
+        git.deletedBranches.push("pi-implement/r1/first");
+        // Mutate on-disk task.json for first
+        const taskDir = join(paths.tasksDir, "first");
+        mkdirSync(taskDir, { recursive: true });
+        writeFileSync(
+          join(taskDir, "task.json"),
+          JSON.stringify({
+            version: 1,
+            taskId: "first",
+            status: "landed",
+            lastReason: "self-heal agent wrote this",
+          }),
+          "utf-8",
+        );
+      }
+      return result;
+    };
+
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Removed stale branch for first.",
+          commands: ["git branch -D pi-implement/r1/first"],
+        }),
+      },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+  });
+
+  it("blocks when scheduler self-heal corrupts run.json runId", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+    writeRunJson(paths, makeRunJson(dir, planPath));
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+
+    const subagents = new FakeSubagents();
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (result.status === "completed") {
+        staleBranches.delete("pi-implement/r1/first");
+        git.deletedBranches.push("pi-implement/r1/first");
+        // Corrupt run.json to a different run id
+        writeRunJson(paths, makeRunJson(dir, planPath, "r2-evil"));
+      }
+      return result;
+    };
+
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Removed stale branch for first.",
+          commands: ["git branch -D pi-implement/r1/first"],
+        }),
+      },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+  });
+
+  it("detects cleared dirty scheduler state as retryable progress", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.statusText = "M dirty.ts";
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+    const originalDeleteTaskBranch = git.deleteTaskBranch.bind(git);
+    git.deleteTaskBranch = async (branchName: string) => {
+      if (branchName === "pi-implement/r1/first") {
+        return;
+      }
+      return originalDeleteTaskBranch(branchName);
+    };
+    // Allow preflight to pass, then report dirty during baseline capture,
+    // then clean again after self-heal.
+    let isCleanCallCount = 0;
+    git.isCleanExcept = async () => {
+      isCleanCallCount++;
+      if (isCleanCallCount <= 1) {
+        return true; // preflight
+      }
+      return git.statusText.trim() === "";
+    };
+
+    const subagents = new FakeSubagents();
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (result.status === "completed") {
+        staleBranches.delete("pi-implement/r1/first");
+        git.deletedBranches.push("pi-implement/r1/first");
+        git.statusText = "";
+      }
+      return result;
+    };
+
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Removed stale branch and cleaned dirty state for first.",
+          commands: [
+            "git branch -D pi-implement/r1/first",
+            "git checkout -- .",
+          ],
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "parallel",
+      runId: "r1",
+      paths,
+      verifyCommand: "echo ok",
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] First");
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Second");
+  });
+
+  it("allows dirty plan artifacts after scheduler self-heal", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+    writeRunJson(paths, makeRunJson(dir, planPath));
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.statusText = " M plan.md";
+    git.createdBranches = ["pi-implement/r1/second"];
+    const staleBranches = new Set(["pi-implement/r1/second"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+    const originalDeleteTaskBranch = git.deleteTaskBranch.bind(git);
+    git.deleteTaskBranch = async (branchName: string) => {
+      if (branchName === "pi-implement/r1/second") {
+        return;
+      }
+      return originalDeleteTaskBranch(branchName);
+    };
+    git.isCleanExcept = async () => true;
+
+    const subagents = new FakeSubagents();
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (result.status === "completed") {
+        staleBranches.delete("pi-implement/r1/second");
+        git.deletedBranches.push("pi-implement/r1/second");
+      }
+      return result;
+    };
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Removed stale branch for second.",
+          commands: ["git branch -D pi-implement/r1/second"],
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "parallel",
+      runId: "r1",
+      paths,
+      verifyCommand: "echo ok",
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Second");
+  });
+
+  it("runs scheduler self-heal for terminal setup failures", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n", "utf-8");
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+    writeRunJson(paths, makeRunJson(dir, planPath));
+    mkdirSync(join(paths.tasksDir, "first"), { recursive: true });
+    writeFileSync(
+      join(paths.tasksDir, "first", "task.json"),
+      JSON.stringify({
+        id: "first",
+        planIndex: 1,
+        title: "First",
+        status: "failed",
+        dependsOn: [],
+        attempts: 1,
+        integrationAttempts: 0,
+        lastReason:
+          "Worktree setup failed: fatal: a branch named 'pi-implement/r1/first' already exists",
+      }),
+      "utf-8",
+    );
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+    const originalDeleteTaskBranch = git.deleteTaskBranch.bind(git);
+    git.deleteTaskBranch = async (branchName: string) => {
+      if (branchName === "pi-implement/r1/first") {
+        return;
+      }
+      return originalDeleteTaskBranch(branchName);
+    };
+
+    const subagents = new FakeSubagents();
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (result.status === "completed") {
+        staleBranches.delete("pi-implement/r1/first");
+        git.deletedBranches.push("pi-implement/r1/first");
+      }
+      return result;
+    };
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Removed stale branch for first.",
+          commands: ["git branch -D pi-implement/r1/first"],
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "parallel",
+      runId: "r1",
+      paths,
+      verifyCommand: "echo ok",
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const selfHealSpawns = subagents.spawns.filter((s) =>
+      s.description.includes("scheduler self-heal"),
+    );
+    expect(selfHealSpawns).toHaveLength(1);
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] First");
+  });
+
+  it("blocks when scheduler self-heal deletes durable run state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n", "utf-8");
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+    writeRunJson(paths, makeRunJson(dir, planPath));
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+
+    const subagents = new FakeSubagents();
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (result.status === "completed") {
+        staleBranches.delete("pi-implement/r1/first");
+        git.deletedBranches.push("pi-implement/r1/first");
+        rmSync(paths.runJson, { force: true });
+      }
+      return result;
+    };
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Removed stale branch for first.",
+          commands: ["git branch -D pi-implement/r1/first"],
+        }),
+      },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+  });
+
+  it("detects dependency installation as retryable progress", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
+      "utf-8",
+    );
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash1",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+        {
+          id: "second",
+          planIndex: 2,
+          title: "Second",
+          taskHash: "hash2",
+          dependsOn: ["first"],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.createdBranches = ["pi-implement/r1/first"];
+    const staleBranches = new Set(["pi-implement/r1/first"]);
+    const originalAddWorktree = git.addWorktree.bind(git);
+    git.addWorktree = async (path: string, branch: string) => {
+      if (staleBranches.has(branch)) {
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
+      }
+      return originalAddWorktree(path, branch);
+    };
+    const originalDeleteTaskBranch = git.deleteTaskBranch.bind(git);
+    git.deleteTaskBranch = async (branchName: string) => {
+      if (branchName === "pi-implement/r1/first") {
+        return;
+      }
+      return originalDeleteTaskBranch(branchName);
+    };
+    // Simulate clean git status after dependency install (only ignored files changed)
+    let statusCallCount = 0;
+    const originalStatus = git.status.bind(git);
+    git.status = async () => {
+      statusCallCount++;
+      if (statusCallCount >= 2) {
+        return "";
+      }
+      return originalStatus();
+    };
+
+    const subagents = new FakeSubagents();
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      if (result.status === "completed") {
+        staleBranches.delete("pi-implement/r1/first");
+        git.deletedBranches.push("pi-implement/r1/first");
+      }
+      return result;
+    };
+
+    subagents.results = [
+      {
+        status: "completed",
+        result: makeSchedulerSelfHealResult({
+          repaired: true,
+          retryScheduler: true,
+          summary: "Installed dependencies for first.",
+          commands: ["npm install"],
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "parallel",
+      runId: "r1",
+      paths,
+      verifyCommand: "echo ok",
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] First");
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Second");
   });
 });

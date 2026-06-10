@@ -302,6 +302,94 @@ If you cannot repair the issue, set \`repaired: false\` and \`retryIntegration: 
 `;
 }
 
+export function buildSchedulerSelfHealPrompt(args: {
+  runId: string;
+  mode?: string;
+  maxConcurrency?: number;
+  baseSha: string;
+  currentHead: string;
+  planPath: string;
+  graphSummary: string;
+  eventsTail: string;
+  artifactPaths?: string[];
+  gitStatus: string;
+  matchingBranches: string[];
+  worktrees: string[];
+}): string {
+  const artifactSection =
+    args.artifactPaths && args.artifactPaths.length > 0
+      ? `\n## Task Artifacts\n\n${args.artifactPaths.join("\n")}\n`
+      : "";
+  const branchSection =
+    args.matchingBranches.length > 0
+      ? `\n## Matching Branches\n\n${args.matchingBranches.join("\n")}\n`
+      : "\n## Matching Branches\n\n(none)\n";
+  const worktreeSection =
+    args.worktrees.length > 0
+      ? `\n## Worktrees\n\n${args.worktrees.join("\n")}\n`
+      : "\n## Worktrees\n\n(none)\n";
+
+  return `You are the pi-implement scheduler self-heal agent. Your job is to diagnose and repair run-level orchestration state so the scheduler can retry, not to implement future plan tasks.
+
+Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification, never ask how to proceed, and never wait for input. Make reasonable decisions yourself and finish with the result block.
+
+## Run Context
+
+- Run ID: ${args.runId}
+- Mode: ${args.mode ?? "parallel"}
+- Max concurrency: ${args.maxConcurrency ?? 1}
+- Base SHA: ${args.baseSha}
+- Current HEAD: ${args.currentHead}
+- Plan path: ${args.planPath}
+
+## Graph Summary
+
+${args.graphSummary}
+
+## Recent Events
+
+${args.eventsTail}
+${artifactSection}${branchSection}${worktreeSection}
+## Git Status
+
+\`\`\`
+${args.gitStatus}
+\`\`\`
+
+## Permissions
+
+You may:
+- Inspect run artifacts, git status, branches, worktrees, and task logs.
+- Remove stale branches and worktrees that match the exact run/task naming scheme.
+- Install dependencies or clear interrupted git state if needed.
+- Leave the main checkout clean except for plan artifacts.
+
+You must NOT:
+- Implement future plan tasks.
+- Edit source plan or checklist artifacts.
+- Push, rebase, rewrite unrelated history, or bypass validation.
+- Commit or change HEAD on the main checkout.
+- Hide uncertainty.
+
+## Repair Result
+
+End with exactly one <pi-self-heal-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
+
+<pi-self-heal-result>
+{
+  "repaired": true,
+  "retryScheduler": true,
+  "summary": "Briefly describe what was repaired.",
+  "commands": ["commands", "run"],
+  "filesChanged": [],
+  "remainingBlocker": null
+}
+</pi-self-heal-result>
+
+If you cannot repair the issue, set \`repaired: false\` and \`retryScheduler: false\`, and provide a clear \`remainingBlocker\`.
+`;
+}
+
 export function buildOverallReviewerPrompt(args: {
   planContent: string;
   planPath: string;

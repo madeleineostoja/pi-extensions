@@ -40,6 +40,15 @@ export type IntegrationSelfHealResult = {
   remainingBlocker?: string | null;
 };
 
+export type SchedulerSelfHealResult = {
+  repaired: boolean;
+  retryScheduler: boolean;
+  summary?: string;
+  commands?: string[];
+  filesChanged?: string[];
+  remainingBlocker?: string | null;
+};
+
 export function parseImplementerResult(
   text: string,
 ):
@@ -284,6 +293,39 @@ export function parseIntegrationSelfHealResult(
       repaired,
       retryIntegration,
       retryMode,
+      summary: typeof value.summary === "string" ? value.summary : undefined,
+      commands: Array.isArray(value.commands)
+        ? value.commands.filter((c): c is string => typeof c === "string")
+        : undefined,
+      filesChanged: Array.isArray(value.filesChanged)
+        ? value.filesChanged.filter((c): c is string => typeof c === "string")
+        : undefined,
+      remainingBlocker:
+        value.remainingBlocker === null ||
+        typeof value.remainingBlocker === "string"
+          ? value.remainingBlocker
+          : undefined,
+    },
+  };
+}
+
+export function parseSchedulerSelfHealResult(
+  text: string,
+):
+  | { ok: true; result: SchedulerSelfHealResult }
+  | { ok: false; reason: string } {
+  const parsed = parseTaggedJsonObject(text, "pi-self-heal-result");
+  if (!parsed.ok) {
+    return parsed;
+  }
+  const value = parsed.value;
+  const repaired = value.repaired === true;
+  const retryScheduler = value.retryScheduler === true;
+  return {
+    ok: true,
+    result: {
+      repaired,
+      retryScheduler,
       summary: typeof value.summary === "string" ? value.summary : undefined,
       commands: Array.isArray(value.commands)
         ? value.commands.filter((c): c is string => typeof c === "string")

@@ -46,6 +46,8 @@ export type GitClient = {
   removeWorktree(worktreePath: string): Promise<void>;
   deleteTaskBranch(branchName: string): Promise<void>;
   diffRange(baseSha: string, headSha: string): Promise<string>;
+  listBranchesMatching(pattern: string): Promise<string[]>;
+  listWorktrees(): Promise<string[]>;
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient;
 };
 
@@ -230,6 +232,25 @@ export class ExecGitClient implements GitClient {
   async diffRange(baseSha: string, headSha: string): Promise<string> {
     return (await this.run(["diff", "--binary", `${baseSha}..${headSha}`]))
       .stdout;
+  }
+
+  async listBranchesMatching(pattern: string): Promise<string[]> {
+    const result = await this.run(["branch", "--list", pattern]);
+    return result.stdout
+      .split("\n")
+      .map((b) => b.trim().replace(/^\*\s*/, ""))
+      .filter(Boolean);
+  }
+
+  async listWorktrees(): Promise<string[]> {
+    const result = await this.run(["worktree", "list", "--porcelain"]);
+    const paths: string[] = [];
+    for (const line of result.stdout.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        paths.push(line.slice("worktree ".length).trim());
+      }
+    }
+    return paths;
   }
 
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient {

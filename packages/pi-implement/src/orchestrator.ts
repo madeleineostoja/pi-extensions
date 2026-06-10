@@ -7,7 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
 import {
   buildAlreadySatisfiedReviewerPrompt,
@@ -15,6 +15,7 @@ import {
   buildIntegrationSelfHealPrompt,
   buildOverallReviewerPrompt,
   buildReviewerPrompt,
+  buildSchedulerSelfHealPrompt,
 } from "./prompts.js";
 import {
   buildTaskPacket,
@@ -39,8 +40,12 @@ import {
   parseIntegrationSelfHealResult,
   parseOverallReviewVerdict,
   parseReviewerVerdict,
+  parseSchedulerSelfHealResult,
 } from "./verdict.js";
-import type { IntegrationSelfHealResult } from "./verdict.js";
+import type {
+  IntegrationSelfHealResult,
+  SchedulerSelfHealResult,
+} from "./verdict.js";
 import type { StatePaths, TaskJson } from "./state.js";
 import {
   writeTaskJson,
@@ -64,9 +69,9 @@ import {
   getBlockedReason,
   type SchedulerRun,
   type SchedulerTask,
+  type SchedulerTaskStatus,
 } from "./scheduler.js";
 import { checkpointPatch } from "./status.js";
-import { dirname } from "node:path";
 import {
   formatBundleMaterial,
   validatePlanMaterialSizes,
@@ -284,7 +289,10 @@ async function runParallelImplementation(
   const sched = createSchedulerRun(graph, deps.maxConcurrency ?? 1);
   const runningWorkers = new Map<string, Promise<WorkerResult>>();
   let plan = initialPlan;
-  let reworkInFlight = false;
+  const reworkTaskIds = new Set<string>();
+  let schedulerSelfHealAttempts = 0;
+  let schedulerSelfHealFailed = false;
+  let schedulerSelfHealRemainingBlocker: string | undefined;
 
   deps.updateState({
     phase: "scheduling",
@@ -296,7 +304,29 @@ async function runParallelImplementation(
     landedCount: 0,
   });
 
-  while (!allTasksTerminal(sched)) {
+  scheduler: for (;;) {
+    if (allTasksTerminal(sched)) {
+      if (anyTaskFailedBlockedStopped(sched)) {
+        const healProgress = await attemptSchedulerSelfHeal(
+          deps,
+          sched,
+          graph,
+          plan,
+          planArtifacts,
+          schedulerSelfHealAttempts,
+        );
+        schedulerSelfHealAttempts = healProgress.attempts;
+        schedulerSelfHealRemainingBlocker = healProgress.remainingBlocker;
+        if (healProgress.hasProgress) {
+          continue scheduler;
+        }
+        if (healProgress.attempted) {
+          schedulerSelfHealFailed = true;
+        }
+      }
+      break;
+    }
+
     throwIfStopped(deps);
     plan = parsePlanFile(deps.planPath);
 
@@ -308,8 +338,9 @@ async function runParallelImplementation(
       if (runningWorkers.has(taskId)) {
         continue;
       }
-      if (sched.tasks.get(taskId)?.status === "needs_rework") {
-        reworkInFlight = true;
+      const wasNeedsRework = sched.tasks.get(taskId)?.status === "needs_rework";
+      if (wasNeedsRework) {
+        reworkTaskIds.add(taskId);
       }
       startTask(sched, taskId);
 
@@ -329,15 +360,20 @@ async function runParallelImplementation(
         planTask,
         planArtifacts,
         runBaseSha,
+        wasNeedsRework,
       );
       runningWorkers.set(taskId, promise);
     }
 
     updateParallelState(deps, sched);
 
+    const hasActiveRework = [...reworkTaskIds].some((id) =>
+      runningWorkers.has(id),
+    );
+
     // ── Try landing (serialized, plan-ordered) ──
     const toLand = nextTaskToLand(sched);
-    if (toLand && !reworkInFlight) {
+    if (toLand && !hasActiveRework) {
       const landResult = await landApprovedTask(
         deps,
         sched,
@@ -348,7 +384,6 @@ async function runParallelImplementation(
       if (landResult === "landed") {
         continue; // Keep looping to possibly land more
       } else if (landResult === "needs_rework") {
-        reworkInFlight = true;
         // The task status is already set to needs_rework; it will restart
         continue;
       }
@@ -360,6 +395,7 @@ async function runParallelImplementation(
       // Race all running workers for the next completion
       const result = await Promise.race(runningWorkers.values());
       runningWorkers.delete(result.taskId);
+      reworkTaskIds.delete(result.taskId);
 
       const task = sched.tasks.get(result.taskId)!;
       if (result.outcome.kind === "approved") {
@@ -415,20 +451,32 @@ async function runParallelImplementation(
     }
 
     // Nothing running and nothing to land
-    if (!toLand && !reworkInFlight) {
+    if (!toLand && !hasActiveRework) {
+      const healProgress = await attemptSchedulerSelfHeal(
+        deps,
+        sched,
+        graph,
+        plan,
+        planArtifacts,
+        schedulerSelfHealAttempts,
+      );
+      schedulerSelfHealAttempts = healProgress.attempts;
+      schedulerSelfHealRemainingBlocker = healProgress.remainingBlocker;
+      if (healProgress.hasProgress) {
+        continue;
+      }
+      schedulerSelfHealFailed = true;
       sched.phase = "blocked";
       break;
-    }
-
-    // If rework in flight but nothing running, we need to wait for a worker
-    // Actually this shouldn't happen since rework workers are in runningWorkers
-    if (reworkInFlight && runningWorkers.size === 0) {
-      reworkInFlight = false;
     }
   }
 
   if (!allTasksTerminal(sched)) {
-    const reason = stalledSchedulerReason(sched);
+    const reason = stalledSchedulerReason(
+      sched,
+      schedulerSelfHealFailed,
+      schedulerSelfHealRemainingBlocker,
+    );
     deps.updateState({ phase: "blocked", lastReason: reason });
     throw new BlockedError(reason);
   }
@@ -479,6 +527,7 @@ async function launchTaskWorker(
   planTask: ReturnType<typeof parsePlanFile>["tasks"][number],
   planArtifacts: string[],
   runBaseSha: string,
+  wasNeedsRework: boolean,
 ): Promise<WorkerResult> {
   const task = sched.tasks.get(taskId)!;
   const baseSha = await deps.git.head();
@@ -490,7 +539,7 @@ async function launchTaskWorker(
 
   if (worktreePath) {
     try {
-      if (task.status === "needs_rework") {
+      if (wasNeedsRework) {
         await deps.git.removeWorktree(worktreePath).catch(() => undefined);
         await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
       }
@@ -1148,6 +1197,569 @@ async function checkSelfHealSafety(
   return undefined;
 }
 
+// ── Scheduler self-heal ───────────────────────────────────────────────────
+
+type SchedulerSelfHealProgress = {
+  attempted: boolean;
+  attempts: number;
+  hasProgress: boolean;
+  remainingBlocker?: string;
+};
+
+async function attemptSchedulerSelfHeal(
+  deps: OrchestratorDeps,
+  sched: SchedulerRun,
+  graph: ImplementGraph,
+  plan: ReturnType<typeof parsePlanFile>,
+  planArtifacts: string[],
+  currentAttempts: number,
+): Promise<SchedulerSelfHealProgress> {
+  const baseline = await captureSchedulerSelfHealBaseline(
+    deps,
+    sched,
+    planArtifacts,
+  );
+  const healResult = await trySchedulerSelfHeal(
+    deps,
+    sched,
+    graph,
+    plan,
+    planArtifacts,
+    currentAttempts,
+  );
+  if (!healResult?.ok) {
+    return {
+      attempted: false,
+      attempts: currentAttempts,
+      hasProgress: false,
+    };
+  }
+
+  const attempts = currentAttempts + 1;
+  const progress = await checkSchedulerSelfHealProgress(
+    deps,
+    sched,
+    planArtifacts,
+    baseline,
+    healResult.result,
+  );
+  if (progress.hasProgress) {
+    for (const taskId of progress.revivedTaskIds) {
+      reviveTaskForSchedulerRetry(deps, sched, taskId);
+    }
+  }
+
+  return {
+    attempted: true,
+    attempts,
+    hasProgress: progress.hasProgress,
+    remainingBlocker: healResult.result.remainingBlocker ?? undefined,
+  };
+}
+
+async function trySchedulerSelfHeal(
+  deps: OrchestratorDeps,
+  sched: SchedulerRun,
+  graph: ImplementGraph,
+  plan: ReturnType<typeof parsePlanFile>,
+  planArtifacts: string[],
+  currentAttempts: number,
+): Promise<{ ok: true; result: SchedulerSelfHealResult } | undefined> {
+  if (currentAttempts >= MAX_SELF_HEAL_ATTEMPTS) {
+    return undefined;
+  }
+
+  const baseSha = graph.baseSha;
+  const currentHead = await deps.git.head();
+  const gitStatus = await deps.git.status();
+  const runId = deps.runId ?? "run";
+  const matchingBranches = await deps.git.listBranchesMatching(
+    `pi-implement/${runId}/*`,
+  );
+  const worktrees = await deps.git.listWorktrees();
+
+  const graphSummary = buildSchedulerGraphSummary(sched, graph);
+
+  const eventsTail = deps.paths
+    ? readEvents(deps.paths)
+        .slice(-20)
+        .map((e) => JSON.stringify(e))
+        .join("\n")
+    : "";
+
+  const artifactPaths: string[] = [];
+  for (const task of sched.tasks.values()) {
+    if (deps.paths) {
+      const taskArtifacts = collectRunArtifactPaths(deps.paths, task.id);
+      if (taskArtifacts) {
+        artifactPaths.push(...taskArtifacts);
+      }
+    }
+  }
+
+  const prompt = buildSchedulerSelfHealPrompt({
+    runId,
+    mode: deps.mode,
+    maxConcurrency: deps.maxConcurrency,
+    baseSha,
+    currentHead,
+    planPath: deps.planPath,
+    graphSummary,
+    eventsTail,
+    artifactPaths: artifactPaths.length > 0 ? artifactPaths : undefined,
+    gitStatus,
+    matchingBranches,
+    worktrees,
+  });
+
+  if (deps.paths) {
+    appendEvent(deps.paths, {
+      type: "scheduler_self_heal_started",
+      attempt: currentAttempts + 1,
+    });
+  }
+
+  try {
+    const id = await deps.subagents.spawn({
+      type: deps.roles.implementer.type,
+      prompt,
+      description: `scheduler self-heal ${runId}`,
+      model: deps.roles.implementer.model,
+    });
+    const ref: AgentDisplayRef = {
+      id,
+      role: "implementer",
+      label: `Scheduler self-heal \u00b7 ${runId}`,
+      startedAt: new Date().toISOString(),
+    };
+    deps.updateState((prev) => addActiveAgentPatch(prev, ref));
+
+    const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
+      deps.updateState((prev) => removeActiveAgentPatch(prev, id));
+    });
+
+    if (result.status !== "completed") {
+      if (deps.paths) {
+        appendEvent(deps.paths, {
+          type: "scheduler_self_heal_failed",
+          attempt: currentAttempts + 1,
+          reason: result.status === "stopped" ? "stopped" : result.error,
+        });
+      }
+      return undefined;
+    }
+
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "scheduler_self_heal_completed",
+        attempt: currentAttempts + 1,
+        result: result.result,
+      });
+    }
+
+    const parsed = parseSchedulerSelfHealResult(result.result);
+    if (!parsed.ok) {
+      if (deps.paths) {
+        appendEvent(deps.paths, {
+          type: "scheduler_self_heal_failed",
+          attempt: currentAttempts + 1,
+          reason: parsed.reason,
+        });
+      }
+      return undefined;
+    }
+
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+type SchedulerSelfHealBaseline = {
+  head: string;
+  planArtifactSnapshot: Map<string, string | undefined>;
+  gitStatusText: string;
+  wasClean: boolean;
+  branches: string[];
+  worktrees: string[];
+  taskStates: Map<string, { status: SchedulerTaskStatus; lastReason?: string }>;
+  taskJsonStates: Map<
+    string,
+    { status: SchedulerTaskStatus; lastReason?: string } | undefined
+  >;
+  setupBlockers: Map<
+    string,
+    { branchExists: boolean; worktreeExists: boolean }
+  >;
+};
+
+async function captureSchedulerSelfHealBaseline(
+  deps: OrchestratorDeps,
+  sched: SchedulerRun,
+  planArtifacts: string[],
+): Promise<SchedulerSelfHealBaseline> {
+  const head = await deps.git.head();
+  const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
+  const gitStatusText = await deps.git.status();
+  const wasClean = await deps.git.isCleanExcept(planArtifacts);
+  const runId = deps.runId ?? "run";
+  const branches = await deps.git.listBranchesMatching(
+    `pi-implement/${runId}/*`,
+  );
+  const worktrees = await deps.git.listWorktrees();
+  const taskStates = new Map<
+    string,
+    { status: SchedulerTaskStatus; lastReason?: string }
+  >();
+  const taskJsonStates = new Map<
+    string,
+    { status: SchedulerTaskStatus; lastReason?: string } | undefined
+  >();
+  const setupBlockers = new Map<
+    string,
+    { branchExists: boolean; worktreeExists: boolean }
+  >();
+
+  for (const task of sched.tasks.values()) {
+    taskStates.set(task.id, {
+      status: task.status,
+      lastReason: task.lastReason,
+    });
+    if (deps.paths) {
+      const onDisk = readTaskJson(deps.paths, task.id);
+      taskJsonStates.set(
+        task.id,
+        onDisk
+          ? {
+              status: onDisk.status as SchedulerTaskStatus,
+              lastReason: onDisk.lastReason ?? undefined,
+            }
+          : undefined,
+      );
+    }
+    if (task.status === "failed" && isSetupFailureReason(task.lastReason)) {
+      const branchName = `pi-implement/${runId}/${task.id}`;
+      const worktreePath = deps.paths
+        ? join(deps.paths.worktreesDir, task.id)
+        : undefined;
+      setupBlockers.set(task.id, {
+        branchExists: branches.some((b) => b === branchName),
+        worktreeExists: worktreePath
+          ? worktrees.some((wt) => wt === worktreePath)
+          : false,
+      });
+    }
+  }
+
+  return {
+    head,
+    planArtifactSnapshot,
+    gitStatusText,
+    wasClean,
+    branches,
+    worktrees,
+    taskStates,
+    taskJsonStates,
+    setupBlockers,
+  };
+}
+
+async function checkSchedulerSelfHealProgress(
+  deps: OrchestratorDeps,
+  sched: SchedulerRun,
+  planArtifacts: string[],
+  baseline: SchedulerSelfHealBaseline,
+  healResult: SchedulerSelfHealResult,
+): Promise<{ hasProgress: boolean; revivedTaskIds: string[] }> {
+  const revivedTaskIds: string[] = [];
+
+  if (!healResult.retryScheduler) {
+    return { hasProgress: false, revivedTaskIds };
+  }
+
+  if (baseline.setupBlockers.size > 0 && !deps.paths) {
+    return { hasProgress: false, revivedTaskIds };
+  }
+
+  // Re-read durable run/lock state to verify self-heal did not corrupt
+  // or switch run.json / graph.json / lock to a different run id.
+  if (deps.paths && !durableRunStateMatches(deps.paths, deps.runId ?? "run")) {
+    return { hasProgress: false, revivedTaskIds };
+  }
+
+  // Post-heal safety checks
+  const currentHead = await deps.git.head();
+  if (currentHead !== baseline.head) {
+    return { hasProgress: false, revivedTaskIds };
+  }
+
+  const changedPlanArtifact = changedSnapshotPath(
+    planArtifacts,
+    baseline.planArtifactSnapshot,
+  );
+  if (changedPlanArtifact) {
+    return { hasProgress: false, revivedTaskIds };
+  }
+
+  // Task state integrity: in-memory status/lastReason must match baseline.
+  // The self-heal agent must not mutate orchestrator task state.
+  for (const [taskId, preState] of baseline.taskStates) {
+    const task = sched.tasks.get(taskId);
+    if (!task) {
+      continue;
+    }
+    if (
+      task.status !== preState.status ||
+      task.lastReason !== preState.lastReason
+    ) {
+      return { hasProgress: false, revivedTaskIds };
+    }
+  }
+
+  // On-disk task JSON integrity: the self-heal agent must not write task.json
+  // to mark tasks landed or alter their durable state.
+  if (deps.paths) {
+    for (const [taskId, preDiskState] of baseline.taskJsonStates) {
+      const onDisk = readTaskJson(deps.paths, taskId);
+      const currentDiskState = onDisk
+        ? { status: onDisk.status, lastReason: onDisk.lastReason ?? undefined }
+        : undefined;
+      const pre = preDiskState ?? undefined;
+      if (
+        currentDiskState?.status !== pre?.status ||
+        currentDiskState?.lastReason !== pre?.lastReason
+      ) {
+        return { hasProgress: false, revivedTaskIds };
+      }
+    }
+  }
+
+  const isDependencyInstall =
+    indicatesSchedulerDependencyInstallation(healResult);
+  const { staged, unstaged, untracked } = await collectChangedPaths(deps);
+  if (hasNonPlanChangedPath(staged, planArtifacts, deps.planPath)) {
+    return { hasProgress: false, revivedTaskIds };
+  }
+  if (hasNonPlanChangedPath(unstaged, planArtifacts, deps.planPath)) {
+    return { hasProgress: false, revivedTaskIds };
+  }
+  if (hasNonPlanChangedPath(untracked, planArtifacts, deps.planPath)) {
+    return { hasProgress: false, revivedTaskIds };
+  }
+
+  const runId = deps.runId ?? "run";
+  const currentBranches = await deps.git.listBranchesMatching(
+    `pi-implement/${runId}/*`,
+  );
+  const currentWorktrees = await deps.git.listWorktrees();
+  const currentClean = await deps.git.isCleanExcept(planArtifacts);
+
+  if (isDependencyInstall && !currentClean) {
+    return { hasProgress: false, revivedTaskIds };
+  }
+
+  // Observable progress: stale branch/worktree removed for a setup-blocked task
+  for (const [taskId, preBlocker] of baseline.setupBlockers) {
+    const task = sched.tasks.get(taskId);
+    if (!task) {
+      continue;
+    }
+    if (task.status !== "failed" || !isSetupFailureReason(task.lastReason)) {
+      continue;
+    }
+    const depsLanded = task.dependsOn.every((depId) => {
+      const dep = sched.tasks.get(depId);
+      return dep?.status === "landed";
+    });
+    if (!depsLanded) {
+      continue;
+    }
+
+    const branchName = `pi-implement/${runId}/${taskId}`;
+    const worktreePath = deps.paths
+      ? join(deps.paths.worktreesDir, taskId)
+      : undefined;
+
+    const branchStillExists = currentBranches.some((b) => b === branchName);
+    const worktreeStillExists = worktreePath
+      ? currentWorktrees.some((wt) => wt === worktreePath)
+      : false;
+
+    const branchRemoved = preBlocker.branchExists && !branchStillExists;
+    const worktreeRemoved = preBlocker.worktreeExists && !worktreeStillExists;
+
+    if (branchRemoved || worktreeRemoved) {
+      const repairNamesTask =
+        (healResult.summary?.includes(taskId) ?? false) ||
+        (healResult.commands?.some(
+          (cmd) =>
+            cmd.includes(branchName) ||
+            (worktreePath ? cmd.includes(worktreePath) : false),
+        ) ??
+          false);
+
+      if (repairNamesTask) {
+        revivedTaskIds.push(taskId);
+      }
+    }
+  }
+
+  if (revivedTaskIds.length > 0) {
+    return { hasProgress: true, revivedTaskIds };
+  }
+
+  // Observable progress: interrupted/dirty scheduler state was cleared
+  if (!baseline.wasClean && currentClean) {
+    return { hasProgress: true, revivedTaskIds };
+  }
+
+  // Observable progress: dependency installation with clean/ignored git status
+  if (isDependencyInstall && currentClean) {
+    return { hasProgress: true, revivedTaskIds };
+  }
+
+  return { hasProgress: false, revivedTaskIds };
+}
+
+function durableRunStateMatches(paths: StatePaths, runId: string): boolean {
+  const currentRunJson = readRunJson(paths);
+  const currentGraphJson = readGraphJson(paths.runDir);
+  if (currentRunJson?.runId !== runId || currentGraphJson?.runId !== runId) {
+    return false;
+  }
+  if (!existsSync(paths.lockFile)) {
+    return false;
+  }
+  try {
+    const lock = JSON.parse(readFileSync(paths.lockFile, "utf-8")) as {
+      runId?: string;
+    };
+    return lock.runId === runId;
+  } catch {
+    return false;
+  }
+}
+
+function hasNonPlanChangedPath(
+  paths: string[],
+  planArtifacts: string[],
+  planPath: string,
+): boolean {
+  return paths.some(
+    (path) => !isPlanArtifactPath(path, planArtifacts, planPath),
+  );
+}
+
+function isPlanArtifactPath(
+  path: string,
+  planArtifacts: string[],
+  planPath: string,
+): boolean {
+  const normalized = normalizeStatusPath(path);
+  return planArtifacts.some((artifact) => {
+    const normalizedArtifact = normalizeStatusPath(artifact);
+    if (normalized === normalizedArtifact) {
+      return true;
+    }
+    if (!isAbsolute(artifact)) {
+      return false;
+    }
+    const relativeArtifact = normalizeStatusPath(
+      relative(dirname(planPath), artifact),
+    );
+    return normalized === relativeArtifact;
+  });
+}
+
+function normalizeStatusPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function isSetupFailureReason(reason: string | undefined): boolean {
+  if (!reason) {
+    return false;
+  }
+  const setupPatterns = [
+    /Worktree setup failed/i,
+    /branch .* already exists/i,
+    /worktree .* already exists/i,
+    /interrupted git operation/i,
+  ];
+  return setupPatterns.some((p) => p.test(reason));
+}
+
+function reviveTaskForSchedulerRetry(
+  deps: OrchestratorDeps,
+  sched: SchedulerRun,
+  taskId: string,
+): void {
+  const task = sched.tasks.get(taskId);
+  if (!task) {
+    return;
+  }
+  task.status = "needs_rework";
+  task.activeAgentIds = [];
+  task.activeAgentRefs = [];
+  task.lastReason = "self-heal repaired setup blocker; retrying";
+  if (deps.paths) {
+    const existing = readTaskJson(deps.paths, taskId);
+    writeTaskJson(deps.paths, taskId, {
+      ...(existing ?? taskToJson(task)),
+      status: "needs_rework",
+      activeSubagentIds: [],
+      lastReason: task.lastReason,
+    });
+    appendEvent(deps.paths, {
+      type: "task_self_heal_requeued",
+      taskId,
+      reason: task.lastReason,
+    });
+  }
+}
+
+export function buildSchedulerGraphSummary(
+  sched: SchedulerRun,
+  graph: ImplementGraph,
+): string {
+  const lines: string[] = [
+    `Run ID: ${graph.runId}`,
+    `Base SHA: ${graph.baseSha}`,
+    `Plan: ${graph.planPath}`,
+    `Nodes (${graph.nodes.length}):`,
+  ];
+  for (const node of graph.nodes) {
+    const task = sched.tasks.get(node.id);
+    const deps =
+      node.dependsOn.length > 0
+        ? ` dependsOn: [${node.dependsOn.join(", ")}]`
+        : "";
+    lines.push(
+      `- ${node.id}: ${node.title} (plan ${node.planIndex}, mode: ${node.mode}, status: ${task?.status ?? "pending"}${deps})`,
+    );
+    if (task?.lastReason) {
+      lines.push(`  lastReason: ${task.lastReason}`);
+    }
+    if (task?.taskCommitSha) {
+      lines.push(`  taskCommitSha: ${task.taskCommitSha}`);
+    }
+    if (task?.landedCommitSha) {
+      lines.push(`  landedCommitSha: ${task.landedCommitSha}`);
+    }
+    if (task?.worktreePath) {
+      lines.push(`  worktree: ${task.worktreePath}`);
+    }
+    if (task?.branchName) {
+      lines.push(`  branch: ${task.branchName}`);
+    }
+    if (task?.activeAgentIds && task.activeAgentIds.length > 0) {
+      lines.push(`  activeAgents: [${task.activeAgentIds.join(", ")}]`);
+    } else {
+      lines.push(`  activeAgents: (none)`);
+    }
+  }
+  return lines.join("\n");
+}
+
 async function collectChangedPaths(deps: OrchestratorDeps): Promise<{
   staged: string[];
   unstaged: string[];
@@ -1173,12 +1785,10 @@ async function collectChangedPaths(deps: OrchestratorDeps): Promise<{
     if (xy[0] !== " " && xy[0] !== "?") {
       staged.push(path);
     }
-    if (xy[1] !== " ") {
-      if (xy[1] === "?") {
-        untracked.push(path);
-      } else {
-        unstaged.push(path);
-      }
+    if (xy === "??") {
+      untracked.push(path);
+    } else if (xy[1] !== " ") {
+      unstaged.push(path);
     }
   }
 
@@ -1213,6 +1823,16 @@ function isPackageManagerFile(path: string): boolean {
 
 function indicatesDependencyInstallation(
   result: IntegrationSelfHealResult | undefined,
+): boolean {
+  if (!result?.commands) {
+    return false;
+  }
+  const installPattern = /^(npm|pnpm|yarn)\s+(install|ci|add)/;
+  return result.commands.some((cmd) => installPattern.test(cmd.trim()));
+}
+
+function indicatesSchedulerDependencyInstallation(
+  result: SchedulerSelfHealResult | undefined,
 ): boolean {
   if (!result?.commands) {
     return false;
@@ -1763,7 +2383,11 @@ function safeArtifactName(value: string): string {
   );
 }
 
-function stalledSchedulerReason(sched: SchedulerRun): string {
+function stalledSchedulerReason(
+  sched: SchedulerRun,
+  schedulerSelfHealAttempted = false,
+  remainingBlocker?: string,
+): string {
   const nonTerminal = [...sched.tasks.values()].filter(
     (task) =>
       task.status !== "landed" &&
@@ -1772,12 +2396,17 @@ function stalledSchedulerReason(sched: SchedulerRun): string {
       task.status !== "stopped" &&
       task.status !== "integration_failed",
   );
+  const healSuffix = schedulerSelfHealAttempted
+    ? ` (scheduler self-heal attempted and did not produce retryable progress${
+        remainingBlocker ? `; remaining blocker: ${remainingBlocker}` : ""
+      })`
+    : "";
   if (!nonTerminal.length) {
-    return "Parallel scheduler stalled without runnable work.";
+    return `Parallel scheduler stalled without runnable work.${healSuffix}`;
   }
   return `Parallel scheduler stalled with non-terminal task(s): ${nonTerminal
     .map((task) => `${task.id}:${task.status}`)
-    .join(", ")}`;
+    .join(", ")}${healSuffix}`;
 }
 
 function completedPlanTaskIndex(

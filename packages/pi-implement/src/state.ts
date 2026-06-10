@@ -89,7 +89,15 @@ export type EventEntry =
       taskId: string;
       attempt: number;
       reason: string;
-    };
+    }
+  | { type: "scheduler_self_heal_started"; attempt: number }
+  | {
+      type: "scheduler_self_heal_completed";
+      attempt: number;
+      result: string;
+    }
+  | { type: "scheduler_self_heal_failed"; attempt: number; reason: string }
+  | { type: "task_self_heal_requeued"; taskId: string; reason: string };
 
 export type DurableEvent = EventEntry & { timestamp: string };
 
