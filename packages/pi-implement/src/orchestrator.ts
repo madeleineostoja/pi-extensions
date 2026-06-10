@@ -2649,6 +2649,7 @@ async function runTaskWorker(args: {
       prompt: implementerPrompt,
       description: `implement task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
       model: deps.roles.implementer.model,
+      cwd: worktreePath,
     });
     const implementerRef: AgentDisplayRef = {
       id: implementerId,
