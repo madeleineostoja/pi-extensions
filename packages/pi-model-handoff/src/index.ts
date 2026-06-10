@@ -54,7 +54,13 @@ function formatSkipReason(reason: string): string {
 }
 
 function notifySkip(ctx: ExtensionContext, reason: string) {
-  ctx.ui.notify(`handoff skipped: ${formatSkipReason(reason)}`, "info");
+  const message = `handoff skipped: ${formatSkipReason(reason)}`;
+  if (ctx.mode === "tui") {
+    const notify = ctx.ui.notify;
+    setTimeout(() => notify(message, "info"), 0);
+    return;
+  }
+  ctx.ui.notify(message, "info");
 }
 
 export default function (pi: ExtensionAPI) {

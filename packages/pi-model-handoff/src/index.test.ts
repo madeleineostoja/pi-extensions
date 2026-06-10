@@ -223,6 +223,10 @@ function captureHandlers() {
   return { handlers, commandRegistrations, shortcutRegistrations };
 }
 
+function waitForDeferredNotifications() {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
 describe("extension registration", () => {
   it("does not register a command or shortcut", () => {
     const { commandRegistrations, shortcutRegistrations } = captureHandlers();
@@ -255,6 +259,7 @@ describe("model_select handler", () => {
     });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
+    await waitForDeferredNotifications();
     expect(ctx.notifyCalls).toContainEqual({
       message: "handoff skipped: restored",
       type: "info",
@@ -268,6 +273,7 @@ describe("model_select handler", () => {
     const event = makeModelSelectEvent({ previousModel: undefined });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
+    await waitForDeferredNotifications();
     expect(ctx.notifyCalls).toContainEqual({
       message: "handoff skipped: no previous model",
       type: "info",
@@ -282,6 +288,7 @@ describe("model_select handler", () => {
     const event = makeModelSelectEvent({ previousModel: model, model });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
+    await waitForDeferredNotifications();
     expect(ctx.notifyCalls).toContainEqual({
       message: "handoff skipped: same model",
       type: "info",
@@ -355,6 +362,7 @@ describe("model_select handler", () => {
     });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
+    await waitForDeferredNotifications();
     expect(ctx.notifyCalls).toContainEqual({
       message: "handoff skipped: nothing to summarize",
       type: "info",
@@ -471,6 +479,7 @@ describe("model_select handler", () => {
     });
     expect(selectCalled).toBe(false);
     expect(ctx.compactCalls).toHaveLength(0);
+    await waitForDeferredNotifications();
     expect(ctx.notifyCalls).toContainEqual({
       message: "handoff skipped: under cost threshold",
       type: "info",
@@ -556,6 +565,7 @@ describe("model_select handler", () => {
     await handler(event as never, ctx);
     expect(selectCalled).toBe(false);
     expect(ctx.compactCalls).toHaveLength(0);
+    await waitForDeferredNotifications();
     expect(ctx.notifyCalls).toContainEqual({
       message: "handoff skipped: under token threshold",
       type: "info",
