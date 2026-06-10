@@ -1,11 +1,4 @@
-import {
-  existsSync,
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -131,9 +124,7 @@ class FakeGit implements GitClient {
   }
   async listBranchesMatching(pattern: string): Promise<string[]> {
     return this.createdBranches.filter(
-      (b) =>
-        b.includes(pattern.replace(/\*\/?$/, "")) &&
-        !this.deletedBranches.includes(b),
+      (b) => b.includes(pattern.replace(/\*\/?$/, "")) && !this.deletedBranches.includes(b),
     );
   }
   async listWorktrees(): Promise<string[]> {
@@ -154,8 +145,7 @@ class FakeGit implements GitClient {
 class FakeSubagents implements SubagentClient {
   spawns: SpawnArgs[] = [];
   results: SubagentResult[] = [];
-  resultsByDescription: { match: string | RegExp; result: SubagentResult }[] =
-    [];
+  resultsByDescription: { match: string | RegExp; result: SubagentResult }[] = [];
 
   async probe() {
     return { ok: true as const };
@@ -188,8 +178,7 @@ class FakeSubagents implements SubagentClient {
 
 const GOOD_IMPL =
   '<pi-implement-result>{"summary":"done","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"feat: do thing"}</pi-implement-result>';
-const GOOD_REVIEW =
-  '<pi-review-result>{"verdict":"approved"}</pi-review-result>';
+const GOOD_REVIEW = '<pi-review-result>{"verdict":"approved"}</pi-review-result>';
 const GOOD_INTEGRATION_REVIEW =
   '<pi-integration-review-result>{"verdict":"approved"}</pi-integration-review-result>';
 
@@ -199,14 +188,7 @@ function makePaths(dir: string) {
     runDir: join(dir, ".pi", "implement", "runs", "r1"),
     runJson: join(dir, ".pi", "implement", "runs", "r1", "run.json"),
     eventsJsonl: join(dir, ".pi", "implement", "runs", "r1", "events.jsonl"),
-    planSnapshot: join(
-      dir,
-      ".pi",
-      "implement",
-      "runs",
-      "r1",
-      "plan.snapshot.md",
-    ),
+    planSnapshot: join(dir, ".pi", "implement", "runs", "r1", "plan.snapshot.md"),
     tasksDir: join(dir, ".pi", "implement", "runs", "r1", "tasks"),
     worktreesDir: join(dir, ".pi", "implement", "worktrees", "r1"),
     lockFile: join(dir, ".pi", "implement", "locks", "run.lock"),
@@ -260,9 +242,7 @@ describe("nextOverallReviewArtifactPath", () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-artifact-"));
     const planPath = join(dir, "plan.md");
     writeFileSync(planPath, "# Plan\n", "utf-8");
-    expect(nextOverallReviewArtifactPath(planPath)).toBe(
-      join(dir, "plan.overall-review.md"),
-    );
+    expect(nextOverallReviewArtifactPath(planPath)).toBe(join(dir, "plan.overall-review.md"));
   });
 
   it("increments a numeric suffix when the sibling exists", () => {
@@ -270,13 +250,9 @@ describe("nextOverallReviewArtifactPath", () => {
     const planPath = join(dir, "plan.md");
     writeFileSync(planPath, "# Plan\n", "utf-8");
     writeFileSync(join(dir, "plan.overall-review.md"), "# First\n", "utf-8");
-    expect(nextOverallReviewArtifactPath(planPath)).toBe(
-      join(dir, "plan.overall-review-2.md"),
-    );
+    expect(nextOverallReviewArtifactPath(planPath)).toBe(join(dir, "plan.overall-review-2.md"));
     writeFileSync(join(dir, "plan.overall-review-2.md"), "# Second\n", "utf-8");
-    expect(nextOverallReviewArtifactPath(planPath)).toBe(
-      join(dir, "plan.overall-review-3.md"),
-    );
+    expect(nextOverallReviewArtifactPath(planPath)).toBe(join(dir, "plan.overall-review-3.md"));
   });
 });
 
@@ -306,11 +282,7 @@ describe("runImplementation", () => {
   it("blocks before spawning implementers when manifest validation failed", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `missing.md`\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `missing.md`\n", "utf-8");
     const manifest = buildPlanBundleManifest(planPath, parsePlanFile(planPath));
     const git = new FakeGit();
     const subagents = new FakeSubagents();
@@ -394,8 +366,7 @@ describe("runImplementation", () => {
         planner: { model: "p/m", type: "Explore" },
       },
       updateState: (patch) => {
-        const resolved =
-          typeof patch === "function" ? patch(currentState) : patch;
+        const resolved = typeof patch === "function" ? patch(currentState) : patch;
         currentState = { ...currentState, ...resolved };
         states.push(resolved);
       },
@@ -480,17 +451,17 @@ describe("runImplementation", () => {
         planner: { model: "p/m", type: "Explore" },
       },
       updateState: (patch) => {
-        const resolved =
-          typeof patch === "function" ? patch(currentState) : patch;
+        const resolved = typeof patch === "function" ? patch(currentState) : patch;
         currentState = { ...currentState, ...resolved };
         states.push(resolved);
       },
       shouldStop: () => false,
     });
 
-    expect(states.find((state) => state.taskIndex !== undefined)).toMatchObject(
-      { taskIndex: 3, totalTasks: 5 },
-    );
+    expect(states.find((state) => state.taskIndex !== undefined)).toMatchObject({
+      taskIndex: 3,
+      totalTasks: 5,
+    });
     expect(subagents.spawns[0]?.description).toContain("task 3/5");
     expect(currentState.phase).toBe("done");
   });
@@ -498,11 +469,7 @@ describe("runImplementation", () => {
   it("reviewer prompt includes sibling tasks as out-of-scope context but implementer prompt does not", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] Task one\n- [x] Task two\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Task one\n- [x] Task two\n", "utf-8");
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     subagents.results = [
@@ -531,9 +498,7 @@ describe("runImplementation", () => {
     expect(implPrompt).not.toContain("Task two");
     expect(reviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(reviewerPrompt).toContain("- [x] Task two");
-    expect(reviewerPrompt).toContain(
-      "Completing a sibling task's own deliverable is scope creep",
-    );
+    expect(reviewerPrompt).toContain("Completing a sibling task's own deliverable is scope creep");
   });
 
   it("index-style plan: implementer and reviewer prompts include referenced material, implementer does not see sibling tasks", async () => {
@@ -602,11 +567,7 @@ describe("runImplementation", () => {
   it("two unchecked tasks: reviewer prompt lists task 2 as out-of-scope but implementer prompt does not", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] Task one\n- [ ] Task two\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Task one\n- [ ] Task two\n", "utf-8");
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     subagents.results = [
@@ -637,9 +598,7 @@ describe("runImplementation", () => {
     expect(implPrompt).not.toContain("Task two");
     expect(reviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(reviewerPrompt).toContain("- [ ] Task two");
-    expect(reviewerPrompt).toContain(
-      "Completing a sibling task's own deliverable is scope creep",
-    );
+    expect(reviewerPrompt).toContain("Completing a sibling task's own deliverable is scope creep");
     expect(reviewerPrompt).toContain(
       "Request changes if the staged diff substantially implements an unselected sibling task",
     );
@@ -727,14 +686,7 @@ describe("runImplementation", () => {
       runDir: join(dir, ".pi", "implement", "runs", "r1"),
       runJson: join(dir, ".pi", "implement", "runs", "r1", "run.json"),
       eventsJsonl: join(dir, ".pi", "implement", "runs", "r1", "events.jsonl"),
-      planSnapshot: join(
-        dir,
-        ".pi",
-        "implement",
-        "runs",
-        "r1",
-        "plan.snapshot.md",
-      ),
+      planSnapshot: join(dir, ".pi", "implement", "runs", "r1", "plan.snapshot.md"),
       tasksDir: join(dir, ".pi", "implement", "runs", "r1", "tasks"),
       worktreesDir: join(dir, ".pi", "implement", "worktrees", "r1"),
       lockFile: join(dir, ".pi", "implement", "locks", "run.lock"),
@@ -782,14 +734,7 @@ describe("runImplementation", () => {
       runDir: join(dir, ".pi", "implement", "runs", "r1"),
       runJson: join(dir, ".pi", "implement", "runs", "r1", "run.json"),
       eventsJsonl: join(dir, ".pi", "implement", "runs", "r1", "events.jsonl"),
-      planSnapshot: join(
-        dir,
-        ".pi",
-        "implement",
-        "runs",
-        "r1",
-        "plan.snapshot.md",
-      ),
+      planSnapshot: join(dir, ".pi", "implement", "runs", "r1", "plan.snapshot.md"),
       tasksDir: join(dir, ".pi", "implement", "runs", "r1", "tasks"),
       worktreesDir: join(dir, ".pi", "implement", "worktrees", "r1"),
       lockFile: join(dir, ".pi", "implement", "locks", "run.lock"),
@@ -822,23 +767,16 @@ describe("runImplementation", () => {
     // integration owns source checklist updates, so task-local approval leaves it unchecked
     expect(readFileSync(planPath, "utf-8")).toContain("- [ ] Do thing");
     const taskDir = join(paths.tasksDir, "t001-do-thing");
-    const taskJson = JSON.parse(
-      readFileSync(join(taskDir, "task.json"), "utf-8"),
-    ) as { status: string; taskCommitSha?: string };
+    const taskJson = JSON.parse(readFileSync(join(taskDir, "task.json"), "utf-8")) as {
+      status: string;
+      taskCommitSha?: string;
+    };
     expect(taskJson.status).toBe("approved");
     expect(taskJson.taskCommitSha).toBe("h1-commit-1");
-    expect(readFileSync(join(taskDir, "prompt.md"), "utf-8")).toContain(
-      "Do thing",
-    );
-    expect(readFileSync(join(taskDir, "result.md"), "utf-8")).toContain(
-      "pi-implement-result",
-    );
-    expect(readFileSync(join(taskDir, "review.md"), "utf-8")).toContain(
-      "pi-review-result",
-    );
-    expect(readFileSync(join(taskDir, "diff.patch"), "utf-8")).toContain(
-      "diff --git",
-    );
+    expect(readFileSync(join(taskDir, "prompt.md"), "utf-8")).toContain("Do thing");
+    expect(readFileSync(join(taskDir, "result.md"), "utf-8")).toContain("pi-implement-result");
+    expect(readFileSync(join(taskDir, "review.md"), "utf-8")).toContain("pi-review-result");
+    expect(readFileSync(join(taskDir, "diff.patch"), "utf-8")).toContain("diff --git");
   });
 
   it("blocks if the task worktree is dirty after task commit", async () => {
@@ -864,14 +802,7 @@ describe("runImplementation", () => {
       runDir: join(dir, ".pi", "implement", "runs", "r1"),
       runJson: join(dir, ".pi", "implement", "runs", "r1", "run.json"),
       eventsJsonl: join(dir, ".pi", "implement", "runs", "r1", "events.jsonl"),
-      planSnapshot: join(
-        dir,
-        ".pi",
-        "implement",
-        "runs",
-        "r1",
-        "plan.snapshot.md",
-      ),
+      planSnapshot: join(dir, ".pi", "implement", "runs", "r1", "plan.snapshot.md"),
       tasksDir: join(dir, ".pi", "implement", "runs", "r1", "tasks"),
       worktreesDir: join(dir, ".pi", "implement", "worktrees", "r1"),
       lockFile: join(dir, ".pi", "implement", "locks", "run.lock"),
@@ -988,11 +919,7 @@ describe("runImplementation", () => {
     // Simulate implementer mutating the plan file
     const originalWaitFor = subagents.waitFor.bind(subagents);
     subagents.waitFor = async () => {
-      writeFileSync(
-        planPath,
-        "# Plan\n\n## Tasks\n\n- [x] Do thing\n",
-        "utf-8",
-      );
+      writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [x] Do thing\n", "utf-8");
       return originalWaitFor();
     };
 
@@ -1036,14 +963,7 @@ describe("runImplementation", () => {
       runDir: join(dir, ".pi", "implement", "runs", "r1"),
       runJson: join(dir, ".pi", "implement", "runs", "r1", "run.json"),
       eventsJsonl: join(dir, ".pi", "implement", "runs", "r1", "events.jsonl"),
-      planSnapshot: join(
-        dir,
-        ".pi",
-        "implement",
-        "runs",
-        "r1",
-        "plan.snapshot.md",
-      ),
+      planSnapshot: join(dir, ".pi", "implement", "runs", "r1", "plan.snapshot.md"),
       tasksDir: join(dir, ".pi", "implement", "runs", "r1", "tasks"),
       worktreesDir: join(dir, ".pi", "implement", "worktrees", "r1"),
       lockFile: join(dir, ".pi", "implement", "locks", "run.lock"),
@@ -1131,14 +1051,7 @@ describe("runImplementation", () => {
       runDir: join(dir, ".pi", "implement", "runs", "r1"),
       runJson: join(dir, ".pi", "implement", "runs", "r1", "run.json"),
       eventsJsonl: join(dir, ".pi", "implement", "runs", "r1", "events.jsonl"),
-      planSnapshot: join(
-        dir,
-        ".pi",
-        "implement",
-        "runs",
-        "r1",
-        "plan.snapshot.md",
-      ),
+      planSnapshot: join(dir, ".pi", "implement", "runs", "r1", "plan.snapshot.md"),
       tasksDir: join(dir, ".pi", "implement", "runs", "r1", "tasks"),
       worktreesDir: join(dir, ".pi", "implement", "worktrees", "r1"),
       lockFile: join(dir, ".pi", "implement", "locks", "run.lock"),
@@ -1803,11 +1716,7 @@ describe("runImplementation", () => {
   it("blocks instead of completing when the parallel scheduler stalls", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -1933,9 +1842,7 @@ describe("runImplementation", () => {
     const originalAddWorktree = git.addWorktree.bind(git);
     git.addWorktree = async (path: string, branch: string) => {
       if (staleBranches.has(branch)) {
-        throw new Error(
-          `fatal: a branch named '${branch}' already exists`,
-        );
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
       }
       return originalAddWorktree(path, branch);
     };
@@ -2037,11 +1944,7 @@ describe("runImplementation", () => {
     expect(taskJson?.status).toBe("satisfied");
 
     const events = readEvents(paths);
-    expect(
-      events.some(
-        (e) => e.type === "task_satisfied" && e.taskId === "t001-do-it",
-      ),
-    ).toBe(true);
+    expect(events.some((e) => e.type === "task_satisfied" && e.taskId === "t001-do-it")).toBe(true);
   });
 
   it("serial already-satisfied approved blocks and leaves checkbox unchecked when worktree is dirty after approval", async () => {
@@ -2222,9 +2125,7 @@ describe("runImplementation", () => {
     const ALREADY_SATISFIED_IMPL =
       '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
 
-    subagents.results = [
-      { status: "completed", result: ALREADY_SATISFIED_IMPL },
-    ];
+    subagents.results = [{ status: "completed", result: ALREADY_SATISFIED_IMPL }];
 
     await expect(
       runImplementation({
@@ -2241,9 +2142,7 @@ describe("runImplementation", () => {
         updateState: () => {},
         shouldStop: () => false,
       }),
-    ).rejects.toThrow(
-      "Implementer reported already_satisfied but produced staged changes",
-    );
+    ).rejects.toThrow("Implementer reported already_satisfied but produced staged changes");
 
     expect(subagents.spawns).toHaveLength(1);
     expect(readFileSync(planPath, "utf-8")).toContain("- [ ] Do it");
@@ -2351,11 +2250,7 @@ describe("runImplementation", () => {
     it("repairs validation failure and lands the task", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
-      writeFileSync(
-        planPath,
-        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
-        "utf-8",
-      );
+      writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
       const paths = makePaths(dir);
       writeGraphJson(paths.runDir, {
         version: 1,
@@ -2451,11 +2346,7 @@ describe("runImplementation", () => {
     it("self-heal prompt includes diagnosis authority and required fields", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
-      writeFileSync(
-        planPath,
-        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
-        "utf-8",
-      );
+      writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
       const paths = makePaths(dir);
       writeGraphJson(paths.runDir, {
         version: 1,
@@ -2539,9 +2430,7 @@ describe("runImplementation", () => {
         shouldStop: () => false,
       });
 
-      const selfHealSpawn = subagents.spawns.find((s) =>
-        s.description.includes("self-heal"),
-      );
+      const selfHealSpawn = subagents.spawns.find((s) => s.description.includes("self-heal"));
       expect(selfHealSpawn).toBeDefined();
       const prompt = selfHealSpawn!.prompt;
       expect(prompt).toContain("integration self-heal agent");
@@ -2560,11 +2449,7 @@ describe("runImplementation", () => {
     it("continue_candidate after cherry-pick conflict lands task", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
-      writeFileSync(
-        planPath,
-        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
-        "utf-8",
-      );
+      writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
       const paths = makePaths(dir);
       writeGraphJson(paths.runDir, {
         version: 1,
@@ -2653,11 +2538,7 @@ describe("runImplementation", () => {
     it("stops after MAX_SELF_HEAL_ATTEMPTS and surfaces failure", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
-      writeFileSync(
-        planPath,
-        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
-        "utf-8",
-      );
+      writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
       const paths = makePaths(dir);
       writeGraphJson(paths.runDir, {
         version: 1,
@@ -2738,11 +2619,7 @@ describe("runImplementation", () => {
     it("blocks when self-heal mutates a plan artifact", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
-      writeFileSync(
-        planPath,
-        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
-        "utf-8",
-      );
+      writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
       const paths = makePaths(dir);
       writeGraphJson(paths.runDir, {
         version: 1,
@@ -2827,11 +2704,7 @@ describe("runImplementation", () => {
     it("does not land when self-heal claims success but validation still fails", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
-      writeFileSync(
-        planPath,
-        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
-        "utf-8",
-      );
+      writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
       const paths = makePaths(dir);
       writeGraphJson(paths.runDir, {
         version: 1,
@@ -2901,11 +2774,7 @@ describe("runImplementation", () => {
     it("blocks retry_cherry_pick when self-heal leaves unsafe checkout state", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
-      writeFileSync(
-        planPath,
-        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
-        "utf-8",
-      );
+      writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
       const paths = makePaths(dir);
       writeGraphJson(paths.runDir, {
         version: 1,
@@ -3009,11 +2878,7 @@ describe("runImplementation", () => {
     it("blocks when unparseable self-heal mutates checkout state", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
-      writeFileSync(
-        planPath,
-        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
-        "utf-8",
-      );
+      writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
       const paths = makePaths(dir);
       writeGraphJson(paths.runDir, {
         version: 1,
@@ -3092,11 +2957,7 @@ describe("runImplementation", () => {
     it("allows newly staged integration-repair files and lands task", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
-      writeFileSync(
-        planPath,
-        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
-        "utf-8",
-      );
+      writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
       const paths = makePaths(dir);
       writeGraphJson(paths.runDir, {
         version: 1,
@@ -3198,11 +3059,7 @@ describe("runImplementation", () => {
     it("self-heal prompt includes graph context and run artifact paths", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
-      writeFileSync(
-        planPath,
-        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
-        "utf-8",
-      );
+      writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
       const paths = makePaths(dir);
       writeGraphJson(paths.runDir, {
         version: 1,
@@ -3286,9 +3143,7 @@ describe("runImplementation", () => {
         shouldStop: () => false,
       });
 
-      const selfHealSpawn = subagents.spawns.find((s) =>
-        s.description.includes("self-heal"),
-      );
+      const selfHealSpawn = subagents.spawns.find((s) => s.description.includes("self-heal"));
       expect(selfHealSpawn).toBeDefined();
       const prompt = selfHealSpawn!.prompt;
       expect(prompt).toContain("Graph Context");
@@ -3385,20 +3240,12 @@ describe("runImplementation", () => {
     });
 
     // Two attempts: first creates branch/worktree, second cleans up and recreates
-    const taskBranches = git.createdBranches.filter((b) =>
-      b.includes("task-1"),
-    );
-    const taskWorktrees = git.addedWorktrees.filter((w) =>
-      w.branch.includes("task-1"),
-    );
+    const taskBranches = git.createdBranches.filter((b) => b.includes("task-1"));
+    const taskWorktrees = git.addedWorktrees.filter((w) => w.branch.includes("task-1"));
     expect(taskBranches).toHaveLength(2);
     expect(taskWorktrees).toHaveLength(2);
-    expect(
-      git.removedWorktrees.filter((w) => w.includes("task-1")),
-    ).toHaveLength(1);
-    expect(
-      git.deletedBranches.filter((b) => b.includes("task-1")),
-    ).toHaveLength(1);
+    expect(git.removedWorktrees.filter((w) => w.includes("task-1"))).toHaveLength(1);
+    expect(git.deletedBranches.filter((b) => b.includes("task-1"))).toHaveLength(1);
   });
 
   it("does not fail with branch already exists on needs_rework retry because it deletes first", async () => {
@@ -3434,18 +3281,13 @@ describe("runImplementation", () => {
     git.rootValue = dir;
     const originalCreateTaskBranch = git.createTaskBranch.bind(git);
     git.createTaskBranch = async (branchName: string, baseSha: string) => {
-      if (
-        git.createdBranches.includes(branchName) &&
-        !git.deletedBranches.includes(branchName)
-      ) {
-        throw new Error(
-          `fatal: a branch named '${branchName}' already exists`,
-        );
+      if (git.createdBranches.includes(branchName) && !git.deletedBranches.includes(branchName)) {
+        throw new Error(`fatal: a branch named '${branchName}' already exists`);
       }
       return originalCreateTaskBranch(branchName, baseSha);
     };
     let cherryPickCount = 0;
-    git.cherryPickNoCommit = async (sha: string) => {
+    git.cherryPickNoCommit = async () => {
       cherryPickCount++;
       if (cherryPickCount === 1) {
         return {
@@ -3502,11 +3344,7 @@ describe("runImplementation", () => {
   it("scheduler self-heal repairs stale branch/worktree and retries", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -3631,11 +3469,7 @@ describe("runImplementation", () => {
   it("scheduler self-heal is bounded by MAX_SELF_HEAL_ATTEMPTS", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -3735,11 +3569,7 @@ describe("runImplementation", () => {
   it("includes rich blocked reason when scheduler self-heal makes no progress", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -3786,9 +3616,7 @@ describe("runImplementation", () => {
     const originalAddWorktree = git.addWorktree.bind(git);
     git.addWorktree = async (path: string, branch: string) => {
       if (staleBranches.has(branch)) {
-        throw new Error(
-          `fatal: a branch named '${branch}' already exists`,
-        );
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
       }
       return originalAddWorktree(path, branch);
     };
@@ -3834,21 +3662,13 @@ describe("runImplementation", () => {
     const message = caught!.message;
     expect(message).toContain("Parallel scheduler blocked:");
     expect(message).toContain("first: failed");
-    expect(message).toContain(
-      "second: pending, waiting for first",
-    );
-    expect(message).toContain(
-      "Self-heal attempted but did not produce retryable progress",
-    );
+    expect(message).toContain("second: pending, waiting for first");
+    expect(message).toContain("Self-heal attempted but did not produce retryable progress");
     expect(message).toContain("remaining blocker: disk full");
 
     const events = readEvents(paths);
-    expect(
-      events.some((e) => e.type === "scheduler_self_heal_started"),
-    ).toBe(true);
-    expect(
-      events.some((e) => e.type === "scheduler_self_heal_completed"),
-    ).toBe(true);
+    expect(events.some((e) => e.type === "scheduler_self_heal_started")).toBe(true);
+    expect(events.some((e) => e.type === "scheduler_self_heal_completed")).toBe(true);
   });
 
   it("uses rich blocked reason for all-terminal scheduler failures", async () => {
@@ -3885,9 +3705,7 @@ describe("runImplementation", () => {
     const originalAddWorktree = git.addWorktree.bind(git);
     git.addWorktree = async (path: string, branch: string) => {
       if (branch === "pi-implement/r1/first") {
-        throw new Error(
-          `fatal: a branch named '${branch}' already exists`,
-        );
+        throw new Error(`fatal: a branch named '${branch}' already exists`);
       }
       return originalAddWorktree(path, branch);
     };
@@ -3938,20 +3756,14 @@ describe("runImplementation", () => {
     const message = caught!.message;
     expect(message).toContain("Parallel scheduler blocked:");
     expect(message).toContain("first: failed: Worktree setup failed");
-    expect(message).toContain(
-      "remaining blocker: branch cleanup requires manual intervention",
-    );
+    expect(message).toContain("remaining blocker: branch cleanup requires manual intervention");
     expect(updates.some((u) => u.lastReason === message)).toBe(true);
   });
 
   it("blocks when scheduler self-heal changes HEAD", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -4045,19 +3857,13 @@ describe("runImplementation", () => {
     ).rejects.toThrow(BlockedError);
 
     const events = readEvents(paths);
-    expect(events.some((e) => e.type === "scheduler_self_heal_completed")).toBe(
-      true,
-    );
+    expect(events.some((e) => e.type === "scheduler_self_heal_completed")).toBe(true);
   });
 
   it("blocks when scheduler self-heal mutates a plan artifact", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -4154,11 +3960,7 @@ describe("runImplementation", () => {
   it("blocks when scheduler self-heal leaves the checkout dirty", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -4255,11 +4057,7 @@ describe("runImplementation", () => {
   it("does not revive a failed task when self-heal did not actually remove the stale state", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -4357,11 +4155,7 @@ describe("runImplementation", () => {
   it("includes remaining blocker in stalled scheduler reason", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -4454,11 +4248,7 @@ describe("runImplementation", () => {
   it("scheduler self-heal prompt includes active agent state", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -4605,11 +4395,7 @@ describe("runImplementation", () => {
   it("blocks when scheduler self-heal mutates in-memory task status", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -4712,11 +4498,7 @@ describe("runImplementation", () => {
   it("blocks when scheduler self-heal mutates on-disk task.json", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -4827,11 +4609,7 @@ describe("runImplementation", () => {
   it("blocks when scheduler self-heal corrupts run.json runId", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -4932,11 +4710,7 @@ describe("runImplementation", () => {
   it("detects cleared dirty scheduler state as retryable progress", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -5025,10 +4799,7 @@ describe("runImplementation", () => {
           repaired: true,
           retryScheduler: true,
           summary: "Removed stale branch and cleaned dirty state for first.",
-          commands: [
-            "git branch -D pi-implement/r1/first",
-            "git checkout -- .",
-          ],
+          commands: ["git branch -D pi-implement/r1/first", "git checkout -- ."],
         }),
       },
       { status: "completed", result: GOOD_IMPL },
@@ -5062,11 +4833,7 @@ describe("runImplementation", () => {
   it("allows dirty plan artifacts after scheduler self-heal", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,
@@ -5377,11 +5144,7 @@ describe("runImplementation", () => {
   it("detects dependency installation as retryable progress", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n",
-      "utf-8",
-    );
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n- [ ] Second\n", "utf-8");
     const paths = makePaths(dir);
     writeGraphJson(paths.runDir, {
       version: 1,

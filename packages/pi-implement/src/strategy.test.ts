@@ -74,32 +74,6 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" });
 }
 
-describe("selectStrategy - forced serial", () => {
-  it("selects serial immediately for --serial without calling planner", async () => {
-    const subagents = makeSubagents();
-    const plan = makePlan(["Task A", "Task B", "Task C"]);
-    const result = await selectStrategy({
-      plan,
-      planContent: plan.content,
-      planHash: "hash",
-      repoRoot: "/repo",
-      baseSha: "abc",
-      config: {},
-      roles: makeRoles(),
-      subagents,
-      paths: makeStatePaths(),
-      runId: "r1",
-      updateState: () => ({}),
-      requestedMode: "serial",
-    });
-    expect(result.mode).toBe("serial");
-    expect(result.reason).toContain("--serial");
-    expect(
-      (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
-    ).toHaveLength(0);
-  });
-});
-
 describe("selectStrategy - auto mode deterministic preconditions", () => {
   it("selects serial when zero unchecked tasks without LLM calls", async () => {
     const subagents = makeSubagents();
@@ -116,7 +90,6 @@ describe("selectStrategy - auto mode deterministic preconditions", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
     expect(result.mode).toBe("serial");
     expect(
@@ -139,7 +112,6 @@ describe("selectStrategy - auto mode deterministic preconditions", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
     expect(result.mode).toBe("serial");
     expect(
@@ -170,7 +142,6 @@ describe("selectStrategy - auto mode planner", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
     expect(
       (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
@@ -203,7 +174,6 @@ describe("selectStrategy - auto mode planner", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
     expect(
       (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
@@ -232,7 +202,6 @@ describe("selectStrategy - auto mode planner", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
     expect(
       (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
@@ -299,7 +268,6 @@ describe("selectStrategy - auto mode planner", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
     expect(
       (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
@@ -308,8 +276,8 @@ describe("selectStrategy - auto mode planner", () => {
   });
 });
 
-describe("selectStrategy - forced parallel", () => {
-  it("skips triage and calls graph planner", async () => {
+describe("selectStrategy - graph planner fallback", () => {
+  it("calls graph planner and uses a valid parallel graph", async () => {
     const graph: ImplementGraph = {
       version: 1,
       runId: "",
@@ -369,8 +337,6 @@ describe("selectStrategy - forced parallel", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "parallel",
-      requestedConcurrency: 3,
     });
 
     expect(
@@ -399,8 +365,6 @@ describe("selectStrategy - forced parallel", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "parallel",
-      requestedConcurrency: 2,
     });
     expect(result.mode).toBe("serial");
     expect(result.reason.length).toBeGreaterThan(0);
@@ -465,8 +429,6 @@ describe("selectStrategy - forced parallel", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "parallel",
-      requestedConcurrency: 2,
     });
     expect(result.mode).toBe("serial");
     expect(result.reason.toLowerCase()).toContain("serial");
@@ -506,8 +468,6 @@ describe("selectStrategy - forced parallel", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "parallel",
-      requestedConcurrency: 2,
     });
 
     const spawnMock = subagents.spawn as unknown as {
@@ -541,7 +501,6 @@ describe("selectStrategy - planner prompt content", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
 
     const spawnMock = subagents.spawn as unknown as {
@@ -574,7 +533,6 @@ describe("selectStrategy - planner prompt content", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
 
     const spawnMock = subagents.spawn as unknown as {
@@ -612,7 +570,6 @@ describe("selectStrategy - planner prompt content", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
 
     const spawnMock = subagents.spawn as unknown as {
@@ -647,7 +604,6 @@ describe("selectStrategy - planner prompt content", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
 
     const spawnMock = subagents.spawn as unknown as {
@@ -679,7 +635,6 @@ describe("selectStrategy - planner prompt content", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
 
     const spawnMock = subagents.spawn as unknown as {
@@ -714,7 +669,6 @@ describe("selectStrategy - planner prompt content", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
 
     const spawnMock = subagents.spawn as unknown as {
@@ -747,7 +701,6 @@ describe("selectStrategy - planner prompt content", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
 
     const spawnMock = subagents.spawn as unknown as {
@@ -779,7 +732,6 @@ describe("selectStrategy - planner prompt content", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
 
     const spawnMock = subagents.spawn as unknown as {
@@ -814,7 +766,6 @@ describe("selectStrategy - planner prompt content", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
 
     const spawnMock = subagents.spawn as unknown as {
@@ -891,8 +842,6 @@ describe("selectStrategy - concurrency clamping", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "parallel",
-      requestedConcurrency: 5,
     });
     expect(result.mode).toBe("parallel");
     expect(result.maxConcurrency).toBe(3);
@@ -976,7 +925,6 @@ describe("selectStrategy - concurrency clamping", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "auto",
     });
     if (result.mode === "parallel") {
       expect(result.maxConcurrency).toBeLessThanOrEqual(2);
@@ -1044,8 +992,6 @@ describe("selectStrategy - validationCommands are advisory only", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "parallel",
-      requestedConcurrency: 2,
     });
     if (result.mode === "parallel") {
       expect(result.graph.nodes[0].validationCommands).toEqual([
@@ -1120,8 +1066,6 @@ describe("selectStrategy - validationCommands are advisory only", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "parallel",
-      requestedConcurrency: 2,
     });
     // Only one spawn: the graph planner. validationCommands are never executed.
     expect(
@@ -1184,7 +1128,6 @@ describe("buildTriagePrompt - bundle material", () => {
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
-      requestedMode: "auto",
       updateState: () => ({}),
       manifest,
     });
@@ -1240,8 +1183,6 @@ describe("selectStrategy - graph planner bundle material", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "parallel",
-      requestedConcurrency: 2,
       manifest,
     });
 
@@ -1300,8 +1241,6 @@ describe("selectStrategy - graph planner bundle material", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "parallel",
-      requestedConcurrency: 2,
       manifest,
     });
 
@@ -1353,8 +1292,6 @@ describe("selectStrategy - graph planner bundle material", () => {
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
-      requestedMode: "parallel",
-      requestedConcurrency: 2,
     });
 
     const spawnMock = subagents.spawn as unknown as {
@@ -1403,8 +1340,6 @@ describe("selectStrategy - graph planner bundle material", () => {
         paths: makeStatePaths(),
         runId: "r1",
         updateState: () => ({}),
-        requestedMode: "parallel",
-        requestedConcurrency: 2,
         manifest,
       }),
     ).rejects.toThrow(PlanMaterialSizeError);
