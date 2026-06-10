@@ -46,6 +46,7 @@ export type StrategyRequest = {
   runId: string;
   signal?: AbortSignal;
   manifest?: PlanBundleManifest;
+  forceSerial?: boolean;
   updateState(state: StatePatch): void;
 };
 
@@ -67,6 +68,14 @@ export async function selectStrategy(
     return {
       mode: "serial",
       reason: "Only one unchecked task; no parallelism needed.",
+      maxConcurrency,
+    };
+  }
+
+  if (req.forceSerial) {
+    return {
+      mode: "serial",
+      reason: "Serial mode forced via --serial flag.",
       maxConcurrency,
     };
   }

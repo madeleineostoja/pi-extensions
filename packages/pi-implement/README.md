@@ -20,6 +20,7 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 
 ```text
 /implement path/to/plan.md          # pick serial or parallel automatically
+/implement path/to/plan.md --serial # force serial execution
 /build path/to/plan.md              # alias for /implement
 /implement status
 /implement stop
@@ -34,6 +35,8 @@ Plan paths must not contain spaces. Use a symlink or rename if needed.
 ## Execution strategy
 
 Zero or one unchecked task short-circuits to serial. Otherwise a progressive planner decides whether the remaining tasks require serial execution or can run from a dependency graph, inspecting the repository only when needed. Invalid planner output, planner failures, invalid graphs, and explicit planner serial decisions fall back to serial execution.
+
+Passing `--serial` forces serial execution and skips the planner entirely.
 
 Parallel execution runs independent tasks concurrently up to `maxParallel` from config, with a hard maximum of `8`.
 

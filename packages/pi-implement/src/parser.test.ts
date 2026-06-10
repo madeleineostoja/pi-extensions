@@ -6,7 +6,7 @@ describe("parseCommand", () => {
     const result = parseCommand("path/to/plan.md");
     expect(result).toEqual({
       kind: "execution",
-      mode: { kind: "auto", planPath: "path/to/plan.md" },
+      mode: { kind: "auto", planPath: "path/to/plan.md", forceSerial: false },
     });
   });
 
@@ -48,7 +48,7 @@ describe("parseCommand", () => {
   it("treats bare 'agents' as plan path", () => {
     expect(parseCommand("agents")).toEqual({
       kind: "execution",
-      mode: { kind: "auto", planPath: "agents" },
+      mode: { kind: "auto", planPath: "agents", forceSerial: false },
     });
   });
 

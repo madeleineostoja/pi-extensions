@@ -430,6 +430,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       }
 
       const planPath = resolve(ctx.cwd, parsed.mode.planPath);
+      const forceSerial = parsed.mode.forceSerial;
 
       const configuredWorkerModels = [
         effective.roles.implementer.model,
@@ -679,6 +680,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           signal: abortController.signal,
           updateState,
           manifest,
+          forceSerial,
         });
         throwIfCommandStopped(isCurrentRun, active, abortController);
         appendEvent(paths, {

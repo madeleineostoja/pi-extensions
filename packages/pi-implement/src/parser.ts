@@ -1,5 +1,8 @@
 export type ParsedCommand =
-  | { kind: "execution"; mode: { kind: "auto"; planPath: string } }
+  | {
+      kind: "execution";
+      mode: { kind: "auto"; planPath: string; forceSerial: boolean };
+    }
   | {
       kind: "subcommand";
       name: "status" | "stop" | "cleanup" | "config" | "inspect" | "view";
@@ -40,7 +43,20 @@ export function parseCommand(input: string): ParsedCommand {
     }
     return {
       kind: "execution",
-      mode: { kind: "auto", planPath: first },
+      mode: { kind: "auto", planPath: first, forceSerial: false },
+    };
+  }
+
+  if (tokens.length === 2 && tokens[1] === "--serial") {
+    if (first.includes(" ")) {
+      return {
+        kind: "error",
+        message: "Plan path must not contain spaces.",
+      };
+    }
+    return {
+      kind: "execution",
+      mode: { kind: "auto", planPath: first, forceSerial: true },
     };
   }
 
@@ -52,5 +68,5 @@ function tokenize(input: string): string[] {
 }
 
 export function usage(): string {
-  return "Usage: /implement <plan.md> | /implement status | /implement stop | /implement cleanup | /implement config | /implement view | /implement inspect";
+  return "Usage: /implement <plan.md> [--serial] | /implement status | /implement stop | /implement cleanup | /implement config | /implement view | /implement inspect";
 }
