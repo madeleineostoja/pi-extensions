@@ -99,14 +99,14 @@ describe("captureContextUsage", () => {
       getContextUsage: () => ({
         tokens: 5000,
         contextWindow: 100000,
-        percent: 0.05,
+        percent: 5,
       }),
     } as any;
     captureContextUsage(state, ctx);
     expect(state.contextUsage).toEqual({
       tokens: 5000,
       contextWindow: 100000,
-      percent: 0.05,
+      percent: 5,
     });
   });
 
@@ -119,7 +119,7 @@ describe("captureContextUsage", () => {
 
   it("clears stale usage when getContextUsage becomes unavailable", () => {
     const state = makeState();
-    state.contextUsage = { tokens: 99, contextWindow: 100, percent: 0.99 };
+    state.contextUsage = { tokens: 99, contextWindow: 100, percent: 99 };
     captureContextUsage(state, {} as any);
     expect(state.contextUsage).toBeUndefined();
   });
@@ -594,10 +594,14 @@ describe("formatTelemetryDiagnostics", () => {
 
   it("includes context usage when available", () => {
     const state = makeState();
-    state.contextUsage = { tokens: 5000, contextWindow: 100000, percent: 0.05 };
+    state.contextUsage = {
+      tokens: 104517,
+      contextWindow: 1050000,
+      percent: 9.954,
+    };
     const text = formatTelemetryDiagnostics(state);
     expect(text).toContain("context usage:");
-    expect(text).toContain("5,000 / 100,000 tokens (5.0%)");
+    expect(text).toContain("104,517 / 1,050,000 tokens (10.0%)");
   });
 
   it("handles unknown tokens gracefully", () => {

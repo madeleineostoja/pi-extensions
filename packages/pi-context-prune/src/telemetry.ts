@@ -355,8 +355,10 @@ export function formatTelemetryDiagnostics(state: PruningState): string {
   if (state.contextUsage) {
     const { tokens, contextWindow, percent } = state.contextUsage;
     if (tokens !== null) {
+      const displayPercent =
+        percent ?? (contextWindow > 0 ? (tokens / contextWindow) * 100 : 0);
       lines.push(
-        `context usage: ${tokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (${((percent ?? 0) * 100).toFixed(1)}%)`,
+        `context usage: ${tokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (${displayPercent.toFixed(1)}%)`,
       );
     } else {
       lines.push(
