@@ -368,11 +368,26 @@ For parallel, return this shape:
         "confidence": "high",
         "reasons": ["why this can run in parallel"],
         "evidencePaths": [],
-        "review": { "mode": "skip" | "suggest" | "require", "reason": "optional" }
+        "review": { "mode": "skip" | "suggest" | "require", "reason": "optional" },
+        "scout": { "mode": "skip" | "suggest" | "require", "reason": "optional", "prompt": "optional", "breadth": "quick" | "medium" | "very thorough" }
       }
     ]
   }
 }
+
+## Scout Directives
+
+Each graph node may include an optional advisory "scout" field to guide runtime just-in-time exploration before the implementer begins a task. These directives are advisory hints, not authoritative guarantees. The runtime may override them based on config, retry state, and current worktree state.
+
+- "require" — the runtime should run a read-only Scout before this task attempt. Use for broad or ambiguous tasks where early context would materially help the implementer.
+- "suggest" — Scout is preferred but may be skipped if the runtime policy says otherwise or the task is trivial.
+- "skip" — the planner believes this task needs no Scout exploration. Use for narrow, obvious, or docs-only tasks.
+- "prompt" — an optional custom Scout prompt or question. The runtime may include it in the Scout request.
+- "breadth" — optional exploration depth hint: "quick" for a few file lookups, "medium" for targeted search, "very thorough" for broad repo tracing.
+
+Omit "scout" entirely when you have no strong opinion.
+
+Important: Scout directives are for future runtime hints only. Do not perform or claim durable repo exploration at planning time. The codebase will change before the task runs. Do not assert that Scout results are already known unless supported by the bounded exploration you performed for strategy decisions.
 
 ## Task Review Directives
 
