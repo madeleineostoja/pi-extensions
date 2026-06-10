@@ -1,12 +1,44 @@
-import { describe, expect, it } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+
+const getAgentDirMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@earendil-works/pi-coding-agent", async () => {
+  const actual = await vi.importActual<
+    typeof import("@earendil-works/pi-coding-agent")
+  >("@earendil-works/pi-coding-agent");
+  return {
+    ...actual,
+    getAgentDir: getAgentDirMock,
+  };
+});
+
 import { canStartImplementRun, registerImplementCommand } from "./command.js";
 import { getStatePaths, createRunState, writeTaskJson } from "./state.js";
 
 type Handler = (args: string, ctx: FakeContext) => Promise<void>;
+
+let tmpAgentDir: string;
+
+function writeImplementConfig(config: unknown) {
+  const dir = join(tmpAgentDir, "extensions", "pi-implement");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "config.json"), JSON.stringify(config));
+}
+
+beforeEach(() => {
+  tmpAgentDir = mkdtempSync(join(tmpdir(), "pi-implement-agent-"));
+  getAgentDirMock.mockReturnValue(tmpAgentDir);
+  writeImplementConfig({ reviewer: { type: "Review" } });
+});
+
+afterEach(() => {
+  rmSync(tmpAgentDir, { recursive: true, force: true });
+  vi.restoreAllMocks();
+});
 
 type FakeContext = {
   cwd: string;
