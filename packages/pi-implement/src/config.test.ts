@@ -7,6 +7,7 @@ import {
   resolveMaxParallel,
   resolveEffectiveTaskReview,
   reviewerDefaultTypeWarning,
+  resolveEffectiveScoutConfig,
 } from "./config.js";
 
 describe("config", () => {
@@ -211,5 +212,148 @@ describe("taskReview config", () => {
     });
     expect(status).toContain("Task review mode: always");
     expect(status).toContain("Task review skip thresholds: 500 chars");
+  });
+});
+
+describe("scout config", () => {
+  it("defaults to enabled auto mode with Explore type", () => {
+    const effective = resolveEffectiveScoutConfig({});
+    expect(effective.enabled).toBe(true);
+    expect(effective.mode).toBe("auto");
+    expect(effective.type).toBe("Explore");
+    expect(effective.model).toBeUndefined();
+    expect(effective.maxResultChars).toBe(50000);
+    expect(effective.timeoutMs).toBe(120000);
+  });
+
+  it("parses valid scout settings", () => {
+    const parsed = parseConfig(
+      JSON.stringify({
+        scout: {
+          enabled: false,
+          mode: "always",
+          type: "Explore",
+          model: "p/scout",
+          maxResultChars: 10000,
+          timeoutMs: 30000,
+        },
+      }),
+    );
+    expect(parsed.config.scout).toEqual({
+      enabled: false,
+      mode: "always",
+      type: "Explore",
+      model: "p/scout",
+      maxResultChars: 10000,
+      timeoutMs: 30000,
+    });
+    expect(parsed.warning).toBeUndefined();
+  });
+
+  it("clamps maxResultChars to hard maximum", () => {
+    const parsed = parseConfig(
+      JSON.stringify({ scout: { maxResultChars: 500000 } }),
+    );
+    expect(parsed.config.scout?.maxResultChars).toBe(200000);
+  });
+
+  it("clamps timeoutMs to hard maximum", () => {
+    const parsed = parseConfig(
+      JSON.stringify({ scout: { timeoutMs: 1000000 } }),
+    );
+    expect(parsed.config.scout?.timeoutMs).toBe(600000);
+  });
+
+  it("ignores invalid scout mode with warning", () => {
+    const parsed = parseConfig(
+      JSON.stringify({ scout: { mode: "sometimes" } }),
+    );
+    expect(parsed.config.scout).toEqual({});
+    expect(parsed.warning).toContain('scout.mode must be "auto", "always", or "off"');
+  });
+
+  it("ignores non-object scout with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ scout: "auto" }));
+    expect(parsed.config.scout).toBeUndefined();
+    expect(parsed.warning).toContain("scout must be an object");
+  });
+
+  it("ignores invalid scout.enabled with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ scout: { enabled: "yes" } }));
+    expect(parsed.config.scout).toEqual({});
+    expect(parsed.warning).toContain("scout.enabled must be a boolean");
+  });
+
+  it("ignores invalid scout.type with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ scout: { type: 123 } }));
+    expect(parsed.config.scout).toEqual({});
+    expect(parsed.warning).toContain("scout.type must be a string");
+  });
+
+  it("ignores empty scout.type with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ scout: { type: "  " } }));
+    expect(parsed.config.scout).toEqual({});
+    expect(parsed.warning).toContain("scout.type must be a non-empty string");
+  });
+
+  it("uses custom scout.type when provided", () => {
+    const parsed = parseConfig(
+      JSON.stringify({ scout: { type: "CustomScout" } }),
+    );
+    expect(parsed.config.scout?.type).toBe("CustomScout");
+    const effective = resolveEffectiveScoutConfig(parsed.config);
+    expect(effective.type).toBe("CustomScout");
+  });
+
+  it("ignores invalid scout.model with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ scout: { model: 123 } }));
+    expect(parsed.config.scout).toEqual({});
+    expect(parsed.warning).toContain("scout.model must be a string");
+  });
+
+  it("ignores empty scout.model with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ scout: { model: "  " } }));
+    expect(parsed.config.scout).toEqual({});
+    expect(parsed.warning).toContain("scout.model must be a non-empty string");
+  });
+
+  it("ignores invalid maxResultChars with warning", () => {
+    const parsed = parseConfig(
+      JSON.stringify({ scout: { maxResultChars: 0 } }),
+    );
+    expect(parsed.config.scout).toEqual({});
+    expect(parsed.warning).toContain("scout.maxResultChars must be a positive integer");
+  });
+
+  it("ignores invalid timeoutMs with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ scout: { timeoutMs: -1 } }));
+    expect(parsed.config.scout).toEqual({});
+    expect(parsed.warning).toContain("scout.timeoutMs must be a positive integer");
+  });
+
+  it("includes scout status in formatConfigStatus", () => {
+    const status = formatConfigStatus({
+      path: "/x/config.json",
+      config: {
+        scout: { enabled: false, mode: "off", type: "Custom", model: "p/m" },
+      },
+    });
+    expect(status).toContain("Scout enabled: false");
+    expect(status).toContain("Scout mode: off");
+    expect(status).toContain("Scout subagent: Custom");
+    expect(status).toContain("Scout model: p/m");
+    expect(status).toContain("Scout max result chars: 50000");
+    expect(status).toContain("Scout timeout: 120000ms");
+  });
+
+  it("omits scout model line when no model is set", () => {
+    const status = formatConfigStatus({
+      path: "/x/config.json",
+      config: {},
+    });
+    expect(status).toContain("Scout enabled: true");
+    expect(status).toContain("Scout mode: auto");
+    expect(status).toContain("Scout subagent: Explore");
+    expect(status).not.toContain("Scout model:");
   });
 });

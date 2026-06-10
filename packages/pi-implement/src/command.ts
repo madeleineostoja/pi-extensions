@@ -13,6 +13,7 @@ import {
   formatConfigStatus,
   resolveMaxParallel,
   reviewerDefaultTypeWarning,
+  resolveEffectiveScoutConfig,
 } from "./config.js";
 import { ExecGitClient } from "./git.js";
 import {
@@ -724,6 +725,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
             abortController.signal.aborted,
           signal: abortController.signal,
           verifyCommand: config.config.verifyCommand,
+          scout: resolveEffectiveScoutConfig(config.config),
         });
       })()
         .then(() => {

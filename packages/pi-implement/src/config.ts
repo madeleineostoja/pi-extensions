@@ -13,6 +13,15 @@ export type TaskReviewConfig = {
   maxSkipFiles?: number;
 };
 
+export type ScoutConfig = {
+  enabled?: boolean;
+  mode?: "auto" | "always" | "off";
+  type?: string;
+  model?: string;
+  maxResultChars?: number;
+  timeoutMs?: number;
+};
+
 export type ImplementConfig = {
   implementer?: RoleConfig;
   reviewer?: RoleConfig;
@@ -20,6 +29,7 @@ export type ImplementConfig = {
   verifyCommand?: string;
   planner?: RoleConfig;
   taskReview?: TaskReviewConfig;
+  scout?: ScoutConfig;
 };
 
 export type ConfigReadResult = {
@@ -39,6 +49,15 @@ export type EffectiveRoles = {
   planner: EffectiveRole;
 };
 
+export type EffectiveScoutConfig = {
+  enabled: boolean;
+  mode: "auto" | "always" | "off";
+  type: string;
+  model?: string;
+  maxResultChars: number;
+  timeoutMs: number;
+};
+
 export const DEFAULT_SUBAGENT_TYPE = "general-purpose";
 const DEFAULT_PLANNER_TYPE = "Explore";
 const DEFAULT_MAX_PARALLEL = 3;
@@ -49,6 +68,14 @@ const DEFAULT_MAX_SKIP_DIFF_CHARS = 2000;
 const DEFAULT_MAX_SKIP_FILES = 3;
 const HARD_MAX_SKIP_DIFF_CHARS = 10000;
 const HARD_MAX_SKIP_FILES = 10;
+
+const DEFAULT_SCOUT_ENABLED = true;
+const DEFAULT_SCOUT_MODE = "auto";
+const DEFAULT_SCOUT_TYPE = "Explore";
+const DEFAULT_MAX_RESULT_CHARS = 50000;
+const DEFAULT_TIMEOUT_MS = 120000;
+const HARD_MAX_RESULT_CHARS = 200000;
+const HARD_MAX_TIMEOUT_MS = 600000;
 
 export function getConfigPath(agentDir: string): string {
   return join(agentDir, "extensions", "pi-implement", "config.json");
@@ -135,6 +162,75 @@ export function parseConfig(raw: string): {
       }
     }
 
+    if (object.scout !== undefined) {
+      const sc = object.scout;
+      if (typeof sc !== "object" || sc === null || Array.isArray(sc)) {
+        warningParts.push("scout must be an object");
+      } else {
+        const scObj = sc as Record<string, unknown>;
+        const scout: ScoutConfig = {};
+        if (scObj.enabled !== undefined) {
+          if (typeof scObj.enabled === "boolean") {
+            scout.enabled = scObj.enabled;
+          } else {
+            warningParts.push("scout.enabled must be a boolean");
+          }
+        }
+        if (scObj.mode !== undefined) {
+          if (
+            scObj.mode === "auto" ||
+            scObj.mode === "always" ||
+            scObj.mode === "off"
+          ) {
+            scout.mode = scObj.mode;
+          } else {
+            warningParts.push('scout.mode must be "auto", "always", or "off"');
+          }
+        }
+        if (scObj.type !== undefined) {
+          if (typeof scObj.type === "string") {
+            const type = scObj.type.trim();
+            if (type) {
+              scout.type = type;
+            } else {
+              warningParts.push("scout.type must be a non-empty string");
+            }
+          } else {
+            warningParts.push("scout.type must be a string");
+          }
+        }
+        if (scObj.model !== undefined) {
+          if (typeof scObj.model === "string") {
+            const model = scObj.model.trim();
+            if (model) {
+              scout.model = model;
+            } else {
+              warningParts.push("scout.model must be a non-empty string");
+            }
+          } else {
+            warningParts.push("scout.model must be a string");
+          }
+        }
+        if (scObj.maxResultChars !== undefined) {
+          const mrc = scObj.maxResultChars;
+          if (typeof mrc === "number" && Number.isInteger(mrc) && mrc > 0) {
+            scout.maxResultChars = Math.min(mrc, HARD_MAX_RESULT_CHARS);
+          } else {
+            warningParts.push("scout.maxResultChars must be a positive integer");
+          }
+        }
+        if (scObj.timeoutMs !== undefined) {
+          const tm = scObj.timeoutMs;
+          if (typeof tm === "number" && Number.isInteger(tm) && tm > 0) {
+            scout.timeoutMs = Math.min(tm, HARD_MAX_TIMEOUT_MS);
+          } else {
+            warningParts.push("scout.timeoutMs must be a positive integer");
+          }
+        }
+        config.scout = scout;
+      }
+    }
+
     for (const role of ["implementer", "reviewer", "planner"] as const) {
       const value = object[role];
       if (value === undefined) {
@@ -207,6 +303,26 @@ export function resolveEffectiveTaskReview(
     maxSkipFiles: Math.min(
       taskReview.maxSkipFiles ?? DEFAULT_MAX_SKIP_FILES,
       HARD_MAX_SKIP_FILES,
+    ),
+  };
+}
+
+export function resolveEffectiveScoutConfig(
+  config: ImplementConfig,
+): EffectiveScoutConfig {
+  const scout = config.scout ?? {};
+  return {
+    enabled: scout.enabled ?? DEFAULT_SCOUT_ENABLED,
+    mode: scout.mode ?? DEFAULT_SCOUT_MODE,
+    type: scout.type ?? DEFAULT_SCOUT_TYPE,
+    model: scout.model,
+    maxResultChars: Math.min(
+      scout.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS,
+      HARD_MAX_RESULT_CHARS,
+    ),
+    timeoutMs: Math.min(
+      scout.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      HARD_MAX_TIMEOUT_MS,
     ),
   };
 }
@@ -313,5 +429,14 @@ export function formatConfigStatus(
   lines.push(
     `Task review skip thresholds: ${effectiveTaskReview.maxSkipDiffChars} chars, ${effectiveTaskReview.maxSkipFiles} files`,
   );
+  const effectiveScout = resolveEffectiveScoutConfig(result.config);
+  lines.push(`Scout enabled: ${effectiveScout.enabled}`);
+  lines.push(`Scout mode: ${effectiveScout.mode}`);
+  lines.push(`Scout subagent: ${effectiveScout.type}`);
+  if (effectiveScout.model) {
+    lines.push(`Scout model: ${effectiveScout.model}`);
+  }
+  lines.push(`Scout max result chars: ${effectiveScout.maxResultChars}`);
+  lines.push(`Scout timeout: ${effectiveScout.timeoutMs}ms`);
   return lines.join("\n");
 }

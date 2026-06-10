@@ -26,7 +26,7 @@ import {
 } from "./plan.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SubagentClient } from "./subagents.js";
-import type { EffectiveRoles } from "./config.js";
+import type { EffectiveRoles, EffectiveScoutConfig } from "./config.js";
 import type {
   RunState,
   ParallelTaskState,
@@ -110,6 +110,7 @@ export type OrchestratorDeps = {
   shouldStop(): boolean;
   signal?: AbortSignal;
   verifyCommand?: string;
+  scout?: EffectiveScoutConfig;
 };
 
 export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
