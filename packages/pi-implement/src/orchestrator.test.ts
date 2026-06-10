@@ -445,6 +445,39 @@ describe("runImplementation", () => {
     expect(states.at(-1)).toMatchObject({ phase: "done" });
   });
 
+  it("serial task implementer spawn has cwd unset", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const implementerSpawn = subagents.spawns.find((s) =>
+      s.description.includes("implement"),
+    );
+    expect(implementerSpawn).toBeDefined();
+    expect(implementerSpawn?.cwd).toBeUndefined();
+  });
+
   it("starts a partially completed serial plan at the next plan task number", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
@@ -843,6 +876,66 @@ describe("runImplementation", () => {
     expect(readFileSync(join(taskDir, "diff.patch"), "utf-8")).toContain(
       "diff --git",
     );
+  });
+
+  it("worktree-backed task implementer spawn carries cwd === worktreePath", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const child = new FakeGit();
+    child.commit = async (message: string): Promise<CommandResult> => {
+      child.commits.push(message);
+      child.headValue = `${child.headValue}-commit-${child.commits.length}`;
+      return { command: "git commit", exitCode: 0, stdout: "", stderr: "" };
+    };
+    git.worktreeChild = child;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+    ];
+    const paths = {
+      baseDir: join(dir, ".pi", "implement"),
+      runDir: join(dir, ".pi", "implement", "runs", "r1"),
+      runJson: join(dir, ".pi", "implement", "runs", "r1", "run.json"),
+      eventsJsonl: join(dir, ".pi", "implement", "runs", "r1", "events.jsonl"),
+      planSnapshot: join(
+        dir,
+        ".pi",
+        "implement",
+        "runs",
+        "r1",
+        "plan.snapshot.md",
+      ),
+      tasksDir: join(dir, ".pi", "implement", "runs", "r1", "tasks"),
+      worktreesDir: join(dir, ".pi", "implement", "worktrees", "r1"),
+      lockFile: join(dir, ".pi", "implement", "locks", "run.lock"),
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("parallel task approved");
+
+    const implementerSpawn = subagents.spawns.find((s) =>
+      s.description.includes("implement"),
+    );
+    expect(implementerSpawn).toBeDefined();
+    expect(implementerSpawn?.cwd).toBe(git.addedWorktrees[0]?.path);
   });
 
   it("blocks if the task worktree is dirty after task commit", async () => {

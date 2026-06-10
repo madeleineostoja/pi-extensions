@@ -102,6 +102,57 @@ describe("EventSubagentClient", () => {
     await expect(promise).resolves.toBe("agent-1");
   });
 
+  it("includes cwd in spawn options when set", async () => {
+    const events = new FakeEvents();
+    const client = new EventSubagentClient(events, 100);
+    const promise = client.spawn({
+      type: "general-purpose",
+      prompt: "p",
+      description: "d",
+      cwd: "/some/path",
+    });
+    const request = events.emitted[0];
+    expect(request.payload).toMatchObject({
+      type: "general-purpose",
+      prompt: "p",
+      options: { description: "d", isBackground: true, cwd: "/some/path" },
+    });
+    const requestId = (request.payload as { requestId: string }).requestId;
+    events.fire(`subagents:rpc:spawn:reply:${requestId}`, {
+      success: true,
+      data: { id: "agent-1" },
+    });
+    await expect(promise).resolves.toBe("agent-1");
+  });
+
+  it("omits cwd in spawn options when unset", async () => {
+    const events = new FakeEvents();
+    const client = new EventSubagentClient(events, 100);
+    const promise = client.spawn({
+      type: "general-purpose",
+      prompt: "p",
+      description: "d",
+    });
+    const request = events.emitted[0];
+    expect(request.payload).toMatchObject({
+      type: "general-purpose",
+      prompt: "p",
+      options: { description: "d", isBackground: true },
+    });
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        (request.payload as { options: Record<string, unknown> }).options,
+        "cwd",
+      ),
+    ).toBe(false);
+    const requestId = (request.payload as { requestId: string }).requestId;
+    events.fire(`subagents:rpc:spawn:reply:${requestId}`, {
+      success: true,
+      data: { id: "agent-1" },
+    });
+    await expect(promise).resolves.toBe("agent-1");
+  });
+
   it("waits for matching completion and ignores unrelated agents", async () => {
     const events = new FakeEvents();
     const client = new EventSubagentClient(events, 100);
