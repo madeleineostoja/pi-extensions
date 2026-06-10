@@ -253,6 +253,128 @@ describe("buildReviewerPrompt", () => {
     expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(prompt).toContain("- [ ] Sibling task A");
   });
+
+  it("contains the initial material-blocking-set contract when no prior required changes are given", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain("## Review Mode: Initial Material Review");
+    expect(prompt).toContain(
+      "Perform one complete pass for material task-level blockers",
+    );
+    expect(prompt).toContain(
+      "List every blocking issue that must be fixed before this task can be committed",
+    );
+  });
+
+  it("allows meaningful material quality cleanup in initial review", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain(
+      "You may request meaningful cleanup or code-quality fixes when they materially affect maintainability or are naturally coupled to larger required changes",
+    );
+  });
+
+  it("does not invite nit-only blocking in initial review", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain(
+      "Do not block solely for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or optional refactors",
+    );
+    expect(prompt).toContain(
+      "Non-blocking observations should not be included in `requiredChanges`",
+    );
+    expect(prompt).toContain(
+      "leave broader concerns for the final overall review",
+    );
+  });
+
+  it("contains reviewer validation-limitation handoff instructions", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain(
+      "You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands",
+    );
+    expect(prompt).toContain(
+      "request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result",
+    );
+    expect(prompt).toContain(
+      "Treat this as a normal `changes_requested` result, not a subagent or system failure",
+    );
+  });
+
+  it("contains the anchored re-review mode and prior required changes list", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      priorRequiredChanges: [
+        "Fix the off-by-one error",
+        "Add a test for the edge case",
+      ],
+    });
+
+    expect(prompt).toContain("## Review Mode: Anchored Re-review");
+    expect(prompt).toContain("## Prior Required Changes");
+    expect(prompt).toContain("1. Fix the off-by-one error");
+    expect(prompt).toContain("2. Add a test for the edge case");
+  });
+
+  it("requires exact copies of unresolved prior items only in anchored re-review", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      priorRequiredChanges: ["Fix the off-by-one error"],
+    });
+
+    expect(prompt).toContain(
+      "`requiredChanges` must contain exact copies of unresolved prior item text only",
+    );
+  });
+
+  it("forbids introducing new issues in anchored re-review", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      priorRequiredChanges: ["Fix the off-by-one error"],
+    });
+
+    expect(prompt).toContain(
+      "Do not restate, broaden, or introduce new issues, even if you notice one during re-review",
+    );
+    expect(prompt).toContain(
+      "New or broader concerns belong to the final overall review/rework loop",
+    );
+  });
+
+  it("does not include critical-issue escape wording in anchored re-review", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      priorRequiredChanges: ["Fix the off-by-one error"],
+    });
+
+    expect(prompt).not.toContain("critical");
+    expect(prompt).not.toContain("escape");
+  });
 });
 
 describe("buildAlreadySatisfiedReviewerPrompt", () => {
@@ -267,9 +389,6 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
     expect(prompt).toContain("There is no staged candidate diff for this task");
     expect(prompt).toContain(
       "The implementer claims the selected task is already satisfied by the current repository state",
-    );
-    expect(prompt).toContain(
-      "Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task",
     );
     expect(prompt).toContain(TASK_PACKET.trim());
     expect(prompt).toContain(WORKTREE_PATH);
@@ -359,6 +478,136 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
     expect(prompt).toContain("Raw auth requirement.");
     expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(prompt).toContain("- [ ] Sibling task A");
+  });
+
+  it("contains the initial material-blocking-set contract when no prior required changes are given", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+    });
+
+    expect(prompt).toContain("## Review Mode: Initial Material Review");
+    expect(prompt).toContain(
+      "Perform one complete pass for material task-level blockers",
+    );
+    expect(prompt).toContain(
+      "List every blocking issue that must be fixed before this task can be accepted as already satisfied",
+    );
+  });
+
+  it("allows meaningful material quality cleanup in initial review", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+    });
+
+    expect(prompt).toContain(
+      "You may request meaningful cleanup or code-quality fixes when they materially affect maintainability or are naturally coupled to larger required changes",
+    );
+  });
+
+  it("does not invite nit-only blocking in initial review", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+    });
+
+    expect(prompt).toContain(
+      "Do not block solely for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or optional refactors",
+    );
+    expect(prompt).toContain(
+      "Non-blocking observations should not be included in `requiredChanges`",
+    );
+    expect(prompt).toContain(
+      "leave broader concerns for the final overall review",
+    );
+  });
+
+  it("contains reviewer validation-limitation handoff instructions", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+    });
+
+    expect(prompt).toContain(
+      "You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands",
+    );
+    expect(prompt).toContain(
+      "request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result",
+    );
+    expect(prompt).toContain(
+      "Treat this as a normal `changes_requested` result, not a subagent or system failure",
+    );
+  });
+
+  it("contains the anchored re-review mode and prior required changes list", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+      priorRequiredChanges: [
+        "Fix the off-by-one error",
+        "Add a test for the edge case",
+      ],
+    });
+
+    expect(prompt).toContain("## Review Mode: Anchored Re-review");
+    expect(prompt).toContain("## Prior Required Changes");
+    expect(prompt).toContain("1. Fix the off-by-one error");
+    expect(prompt).toContain("2. Add a test for the edge case");
+  });
+
+  it("requires exact copies of unresolved prior items only in anchored re-review", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+      priorRequiredChanges: ["Fix the off-by-one error"],
+    });
+
+    expect(prompt).toContain(
+      "`requiredChanges` must contain exact copies of unresolved prior item text only",
+    );
+  });
+
+  it("forbids introducing new issues in anchored re-review", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+      priorRequiredChanges: ["Fix the off-by-one error"],
+    });
+
+    expect(prompt).toContain(
+      "Do not restate, broaden, or introduce new issues, even if you notice one during re-review",
+    );
+    expect(prompt).toContain(
+      "New or broader concerns belong to the final overall review/rework loop",
+    );
+  });
+
+  it("does not include critical-issue escape wording in anchored re-review", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+      priorRequiredChanges: ["Fix the off-by-one error"],
+    });
+
+    expect(prompt).not.toContain("critical");
+    expect(prompt).not.toContain("escape");
   });
 });
 
