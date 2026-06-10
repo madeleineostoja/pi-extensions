@@ -50,6 +50,12 @@ export type SchedulerSelfHealResult = {
   remainingBlocker?: string | null;
 };
 
+export type OverallReworkResult = {
+  summary: string;
+  verification: VerificationStep[];
+  commitMessage?: string;
+};
+
 export function parseImplementerResult(
   text: string,
 ):
@@ -302,6 +308,66 @@ export function parseIntegrationSelfHealResult(
   };
 }
 
+export function parseOverallReworkResult(
+  text: string,
+):
+  | { ok: true; result: OverallReworkResult }
+  | { ok: false; reason: string } {
+  const parsed = parseTaggedJsonObject(text, "pi-overall-rework-result");
+  if (!parsed.ok) {
+    return parsed;
+  }
+  const value = parsed.value;
+  const summary = value.summary;
+  const verification = value.verification;
+  const commitMessage = value.commitMessage;
+
+  if (!isNonEmptyString(summary)) {
+    return { ok: false, reason: "Rework JSON is missing summary." };
+  }
+  if (!Array.isArray(verification) || verification.length === 0) {
+    return {
+      ok: false,
+      reason: "Rework JSON must include a non-empty verification array.",
+    };
+  }
+  const steps: VerificationStep[] = [];
+  for (const step of verification) {
+    if (!isRecord(step)) {
+      return {
+        ok: false,
+        reason: "Each verification entry must be an object.",
+      };
+    }
+    if (
+      !isNonEmptyString(step.command) ||
+      !isNonEmptyString(step.result) ||
+      !isNonEmptyString(step.rationale)
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each verification entry must include command, result, and rationale strings.",
+      };
+    }
+    steps.push({
+      command: step.command,
+      result: step.result,
+      rationale: step.rationale,
+    });
+  }
+
+  return {
+    ok: true,
+    result: {
+      summary,
+      verification: steps,
+      commitMessage:
+        typeof commitMessage === "string" ? commitMessage.trim() : undefined,
+    },
+  };
+}
+
 export function parseSchedulerSelfHealResult(
   text: string,
 ):
@@ -354,7 +420,8 @@ function parseTaggedJsonObject(
     | "pi-implement-result"
     | "pi-review-result"
     | "pi-overall-review-result"
-    | "pi-self-heal-result",
+    | "pi-self-heal-result"
+    | "pi-overall-rework-result",
 ):
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; reason: string } {

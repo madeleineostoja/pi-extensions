@@ -14,6 +14,7 @@ import {
   buildImplementerPrompt,
   buildIntegrationSelfHealPrompt,
   buildOverallReviewerPrompt,
+  buildOverallReworkPrompt,
   buildReviewerPrompt,
   buildSchedulerSelfHealPrompt,
 } from "./prompts.js";
@@ -40,6 +41,7 @@ import {
   parseImplementerResult,
   parseIntegrationSelfHealResult,
   parseOverallReviewVerdict,
+  parseOverallReworkResult,
   parseReviewerVerdict,
   parseSchedulerSelfHealResult,
 } from "./verdict.js";
@@ -92,6 +94,7 @@ const MAX_SYSTEM_FAILURES = 2;
 const MAX_ACCUMULATED_DIFF_CHARS = 50000;
 const MAX_REWORK_ATTEMPTS = 2;
 const MAX_SELF_HEAL_ATTEMPTS = 2;
+const MAX_OVERALL_REWORK_ATTEMPTS = 2;
 const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 
 const execAsync = promisify(exec);
@@ -192,7 +195,7 @@ async function runSerialImplementation(
       totalTasks: plan.tasks.length,
     });
     if (!task) {
-      await runOverallReview(deps, plan, planArtifacts, runBaseSha);
+      await runOverallReviewLoop(deps, plan, planArtifacts, runBaseSha);
       deps.updateState({
         phase: "done",
         taskIndex: plan.tasks.length,
@@ -502,7 +505,7 @@ async function runParallelImplementation(
       });
       throw new BlockedError(finalValidation.reason);
     }
-    await runOverallReview(deps, initialPlan, planArtifacts, graph.baseSha);
+    await runOverallReviewLoop(deps, initialPlan, planArtifacts, graph.baseSha);
   }
 
   const landedCount = [...sched.tasks.values()].filter(
@@ -2240,12 +2243,21 @@ export function nextOverallReviewArtifactPath(planPath: string): string {
   }
 }
 
-async function runOverallReview(
+type OverallReviewOutcome =
+  | { verdict: "approved" }
+  | {
+      verdict: "changes_requested";
+      requiredChanges: string[];
+      recommendationMarkdown?: string;
+      rawResult: string;
+    };
+
+async function runOverallReviewOnce(
   deps: OrchestratorDeps,
   plan: ReturnType<typeof parsePlanFile>,
   planArtifacts: string[],
   baseSha: string,
-): Promise<void> {
+): Promise<OverallReviewOutcome> {
   throwIfStopped(deps);
 
   if (!(await deps.git.isCleanExcept(planArtifacts))) {
@@ -2261,7 +2273,7 @@ async function runOverallReview(
   }
 
   if (baseSha === headSha) {
-    return;
+    return { verdict: "approved" };
   }
 
   const diff = await deps.git.diffRange(baseSha, headSha);
@@ -2353,14 +2365,483 @@ async function runOverallReview(
 
   const verdict = parseOverallReviewVerdict(result.result);
   if (verdict.verdict === "approved") {
-    return;
+    return { verdict: "approved" };
   }
 
-  const artifactPath = nextOverallReviewArtifactPath(deps.planPath);
+  return {
+    verdict: "changes_requested",
+    requiredChanges: verdict.requiredChanges,
+    recommendationMarkdown: verdict.recommendationMarkdown,
+    rawResult: result.result,
+  };
+}
+
+type OverallReworkAttemptResult =
+  | { ok: true; commitSha: string }
+  | { ok: false; reason: string; blocking: boolean };
+
+async function resetOverallRework(
+  deps: OrchestratorDeps,
+  preAttemptHead: string,
+  planArtifacts: string[],
+  planArtifactSnapshot: Map<string, string | undefined>,
+): Promise<void> {
+  await deps.git.resetHard(preAttemptHead).catch(() => undefined);
+  await deps.git
+    .restoreWorktreeFromIndexExcept(planArtifacts)
+    .catch(() => undefined);
+  restorePlanArtifacts(planArtifacts, planArtifactSnapshot);
+}
+
+async function runOverallReworkAttempt(
+  deps: OrchestratorDeps,
+  plan: ReturnType<typeof parsePlanFile>,
+  planArtifacts: string[],
+  runBaseSha: string,
+  review: Extract<OverallReviewOutcome, { verdict: "changes_requested" }>,
+  attemptNumber: number,
+  priorAttemptFailures: string[],
+): Promise<OverallReworkAttemptResult> {
+  throwIfStopped(deps);
+
+  if (!(await deps.git.isCleanExcept(planArtifacts))) {
+    return {
+      ok: false,
+      reason: "dirty worktree before overall rework",
+      blocking: true,
+    };
+  }
+
+  const preAttemptHead = await deps.git.head();
+  const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
+
+  const headSha = await deps.git.head();
+  const diff = await deps.git.diffRange(runBaseSha, headSha);
+
+  const landedTasks: Array<{ id: string; title: string; commitSha?: string }> =
+    [];
+  if (deps.paths) {
+    const events = readEvents(deps.paths);
+    const landedEvents = events.filter((e) => e.type === "task_landed");
+    const seen = new Set<string>();
+    for (const ev of landedEvents) {
+      if (seen.has(ev.taskId)) {
+        continue;
+      }
+      seen.add(ev.taskId);
+      const taskJson = readTaskJson(deps.paths, ev.taskId);
+      if (taskJson) {
+        landedTasks.push({
+          id: taskJson.id,
+          title: taskJson.title,
+          commitSha: taskJson.landedCommitSha,
+        });
+      }
+    }
+  }
+
+  let bundleMaterial: string | undefined;
+  if (deps.manifest) {
+    bundleMaterial = formatBundleMaterial(deps.manifest);
+  }
+
+  const prompt = buildOverallReworkPrompt({
+    planContent: readFileSync(deps.planPath, "utf-8"),
+    planPath: deps.planPath,
+    baseSha: runBaseSha,
+    headSha,
+    diff,
+    runId: deps.runId,
+    landedTasks,
+    bundleMaterial,
+    requiredChanges: review.requiredChanges,
+    recommendationMarkdown: review.recommendationMarkdown,
+    priorAttemptFailures,
+  });
+
+  deps.updateState({ phase: "final_rework", activeSubagentId: undefined });
+
+  if (deps.paths) {
+    appendEvent(deps.paths, {
+      type: "overall_rework_started",
+      attempt: attemptNumber,
+    });
+    const artifactDir = join(deps.paths.runDir, "overall-review");
+    mkdirSync(artifactDir, { recursive: true });
+    writeFileSync(
+      join(artifactDir, `rework-prompt-${attemptNumber}.md`),
+      prompt,
+      "utf-8",
+    );
+  }
+
+  deps.updateState((prev) =>
+    checkpointPatch(
+      prev,
+      `Overall rework started (attempt ${attemptNumber})`,
+    ),
+  );
+
+  const id = await deps.subagents.spawn({
+    type: deps.roles.implementer.type,
+    prompt,
+    description: `overall rework attempt ${attemptNumber}`,
+    model: deps.roles.implementer.model,
+  });
+  const ref: AgentDisplayRef = {
+    id,
+    role: "implementer",
+    label: `Overall rework · attempt ${attemptNumber}`,
+    startedAt: new Date().toISOString(),
+  };
+  deps.updateState((prev) => addActiveAgentPatch(prev, ref));
+  const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
+    deps.updateState((prev) => removeActiveAgentPatch(prev, id));
+  });
+
+  // Stopped
+  if (result.status === "stopped") {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    throw new StoppedError();
+  }
+
+  // Failed subagent
+  if (result.status !== "completed") {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "overall_rework_failed",
+        attempt: attemptNumber,
+        reason: result.error,
+      });
+    }
+    return {
+      ok: false,
+      reason: `Implementer subagent failed: ${result.error}`,
+      blocking: false,
+    };
+  }
+
+  // Boundary checks
+  if ((await deps.git.head()) !== preAttemptHead) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    return {
+      ok: false,
+      reason: "overall rework implementer changed HEAD",
+      blocking: true,
+    };
+  }
+  const changedPlanArtifact = changedSnapshotPath(
+    planArtifacts,
+    planArtifactSnapshot,
+  );
+  if (changedPlanArtifact) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    return {
+      ok: false,
+      reason: `overall rework implementer changed a plan artifact: ${changedPlanArtifact}`,
+      blocking: true,
+    };
+  }
+
+  // Parse result
+  const parsed = parseOverallReworkResult(result.result);
+  if (!parsed.ok) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "overall_rework_failed",
+        attempt: attemptNumber,
+        reason: parsed.reason,
+      });
+    }
+    return {
+      ok: false,
+      reason: `Invalid rework result: ${parsed.reason}`,
+      blocking: false,
+    };
+  }
+
+  // Stage all except plan artifacts
+  await deps.git.stageAllExcept(planArtifacts);
+  const hasStaged = await deps.git.hasStagedChanges();
+
+  if (!hasStaged) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "overall_rework_failed",
+        attempt: attemptNumber,
+        reason: "reworker produced no staged changes",
+      });
+    }
+    return {
+      ok: false,
+      reason: "Overall reworker produced no staged changes",
+      blocking: false,
+    };
+  }
+
+  const stagedAfter = await deps.git.stagedFingerprint();
+  const worktreeAfter =
+    await deps.git.worktreeFingerprintExcept(planArtifacts);
+
+  // Validation
+  const validationCommands = await resolveValidationCommands(deps);
+  const validationLogs: string[] = [];
+  let validationFailureReason: string | undefined;
+  if (validationCommands.length > 0) {
+    for (const command of validationCommands) {
+      const validationResult = await runValidationCommand(
+        command,
+        await deps.git.root(),
+      );
+      const log = `${command.display}\n\nexitCode: ${validationResult.exitCode}\n\nSTDOUT\n${validationResult.stdout}\n\nSTDERR\n${validationResult.stderr}\n`;
+      validationLogs.push(log);
+      if (deps.paths) {
+        const artifactDir = join(deps.paths.runDir, "overall-review");
+        mkdirSync(artifactDir, { recursive: true });
+        writeFileSync(
+          join(
+            artifactDir,
+            `rework-validation-${attemptNumber}-${safeArtifactName(command.label)}.log`,
+          ),
+          log,
+          "utf-8",
+        );
+      }
+      if (validationResult.exitCode !== 0) {
+        validationFailureReason = `Validation failed: ${command.display}\n\n${validationResult.stderr || validationResult.stdout}`;
+        break;
+      }
+    }
+  }
+
+  // Validation mutation detection — always run, even when validation failed
+  const postValidationHead = await deps.git.head();
+  const postValidationStaged = await deps.git.stagedFingerprint();
+  const postValidationWorktree =
+    await deps.git.worktreeFingerprintExcept(planArtifacts);
+  const changedPlanArtifactAfterValidation = changedSnapshotPath(
+    planArtifacts,
+    planArtifactSnapshot,
+  );
+
+  if (postValidationHead !== preAttemptHead) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    return {
+      ok: false,
+      reason: "Validation changed HEAD during overall rework",
+      blocking: true,
+    };
+  }
+  if (changedPlanArtifactAfterValidation) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    return {
+      ok: false,
+      reason: `Validation changed a plan artifact during overall rework: ${changedPlanArtifactAfterValidation}`,
+      blocking: true,
+    };
+  }
+  if (postValidationStaged !== stagedAfter) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    return {
+      ok: false,
+      reason: "Validation changed staged state during overall rework",
+      blocking: true,
+    };
+  }
+  if (postValidationWorktree !== worktreeAfter) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    return {
+      ok: false,
+      reason: "Validation changed worktree state during overall rework",
+      blocking: true,
+    };
+  }
+
+  if (validationFailureReason) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "overall_rework_failed",
+        attempt: attemptNumber,
+        reason: validationFailureReason,
+      });
+    }
+    return {
+      ok: false,
+      reason: validationFailureReason,
+      blocking: false,
+    };
+  }
+
+  // Commit
+  const commitMessage = isValidCommitMessage(
+    parsed.result.commitMessage ?? "",
+  )
+    ? parsed.result.commitMessage!
+    : "fix: address overall review";
+
+  const commit = await deps.git.commit(commitMessage);
+  if (commit.exitCode !== 0) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "overall_rework_failed",
+        attempt: attemptNumber,
+        reason: `commit-hook failure: ${commit.stderr || commit.stdout}`,
+      });
+    }
+    return {
+      ok: false,
+      reason: `Commit hook failed: ${commit.stderr || commit.stdout}`,
+      blocking: false,
+    };
+  }
+
+  const postCommitHead = await deps.git.head();
+  if (postCommitHead === preAttemptHead) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    return {
+      ok: false,
+      reason: "Commit succeeded but HEAD did not advance",
+      blocking: false,
+    };
+  }
+
+  const changedPlanArtifactAfterCommit = changedSnapshotPath(
+    planArtifacts,
+    planArtifactSnapshot,
+  );
+  if (changedPlanArtifactAfterCommit) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    return {
+      ok: false,
+      reason: `Commit hook changed a plan artifact during overall rework: ${changedPlanArtifactAfterCommit}`,
+      blocking: true,
+    };
+  }
+
+  if (!(await deps.git.isCleanExcept(planArtifacts))) {
+    await resetOverallRework(
+      deps,
+      preAttemptHead,
+      planArtifacts,
+      planArtifactSnapshot,
+    );
+    return {
+      ok: false,
+      reason: "Commit succeeded but checkout is dirty after overall rework",
+      blocking: false,
+    };
+  }
+
+  if (deps.paths) {
+    appendEvent(deps.paths, {
+      type: "overall_rework_committed",
+      attempt: attemptNumber,
+      commitSha: postCommitHead,
+    });
+  }
+
+  deps.updateState((prev) =>
+    checkpointPatch(
+      prev,
+      `Overall rework committed (attempt ${attemptNumber}) @ ${postCommitHead.slice(0, 7)}`,
+    ),
+  );
+
+  return { ok: true, commitSha: postCommitHead };
+}
+
+function buildOverallReviewArtifactContent(
+  deps: OrchestratorDeps,
+  baseSha: string,
+  headSha: string,
+  lastReview: Extract<OverallReviewOutcome, { verdict: "changes_requested" }>,
+  reworkFailures: string[],
+): string {
   const recommendation =
-    verdict.recommendationMarkdown ??
-    `## Required Changes\n\n${verdict.requiredChanges.map((c) => `- ${c}`).join("\n")}`;
-  const artifactContent = `# Overall Review: Changes Requested
+    lastReview.recommendationMarkdown ??
+    `## Required Changes\n\n${lastReview.requiredChanges.map((c) => `- ${c}`).join("\n")}`;
+
+  const reworkSection =
+    reworkFailures.length > 0
+      ? `\n## Rework Attempts\n\n${reworkFailures.map((f, i) => `- Attempt ${i + 1}: ${f}`).join("\n")}\n`
+      : "";
+
+  return `# Overall Review: Changes Requested
 
 ## Verdict
 
@@ -2368,7 +2849,7 @@ changes_requested
 
 ## Required Changes
 
-${verdict.requiredChanges.map((c) => `- ${c}`).join("\n")}
+${lastReview.requiredChanges.map((c) => `- ${c}`).join("\n")}
 
 ## Recommendation
 
@@ -2379,19 +2860,128 @@ ${recommendation}
 - Plan: ${deps.planPath}
 - Base SHA: ${baseSha}
 - Head SHA: ${headSha}
-${deps.runId ? `- Run ID: ${deps.runId}\n` : ""}
+${deps.runId ? `- Run ID: ${deps.runId}\n` : ""}${reworkSection}
 ## Raw Result
 
-<pi-overall-review-result>
-${JSON.stringify({ verdict: verdict.verdict, requiredChanges: verdict.requiredChanges, recommendationMarkdown: verdict.recommendationMarkdown }, null, 2)}
-</pi-overall-review-result>
+${lastReview.rawResult}
 `;
+}
+
+async function runOverallReviewLoop(
+  deps: OrchestratorDeps,
+  plan: ReturnType<typeof parsePlanFile>,
+  planArtifacts: string[],
+  runBaseSha: string,
+): Promise<void> {
+  const reworkFailures: string[] = [];
+
+  const initialReview = await runOverallReviewOnce(
+    deps,
+    plan,
+    planArtifacts,
+    runBaseSha,
+  );
+
+  if (initialReview.verdict === "approved") {
+    deps.updateState((prev) =>
+      checkpointPatch(prev, "Final overall review approved"),
+    );
+    if (deps.paths) {
+      appendEvent(deps.paths, { type: "overall_review_approved" });
+    }
+    return;
+  }
+
+  let lastReview: Extract<
+    OverallReviewOutcome,
+    { verdict: "changes_requested" }
+  > = initialReview;
+
+  if (deps.paths) {
+    appendEvent(deps.paths, {
+      type: "overall_review_changes_requested",
+      requiredChanges: initialReview.requiredChanges,
+    });
+  }
+
+  deps.updateState((prev) =>
+    checkpointPatch(
+      prev,
+      `Overall review changes requested: ${initialReview.requiredChanges.join("; ")}`,
+    ),
+  );
+
+  for (let attempt = 1; attempt <= MAX_OVERALL_REWORK_ATTEMPTS; attempt++) {
+    const rework = await runOverallReworkAttempt(
+      deps,
+      plan,
+      planArtifacts,
+      runBaseSha,
+      lastReview,
+      attempt,
+      reworkFailures,
+    );
+
+    if (!rework.ok) {
+      if (rework.blocking) {
+        throw new BlockedError(rework.reason);
+      }
+      reworkFailures.push(rework.reason);
+      continue;
+    }
+
+    // Re-run overall review only after a successful rework commit
+    const review = await runOverallReviewOnce(
+      deps,
+      plan,
+      planArtifacts,
+      runBaseSha,
+    );
+
+    if (review.verdict === "approved") {
+      deps.updateState((prev) =>
+        checkpointPatch(prev, "Final overall review approved"),
+      );
+      if (deps.paths) {
+        appendEvent(deps.paths, { type: "overall_review_approved" });
+      }
+      return;
+    }
+
+    lastReview = review;
+
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "overall_review_changes_requested",
+        requiredChanges: review.requiredChanges,
+      });
+    }
+
+    deps.updateState((prev) =>
+      checkpointPatch(
+        prev,
+        `Overall review changes requested: ${review.requiredChanges.join("; ")}`,
+      ),
+    );
+  }
+
+  const headSha = await deps.git.head();
+  const artifactPath = nextOverallReviewArtifactPath(deps.planPath);
+  const artifactContent = buildOverallReviewArtifactContent(
+    deps,
+    runBaseSha,
+    headSha,
+    lastReview,
+    reworkFailures,
+  );
   mkdirSync(dirname(artifactPath), { recursive: true });
   writeFileSync(artifactPath, artifactContent, "utf-8");
-  throw new OverallReviewFollowupError(
-    artifactPath,
-    `Overall review requested changes: ${verdict.requiredChanges.join("; ")}`,
-  );
+
+  const latestFailure = reworkFailures.at(-1);
+  const message = latestFailure
+    ? `Overall review requested changes: ${lastReview.requiredChanges.join("; ")}. Latest rework failure: ${latestFailure}`
+    : `Overall review requested changes: ${lastReview.requiredChanges.join("; ")}`;
+  throw new OverallReviewFollowupError(artifactPath, message);
 }
 
 function safeArtifactName(value: string): string {

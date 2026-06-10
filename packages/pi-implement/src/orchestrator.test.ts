@@ -13,6 +13,7 @@ import {
   runImplementation,
   BlockedError,
   OverallReviewFollowupError,
+  StoppedError,
   nextOverallReviewArtifactPath,
   buildSchedulerGraphSummary,
 } from "./orchestrator.js";
@@ -254,6 +255,8 @@ const GOOD_OVERALL_REVIEW =
   '<pi-overall-review-result>{"verdict":"approved"}</pi-overall-review-result>';
 const BAD_OVERALL_REVIEW =
   '<pi-overall-review-result>{"verdict":"changes_requested","requiredChanges":["add integration tests"],"recommendationMarkdown":"## Suggested\\n\\nAdd tests."}</pi-overall-review-result>';
+const GOOD_REWORK =
+  '<pi-overall-rework-result>{"summary":"fixed","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"fix: address overall review"}</pi-overall-rework-result>';
 
 describe("nextOverallReviewArtifactPath", () => {
   it("returns a sibling path for the first review", () => {
@@ -1640,10 +1643,17 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     git.headValue = "base-sha";
     const subagents = new FakeSubagents();
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: { status: "completed", result: BAD_OVERALL_REVIEW },
+      },
+    ];
     subagents.results = [
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
-      { status: "completed", result: BAD_OVERALL_REVIEW },
+      { status: "completed", result: "invalid rework" },
+      { status: "completed", result: "invalid rework" },
     ];
 
     await expect(
@@ -1670,6 +1680,7 @@ describe("runImplementation", () => {
     expect(content).toContain("add integration tests");
     expect(content).toContain("## Suggested");
     expect(content).toContain("old-sha");
+    expect(content).toContain("Rework Attempts");
   });
 
   it("skips overall review when baseSha equals headSha", async () => {
@@ -2038,10 +2049,17 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     git.rootValue = dir;
     const subagents = new FakeSubagents();
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: { status: "completed", result: BAD_OVERALL_REVIEW },
+      },
+    ];
     subagents.results = [
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
-      { status: "completed", result: BAD_OVERALL_REVIEW },
+      { status: "completed", result: "invalid rework" },
+      { status: "completed", result: "invalid rework" },
     ];
 
     await expect(
@@ -2065,6 +2083,895 @@ describe("runImplementation", () => {
 
     const artifactPath = join(dir, "plan.overall-review.md");
     expect(existsSync(artifactPath)).toBe(true);
+  });
+
+  it("reworks and approves after overall review requests changes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    let overallReviewCount = 0;
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: {
+          status: "completed",
+          get result() {
+            overallReviewCount++;
+            return overallReviewCount === 1
+              ? BAD_OVERALL_REVIEW
+              : GOOD_OVERALL_REVIEW;
+          },
+        },
+      },
+    ];
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_REWORK },
+    ];
+
+    let currentState: RunState = { phase: "idle" };
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: (patch) => {
+        currentState =
+          typeof patch === "function"
+            ? { ...currentState, ...patch(currentState) }
+            : { ...currentState, ...patch };
+      },
+      shouldStop: () => false,
+    });
+
+    expect(currentState.phase).toBe("done");
+    expect(git.commits.length).toBeGreaterThanOrEqual(1);
+    expect(subagents.spawns.some((s) => s.description.includes("overall rework"))).toBe(true);
+    const reworkPrompt = subagents.spawns.find((s) =>
+      s.description.includes("overall rework"),
+    )?.prompt;
+    expect(reworkPrompt).toContain("pi-implement overall rework implementer");
+    expect(reworkPrompt).toContain("add integration tests");
+    expect(reworkPrompt).toContain("old-sha");
+    expect(reworkPrompt).toContain("Do thing");
+  });
+
+  it("consumes a rework attempt when reworker produces invalid result", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: { status: "completed", result: BAD_OVERALL_REVIEW },
+      },
+    ];
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: "invalid garbage" },
+      { status: "completed", result: "invalid garbage" },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(OverallReviewFollowupError);
+
+    const reworkSpawns = subagents.spawns.filter((s) =>
+      s.description.includes("overall rework"),
+    );
+    expect(reworkSpawns).toHaveLength(2);
+    const artifactPath = join(dir, "plan.overall-review.md");
+    const content = readFileSync(artifactPath, "utf-8");
+    expect(content).toContain("Rework Attempts");
+  });
+
+  it("throws StoppedError when overall rework is stopped", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: BAD_OVERALL_REVIEW },
+      { status: "stopped", error: "user stopped" },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(StoppedError);
+  });
+
+  it("blocks when overall rework implementer changes HEAD", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    let overallReviewCount = 0;
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: {
+          status: "completed",
+          get result() {
+            overallReviewCount++;
+            return overallReviewCount === 1
+              ? BAD_OVERALL_REVIEW
+              : GOOD_OVERALL_REVIEW;
+          },
+        },
+      },
+    ];
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_REWORK },
+    ];
+
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    let waits = 0;
+    subagents.waitFor = async (id, signal) => {
+      waits++;
+      const result = await originalWaitFor(id, signal);
+      if (waits === 3) {
+        git.headValue = "mutated";
+      }
+      return result;
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+  });
+
+  it("blocks when overall rework implementer mutates a plan artifact", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    let overallReviewCount = 0;
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: {
+          status: "completed",
+          get result() {
+            overallReviewCount++;
+            return overallReviewCount === 1
+              ? BAD_OVERALL_REVIEW
+              : GOOD_OVERALL_REVIEW;
+          },
+        },
+      },
+    ];
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_REWORK },
+    ];
+
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    let waits = 0;
+    subagents.waitFor = async (id, signal) => {
+      waits++;
+      const result = await originalWaitFor(id, signal);
+      if (waits === 4) {
+        writeFileSync(planPath, "# Mutated\n", "utf-8");
+      }
+      return result;
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
+  });
+
+  it("treats no-staged-change rework as failed attempt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: { status: "completed", result: BAD_OVERALL_REVIEW },
+      },
+    ];
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_REWORK },
+      { status: "completed", result: GOOD_REWORK },
+    ];
+
+    let stagedCallCount = 0;
+    git.hasStagedChanges = async () => {
+      stagedCallCount++;
+      return stagedCallCount !== 2;
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(OverallReviewFollowupError);
+
+    const reworkSpawns = subagents.spawns.filter((s) =>
+      s.description.includes("overall rework"),
+    );
+    expect(reworkSpawns).toHaveLength(2);
+  });
+
+  it("uses fallback commit message when rework result has invalid commit message", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    let overallReviewCount = 0;
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: {
+          status: "completed",
+          get result() {
+            overallReviewCount++;
+            return overallReviewCount === 1
+              ? BAD_OVERALL_REVIEW
+              : GOOD_OVERALL_REVIEW;
+          },
+        },
+      },
+    ];
+
+    const BAD_COMMIT_REWORK =
+      '<pi-overall-rework-result>{"summary":"fixed","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"bad message"}</pi-overall-rework-result>';
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: BAD_COMMIT_REWORK },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(git.commits).toContain("fix: address overall review");
+  });
+
+  it("consumes attempt when overall rework validation fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: { status: "completed", result: BAD_OVERALL_REVIEW },
+      },
+    ];
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_REWORK },
+      { status: "completed", result: GOOD_REWORK },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        verifyCommand: "exit 1",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(OverallReviewFollowupError);
+
+    const reworkSpawns = subagents.spawns.filter((s) =>
+      s.description.includes("overall rework"),
+    );
+    expect(reworkSpawns).toHaveLength(2);
+  });
+
+  it("consumes attempt when overall rework commit hook fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: { status: "completed", result: BAD_OVERALL_REVIEW },
+      },
+    ];
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_REWORK },
+      { status: "completed", result: GOOD_REWORK },
+    ];
+
+    let commitCallCount = 0;
+    const originalCommit = git.commit.bind(git);
+    git.commit = async (message: string) => {
+      commitCallCount++;
+      if (commitCallCount === 2) {
+        return {
+          command: "git commit",
+          exitCode: 1,
+          stdout: "",
+          stderr: "hook failed",
+        };
+      }
+      return originalCommit(message);
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(OverallReviewFollowupError);
+
+    const reworkSpawns = subagents.spawns.filter((s) =>
+      s.description.includes("overall rework"),
+    );
+    expect(reworkSpawns).toHaveLength(2);
+  });
+
+  it("blocks when overall rework validation mutates state even if the command fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: { status: "completed", result: BAD_OVERALL_REVIEW },
+      },
+    ];
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_REWORK },
+    ];
+
+    let mutateAfterRework = false;
+    let fpCallCount = 0;
+    const originalStagedFingerprint = git.stagedFingerprint.bind(git);
+    git.stagedFingerprint = async () => {
+      if (mutateAfterRework) {
+        fpCallCount++;
+        return `mutated-fp-${fpCallCount}`;
+      }
+      return originalStagedFingerprint();
+    };
+
+    const originalWaitFor = subagents.waitFor.bind(subagents);
+    subagents.waitFor = async (id, signal) => {
+      const result = await originalWaitFor(id, signal);
+      const index = id ? Number(id.replace("agent-", "")) - 1 : -1;
+      const spawn = index >= 0 ? subagents.spawns[index] : undefined;
+      if (spawn?.description.includes("overall rework")) {
+        mutateAfterRework = true;
+      }
+      return result;
+    };
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        verifyCommand: "exit 1",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("Validation changed staged state during overall rework");
+  });
+
+  it("does not re-run overall review after a failed rework attempt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    let overallReviewCount = 0;
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: {
+          status: "completed",
+          get result() {
+            overallReviewCount++;
+            return overallReviewCount === 1
+              ? BAD_OVERALL_REVIEW
+              : GOOD_OVERALL_REVIEW;
+          },
+        },
+      },
+    ];
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: "invalid garbage" },
+      { status: "completed", result: "invalid garbage" },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(OverallReviewFollowupError);
+
+    // Only one overall review should have been spawned because neither rework
+    // attempt produced a successful commit, so there is no reason to re-review.
+    const reviewSpawns = subagents.spawns.filter((s) =>
+      s.description.includes("overall review"),
+    );
+    expect(reviewSpawns).toHaveLength(1);
+  });
+
+  it("includes latest rework failure and raw review result in exhausted-cap artifact and error", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: { status: "completed", result: BAD_OVERALL_REVIEW },
+      },
+    ];
+
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: "invalid garbage" },
+      { status: "completed", result: "invalid garbage" },
+    ];
+
+    let error: OverallReviewFollowupError | undefined;
+    try {
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+    } catch (err) {
+      if (err instanceof OverallReviewFollowupError) {
+        error = err;
+      }
+    }
+
+    expect(error).toBeDefined();
+    expect(error!.message).toContain("Latest rework failure:");
+    expect(error!.message).toContain("Response did not include");
+
+    const artifactPath = join(dir, "plan.overall-review.md");
+    expect(existsSync(artifactPath)).toBe(true);
+    const content = readFileSync(artifactPath, "utf-8");
+    expect(content).toContain("add integration tests");
+    expect(content).toContain("## Raw Result");
+    expect(content).toContain(BAD_OVERALL_REVIEW);
+    expect(content).toContain("Rework Attempts");
   });
 
   it("blocks instead of completing when the parallel scheduler stalls", async () => {

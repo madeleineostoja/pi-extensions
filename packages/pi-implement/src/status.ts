@@ -9,6 +9,7 @@ export type Phase =
   | "integrating"
   | "reworking"
   | "final_review"
+  | "final_rework"
   | "followup_required"
   | "blocked"
   | "stopping"
