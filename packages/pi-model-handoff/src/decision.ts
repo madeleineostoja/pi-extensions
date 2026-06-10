@@ -33,6 +33,7 @@ export type HandoffEstimate = {
 
 export const FULL_CONTEXT_HANDOFF_COST_THRESHOLD_NZD = 0.5;
 export const FULL_CONTEXT_HANDOFF_COST_THRESHOLD_USD = 0.5;
+export const FULL_CONTEXT_HANDOFF_TOKEN_THRESHOLD = 50_000;
 
 export type HandoffDecision =
   | { kind: "skip"; reason: string }
@@ -41,28 +42,36 @@ export type HandoffDecision =
 export type HandoffDecisionOptions = {
   convertFullContextCostToNzd?: (usd: number) => number | undefined;
   fullContextCostThresholdNzd?: number;
+  fullContextTokenThreshold?: number;
 };
 
-export function isEligibleSwitch(
+export function getSwitchSkipReason(
   event: ModelSelectEvent,
   mode: "tui" | "rpc" | "json" | "print",
-): boolean {
+): string | undefined {
   if (event.source === "restore") {
-    return false;
+    return "Model restored";
   }
   if (!event.previousModel) {
-    return false;
+    return "No previous model";
   }
   if (mode !== "tui") {
-    return false;
+    return "Not running in TUI";
   }
   if (
     event.previousModel.provider === event.model.provider &&
     event.previousModel.id === event.model.id
   ) {
-    return false;
+    return "Same model";
   }
-  return true;
+  return undefined;
+}
+
+export function isEligibleSwitch(
+  event: ModelSelectEvent,
+  mode: "tui" | "rpc" | "json" | "print",
+): boolean {
+  return getSwitchSkipReason(event, mode) === undefined;
 }
 
 export function buildModelRef(
@@ -194,7 +203,15 @@ export function makeHandoffDecision(
   }
 
   if (estimate.targetFullContextInputCost === undefined) {
-    return { kind: "skip", reason: "Target model pricing unavailable" };
+    const thresholdTokens =
+      options.fullContextTokenThreshold ?? FULL_CONTEXT_HANDOFF_TOKEN_THRESHOLD;
+    if (estimate.currentTokens <= thresholdTokens) {
+      return {
+        kind: "skip",
+        reason: "Full context tokens are below handoff warning threshold",
+      };
+    }
+    return { kind: "offer", estimate };
   }
 
   const thresholdNzd =

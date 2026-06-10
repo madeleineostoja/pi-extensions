@@ -1,4 +1,7 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import {
   compact,
   getAgentDir,
@@ -8,7 +11,7 @@ import { convertCurrency, refreshCurrencyRate } from "@pi-extensions/lib";
 import { prepareCompaction } from "./compaction";
 import {
   buildModelRef,
-  isEligibleSwitch,
+  getSwitchSkipReason,
   makeHandoffDecision,
 } from "./decision";
 import {
@@ -23,9 +26,42 @@ import {
   OPTION_CREATE_HANDOFF,
 } from "./prompt";
 
+function formatSkipReason(reason: string): string {
+  switch (reason) {
+    case "Model restored":
+      return "restored";
+    case "No previous model":
+      return "no previous model";
+    case "Not running in TUI":
+      return "not TUI";
+    case "Same model":
+      return "same model";
+    case "No compaction preparation available":
+      return "nothing to compact";
+    case "No messages to summarize":
+      return "nothing to summarize";
+    case "Estimated context savings are below 20%":
+      return "savings < 20%";
+    case "Full context tokens are below handoff warning threshold":
+      return "under token threshold";
+    case "Full context cost is below handoff warning threshold":
+      return "under cost threshold";
+    case "Full context cost is below handoff warning threshold (USD fallback)":
+      return "under USD cost threshold";
+    default:
+      return reason;
+  }
+}
+
+function notifySkip(ctx: ExtensionContext, reason: string) {
+  ctx.ui.notify(`handoff skipped: ${formatSkipReason(reason)}`, "info");
+}
+
 export default function (pi: ExtensionAPI) {
   pi.on("model_select", async (event, ctx) => {
-    if (!isEligibleSwitch(event, ctx.mode)) {
+    const switchSkipReason = getSwitchSkipReason(event, ctx.mode);
+    if (switchSkipReason) {
+      notifySkip(ctx, switchSkipReason);
       return;
     }
 
@@ -51,6 +87,7 @@ export default function (pi: ExtensionAPI) {
         convertCurrency({ amount, from: "USD", to: "NZD" }),
     });
     if (decision.kind === "skip") {
+      notifySkip(ctx, decision.reason);
       return;
     }
 

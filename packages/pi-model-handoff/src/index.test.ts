@@ -255,6 +255,10 @@ describe("model_select handler", () => {
     });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
+    expect(ctx.notifyCalls).toContainEqual({
+      message: "handoff skipped: restored",
+      type: "info",
+    });
   });
 
   it("ignores missing previousModel", async () => {
@@ -264,6 +268,10 @@ describe("model_select handler", () => {
     const event = makeModelSelectEvent({ previousModel: undefined });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
+    expect(ctx.notifyCalls).toContainEqual({
+      message: "handoff skipped: no previous model",
+      type: "info",
+    });
   });
 
   it("ignores same model", async () => {
@@ -274,6 +282,10 @@ describe("model_select handler", () => {
     const event = makeModelSelectEvent({ previousModel: model, model });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
+    expect(ctx.notifyCalls).toContainEqual({
+      message: "handoff skipped: same model",
+      type: "info",
+    });
   });
 
   it("ignores when mode is not tui", async () => {
@@ -286,6 +298,10 @@ describe("model_select handler", () => {
     });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
+    expect(ctx.notifyCalls).toContainEqual({
+      message: "handoff skipped: not TUI",
+      type: "info",
+    });
   });
 
   it("does not call ctx.compact before user accepts (dry run)", async () => {
@@ -339,6 +355,10 @@ describe("model_select handler", () => {
     });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
+    expect(ctx.notifyCalls).toContainEqual({
+      message: "handoff skipped: nothing to summarize",
+      type: "info",
+    });
   });
 
   it("calls ctx.ui.select immediately during the handler", async () => {
@@ -451,7 +471,95 @@ describe("model_select handler", () => {
     });
     expect(selectCalled).toBe(false);
     expect(ctx.compactCalls).toHaveLength(0);
+    expect(ctx.notifyCalls).toContainEqual({
+      message: "handoff skipped: under cost threshold",
+      type: "info",
+    });
     expect(getPendingHandoff()).toBeUndefined();
+  });
+
+  it("offers when pricing is unavailable but token threshold is exceeded", async () => {
+    const { handlers } = captureHandlers();
+    const handler = handlers["model_select"][0];
+    let selectCalled = false;
+    const ctx = makeFakeCtx({
+      selectResult: undefined,
+      modelRegistry: {
+        isUsingOAuth: (model: { provider: string }) =>
+          model.provider === "openai",
+        getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
+      } as never,
+    });
+    const originalSelect = ctx.ui.select;
+    ctx.ui.select = async (...args: Parameters<typeof ctx.ui.select>) => {
+      selectCalled = true;
+      return originalSelect(...args);
+    };
+    vi.mocked(prepareCompaction).mockReturnValue({
+      firstKeptEntryId: "keep-1",
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore: 60000,
+      naiveContextTokens: 60000,
+      fileOps: {} as never,
+      settings: {
+        enabled: true,
+        reserveTokens: 16384,
+        keepRecentTokens: 20000,
+      },
+    } as never);
+    const event = makeModelSelectEvent({
+      previousModel: makeModel("anthropic", "opus", 10),
+      model: makeModel("openai", "gpt-4o", 5),
+    });
+    await handler(event as never, ctx);
+    expect(selectCalled).toBe(true);
+    expect(ctx.notifyCalls).toHaveLength(0);
+  });
+
+  it("skips when pricing is unavailable and token threshold is not exceeded", async () => {
+    const { handlers } = captureHandlers();
+    const handler = handlers["model_select"][0];
+    let selectCalled = false;
+    const ctx = makeFakeCtx({
+      selectResult: "Create handoff",
+      modelRegistry: {
+        isUsingOAuth: (model: { provider: string }) =>
+          model.provider === "openai",
+        getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
+      } as never,
+    });
+    const originalSelect = ctx.ui.select;
+    ctx.ui.select = async (...args: Parameters<typeof ctx.ui.select>) => {
+      selectCalled = true;
+      return originalSelect(...args);
+    };
+    vi.mocked(prepareCompaction).mockReturnValue({
+      firstKeptEntryId: "keep-1",
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore: 40000,
+      naiveContextTokens: 40000,
+      fileOps: {} as never,
+      settings: {
+        enabled: true,
+        reserveTokens: 16384,
+        keepRecentTokens: 20000,
+      },
+    } as never);
+    const event = makeModelSelectEvent({
+      previousModel: makeModel("anthropic", "opus", 10),
+      model: makeModel("openai", "gpt-4o", 5),
+    });
+    await handler(event as never, ctx);
+    expect(selectCalled).toBe(false);
+    expect(ctx.compactCalls).toHaveLength(0);
+    expect(ctx.notifyCalls).toContainEqual({
+      message: "handoff skipped: under token threshold",
+      type: "info",
+    });
   });
 
   it("dismissal/undefined behaves like continue full context", async () => {

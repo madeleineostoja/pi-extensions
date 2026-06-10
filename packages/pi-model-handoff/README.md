@@ -26,11 +26,13 @@ The extension reuses Pi's native compaction system. Pi continues to own cut-poin
 
 The extension only prompts when:
 
-1. Pi would summarize more old messages than it keeps live (`summarizedTokens > keptTokens`).
-2. If pricing is available for both models and the source is not subscription/OAuth, the target input price must be lower than the source input price (an apparent downshift).
-3. If the full-context cost can be converted to NZD, sending the full context to the target model would cost more than NZD $0.50.
+1. The model switch is interactive: TUI mode, not a restore, with a previous model and a different target model.
+2. Pi has old context it can summarize.
+3. The estimated context savings are at least 20%.
+4. If target pricing is available, sending the full context to the target model would cost more than NZD $0.50. If NZD conversion is unavailable, the same numeric threshold is applied in USD.
+5. If target pricing is unavailable for any reason, including OAuth/subscription models, the full context must exceed 50k tokens.
 
-If pricing is missing, the source is subscription/OAuth, or NZD conversion is unavailable, the earlier token/pricing gates decide.
+When a switch is skipped, the extension emits a short info message with the reason.
 
 ## Limitations
 

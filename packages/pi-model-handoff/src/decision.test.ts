@@ -234,7 +234,7 @@ describe("makeHandoffDecision", () => {
     expect(decision.kind).toBe("offer");
   });
 
-  it("skips when target pricing unavailable", () => {
+  it("uses token threshold when target pricing is unavailable", () => {
     const preparation = makePreparation({
       tokensBefore: 500,
       messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
@@ -245,7 +245,20 @@ describe("makeHandoffDecision", () => {
     );
     const decision = makeHandoffDecision(preparation, targetRef);
     expect(decision.kind).toBe("skip");
-    expect((decision as { reason: string }).reason).toContain("pricing");
+    expect((decision as { reason: string }).reason).toContain("tokens");
+  });
+
+  it("offers above token threshold when target pricing is unavailable", () => {
+    const preparation = makePreparation({
+      tokensBefore: 60000,
+      messagesToSummarize: [{ role: "user", content: "a".repeat(160000) }],
+    });
+    const targetRef = buildModelRef(
+      { ...makeModel("c", "d", 1), cost: { input: NaN, output: NaN } },
+      false,
+    );
+    const decision = makeHandoffDecision(preparation, targetRef);
+    expect(decision.kind).toBe("offer");
   });
 
   it("skips when converted full-context cost is at or below the NZD threshold", () => {
