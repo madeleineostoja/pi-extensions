@@ -17,6 +17,7 @@ export type SpawnArgs = {
   prompt: string;
   description: string;
   model?: string;
+  cwd?: string;
 };
 
 export type SubagentResult =
@@ -50,12 +51,16 @@ export class EventSubagentClient implements SubagentClient {
       description: string;
       isBackground: boolean;
       model?: string;
+      cwd?: string;
     } = {
       description: args.description,
       isBackground: true,
     };
     if (args.model !== undefined) {
       options.model = args.model;
+    }
+    if (args.cwd !== undefined) {
+      options.cwd = args.cwd;
     }
     const data = await this.rpc<{ id?: string }>("spawn", {
       type: args.type,
