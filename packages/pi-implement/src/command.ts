@@ -614,7 +614,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         customType: "pi-implement-guidance",
         content: `pi-implement is now running and will autonomously implement the plan task-by-task using its own subagents. It owns the full implement → review → commit loop, including deciding what runs next.
 
-While it runs you may receive \`subagent-notification\` messages reporting that its internal background agents have completed. Those are pi-implement's own workers — NOT tasks for you. Do not respond to them, do not call get_subagent_result, do not start/stop/steer agents, and do not narrate or summarize progress yourself. pi-implement emits its own authoritative \`pi-implement-progress\` updates and a final completion/blocked notice. Simply stay idle until the run ends or the user asks you something directly.`,
+Stay idle until the run ends or the user asks you something directly. Do not respond to pi-implement's internal progress updates, do not call get_subagent_result, do not start/stop/steer agents, and do not narrate or summarize progress yourself. pi-implement emits its own authoritative \`pi-implement-progress\` updates and a final completion/blocked notice.`,
         display: false,
       });
 
@@ -864,6 +864,7 @@ class TrackingSubagentClient implements SubagentClient {
 
   async spawn(args: SpawnArgs): Promise<string> {
     const id = await this.inner.spawn(args);
+    markWorkerConsumed(id);
     this.activeIds.add(id);
     this.emitChange();
     return id;
@@ -955,25 +956,44 @@ function resolveUsageTotal(value: unknown): number | undefined {
   return Number.isFinite(total) && total > 0 ? total : undefined;
 }
 
-function collectRuntimeSnapshots(ids: string[]): AgentRuntimeSnapshot[] {
-  const snapshots: AgentRuntimeSnapshot[] = [];
+function getSubagentRecord(id: string): Record<string, unknown> | undefined {
   const manager = (globalThis as Record<symbol, unknown>)[
     Symbol.for("pi-subagents:manager")
   ];
   if (!manager || typeof manager !== "object" || !("getRecord" in manager)) {
-    return snapshots;
+    return undefined;
   }
   const getRecord = (manager as Record<string, unknown>).getRecord;
   if (typeof getRecord !== "function") {
-    return snapshots;
+    return undefined;
   }
+  try {
+    const record = (getRecord as (id: string) => unknown)(id);
+    if (record && typeof record === "object") {
+      return record as Record<string, unknown>;
+    }
+  } catch {
+    // Best-effort
+  }
+  return undefined;
+}
+
+function markWorkerConsumed(id: string): void {
+  const r = getSubagentRecord(id);
+  if (!r) return;
+  try {
+    r.resultConsumed = true;
+  } catch {
+    // Best-effort: pi-subagents record shape may change
+  }
+}
+
+function collectRuntimeSnapshots(ids: string[]): AgentRuntimeSnapshot[] {
+  const snapshots: AgentRuntimeSnapshot[] = [];
   for (const id of ids) {
+    const r = getSubagentRecord(id);
+    if (!r) continue;
     try {
-      const record = (getRecord as (id: string) => unknown)(id);
-      if (!record || typeof record !== "object") {
-        continue;
-      }
-      const r = record as Record<string, unknown>;
       const snapshot: AgentRuntimeSnapshot = { id };
       if (typeof r.status === "string") {
         snapshot.status = r.status;

@@ -435,10 +435,8 @@ describe("runImplementation", () => {
     );
     expect(currentState.checkpointQueue).toEqual(
       expect.arrayContaining([
-        "\u00b7 Task 1/1 implementer \u00b7 Do thing started",
         "\u00b7 Task 1/1 implementation finished: done",
         "\u00b7 Task 1/1 verification: tests: passed",
-        "\u00b7 Task 1/1 reviewer \u00b7 Do thing started",
         "\u2713 Task 1/1 review approved",
         "\u00b7 Task 1/1 committing: feat: do thing",
         "\u2713 Task 1/1 landed @ h1-comm",

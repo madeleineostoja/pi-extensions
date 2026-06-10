@@ -1,9 +1,6 @@
 import type { Phase, RunState, TaskStatus } from "./status.js";
 
 const PHASE_LABEL: Partial<Record<Phase, string>> = {
-  preflight: "running preflight checks",
-  strategy: "selecting execution strategy",
-  scheduling: "scheduling tasks",
   coding: "implementing",
   reviewing: "under review",
   committing: "committing",

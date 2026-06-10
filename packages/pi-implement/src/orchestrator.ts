@@ -2661,10 +2661,7 @@ async function runTaskWorker(args: {
       taskTitle: shortTask(task.text),
     };
     setSchedulerActiveAgent(schedulerTask, implementerRef);
-    deps.updateState((prev) => ({
-      ...addActiveAgentPatch(prev, implementerRef),
-      ...checkpointPatch(prev, `\u00b7 ${implementerRef.label} started`),
-    }));
+    deps.updateState((prev) => addActiveAgentPatch(prev, implementerRef));
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
         id: taskId,
@@ -2908,10 +2905,7 @@ async function runTaskWorker(args: {
       taskTitle: shortTask(task.text),
     };
     setSchedulerActiveAgent(schedulerTask, reviewerRef);
-    deps.updateState((prev) => ({
-      ...addActiveAgentPatch(prev, reviewerRef),
-      ...checkpointPatch(prev, `\u00b7 ${reviewerRef.label} started`),
-    }));
+    deps.updateState((prev) => addActiveAgentPatch(prev, reviewerRef));
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
         id: taskId,
