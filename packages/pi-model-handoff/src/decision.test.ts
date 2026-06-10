@@ -136,10 +136,9 @@ describe("computeHandoffEstimate", () => {
         { role: "assistant", content: "b".repeat(400) },
       ],
     });
-    const sourceRef = buildModelRef(makeModel("anthropic", "opus", 15), false);
     const targetRef = buildModelRef(makeModel("openai", "gpt-4o", 5), false);
 
-    const estimate = computeHandoffEstimate(preparation, sourceRef, targetRef);
+    const estimate = computeHandoffEstimate(preparation, targetRef);
 
     expect(estimate.currentTokens).toBe(10000);
     expect(estimate.summarizedTokens).toBeGreaterThan(0);
@@ -174,16 +173,12 @@ describe("computeHandoffEstimate", () => {
       tokensBefore: 10000,
       messagesToSummarize: [{ role: "user", content: "hello" }],
     });
-    const sourceRef = buildModelRef(
-      { ...makeModel("a", "b", 1), cost: { input: NaN, output: NaN } },
-      false,
-    );
     const targetRef = buildModelRef(
       { ...makeModel("c", "d", 1), cost: { input: NaN, output: NaN } },
       false,
     );
 
-    const estimate = computeHandoffEstimate(preparation, sourceRef, targetRef);
+    const estimate = computeHandoffEstimate(preparation, targetRef);
     expect(estimate.targetFullContextInputCost).toBeUndefined();
     expect(estimate.estimatedHandoffCost).toBeUndefined();
     expect(estimate.estimatedSavingsCost).toBeUndefined();
@@ -194,7 +189,6 @@ describe("makeHandoffDecision", () => {
   it("skips when preparation is undefined", () => {
     const decision = makeHandoffDecision(
       undefined,
-      buildModelRef(makeModel("a", "b", 1), false),
       buildModelRef(makeModel("c", "d", 1), false),
     );
     expect(decision.kind).toBe("skip");
@@ -208,94 +202,49 @@ describe("makeHandoffDecision", () => {
     });
     const decision = makeHandoffDecision(
       preparation,
-      buildModelRef(makeModel("a", "b", 1), false),
       buildModelRef(makeModel("c", "d", 1), false),
     );
     expect(decision.kind).toBe("skip");
     expect((decision as { reason: string }).reason).toContain("No messages");
   });
 
-  it("skips when summarizedTokens <= keptTokens", () => {
+  it("skips when estimated savings are below 20%", () => {
     const preparation = makePreparation({
-      tokensBefore: 100,
+      tokensBefore: 1000,
       messagesToSummarize: [{ role: "user", content: "short" }],
     });
     const decision = makeHandoffDecision(
       preparation,
-      buildModelRef(makeModel("a", "b", 1), false),
       buildModelRef(makeModel("c", "d", 1), false),
     );
     expect(decision.kind).toBe("skip");
-    expect((decision as { reason: string }).reason).toContain("kept");
+    expect((decision as { reason: string }).reason).toContain("20%");
   });
 
-  it("offers when summarizedTokens > keptTokens and no pricing", () => {
+  it("offers when estimated savings are at least 20%", () => {
     const preparation = makePreparation({
       tokensBefore: 500,
       messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
     });
-    const sourceRef = buildModelRef(
-      { ...makeModel("a", "b", 1), cost: { input: NaN, output: NaN } },
-      false,
+    const decision = makeHandoffDecision(
+      preparation,
+      buildModelRef(makeModel("c", "d", 3000), false),
     );
+    expect(decision.kind).toBe("offer");
+  });
+
+  it("skips when target pricing unavailable", () => {
+    const preparation = makePreparation({
+      tokensBefore: 500,
+      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
+    });
     const targetRef = buildModelRef(
       { ...makeModel("c", "d", 1), cost: { input: NaN, output: NaN } },
       false,
     );
-    const decision = makeHandoffDecision(preparation, sourceRef, targetRef);
-    expect(decision.kind).toBe("offer");
-  });
-
-  it("offers when source is subscription and token reduction is large", () => {
-    const preparation = makePreparation({
-      tokensBefore: 1000,
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
-    });
-    const sourceRef = buildModelRef(makeModel("anthropic", "pro", 20), true);
-    const targetRef = buildModelRef(makeModel("openai", "gpt-4o", 5), false);
-    const decision = makeHandoffDecision(preparation, sourceRef, targetRef);
-    expect(decision.kind).toBe("offer");
-  });
-
-  it("skips downshift check when source is subscription but uses token gate", () => {
-    const preparation = makePreparation({
-      tokensBefore: 100,
-      messagesToSummarize: [{ role: "user", content: "short" }],
-    });
-    const sourceRef = buildModelRef(makeModel("anthropic", "pro", 20), true);
-    const targetRef = buildModelRef(makeModel("openai", "gpt-4o", 5), false);
-    const decision = makeHandoffDecision(preparation, sourceRef, targetRef);
+    const decision = makeHandoffDecision(preparation, targetRef);
     expect(decision.kind).toBe("skip");
-    expect((decision as { reason: string }).reason).toContain("kept");
-  });
-
-  it("skips when target is not cheaper and both have pricing", () => {
-    const preparation = makePreparation({
-      tokensBefore: 1000,
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
-    });
-    const sourceRef = buildModelRef(makeModel("openai", "cheap", 1), false);
-    const targetRef = buildModelRef(
-      makeModel("openai", "expensive", 10),
-      false,
-    );
-    const decision = makeHandoffDecision(preparation, sourceRef, targetRef);
-    expect(decision.kind).toBe("skip");
-    expect((decision as { reason: string }).reason).toContain("not cheaper");
-  });
-
-  it("offers when target is cheaper and both have pricing", () => {
-    const preparation = makePreparation({
-      tokensBefore: 1000,
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
-    });
-    const sourceRef = buildModelRef(
-      makeModel("openai", "expensive", 10),
-      false,
-    );
-    const targetRef = buildModelRef(makeModel("openai", "cheap", 1), false);
-    const decision = makeHandoffDecision(preparation, sourceRef, targetRef);
-    expect(decision.kind).toBe("offer");
+    expect((decision as { reason: string }).reason).toContain("pricing");
   });
 
   it("skips when converted full-context cost is at or below the NZD threshold", () => {
@@ -303,12 +252,8 @@ describe("makeHandoffDecision", () => {
       tokensBefore: 40000,
       messagesToSummarize: [{ role: "user", content: "a".repeat(100000) }],
     });
-    const sourceRef = buildModelRef(
-      makeModel("openai", "expensive", 10),
-      false,
-    );
     const targetRef = buildModelRef(makeModel("openai", "cheap", 5), false);
-    const decision = makeHandoffDecision(preparation, sourceRef, targetRef, {
+    const decision = makeHandoffDecision(preparation, targetRef, {
       convertFullContextCostToNzd: (usd) => usd * 2,
     });
     expect(decision.kind).toBe("skip");
@@ -320,30 +265,31 @@ describe("makeHandoffDecision", () => {
       tokensBefore: 60000,
       messagesToSummarize: [{ role: "user", content: "a".repeat(200000) }],
     });
-    const sourceRef = buildModelRef(
-      makeModel("openai", "expensive", 10),
-      false,
-    );
     const targetRef = buildModelRef(makeModel("openai", "cheap", 5), false);
-    const decision = makeHandoffDecision(preparation, sourceRef, targetRef, {
+    const decision = makeHandoffDecision(preparation, targetRef, {
       convertFullContextCostToNzd: (usd) => usd * 2,
     });
     expect(decision.kind).toBe("offer");
   });
 
-  it("offers when NZD conversion is unavailable", () => {
+  it("skips when USD fallback cost is at or below doubled threshold", () => {
     const preparation = makePreparation({
       tokensBefore: 40000,
       messagesToSummarize: [{ role: "user", content: "a".repeat(100000) }],
     });
-    const sourceRef = buildModelRef(
-      makeModel("openai", "expensive", 10),
-      false,
-    );
     const targetRef = buildModelRef(makeModel("openai", "cheap", 5), false);
-    const decision = makeHandoffDecision(preparation, sourceRef, targetRef, {
-      convertFullContextCostToNzd: () => undefined,
+    const decision = makeHandoffDecision(preparation, targetRef);
+    expect(decision.kind).toBe("skip");
+    expect((decision as { reason: string }).reason).toContain("USD fallback");
+  });
+
+  it("offers when USD fallback cost exceeds doubled threshold", () => {
+    const preparation = makePreparation({
+      tokensBefore: 300000,
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
     });
+    const targetRef = buildModelRef(makeModel("openai", "cheap", 5), false);
+    const decision = makeHandoffDecision(preparation, targetRef);
     expect(decision.kind).toBe("offer");
   });
 
@@ -353,9 +299,10 @@ describe("makeHandoffDecision", () => {
       messagesToSummarize: [{ role: "user", content: "a".repeat(4000) }],
       turnPrefixMessages: [{ role: "user", content: "b".repeat(4000) }],
     });
-    const sourceRef = buildModelRef(makeModel("a", "b", 5), false);
-    const targetRef = buildModelRef(makeModel("c", "d", 1), false);
-    const decision = makeHandoffDecision(preparation, sourceRef, targetRef);
+    const decision = makeHandoffDecision(
+      preparation,
+      buildModelRef(makeModel("c", "d", 3000), false),
+    );
     expect(decision.kind).toBe("offer");
   });
 });

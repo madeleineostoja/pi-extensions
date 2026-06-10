@@ -52,7 +52,7 @@ vi.mock("@pi-extensions/lib", () => {
 });
 
 beforeEach(() => {
-  refreshCurrencyRateMock.mockReset();
+  refreshCurrencyRateMock.mockReset().mockResolvedValue(undefined);
   convertCurrencyMock.mockReset();
 });
 
@@ -294,10 +294,10 @@ describe("model_select handler", () => {
     const ctx = makeFakeCtx({ selectResult: undefined });
     vi.mocked(prepareCompaction).mockReturnValue({
       firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
       turnPrefixMessages: [],
       isSplitTurn: false,
-      tokensBefore: 1000,
+      tokensBefore: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -351,10 +351,10 @@ describe("model_select handler", () => {
     };
     vi.mocked(prepareCompaction).mockReturnValue({
       firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
       turnPrefixMessages: [],
       isSplitTurn: false,
-      tokensBefore: 1000,
+      tokensBefore: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -386,10 +386,10 @@ describe("model_select handler", () => {
     };
     vi.mocked(prepareCompaction).mockReturnValue({
       firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
       turnPrefixMessages: [],
       isSplitTurn: false,
-      tokensBefore: 1000,
+      tokensBefore: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -455,10 +455,10 @@ describe("model_select handler", () => {
     const ctx = makeFakeCtx({ selectResult: undefined });
     vi.mocked(prepareCompaction).mockReturnValue({
       firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
       turnPrefixMessages: [],
       isSplitTurn: false,
-      tokensBefore: 1000,
+      tokensBefore: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -481,10 +481,10 @@ describe("model_select handler", () => {
     const ctx = makeFakeCtx({ selectResult: "Continue full context" });
     vi.mocked(prepareCompaction).mockReturnValue({
       firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
       turnPrefixMessages: [],
       isSplitTurn: false,
-      tokensBefore: 1000,
+      tokensBefore: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -507,10 +507,10 @@ describe("model_select handler", () => {
     const ctx = makeFakeCtx({ selectResult: "Create handoff" });
     vi.mocked(prepareCompaction).mockReturnValue({
       firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
       turnPrefixMessages: [],
       isSplitTurn: false,
-      tokensBefore: 1000,
+      tokensBefore: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -544,10 +544,10 @@ describe("model_select handler", () => {
     const ctx1 = makeFakeCtx({ selectResult: "Create handoff" });
     vi.mocked(prepareCompaction).mockReturnValue({
       firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
       turnPrefixMessages: [],
       isSplitTurn: false,
-      tokensBefore: 1000,
+      tokensBefore: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -558,7 +558,7 @@ describe("model_select handler", () => {
     await handler(
       makeModelSelectEvent({
         previousModel: firstModel,
-        model: makeModel("openai", "gpt-4o-mini", 1),
+        model: makeModel("openai", "gpt-4o-mini", 5),
       }) as never,
       ctx1,
     );
@@ -568,7 +568,7 @@ describe("model_select handler", () => {
     await handler(
       makeModelSelectEvent({
         previousModel: laterModel,
-        model: makeModel("openai", "gpt-4o-mini", 1),
+        model: makeModel("openai", "gpt-4o-mini", 5),
       }) as never,
       ctx2,
     );
@@ -743,10 +743,10 @@ describe("state clearing", () => {
     const ctx = makeFakeCtx({ selectResult: "Create handoff" });
     vi.mocked(prepareCompaction).mockReturnValue({
       firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
       turnPrefixMessages: [],
       isSplitTurn: false,
-      tokensBefore: 1000,
+      tokensBefore: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -776,10 +776,10 @@ describe("state clearing", () => {
     const ctx = makeFakeCtx({ selectResult: "Create handoff" });
     vi.mocked(prepareCompaction).mockReturnValue({
       firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(8000) }],
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
       turnPrefixMessages: [],
       isSplitTurn: false,
-      tokensBefore: 1000,
+      tokensBefore: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,

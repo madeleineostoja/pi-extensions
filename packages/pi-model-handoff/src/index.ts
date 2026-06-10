@@ -45,23 +45,15 @@ export default function (pi: ExtensionAPI) {
       ctx.modelRegistry.isUsingOAuth(event.model),
     );
 
-    const initialDecision = makeHandoffDecision(
-      preparation,
-      sourceRef,
-      targetRef,
-    );
-    if (initialDecision.kind === "skip") {
-      return;
-    }
-
-    await refreshCurrencyRate({ from: "USD", to: "NZD" });
-    const decision = makeHandoffDecision(preparation, sourceRef, targetRef, {
+    await refreshCurrencyRate({ from: "USD", to: "NZD" }).catch(() => {});
+    const decision = makeHandoffDecision(preparation, targetRef, {
       convertFullContextCostToNzd: (amount) =>
         convertCurrency({ amount, from: "USD", to: "NZD" }),
     });
     if (decision.kind === "skip") {
       return;
     }
+
     const prompt = formatHandoffPrompt(sourceRef, targetRef, decision.estimate);
     const choice = await ctx.ui.select(prompt, [
       OPTION_CREATE_HANDOFF,

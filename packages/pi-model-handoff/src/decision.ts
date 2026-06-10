@@ -93,7 +93,6 @@ export function buildModelRef(
 
 export function computeHandoffEstimate(
   preparation: CompactionPreparation,
-  _sourceRef: ModelRef,
   targetRef: ModelRef,
 ): HandoffEstimate {
   const allMessages = [
@@ -135,7 +134,6 @@ export function computeHandoffEstimate(
 
 export function makeHandoffDecision(
   preparation: CompactionPreparation | undefined,
-  sourceRef: ModelRef,
   targetRef: ModelRef,
   options: HandoffDecisionOptions = {},
 ): HandoffDecision {
@@ -151,51 +149,43 @@ export function makeHandoffDecision(
     return { kind: "skip", reason: "No messages to summarize" };
   }
 
-  const summarizedTokens = allMessages.reduce(
-    (sum, msg) => sum + estimateTokens(msg as never),
-    0,
-  );
-  const keptTokens = Math.max(preparation.tokensBefore - summarizedTokens, 0);
+  const estimate = computeHandoffEstimate(preparation, targetRef);
 
-  if (summarizedTokens <= keptTokens) {
+  if (estimate.estimatedSavingsTokens < estimate.currentTokens * 0.2) {
     return {
       kind: "skip",
-      reason: "Summarized tokens do not exceed kept tokens",
+      reason: "Estimated context savings are below 20%",
     };
   }
 
-  const pricingAvailable =
-    sourceRef.inputCostPerMillion !== undefined &&
-    targetRef.inputCostPerMillion !== undefined;
-  const neitherSubscription =
-    !sourceRef.subscription && !targetRef.subscription;
-
-  if (pricingAvailable && neitherSubscription) {
-    if (targetRef.inputCostPerMillion! >= sourceRef.inputCostPerMillion!) {
-      return {
-        kind: "skip",
-        reason: "Target model is not cheaper than source model",
-      };
-    }
+  if (estimate.targetFullContextInputCost === undefined) {
+    return { kind: "skip", reason: "Target model pricing unavailable" };
   }
 
-  const estimate = computeHandoffEstimate(preparation, sourceRef, targetRef);
-  const fullContextCostNzd =
-    estimate.targetFullContextInputCost === undefined
-      ? undefined
-      : options.convertFullContextCostToNzd?.(
-          estimate.targetFullContextInputCost,
-        );
   const thresholdNzd =
     options.fullContextCostThresholdNzd ??
     FULL_CONTEXT_HANDOFF_COST_THRESHOLD_NZD;
 
-  if (fullContextCostNzd !== undefined && fullContextCostNzd <= thresholdNzd) {
-    return {
-      kind: "skip",
-      reason: "Full context cost is below handoff warning threshold",
-    };
+  const fullContextCostNzd = options.convertFullContextCostToNzd?.(
+    estimate.targetFullContextInputCost,
+  );
+  if (fullContextCostNzd !== undefined) {
+    if (fullContextCostNzd <= thresholdNzd) {
+      return {
+        kind: "skip",
+        reason: "Full context cost is below handoff warning threshold",
+      };
+    }
+    return { kind: "offer", estimate };
   }
 
+  const usdFallbackThreshold = thresholdNzd * 2;
+  if (estimate.targetFullContextInputCost <= usdFallbackThreshold) {
+    return {
+      kind: "skip",
+      reason:
+        "Full context cost is below handoff warning threshold (USD fallback)",
+    };
+  }
   return { kind: "offer", estimate };
 }
