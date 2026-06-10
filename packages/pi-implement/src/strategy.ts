@@ -25,15 +25,11 @@ export type StrategyOutcome =
       mode: "serial";
       reason: string;
       maxConcurrency: number;
-      requestedMode: "auto" | "serial" | "parallel";
-      requestedConcurrency: number | undefined;
     }
   | {
       mode: "parallel";
       reason: string;
       maxConcurrency: number;
-      requestedMode: "auto" | "serial" | "parallel";
-      requestedConcurrency: number | undefined;
       graph: ImplementGraph;
     };
 
@@ -48,8 +44,6 @@ export type StrategyRequest = {
   subagents: SubagentClient;
   paths: StatePaths;
   runId: string;
-  requestedMode: "auto" | "serial" | "parallel";
-  requestedConcurrency?: number;
   signal?: AbortSignal;
   manifest?: PlanBundleManifest;
   updateState(state: StatePatch): void;
@@ -59,31 +53,13 @@ export async function selectStrategy(
   req: StrategyRequest,
 ): Promise<StrategyOutcome> {
   const unchecked = req.plan.tasks.filter((t) => !t.checked);
-  const maxConcurrency = resolveMaxParallel(
-    req.config,
-    req.requestedConcurrency,
-  );
-
-  const outcomeMeta = {
-    requestedMode: req.requestedMode,
-    requestedConcurrency: req.requestedConcurrency,
-  };
-
-  if (req.requestedMode === "serial") {
-    return {
-      mode: "serial",
-      reason: "Serial mode requested via --serial.",
-      maxConcurrency,
-      ...outcomeMeta,
-    };
-  }
+  const maxConcurrency = resolveMaxParallel(req.config);
 
   if (unchecked.length === 0) {
     return {
       mode: "serial",
       reason: "No unchecked tasks; nothing to run.",
       maxConcurrency,
-      ...outcomeMeta,
     };
   }
 
@@ -92,15 +68,9 @@ export async function selectStrategy(
       mode: "serial",
       reason: "Only one unchecked task; no parallelism needed.",
       maxConcurrency,
-      ...outcomeMeta,
     };
   }
 
-  if (req.requestedMode === "parallel") {
-    return runGraphPlanner(req, unchecked, maxConcurrency);
-  }
-
-  // Auto mode with two or more unchecked tasks: use the graph planner directly
   return runGraphPlanner(req, unchecked, maxConcurrency);
 }
 
@@ -142,60 +112,11 @@ function removeStrategyAgentPatch(
   };
 }
 
-export function buildTriagePrompt(
-  plan: ParsedPlan,
-  unchecked: PlanTask[],
-  manifest?: PlanBundleManifest,
-): string {
-  const taskLines = unchecked
-    .map((t) => `- [planIndex=${t.index}] ${t.text}`)
-    .join("\n");
-  const bundleMaterial = manifest ? formatBundleMaterial(manifest) : "";
-  const bundleSection = bundleMaterial
-    ? `\n\n## Referenced Plan Material\n\n${bundleMaterial}`
-    : "";
-
-  return `You are a strategy triage agent for a code implementation pipeline.
-
-Analyze the following plan tasks and decide whether they should be executed serially (one at a time) or escalated to a graph planner for potential parallel execution.
-
-## Plan
-
-${plan.content}${bundleSection}
-
-## Unchecked Tasks (${unchecked.length})
-
-${taskLines}
-
-## Instructions
-
-Respond with strict JSON only (no prose, no markdown fences) matching exactly:
-{"decision":"serial","reason":"..."}
-or
-{"decision":"escalate-to-planner","reason":"..."}
-
-Choose "serial" if:
-- Tasks appear to be tightly coupled or sequential by nature
-- Tasks likely touch the same files or systems
-- There is insufficient evidence of independent work streams
-
-Choose "escalate-to-planner" only if:
-- There are clearly distinct, independent areas of work
-- Tasks could reasonably run in parallel without conflict
-
-When in doubt, choose "serial".`;
-}
-
 async function runGraphPlanner(
   req: StrategyRequest,
   unchecked: PlanTask[],
   maxConcurrency: number,
 ): Promise<StrategyOutcome> {
-  const outcomeMeta = {
-    requestedMode: req.requestedMode,
-    requestedConcurrency: req.requestedConcurrency,
-  };
-
   let prompt: string;
   try {
     prompt = await buildGraphPlannerPrompt(req, unchecked);
@@ -208,7 +129,6 @@ async function runGraphPlanner(
       mode: "serial",
       reason: `Could not build graph planner prompt: ${message}; defaulting to serial.`,
       maxConcurrency,
-      ...outcomeMeta,
     };
   }
 
@@ -234,7 +154,6 @@ async function runGraphPlanner(
         mode: "serial",
         reason: `Graph planner subagent ${result.status}: ${result.error}; defaulting to serial.`,
         maxConcurrency,
-        ...outcomeMeta,
       };
     }
     rawResult = result.result;
@@ -245,7 +164,6 @@ async function runGraphPlanner(
       mode: "serial",
       reason: `Graph planner subagent error: ${message}; defaulting to serial.`,
       maxConcurrency,
-      ...outcomeMeta,
     };
   }
 
@@ -258,18 +176,12 @@ function processGraphPlannerResult(
   unchecked: PlanTask[],
   maxConcurrency: number,
 ): StrategyOutcome {
-  const outcomeMeta = {
-    requestedMode: req.requestedMode,
-    requestedConcurrency: req.requestedConcurrency,
-  };
-
   const parsed = parseStrategyDecision(rawResult);
   if (!parsed.ok) {
     return {
       mode: "serial",
       reason: `Planner output invalid: ${parsed.reason}; defaulting to serial.`,
       maxConcurrency,
-      ...outcomeMeta,
     };
   }
 
@@ -280,7 +192,6 @@ function processGraphPlannerResult(
       mode: "serial",
       reason: `Planner recommended serial: ${decision.reason}`,
       maxConcurrency,
-      ...outcomeMeta,
     };
   }
 
@@ -290,7 +201,6 @@ function processGraphPlannerResult(
       reason:
         "Planner recommended parallel but provided no graph; defaulting to serial.",
       maxConcurrency,
-      ...outcomeMeta,
     };
   }
 
@@ -301,13 +211,11 @@ function processGraphPlannerResult(
       mode: "serial",
       reason: `Graph validation failed: ${validation.reason}; defaulting to serial.`,
       maxConcurrency,
-      ...outcomeMeta,
     };
   }
 
   const effectiveConcurrency = clampConcurrency(
     decision.maxConcurrency,
-    req.requestedConcurrency,
     req.config,
   );
 
@@ -326,23 +234,18 @@ function processGraphPlannerResult(
     reason: `Planner recommended parallel: ${decision.reason}`,
     maxConcurrency: effectiveConcurrency,
     graph,
-    ...outcomeMeta,
   };
 }
 
 function clampConcurrency(
   plannerProposed: number | undefined,
-  requested: number | undefined,
   config: ImplementConfig,
 ): number {
   const HARD_MAX = 8;
   const fromConfig = config.maxParallel ?? 3;
   const base = Math.min(fromConfig, HARD_MAX);
   if (plannerProposed !== undefined) {
-    return Math.min(plannerProposed, base, requested ?? base);
-  }
-  if (requested !== undefined) {
-    return Math.min(requested, base);
+    return Math.min(plannerProposed, base);
   }
   return base;
 }
@@ -421,9 +324,18 @@ ${gitStatus}
 
 ## Response Format
 
-Respond with strict JSON only (no prose, no markdown fences) matching:
+Respond with strict JSON only. Your final response must begin with { and end with }. Do not include markdown fences, analysis, or any text outside the JSON. Put the full explanation in the JSON "reason" and node "reasons" fields.
+
+For serial, return exactly this shape and omit graph:
 {
-  "mode": "serial" | "parallel",
+  "mode": "serial",
+  "reason": "...",
+  "confidence": "high" | "medium" | "low"
+}
+
+For parallel, return this shape:
+{
+  "mode": "parallel",
   "reason": "...",
   "confidence": "high" | "medium" | "low",
   "maxConcurrency": <optional positive integer>,
@@ -452,7 +364,7 @@ Respond with strict JSON only (no prose, no markdown fences) matching:
   }
 }
 
-If the correct strategy is serial, set mode to "serial" and omit the graph.`;
+If the correct strategy is serial, set mode to "serial" and omit the graph. Do not wrap the JSON in a markdown code fence.`;
 }
 
 async function getFilteredGitStatus(

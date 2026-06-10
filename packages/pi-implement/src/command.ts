@@ -40,7 +40,6 @@ import {
 } from "./status.js";
 import { parseCommand } from "./parser.js";
 import { selectStrategy } from "./strategy.js";
-import type { ExecutionMode } from "./parser.js";
 import { nextUncheckedTask, parsePlanFile } from "./plan.js";
 import {
   buildPlanBundleManifest,
@@ -430,7 +429,6 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         ctx.ui.notify(reviewerWarning, "warning");
       }
 
-      const mode = parsed.mode.kind;
       const planPath = resolve(ctx.cwd, parsed.mode.planPath);
 
       const configuredWorkerModels = [
@@ -458,7 +456,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         return;
       }
 
-      if (mode !== "serial" && effective.roles.planner.model !== undefined) {
+      if (effective.roles.planner.model !== undefined) {
         if (!isModelRef(effective.roles.planner.model)) {
           ctx.ui.notify(
             `Invalid planner model reference: ${effective.roles.planner.model}. Expected provider/model-id.`,
@@ -522,17 +520,8 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       const runIdNum = ++nextRunId;
       const abortController = new AbortController();
 
-      const requestedConcurrency =
-        mode === "parallel" ? parsed.mode.concurrency : undefined;
-      const maxConcurrency = resolveMaxParallel(
-        config.config,
-        requestedConcurrency,
-      );
-
-      const initialStrategyReason = describeStrategy(
-        parsed.mode,
-        maxConcurrency,
-      );
+      const maxConcurrency = resolveMaxParallel(config.config);
+      const initialStrategyReason = describeStrategy(maxConcurrency);
       let runId = "";
       let paths: ReturnType<typeof getStatePaths> | undefined;
       let now = "";
@@ -543,7 +532,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         const runJson = {
           version: 1 as const,
           runId,
-          mode,
+          mode: "auto" as const,
           strategyReason: initialStrategyReason,
           repoRoot,
           checkoutRoot,
@@ -590,7 +579,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         return;
       }
 
-      const modeSource = parsed.mode.kind === "auto" ? "auto" : "cli";
+      const modeSource = "auto" as const;
       const initialTaskIndex =
         nextUncheckedTask(plan)?.index ??
         (plan.tasks.length > 0 ? plan.tasks.length : undefined);
@@ -600,7 +589,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           phase: "preflight",
           planPath,
           runId,
-          mode,
+          mode: "auto",
           modeSource,
           baseSha,
           currentMainHead: baseSha,
@@ -687,8 +676,6 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
           subagents: client,
           paths,
           runId,
-          requestedMode: mode,
-          requestedConcurrency,
           signal: abortController.signal,
           updateState,
           manifest,
@@ -917,13 +904,7 @@ function throwIfCommandStopped(
   }
 }
 
-function describeStrategy(mode: ExecutionMode, maxConcurrency: number): string {
-  if (mode.kind === "serial") {
-    return "Serial mode requested via --serial.";
-  }
-  if (mode.kind === "parallel") {
-    return `Parallel mode requested via --parallel ${mode.concurrency}; effective concurrency ${maxConcurrency}.`;
-  }
+function describeStrategy(maxConcurrency: number): string {
   return `Auto mode selected; effective max concurrency ${maxConcurrency}.`;
 }
 

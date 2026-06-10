@@ -9,7 +9,7 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 - **Autonomous task loop** — drives the full implement → review → commit cycle per task without human input, one commit per approved task.
 - **Independent review gate** — a separate reviewer subagent judges correctness, quality, scope, and verification before anything is committed; changes-requested feedback is fed back to a bounded rework loop.
 - **Whole-feature overall review** — once all tasks land, a read-only reviewer assesses the combined diff against the original plan and can require follow-up work.
-- **Serial or parallel execution** — auto-selects per plan, or run forced serial or up to `n` concurrent tasks. Parallel tasks run in isolated worktrees and integrate back one at a time with verification at each step.
+- **Serial or parallel execution** — auto-selects per plan whether tasks should run one at a time or through a dependency graph. Parallel tasks run in isolated worktrees and integrate back one at a time with verification at each step.
 - **Sandboxed subagents** — implementers and reviewers are confined to their worktree; the orchestrator detects and blocks (or auto-heals) any out-of-bounds change to HEAD, the candidate diff, the main checkout, or plan artifacts.
 - **Built-in verification** — runs a configured verify command or auto-detected `test`/`typecheck`/`build` scripts, with an LLM integration review as a last resort. Precommit hooks are a hard gate and are never bypassed.
 - **Index-style plans** — top-level tasks can link out to supporting markdown files, which are inlined into the implementer's context.
@@ -19,10 +19,8 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 ## Usage
 
 ```text
-/implement path/to/plan.md          # auto: pick serial or parallel automatically
+/implement path/to/plan.md          # pick serial or parallel automatically
 /build path/to/plan.md              # alias for /implement
-/implement --serial path/to/plan.md # force one task at a time
-/implement --parallel <n> path/to/plan.md
 /implement status
 /implement stop
 /implement inspect
@@ -33,13 +31,11 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 
 Plan paths must not contain spaces. Use a symlink or rename if needed.
 
-## Execution modes
+## Execution strategy
 
-- `auto` (default): zero or one unchecked task short-circuits to serial. Otherwise a progressive planner decides whether the remaining tasks require serial execution or can run from a dependency graph, inspecting the repository only when needed. Invalid planner output, planner failures, invalid graphs, and explicit planner serial decisions fall back to serial execution.
-- `--serial`: run unchecked tasks strictly one at a time in plan order.
-- `--parallel <n>`: ask the same planner for a dependency graph and run independent tasks concurrently, up to `n` (clamped by `maxParallel` and a hard maximum of `8`).
+Zero or one unchecked task short-circuits to serial. Otherwise a progressive planner decides whether the remaining tasks require serial execution or can run from a dependency graph, inspecting the repository only when needed. Invalid planner output, planner failures, invalid graphs, and explicit planner serial decisions fall back to serial execution.
 
-Trivial cases short-circuit: zero or one unchecked task always runs serially.
+Parallel execution runs independent tasks concurrently up to `maxParallel` from config, with a hard maximum of `8`.
 
 ## The per-task loop
 

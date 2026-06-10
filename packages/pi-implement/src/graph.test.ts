@@ -156,13 +156,32 @@ describe("parseStrategyDecision", () => {
     }
   });
 
-  it("rejects decision embedded in prose", () => {
-    const text =
-      'Here is my analysis.\n\n{"mode":"serial","reason":"too coupled","confidence":"high"}\n\nDone.';
-    const result = parseStrategyDecision(text);
+  it("accepts a single decision embedded in prose or a markdown fence", () => {
+    const decision = {
+      mode: "serial",
+      reason: "too coupled",
+      confidence: "high",
+    };
+    for (const text of [
+      `Here is my analysis.\n\n${JSON.stringify(decision)}\n\nDone.`,
+      `\`\`\`json\n${JSON.stringify(decision)}\n\`\`\``,
+    ]) {
+      expect(parseStrategyDecision(text)).toEqual({
+        ok: true,
+        value: decision,
+      });
+    }
+  });
+
+  it("rejects ambiguous multiple JSON objects", () => {
+    const first = { mode: "serial", reason: "first", confidence: "high" };
+    const second = { mode: "serial", reason: "second", confidence: "low" };
+    const result = parseStrategyDecision(
+      `${JSON.stringify(first)}\n${JSON.stringify(second)}`,
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.reason).toBeTruthy();
+      expect(result.reason).toContain("multiple JSON objects");
     }
   });
 });

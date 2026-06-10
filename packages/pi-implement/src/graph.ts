@@ -53,10 +53,14 @@ export type GraphValidationResult =
 export function parseStrategyDecision(
   text: string,
 ): { ok: true; value: StrategyDecision } | { ok: false; reason: string } {
-  const trimmed = text.trim();
+  const candidate = extractJsonObject(text);
+  if (!candidate.ok) {
+    return candidate;
+  }
+
   let parsed: unknown;
   try {
-    parsed = JSON.parse(trimmed);
+    parsed = JSON.parse(candidate.text);
   } catch {
     return {
       ok: false,
@@ -132,6 +136,86 @@ export function parseStrategyDecision(
       reason: `Could not parse planner JSON: ${message}`,
     };
   }
+}
+
+function extractJsonObject(
+  text: string,
+): { ok: true; text: string } | { ok: false; reason: string } {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}") && isJson(trimmed)) {
+    return { ok: true, text: trimmed };
+  }
+
+  const candidates: string[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "{") {
+      continue;
+    }
+    const end = findMatchingBrace(text, i);
+    if (end === undefined) {
+      continue;
+    }
+    const candidate = text.slice(i, end + 1).trim();
+    if (isJson(candidate)) {
+      candidates.push(candidate);
+      i = end;
+    }
+  }
+
+  if (candidates.length === 1) {
+    return { ok: true, text: candidates[0] };
+  }
+  if (candidates.length > 1) {
+    return {
+      ok: false,
+      reason: "Planner output contains multiple JSON objects.",
+    };
+  }
+  return { ok: true, text: trimmed };
+}
+
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findMatchingBrace(text: string, start: number): number | undefined {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth++;
+    } else if (char === "}") {
+      depth--;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+
+  return undefined;
 }
 
 function parseImplementGraph(

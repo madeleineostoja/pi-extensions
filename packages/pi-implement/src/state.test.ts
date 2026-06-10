@@ -408,7 +408,7 @@ describe("run state lifecycle", () => {
         version: 1 as const,
         runId: "r20240115-120000",
         mode: "parallel" as const,
-        strategyReason: "Parallel mode requested.",
+        strategyReason: "Planner recommended parallel.",
         repoRoot: repo,
         planPath: join(repo, "plan.md"),
         planHash: "abc123",

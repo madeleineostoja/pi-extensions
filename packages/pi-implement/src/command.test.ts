@@ -135,13 +135,6 @@ describe("/implement command", () => {
     expect(ctx.ui.notifications[0]?.level).toBe("warning");
   });
 
-  it("shows usage for --parallel without integer", async () => {
-    const { handler, ctx } = setup();
-    await handler("--parallel abc plan.md", ctx);
-    expect(ctx.ui.notifications[0]?.message).toContain("positive integer");
-    expect(ctx.ui.notifications[0]?.level).toBe("warning");
-  });
-
   it("shows view fallback with no active agents", async () => {
     const { handler, ctx } = setup();
     await handler("view", ctx);

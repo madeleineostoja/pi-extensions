@@ -129,13 +129,9 @@ export function parseConfig(raw: string): {
   }
 }
 
-export function resolveMaxParallel(
-  config: ImplementConfig,
-  requested?: number,
-): number {
+export function resolveMaxParallel(config: ImplementConfig): number {
   const fromConfig = config.maxParallel ?? DEFAULT_MAX_PARALLEL;
-  const fromRequest = requested ?? fromConfig;
-  return Math.min(fromRequest, fromConfig, HARD_MAX_PARALLEL);
+  return Math.min(fromConfig, HARD_MAX_PARALLEL);
 }
 
 export function readConfig(agentDir: string): ConfigReadResult {

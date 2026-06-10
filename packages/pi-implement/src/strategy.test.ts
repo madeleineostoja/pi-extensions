@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildTriagePrompt, selectStrategy } from "./strategy.js";
+import { selectStrategy } from "./strategy.js";
 import { parsePlan } from "./plan.js";
 import { buildPlanBundleManifest, PlanMaterialSizeError } from "./manifest.js";
 import type { SubagentClient } from "./subagents.js";
@@ -782,7 +782,7 @@ describe("selectStrategy - planner prompt content", () => {
 });
 
 describe("selectStrategy - concurrency clamping", () => {
-  it("clamps effective concurrency to min(requested, config.maxParallel, 8)", async () => {
+  it("clamps effective concurrency to min(config.maxParallel, 8)", async () => {
     const graph: ImplementGraph = {
       version: 1,
       runId: "",
@@ -1071,73 +1071,6 @@ describe("selectStrategy - validationCommands are advisory only", () => {
     expect(
       (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
     ).toHaveLength(1);
-  });
-});
-
-describe("buildTriagePrompt - bundle material", () => {
-  it("does not include a bundle material section without a manifest", () => {
-    const plan = makePlan(["Task A", "Task B"]);
-    const prompt = buildTriagePrompt(plan, plan.tasks);
-    expect(prompt).not.toContain("## Referenced Plan Material");
-  });
-
-  it("includes bundle material when a manifest has referenced files", () => {
-    const dir = join(tmpRunDir, "triage-bundle");
-    mkdirSync(dir, { recursive: true });
-    const planPath = join(dir, "plan.md");
-    const subPath = join(dir, "sub.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] Task A\n  - Plan: `sub.md`\n- [ ] Task B\n",
-    );
-    writeFileSync(subPath, "# Subplan\n\nTriage context.\n");
-    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
-    const manifest = buildPlanBundleManifest(planPath, plan);
-
-    const prompt = buildTriagePrompt(plan, plan.tasks, manifest);
-
-    expect(prompt).toContain("## Referenced Plan Material");
-    expect(prompt).toContain("### sub.md");
-    expect(prompt).toContain("Triage context.");
-  });
-
-  it("passes bundle material to the auto-mode triage agent", async () => {
-    const dir = join(tmpRunDir, "triage-select");
-    mkdirSync(dir, { recursive: true });
-    const planPath = join(dir, "plan.md");
-    const subPath = join(dir, "sub.md");
-    writeFileSync(
-      planPath,
-      "# Plan\n\n## Tasks\n\n- [ ] Task A\n  - Plan: `sub.md`\n- [ ] Task B\n",
-    );
-    writeFileSync(subPath, "# Subplan\n\nTriage context.\n");
-    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
-    const manifest = buildPlanBundleManifest(planPath, plan);
-    const subagents = makeSubagents(
-      JSON.stringify({ decision: "serial", reason: "coupled" }),
-    );
-
-    await selectStrategy({
-      plan,
-      planContent: plan.content,
-      planHash: "hash",
-      repoRoot: dir,
-      baseSha: "abc",
-      config: {},
-      roles: makeRoles(),
-      subagents,
-      paths: makeStatePaths(),
-      runId: "r1",
-      updateState: () => ({}),
-      manifest,
-    });
-
-    const spawnMock = subagents.spawn as unknown as {
-      mock: { calls: Array<Array<{ prompt: string }>> };
-    };
-    const prompt = spawnMock.mock.calls[0][0].prompt;
-    expect(prompt).toContain("## Referenced Plan Material");
-    expect(prompt).toContain("Triage context.");
   });
 });
 

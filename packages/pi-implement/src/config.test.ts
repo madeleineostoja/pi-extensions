@@ -108,10 +108,9 @@ describe("config", () => {
 
   it("resolves maxParallel with defaults", () => {
     expect(resolveMaxParallel({})).toBe(3);
-    expect(resolveMaxParallel({}, 5)).toBe(3);
-    expect(resolveMaxParallel({ maxParallel: 6 }, 10)).toBe(6);
-    expect(resolveMaxParallel({ maxParallel: 2 }, 10)).toBe(2);
-    expect(resolveMaxParallel({ maxParallel: 10 }, 10)).toBe(8);
+    expect(resolveMaxParallel({ maxParallel: 6 })).toBe(6);
+    expect(resolveMaxParallel({ maxParallel: 2 })).toBe(2);
+    expect(resolveMaxParallel({ maxParallel: 10 })).toBe(8);
   });
 
   it("warns when reviewer uses the default general-purpose subagent", () => {
