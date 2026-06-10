@@ -12,9 +12,13 @@ export function buildImplementerPrompt(args: {
   worktreePath: string;
   feedback?: string;
   priorSummary?: string;
+  scoutContext?: string;
 }): string {
   const retry = args.feedback
     ? `\n## Retry Context\n\nPrevious attempt summary:\n${args.priorSummary ?? "(none)"}\n\nFeedback to address:\n${args.feedback}\n`
+    : "";
+  const scout = args.scoutContext
+    ? `\n## Scout Context\n\nThe following context was gathered by a read-only Scout for this attempt only. It is a starting map, not authoritative truth.\n\n- Treat Scout findings as hints, not facts. Read relevant files yourself before editing.\n- Do not expand your implementation scope based on Scout discoveries. Stick to the selected task packet.\n- Avoid broad repository searches unless the Scout context is clearly insufficient for the task.\n\n${args.scoutContext}\n`
     : "";
   return `You are the pi-implement implementer for exactly one task from a /plan artifact. This prompt is the complete task contract and must work even if your subagent definition is generic.
 
@@ -39,7 +43,7 @@ Do not edit source plan files or checklist state. Do not stage, commit, reset, c
 Make the necessary code, documentation, and test changes for the selected task. Choose and run task-appropriate verification. When in doubt, run more verification rather than less: time is cheap, missed regressions are not. Precommit hooks will run on commit and cannot be bypassed, so satisfy lint, format, typecheck, and test expectations from the start. If verification is limited or fails, report that clearly.
 
 If blocked, leave the repository in a safe state and explain the blocker in the result block.
-${retry}
+${retry}${scout}
 ## Task Packet
 
 ${args.taskPacket}
