@@ -317,6 +317,151 @@ describe("validateGraph", () => {
   });
 });
 
+describe("parseStrategyDecision with review directives", () => {
+  it("parses a graph node with review directive", () => {
+    const graph = makeGraph([
+      makeNode({
+        id: "t1",
+        planIndex: 1,
+        review: { mode: "skip", reason: "docs only" },
+      }),
+    ]);
+    const result = parseStrategyDecision(
+      JSON.stringify({
+        mode: "parallel",
+        reason: "ok",
+        confidence: "high",
+        graph,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.graph?.nodes[0].review).toEqual({
+        mode: "skip",
+        reason: "docs only",
+      });
+    }
+  });
+
+  it("parses a graph node with review mode suggest and no reason", () => {
+    const graph = makeGraph([
+      makeNode({ id: "t1", planIndex: 1, review: { mode: "suggest" } }),
+    ]);
+    const result = parseStrategyDecision(
+      JSON.stringify({
+        mode: "parallel",
+        reason: "ok",
+        confidence: "high",
+        graph,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.graph?.nodes[0].review).toEqual({ mode: "suggest" });
+    }
+  });
+
+  it("parses a graph node without review directive", () => {
+    const graph = makeGraph([makeNode({ id: "t1", planIndex: 1 })]);
+    const result = parseStrategyDecision(
+      JSON.stringify({
+        mode: "parallel",
+        reason: "ok",
+        confidence: "high",
+        graph,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.graph?.nodes[0].review).toBeUndefined();
+    }
+  });
+
+  it("rejects invalid review mode", () => {
+    const graph = makeGraph([
+      makeNode({
+        id: "t1",
+        planIndex: 1,
+        review: { mode: "maybe" } as never,
+      }),
+    ]);
+    const result = parseStrategyDecision(
+      JSON.stringify({
+        mode: "parallel",
+        reason: "ok",
+        confidence: "high",
+        graph,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("review mode");
+    }
+  });
+
+  it("rejects non-object review directive", () => {
+    const graph = makeGraph([
+      makeNode({ id: "t1", planIndex: 1, review: "skip" as never }),
+    ]);
+    const result = parseStrategyDecision(
+      JSON.stringify({
+        mode: "parallel",
+        reason: "ok",
+        confidence: "high",
+        graph,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("review must be an object");
+    }
+  });
+
+  it("rejects non-string review reason", () => {
+    const graph = makeGraph([
+      makeNode({
+        id: "t1",
+        planIndex: 1,
+        review: { mode: "skip", reason: 123 } as never,
+      }),
+    ]);
+    const result = parseStrategyDecision(
+      JSON.stringify({
+        mode: "parallel",
+        reason: "ok",
+        confidence: "high",
+        graph,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("review reason");
+    }
+  });
+
+  it("trims empty review reason and omits it", () => {
+    const graph = makeGraph([
+      makeNode({
+        id: "t1",
+        planIndex: 1,
+        review: { mode: "require", reason: "   " },
+      }),
+    ]);
+    const result = parseStrategyDecision(
+      JSON.stringify({
+        mode: "parallel",
+        reason: "ok",
+        confidence: "high",
+        graph,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.graph?.nodes[0].review).toEqual({ mode: "require" });
+    }
+  });
+});
+
 describe("detectCycle", () => {
   it("returns ok for a graph with no cycles", () => {
     const nodes: ImplementGraphNode[] = [

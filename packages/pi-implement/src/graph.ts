@@ -9,6 +9,11 @@ import { dirname, join } from "node:path";
 
 export type GraphNodeMode = "serial" | "parallel";
 
+export type TaskReviewDirective = {
+  mode: "skip" | "suggest" | "require";
+  reason?: string;
+};
+
 export type ImplementGraphNode = {
   id: string;
   planIndex: number;
@@ -27,6 +32,7 @@ export type ImplementGraphNode = {
   confidence: "high" | "medium" | "low";
   reasons: string[];
   evidencePaths: string[];
+  review?: TaskReviewDirective;
 };
 
 export type ImplementGraph = {
@@ -315,6 +321,10 @@ function parseGraphNode(
   const validationCommands = parseStringArray(obj.validationCommands) ?? [];
   const reasons = parseStringArray(obj.reasons) ?? [];
   const evidencePaths = parseStringArray(obj.evidencePaths) ?? [];
+  const review = parseTaskReviewDirective(obj.review);
+  if (review !== undefined && !review.ok) {
+    return { ok: false, reason: review.reason };
+  }
 
   return {
     ok: true,
@@ -331,8 +341,44 @@ function parseGraphNode(
       confidence: obj.confidence,
       reasons,
       evidencePaths,
+      review: review?.value,
     },
   };
+}
+
+function parseTaskReviewDirective(
+  value: unknown,
+):
+  | { ok: true; value: TaskReviewDirective }
+  | { ok: false; reason: string }
+  | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, reason: "Graph node review must be an object." };
+  }
+  const obj = value as Record<string, unknown>;
+  if (obj.mode !== "skip" && obj.mode !== "suggest" && obj.mode !== "require") {
+    return {
+      ok: false,
+      reason: `Graph node review mode must be "skip", "suggest", or "require", got: ${String(obj.mode)}.`,
+    };
+  }
+  const directive: TaskReviewDirective = { mode: obj.mode };
+  if (obj.reason !== undefined) {
+    if (typeof obj.reason !== "string") {
+      return {
+        ok: false,
+        reason: "Graph node review reason must be a string.",
+      };
+    }
+    const trimmed = obj.reason.trim();
+    if (trimmed.length > 0) {
+      directive.reason = trimmed;
+    }
+  }
+  return { ok: true, value: directive };
 }
 
 function parseStringArray(value: unknown): string[] | undefined {

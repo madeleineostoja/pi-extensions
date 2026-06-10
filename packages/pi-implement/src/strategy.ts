@@ -358,11 +358,22 @@ For parallel, return this shape:
         "validationCommands": [],
         "confidence": "high",
         "reasons": ["why this can run in parallel"],
-        "evidencePaths": []
+        "evidencePaths": [],
+        "review": { "mode": "skip" | "suggest" | "require", "reason": "optional" }
       }
     ]
   }
 }
+
+## Task Review Directives
+
+Each graph node may include an optional advisory "review" field to guide the runtime task-review policy. These directives are advisory hints, not authoritative guarantees. The runtime may override them based on the actual staged diff, retry state, and validation evidence.
+
+- "require" — the runtime must run per-task review. Use for security/auth, persistence, public API, concurrency/state, migrations, dependency/config changes, broad/multi-area work, low planner confidence, or tasks likely to need subjective correctness review.
+- "suggest" — review is preferred; in v1 the runtime may only skip when the actual candidate is strictly docs-only. Use as the safe default when you see some risk but not enough to force "require".
+- "skip" — the planner believes the task is skip-eligible, not that skipping is guaranteed. Recommend "skip" only for obviously low-risk tasks such as small docs-only changes or additive fixture/snapshot tasks where an objective runtime check can establish safety.
+- Omit "review" entirely when you have no strong opinion; the runtime will default to reviewing.
+- Do not base review directives on imagined implementation details you cannot verify. Base them only on the plan text, task scope, and files you have observed.
 
 If the correct strategy is serial, set mode to "serial" and omit the graph. Do not wrap the JSON in a markdown code fence.`;
 }

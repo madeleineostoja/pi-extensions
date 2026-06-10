@@ -680,6 +680,46 @@ describe("selectStrategy - planner prompt content", () => {
     expect(prompt).toContain("only a few targeted searches or reads per task");
   });
 
+  it("documents advisory task-review directives in the planner schema", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain(
+      '"review": { "mode": "skip" | "suggest" | "require"',
+    );
+    expect(prompt).toContain('optional advisory "review" field');
+    expect(prompt).toContain("advisory hints, not authoritative guarantees");
+    expect(prompt).toContain(
+      "actual staged diff, retry state, and validation evidence",
+    );
+    expect(prompt).toContain(
+      "Do not base review directives on imagined implementation details",
+    );
+  });
+
   it("requires concrete semantic dependencies for dependsOn", async () => {
     const subagents = makeSubagents(
       JSON.stringify({
