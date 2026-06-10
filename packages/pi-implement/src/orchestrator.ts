@@ -78,7 +78,9 @@ import {
   type PlanBundleManifest,
 } from "./manifest.js";
 
-const MAX_REVIEWER_REQUESTS = 5;
+// One initial full review plus up to two anchored re-reviews.
+// If the second anchored re-review still returns unresolved required changes, block.
+const MAX_ANCHORED_REVIEW_CHANGE_REQUESTS = 2;
 const MAX_SYSTEM_FAILURES = 2;
 const MAX_ACCUMULATED_DIFF_CHARS = 50000;
 const MAX_REWORK_ATTEMPTS = 2;
@@ -2613,7 +2615,7 @@ async function runTaskWorker(args: {
   let priorSummary: string | undefined;
   let attempt = 1;
   let systemFailures = 0;
-  let reviewerRequests = 0;
+  let anchoredReviewChangeRequests = 0;
   let priorReviewRequiredChanges: string[] | undefined;
 
   for (;;) {
@@ -2716,6 +2718,7 @@ async function runTaskWorker(args: {
       );
       systemFailures++;
       priorReviewRequiredChanges = undefined;
+      anchoredReviewChangeRequests = 0;
       attempt++;
       continue;
     }
@@ -2791,6 +2794,7 @@ async function runTaskWorker(args: {
       );
       systemFailures++;
       priorReviewRequiredChanges = undefined;
+      anchoredReviewChangeRequests = 0;
       attempt++;
       continue;
     }
@@ -2874,6 +2878,7 @@ async function runTaskWorker(args: {
       systemFailures++;
       await taskGit.reset();
       priorReviewRequiredChanges = undefined;
+      anchoredReviewChangeRequests = 0;
       attempt++;
       continue;
     }
@@ -2956,6 +2961,7 @@ async function runTaskWorker(args: {
       );
       systemFailures++;
       priorReviewRequiredChanges = undefined;
+      anchoredReviewChangeRequests = 0;
       attempt++;
       continue;
     }
@@ -3010,6 +3016,7 @@ async function runTaskWorker(args: {
       );
       systemFailures++;
       priorReviewRequiredChanges = undefined;
+      anchoredReviewChangeRequests = 0;
       attempt++;
       continue;
     }
@@ -3036,12 +3043,7 @@ async function runTaskWorker(args: {
       if (!isAnchoredReview) {
         await taskGit.reset();
         priorReviewRequiredChanges = verdict.requiredChanges;
-        feedback = recordReviewerRequest(
-          task.index,
-          reviewerRequests,
-          verdict.requiredChanges,
-        );
-        reviewerRequests++;
+        feedback = reviewerFeedback(verdict.requiredChanges);
         attempt++;
         continue;
       }
@@ -3049,16 +3051,22 @@ async function runTaskWorker(args: {
         // Anchored review returned only non-matching items — treat as approved.
         // Do NOT reset so the approved candidate diff remains staged.
         priorReviewRequiredChanges = undefined;
+        anchoredReviewChangeRequests = 0;
         // Fall through to approval path below
       } else {
+        anchoredReviewChangeRequests++;
+        if (
+          anchoredReviewChangeRequests >= MAX_ANCHORED_REVIEW_CHANGE_REQUESTS
+        ) {
+          await taskGit.reset();
+          const message = unresolved.map((change) => `- ${change}`).join("\n");
+          throw new BlockedError(
+            `anchored review change request limit reached for task ${task.index}:\n${message}`,
+          );
+        }
         await taskGit.reset();
         priorReviewRequiredChanges = unresolved;
-        feedback = recordReviewerRequest(
-          task.index,
-          reviewerRequests,
-          unresolved,
-        );
-        reviewerRequests++;
+        feedback = reviewerFeedback(unresolved);
         attempt++;
         continue;
       }
@@ -3066,6 +3074,7 @@ async function runTaskWorker(args: {
 
     // Clear anchor on any approval path
     priorReviewRequiredChanges = undefined;
+    anchoredReviewChangeRequests = 0;
 
     // Approved
     if (
@@ -3172,6 +3181,7 @@ async function runTaskWorker(args: {
         );
         systemFailures++;
         priorReviewRequiredChanges = undefined;
+        anchoredReviewChangeRequests = 0;
         attempt++;
         if (deps.paths) {
           writeTaskJson(deps.paths, taskId, {
@@ -3311,6 +3321,7 @@ async function runTaskWorker(args: {
     );
     systemFailures++;
     priorReviewRequiredChanges = undefined;
+    anchoredReviewChangeRequests = 0;
     attempt++;
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
@@ -3473,17 +3484,8 @@ function recordSystemFailure(
   return { source, message };
 }
 
-function recordReviewerRequest(
-  taskIndex: number,
-  currentRequests: number,
-  requiredChanges: string[],
-): RetryFeedback {
+function reviewerFeedback(requiredChanges: string[]): RetryFeedback {
   const message = requiredChanges.map((change) => `- ${change}`).join("\n");
-  if (currentRequests + 1 >= MAX_REVIEWER_REQUESTS) {
-    throw new BlockedError(
-      `reviewer requested changes limit reached for task ${taskIndex}:\n${message}`,
-    );
-  }
   return { source: "reviewer", message };
 }
 

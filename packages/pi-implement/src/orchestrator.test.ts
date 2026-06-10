@@ -1200,6 +1200,52 @@ describe("runImplementation", () => {
     expect(git.commits).toEqual(["feat: do thing"]);
   });
 
+  it("blocks after unresolved second anchored re-review", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      {
+        status: "completed",
+        result:
+          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+      },
+      { status: "completed", result: GOOD_IMPL },
+      {
+        status: "completed",
+        result:
+          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+      },
+      { status: "completed", result: GOOD_IMPL },
+      {
+        status: "completed",
+        result:
+          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+      },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+
+    expect(subagents.spawns).toHaveLength(6);
+    expect(git.commits).toHaveLength(0);
+  });
+
   it("ignores non-matching anchored reviewer items and proceeds as approved", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
@@ -1322,9 +1368,7 @@ describe("runImplementation", () => {
     expect(thirdReviewerPrompt).not.toContain(
       "## Review Mode: Anchored Re-review",
     );
-    expect(thirdReviewerPrompt).not.toContain(
-      "## Prior Required Changes",
-    );
+    expect(thirdReviewerPrompt).not.toContain("## Prior Required Changes");
     expect(thirdReviewerPrompt).toContain(
       "## Review Mode: Initial Material Review",
     );
