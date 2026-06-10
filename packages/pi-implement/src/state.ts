@@ -63,6 +63,11 @@ export type TaskJson = {
   lastReason?: string;
   commitMessage?: string;
   selfHealAttempts?: number;
+  review?: {
+    lastDecision: "reviewed" | "skipped" | "required";
+    lastReason?: string;
+    skippedCount?: number;
+  };
 };
 
 export type EventEntry =

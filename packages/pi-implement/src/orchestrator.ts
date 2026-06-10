@@ -26,7 +26,8 @@ import {
 } from "./plan.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SubagentClient } from "./subagents.js";
-import type { EffectiveRoles } from "./config.js";
+import type { EffectiveRoles, EffectiveTaskReviewConfig } from "./config.js";
+import { resolveEffectiveTaskReview } from "./config.js";
 import type {
   RunState,
   ParallelTaskState,
@@ -46,6 +47,12 @@ import type {
   IntegrationSelfHealResult,
   SchedulerSelfHealResult,
 } from "./verdict.js";
+import type {
+  ValidationEvidence,
+  StagedFileSummary,
+  TaskReviewDecision,
+} from "./review-policy.js";
+import { decideTaskReview } from "./review-policy.js";
 import type { StatePaths, TaskJson } from "./state.js";
 import {
   writeTaskJson,
@@ -57,7 +64,7 @@ import {
 } from "./state.js";
 import type { RunMode } from "./state.js";
 import { readGraphJson } from "./graph.js";
-import type { ImplementGraph } from "./graph.js";
+import type { ImplementGraph, TaskReviewDirective } from "./graph.js";
 import {
   createSchedulerRun,
   computeReadyTasks,
@@ -110,6 +117,7 @@ export type OrchestratorDeps = {
   shouldStop(): boolean;
   signal?: AbortSignal;
   verifyCommand?: string;
+  effectiveTaskReview?: EffectiveTaskReviewConfig;
 };
 
 export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
@@ -363,6 +371,7 @@ async function runParallelImplementation(
         planArtifacts,
         runBaseSha,
         wasNeedsRework,
+        taskNode.review,
       );
       runningWorkers.set(taskId, promise);
     }
@@ -533,6 +542,7 @@ async function launchTaskWorker(
   planArtifacts: string[],
   runBaseSha: string,
   wasNeedsRework: boolean,
+  plannerDirective?: TaskReviewDirective,
 ): Promise<WorkerResult> {
   const task = sched.tasks.get(taskId)!;
   const baseSha = await deps.git.head();
@@ -593,6 +603,8 @@ async function launchTaskWorker(
       planArtifacts,
       schedulerTask: task,
       runBaseSha,
+      plannerDirective,
+      wasNeedsRework,
     });
 
     if (deps.shouldStop() || deps.signal?.aborted) {
@@ -925,8 +937,9 @@ async function landApprovedTask(
         taskId,
         commitSha: landedHead,
       });
+      const existing = readTaskJson(deps.paths, taskId);
       writeTaskJson(deps.paths, taskId, {
-        ...taskToJson(task),
+        ...(existing ?? taskToJson(task)),
         status: "landed",
         landedCommitSha: landedHead,
       });
@@ -2584,6 +2597,125 @@ function taskToJson(task: SchedulerTask): TaskJson {
 
 // ── Task worker (shared serial + parallel) ─────────────────────────────────
 
+async function getStagedFileSummary(
+  taskGit: GitClient,
+): Promise<StagedFileSummary> {
+  const nameStatus = await taskGit.stagedNameStatus();
+  const lines = nameStatus.split("\n").filter((l) => l.trim());
+  const diff = await taskGit.stagedDiff();
+  return {
+    fileCount: lines.length,
+    diffChars: diff.length,
+    nameStatusLines: lines,
+  };
+}
+
+async function runReviewSkipValidation(
+  deps: OrchestratorDeps,
+  taskGit: GitClient,
+  taskId: string,
+): Promise<
+  | { ok: true; commands: string[]; log: string }
+  | { ok: false; reason: string; log: string }
+> {
+  const commands = await resolveValidationCommands(deps);
+  if (commands.length === 0) {
+    return {
+      ok: true,
+      commands: [],
+      log: "No validation commands configured.",
+    };
+  }
+  const cwd = await taskGit.root();
+  const logs: string[] = [];
+  for (const command of commands) {
+    const result = await runValidationCommand(command, cwd);
+    const log = `${command.display}\n\nexitCode: ${result.exitCode}\n\nSTDOUT\n${result.stdout}\n\nSTDERR\n${result.stderr}\n`;
+    logs.push(log);
+    if (deps.paths) {
+      persistTaskArtifact(
+        deps.paths,
+        taskId,
+        `review-validation-${safeArtifactName(command.label)}-attempt.log`,
+        log,
+      );
+    }
+    if (result.exitCode !== 0) {
+      return {
+        ok: false,
+        reason: `${command.display} failed`,
+        log: logs.join("\n---\n"),
+      };
+    }
+  }
+  return {
+    ok: true,
+    commands: commands.map((c) => c.display),
+    log: logs.join("\n---\n"),
+  };
+}
+
+function persistReviewDecisionArtifact(
+  paths: StatePaths,
+  taskId: string,
+  attempt: number,
+  decision: TaskReviewDecision,
+  plannerDirective: TaskReviewDirective | undefined,
+  stagedSummary: StagedFileSummary,
+  validation: ValidationEvidence,
+  scoutFailed: boolean,
+): void {
+  const content = `# Review Decision (Attempt ${attempt})
+
+## Decision: ${decision.action}
+
+**Reason:** ${decision.reason}
+
+## Planner Directive
+${plannerDirective ? "\`\`\`json\n" + JSON.stringify(plannerDirective, null, 2) + "\n\`\`\`" : "None"}
+
+## Staged Changes
+- Files: ${stagedSummary.fileCount}
+- Diff chars: ${stagedSummary.diffChars}
+- Name-status:
+${stagedSummary.nameStatusLines.map((l) => `    ${l}`).join("\n")}
+
+## Validation Evidence
+\`\`\`json\n${JSON.stringify(validation, null, 2)}\n\`\`\`
+
+## Context
+- Scout failed: ${scoutFailed}
+`;
+  persistTaskArtifact(
+    paths,
+    taskId,
+    `review-decision-attempt-${attempt}.md`,
+    content,
+  );
+}
+
+function persistReviewSkippedArtifact(
+  paths: StatePaths,
+  taskId: string,
+  attempt: number,
+  decision: Extract<TaskReviewDecision, { action: "skip" }>,
+): void {
+  const content = `# Review Skipped (Attempt ${attempt})
+
+## Verdict
+Review skipped: ${decision.reason}
+
+## Category
+${decision.category}
+`;
+  persistTaskArtifact(
+    paths,
+    taskId,
+    `review-skipped-attempt-${attempt}.md`,
+    content,
+  );
+}
+
 async function runTaskWorker(args: {
   deps: OrchestratorDeps;
   plan: ReturnType<typeof parsePlanFile>;
@@ -2596,6 +2728,8 @@ async function runTaskWorker(args: {
   planArtifacts: string[];
   schedulerTask?: SchedulerTask;
   runBaseSha?: string;
+  plannerDirective?: TaskReviewDirective;
+  wasNeedsRework?: boolean;
 }): Promise<boolean> {
   const {
     deps,
@@ -2609,6 +2743,8 @@ async function runTaskWorker(args: {
     planArtifacts,
     schedulerTask,
     runBaseSha,
+    plannerDirective,
+    wasNeedsRework,
   } = args;
 
   let feedback: RetryFeedback | undefined;
@@ -2810,7 +2946,9 @@ async function runTaskWorker(args: {
     let candidatePatch: string | undefined;
     let worktreeFingerprintBefore: string | undefined;
     let reviewHeadBefore: string;
-    let reviewerPrompt: string;
+    let reviewerPrompt: string | undefined;
+    let skipReview = false;
+    let skipReason: string | undefined;
 
     if (hasStaged) {
       fingerprintBefore = await taskGit.stagedFingerprint();
@@ -2823,16 +2961,140 @@ async function runTaskWorker(args: {
       }
 
       reviewHeadBefore = await taskGit.head();
-      const outOfScopeTasks = plan.tasks
-        .filter((t) => t.index !== task.index)
-        .map((t) => t.originalLine);
-      reviewerPrompt = buildReviewerPrompt({
-        taskPacket: packet.markdown,
-        worktreePath: effectiveWorktreePath,
-        implementer: parsed.result,
-        outOfScopeTasks,
-        priorRequiredChanges: priorReviewRequiredChanges,
+
+      // ── Dynamic review decision ──
+      const stagedSummary = await getStagedFileSummary(taskGit);
+      const isRetry = attempt > 1 || (wasNeedsRework ?? false);
+      const effectiveConfig =
+        deps.effectiveTaskReview ?? resolveEffectiveTaskReview({});
+      let validationEvidence: ValidationEvidence = { status: "not_required" };
+      let reviewDecision = decideTaskReview({
+        effectiveConfig,
+        plannerDirective,
+        isRetry,
+        implementerOutcome: "changed",
+        scoutFailed: false,
+        stagedSummary,
+        validation: validationEvidence,
       });
+
+      if (reviewDecision.action === "needs_validation") {
+        const validation = await runReviewSkipValidation(deps, taskGit, taskId);
+        if (!validation.ok) {
+          await taskGit.reset();
+          feedback = recordSystemFailure(
+            task.index,
+            systemFailures,
+            "system",
+            `Validation failed: ${validation.reason}`,
+          );
+          systemFailures++;
+          if (deps.paths) {
+            persistReviewDecisionArtifact(
+              deps.paths,
+              taskId,
+              attempt,
+              reviewDecision,
+              plannerDirective,
+              stagedSummary,
+              { status: "failed", reason: validation.reason },
+              false,
+            );
+            persistTaskArtifact(
+              deps.paths,
+              taskId,
+              `review-validation-failure-attempt-${attempt}.log`,
+              validation.log,
+            );
+          }
+          priorReviewRequiredChanges = undefined;
+          anchoredReviewChangeRequests = 0;
+          attempt++;
+          continue;
+        }
+
+        // Mutation detection after validation
+        const postValidationHead = await taskGit.head();
+        const postValidationStaged = await taskGit.stagedFingerprint();
+        const postValidationWorktree =
+          await taskGit.worktreeFingerprintExcept(planArtifacts);
+        const changedPlanArtifactAfterValidation = changedSnapshotPath(
+          planArtifacts,
+          planArtifactSnapshot,
+        );
+
+        if (postValidationHead !== reviewHeadBefore) {
+          throw new BlockedError("validation changed HEAD");
+        }
+        if (changedPlanArtifactAfterValidation) {
+          throw new BlockedError(
+            `validation changed a plan artifact: ${changedPlanArtifactAfterValidation}`,
+          );
+        }
+        if (postValidationStaged !== fingerprintBefore) {
+          throw new BlockedError("validation changed staged state");
+        }
+        if (postValidationWorktree !== worktreeFingerprintBefore) {
+          throw new BlockedError("validation changed worktree state");
+        }
+
+        validationEvidence = {
+          status: "passed",
+          commands: validation.commands,
+        };
+        reviewDecision = decideTaskReview({
+          effectiveConfig,
+          plannerDirective,
+          isRetry,
+          implementerOutcome: "changed",
+          scoutFailed: false,
+          stagedSummary,
+          validation: validationEvidence,
+        });
+      }
+
+      if (deps.paths) {
+        persistReviewDecisionArtifact(
+          deps.paths,
+          taskId,
+          attempt,
+          reviewDecision,
+          plannerDirective,
+          stagedSummary,
+          validationEvidence,
+          false,
+        );
+        if (reviewDecision.action === "skip") {
+          persistReviewSkippedArtifact(
+            deps.paths,
+            taskId,
+            attempt,
+            reviewDecision,
+          );
+        }
+      }
+
+      if (reviewDecision.action === "skip") {
+        skipReview = true;
+        skipReason = reviewDecision.reason;
+        deps.updateState((prev) =>
+          checkpointPatch(
+            prev,
+            `\u00b7 Task ${task.index}/${plan.tasks.length} review skipped: ${reviewDecision.reason}`,
+          ),
+        );
+      } else {
+        const outOfScopeTasks = plan.tasks
+          .filter((t) => t.index !== task.index)
+          .map((t) => t.originalLine);
+        reviewerPrompt = buildReviewerPrompt({
+          taskPacket: packet.markdown,
+          worktreePath: effectiveWorktreePath,
+          implementer: parsed.result,
+          outOfScopeTasks,
+          priorRequiredChanges: priorReviewRequiredChanges,
+        });
+      }
     } else if (parsed.result.outcome === "already_satisfied" && !worktreePath) {
       await taskGit.reset();
       reviewHeadBefore = await taskGit.head();
@@ -2884,185 +3146,189 @@ async function runTaskWorker(args: {
     }
     deps.updateState({ phase: "reviewing", activeSubagentId: undefined });
 
-    if (deps.paths) {
-      persistTaskArtifact(deps.paths, taskId, "review.md", reviewerPrompt);
+    if (!skipReview && deps.paths) {
+      persistTaskArtifact(deps.paths, taskId, "review.md", reviewerPrompt!);
     }
 
-    const reviewerId = await deps.subagents.spawn({
-      type: deps.roles.reviewer.type,
-      prompt: reviewerPrompt,
-      description: `review task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
-      model: deps.roles.reviewer.model,
-    });
-    const reviewerRef: AgentDisplayRef = {
-      id: reviewerId,
-      role: "reviewer",
-      label: `Task ${task.index}/${plan.tasks.length} reviewer \u00b7 ${shortTask(task.text)}`,
-      startedAt: new Date().toISOString(),
-      taskId,
-      taskIndex: task.index,
-      taskTotal: plan.tasks.length,
-      taskTitle: shortTask(task.text),
-    };
-    setSchedulerActiveAgent(schedulerTask, reviewerRef);
-    deps.updateState((prev) => addActiveAgentPatch(prev, reviewerRef));
-    if (deps.paths) {
-      writeTaskJson(deps.paths, taskId, {
-        id: taskId,
-        planIndex: task.index - 1,
-        title: task.text,
-        status: "reviewing",
-        dependsOn: [],
-        attempts: attempt,
-        integrationAttempts: 0,
-        baseSha,
-        worktreePath,
-        branchName,
-        activeSubagentIds: [reviewerId],
+    if (!skipReview) {
+      const reviewerId = await deps.subagents.spawn({
+        type: deps.roles.reviewer.type,
+        prompt: reviewerPrompt!,
+        description: `review task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
+        model: deps.roles.reviewer.model,
       });
-    }
-    const review = await deps.subagents.waitFor(reviewerId, deps.signal);
-    clearSchedulerActiveAgent(schedulerTask, reviewerId);
-    deps.updateState((prev) => removeActiveAgentPatch(prev, reviewerId));
-    if (deps.paths) {
-      writeTaskJson(deps.paths, taskId, {
-        id: taskId,
-        planIndex: task.index - 1,
-        title: task.text,
-        status: review.status === "completed" ? "reviewing" : "failed",
-        dependsOn: [],
-        attempts: attempt,
-        integrationAttempts: 0,
-        baseSha,
-        worktreePath,
-        branchName,
-        activeSubagentIds: [],
-        lastReason: review.status !== "completed" ? review.error : undefined,
-      });
-    }
-    if (review.status === "stopped") {
-      await taskGit.reset();
-      throw new StoppedError();
-    }
-    await throwIfStoppedAndReset(deps, taskGit);
-    if (review.status === "failed") {
-      await taskGit.reset();
-      feedback = recordSystemFailure(
-        task.index,
-        systemFailures,
-        "system",
-        `Reviewer subagent failed: ${review.error}`,
-      );
-      systemFailures++;
-      priorReviewRequiredChanges = undefined;
-      anchoredReviewChangeRequests = 0;
-      attempt++;
-      continue;
-    }
-
-    // Boundary checks
-    if ((await deps.git.head()) !== mainHeadBefore) {
-      throw new BlockedError("reviewer changed HEAD");
-    }
-    const changedPlanArtifactAfterReview = changedSnapshotPath(
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    if (changedPlanArtifactAfterReview) {
-      throw new BlockedError(
-        `reviewer changed a plan artifact: ${changedPlanArtifactAfterReview}`,
-      );
-    }
-    if (worktreePath && !(await deps.git.isCleanExcept(planArtifacts))) {
-      throw new BlockedError(
-        "reviewer dirtied the main checkout outside the task worktree",
-      );
-    }
-    if ((await taskGit.head()) !== reviewHeadBefore) {
-      throw new BlockedError("reviewer changed HEAD");
-    }
-
-    if (
-      !hasStaged &&
-      !worktreePath &&
-      !(await deps.git.isCleanExcept(planArtifacts))
-    ) {
-      throw new BlockedError("reviewer dirtied the serial checkout");
-    }
-
-    if (hasStaged) {
-      await healReviewerMutations({
-        taskGit,
-        planArtifacts,
-        stagedFingerprintBefore: fingerprintBefore!,
-        candidatePatch: candidatePatch!,
-        worktreeFingerprintBefore: worktreeFingerprintBefore!,
-      });
-    }
-    const verdict = parseReviewerVerdict(review.result);
-    if (verdict.verdict === "error") {
-      await taskGit.reset();
-      feedback = recordSystemFailure(
-        task.index,
-        systemFailures,
-        "system",
-        `Reviewer produced invalid verdict: ${verdict.reason}`,
-      );
-      systemFailures++;
-      priorReviewRequiredChanges = undefined;
-      anchoredReviewChangeRequests = 0;
-      attempt++;
-      continue;
-    }
-    const isAnchoredReview = (priorReviewRequiredChanges?.length ?? 0) > 0;
-    let unresolved: string[] = [];
-    if (verdict.verdict === "changes_requested") {
-      if (isAnchoredReview) {
-        unresolved = verdict.requiredChanges.filter((change: string) =>
-          priorReviewRequiredChanges!.includes(change),
-        );
-      } else {
-        unresolved = verdict.requiredChanges;
+      const reviewerRef: AgentDisplayRef = {
+        id: reviewerId,
+        role: "reviewer",
+        label: `Task ${task.index}/${plan.tasks.length} reviewer \u00b7 ${shortTask(task.text)}`,
+        startedAt: new Date().toISOString(),
+        taskId,
+        taskIndex: task.index,
+        taskTotal: plan.tasks.length,
+        taskTitle: shortTask(task.text),
+      };
+      setSchedulerActiveAgent(schedulerTask, reviewerRef);
+      deps.updateState((prev) => addActiveAgentPatch(prev, reviewerRef));
+      if (deps.paths) {
+        writeTaskJson(deps.paths, taskId, {
+          id: taskId,
+          planIndex: task.index - 1,
+          title: task.text,
+          status: "reviewing",
+          dependsOn: [],
+          attempts: attempt,
+          integrationAttempts: 0,
+          baseSha,
+          worktreePath,
+          branchName,
+          activeSubagentIds: [reviewerId],
+        });
       }
-    }
-    deps.updateState((prev) =>
-      checkpointPatch(
-        prev,
-        verdict.verdict === "approved" || unresolved.length === 0
-          ? `\u2713 Task ${task.index}/${plan.tasks.length} review approved`
-          : `\u00b7 Task ${task.index}/${plan.tasks.length} review changes requested: ${formatRequiredChanges(unresolved)}`,
-      ),
-    );
-    if (verdict.verdict === "changes_requested") {
-      if (!isAnchoredReview) {
+      const review = await deps.subagents.waitFor(reviewerId, deps.signal);
+      clearSchedulerActiveAgent(schedulerTask, reviewerId);
+      deps.updateState((prev) => removeActiveAgentPatch(prev, reviewerId));
+      if (deps.paths) {
+        writeTaskJson(deps.paths, taskId, {
+          id: taskId,
+          planIndex: task.index - 1,
+          title: task.text,
+          status: review.status === "completed" ? "reviewing" : "failed",
+          dependsOn: [],
+          attempts: attempt,
+          integrationAttempts: 0,
+          baseSha,
+          worktreePath,
+          branchName,
+          activeSubagentIds: [],
+          lastReason: review.status !== "completed" ? review.error : undefined,
+        });
+      }
+      if (review.status === "stopped") {
         await taskGit.reset();
-        priorReviewRequiredChanges = verdict.requiredChanges;
-        feedback = reviewerFeedback(verdict.requiredChanges);
-        attempt++;
-        continue;
+        throw new StoppedError();
       }
-      if (unresolved.length === 0) {
-        // Anchored review returned only non-matching items — treat as approved.
-        // Do NOT reset so the approved candidate diff remains staged.
+      await throwIfStoppedAndReset(deps, taskGit);
+      if (review.status === "failed") {
+        await taskGit.reset();
+        feedback = recordSystemFailure(
+          task.index,
+          systemFailures,
+          "system",
+          `Reviewer subagent failed: ${review.error}`,
+        );
+        systemFailures++;
         priorReviewRequiredChanges = undefined;
         anchoredReviewChangeRequests = 0;
-        // Fall through to approval path below
-      } else {
-        anchoredReviewChangeRequests++;
-        if (
-          anchoredReviewChangeRequests >= MAX_ANCHORED_REVIEW_CHANGE_REQUESTS
-        ) {
-          await taskGit.reset();
-          const message = unresolved.map((change) => `- ${change}`).join("\n");
-          throw new BlockedError(
-            `anchored review change request limit reached for task ${task.index}:\n${message}`,
-          );
-        }
-        await taskGit.reset();
-        priorReviewRequiredChanges = unresolved;
-        feedback = reviewerFeedback(unresolved);
         attempt++;
         continue;
+      }
+
+      // Boundary checks
+      if ((await deps.git.head()) !== mainHeadBefore) {
+        throw new BlockedError("reviewer changed HEAD");
+      }
+      const changedPlanArtifactAfterReview = changedSnapshotPath(
+        planArtifacts,
+        planArtifactSnapshot,
+      );
+      if (changedPlanArtifactAfterReview) {
+        throw new BlockedError(
+          `reviewer changed a plan artifact: ${changedPlanArtifactAfterReview}`,
+        );
+      }
+      if (worktreePath && !(await deps.git.isCleanExcept(planArtifacts))) {
+        throw new BlockedError(
+          "reviewer dirtied the main checkout outside the task worktree",
+        );
+      }
+      if ((await taskGit.head()) !== reviewHeadBefore) {
+        throw new BlockedError("reviewer changed HEAD");
+      }
+
+      if (
+        !hasStaged &&
+        !worktreePath &&
+        !(await deps.git.isCleanExcept(planArtifacts))
+      ) {
+        throw new BlockedError("reviewer dirtied the serial checkout");
+      }
+
+      if (hasStaged) {
+        await healReviewerMutations({
+          taskGit,
+          planArtifacts,
+          stagedFingerprintBefore: fingerprintBefore!,
+          candidatePatch: candidatePatch!,
+          worktreeFingerprintBefore: worktreeFingerprintBefore!,
+        });
+      }
+      const verdict = parseReviewerVerdict(review.result);
+      if (verdict.verdict === "error") {
+        await taskGit.reset();
+        feedback = recordSystemFailure(
+          task.index,
+          systemFailures,
+          "system",
+          `Reviewer produced invalid verdict: ${verdict.reason}`,
+        );
+        systemFailures++;
+        priorReviewRequiredChanges = undefined;
+        anchoredReviewChangeRequests = 0;
+        attempt++;
+        continue;
+      }
+      const isAnchoredReview = (priorReviewRequiredChanges?.length ?? 0) > 0;
+      let unresolved: string[] = [];
+      if (verdict.verdict === "changes_requested") {
+        if (isAnchoredReview) {
+          unresolved = verdict.requiredChanges.filter((change: string) =>
+            priorReviewRequiredChanges!.includes(change),
+          );
+        } else {
+          unresolved = verdict.requiredChanges;
+        }
+      }
+      deps.updateState((prev) =>
+        checkpointPatch(
+          prev,
+          verdict.verdict === "approved" || unresolved.length === 0
+            ? `\u2713 Task ${task.index}/${plan.tasks.length} review approved`
+            : `\u00b7 Task ${task.index}/${plan.tasks.length} review changes requested: ${formatRequiredChanges(unresolved)}`,
+        ),
+      );
+      if (verdict.verdict === "changes_requested") {
+        if (!isAnchoredReview) {
+          await taskGit.reset();
+          priorReviewRequiredChanges = verdict.requiredChanges;
+          feedback = reviewerFeedback(verdict.requiredChanges);
+          attempt++;
+          continue;
+        }
+        if (unresolved.length === 0) {
+          // Anchored review returned only non-matching items — treat as approved.
+          // Do NOT reset so the approved candidate diff remains staged.
+          priorReviewRequiredChanges = undefined;
+          anchoredReviewChangeRequests = 0;
+          // Fall through to approval path below
+        } else {
+          anchoredReviewChangeRequests++;
+          if (
+            anchoredReviewChangeRequests >= MAX_ANCHORED_REVIEW_CHANGE_REQUESTS
+          ) {
+            await taskGit.reset();
+            const message = unresolved
+              .map((change) => `- ${change}`)
+              .join("\n");
+            throw new BlockedError(
+              `anchored review change request limit reached for task ${task.index}:\n${message}`,
+            );
+          }
+          await taskGit.reset();
+          priorReviewRequiredChanges = unresolved;
+          feedback = reviewerFeedback(unresolved);
+          attempt++;
+          continue;
+        }
       }
     }
 
@@ -3139,6 +3405,9 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [],
+        review: skipReview
+          ? { lastDecision: "skipped", lastReason: skipReason }
+          : { lastDecision: "reviewed" },
       });
     }
 
@@ -3234,6 +3503,9 @@ async function runTaskWorker(args: {
           taskCommitSha,
           activeSubagentIds: [],
           commitMessage: approvedMessage,
+          review: skipReview
+            ? { lastDecision: "skipped", lastReason: skipReason }
+            : { lastDecision: "reviewed" },
         });
         appendEvent(deps.paths, {
           type: "task_approved",
@@ -3282,6 +3554,9 @@ async function runTaskWorker(args: {
           integrationAttempts: 0,
           landedCommitSha: head,
           activeSubagentIds: [],
+          review: skipReview
+            ? { lastDecision: "skipped", lastReason: skipReason }
+            : { lastDecision: "reviewed" },
         });
       }
       deps.updateState((prev) => ({
