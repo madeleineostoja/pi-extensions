@@ -114,11 +114,37 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
   };
   let nextRunId = 0;
   let lastStoppedState: RunState | undefined;
+  let widgetTick: ReturnType<typeof setInterval> | undefined;
+
+  const startWidgetTick = (ctx: ExtensionCommandContext) => {
+    if (widgetTick || ctx.mode !== "tui") {
+      return;
+    }
+    widgetTick = setInterval(() => {
+      if (activeSubagentIds(active).length === 0) {
+        stopWidgetTick();
+        return;
+      }
+      syncWidget(ctx, active.state);
+    }, 1000);
+  };
+
+  const stopWidgetTick = () => {
+    if (widgetTick) {
+      clearInterval(widgetTick);
+      widgetTick = undefined;
+    }
+  };
 
   const setState = (ctx: ExtensionCommandContext, patch: Partial<RunState>) => {
     active.state = { ...active.state, ...patch };
     syncStatus(ctx, active.state);
     syncWidget(ctx, active.state);
+    if (activeSubagentIds(active).length > 0) {
+      startWidgetTick(ctx);
+    } else {
+      stopWidgetTick();
+    }
   };
 
   pi.on("session_shutdown", async (_event, ctx) => {
@@ -133,6 +159,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         // Best-effort: session is shutting down anyway.
       }
     }
+    stopWidgetTick();
     if (ctx.mode === "tui") {
       ctx.ui.setStatus(STATUS_KEY, undefined);
       ctx.ui.setWidget(WIDGET_KEY, undefined);
@@ -232,6 +259,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             );
           }
           ctx.ui.notify("pi-implement stopped.", "warning");
+          stopWidgetTick();
           if (ctx.mode === "tui") {
             ctx.ui.setWidget(WIDGET_KEY, undefined);
           }
@@ -566,6 +594,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       const initialTaskIndex =
         nextUncheckedTask(plan)?.index ??
         (plan.tasks.length > 0 ? plan.tasks.length : undefined);
+      stopWidgetTick();
       active = {
         state: {
           phase: "preflight",
@@ -718,6 +747,7 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
             activeSubagentIds: [],
           });
           ctx.ui.notify("pi-implement done.", "info");
+          stopWidgetTick();
           if (ctx.mode === "tui") {
             ctx.ui.setStatus(STATUS_KEY, undefined);
             ctx.ui.setWidget(WIDGET_KEY, undefined);
@@ -817,6 +847,7 @@ While it runs you may receive \`subagent-notification\` messages reporting that 
               releaseRunLock(paths, runId);
             }
           }
+          stopWidgetTick();
           if (ctx.mode === "tui") {
             ctx.ui.setWidget(WIDGET_KEY, undefined);
           }
