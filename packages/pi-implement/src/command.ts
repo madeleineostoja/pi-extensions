@@ -942,7 +942,9 @@ function syncWidget(ctx: ExtensionCommandContext, state: RunState): void {
 }
 
 function resolveUsageTotal(value: unknown): number | undefined {
-  if (!value || typeof value !== "object") return undefined;
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
   const u = value as Record<string, unknown>;
   if (typeof u.totalTokens === "number" && Number.isFinite(u.totalTokens)) {
     return u.totalTokens;
@@ -982,7 +984,9 @@ function getSubagentRecord(id: string): Record<string, unknown> | undefined {
 
 function markWorkerConsumed(id: string): void {
   const r = getSubagentRecord(id);
-  if (!r) return;
+  if (!r) {
+    return;
+  }
   try {
     r.resultConsumed = true;
   } catch {
@@ -994,7 +998,9 @@ function collectRuntimeSnapshots(ids: string[]): AgentRuntimeSnapshot[] {
   const snapshots: AgentRuntimeSnapshot[] = [];
   for (const id of ids) {
     const r = getSubagentRecord(id);
-    if (!r) continue;
+    if (!r) {
+      continue;
+    }
     try {
       const snapshot: AgentRuntimeSnapshot = { id };
       if (typeof r.status === "string") {
