@@ -498,6 +498,13 @@ async function runParallelImplementation(
     (t) => t.status === "landed",
   ).length;
   const hasFailure = anyTaskFailedBlockedStopped(sched);
+  const failureReason = hasFailure
+    ? stalledSchedulerReason(
+        sched,
+        schedulerSelfHealFailed,
+        schedulerSelfHealRemainingBlocker,
+      )
+    : undefined;
   deps.updateState({
     phase: hasFailure
       ? "blocked"
@@ -508,15 +515,11 @@ async function runParallelImplementation(
     activeSubagentId: undefined,
     activeSubagentIds: [],
     activeAgentRefs: [],
+    ...(failureReason ? { lastReason: failureReason } : {}),
   });
 
-  if (hasFailure) {
-    const failed = [...sched.tasks.values()].find(
-      (t) => t.status === "failed" || t.status === "integration_failed",
-    );
-    throw new BlockedError(
-      failed?.lastReason ?? "One or more tasks failed or were blocked",
-    );
+  if (failureReason) {
+    throw new BlockedError(failureReason);
   }
 }
 
@@ -2383,30 +2386,64 @@ function safeArtifactName(value: string): string {
   );
 }
 
-function stalledSchedulerReason(
+export function stalledSchedulerReason(
   sched: SchedulerRun,
   schedulerSelfHealAttempted = false,
   remainingBlocker?: string,
 ): string {
-  const nonTerminal = [...sched.tasks.values()].filter(
-    (task) =>
-      task.status !== "landed" &&
-      task.status !== "failed" &&
-      task.status !== "blocked" &&
-      task.status !== "stopped" &&
-      task.status !== "integration_failed",
+  const lines: string[] = [];
+  lines.push("Parallel scheduler blocked:");
+
+  const allTasks = [...sched.tasks.values()].sort(
+    (a, b) => a.planIndex - b.planIndex,
   );
-  const healSuffix = schedulerSelfHealAttempted
-    ? ` (scheduler self-heal attempted and did not produce retryable progress${
-        remainingBlocker ? `; remaining blocker: ${remainingBlocker}` : ""
-      })`
-    : "";
-  if (!nonTerminal.length) {
-    return `Parallel scheduler stalled without runnable work.${healSuffix}`;
+
+  for (const task of allTasks) {
+    if (task.status === "landed") {
+      continue;
+    }
+
+    if (
+      task.status === "failed" ||
+      task.status === "blocked" ||
+      task.status === "stopped" ||
+      task.status === "integration_failed"
+    ) {
+      const reason = task.lastReason ? `: ${task.lastReason}` : "";
+      lines.push(`- ${task.id}: ${task.status}${reason}`);
+      continue;
+    }
+
+    if (task.status === "approved") {
+      const earlierNonLanded = allTasks
+        .filter((t) => t.planIndex < task.planIndex && t.status !== "landed")
+        .map((t) => `${t.id}:${t.status}`);
+      if (earlierNonLanded.length > 0) {
+        lines.push(
+          `- ${task.id}: approved but cannot land until earlier tasks land: ${earlierNonLanded.join(", ")}`,
+        );
+      } else {
+        lines.push(`- ${task.id}: approved`);
+      }
+      continue;
+    }
+
+    const blockedReason = getBlockedReason(task, sched);
+    if (blockedReason) {
+      lines.push(`- ${task.id}: ${task.status}, ${blockedReason}`);
+    } else {
+      lines.push(`- ${task.id}: ${task.status}`);
+    }
   }
-  return `Parallel scheduler stalled with non-terminal task(s): ${nonTerminal
-    .map((task) => `${task.id}:${task.status}`)
-    .join(", ")}${healSuffix}`;
+
+  if (schedulerSelfHealAttempted) {
+    const healLine = remainingBlocker
+      ? `Self-heal attempted but did not produce retryable progress; remaining blocker: ${remainingBlocker}`
+      : "Self-heal attempted but did not produce retryable progress";
+    lines.push(healLine);
+  }
+
+  return lines.join("\n");
 }
 
 function completedPlanTaskIndex(
