@@ -720,6 +720,50 @@ describe("selectStrategy - planner prompt content", () => {
     );
   });
 
+  it("documents advisory scout directives in the planner schema", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain(
+      '"scout": { "mode": "skip" | "suggest" | "require", "reason": "optional", "prompt": "optional", "breadth": "quick" | "medium" | "very thorough" }',
+    );
+    expect(prompt).toContain("## Scout Directives");
+    expect(prompt).toContain('optional advisory "scout" field');
+    expect(prompt).toContain("advisory hints, not authoritative guarantees");
+    expect(prompt).toContain("runtime just-in-time exploration");
+    expect(prompt).toContain("future runtime hints only");
+    expect(prompt).toContain(
+      "Do not perform or claim durable repo exploration at planning time",
+    );
+    expect(prompt).toContain("The codebase will change before the task runs");
+    expect(prompt).toContain(
+      "Do not assert that Scout results are already known",
+    );
+  });
+
   it("requires concrete semantic dependencies for dependsOn", async () => {
     const subagents = makeSubagents(
       JSON.stringify({

@@ -25,8 +25,14 @@ import {
   parsePlanFile,
 } from "./plan.js";
 import type { CommandResult, GitClient } from "./git.js";
-import type { SubagentClient } from "./subagents.js";
-import type { EffectiveRoles } from "./config.js";
+import type { SubagentClient, SubagentResult } from "./subagents.js";
+import type { EffectiveRoles, EffectiveScoutConfig } from "./config.js";
+import {
+  decideScout,
+  buildScoutPrompt,
+  formatScoutContext,
+  buildScoutUnavailableNote,
+} from "./scout.js";
 import type {
   RunState,
   ParallelTaskState,
@@ -57,7 +63,7 @@ import {
 } from "./state.js";
 import type { RunMode } from "./state.js";
 import { readGraphJson } from "./graph.js";
-import type { ImplementGraph } from "./graph.js";
+import type { ImplementGraph, ScoutDirective } from "./graph.js";
 import {
   createSchedulerRun,
   computeReadyTasks,
@@ -91,7 +97,7 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 type RetryFeedback = {
-  source: "reviewer" | "system" | "commit-hook";
+  source: "reviewer" | "system" | "commit-hook" | "integration";
   message: string;
 };
 
@@ -110,6 +116,7 @@ export type OrchestratorDeps = {
   shouldStop(): boolean;
   signal?: AbortSignal;
   verifyCommand?: string;
+  scout?: EffectiveScoutConfig;
 };
 
 export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
@@ -363,6 +370,7 @@ async function runParallelImplementation(
         planArtifacts,
         runBaseSha,
         wasNeedsRework,
+        taskNode.scout,
       );
       runningWorkers.set(taskId, promise);
     }
@@ -409,7 +417,7 @@ async function runParallelImplementation(
         if (deps.paths) {
           const existing = readTaskJson(deps.paths, result.taskId);
           writeTaskJson(deps.paths, result.taskId, {
-            ...(existing ?? taskToJson(task)),
+            ...buildTaskJsonSnapshot(existing, task),
             status: "approved",
             taskCommitSha: result.outcome.taskCommitSha,
             commitMessage: result.outcome.commitMessage,
@@ -429,7 +437,7 @@ async function runParallelImplementation(
         if (deps.paths) {
           const existing = readTaskJson(deps.paths, result.taskId);
           writeTaskJson(deps.paths, result.taskId, {
-            ...(existing ?? taskToJson(task)),
+            ...buildTaskJsonSnapshot(existing, task),
             status: "failed",
             activeSubagentIds: [],
             lastReason: result.outcome.reason,
@@ -443,7 +451,7 @@ async function runParallelImplementation(
         if (deps.paths) {
           const existing = readTaskJson(deps.paths, result.taskId);
           writeTaskJson(deps.paths, result.taskId, {
-            ...(existing ?? taskToJson(task)),
+            ...buildTaskJsonSnapshot(existing, task),
             status: "stopped",
             activeSubagentIds: [],
           });
@@ -533,6 +541,7 @@ async function launchTaskWorker(
   planArtifacts: string[],
   runBaseSha: string,
   wasNeedsRework: boolean,
+  scoutDirective?: ScoutDirective,
 ): Promise<WorkerResult> {
   const task = sched.tasks.get(taskId)!;
   const baseSha = await deps.git.head();
@@ -555,7 +564,7 @@ async function launchTaskWorker(
       if (deps.paths) {
         const existing = readTaskJson(deps.paths, taskId);
         writeTaskJson(deps.paths, taskId, {
-          ...(existing ?? taskToJson(task)),
+          ...buildTaskJsonSnapshot(existing, task),
           status: "coding",
           baseSha,
           worktreePath,
@@ -593,6 +602,12 @@ async function launchTaskWorker(
       planArtifacts,
       schedulerTask: task,
       runBaseSha,
+      scoutDirective,
+      initialFeedback:
+        wasNeedsRework && task.lastReason
+          ? { source: "integration", message: task.lastReason }
+          : undefined,
+      attemptOrdinalBase: task.integrationAttempts,
     });
 
     if (deps.shouldStop() || deps.signal?.aborted) {
@@ -717,8 +732,9 @@ async function landApprovedTask(
         taskId,
         reason: task.lastReason,
       });
+      const existing = readTaskJson(deps.paths, taskId);
       writeTaskJson(deps.paths, taskId, {
-        ...taskToJson(task),
+        ...buildTaskJsonSnapshot(existing, task),
         status: "integration_failed",
         lastReason: task.lastReason,
       });
@@ -925,8 +941,9 @@ async function landApprovedTask(
         taskId,
         commitSha: landedHead,
       });
+      const existing = readTaskJson(deps.paths, taskId);
       writeTaskJson(deps.paths, taskId, {
-        ...taskToJson(task),
+        ...buildTaskJsonSnapshot(existing, task),
         status: "landed",
         landedCommitSha: landedHead,
       });
@@ -956,8 +973,9 @@ function markIntegrationFailure(
   task.lastReason = reason;
   if (deps.paths) {
     appendEvent(deps.paths, { type: "integration_failed", taskId, reason });
+    const existing = readTaskJson(deps.paths, taskId);
     writeTaskJson(deps.paths, taskId, {
-      ...taskToJson(task),
+      ...buildTaskJsonSnapshot(existing, task),
       status: "integration_failed",
       lastReason: reason,
     });
@@ -1709,7 +1727,7 @@ function reviveTaskForSchedulerRetry(
   if (deps.paths) {
     const existing = readTaskJson(deps.paths, taskId);
     writeTaskJson(deps.paths, taskId, {
-      ...(existing ?? taskToJson(task)),
+      ...buildTaskJsonSnapshot(existing, task),
       status: "needs_rework",
       activeSubagentIds: [],
       lastReason: task.lastReason,
@@ -2466,6 +2484,9 @@ function updateParallelState(
     if (task.status === "landed") {
       landedCount++;
     }
+    const scoutMeta = deps.paths
+      ? readTaskJson(deps.paths, task.id)?.scout
+      : undefined;
     tasks.push({
       id: task.id,
       planIndex: task.planIndex - 1,
@@ -2476,6 +2497,7 @@ function updateParallelState(
       landedCommitSha: task.landedCommitSha,
       activeAgentIds: task.activeAgentIds,
       activeAgentRefs: task.activeAgentRefs,
+      scout: scoutMeta,
     });
     for (const id of task.activeAgentIds) {
       activeAgentIds.push(id);
@@ -2582,6 +2604,16 @@ function taskToJson(task: SchedulerTask): TaskJson {
   };
 }
 
+function buildTaskJsonSnapshot(
+  existing: TaskJson | undefined,
+  task: SchedulerTask,
+): TaskJson {
+  return {
+    ...taskToJson(task),
+    scout: existing?.scout,
+  };
+}
+
 // ── Task worker (shared serial + parallel) ─────────────────────────────────
 
 async function runTaskWorker(args: {
@@ -2596,6 +2628,9 @@ async function runTaskWorker(args: {
   planArtifacts: string[];
   schedulerTask?: SchedulerTask;
   runBaseSha?: string;
+  scoutDirective?: ScoutDirective;
+  initialFeedback?: RetryFeedback;
+  attemptOrdinalBase?: number;
 }): Promise<boolean> {
   const {
     deps,
@@ -2609,14 +2644,21 @@ async function runTaskWorker(args: {
     planArtifacts,
     schedulerTask,
     runBaseSha,
+    scoutDirective,
+    initialFeedback,
+    attemptOrdinalBase,
   } = args;
 
-  let feedback: RetryFeedback | undefined;
+  let feedback: RetryFeedback | undefined = initialFeedback;
   let priorSummary: string | undefined;
   let attempt = 1;
   let systemFailures = 0;
   let anchoredReviewChangeRequests = 0;
   let priorReviewRequiredChanges: string[] | undefined;
+  const existingTaskJson = deps.paths
+    ? readTaskJson(deps.paths, taskId)
+    : undefined;
+  let scoutMeta: TaskJson["scout"] | undefined = existingTaskJson?.scout;
 
   for (;;) {
     throwIfStopped(deps);
@@ -2625,10 +2667,201 @@ async function runTaskWorker(args: {
     const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
     const packet = buildTaskPacket(plan, task, deps.manifest);
     const effectiveWorktreePath = worktreePath ?? (await deps.git.root());
+
+    // ── Scout phase ──
+    let scoutContext: string | undefined;
+    const totalAttempt = (attemptOrdinalBase ?? 0) + attempt;
+    const isRetry = totalAttempt > 1 || initialFeedback !== undefined;
+    if (deps.scout && !deps.shouldStop() && !deps.signal?.aborted) {
+      const decision = decideScout({
+        config: deps.scout,
+        directive: scoutDirective,
+        isRetry,
+        attemptOrdinal: totalAttempt,
+        feedback: feedback ?? initialFeedback,
+        taskText: task.text,
+        taskPacket: packet.markdown,
+      });
+
+      if (!decision.run) {
+        scoutMeta = {
+          calls: scoutMeta?.calls ?? 0,
+          lastStatus: "skipped",
+          lastReason: decision.reason,
+        };
+      }
+
+      if (decision.run) {
+        const scoutPrompt = buildScoutPrompt({
+          worktreePath: effectiveWorktreePath,
+          taskPacket: packet.markdown,
+          planArtifacts,
+          directive: scoutDirective,
+          isRetry,
+          feedback: feedback ?? initialFeedback,
+        });
+
+        if (deps.paths) {
+          persistTaskArtifact(
+            deps.paths,
+            taskId,
+            `scout-prompt-attempt-${totalAttempt}.md`,
+            scoutPrompt,
+          );
+        }
+
+        let scoutId: string | undefined;
+        try {
+          scoutId = await deps.subagents.spawn({
+            type: deps.scout.type,
+            prompt: scoutPrompt,
+            description: `scout task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
+            model: deps.scout.model,
+          });
+        } catch (spawnErr) {
+          const note = buildScoutUnavailableNote(
+            spawnErr instanceof Error ? spawnErr.message : String(spawnErr),
+          );
+          scoutContext = note;
+          scoutMeta = {
+            calls: (scoutMeta?.calls ?? 0) + 1,
+            lastStatus: "failed",
+            lastReason:
+              spawnErr instanceof Error ? spawnErr.message : String(spawnErr),
+          };
+          if (deps.paths) {
+            persistTaskArtifact(
+              deps.paths,
+              taskId,
+              `scout-attempt-${totalAttempt}.md`,
+              note,
+            );
+          }
+        }
+
+        if (scoutId) {
+          const scoutRef: AgentDisplayRef = {
+            id: scoutId,
+            role: "scout",
+            label: `Task ${task.index}/${plan.tasks.length} scout \u00b7 ${shortTask(task.text)}`,
+            startedAt: new Date().toISOString(),
+            taskId,
+            taskIndex: task.index,
+            taskTotal: plan.tasks.length,
+            taskTitle: shortTask(task.text),
+          };
+          setSchedulerActiveAgent(schedulerTask, scoutRef);
+          deps.updateState((prev) => addActiveAgentPatch(prev, scoutRef));
+
+          let scoutResult: SubagentResult;
+          try {
+            const waitPromise = deps.subagents.waitFor(scoutId, deps.signal);
+            const timeoutMs = deps.scout.timeoutMs;
+            const raced =
+              timeoutMs && timeoutMs > 0
+                ? Promise.race([
+                    waitPromise,
+                    new Promise<SubagentResult>((resolve) => {
+                      setTimeout(
+                        () =>
+                          resolve({
+                            status: "failed",
+                            error: `Scout timed out after ${timeoutMs}ms`,
+                          }),
+                        timeoutMs,
+                      );
+                    }),
+                  ])
+                : waitPromise;
+            scoutResult = await raced.finally(() => {
+              clearSchedulerActiveAgent(schedulerTask, scoutId);
+              deps.updateState((prev) => removeActiveAgentPatch(prev, scoutId));
+            });
+          } catch (waitErr) {
+            clearSchedulerActiveAgent(schedulerTask, scoutId);
+            deps.updateState((prev) => removeActiveAgentPatch(prev, scoutId));
+            if (waitErr instanceof StoppedError) {
+              throw waitErr;
+            }
+            scoutResult = {
+              status: "failed",
+              error:
+                waitErr instanceof Error ? waitErr.message : String(waitErr),
+            };
+          }
+
+          if (
+            scoutResult.status === "completed" &&
+            scoutResult.result.trim().length > 0
+          ) {
+            scoutContext = formatScoutContext(
+              scoutResult.result,
+              deps.scout.maxResultChars,
+            );
+            scoutMeta = {
+              calls: (scoutMeta?.calls ?? 0) + 1,
+              lastStatus: "completed",
+            };
+            if (deps.paths) {
+              persistTaskArtifact(
+                deps.paths,
+                taskId,
+                `scout-attempt-${totalAttempt}.md`,
+                scoutResult.result,
+              );
+            }
+          } else if (scoutResult.status === "stopped") {
+            throwIfStopped(deps);
+            scoutContext = buildScoutUnavailableNote("stopped");
+            scoutMeta = {
+              calls: (scoutMeta?.calls ?? 0) + 1,
+              lastStatus: "stopped",
+            };
+            if (deps.paths) {
+              persistTaskArtifact(
+                deps.paths,
+                taskId,
+                `scout-attempt-${totalAttempt}.md`,
+                scoutContext,
+              );
+            }
+          } else {
+            const reason =
+              scoutResult.status === "failed"
+                ? scoutResult.error
+                : "empty result";
+            scoutContext = buildScoutUnavailableNote(reason);
+            scoutMeta = {
+              calls: (scoutMeta?.calls ?? 0) + 1,
+              lastStatus: "failed",
+              lastReason: reason,
+            };
+            if (deps.paths) {
+              persistTaskArtifact(
+                deps.paths,
+                taskId,
+                `scout-attempt-${totalAttempt}.md`,
+                scoutContext,
+              );
+            }
+          }
+        }
+      }
+
+      if (deps.paths && scoutMeta && scoutMeta.lastStatus !== "skipped") {
+        const scoutNote =
+          scoutMeta.lastStatus === "completed"
+            ? `\u00b7 Task ${task.index}/${plan.tasks.length} scout completed`
+            : `\u00b7 Task ${task.index}/${plan.tasks.length} scout unavailable${scoutMeta.lastReason ? `: ${scoutMeta.lastReason}` : ""}`;
+        deps.updateState((prev) => checkpointPatch(prev, scoutNote));
+      }
+    }
+
     const implementerPrompt = buildImplementerPrompt({
       taskPacket: packet.markdown,
       worktreePath: effectiveWorktreePath,
       feedback: feedback ? formatFeedback(feedback) : undefined,
+      scoutContext,
       priorSummary,
     });
     deps.updateState({
@@ -2676,6 +2909,7 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [implementerId],
+        scout: scoutMeta,
       });
       appendEvent(deps.paths, { type: "task_started", taskId });
     }
@@ -2706,6 +2940,7 @@ async function runTaskWorker(args: {
           branchName,
           activeSubagentIds: [],
           lastReason: implementation.error,
+          scout: scoutMeta,
         });
       }
       feedback = recordSystemFailure(
@@ -2740,6 +2975,7 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [],
+        scout: scoutMeta,
       });
     }
 
@@ -2920,6 +3156,7 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [reviewerId],
+        scout: scoutMeta,
       });
     }
     const review = await deps.subagents.waitFor(reviewerId, deps.signal);
@@ -2939,6 +3176,7 @@ async function runTaskWorker(args: {
         branchName,
         activeSubagentIds: [],
         lastReason: review.status !== "completed" ? review.error : undefined,
+        scout: scoutMeta,
       });
     }
     if (review.status === "stopped") {
@@ -3113,6 +3351,7 @@ async function runTaskWorker(args: {
           worktreePath,
           branchName,
           activeSubagentIds: [],
+          scout: scoutMeta,
         });
       }
       const satisfiedHead = await deps.git.head();
@@ -3140,6 +3379,7 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [],
+        scout: scoutMeta,
       });
     }
 
@@ -3192,6 +3432,7 @@ async function runTaskWorker(args: {
             branchName,
             activeSubagentIds: [],
             lastReason: feedback.message,
+            scout: scoutMeta,
           });
           appendEvent(deps.paths, {
             type: "integration_failed",
@@ -3235,6 +3476,7 @@ async function runTaskWorker(args: {
           taskCommitSha,
           activeSubagentIds: [],
           commitMessage: approvedMessage,
+          scout: scoutMeta,
         });
         appendEvent(deps.paths, {
           type: "task_approved",
@@ -3283,6 +3525,7 @@ async function runTaskWorker(args: {
           integrationAttempts: 0,
           landedCommitSha: head,
           activeSubagentIds: [],
+          scout: scoutMeta,
         });
       }
       deps.updateState((prev) => ({
@@ -3329,6 +3572,7 @@ async function runTaskWorker(args: {
         integrationAttempts: systemFailures,
         activeSubagentIds: [],
         lastReason: feedback.message,
+        scout: scoutMeta,
       });
       appendEvent(deps.paths, {
         type: "integration_failed",

@@ -167,6 +167,85 @@ describe("buildImplementerPrompt", () => {
     expect(prompt).toContain("fix the bug");
     expect(prompt).toContain("tried but failed");
   });
+
+  it("omits Scout Context when no scoutContext is provided", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).not.toContain("## Scout Context");
+    expect(prompt).not.toContain("read-only Scout");
+  });
+
+  it("includes Scout Context before Task Packet when scoutContext is provided", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      scoutContext: "Relevant file: src/foo.ts",
+    });
+
+    expect(prompt).toContain("## Scout Context");
+    expect(prompt).toContain("Relevant file: src/foo.ts");
+    const scoutIndex = prompt.indexOf("## Scout Context");
+    const packetIndex = prompt.indexOf("## Task Packet");
+    expect(scoutIndex).toBeGreaterThan(0);
+    expect(packetIndex).toBeGreaterThan(0);
+    expect(scoutIndex).toBeLessThan(packetIndex);
+  });
+
+  it("tells the implementer to treat Scout as a map, not truth", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      scoutContext: "some context",
+    });
+
+    expect(prompt).toContain("starting map, not authoritative truth");
+    expect(prompt).toContain(
+      "Treat Scout findings as hints, not facts. Read relevant files yourself before editing.",
+    );
+  });
+
+  it("tells the implementer to avoid expanding scope based on Scout discoveries", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      scoutContext: "some context",
+    });
+
+    expect(prompt).toContain(
+      "Do not expand your implementation scope based on Scout discoveries. Stick to the selected task packet.",
+    );
+  });
+
+  it("tells the implementer to avoid broad repo search unless Scout is clearly insufficient", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      scoutContext: "some context",
+    });
+
+    expect(prompt).toContain(
+      "Avoid broad repository searches unless the Scout context is clearly insufficient for the task.",
+    );
+  });
+
+  it("places Scout Context after Retry Context when both are present", () => {
+    const prompt = buildImplementerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      feedback: "fix the bug",
+      priorSummary: "tried but failed",
+      scoutContext: "Relevant file: src/foo.ts",
+    });
+
+    const retryIndex = prompt.indexOf("## Retry Context");
+    const scoutIndex = prompt.indexOf("## Scout Context");
+    const packetIndex = prompt.indexOf("## Task Packet");
+    expect(retryIndex).toBeLessThan(scoutIndex);
+    expect(scoutIndex).toBeLessThan(packetIndex);
+  });
 });
 
 describe("buildReviewerPrompt", () => {
