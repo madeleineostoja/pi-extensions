@@ -9,11 +9,9 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
   getStatePaths,
   getBaseDir,
-  encodeRepoRoot,
   makeRunId,
   makeRunIdWithSuffix,
   taskIdFromTask,
@@ -47,7 +45,7 @@ function escapeRegExp(value: string): string {
 describe("state paths", () => {
   it("computes correct paths", () => {
     const paths = getStatePaths("/repo", "r20240101-120000");
-    const expectedBase = join(getAgentDir(), "pi-implement", "--repo--");
+    const expectedBase = join("/repo", ".pi", "implement");
     expect(paths.baseDir).toBe(expectedBase);
     expect(paths.runDir).toBe(join(expectedBase, "runs", "r20240101-120000"));
     expect(paths.runJson).toBe(
@@ -73,11 +71,8 @@ describe("state paths", () => {
     );
   });
 
-  it("encodes repo root into the base dir", () => {
-    expect(encodeRepoRoot("/repo")).toBe("repo");
-    expect(getBaseDir("/repo")).toBe(
-      join(getAgentDir(), "pi-implement", "--repo--"),
-    );
+  it("bases state inside the repo", () => {
+    expect(getBaseDir("/repo")).toBe(join("/repo", ".pi", "implement"));
   });
 });
 

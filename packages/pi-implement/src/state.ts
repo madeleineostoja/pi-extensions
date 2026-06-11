@@ -11,8 +11,6 @@ import {
 import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-
 export type RunMode = "auto" | "serial" | "parallel";
 
 export type RunJson = {
@@ -152,12 +150,8 @@ export type CheckRunLocksResult = {
   staleRemoved: string[];
 };
 
-export function encodeRepoRoot(repoRoot: string): string {
-  return repoRoot.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
-}
-
 export function getBaseDir(repoRoot: string): string {
-  return join(getAgentDir(), "pi-implement", `--${encodeRepoRoot(repoRoot)}--`);
+  return join(repoRoot, ".pi", "implement");
 }
 
 export function getStatePaths(
