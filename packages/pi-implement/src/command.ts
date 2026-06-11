@@ -114,6 +114,14 @@ function isWarningTerminalPhase(phase: RunState["phase"]): boolean {
 }
 
 export function registerImplementCommand(pi: ExtensionAPI): void {
+  pi.registerMessageRenderer(
+    "pi-implement-progress",
+    (message, _options, theme) => {
+      const text = theme.fg("accent", "pi-implement") + " " + message.content;
+      return { render: () => [text], invalidate: () => {} };
+    },
+  );
+
   let active: ActiveRun = {
     state: { phase: "idle" },
     stopping: false,
@@ -644,7 +652,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         customType: "pi-implement-guidance",
         content: `pi-implement is now running and will autonomously implement the plan task-by-task using its own subagents. It owns the full implement → review → commit loop, including deciding what runs next.
 
-Stay idle until the run ends or the user asks you something directly. Do not respond to pi-implement's internal progress updates, do not call get_subagent_result, do not start/stop/steer agents, and do not narrate or summarize progress yourself. pi-implement emits its own authoritative \`pi-implement-progress\` updates and a final completion/blocked notice.`,
+Stay idle until the run ends or the user asks you something directly. Do not respond to pi-implement's internal progress updates, do not call get_subagent_result, do not start/stop/steer agents, and do not narrate or summarize progress yourself. pi-implement emits its own authoritative progress updates and a final completion/blocked notice.`,
         display: false,
       });
 

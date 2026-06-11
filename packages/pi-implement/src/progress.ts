@@ -3,7 +3,6 @@ import type { Phase, RunState, TaskStatus } from "./status.js";
 const PHASE_LABEL: Partial<Record<Phase, string>> = {
   coding: "implementing",
   reviewing: "under review",
-  committing: "committing",
   integrating: "integrating",
   reworking: "reworking",
   final_review: "running final review",
@@ -94,9 +93,8 @@ function serialNotes(
   const taskChanged = idx !== undefined && prev.taskIndex !== idx;
   const enteredCoding = next.phase === "coding" && prev.phase !== "coding";
 
-  if (taskChanged && prev.taskIndex && prev.totalTasks) {
-    lines.push(`✓ Task ${prev.taskIndex}/${prev.totalTasks} completed`);
-  }
+  // "landed"/"satisfied" checkpoints already signal task completion,
+  // so skip a redundant generic "completed" note here.
 
   if (next.phase === "coding") {
     if (taskChanged || enteredCoding) {

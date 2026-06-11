@@ -55,13 +55,7 @@ describe("diffProgress", () => {
     expect(lines).toContain("\u2713 pi-implement complete");
   });
 
-  it("uses completed wording for serial task and run completion", () => {
-    const prev: RunState = { phase: "reviewing", taskIndex: 1, totalTasks: 2 };
-    const next: RunState = { phase: "coding", taskIndex: 2, totalTasks: 2 };
-    expect(diffProgress(prev, next, ["A", "B"])).toContain(
-      "\u2713 Task 1/2 completed",
-    );
-
+  it("uses completed wording for run completion", () => {
     const doneLines = diffProgress(
       { phase: "reviewing" },
       { phase: "done", totalTasks: 2 },
