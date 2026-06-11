@@ -58,8 +58,16 @@ function protectedRootsFor(cwd: string): string[] {
   return root ? [cwd, root] : [cwd];
 }
 
-function isSafeDisposableTempTarget(target: string, cwd: string): boolean {
-  return isDisposableTempTarget(target, cwd, protectedRootsFor(cwd));
+function isSafeDisposableTempTarget(
+  target: string,
+  projectCwd: string,
+  resolveCwd: string,
+): boolean {
+  return isDisposableTempTarget(
+    target,
+    resolveCwd,
+    protectedRootsFor(projectCwd),
+  );
 }
 
 function extractShellWordsWithTempEnv(command: string): string[] | undefined {
@@ -72,18 +80,19 @@ function extractShellWordsWithTempEnv(command: string): string[] | undefined {
 
 function allTargetsSafe(
   targets: string[],
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): boolean {
   for (const t of targets) {
-    const abs = toAbsolutePath(t, cwd);
+    const abs = toAbsolutePath(t, resolveCwd);
     if (isSessionCreated(abs, sessionCreatedPaths)) {
       continue;
     }
-    if (isSafeDisposableTempTarget(t, cwd)) {
+    if (isSafeDisposableTempTarget(t, projectCwd, resolveCwd)) {
       continue;
     }
-    const rec = classifyGitRecoverability(cwd, abs);
+    const rec = classifyGitRecoverability(projectCwd, abs);
     if (rec !== "tracked-clean") {
       return false;
     }
@@ -93,10 +102,11 @@ function allTargetsSafe(
 
 function targetExistsAndNotSafe(
   target: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): boolean {
-  const abs = toAbsolutePath(target, cwd);
+  const abs = toAbsolutePath(target, resolveCwd);
   if (SAFE_PSEUDO_DEVICES.has(abs)) {
     return false;
   }
@@ -106,10 +116,10 @@ function targetExistsAndNotSafe(
   if (isSessionCreated(abs, sessionCreatedPaths)) {
     return false;
   }
-  if (isSafeDisposableTempTarget(target, cwd)) {
+  if (isSafeDisposableTempTarget(target, projectCwd, resolveCwd)) {
     return false;
   }
-  const rec = classifyGitRecoverability(cwd, abs);
+  const rec = classifyGitRecoverability(projectCwd, abs);
   return rec !== "tracked-clean";
 }
 
@@ -135,8 +145,10 @@ function withPreview(
   return action ? { ...action, preview } : undefined;
 }
 
-function splitShellSegments(command: string): string[] {
-  const segments: string[] = [];
+type ShellSegment = { text: string; sep: string | null };
+
+function splitShellSegments(command: string): ShellSegment[] {
+  const segments: ShellSegment[] = [];
   let start = 0;
   let i = 0;
   let quote: "'" | '"' | null = null;
@@ -168,7 +180,10 @@ function splitShellSegments(command: string): string[] {
     if (ch === ";" || ch === "|") {
       const segment = command.slice(start, i).trim();
       if (segment) {
-        segments.push(segment);
+        segments.push({
+          text: segment,
+          sep: ch + (command[i + 1] === ch ? ch : ""),
+        });
       }
       i += command[i + 1] === ch ? 2 : 1;
       start = i;
@@ -178,7 +193,7 @@ function splitShellSegments(command: string): string[] {
     if (ch === "\n") {
       const segment = command.slice(start, i).trim();
       if (segment) {
-        segments.push(segment);
+        segments.push({ text: segment, sep: "\n" });
       }
       i++;
       start = i;
@@ -188,7 +203,7 @@ function splitShellSegments(command: string): string[] {
     if (ch === "&" && command[i + 1] === "&") {
       const segment = command.slice(start, i).trim();
       if (segment) {
-        segments.push(segment);
+        segments.push({ text: segment, sep: "&&" });
       }
       i += 2;
       start = i;
@@ -204,7 +219,7 @@ function splitShellSegments(command: string): string[] {
       }
       const segment = command.slice(start, i).trim();
       if (segment) {
-        segments.push(segment);
+        segments.push({ text: segment, sep: "&" });
       }
       i++;
       start = i;
@@ -216,9 +231,49 @@ function splitShellSegments(command: string): string[] {
 
   const tail = command.slice(start).trim();
   if (tail) {
-    segments.push(tail);
+    segments.push({ text: tail, sep: null });
   }
   return segments;
+}
+
+function cdEffectiveTarget(segment: string, cwd: string): string | null {
+  const words = extractShellWords(segment);
+  if (!words) {
+    return null;
+  }
+  const stripped = stripCommandWrappers(words);
+  if (stripped[0] !== "cd") {
+    return null;
+  }
+
+  let i = 1;
+  while (i < stripped.length) {
+    const w = stripped[i];
+    if (w === "-L" || w === "-P") {
+      i++;
+      continue;
+    }
+    break;
+  }
+  if (i >= stripped.length) {
+    return null;
+  }
+
+  let target = stripped[i];
+  const expanded = expandKnownTempEnvVars(target);
+  if (expanded === undefined) {
+    return null;
+  }
+  target = expanded;
+
+  if (/[;&|`$*?{}]|<\(/.test(target)) {
+    return null;
+  }
+  if (target === "-") {
+    return null;
+  }
+
+  return toAbsolutePath(target, cwd);
 }
 
 function isShellAssignment(word: string): boolean {
@@ -316,22 +371,41 @@ function normalizedCommand(command: string): string | undefined {
   return stripped.map(shellQuote).join(" ");
 }
 
-function commandCandidates(command: string): string[] {
-  const candidates: string[] = [];
+type Candidate = { candidate: string; resolveCwd: string };
+
+function commandCandidates(command: string, cwd: string): Candidate[] {
+  const candidates: Candidate[] = [];
   const seen = new Set<string>();
-  const add = (candidate: string | undefined) => {
+  const add = (candidate: string | undefined, resolveCwd: string) => {
     const trimmed = candidate?.trim();
-    if (trimmed && !seen.has(trimmed)) {
-      seen.add(trimmed);
-      candidates.push(trimmed);
+    const key = `${resolveCwd}::${trimmed}`;
+    if (trimmed && !seen.has(key)) {
+      seen.add(key);
+      candidates.push({ candidate: trimmed, resolveCwd });
     }
   };
 
-  add(command);
-  add(normalizedCommand(command));
-  for (const segment of splitShellSegments(command)) {
-    add(segment);
-    add(normalizedCommand(segment));
+  add(command, cwd);
+  add(normalizedCommand(command), cwd);
+
+  let effectiveCwd = cwd;
+  for (const { text, sep } of splitShellSegments(command)) {
+    add(text, effectiveCwd);
+    add(normalizedCommand(text), effectiveCwd);
+
+    // Only a cd in a true sequencing operator (&&, ;, newline, final
+    // segment) changes the cwd for what follows. A cd inside a pipe, a
+    // background job, or the left side of `||` runs in a subshell or
+    // conditionally, so it does not change the accumulated cwd — but the
+    // cwd already accumulated from earlier sequencers still carries through.
+    const isSequencer =
+      sep === "&&" || sep === ";" || sep === "\n" || sep === null;
+    if (isSequencer) {
+      const target = cdEffectiveTarget(text, effectiveCwd);
+      if (target !== null) {
+        effectiveCwd = target;
+      }
+    }
   }
 
   return candidates;
@@ -400,7 +474,8 @@ function isSafeMktempCleanup(command: string): boolean {
 
 function assessRemoval(
   command: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   if (
@@ -459,7 +534,7 @@ function assessRemoval(
     return undefined;
   }
 
-  if (allTargetsSafe(targets, cwd, sessionCreatedPaths)) {
+  if (allTargetsSafe(targets, projectCwd, resolveCwd, sessionCreatedPaths)) {
     return undefined;
   }
 
@@ -553,7 +628,8 @@ function hasUnescapedControlOperator(command: string): boolean {
 
 function assessFindDelete(
   command: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const deleteMatch = /\s-delete(?:\s|[;&|]|$)/.test(command);
@@ -569,7 +645,7 @@ function assessFindDelete(
     : extractFindRootsFromCommand(command);
   if (
     roots &&
-    allTargetsSafe(roots, cwd, sessionCreatedPaths) &&
+    allTargetsSafe(roots, projectCwd, resolveCwd, sessionCreatedPaths) &&
     !hasUnescapedControlOperator(command)
   ) {
     return undefined;
@@ -890,7 +966,8 @@ function assessGitUnparseable(
 
 function assessRedirect(
   command: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const redirectRe =
@@ -901,7 +978,9 @@ function assessRedirect(
   }
 
   const target = match[2];
-  if (targetExistsAndNotSafe(target, cwd, sessionCreatedPaths)) {
+  if (
+    targetExistsAndNotSafe(target, projectCwd, resolveCwd, sessionCreatedPaths)
+  ) {
     return makeAction(
       command,
       "bash:redirect-overwrite",
@@ -913,7 +992,8 @@ function assessRedirect(
 
 function assessColonRedirect(
   command: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const re = /(?:^|\s)(?::|true)\s*>(?!>)\s*(["']?)([^"'\s;|&]+)\1/;
@@ -923,7 +1003,9 @@ function assessColonRedirect(
   }
 
   const target = match[2];
-  if (targetExistsAndNotSafe(target, cwd, sessionCreatedPaths)) {
+  if (
+    targetExistsAndNotSafe(target, projectCwd, resolveCwd, sessionCreatedPaths)
+  ) {
     return makeAction(
       command,
       "bash:redirect-overwrite",
@@ -935,7 +1017,8 @@ function assessColonRedirect(
 
 function assessTruncate(
   command: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
@@ -976,7 +1059,7 @@ function assessTruncate(
   }
 
   const risky = targets.filter((t) =>
-    targetExistsAndNotSafe(t, cwd, sessionCreatedPaths),
+    targetExistsAndNotSafe(t, projectCwd, resolveCwd, sessionCreatedPaths),
   );
   if (risky.length > 0) {
     return makeAction(
@@ -990,7 +1073,8 @@ function assessTruncate(
 
 function assessDd(
   command: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
@@ -1004,7 +1088,9 @@ function assessDd(
   }
   const target = ofArg.slice(3);
 
-  if (targetExistsAndNotSafe(target, cwd, sessionCreatedPaths)) {
+  if (
+    targetExistsAndNotSafe(target, projectCwd, resolveCwd, sessionCreatedPaths)
+  ) {
     return makeAction(
       command,
       "bash:dd-output",
@@ -1016,7 +1102,8 @@ function assessDd(
 
 function assessSedInPlace(
   command: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
@@ -1037,7 +1124,7 @@ function assessSedInPlace(
   }
 
   const risky = targets.filter((t) =>
-    targetExistsAndNotSafe(t, cwd, sessionCreatedPaths),
+    targetExistsAndNotSafe(t, projectCwd, resolveCwd, sessionCreatedPaths),
   );
   if (risky.length > 0) {
     return makeAction(
@@ -1051,7 +1138,8 @@ function assessSedInPlace(
 
 function assessPerlInPlace(
   command: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
@@ -1072,7 +1160,7 @@ function assessPerlInPlace(
   }
 
   const risky = targets.filter((t) =>
-    targetExistsAndNotSafe(t, cwd, sessionCreatedPaths),
+    targetExistsAndNotSafe(t, projectCwd, resolveCwd, sessionCreatedPaths),
   );
   if (risky.length > 0) {
     return makeAction(
@@ -1086,7 +1174,8 @@ function assessPerlInPlace(
 
 function assessMvCp(
   command: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
@@ -1104,7 +1193,9 @@ function assessMvCp(
   }
   const dest = targets[targets.length - 1];
 
-  if (targetExistsAndNotSafe(dest, cwd, sessionCreatedPaths)) {
+  if (
+    targetExistsAndNotSafe(dest, projectCwd, resolveCwd, sessionCreatedPaths)
+  ) {
     return makeAction(
       command,
       cmd === "mv" ? "bash:mv-overwrite" : "bash:cp-overwrite",
@@ -1116,7 +1207,8 @@ function assessMvCp(
 
 function assessInstall(
   command: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   const words = extractShellWords(command);
@@ -1130,7 +1222,9 @@ function assessInstall(
   }
   const dest = targets[targets.length - 1];
 
-  if (targetExistsAndNotSafe(dest, cwd, sessionCreatedPaths)) {
+  if (
+    targetExistsAndNotSafe(dest, projectCwd, resolveCwd, sessionCreatedPaths)
+  ) {
     return makeAction(
       command,
       "bash:install-overwrite",
@@ -2034,7 +2128,8 @@ function assessDeployPublish(command: string): GuardAction | undefined {
 
 function assessSingleCommand(
   command: string,
-  cwd: string,
+  projectCwd: string,
+  resolveCwd: string,
   sessionCreatedPaths: Set<string>,
 ): GuardAction | undefined {
   return (
@@ -2042,17 +2137,17 @@ function assessSingleCommand(
     assessShellExecDestructive(command) ??
     assessXargsDestructive(command) ??
     assessSshRemoteDestructive(command) ??
-    assessFindDelete(command, cwd, sessionCreatedPaths) ??
-    assessGit(command, cwd) ??
-    assessRemoval(command, cwd, sessionCreatedPaths) ??
-    assessColonRedirect(command, cwd, sessionCreatedPaths) ??
-    assessRedirect(command, cwd, sessionCreatedPaths) ??
-    assessTruncate(command, cwd, sessionCreatedPaths) ??
-    assessDd(command, cwd, sessionCreatedPaths) ??
-    assessSedInPlace(command, cwd, sessionCreatedPaths) ??
-    assessPerlInPlace(command, cwd, sessionCreatedPaths) ??
-    assessMvCp(command, cwd, sessionCreatedPaths) ??
-    assessInstall(command, cwd, sessionCreatedPaths) ??
+    assessFindDelete(command, projectCwd, resolveCwd, sessionCreatedPaths) ??
+    assessGit(command, resolveCwd) ??
+    assessRemoval(command, projectCwd, resolveCwd, sessionCreatedPaths) ??
+    assessColonRedirect(command, projectCwd, resolveCwd, sessionCreatedPaths) ??
+    assessRedirect(command, projectCwd, resolveCwd, sessionCreatedPaths) ??
+    assessTruncate(command, projectCwd, resolveCwd, sessionCreatedPaths) ??
+    assessDd(command, projectCwd, resolveCwd, sessionCreatedPaths) ??
+    assessSedInPlace(command, projectCwd, resolveCwd, sessionCreatedPaths) ??
+    assessPerlInPlace(command, projectCwd, resolveCwd, sessionCreatedPaths) ??
+    assessMvCp(command, projectCwd, resolveCwd, sessionCreatedPaths) ??
+    assessInstall(command, projectCwd, resolveCwd, sessionCreatedPaths) ??
     assessPermissions(command) ??
     assessRsync(command) ??
     assessInterpreter(command) ??
@@ -2084,8 +2179,16 @@ export function assessBashCommand(
   // the same compound command (e.g. a trailing `docker rmi --force`).
   const commandToAssess = stripMktempCleanups(trimmed);
 
-  for (const candidate of commandCandidates(commandToAssess)) {
-    const action = assessSingleCommand(candidate, cwd, sessionCreatedPaths);
+  for (const { candidate, resolveCwd } of commandCandidates(
+    commandToAssess,
+    cwd,
+  )) {
+    const action = assessSingleCommand(
+      candidate,
+      cwd,
+      resolveCwd,
+      sessionCreatedPaths,
+    );
     if (action) {
       return withPreview(action, trimmed);
     }

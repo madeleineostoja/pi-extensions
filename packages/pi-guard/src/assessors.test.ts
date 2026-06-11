@@ -317,6 +317,54 @@ describe("assessBashCommand — file removal", () => {
     expect(action).toBeDefined();
     expect(action?.allowKey).toBe("bash:git-reset-hard");
   });
+
+  it("allows rm after cd into a temp directory", () => {
+    expect(
+      assessBashCommand("cd /tmp && rm -rf pi-subagents", repo, new Set()),
+    ).toBeUndefined();
+  });
+
+  it("allows rm after chained cd into a temp directory", () => {
+    expect(
+      assessBashCommand(
+        "cd /tmp && cd subdir && rm -rf pi-subagents",
+        repo,
+        new Set(),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("keeps the accumulated cd across a following || segment", () => {
+    // The cd succeeded, so the shell stays in /tmp for the `rm` regardless of
+    // the || branch; the target must resolve against /tmp, not the repo.
+    expect(
+      assessBashCommand(
+        "cd /tmp && false || rm -rf pi-subagents",
+        repo,
+        new Set(),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("does not propagate cd across pipes", () => {
+    const action = assessBashCommand(
+      "cd /tmp | rm -rf pi-subagents",
+      repo,
+      new Set(),
+    );
+    expect(action).toBeDefined();
+    expect(action?.allowKey).toBe("bash:rm-risky");
+  });
+
+  it("does not propagate cd across backgrounding", () => {
+    const action = assessBashCommand(
+      "cd /tmp & rm -rf pi-subagents",
+      repo,
+      new Set(),
+    );
+    expect(action).toBeDefined();
+    expect(action?.allowKey).toBe("bash:rm-risky");
+  });
 });
 
 describe("assessBashCommand — git local-loss", () => {
