@@ -3968,7 +3968,29 @@ async function runTaskWorker(args: {
           implementer: parsed.result,
           outOfScopeTasks,
           priorRequiredChanges: priorReviewRequiredChanges,
+          baseSha: worktreePath ? baseSha : undefined,
         });
+      }
+
+      if (worktreePath) {
+        const wipCommit = await taskGit.commit("pi-implement: candidate");
+        if (wipCommit.exitCode !== 0) {
+          await taskGit.resetHard(baseSha);
+          feedback = recordSystemFailure(
+            task.index,
+            systemFailures,
+            "commit-hook",
+            `Commit failed. Fix the issue and try again.\n\n${wipCommit.stderr || wipCommit.stdout}`,
+          );
+          systemFailures++;
+          priorReviewRequiredChanges = undefined;
+          anchoredReviewChangeRequests = 0;
+          attempt++;
+          continue;
+        }
+        reviewHeadBefore = await taskGit.head();
+        worktreeFingerprintBefore =
+          await taskGit.worktreeFingerprintExcept(planArtifacts);
       }
     } else if (parsed.result.outcome === "already_satisfied" && !worktreePath) {
       await taskGit.reset();
@@ -4139,6 +4161,7 @@ async function runTaskWorker(args: {
           stagedFingerprintBefore: fingerprintBefore!,
           candidatePatch: candidatePatch!,
           worktreeFingerprintBefore: worktreeFingerprintBefore!,
+          committedSha: worktreePath ? reviewHeadBefore : undefined,
         });
       }
       const verdict = parseReviewerVerdict(review.result);
@@ -4314,15 +4337,15 @@ async function runTaskWorker(args: {
     await throwIfStoppedAndReset(deps, taskGit);
 
     if (worktreePath) {
-      const taskCommit = await taskGit.commit(approvedMessage);
+      const taskCommit = await taskGit.reword(approvedMessage);
       if (taskCommit.exitCode !== 0) {
         const headAfterFailedCommit = await taskGit.head();
         if (headAfterFailedCommit !== reviewHeadBefore) {
           throw new BlockedError(
-            "task commit failed but HEAD changed; inspect manually",
+            "task reword failed but HEAD changed; inspect manually",
           );
         }
-        await taskGit.reset();
+        await taskGit.resetHard(baseSha);
         feedback = recordSystemFailure(
           task.index,
           systemFailures,
@@ -4361,9 +4384,7 @@ async function runTaskWorker(args: {
 
       const taskCommitSha = await taskGit.head();
       if (taskCommitSha === reviewHeadBefore) {
-        throw new BlockedError(
-          "task commit succeeded but HEAD did not advance",
-        );
+        throw new BlockedError("task reword succeeded but HEAD did not change");
       }
       if ((await deps.git.head()) !== mainHeadBefore) {
         throw new BlockedError("task commit changed main checkout HEAD");
@@ -4509,6 +4530,7 @@ async function healReviewerMutations(args: {
   stagedFingerprintBefore: string;
   candidatePatch: string;
   worktreeFingerprintBefore: string;
+  committedSha?: string;
 }): Promise<void> {
   const {
     taskGit,
@@ -4516,7 +4538,26 @@ async function healReviewerMutations(args: {
     stagedFingerprintBefore,
     candidatePatch,
     worktreeFingerprintBefore,
+    committedSha,
   } = args;
+
+  if (committedSha) {
+    const worktreeFingerprintAfter =
+      await taskGit.worktreeFingerprintExcept(planArtifacts);
+    if (worktreeFingerprintAfter === worktreeFingerprintBefore) {
+      return;
+    }
+    await taskGit.resetHard(committedSha);
+    const healedWorktreeFingerprint =
+      await taskGit.worktreeFingerprintExcept(planArtifacts);
+    if (healedWorktreeFingerprint !== worktreeFingerprintBefore) {
+      throw new BlockedError(
+        "reviewer changed the candidate diff and auto-heal failed",
+      );
+    }
+    return;
+  }
+
   const stagedFingerprintAfter = await taskGit.stagedFingerprint();
   const worktreeFingerprintAfter =
     await taskGit.worktreeFingerprintExcept(planArtifacts);

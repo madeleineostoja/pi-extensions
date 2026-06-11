@@ -92,8 +92,21 @@ export function buildReviewerPrompt(args: {
   implementer: ParsedImplementerResult;
   outOfScopeTasks?: string[];
   priorRequiredChanges?: string[];
+  baseSha?: string;
 }): string {
   const siblingSection = buildSiblingTasksSection(args.outOfScopeTasks);
+  const diffInstructions = args.baseSha
+    ? `The candidate diff is committed on this task branch. Use read-only git commands such as:
+- \`cd ${args.worktreePath} && git diff ${args.baseSha}..HEAD\`
+- \`git diff ${args.baseSha}..HEAD --stat\` (run from the worktree)
+- \`git diff ${args.baseSha}..HEAD --name-status\` (run from the worktree)
+- \`git show HEAD\` (run from the worktree)
+- \`git show HEAD:path/to/file\` (run from the worktree)`
+    : `Inspect the staged candidate diff in the assigned worktree. Use read-only git commands such as:
+- \`cd ${args.worktreePath} && git diff --cached HEAD\`
+- \`git diff --cached --stat HEAD\` (run from the worktree)
+- \`git diff --cached --name-status HEAD\` (run from the worktree)
+- \`git show :path/to/file\` (run from the worktree)`;
   const isAnchored = (args.priorRequiredChanges?.length ?? 0) > 0;
   const reviewModeSection = isAnchored
     ? `## Review Mode: Anchored Re-review
@@ -113,15 +126,11 @@ You may request meaningful cleanup or code-quality fixes when they materially af
 
 Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The task packet is a deliberate single-task slice; sibling task lines are intentionally omitted and are out of scope.
 
-The staged diff lives in the assigned worktree for this task:
+The candidate diff lives in the assigned worktree for this task:
 
   ${args.worktreePath}
 
-Inspect the staged candidate diff in the assigned worktree. Use read-only git commands such as:
-- \`cd ${args.worktreePath} && git diff --cached HEAD\`
-- \`git diff --cached --stat HEAD\` (run from the worktree)
-- \`git diff --cached --name-status HEAD\` (run from the worktree)
-- \`git show :path/to/file\` (run from the worktree)
+${diffInstructions}
 
 This is review only, not implementation. Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, run formatters with write/fix flags, or change HEAD. You may run read-only commands and read/search relevant files to understand the current implementation.
 

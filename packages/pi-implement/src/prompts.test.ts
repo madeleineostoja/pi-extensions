@@ -263,6 +263,20 @@ describe("buildReviewerPrompt", () => {
     expect(prompt).toContain("change HEAD");
   });
 
+  it("inspects the committed range when baseSha is provided", () => {
+    const prompt = buildReviewerPrompt({
+      taskPacket: TASK_PACKET,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      baseSha: "base123",
+    });
+
+    expect(prompt).not.toContain("--cached");
+    expect(prompt).toContain("git diff base123..HEAD");
+    expect(prompt).toContain("git show HEAD");
+    expect(prompt).toContain("git show HEAD:path/to/file");
+  });
+
   it("includes out-of-scope sibling tasks when provided", () => {
     const prompt = buildReviewerPrompt({
       taskPacket: TASK_PACKET,

@@ -881,7 +881,7 @@ describe("runImplementation", () => {
       taskCommitSha?: string;
     };
     expect(taskJson.status).toBe("approved");
-    expect(taskJson.taskCommitSha).toBe("h1-commit-1");
+    expect(taskJson.taskCommitSha).toBe("h1-commit-1-reword-1");
     expect(readFileSync(join(taskDir, "prompt.md"), "utf-8")).toContain(
       "Do thing",
     );
@@ -8695,37 +8695,45 @@ describe("runImplementation", () => {
       const git = new FakeGit();
       setupWorktreeGit(git, dir, "M\tREADME.md");
       const child = git.worktreeChild as FakeGit;
-      const originalCommit = child.commit.bind(child);
-      let commitCount = 0;
-      child.commit = async (message: string) => {
-        commitCount++;
-        if (commitCount === 2) {
+      const originalReword = child.reword.bind(child);
+      let rewordCount = 0;
+      child.reword = async (message: string) => {
+        rewordCount++;
+        if (rewordCount === 1) {
           return {
-            command: "git commit",
+            command: "git commit --amend",
             exitCode: 1,
             stdout: "",
             stderr: "hook failed",
           };
         }
-        return originalCommit(message);
+        return originalReword(message);
       };
 
       const subagents = new FakeSubagents();
+      subagents.resultsByDescription = [
+        {
+          match: /integration self-heal/,
+          result: {
+            status: "completed",
+            result: makeSelfHealResult({
+              repaired: false,
+              retryIntegration: false,
+              summary: "cannot fix",
+            }),
+          },
+        },
+        {
+          match: /overall review/,
+          result: { status: "completed", result: GOOD_OVERALL_REVIEW },
+        },
+      ];
       subagents.results = [
         { status: "completed", result: GOOD_IMPL },
-        {
-          status: "completed",
-          result: makeSelfHealResult({
-            repaired: false,
-            retryIntegration: false,
-            summary: "cannot fix",
-          }),
-        },
         { status: "completed", result: GOOD_IMPL },
         { status: "completed", result: GOOD_REVIEW },
         { status: "completed", result: GOOD_IMPL },
         { status: "completed", result: GOOD_REVIEW },
-        { status: "completed", result: GOOD_OVERALL_REVIEW },
       ];
 
       await runImplementation({
@@ -8756,6 +8764,184 @@ describe("runImplementation", () => {
         skippedCount: 1,
         reviewedCount: 2,
       });
+    });
+
+    it("parallel candidate is committed before reviewer spawn", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+      const git = new FakeGit();
+      setupWorktreeGit(git, dir, "M\tfile.ts");
+      const subagents = new FakeSubagents();
+      subagents.resultsByDescription = [
+        {
+          match: /integration review/,
+          result: { status: "completed", result: GOOD_INTEGRATION_REVIEW },
+        },
+        {
+          match: /overall review/,
+          result: { status: "completed", result: GOOD_OVERALL_REVIEW },
+        },
+      ];
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+      ];
+
+      const originalSpawn = subagents.spawn.bind(subagents);
+      let reviewerSpawned = false;
+      subagents.spawn = async (args) => {
+        if (args.description.includes("review")) {
+          reviewerSpawned = true;
+        }
+        return originalSpawn(args);
+      };
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      expect(reviewerSpawned).toBe(true);
+      expect(git.worktreeChild!.headValue).not.toBe("h1");
+      expect(await git.worktreeChild!.isCleanExcept()).toBe(true);
+    });
+
+    it("wip commit hook failure resets to base and retries", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+      const git = new FakeGit();
+      setupWorktreeGit(git, dir, "M\tfile.ts");
+
+      let commitCallCount = 0;
+      const originalCommit = git.worktreeChild!.commit.bind(git.worktreeChild);
+      git.worktreeChild!.commit = async (message: string) => {
+        commitCallCount++;
+        if (commitCallCount === 1) {
+          return {
+            command: "git commit",
+            exitCode: 1,
+            stdout: "",
+            stderr: "pre-commit hook rejected",
+          };
+        }
+        return originalCommit(message);
+      };
+
+      const resetHardCalls: string[] = [];
+      const originalResetHard = git.worktreeChild!.resetHard.bind(
+        git.worktreeChild,
+      );
+      git.worktreeChild!.resetHard = async (sha: string) => {
+        resetHardCalls.push(sha);
+        return originalResetHard(sha);
+      };
+
+      const subagents = new FakeSubagents();
+      subagents.resultsByDescription = [
+        {
+          match: /integration review/,
+          result: { status: "completed", result: GOOD_INTEGRATION_REVIEW },
+        },
+        {
+          match: /overall review/,
+          result: { status: "completed", result: GOOD_OVERALL_REVIEW },
+        },
+      ];
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      expect(resetHardCalls).toContain("h1");
+      expect(subagents.spawns).toHaveLength(5);
+      const secondImplPrompt = subagents.spawns[1]?.prompt ?? "";
+      expect(secondImplPrompt).toContain("pre-commit hook rejected");
     });
   });
 
