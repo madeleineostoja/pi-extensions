@@ -309,4 +309,28 @@ describe("git helpers", () => {
     expect(diff).toContain("feature.ts");
     expect(diff).toContain("export const feat = true;");
   });
+
+  it("rewords the current commit message without changing parent", async () => {
+    const cwd = repo();
+    const client = new ExecGitClient(cwd);
+
+    writeFileSync(join(cwd, "feature.ts"), "export const feat = true;\n");
+    git(cwd, "add", "feature.ts");
+    git(cwd, "commit", "-m", "feat: add feature");
+
+    const parentSha = git(cwd, "rev-parse", "HEAD^").trim();
+    const beforeHead = await client.head();
+
+    const result = await client.reword("feat: add feature (reworded)");
+    expect(result.exitCode).toBe(0);
+
+    const afterHead = await client.head();
+    expect(afterHead).not.toBe(beforeHead);
+
+    const message = git(cwd, "log", "-1", "--format=%B").trim();
+    expect(message).toBe("feat: add feature (reworded)");
+
+    const afterParentSha = git(cwd, "rev-parse", "HEAD^").trim();
+    expect(afterParentSha).toBe(parentSha);
+  });
 });

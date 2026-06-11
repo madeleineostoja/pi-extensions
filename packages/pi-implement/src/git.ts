@@ -39,6 +39,7 @@ export type GitClient = {
   restoreWorktreeFromIndexExcept(paths: string[]): Promise<void>;
   restoreStagedPatch(patch: string, protectedPaths: string[]): Promise<void>;
   commit(message: string): Promise<CommandResult>;
+  reword(message: string): Promise<CommandResult>;
   reset(): Promise<void>;
   resetHard(commitSha: string): Promise<void>;
   cherryPickNoCommit(commitSha: string): Promise<CommandResult>;
@@ -198,6 +199,10 @@ export class ExecGitClient implements GitClient {
 
   async commit(message: string): Promise<CommandResult> {
     return this.run(["commit", "-m", message], true);
+  }
+
+  async reword(message: string): Promise<CommandResult> {
+    return this.run(["commit", "--amend", "-m", message], true);
   }
 
   async reset(): Promise<void> {

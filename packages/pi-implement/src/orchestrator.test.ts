@@ -98,6 +98,20 @@ class FakeGit implements GitClient {
     this.headValue = `${this.headValue}-commit-${this.commits.length}`;
     return { command: "git commit", exitCode: 0, stdout: "", stderr: "" };
   }
+  async reword(message: string): Promise<CommandResult> {
+    if (this.commits.length > 0) {
+      this.commits[this.commits.length - 1] = message;
+    } else {
+      this.commits.push(message);
+    }
+    this.headValue = `${this.headValue}-reword-${this.commits.length}`;
+    return {
+      command: "git commit --amend",
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    };
+  }
   async reset() {}
   async resetHard(commitSha: string) {
     this.headValue = commitSha;
