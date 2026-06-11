@@ -14,6 +14,7 @@ import {
   resolveMaxParallel,
   reviewerDefaultTypeWarning,
   resolveEffectiveScoutConfig,
+  resolveEffectiveTaskReview,
 } from "./config.js";
 import { ExecGitClient } from "./git.js";
 import {
@@ -75,7 +76,7 @@ type ActiveRun = {
   activeSubagentIds?: string[];
 };
 
-const ACTIVE_PHASES = new Set([
+const ACTIVE_PHASES = new Set<RunState["phase"]>([
   "preflight",
   "strategy",
   "scheduling",
@@ -85,6 +86,7 @@ const ACTIVE_PHASES = new Set([
   "integrating",
   "reworking",
   "final_review",
+  "final_rework",
   "stopping",
 ]);
 
@@ -95,6 +97,10 @@ const STARTABLE_PHASES = new Set([
   "blocked",
   "followup_required",
 ]);
+
+export function isActiveImplementPhase(phase: RunState["phase"]): boolean {
+  return ACTIVE_PHASES.has(phase);
+}
 
 export function canStartImplementRun(phase: RunState["phase"]): boolean {
   return STARTABLE_PHASES.has(phase);
@@ -216,7 +222,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         }
 
         if (parsed.name === "stop") {
-          if (!ACTIVE_PHASES.has(active.state.phase)) {
+          if (!isActiveImplementPhase(active.state.phase)) {
             ctx.ui.notify(
               `pi-implement is not running (phase: ${active.state.phase}).`,
               "info",
@@ -340,7 +346,10 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
                 continue;
               }
               const wt = task.worktreePath ?? "—";
-              let line = `${task.id} [${task.status}] → ${wt}`;
+              const review = task.review
+                ? ` (${task.review.lastDecision})`
+                : "";
+              let line = `${task.id} [${task.status}${review}] → ${wt}`;
               if (task.scout) {
                 let scoutPart = ` · scout: ${task.scout.calls} call${task.scout.calls === 1 ? "" : "s"}${task.scout.lastStatus ? `, last=${task.scout.lastStatus}` : ""}`;
                 if (task.scout.lastReason) {
@@ -360,7 +369,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         }
 
         if (parsed.name === "cleanup") {
-          if (ACTIVE_PHASES.has(active.state.phase)) {
+          if (isActiveImplementPhase(active.state.phase)) {
             ctx.ui.notify(
               "pi-implement cleanup refused: a run is currently active. Use `/implement stop` first.",
               "warning",
@@ -738,6 +747,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           signal: abortController.signal,
           verifyCommand: config.config.verifyCommand,
           scout: resolveEffectiveScoutConfig(config.config),
+          effectiveTaskReview: resolveEffectiveTaskReview(config.config),
         });
       })()
         .then(() => {

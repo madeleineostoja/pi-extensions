@@ -68,6 +68,12 @@ export type TaskJson = {
     lastStatus?: "completed" | "failed" | "stopped" | "skipped";
     lastReason?: string;
   };
+  review?: {
+    lastDecision: "reviewed" | "skipped" | "required";
+    lastReason?: string;
+    skippedCount?: number;
+    reviewedCount?: number;
+  };
 };
 
 export type EventEntry =
@@ -102,7 +108,12 @@ export type EventEntry =
       result: string;
     }
   | { type: "scheduler_self_heal_failed"; attempt: number; reason: string }
-  | { type: "task_self_heal_requeued"; taskId: string; reason: string };
+  | { type: "task_self_heal_requeued"; taskId: string; reason: string }
+  | { type: "overall_review_changes_requested"; requiredChanges: string[] }
+  | { type: "overall_review_approved" }
+  | { type: "overall_rework_started"; attempt: number; artifactPath?: string }
+  | { type: "overall_rework_failed"; attempt: number; reason: string }
+  | { type: "overall_rework_committed"; attempt: number; commitSha: string };
 
 export type DurableEvent = EventEntry & { timestamp: string };
 

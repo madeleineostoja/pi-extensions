@@ -494,6 +494,85 @@ Changes requested:
 `;
 }
 
+export function buildOverallReworkPrompt(args: {
+  planContent: string;
+  planPath: string;
+  baseSha: string;
+  headSha: string;
+  diff: string;
+  runId?: string;
+  landedTasks?: Array<{ id: string; title: string; commitSha?: string }>;
+  bundleMaterial?: string;
+  requiredChanges: string[];
+  recommendationMarkdown?: string;
+  priorAttemptFailures?: string[];
+}): string {
+  const runSection = args.runId ? `\nRun ID: ${args.runId}\n` : "\n";
+  const taskSection =
+    args.landedTasks && args.landedTasks.length > 0
+      ? `\n## Landed Tasks\n\n${args.landedTasks.map((t) => `- ${t.id}: ${t.title}${t.commitSha ? ` @ ${t.commitSha.slice(0, 7)}` : ""}`).join("\n")}\n`
+      : "";
+  const bundleSection = args.bundleMaterial
+    ? `\n\n## Referenced Plan Material\n\n${args.bundleMaterial}`
+    : "";
+  const priorFailuresSection =
+    args.priorAttemptFailures && args.priorAttemptFailures.length > 0
+      ? `\n## Prior Rework Attempt Failures\n\n${args.priorAttemptFailures.map((f, i) => `${i + 1}. ${f}`).join("\n")}\n`
+      : "";
+  const recommendationSection = args.recommendationMarkdown
+    ? `\n## Recommendation\n\n${args.recommendationMarkdown}\n`
+    : "";
+
+  return `You are the pi-implement overall rework implementer. Your job is to address the overall review feedback for the completed feature.
+
+Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification, never ask how to proceed, and never wait for input. Make reasonable decisions yourself and finish with the result block.
+
+## Scope
+
+Make only the changes required to satisfy the overall review feedback and the original plan. Do not reopen completed tasks for unrelated improvements or scope creep.
+
+## Constraints
+
+Do not edit source plan files or checklist state. Do not stage, commit, reset, checkout, rebase, merge, tag, push, clean, or force-add ignored files.
+
+## Context
+
+Source: ${args.planPath}
+Base SHA: ${args.baseSha}
+Head SHA: ${args.headSha}${runSection}${taskSection}
+
+${args.planContent}${bundleSection}
+
+## Combined Diff
+
+\`\`\`diff
+${args.diff}
+\`\`\`
+
+## Required Changes
+
+${args.requiredChanges.map((c) => `- ${c}`).join("\n")}
+${recommendationSection}${priorFailuresSection}
+End with exactly one <pi-overall-rework-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
+
+<pi-overall-rework-result>
+{
+  "summary": "Briefly describe what changed.",
+  "verification": [
+    {
+      "command": "command or check that was run",
+      "result": "passed, failed, or not applicable",
+      "rationale": "why this verification is sufficient or what limitation remains"
+    }
+  ],
+  "commitMessage": "type: short description"
+}
+</pi-overall-rework-result>
+
+The commitMessage is optional; if omitted or invalid, a fallback will be used.
+`;
+}
+
 function formatVerification(result: ParsedImplementerResult): string {
   return result.verification
     .map(

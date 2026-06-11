@@ -57,7 +57,7 @@ An implementer may report `already_satisfied` when the current repository state 
 
 After the last task is committed (and, in parallel mode, after final validation), a read-only overall reviewer inspects the combined base→HEAD diff against the full plan to catch cross-task gaps, missed edge cases, and integration problems.
 
-If it requests changes, the run ends in a `followup_required` state and writes a `<plan>.overall-review.md` artifact next to the plan describing the required changes and a suggested follow-up. Re-running `/implement` after addressing them resumes from the remaining work.
+If the overall reviewer requests changes, pi-implement can autonomously run a bounded rework loop: an implementer addresses the feedback, commits the changes, and the overall review is re-run. This repeats up to a small retry limit. If the limit is exhausted before approval, the run ends in a `followup_required` state and writes a `<plan>.overall-review.md` artifact next to the plan describing the required changes and a suggested follow-up. Re-running `/implement` after addressing them resumes from the remaining work.
 
 ## Parallel execution and integration
 
@@ -129,7 +129,12 @@ Global config lives at:
     "timeoutMs": 120000
   },
   "maxParallel": 3,
-  "verifyCommand": "npm test"
+  "verifyCommand": "npm test",
+  "taskReview": {
+    "mode": "auto",
+    "maxSkipDiffChars": 2000,
+    "maxSkipFiles": 3
+  }
 }
 ```
 
@@ -138,6 +143,8 @@ If a role model is omitted, pi-implement does not pass a model override, so `pi-
 `scout` controls just-in-time read-only exploration before task attempts. It defaults to enabled `auto` mode with the `Explore` subagent type, no model override, `50000` max result chars, and a `120000`ms timeout. `mode` can be `auto`, `always`, or `off`: `off` disables Scout, `always` runs Scout before each task attempt, and `auto` runs only when the planner suggests/requires Scout or retry/rework feedback needs fresh context. `scout.model` optionally overrides the Scout model, while `scout.maxResultChars` and `scout.timeoutMs` are positive integers clamped to hard maximums. Scout output is bounded, attempt-scoped context for the implementer to verify; it does not expand task scope and is skipped silently when policy says it is unnecessary.
 
 `maxParallel` defaults to `3` and is clamped to a hard maximum of `8`. Invalid values are ignored with a warning.
+
+`taskReview` controls when per-task review can be skipped. Default `auto` preserves review as the safety net unless planner hints and runtime evidence (small docs-only or additive-fixture diffs with passing validation) make a task skip-eligible. Set `mode` to `"always"` to force review for every task. `maxSkipDiffChars` and `maxSkipFiles` cap the size of skip-eligible diffs.
 
 `verifyCommand` is an optional non-empty shell command. In parallel mode it runs from the repository root during per-task integration and final validation. If omitted, pi-implement auto-detects `test`, `typecheck`, and `build` package scripts (respecting the repo's npm/pnpm/yarn lockfile); if none exist, it falls back to an LLM integration review.
 

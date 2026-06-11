@@ -9,6 +9,7 @@ export type Phase =
   | "integrating"
   | "reworking"
   | "final_review"
+  | "final_rework"
   | "followup_required"
   | "blocked"
   | "stopping"
@@ -72,6 +73,12 @@ export type ParallelTaskState = {
     lastStatus?: "completed" | "failed" | "stopped" | "skipped";
     lastReason?: string;
   };
+  review?: {
+    lastDecision: "reviewed" | "skipped" | "required";
+    lastReason?: string;
+    skippedCount?: number;
+    reviewedCount?: number;
+  };
 };
 
 export type StatePatch =
@@ -131,6 +138,12 @@ export function formatFooterStatusParts(
   }
   if (state.phase === "done") {
     return footerStatusParts("implement done", "success");
+  }
+  if (state.phase === "final_review") {
+    return footerStatusParts("implement final review", "active");
+  }
+  if (state.phase === "final_rework") {
+    return footerStatusParts("implement final rework", "active");
   }
   if (state.phase === "followup_required") {
     return footerStatusParts(
@@ -216,6 +229,12 @@ export function formatRunStatus(state: RunState, nowMs = Date.now()): string {
       }
       if (task.landedCommitSha) {
         line += ` @ ${shortenSha(task.landedCommitSha)}`;
+      }
+      if (task.review) {
+        line += ` · review: ${task.review.lastDecision}`;
+        if (task.review.lastReason) {
+          line += ` (${shorten(task.review.lastReason, 40)})`;
+        }
       }
       if (task.scout) {
         let scoutPart = ` · scout: ${task.scout.calls} call${task.scout.calls === 1 ? "" : "s"}${task.scout.lastStatus ? `, last=${task.scout.lastStatus}` : ""}`;
