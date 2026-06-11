@@ -60,16 +60,10 @@
       "prettier --write"
     ]
   },
-  "dependencies": {
-    "@tintinweb/pi-subagents": "^0.8.0"
-  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
-  },
-  "bundledDependencies": [
-    "@tintinweb/pi-subagents"
-  ]
+  }
 }
