@@ -13,7 +13,7 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 - **Sandboxed subagents** — implementers and reviewers are confined to their worktree; the orchestrator detects and blocks (or auto-heals) any out-of-bounds change to HEAD, the candidate diff, the main checkout, or plan artifacts.
 - **Built-in verification** — runs a configured verify command or auto-detected `test`/`typecheck`/`build` scripts, with an LLM integration review as a last resort. Precommit hooks are a hard gate and are never bypassed.
 - **Index-style plans** — top-level tasks can link out to supporting markdown files, which are inlined into the implementer's context.
-- **Durable, resumable state** — per-run state, artifacts, and worktrees are persisted under the repo; runs are lockable across sessions, auto-cleaned on success, and inspectable/recoverable on failure.
+- **Durable, resumable state** — per-run state, artifacts, and worktrees are persisted under `<repo>/.pi/implement/`; runs are lockable across sessions, auto-cleaned on success, and inspectable/recoverable on failure.
 - **Live progress** — a TUI status footer and per-agent widget (tokens, tool uses, compactions) plus progress messages streamed into the session.
 
 ## Usage
@@ -162,6 +162,8 @@ Run `/implement view` to inspect active pi-implement subagents. With one active 
 
 ## Recovery
 
-Use `/implement stop` to halt local orchestration and request that active subagents stop. If a run is blocked or stopped, run `/implement inspect` to locate the run directory and worktrees and see each task's status, fix or revert as needed, return to a clean state (except for intended plan checkbox state), then rerun `/implement <plan.md>`.
+Use `/implement stop` to halt local orchestration and request that active subagents stop. If a run is blocked or stopped, run `/implement inspect` to locate the run directory and worktrees under `<repo>/.pi/implement/` and see each task's status, fix or revert as needed, return to a clean state (except for intended plan checkbox state), then rerun `/implement <plan.md>`.
 
 Use `/implement cleanup` to remove durable state and worktrees left behind by failed, blocked, or stopped runs. It refuses while a run is active or another session holds a live run lock, and prunes stale locks it can prove are dead. Successful runs are cleaned up automatically.
+
+pi-implement automatically registers `/.pi/implement/` in the repo-local `.git/info/exclude` on startup, so its runtime state never appears as an untracked file in `git status`.
