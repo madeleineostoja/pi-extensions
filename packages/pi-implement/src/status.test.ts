@@ -388,6 +388,33 @@ describe("status formatting", () => {
     expect(status).toContain("Plan: /plan.md");
   });
 
+  it("formats footer for final_review and final_rework phases", () => {
+    expect(formatFooterStatus({ phase: "final_review" })).toBe(
+      "󰚩 implement final review",
+    );
+    expect(formatFooterStatus({ phase: "final_rework" })).toBe(
+      "󰚩 implement final rework",
+    );
+  });
+
+  it("formats overall review and rework agent labels", () => {
+    const overallReviewer = makeAgentLabel({
+      id: "a1",
+      role: "reviewer",
+      label: "Reviewer · Overall review",
+      startedAt: "2024-01-01T00:00:00Z",
+    });
+    expect(overallReviewer).toBe("Reviewer · Overall review");
+
+    const overallReworker = makeAgentLabel({
+      id: "a2",
+      role: "implementer",
+      label: "Overall rework · attempt 1",
+      startedAt: "2024-01-01T00:00:00Z",
+    });
+    expect(overallReworker).toBe("Overall rework · attempt 1");
+  });
+
   it("keeps checkpoint history bounded while preserving emission sequence", () => {
     let state: RunState = { phase: "coding" };
     for (let i = 1; i <= 30; i++) {

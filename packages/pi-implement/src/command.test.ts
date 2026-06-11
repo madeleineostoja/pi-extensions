@@ -3,7 +3,11 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { canStartImplementRun, registerImplementCommand } from "./command.js";
+import {
+  canStartImplementRun,
+  isActiveImplementPhase,
+  registerImplementCommand,
+} from "./command.js";
 import { getStatePaths, createRunState, writeTaskJson } from "./state.js";
 
 type Handler = (args: string, ctx: FakeContext) => Promise<void>;
@@ -231,6 +235,9 @@ describe("/implement command", () => {
 
     expect(canStartImplementRun("followup_required")).toBe(true);
     expect(canStartImplementRun("final_review")).toBe(false);
+    expect(canStartImplementRun("final_rework")).toBe(false);
+    expect(isActiveImplementPhase("final_review")).toBe(true);
+    expect(isActiveImplementPhase("final_rework")).toBe(true);
   });
 
   it("inspect prints run dirs and task statuses from disk", async () => {

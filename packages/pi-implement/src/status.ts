@@ -123,6 +123,12 @@ export function formatFooterStatusParts(
   if (state.phase === "done") {
     return footerStatusParts("implement done", "success");
   }
+  if (state.phase === "final_review") {
+    return footerStatusParts("implement final review", "active");
+  }
+  if (state.phase === "final_rework") {
+    return footerStatusParts("implement final rework", "active");
+  }
   if (state.phase === "followup_required") {
     return footerStatusParts(
       `implement follow-up required${state.lastReason ? ` · ${shorten(state.lastReason, 32)}` : ""}`,

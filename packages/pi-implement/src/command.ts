@@ -75,7 +75,7 @@ type ActiveRun = {
   activeSubagentIds?: string[];
 };
 
-const ACTIVE_PHASES = new Set([
+const ACTIVE_PHASES = new Set<RunState["phase"]>([
   "preflight",
   "strategy",
   "scheduling",
@@ -85,6 +85,7 @@ const ACTIVE_PHASES = new Set([
   "integrating",
   "reworking",
   "final_review",
+  "final_rework",
   "stopping",
 ]);
 
@@ -95,6 +96,10 @@ const STARTABLE_PHASES = new Set([
   "blocked",
   "followup_required",
 ]);
+
+export function isActiveImplementPhase(phase: RunState["phase"]): boolean {
+  return ACTIVE_PHASES.has(phase);
+}
 
 export function canStartImplementRun(phase: RunState["phase"]): boolean {
   return STARTABLE_PHASES.has(phase);
@@ -216,7 +221,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         }
 
         if (parsed.name === "stop") {
-          if (!ACTIVE_PHASES.has(active.state.phase)) {
+          if (!isActiveImplementPhase(active.state.phase)) {
             ctx.ui.notify(
               `pi-implement is not running (phase: ${active.state.phase}).`,
               "info",
@@ -340,7 +345,10 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
                 continue;
               }
               const wt = task.worktreePath ?? "—";
-              lines.push(`${task.id} [${task.status}] → ${wt}`);
+              const review = task.review
+                ? ` (${task.review.lastDecision})`
+                : "";
+              lines.push(`${task.id} [${task.status}${review}] → ${wt}`);
             }
           }
           ctx.ui.notify(lines.join("\n"), "info");
@@ -348,7 +356,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         }
 
         if (parsed.name === "cleanup") {
-          if (ACTIVE_PHASES.has(active.state.phase)) {
+          if (isActiveImplementPhase(active.state.phase)) {
             ctx.ui.notify(
               "pi-implement cleanup refused: a run is currently active. Use `/implement stop` first.",
               "warning",

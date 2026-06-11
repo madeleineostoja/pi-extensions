@@ -67,6 +67,7 @@ export type TaskJson = {
     lastDecision: "reviewed" | "skipped" | "required";
     lastReason?: string;
     skippedCount?: number;
+    reviewedCount?: number;
   };
 };
 
@@ -105,7 +106,7 @@ export type EventEntry =
   | { type: "task_self_heal_requeued"; taskId: string; reason: string }
   | { type: "overall_review_changes_requested"; requiredChanges: string[] }
   | { type: "overall_review_approved" }
-  | { type: "overall_rework_started"; attempt: number }
+  | { type: "overall_rework_started"; attempt: number; artifactPath?: string }
   | { type: "overall_rework_failed"; attempt: number; reason: string }
   | { type: "overall_rework_committed"; attempt: number; commitSha: string };
 

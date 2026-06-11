@@ -311,6 +311,80 @@ describe("run state lifecycle", () => {
     expect(read).toEqual(task);
   });
 
+  it("writes and reads task.json with review metadata", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const run = {
+      version: 1 as const,
+      runId: "r20240115-120000",
+      mode: "auto" as const,
+      strategyReason: "Auto mode selected; effective max concurrency 3.",
+      repoRoot: repo,
+      planPath: "/repo/plan.md",
+      planHash: "abc123",
+      baseSha: "def456",
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+
+    createRunState(paths, run, "# Plan\n");
+    const task = {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test task",
+      status: "approved" as const,
+      dependsOn: [],
+      attempts: 1,
+      integrationAttempts: 0,
+      review: {
+        lastDecision: "skipped" as const,
+        lastReason: "docs-only changes with low-risk directive",
+        skippedCount: 1,
+        reviewedCount: 0,
+      },
+    };
+    writeTaskJson(paths, "t001-test", task);
+
+    const read = readTaskJson(paths, "t001-test");
+    expect(read?.review).toEqual(task.review);
+  });
+
+  it("reads older task.json without review field as undefined", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const run = {
+      version: 1 as const,
+      runId: "r20240115-120000",
+      mode: "auto" as const,
+      strategyReason: "Auto mode selected; effective max concurrency 3.",
+      repoRoot: repo,
+      planPath: "/repo/plan.md",
+      planHash: "abc123",
+      baseSha: "def456",
+      currentPhase: "preflight",
+      maxConcurrency: 3,
+      startedAt: "2024-01-15T12:00:00Z",
+      updatedAt: "2024-01-15T12:00:00Z",
+    };
+
+    createRunState(paths, run, "# Plan\n");
+    const task = {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test task",
+      status: "approved" as const,
+      dependsOn: [],
+      attempts: 1,
+      integrationAttempts: 0,
+    };
+    writeTaskJson(paths, "t001-test", task);
+
+    const read = readTaskJson(paths, "t001-test");
+    expect(read?.review).toBeUndefined();
+  });
+
   it("appends and reads events", () => {
     const repo = tempRepo();
     const paths = getStatePaths(repo, "r20240115-120000");

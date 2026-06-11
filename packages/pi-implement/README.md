@@ -57,7 +57,7 @@ An implementer may report `already_satisfied` when the current repository state 
 
 After the last task is committed (and, in parallel mode, after final validation), a read-only overall reviewer inspects the combined base→HEAD diff against the full plan to catch cross-task gaps, missed edge cases, and integration problems.
 
-If it requests changes, the run ends in a `followup_required` state and writes a `<plan>.overall-review.md` artifact next to the plan describing the required changes and a suggested follow-up. Re-running `/implement` after addressing them resumes from the remaining work.
+If the overall reviewer requests changes, pi-implement can autonomously run a bounded rework loop: an implementer addresses the feedback, commits the changes, and the overall review is re-run. This repeats up to a small retry limit. If the limit is exhausted before approval, the run ends in a `followup_required` state and writes a `<plan>.overall-review.md` artifact next to the plan describing the required changes and a suggested follow-up. Re-running `/implement` after addressing them resumes from the remaining work.
 
 ## Parallel execution and integration
 
@@ -121,13 +121,20 @@ Global config lives at:
     "type": "Explore"
   },
   "maxParallel": 3,
-  "verifyCommand": "npm test"
+  "verifyCommand": "npm test",
+  "taskReview": {
+    "mode": "auto",
+    "maxSkipDiffChars": 2000,
+    "maxSkipFiles": 3
+  }
 }
 ```
 
 If a role model is omitted, pi-implement does not pass a model override, so `pi-subagents` uses the role's subagent type default model (and then the current session model if that type has no default). If a role type is omitted, `general-purpose` is used for implementer and reviewer, and `Explore` is used for the planner. The runtime prompts are self-contained enough to work with `general-purpose`, but reviewer safety is only instruction-enforced in that mode; configure `reviewer.type` to a dedicated read-only review agent for stronger isolation.
 
 `maxParallel` defaults to `3` and is clamped to a hard maximum of `8`. Invalid values are ignored with a warning.
+
+`taskReview` controls when per-task review can be skipped. Default `auto` preserves review as the safety net unless planner hints and runtime evidence (small docs-only or additive-fixture diffs with passing validation) make a task skip-eligible. Set `mode` to `"always"` to force review for every task. `maxSkipDiffChars` and `maxSkipFiles` cap the size of skip-eligible diffs.
 
 `verifyCommand` is an optional non-empty shell command. In parallel mode it runs from the repository root during per-task integration and final validation. If omitted, pi-implement auto-detects `test`, `typecheck`, and `build` package scripts (respecting the repo's npm/pnpm/yarn lockfile); if none exist, it falls back to an LLM integration review.
 

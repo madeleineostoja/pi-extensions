@@ -310,9 +310,7 @@ export function parseIntegrationSelfHealResult(
 
 export function parseOverallReworkResult(
   text: string,
-):
-  | { ok: true; result: OverallReworkResult }
-  | { ok: false; reason: string } {
+): { ok: true; result: OverallReworkResult } | { ok: false; reason: string } {
   const parsed = parseTaggedJsonObject(text, "pi-overall-rework-result");
   if (!parsed.ok) {
     return parsed;

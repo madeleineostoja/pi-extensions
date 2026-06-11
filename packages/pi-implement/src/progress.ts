@@ -7,6 +7,7 @@ const PHASE_LABEL: Partial<Record<Phase, string>> = {
   integrating: "integrating",
   reworking: "reworking",
   final_review: "running final review",
+  final_rework: "reworking overall",
 };
 
 const STATUS_NOTE: Partial<

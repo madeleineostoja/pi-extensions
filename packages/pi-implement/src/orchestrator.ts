@@ -972,8 +972,9 @@ function markIntegrationFailure(
   task.lastReason = reason;
   if (deps.paths) {
     appendEvent(deps.paths, { type: "integration_failed", taskId, reason });
+    const existing = readTaskJson(deps.paths, taskId);
     writeTaskJson(deps.paths, taskId, {
-      ...taskToJson(task),
+      ...(existing ?? taskToJson(task)),
       status: "integration_failed",
       lastReason: reason,
     });
@@ -2462,24 +2463,19 @@ async function runOverallReworkAttempt(
   deps.updateState({ phase: "final_rework", activeSubagentId: undefined });
 
   if (deps.paths) {
+    const artifactDir = join(deps.paths.runDir, "overall-review");
+    mkdirSync(artifactDir, { recursive: true });
+    const promptPath = join(artifactDir, `rework-prompt-${attemptNumber}.md`);
+    writeFileSync(promptPath, prompt, "utf-8");
     appendEvent(deps.paths, {
       type: "overall_rework_started",
       attempt: attemptNumber,
+      artifactPath: promptPath,
     });
-    const artifactDir = join(deps.paths.runDir, "overall-review");
-    mkdirSync(artifactDir, { recursive: true });
-    writeFileSync(
-      join(artifactDir, `rework-prompt-${attemptNumber}.md`),
-      prompt,
-      "utf-8",
-    );
   }
 
   deps.updateState((prev) =>
-    checkpointPatch(
-      prev,
-      `Overall rework started (attempt ${attemptNumber})`,
-    ),
+    checkpointPatch(prev, `Overall rework started (attempt ${attemptNumber})`),
   );
 
   const id = await deps.subagents.spawn({
@@ -2508,6 +2504,17 @@ async function runOverallReworkAttempt(
       planArtifactSnapshot,
     );
     throw new StoppedError();
+  }
+
+  // Persist result when paths exist
+  if (deps.paths && result.status === "completed") {
+    const artifactDir = join(deps.paths.runDir, "overall-review");
+    mkdirSync(artifactDir, { recursive: true });
+    writeFileSync(
+      join(artifactDir, `rework-result-${attemptNumber}.md`),
+      result.result,
+      "utf-8",
+    );
   }
 
   // Failed subagent
@@ -2613,8 +2620,7 @@ async function runOverallReworkAttempt(
   }
 
   const stagedAfter = await deps.git.stagedFingerprint();
-  const worktreeAfter =
-    await deps.git.worktreeFingerprintExcept(planArtifacts);
+  const worktreeAfter = await deps.git.worktreeFingerprintExcept(planArtifacts);
 
   // Validation
   const validationCommands = await resolveValidationCommands(deps);
@@ -2732,9 +2738,7 @@ async function runOverallReworkAttempt(
   }
 
   // Commit
-  const commitMessage = isValidCommitMessage(
-    parsed.result.commitMessage ?? "",
-  )
+  const commitMessage = isValidCommitMessage(parsed.result.commitMessage ?? "")
     ? parsed.result.commitMessage!
     : "fix: address overall review";
 
@@ -3185,6 +3189,35 @@ function taskToJson(task: SchedulerTask): TaskJson {
   };
 }
 
+function currentTaskReviewMetadata(
+  paths: StatePaths | undefined,
+  taskId: string,
+): TaskJson["review"] {
+  return paths ? readTaskJson(paths, taskId)?.review : undefined;
+}
+
+function nextTaskReviewMetadata(
+  paths: StatePaths | undefined,
+  taskId: string,
+  skipReview: boolean,
+  skipReason: string | undefined,
+): TaskJson["review"] {
+  const existingReview = currentTaskReviewMetadata(paths, taskId);
+  if (skipReview) {
+    return {
+      lastDecision: "skipped",
+      lastReason: skipReason,
+      skippedCount: (existingReview?.skippedCount ?? 0) + 1,
+      reviewedCount: existingReview?.reviewedCount,
+    };
+  }
+  return {
+    lastDecision: "reviewed",
+    skippedCount: existingReview?.skippedCount,
+    reviewedCount: (existingReview?.reviewedCount ?? 0) + 1,
+  };
+}
+
 // ── Task worker (shared serial + parallel) ─────────────────────────────────
 
 async function getStagedFileSummary(
@@ -3401,6 +3434,7 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [implementerId],
+        review: currentTaskReviewMetadata(deps.paths, taskId),
       });
       appendEvent(deps.paths, { type: "task_started", taskId });
     }
@@ -3431,6 +3465,7 @@ async function runTaskWorker(args: {
           branchName,
           activeSubagentIds: [],
           lastReason: implementation.error,
+          review: currentTaskReviewMetadata(deps.paths, taskId),
         });
       }
       feedback = recordSystemFailure(
@@ -3465,6 +3500,7 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [],
+        review: currentTaskReviewMetadata(deps.paths, taskId),
       });
     }
 
@@ -3772,6 +3808,7 @@ async function runTaskWorker(args: {
           worktreePath,
           branchName,
           activeSubagentIds: [reviewerId],
+          review: currentTaskReviewMetadata(deps.paths, taskId),
         });
       }
       const review = await deps.subagents.waitFor(reviewerId, deps.signal);
@@ -3791,6 +3828,7 @@ async function runTaskWorker(args: {
           branchName,
           activeSubagentIds: [],
           lastReason: review.status !== "completed" ? review.error : undefined,
+          review: currentTaskReviewMetadata(deps.paths, taskId),
         });
       }
       if (review.status === "stopped") {
@@ -3926,6 +3964,13 @@ async function runTaskWorker(args: {
     priorReviewRequiredChanges = undefined;
     anchoredReviewChangeRequests = 0;
 
+    const taskReviewMeta = nextTaskReviewMetadata(
+      deps.paths,
+      taskId,
+      skipReview,
+      skipReason,
+    );
+
     // Approved
     if (
       !hasStaged &&
@@ -3968,6 +4013,7 @@ async function runTaskWorker(args: {
           worktreePath,
           branchName,
           activeSubagentIds: [],
+          review: taskReviewMeta,
         });
       }
       const satisfiedHead = await deps.git.head();
@@ -3995,9 +4041,7 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [],
-        review: skipReview
-          ? { lastDecision: "skipped", lastReason: skipReason }
-          : { lastDecision: "reviewed" },
+        review: taskReviewMeta,
       });
     }
 
@@ -4050,6 +4094,7 @@ async function runTaskWorker(args: {
             branchName,
             activeSubagentIds: [],
             lastReason: feedback.message,
+            review: currentTaskReviewMetadata(deps.paths, taskId),
           });
           appendEvent(deps.paths, {
             type: "integration_failed",
@@ -4093,9 +4138,7 @@ async function runTaskWorker(args: {
           taskCommitSha,
           activeSubagentIds: [],
           commitMessage: approvedMessage,
-          review: skipReview
-            ? { lastDecision: "skipped", lastReason: skipReason }
-            : { lastDecision: "reviewed" },
+          review: taskReviewMeta,
         });
         appendEvent(deps.paths, {
           type: "task_approved",
@@ -4144,9 +4187,7 @@ async function runTaskWorker(args: {
           integrationAttempts: 0,
           landedCommitSha: head,
           activeSubagentIds: [],
-          review: skipReview
-            ? { lastDecision: "skipped", lastReason: skipReason }
-            : { lastDecision: "reviewed" },
+          review: taskReviewMeta,
         });
       }
       deps.updateState((prev) => ({
@@ -4193,6 +4234,7 @@ async function runTaskWorker(args: {
         integrationAttempts: systemFailures,
         activeSubagentIds: [],
         lastReason: feedback.message,
+        review: currentTaskReviewMetadata(deps.paths, taskId),
       });
       appendEvent(deps.paths, {
         type: "integration_failed",

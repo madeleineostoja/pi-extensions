@@ -177,6 +177,13 @@ describe("diffProgress", () => {
     );
   });
 
+  it("emits final_rework phase label", () => {
+    const prev: RunState = { phase: "final_review" };
+    const next: RunState = { phase: "final_rework" };
+    const lines = diffProgress(prev, next, []);
+    expect(lines).toContain("· reworking overall");
+  });
+
   it("uses checkpointSequence when bounded history drops older entries", () => {
     const prev: RunState = {
       phase: "coding",
