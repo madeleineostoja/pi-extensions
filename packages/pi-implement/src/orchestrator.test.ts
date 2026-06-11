@@ -142,6 +142,7 @@ class FakeGit implements GitClient {
     const removed = new Set(this.removedWorktrees);
     return added.filter((p) => !removed.has(p));
   }
+  async ensureInfoExclude() {}
   forWorktree(worktreePath: string): GitClient {
     if (!this.worktreeChild) {
       this.worktreeChild = new FakeGit();

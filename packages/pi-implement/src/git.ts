@@ -2,7 +2,9 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -48,6 +50,7 @@ export type GitClient = {
   diffRange(baseSha: string, headSha: string): Promise<string>;
   listBranchesMatching(pattern: string): Promise<string[]>;
   listWorktrees(): Promise<string[]>;
+  ensureInfoExclude(pattern: string): Promise<void>;
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient;
 };
 
@@ -251,6 +254,33 @@ export class ExecGitClient implements GitClient {
       }
     }
     return paths;
+  }
+
+  async ensureInfoExclude(pattern: string): Promise<void> {
+    const commonDir = (
+      await this.run([
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      ])
+    ).stdout.trim();
+    const infoDir = join(commonDir, "info");
+    const excludePath = join(infoDir, "exclude");
+    if (!existsSync(excludePath)) {
+      mkdirSync(infoDir, { recursive: true });
+      writeFileSync(excludePath, `${pattern}\n`, "utf-8");
+      return;
+    }
+    const content = readFileSync(excludePath, "utf-8");
+    const lines = content.split("\n");
+    if (lines.includes(pattern)) {
+      return;
+    }
+    writeFileSync(
+      excludePath,
+      `${content.endsWith("\n") ? content : `${content}\n`}${pattern}\n`,
+      "utf-8",
+    );
   }
 
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient {

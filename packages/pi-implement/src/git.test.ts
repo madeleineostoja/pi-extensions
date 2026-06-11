@@ -1,5 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -146,6 +151,46 @@ describe("git helpers", () => {
     expect(wtListAfter).not.toContain(worktreePath);
     const branchesAfter = git(cwd, "branch", "--list");
     expect(branchesAfter).not.toContain(branchName);
+  });
+
+  it("idempotently registers an info/exclude pattern and hides in-repo worktrees from status", async () => {
+    const cwd = repo();
+    const client = new ExecGitClient(cwd);
+    const baseSha = await client.head();
+    const worktreePath = join(
+      cwd,
+      ".pi",
+      "implement",
+      "worktrees",
+      "r1",
+      "t001-wt-test",
+    );
+    const branchName = "pi-implement/r1/t001-wt-test";
+
+    await client.ensureInfoExclude("/.pi/implement/");
+    const excludeContent = readFileSync(
+      join(cwd, ".git", "info", "exclude"),
+      "utf-8",
+    );
+    expect(excludeContent).toContain("/.pi/implement/");
+
+    // Second call must not duplicate the line
+    await client.ensureInfoExclude("/.pi/implement/");
+    const excludeContentAfter = readFileSync(
+      join(cwd, ".git", "info", "exclude"),
+      "utf-8",
+    );
+    expect(
+      excludeContentAfter.split("\n").filter((l) => l === "/.pi/implement/"),
+    ).toHaveLength(1);
+
+    await client.createTaskBranch(branchName, baseSha);
+    await client.addWorktree(worktreePath, branchName);
+
+    expect(await client.isClean()).toBe(true);
+
+    await client.removeWorktree(worktreePath);
+    await client.deleteTaskBranch(branchName);
   });
 
   it("forWorktree returns a GitClient rooted at the worktree", async () => {
