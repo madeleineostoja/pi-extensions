@@ -509,6 +509,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         git = new ExecGitClient(ctx.cwd);
         repoRoot = await git.mainRoot();
         checkoutRoot = await git.root();
+        await git.ensureInfoExclude("/.pi/implement/");
         baseSha = await git.head();
         planContent = readFileSync(planPath, "utf-8");
         plan = parsePlanFile(planPath);
