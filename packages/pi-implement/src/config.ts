@@ -216,7 +216,9 @@ export function parseConfig(raw: string): {
           if (typeof mrc === "number" && Number.isInteger(mrc) && mrc > 0) {
             scout.maxResultChars = Math.min(mrc, HARD_MAX_RESULT_CHARS);
           } else {
-            warningParts.push("scout.maxResultChars must be a positive integer");
+            warningParts.push(
+              "scout.maxResultChars must be a positive integer",
+            );
           }
         }
         if (scObj.timeoutMs !== undefined) {

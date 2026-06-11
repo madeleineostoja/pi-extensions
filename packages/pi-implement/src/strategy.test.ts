@@ -755,9 +755,13 @@ describe("selectStrategy - planner prompt content", () => {
     expect(prompt).toContain("advisory hints, not authoritative guarantees");
     expect(prompt).toContain("runtime just-in-time exploration");
     expect(prompt).toContain("future runtime hints only");
-    expect(prompt).toContain("Do not perform or claim durable repo exploration at planning time");
+    expect(prompt).toContain(
+      "Do not perform or claim durable repo exploration at planning time",
+    );
     expect(prompt).toContain("The codebase will change before the task runs");
-    expect(prompt).toContain("Do not assert that Scout results are already known");
+    expect(prompt).toContain(
+      "Do not assert that Scout results are already known",
+    );
   });
 
   it("requires concrete semantic dependencies for dependsOn", async () => {

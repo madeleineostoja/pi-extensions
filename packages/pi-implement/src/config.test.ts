@@ -269,7 +269,9 @@ describe("scout config", () => {
       JSON.stringify({ scout: { mode: "sometimes" } }),
     );
     expect(parsed.config.scout).toEqual({});
-    expect(parsed.warning).toContain('scout.mode must be "auto", "always", or "off"');
+    expect(parsed.warning).toContain(
+      'scout.mode must be "auto", "always", or "off"',
+    );
   });
 
   it("ignores non-object scout with warning", () => {
@@ -322,13 +324,17 @@ describe("scout config", () => {
       JSON.stringify({ scout: { maxResultChars: 0 } }),
     );
     expect(parsed.config.scout).toEqual({});
-    expect(parsed.warning).toContain("scout.maxResultChars must be a positive integer");
+    expect(parsed.warning).toContain(
+      "scout.maxResultChars must be a positive integer",
+    );
   });
 
   it("ignores invalid timeoutMs with warning", () => {
     const parsed = parseConfig(JSON.stringify({ scout: { timeoutMs: -1 } }));
     expect(parsed.config.scout).toEqual({});
-    expect(parsed.warning).toContain("scout.timeoutMs must be a positive integer");
+    expect(parsed.warning).toContain(
+      "scout.timeoutMs must be a positive integer",
+    );
   });
 
   it("includes scout status in formatConfigStatus", () => {
