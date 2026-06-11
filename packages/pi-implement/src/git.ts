@@ -42,6 +42,7 @@ export type GitClient = {
   reword(message: string): Promise<CommandResult>;
   reset(): Promise<void>;
   resetHard(commitSha: string): Promise<void>;
+  aheadOfBase(branchName: string, baseSha: string): Promise<boolean>;
   cherryPickNoCommit(commitSha: string): Promise<CommandResult>;
   cherryPickAbort(): Promise<void>;
   createTaskBranch(branchName: string, baseSha: string): Promise<void>;
@@ -211,6 +212,18 @@ export class ExecGitClient implements GitClient {
 
   async resetHard(commitSha: string): Promise<void> {
     await this.run(["reset", "--hard", commitSha], true);
+  }
+
+  async aheadOfBase(branchName: string, baseSha: string): Promise<boolean> {
+    const result = await this.run(
+      ["rev-list", "--count", `${baseSha}..${branchName}`],
+      true,
+    );
+    if (result.exitCode !== 0) {
+      return false;
+    }
+    const count = parseInt(result.stdout.trim(), 10);
+    return !isNaN(count) && count > 0;
   }
 
   async cherryPickNoCommit(commitSha: string): Promise<CommandResult> {

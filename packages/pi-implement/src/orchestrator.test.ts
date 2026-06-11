@@ -16,6 +16,8 @@ import {
   StoppedError,
   nextOverallReviewArtifactPath,
   buildSchedulerGraphSummary,
+  captureSchedulerSelfHealBaseline,
+  checkSchedulerSelfHealProgress,
 } from "./orchestrator.js";
 import { createSchedulerRun } from "./scheduler.js";
 import { writeGraphJson } from "./graph.js";
@@ -115,6 +117,10 @@ class FakeGit implements GitClient {
   async reset() {}
   async resetHard(commitSha: string) {
     this.headValue = commitSha;
+  }
+  aheadOfBaseValue = false;
+  async aheadOfBase(_branchName: string, _baseSha: string): Promise<boolean> {
+    return this.aheadOfBaseValue;
   }
   async cherryPickNoCommit(commitSha: string): Promise<CommandResult> {
     this.diffText = `diff --git a/${commitSha} b/${commitSha}`;
@@ -6773,6 +6779,298 @@ describe("runImplementation", () => {
     expect(readFileSync(planPath, "utf-8")).toContain("- [x] Second");
   });
 
+  it("self-heal does not count removed worktree as progress when branch is ahead of base", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n", "utf-8");
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      version: 1,
+      runId: "r1",
+      mode: "parallel",
+      strategyReason: "parallel",
+      repoRoot: dir,
+      planPath,
+      planHash: "hash",
+      baseSha: "h1",
+      currentPhase: "scheduling",
+      maxConcurrency: 1,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+    mkdirSync(join(paths.tasksDir, "first"), { recursive: true });
+    writeFileSync(
+      join(paths.tasksDir, "first", "task.json"),
+      JSON.stringify({
+        id: "first",
+        planIndex: 0,
+        title: "First",
+        status: "failed",
+        dependsOn: [],
+        attempts: 1,
+        integrationAttempts: 0,
+        baseSha: "h1",
+        lastReason: "Worktree setup failed: fatal: ...",
+      }),
+      "utf-8",
+    );
+
+    const git = new FakeGit();
+    git.headValue = "h1";
+    git.createdBranches = ["pi-implement/r1/first"];
+    git.aheadOfBaseValue = true;
+    git.addedWorktrees = [
+      {
+        path: join(paths.worktreesDir, "first"),
+        branch: "pi-implement/r1/first",
+      },
+    ];
+
+    const subagents = new FakeSubagents();
+    const sched = createSchedulerRun(
+      {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "first",
+            planIndex: 1,
+            title: "First",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      },
+      1,
+    );
+    sched.tasks.get("first")!.status = "failed";
+    sched.tasks.get("first")!.lastReason = "Worktree setup failed: fatal: ...";
+
+    const deps = {
+      git,
+      subagents,
+      planPath,
+      paths,
+      runId: "r1",
+      mode: "parallel" as const,
+      roles: {
+        implementer: {
+          model: "p/m" as const,
+          type: "general-purpose" as const,
+        },
+        reviewer: { model: "p/m" as const, type: "general-purpose" as const },
+        planner: { model: "p/m" as const, type: "Explore" as const },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    };
+
+    const baseline = await captureSchedulerSelfHealBaseline(deps, sched, [
+      planPath,
+    ]);
+
+    git.removedWorktrees.push(join(paths.worktreesDir, "first"));
+
+    const progress = await checkSchedulerSelfHealProgress(
+      deps,
+      sched,
+      [planPath],
+      baseline,
+      {
+        repaired: true,
+        retryScheduler: true,
+        summary: "Removed stale worktree for first.",
+        commands: [
+          `git worktree remove --force ${join(paths.worktreesDir, "first")}`,
+        ],
+        filesChanged: [],
+        remainingBlocker: null,
+      },
+    );
+
+    expect(progress.hasProgress).toBe(false);
+    expect(progress.revivedTaskIds).toHaveLength(0);
+  });
+
+  it("self-heal counts removed worktree as progress when branch is at base", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n", "utf-8");
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      version: 1,
+      runId: "r1",
+      mode: "parallel",
+      strategyReason: "parallel",
+      repoRoot: dir,
+      planPath,
+      planHash: "hash",
+      baseSha: "h1",
+      currentPhase: "scheduling",
+      maxConcurrency: 1,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash",
+          dependsOn: [],
+          mode: "parallel",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+    mkdirSync(join(paths.tasksDir, "first"), { recursive: true });
+    writeFileSync(
+      join(paths.tasksDir, "first", "task.json"),
+      JSON.stringify({
+        id: "first",
+        planIndex: 0,
+        title: "First",
+        status: "failed",
+        dependsOn: [],
+        attempts: 1,
+        integrationAttempts: 0,
+        baseSha: "h1",
+        lastReason: "Worktree setup failed: fatal: ...",
+      }),
+      "utf-8",
+    );
+
+    const git = new FakeGit();
+    git.headValue = "h1";
+    git.createdBranches = ["pi-implement/r1/first"];
+    git.aheadOfBaseValue = false;
+    git.addedWorktrees = [
+      {
+        path: join(paths.worktreesDir, "first"),
+        branch: "pi-implement/r1/first",
+      },
+    ];
+
+    const subagents = new FakeSubagents();
+    const sched = createSchedulerRun(
+      {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "first",
+            planIndex: 1,
+            title: "First",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      },
+      1,
+    );
+    sched.tasks.get("first")!.status = "failed";
+    sched.tasks.get("first")!.lastReason = "Worktree setup failed: fatal: ...";
+
+    const deps = {
+      git,
+      subagents,
+      planPath,
+      paths,
+      runId: "r1",
+      mode: "parallel" as const,
+      roles: {
+        implementer: {
+          model: "p/m" as const,
+          type: "general-purpose" as const,
+        },
+        reviewer: { model: "p/m" as const, type: "general-purpose" as const },
+        planner: { model: "p/m" as const, type: "Explore" as const },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    };
+
+    const baseline = await captureSchedulerSelfHealBaseline(deps, sched, [
+      planPath,
+    ]);
+
+    git.removedWorktrees.push(join(paths.worktreesDir, "first"));
+
+    const progress = await checkSchedulerSelfHealProgress(
+      deps,
+      sched,
+      [planPath],
+      baseline,
+      {
+        repaired: true,
+        retryScheduler: true,
+        summary: "Removed stale worktree for first.",
+        commands: [
+          `git worktree remove --force ${join(paths.worktreesDir, "first")}`,
+        ],
+        filesChanged: [],
+        remainingBlocker: null,
+      },
+    );
+
+    expect(progress.hasProgress).toBe(true);
+    expect(progress.revivedTaskIds).toContain("first");
+  });
+
   describe("scout", () => {
     const SCOUT_RESULT = "Relevant file: src/foo.ts\nRelevant symbol: bar()";
 
@@ -9104,6 +9402,76 @@ describe("runImplementation", () => {
       const taskJson = readTaskJson(paths, "task-1");
       expect(taskJson?.taskCommitSha).toBe(child.headValue);
       expect(taskJson?.commitMessage).toBe("feat: do thing");
+    });
+
+    it("preserves the WIP commit when a parallel worker returns failed", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+      const git = new FakeGit();
+      setupWorktreeGit(git, dir, "M\tfile.ts");
+      const subagents = new FakeSubagents();
+      // Implementer succeeds each attempt, but the reviewer crashes twice in a
+      // row, exhausting MAX_SYSTEM_FAILURES so the worker returns `failed`
+      // rather than retrying to success. Self-heal is then starved of fake
+      // results and cannot make progress, so the run rejects.
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "failed", error: "reviewer crashed" },
+        { status: "completed", result: GOOD_IMPL },
+        { status: "failed", error: "reviewer crashed" },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow(BlockedError);
+
+      const child = git.worktreeChild as FakeGit;
+      expect(child.commits.length).toBeGreaterThan(0);
+      expect(child.headValue).not.toBe("h1");
+      expect(readTaskJson(paths, "task-1")?.status).toBe("failed");
     });
   });
 

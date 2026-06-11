@@ -1435,11 +1435,11 @@ type SchedulerSelfHealBaseline = {
   >;
   setupBlockers: Map<
     string,
-    { branchExists: boolean; worktreeExists: boolean }
+    { branchExists: boolean; worktreeExists: boolean; aheadOfBase: boolean }
   >;
 };
 
-async function captureSchedulerSelfHealBaseline(
+export async function captureSchedulerSelfHealBaseline(
   deps: OrchestratorDeps,
   sched: SchedulerRun,
   planArtifacts: string[],
@@ -1463,7 +1463,7 @@ async function captureSchedulerSelfHealBaseline(
   >();
   const setupBlockers = new Map<
     string,
-    { branchExists: boolean; worktreeExists: boolean }
+    { branchExists: boolean; worktreeExists: boolean; aheadOfBase: boolean }
   >();
 
   for (const task of sched.tasks.values()) {
@@ -1488,10 +1488,17 @@ async function captureSchedulerSelfHealBaseline(
       const worktreePath = deps.paths
         ? join(deps.paths.worktreesDir, task.id)
         : undefined;
+      const taskJson = deps.paths
+        ? readTaskJson(deps.paths, task.id)
+        : undefined;
+      const taskBaseSha = taskJson?.baseSha ?? head;
       setupBlockers.set(task.id, {
         branchExists: branches.some((b) => b === branchName),
         worktreeExists: worktreePath
           ? worktrees.some((wt) => wt === worktreePath)
+          : false,
+        aheadOfBase: branches.some((b) => b === branchName)
+          ? await deps.git.aheadOfBase(branchName, taskBaseSha)
           : false,
       });
     }
@@ -1510,7 +1517,7 @@ async function captureSchedulerSelfHealBaseline(
   };
 }
 
-async function checkSchedulerSelfHealProgress(
+export async function checkSchedulerSelfHealProgress(
   deps: OrchestratorDeps,
   sched: SchedulerRun,
   planArtifacts: string[],
@@ -1618,6 +1625,9 @@ async function checkSchedulerSelfHealProgress(
       return dep?.status === "landed";
     });
     if (!depsLanded) {
+      continue;
+    }
+    if (preBlocker.aheadOfBase) {
       continue;
     }
 
