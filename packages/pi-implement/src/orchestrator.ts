@@ -4200,7 +4200,11 @@ async function runTaskWorker(args: {
       );
       if (verdict.verdict === "changes_requested") {
         if (!isAnchoredReview) {
-          await taskGit.reset();
+          if (worktreePath) {
+            await taskGit.resetHard(baseSha);
+          } else {
+            await taskGit.reset();
+          }
           priorReviewRequiredChanges = verdict.requiredChanges;
           feedback = reviewerFeedback(verdict.requiredChanges);
           attempt++;
@@ -4225,7 +4229,11 @@ async function runTaskWorker(args: {
               `anchored review change request limit reached for task ${task.index}:\n${message}`,
             );
           }
-          await taskGit.reset();
+          if (worktreePath) {
+            await taskGit.resetHard(baseSha);
+          } else {
+            await taskGit.reset();
+          }
           priorReviewRequiredChanges = unresolved;
           feedback = reviewerFeedback(unresolved);
           attempt++;

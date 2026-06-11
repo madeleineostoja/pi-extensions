@@ -8943,6 +8943,168 @@ describe("runImplementation", () => {
       const secondImplPrompt = subagents.spawns[1]?.prompt ?? "";
       expect(secondImplPrompt).toContain("pre-commit hook rejected");
     });
+
+    it("parallel changes_requested resets branch to base before re-attempt", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+      const git = new FakeGit();
+      setupWorktreeGit(git, dir, "M\tfile.ts");
+      const subagents = new FakeSubagents();
+      subagents.resultsByDescription = [
+        {
+          match: /integration review/,
+          result: { status: "completed", result: GOOD_INTEGRATION_REVIEW },
+        },
+        {
+          match: /overall review/,
+          result: { status: "completed", result: GOOD_OVERALL_REVIEW },
+        },
+      ];
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        {
+          status: "completed",
+          result:
+            '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+        },
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+      ];
+
+      const implHeads: string[] = [];
+      const originalSpawn = subagents.spawn.bind(subagents);
+      subagents.spawn = async (args) => {
+        if (args.description.includes("implement")) {
+          implHeads.push(git.worktreeChild!.headValue);
+        }
+        return originalSpawn(args);
+      };
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      expect(implHeads).toHaveLength(2);
+      expect(implHeads[0]).toBe("h1");
+      expect(implHeads[1]).toBe("h1");
+    });
+
+    it("parallel approval rewords WIP commit and produces exactly one commit beyond base", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+      const git = new FakeGit();
+      setupWorktreeGit(git, dir, "M\tfile.ts");
+      const subagents = new FakeSubagents();
+      subagents.resultsByDescription = [
+        {
+          match: /integration review/,
+          result: { status: "completed", result: GOOD_INTEGRATION_REVIEW },
+        },
+        {
+          match: /overall review/,
+          result: { status: "completed", result: GOOD_OVERALL_REVIEW },
+        },
+      ];
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      const child = git.worktreeChild as FakeGit;
+      expect(child.commits).toHaveLength(1);
+      expect(child.commits[0]).toBe("feat: do thing");
+      expect(child.headValue).not.toBe("h1");
+
+      const taskJson = readTaskJson(paths, "task-1");
+      expect(taskJson?.taskCommitSha).toBe(child.headValue);
+      expect(taskJson?.commitMessage).toBe("feat: do thing");
+    });
   });
 
   it("already_satisfied forces review and records metadata", async () => {
