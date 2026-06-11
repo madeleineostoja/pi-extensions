@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   writeFileSync,
   existsSync,
@@ -10,7 +11,7 @@ import {
 } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 export type RunMode = "auto" | "serial" | "parallel";
 
 export type RunJson = {
@@ -435,6 +436,112 @@ export function cleanupAllRuns(
   return { cleaned, warnings };
 }
 
+// Removes pi-implement worktrees and branches whose owning run no longer has
+// a run dir under .pi/implement/runs (i.e. true orphans left behind by an
+// interrupted run or a partially-deleted state dir). Runs that still have a
+// run dir are owned by cleanupRun and are left untouched, so this never
+// destroys artifacts for a run that callers can still resume or inspect.
+export function sweepRunArtifacts(repoRoot: string): {
+  worktrees: number;
+  branches: number;
+} {
+  const worktreesBase = safeRealpath(join(getBaseDir(repoRoot), "worktrees"));
+  const knownRunIds = new Set(listRunIds(repoRoot));
+  let worktrees = 0;
+  let branches = 0;
+
+  try {
+    const list = execFileSync("git", ["worktree", "list", "--porcelain"], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+    });
+    for (const line of list.split("\n")) {
+      if (!line.startsWith("worktree ")) {
+        continue;
+      }
+      const wtPath = safeRealpath(line.slice("worktree ".length).trim());
+      const runId = worktreeRunId(wtPath, worktreesBase);
+      if (runId === undefined || knownRunIds.has(runId)) {
+        continue;
+      }
+      try {
+        execFileSync("git", ["worktree", "remove", "--force", wtPath], {
+          cwd: repoRoot,
+          stdio: "ignore",
+        });
+        worktrees++;
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    execFileSync("git", ["worktree", "prune"], {
+      cwd: repoRoot,
+      stdio: "ignore",
+    });
+  } catch {
+    // ignore
+  }
+
+  try {
+    const list = execFileSync("git", ["branch", "--list", "pi-implement/*"], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+    });
+    const names = list
+      .split("\n")
+      .map((b) => b.trim().replace(/^\*\s*/, ""))
+      .filter(Boolean);
+    for (const name of names) {
+      const runId = branchRunId(name);
+      if (runId === undefined || knownRunIds.has(runId)) {
+        continue;
+      }
+      try {
+        execFileSync("git", ["branch", "-D", name], {
+          cwd: repoRoot,
+          stdio: "ignore",
+        });
+        branches++;
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return { worktrees, branches };
+}
+
+// Worktrees live at <worktreesBase>/<runId>/<taskId>; returns the runId for a
+// path inside that tree, or undefined for anything outside it.
+function worktreeRunId(
+  worktreePath: string,
+  worktreesBase: string,
+): string | undefined {
+  const prefix = worktreesBase.endsWith(sep)
+    ? worktreesBase
+    : worktreesBase + sep;
+  if (!worktreePath.startsWith(prefix)) {
+    return undefined;
+  }
+  const [runId] = worktreePath.slice(prefix.length).split(sep);
+  return runId || undefined;
+}
+
+// Task branches are named pi-implement/<runId>/<taskId>.
+function branchRunId(branchName: string): string | undefined {
+  const parts = branchName.split("/");
+  return parts[0] === "pi-implement" && parts.length >= 3
+    ? parts[1]
+    : undefined;
+}
+
 export function listRunIds(repoRoot: string): string[] {
   const runsDir = join(getBaseDir(repoRoot), "runs");
   if (!existsSync(runsDir)) {
@@ -469,6 +576,10 @@ function readTaskCleanupEntries(
     }
   }
   return entries;
+}
+
+function safeRealpath(path: string): string {
+  return existsSync(path) ? realpathSync(path) : path;
 }
 
 function runGitCleanup(repoRoot: string, args: string[]): void {

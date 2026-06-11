@@ -62,6 +62,7 @@ import {
   acquireRunLock,
   releaseRunLock,
   checkRunLocks,
+  sweepRunArtifacts,
 } from "./state.js";
 
 const STATUS_KEY = "pi-implement.status";
@@ -410,10 +411,15 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
               );
             }
           }
-          ctx.ui.notify(
-            `pi-implement cleanup: removed ${cleaned} run(s).`,
-            "info",
-          );
+          const { worktrees, branches } = sweepRunArtifacts(repoRoot);
+          const parts = [`removed ${cleaned} run(s)`];
+          if (worktrees) {
+            parts.push(`pruned ${worktrees} worktree(s)`);
+          }
+          if (branches) {
+            parts.push(`deleted ${branches} orphaned branch(es)`);
+          }
+          ctx.ui.notify(`pi-implement cleanup: ${parts.join("; ")}.`, "info");
           return;
         }
 

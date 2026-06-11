@@ -22,6 +22,7 @@ import {
   readEvents,
   readRunJson,
   readTaskJson,
+  sweepRunArtifacts,
   cleanupRun,
   listRunIds,
   acquireRunLock,
@@ -563,6 +564,56 @@ describe("run state lifecycle", () => {
       );
       expect(existsSync(paths.runDir)).toBe(false);
       expect(existsSync(paths.lockFile)).toBe(false);
+    },
+  );
+
+  it(
+    "sweepRunArtifacts deletes orphaned branches and worktrees with no run dir",
+    { timeout: 15000 },
+    () => {
+      const repo = tempRepo();
+      git(repo, "init", "-q");
+      git(repo, "config", "user.email", "test@example.com");
+      git(repo, "config", "user.name", "Test User");
+      writeFileSync(join(repo, "README.md"), "# Test\n", "utf-8");
+      git(repo, "add", "README.md");
+      git(repo, "commit", "-q", "-m", "chore: init");
+
+      const orphanId = "r20240115-120000";
+      const orphanPaths = getStatePaths(repo, orphanId);
+      mkdirSync(orphanPaths.worktreesDir, { recursive: true });
+      const orphanBranch = `pi-implement/${orphanId}/t001-orphan`;
+      const orphanWorktree = join(orphanPaths.worktreesDir, "t001-orphan");
+      git(repo, "branch", orphanBranch, "HEAD");
+      git(repo, "worktree", "add", "-q", orphanWorktree, orphanBranch);
+      // Intentionally do NOT create the run dir, simulating an already-removed run
+      expect(existsSync(orphanPaths.runDir)).toBe(false);
+
+      // A second run that still has its run dir must be left untouched, even
+      // though its process is not alive — only a present run dir protects it.
+      const liveId = "r20240115-130000";
+      const livePaths = getStatePaths(repo, liveId);
+      mkdirSync(livePaths.runDir, { recursive: true });
+      mkdirSync(livePaths.worktreesDir, { recursive: true });
+      const liveBranch = `pi-implement/${liveId}/t001-live`;
+      const liveWorktree = join(livePaths.worktreesDir, "t001-live");
+      git(repo, "branch", liveBranch, "HEAD");
+      git(repo, "worktree", "add", "-q", liveWorktree, liveBranch);
+
+      const result = sweepRunArtifacts(repo);
+      expect(result.worktrees).toBe(1);
+      expect(result.branches).toBe(1);
+
+      expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(
+        orphanWorktree,
+      );
+      expect(git(repo, "branch", "--list", orphanBranch)).not.toContain(
+        orphanBranch,
+      );
+      expect(git(repo, "worktree", "list", "--porcelain")).toContain(
+        liveWorktree,
+      );
+      expect(git(repo, "branch", "--list", liveBranch)).toContain(liveBranch);
     },
   );
 
