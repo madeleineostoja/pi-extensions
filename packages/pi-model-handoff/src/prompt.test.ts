@@ -50,49 +50,66 @@ describe("formatSwitchNotification", () => {
     convertCurrencyMock.mockReset();
   });
 
-  it("includes target model name and context size", () => {
-    const msg = formatSwitchNotification(
+  it("renders the full notification for a billable target", () => {
+    convertCurrencyMock.mockImplementation(({ amount }) => amount * 1.7);
+    const notification = formatSwitchNotification(
       makeRef({ name: "Kimi K2.6" }),
-      makeEstimate({ currentTokens: 200_000, estimatedHandoffTokens: 6000 }),
+      makeEstimate({
+        currentTokens: 200_000,
+        estimatedHandoffTokens: 6000,
+        targetFullContextInputCost: 0.05,
+      }),
     );
-    expect(msg).toContain("Switched to Kimi K2.6");
-    expect(msg).toContain("200k context");
-    expect(msg).toContain("/handoff (~6.0k)");
+    expect(notification).toBe(
+      "Switched to Kimi K2.6 · 200k context (~$0.0850) · /handoff (~6.0k)",
+    );
+  });
+
+  it("omits the cost parenthetical for an OAuth target", () => {
+    convertCurrencyMock.mockImplementation(({ amount }) => amount * 1.7);
+    const notification = formatSwitchNotification(
+      makeRef({ name: "GPT-4o", subscription: true }),
+      makeEstimate({
+        currentTokens: 200_000,
+        estimatedHandoffTokens: 6000,
+        targetFullContextInputCost: 0.05,
+      }),
+    );
+    expect(notification).toBe(
+      "Switched to GPT-4o · 200k context · /handoff (~6.0k)",
+    );
+  });
+
+  it("omits the cost parenthetical when no rate is available", () => {
+    convertCurrencyMock.mockReturnValue(undefined);
+    const notification = formatSwitchNotification(
+      makeRef({ name: "GPT-4o" }),
+      makeEstimate({
+        currentTokens: 200_000,
+        estimatedHandoffTokens: 6000,
+        targetFullContextInputCost: 0.05,
+      }),
+    );
+    expect(notification).toBe(
+      "Switched to GPT-4o · 200k context · /handoff (~6.0k)",
+    );
+  });
+
+  it("omits the cost parenthetical when pricing is unavailable", () => {
+    const notification = formatSwitchNotification(
+      makeRef(),
+      makeEstimate({ targetFullContextInputCost: undefined }),
+    );
+    expect(notification).not.toContain("(~$");
+    expect(notification).toContain("· /handoff");
   });
 
   it("falls back to provider/id when name is absent", () => {
-    const msg = formatSwitchNotification(
-      makeRef({ name: undefined, provider: "anthropic", id: "claude-opus" }),
+    const notification = formatSwitchNotification(
+      makeRef({ name: undefined, provider: "openai", id: "gpt-4o" }),
       makeEstimate(),
     );
-    expect(msg).toContain("anthropic/claude-opus");
-  });
-
-  it("shows converted cost when a rate is available", () => {
-    convertCurrencyMock.mockImplementation(({ amount }) => amount * 1.7);
-    const msg = formatSwitchNotification(
-      makeRef(),
-      makeEstimate({ targetFullContextInputCost: 0.12 }),
-    );
-    expect(msg).toContain("(~$0.20)");
-  });
-
-  it("omits cost parenthetical when pricing is unavailable", () => {
-    const msg = formatSwitchNotification(
-      makeRef({ inputCostPerMillion: undefined }),
-      makeEstimate({ targetFullContextInputCost: undefined }),
-    );
-    expect(msg).not.toContain("(~$");
-    expect(msg).toContain("· /handoff");
-  });
-
-  it("omits cost when no converted rate is available", () => {
-    convertCurrencyMock.mockReturnValue(undefined);
-    const msg = formatSwitchNotification(
-      makeRef(),
-      makeEstimate({ targetFullContextInputCost: 0.12 }),
-    );
-    expect(msg).not.toContain("(~$");
+    expect(notification).toContain("openai/gpt-4o");
   });
 
   it("does not mention break-even turns or ROI", () => {

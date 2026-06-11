@@ -383,7 +383,7 @@ describe("model_select handler", () => {
     await waitForDeferredNotifications();
     expect(ctx.notifyCalls).toContainEqual({
       message:
-        "Switched to openai-gpt-4o · 300k context (~$2.55) · /handoff (~24k)",
+        "Switched to openai-gpt-4o · 300k context (~$2.5500) · /handoff (~24k)",
       type: "info",
     });
   });

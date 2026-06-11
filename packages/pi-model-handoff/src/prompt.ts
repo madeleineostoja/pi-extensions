@@ -18,7 +18,9 @@ function roundTo2SigFigs(n: number): number {
   return Math.round(n / power) * power;
 }
 
-function formatConvertedCost(usd: number | undefined): string | undefined {
+export function formatConvertedCost(
+  usd: number | undefined,
+): string | undefined {
   if (usd === undefined) {
     return undefined;
   }
@@ -26,7 +28,7 @@ function formatConvertedCost(usd: number | undefined): string | undefined {
   if (nzd === undefined) {
     return undefined;
   }
-  return `~$${nzd.toFixed(2)}`;
+  return `~$${nzd.toFixed(4)}`;
 }
 
 export function formatTokens(n: number): string {
@@ -48,7 +50,7 @@ export function formatSwitchNotification(
   const targetName = targetRef.name ?? `${targetRef.provider}/${targetRef.id}`;
   let msg = `Switched to ${targetName} · ${formatTokens(estimate.currentTokens)} context`;
   const cost = formatConvertedCost(estimate.targetFullContextInputCost);
-  if (cost !== undefined) {
+  if (cost !== undefined && !targetRef.subscription) {
     msg += ` (${cost})`;
   }
   msg += ` · /handoff (~${formatTokens(estimate.estimatedHandoffTokens)})`;
