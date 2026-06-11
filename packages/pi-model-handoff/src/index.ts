@@ -1,73 +1,27 @@
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   compact,
   getAgentDir,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { convertCurrency, refreshCurrencyRate } from "@pi-extensions/lib";
+import { refreshCurrencyRate } from "@pi-extensions/lib";
 import { prepareCompaction } from "./compaction";
 import {
   buildModelRef,
+  computeHandoffEstimate,
   getSwitchSkipReason,
-  makeHandoffDecision,
 } from "./decision";
 import {
   clearPendingHandoff,
   getPendingHandoff,
   setPendingHandoff,
 } from "./handoff";
-import {
-  formatHandoffPrompt,
-  HANDOFF_INSTRUCTIONS,
-  OPTION_CONTINUE_FULL_CONTEXT,
-  OPTION_CREATE_HANDOFF,
-} from "./prompt";
-
-function formatSkipReason(reason: string): string {
-  switch (reason) {
-    case "Model restored":
-      return "restored";
-    case "No previous model":
-      return "no previous model";
-    case "Not running in TUI":
-      return "not TUI";
-    case "Same model":
-      return "same model";
-    case "No compaction preparation available":
-      return "nothing to compact";
-    case "No messages to summarize":
-      return "nothing to summarize";
-    case "Estimated context savings are below 20%":
-      return "savings < 20%";
-    case "Full context tokens are below handoff warning threshold":
-      return "under token threshold";
-    case "Full context cost is below handoff warning threshold":
-      return "under cost threshold";
-    case "Full context cost is below handoff warning threshold (USD fallback)":
-      return "under USD cost threshold";
-    default:
-      return reason;
-  }
-}
-
-function notifySkip(ctx: ExtensionContext, reason: string) {
-  const message = `handoff skipped: ${formatSkipReason(reason)}`;
-  if (ctx.mode === "tui") {
-    const notify = ctx.ui.notify;
-    setTimeout(() => notify(message, "info"), 0);
-    return;
-  }
-  ctx.ui.notify(message, "info");
-}
+import { formatSwitchNotification, HANDOFF_INSTRUCTIONS } from "./prompt";
 
 export default function (pi: ExtensionAPI) {
   pi.on("model_select", async (event, ctx) => {
     const switchSkipReason = getSwitchSkipReason(event, ctx.mode);
     if (switchSkipReason) {
-      notifySkip(ctx, switchSkipReason);
       return;
     }
 
@@ -77,46 +31,82 @@ export default function (pi: ExtensionAPI) {
       getAgentDir(),
     ).getCompactionSettings();
     const preparation = prepareCompaction(branchEntries, settings);
+    if (!preparation) {
+      return;
+    }
 
-    const sourceRef = buildModelRef(
-      event.previousModel!,
-      ctx.modelRegistry.isUsingOAuth(event.previousModel!),
-    );
+    const allMessages = [
+      ...preparation.messagesToSummarize,
+      ...preparation.turnPrefixMessages,
+    ];
+    if (allMessages.length === 0) {
+      return;
+    }
+
     const targetRef = buildModelRef(
       event.model,
       ctx.modelRegistry.isUsingOAuth(event.model),
     );
 
     await refreshCurrencyRate({ from: "USD", to: "NZD" }).catch(() => {});
-    const decision = makeHandoffDecision(preparation, targetRef, {
-      convertFullContextCostToNzd: (amount) =>
-        convertCurrency({ amount, from: "USD", to: "NZD" }),
-    });
-    if (decision.kind === "skip") {
-      notifySkip(ctx, decision.reason);
-      return;
+    const estimate = computeHandoffEstimate(preparation, targetRef);
+    const notification = formatSwitchNotification(targetRef, estimate);
+
+    if (ctx.mode === "tui") {
+      setTimeout(() => ctx.ui.notify(notification, "info"), 0);
+    } else {
+      ctx.ui.notify(notification, "info");
     }
+  });
 
-    const prompt = formatHandoffPrompt(sourceRef, targetRef, decision.estimate);
-    const choice = await ctx.ui.select(prompt, [
-      OPTION_CREATE_HANDOFF,
-      OPTION_CONTINUE_FULL_CONTEXT,
-    ]);
+  pi.registerCommand("handoff", {
+    description: "Compact the incurred context using the previous model",
+    handler: async (_args, ctx) => {
+      const branch = ctx.sessionManager.getBranch();
+      let lastAssistant: { provider: string; model: string } | undefined;
+      for (let i = branch.length - 1; i >= 0; i--) {
+        const entry = branch[i];
+        if (entry.type === "message" && entry.message.role === "assistant") {
+          lastAssistant = entry.message as { provider: string; model: string };
+          break;
+        }
+      }
 
-    if (choice !== OPTION_CREATE_HANDOFF) {
-      return;
-    }
+      if (!lastAssistant) {
+        ctx.ui.notify("no prior model to hand off from", "error");
+        return;
+      }
 
-    setPendingHandoff({ previousModel: event.previousModel! });
-    ctx.compact({
-      customInstructions: HANDOFF_INSTRUCTIONS,
-      onComplete: () => {
-        clearPendingHandoff();
-      },
-      onError: () => {
-        clearPendingHandoff();
-      },
-    });
+      const currentModel = ctx.model;
+      if (
+        currentModel &&
+        lastAssistant.provider === currentModel.provider &&
+        lastAssistant.model === currentModel.id
+      ) {
+        ctx.ui.notify("no prior model to hand off from", "error");
+        return;
+      }
+
+      const previousModel = ctx.modelRegistry.find(
+        lastAssistant.provider,
+        lastAssistant.model,
+      );
+      if (!previousModel) {
+        ctx.ui.notify("previous model unavailable for handoff", "error");
+        return;
+      }
+
+      setPendingHandoff({ previousModel });
+      ctx.compact({
+        customInstructions: HANDOFF_INSTRUCTIONS,
+        onComplete: () => {
+          clearPendingHandoff();
+        },
+        onError: () => {
+          clearPendingHandoff();
+        },
+      });
+    },
   });
 
   pi.on("session_before_compact", async (event, ctx) => {

@@ -32,6 +32,9 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
         }),
       }),
     } as never,
+    estimateTokens: vi.fn().mockImplementation((msg: { content?: string }) => {
+      return msg.content?.length ?? 0;
+    }),
   };
 });
 
@@ -62,6 +65,10 @@ function makeFakeExtensionAPI() {
     ((event: never, ctx: ExtensionContext) => Promise<unknown>)[]
   > = {};
   const commandRegistrations: string[] = [];
+  const commandHandlers: Record<
+    string,
+    (args: string, ctx: never) => Promise<void>
+  > = {};
   const shortcutRegistrations: string[] = [];
 
   const pi = {
@@ -71,8 +78,12 @@ function makeFakeExtensionAPI() {
       }
       handlers[event].push(handler as never);
     },
-    registerCommand: (name: string) => {
+    registerCommand: (
+      name: string,
+      options: { handler: (args: string, ctx: never) => Promise<void> },
+    ) => {
       commandRegistrations.push(name);
+      commandHandlers[name] = options.handler;
     },
     registerShortcut: (name: string) => {
       shortcutRegistrations.push(name);
@@ -101,7 +112,13 @@ function makeFakeExtensionAPI() {
     events: {} as never,
   } as unknown as ExtensionAPI;
 
-  return { pi, handlers, commandRegistrations, shortcutRegistrations };
+  return {
+    pi,
+    handlers,
+    commandRegistrations,
+    commandHandlers,
+    shortcutRegistrations,
+  };
 }
 
 function makeModel(provider: string, id: string, inputCost: number) {
@@ -135,11 +152,38 @@ function makeModelSelectEvent(overrides: {
   };
 }
 
+function makeAssistantEntry(provider: string, model: string, id: string) {
+  return {
+    id,
+    type: "message",
+    message: {
+      role: "assistant",
+      provider,
+      model,
+      content: [{ type: "text", text: "hi" }],
+      usage: {
+        input: 10,
+        output: 10,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 20,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: 1,
+    },
+    parentId: null,
+    timestamp: "2024-01-01T00:00:00Z",
+  } as never;
+}
+
 function makeFakeCtx(
   overrides: {
     mode?: "tui" | "rpc" | "json" | "print";
     selectResult?: string | undefined;
     modelRegistry?: ExtensionContext["modelRegistry"];
+    model?: ExtensionContext["model"];
+    branch?: ReturnType<ExtensionContext["sessionManager"]["getBranch"]>;
   } = {},
 ): ExtensionContext & {
   compactCalls: unknown[];
@@ -190,15 +234,16 @@ function makeFakeCtx(
     },
     cwd: "/",
     sessionManager: {
-      getBranch: () => [],
+      getBranch: () => overrides.branch ?? [],
     } as never,
     modelRegistry:
       overrides.modelRegistry ??
       ({
         isUsingOAuth: () => false,
         getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
+        find: () => undefined,
       } as never),
-    model: undefined,
+    model: overrides.model ?? undefined,
     isIdle: () => true,
     abort: () => {},
     hasPendingMessages: () => false,
@@ -217,10 +262,20 @@ function makeFakeCtx(
 }
 
 function captureHandlers() {
-  const { pi, handlers, commandRegistrations, shortcutRegistrations } =
-    makeFakeExtensionAPI();
+  const {
+    pi,
+    handlers,
+    commandRegistrations,
+    commandHandlers,
+    shortcutRegistrations,
+  } = makeFakeExtensionAPI();
   registerExtension(pi);
-  return { handlers, commandRegistrations, shortcutRegistrations };
+  return {
+    handlers,
+    commandRegistrations,
+    commandHandlers,
+    shortcutRegistrations,
+  };
 }
 
 function waitForDeferredNotifications() {
@@ -228,9 +283,13 @@ function waitForDeferredNotifications() {
 }
 
 describe("extension registration", () => {
-  it("does not register a command or shortcut", () => {
-    const { commandRegistrations, shortcutRegistrations } = captureHandlers();
-    expect(commandRegistrations).toHaveLength(0);
+  it("registers the handoff command", () => {
+    const { commandRegistrations } = captureHandlers();
+    expect(commandRegistrations).toContain("handoff");
+  });
+
+  it("does not register a shortcut", () => {
+    const { shortcutRegistrations } = captureHandlers();
     expect(shortcutRegistrations).toHaveLength(0);
   });
 
@@ -248,7 +307,7 @@ describe("model_select handler", () => {
     vi.clearAllMocks();
   });
 
-  it("ignores restore source", async () => {
+  it("ignores restore source silently", async () => {
     const { handlers } = captureHandlers();
     const handler = handlers["model_select"][0];
     const ctx = makeFakeCtx();
@@ -259,28 +318,20 @@ describe("model_select handler", () => {
     });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
-    await waitForDeferredNotifications();
-    expect(ctx.notifyCalls).toContainEqual({
-      message: "handoff skipped: restored",
-      type: "info",
-    });
+    expect(ctx.notifyCalls).toHaveLength(0);
   });
 
-  it("ignores missing previousModel", async () => {
+  it("ignores missing previousModel silently", async () => {
     const { handlers } = captureHandlers();
     const handler = handlers["model_select"][0];
     const ctx = makeFakeCtx();
     const event = makeModelSelectEvent({ previousModel: undefined });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
-    await waitForDeferredNotifications();
-    expect(ctx.notifyCalls).toContainEqual({
-      message: "handoff skipped: no previous model",
-      type: "info",
-    });
+    expect(ctx.notifyCalls).toHaveLength(0);
   });
 
-  it("ignores same model", async () => {
+  it("ignores same model silently", async () => {
     const { handlers } = captureHandlers();
     const handler = handlers["model_select"][0];
     const ctx = makeFakeCtx();
@@ -288,14 +339,10 @@ describe("model_select handler", () => {
     const event = makeModelSelectEvent({ previousModel: model, model });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
-    await waitForDeferredNotifications();
-    expect(ctx.notifyCalls).toContainEqual({
-      message: "handoff skipped: same model",
-      type: "info",
-    });
+    expect(ctx.notifyCalls).toHaveLength(0);
   });
 
-  it("ignores when mode is not tui", async () => {
+  it("ignores when mode is not tui silently", async () => {
     const { handlers } = captureHandlers();
     const handler = handlers["model_select"][0];
     const ctx = makeFakeCtx({ mode: "rpc" });
@@ -305,16 +352,14 @@ describe("model_select handler", () => {
     });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
-    expect(ctx.notifyCalls).toContainEqual({
-      message: "handoff skipped: not TUI",
-      type: "info",
-    });
+    expect(ctx.notifyCalls).toHaveLength(0);
   });
 
-  it("does not call ctx.compact before user accepts (dry run)", async () => {
+  it("shows notification for billable target", async () => {
+    convertCurrencyMock.mockReturnValue(2.55);
     const { handlers } = captureHandlers();
     const handler = handlers["model_select"][0];
-    const ctx = makeFakeCtx({ selectResult: undefined });
+    const ctx = makeFakeCtx();
     vi.mocked(prepareCompaction).mockReturnValue({
       firstKeptEntryId: "keep-1",
       messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
@@ -334,11 +379,67 @@ describe("model_select handler", () => {
       model: makeModel("openai", "gpt-4o", 5),
     });
     await handler(event as never, ctx);
-    expect(prepareCompaction).toHaveBeenCalled();
     expect(ctx.compactCalls).toHaveLength(0);
+    await waitForDeferredNotifications();
+    expect(ctx.notifyCalls).toContainEqual({
+      message:
+        "Switched to openai-gpt-4o · 300k context (~$2.55) · /handoff (~24k)",
+      type: "info",
+    });
   });
 
-  it("skips prompting when there are no messages to summarize", async () => {
+  it("shows notification omitting cost for OAuth target", async () => {
+    const { handlers } = captureHandlers();
+    const handler = handlers["model_select"][0];
+    const ctx = makeFakeCtx({
+      modelRegistry: {
+        isUsingOAuth: () => true,
+        getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
+        find: () => undefined,
+      } as never,
+    });
+    vi.mocked(prepareCompaction).mockReturnValue({
+      firstKeptEntryId: "keep-1",
+      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore: 300000,
+      naiveContextTokens: 300000,
+      fileOps: {} as never,
+      settings: {
+        enabled: true,
+        reserveTokens: 16384,
+        keepRecentTokens: 20000,
+      },
+    } as never);
+    const event = makeModelSelectEvent({
+      previousModel: makeModel("anthropic", "opus", 15),
+      model: makeModel("openai", "gpt-4o", 5),
+    });
+    await handler(event as never, ctx);
+    expect(ctx.compactCalls).toHaveLength(0);
+    await waitForDeferredNotifications();
+    expect(ctx.notifyCalls).toContainEqual({
+      message: "Switched to openai-gpt-4o · 300k context · /handoff (~24k)",
+      type: "info",
+    });
+  });
+
+  it("is silent when preparation is undefined", async () => {
+    const { handlers } = captureHandlers();
+    const handler = handlers["model_select"][0];
+    const ctx = makeFakeCtx();
+    vi.mocked(prepareCompaction).mockReturnValue(undefined);
+    const event = makeModelSelectEvent({
+      previousModel: makeModel("anthropic", "opus", 15),
+      model: makeModel("openai", "gpt-4o", 5),
+    });
+    await handler(event as never, ctx);
+    expect(ctx.compactCalls).toHaveLength(0);
+    expect(ctx.notifyCalls).toHaveLength(0);
+  });
+
+  it("is silent when there are no messages to summarize", async () => {
     const { handlers } = captureHandlers();
     const handler = handlers["model_select"][0];
     const ctx = makeFakeCtx();
@@ -362,183 +463,14 @@ describe("model_select handler", () => {
     });
     await handler(event as never, ctx);
     expect(ctx.compactCalls).toHaveLength(0);
-    await waitForDeferredNotifications();
-    expect(ctx.notifyCalls).toContainEqual({
-      message: "handoff skipped: nothing to summarize",
-      type: "info",
-    });
-  });
-
-  it("calls ctx.ui.select immediately during the handler", async () => {
-    const { handlers } = captureHandlers();
-    const handler = handlers["model_select"][0];
-    let selectCalled = false;
-    const ctx = makeFakeCtx({ selectResult: undefined });
-    const originalSelect = ctx.ui.select;
-    ctx.ui.select = async (...args: Parameters<typeof ctx.ui.select>) => {
-      selectCalled = true;
-      return originalSelect(...args);
-    };
-    vi.mocked(prepareCompaction).mockReturnValue({
-      firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
-      turnPrefixMessages: [],
-      isSplitTurn: false,
-      tokensBefore: 300000,
-      naiveContextTokens: 300000,
-      fileOps: {} as never,
-      settings: {
-        enabled: true,
-        reserveTokens: 16384,
-        keepRecentTokens: 20000,
-      },
-    } as never);
-    const event = makeModelSelectEvent({
-      previousModel: makeModel("anthropic", "opus", 15),
-      model: makeModel("openai", "gpt-4o", 5),
-    });
-    await handler(event as never, ctx);
-    expect(selectCalled).toBe(true);
-  });
-
-  it("awaits refreshCurrencyRate before formatting the prompt", async () => {
-    let refreshed = false;
-    refreshCurrencyRateMock.mockImplementation(async () => {
-      refreshed = true;
-    });
-    const { handlers } = captureHandlers();
-    const handler = handlers["model_select"][0];
-    let selectCalled = false;
-    const ctx = makeFakeCtx({ selectResult: undefined });
-    const originalSelect = ctx.ui.select;
-    ctx.ui.select = async (...args: Parameters<typeof ctx.ui.select>) => {
-      selectCalled = true;
-      return originalSelect(...args);
-    };
-    vi.mocked(prepareCompaction).mockReturnValue({
-      firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
-      turnPrefixMessages: [],
-      isSplitTurn: false,
-      tokensBefore: 300000,
-      naiveContextTokens: 300000,
-      fileOps: {} as never,
-      settings: {
-        enabled: true,
-        reserveTokens: 16384,
-        keepRecentTokens: 20000,
-      },
-    } as never);
-    const event = makeModelSelectEvent({
-      previousModel: makeModel("anthropic", "opus", 15),
-      model: makeModel("openai", "gpt-4o", 5),
-    });
-    await handler(event as never, ctx);
-    expect(refreshed).toBe(true);
-    expect(selectCalled).toBe(true);
-  });
-
-  it("skips prompting when converted full-context cost is below threshold", async () => {
-    convertCurrencyMock.mockReturnValue(0.4);
-    const { handlers } = captureHandlers();
-    const handler = handlers["model_select"][0];
-    let selectCalled = false;
-    const ctx = makeFakeCtx({ selectResult: "Create handoff" });
-    const originalSelect = ctx.ui.select;
-    ctx.ui.select = async (...args: Parameters<typeof ctx.ui.select>) => {
-      selectCalled = true;
-      return originalSelect(...args);
-    };
-    vi.mocked(prepareCompaction).mockReturnValue({
-      firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(100000) }],
-      turnPrefixMessages: [],
-      isSplitTurn: false,
-      tokensBefore: 40000,
-      naiveContextTokens: 40000,
-      fileOps: {} as never,
-      settings: {
-        enabled: true,
-        reserveTokens: 16384,
-        keepRecentTokens: 20000,
-      },
-    } as never);
-    const event = makeModelSelectEvent({
-      previousModel: makeModel("anthropic", "opus", 10),
-      model: makeModel("openai", "gpt-4o", 5),
-    });
-    await handler(event as never, ctx);
-    expect(refreshCurrencyRateMock).toHaveBeenCalledWith({
-      from: "USD",
-      to: "NZD",
-    });
-    expect(convertCurrencyMock).toHaveBeenCalledWith({
-      amount: 0.2,
-      from: "USD",
-      to: "NZD",
-    });
-    expect(selectCalled).toBe(false);
-    expect(ctx.compactCalls).toHaveLength(0);
-    await waitForDeferredNotifications();
-    expect(ctx.notifyCalls).toContainEqual({
-      message: "handoff skipped: under cost threshold",
-      type: "info",
-    });
-    expect(getPendingHandoff()).toBeUndefined();
-  });
-
-  it("offers when pricing is unavailable but token threshold is exceeded", async () => {
-    const { handlers } = captureHandlers();
-    const handler = handlers["model_select"][0];
-    let selectCalled = false;
-    const ctx = makeFakeCtx({
-      selectResult: undefined,
-      modelRegistry: {
-        isUsingOAuth: (model: { provider: string }) =>
-          model.provider === "openai",
-        getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
-      } as never,
-    });
-    const originalSelect = ctx.ui.select;
-    ctx.ui.select = async (...args: Parameters<typeof ctx.ui.select>) => {
-      selectCalled = true;
-      return originalSelect(...args);
-    };
-    vi.mocked(prepareCompaction).mockReturnValue({
-      firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
-      turnPrefixMessages: [],
-      isSplitTurn: false,
-      tokensBefore: 60000,
-      naiveContextTokens: 60000,
-      fileOps: {} as never,
-      settings: {
-        enabled: true,
-        reserveTokens: 16384,
-        keepRecentTokens: 20000,
-      },
-    } as never);
-    const event = makeModelSelectEvent({
-      previousModel: makeModel("anthropic", "opus", 10),
-      model: makeModel("openai", "gpt-4o", 5),
-    });
-    await handler(event as never, ctx);
-    expect(selectCalled).toBe(true);
     expect(ctx.notifyCalls).toHaveLength(0);
   });
 
-  it("skips when pricing is unavailable and token threshold is not exceeded", async () => {
+  it("never calls ctx.ui.select", async () => {
     const { handlers } = captureHandlers();
     const handler = handlers["model_select"][0];
     let selectCalled = false;
-    const ctx = makeFakeCtx({
-      selectResult: "Create handoff",
-      modelRegistry: {
-        isUsingOAuth: (model: { provider: string }) =>
-          model.provider === "openai",
-        getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
-      } as never,
-    });
+    const ctx = makeFakeCtx();
     const originalSelect = ctx.ui.select;
     ctx.ui.select = async (...args: Parameters<typeof ctx.ui.select>) => {
       selectCalled = true;
@@ -549,8 +481,8 @@ describe("model_select handler", () => {
       messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
       turnPrefixMessages: [],
       isSplitTurn: false,
-      tokensBefore: 40000,
-      naiveContextTokens: 40000,
+      tokensBefore: 300000,
+      naiveContextTokens: 300000,
       fileOps: {} as never,
       settings: {
         enabled: true,
@@ -559,97 +491,33 @@ describe("model_select handler", () => {
       },
     } as never);
     const event = makeModelSelectEvent({
-      previousModel: makeModel("anthropic", "opus", 10),
+      previousModel: makeModel("anthropic", "opus", 15),
       model: makeModel("openai", "gpt-4o", 5),
     });
     await handler(event as never, ctx);
     expect(selectCalled).toBe(false);
-    expect(ctx.compactCalls).toHaveLength(0);
-    await waitForDeferredNotifications();
-    expect(ctx.notifyCalls).toContainEqual({
-      message: "handoff skipped: under token threshold",
-      type: "info",
-    });
+  });
+});
+
+describe("/handoff command", () => {
+  beforeEach(() => {
+    clearPendingHandoff();
+    vi.clearAllMocks();
   });
 
-  it("dismissal/undefined behaves like continue full context", async () => {
-    const { handlers } = captureHandlers();
-    const handler = handlers["model_select"][0];
-    const ctx = makeFakeCtx({ selectResult: undefined });
-    vi.mocked(prepareCompaction).mockReturnValue({
-      firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
-      turnPrefixMessages: [],
-      isSplitTurn: false,
-      tokensBefore: 300000,
-      naiveContextTokens: 300000,
-      fileOps: {} as never,
-      settings: {
-        enabled: true,
-        reserveTokens: 16384,
-        keepRecentTokens: 20000,
-      },
-    } as never);
-    const event = makeModelSelectEvent({
-      previousModel: makeModel("anthropic", "opus", 15),
+  it("compacts using previous model when last assistant differs from current", async () => {
+    const { commandHandlers } = captureHandlers();
+    const previousModel = makeModel("anthropic", "claude-3-opus", 15);
+    const ctx = makeFakeCtx({
       model: makeModel("openai", "gpt-4o", 5),
+      branch: [makeAssistantEntry("anthropic", "claude-3-opus", "e1")],
+      modelRegistry: {
+        isUsingOAuth: () => false,
+        getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
+        find: (_provider: string, _id: string) => previousModel,
+      } as never,
     });
-    await handler(event as never, ctx);
-    expect(ctx.compactCalls).toHaveLength(0);
-    expect(getPendingHandoff()).toBeUndefined();
-  });
-
-  it("choosing continue full context does not call ctx.compact or set pending", async () => {
-    const { handlers } = captureHandlers();
-    const handler = handlers["model_select"][0];
-    const ctx = makeFakeCtx({ selectResult: "Continue full context" });
-    vi.mocked(prepareCompaction).mockReturnValue({
-      firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
-      turnPrefixMessages: [],
-      isSplitTurn: false,
-      tokensBefore: 300000,
-      naiveContextTokens: 300000,
-      fileOps: {} as never,
-      settings: {
-        enabled: true,
-        reserveTokens: 16384,
-        keepRecentTokens: 20000,
-      },
-    } as never);
-    const event = makeModelSelectEvent({
-      previousModel: makeModel("anthropic", "opus", 15),
-      model: makeModel("openai", "gpt-4o", 5),
-    });
-    await handler(event as never, ctx);
-    expect(ctx.compactCalls).toHaveLength(0);
-    expect(getPendingHandoff()).toBeUndefined();
-  });
-
-  it("choosing create handoff sets pending and calls ctx.compact with callbacks", async () => {
-    const { handlers } = captureHandlers();
-    const handler = handlers["model_select"][0];
-    const ctx = makeFakeCtx({ selectResult: "Create handoff" });
-    vi.mocked(prepareCompaction).mockReturnValue({
-      firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
-      turnPrefixMessages: [],
-      isSplitTurn: false,
-      tokensBefore: 300000,
-      naiveContextTokens: 300000,
-      fileOps: {} as never,
-      settings: {
-        enabled: true,
-        reserveTokens: 16384,
-        keepRecentTokens: 20000,
-      },
-    } as never);
-    const previousModel = makeModel("anthropic", "opus", 15);
-    const event = makeModelSelectEvent({
-      previousModel,
-      model: makeModel("openai", "gpt-4o", 5),
-    });
-    await handler(event as never, ctx);
+    await commandHandlers["handoff"]("", ctx as never);
     expect(ctx.compactCalls).toHaveLength(1);
     expect(getPendingHandoff()?.previousModel).toBe(previousModel);
     const compactOptions = ctx.compactCalls[0] as {
@@ -662,44 +530,77 @@ describe("model_select handler", () => {
     expect(typeof compactOptions.onError).toBe("function");
   });
 
-  it("later eligible model switch replaces prior pending state", async () => {
-    const { handlers } = captureHandlers();
-    const handler = handlers["model_select"][0];
-    const firstModel = makeModel("anthropic", "opus", 15);
-    const laterModel = makeModel("openai", "gpt-4o", 5);
-    const ctx1 = makeFakeCtx({ selectResult: "Create handoff" });
-    vi.mocked(prepareCompaction).mockReturnValue({
-      firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
-      turnPrefixMessages: [],
-      isSplitTurn: false,
-      tokensBefore: 300000,
-      naiveContextTokens: 300000,
-      fileOps: {} as never,
-      settings: {
-        enabled: true,
-        reserveTokens: 16384,
-        keepRecentTokens: 20000,
-      },
-    } as never);
-    await handler(
-      makeModelSelectEvent({
-        previousModel: firstModel,
-        model: makeModel("openai", "gpt-4o-mini", 5),
-      }) as never,
-      ctx1,
-    );
-    expect(getPendingHandoff()?.previousModel).toBe(firstModel);
+  it("errors when last assistant is the current model", async () => {
+    const { commandHandlers } = captureHandlers();
+    const currentModel = makeModel("openai", "gpt-4o", 5);
+    const ctx = makeFakeCtx({
+      model: currentModel,
+      branch: [makeAssistantEntry("openai", "gpt-4o", "e1")],
+      modelRegistry: {
+        isUsingOAuth: () => false,
+        getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
+        find: () => currentModel,
+      } as never,
+    });
+    await commandHandlers["handoff"]("", ctx as never);
+    expect(ctx.compactCalls).toHaveLength(0);
+    expect(ctx.notifyCalls).toContainEqual({
+      message: "no prior model to hand off from",
+      type: "error",
+    });
+    expect(getPendingHandoff()).toBeUndefined();
+  });
 
-    const ctx2 = makeFakeCtx({ selectResult: "Create handoff" });
-    await handler(
-      makeModelSelectEvent({
-        previousModel: laterModel,
-        model: makeModel("openai", "gpt-4o-mini", 5),
-      }) as never,
-      ctx2,
-    );
-    expect(getPendingHandoff()?.previousModel).toBe(laterModel);
+  it("errors when there is no prior assistant message", async () => {
+    const { commandHandlers } = captureHandlers();
+    const ctx = makeFakeCtx({
+      model: makeModel("openai", "gpt-4o", 5),
+      branch: [],
+    });
+    await commandHandlers["handoff"]("", ctx as never);
+    expect(ctx.compactCalls).toHaveLength(0);
+    expect(ctx.notifyCalls).toContainEqual({
+      message: "no prior model to hand off from",
+      type: "error",
+    });
+    expect(getPendingHandoff()).toBeUndefined();
+  });
+
+  it("errors when previous model is not found in registry", async () => {
+    const { commandHandlers } = captureHandlers();
+    const ctx = makeFakeCtx({
+      model: makeModel("openai", "gpt-4o", 5),
+      branch: [makeAssistantEntry("anthropic", "claude-3-opus", "e1")],
+      modelRegistry: {
+        isUsingOAuth: () => false,
+        getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
+        find: () => undefined,
+      } as never,
+    });
+    await commandHandlers["handoff"]("", ctx as never);
+    expect(ctx.compactCalls).toHaveLength(0);
+    expect(ctx.notifyCalls).toContainEqual({
+      message: "previous model unavailable for handoff",
+      type: "error",
+    });
+    expect(getPendingHandoff()).toBeUndefined();
+  });
+
+  it("leaves current model unchanged on success", async () => {
+    const { commandHandlers } = captureHandlers();
+    const currentModel = makeModel("openai", "gpt-4o", 5);
+    const previousModel = makeModel("anthropic", "claude-3-opus", 15);
+    const ctx = makeFakeCtx({
+      model: currentModel,
+      branch: [makeAssistantEntry("anthropic", "claude-3-opus", "e1")],
+      modelRegistry: {
+        isUsingOAuth: () => false,
+        getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
+        find: () => previousModel,
+      } as never,
+    });
+    await commandHandlers["handoff"]("", ctx as never);
+    expect(ctx.model).toBe(currentModel);
   });
 });
 
@@ -872,30 +773,18 @@ describe("state clearing", () => {
     setPendingHandoff({
       previousModel: makeModel("anthropic", "opus", 15) as never,
     });
-    const { handlers } = captureHandlers();
-    const modelSelectHandler = handlers["model_select"][0];
-    const ctx = makeFakeCtx({ selectResult: "Create handoff" });
-    vi.mocked(prepareCompaction).mockReturnValue({
-      firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
-      turnPrefixMessages: [],
-      isSplitTurn: false,
-      tokensBefore: 300000,
-      naiveContextTokens: 300000,
-      fileOps: {} as never,
-      settings: {
-        enabled: true,
-        reserveTokens: 16384,
-        keepRecentTokens: 20000,
-      },
-    } as never);
-    await modelSelectHandler(
-      makeModelSelectEvent({
-        previousModel: makeModel("anthropic", "opus", 15),
-        model: makeModel("openai", "gpt-4o", 5),
-      }) as never,
-      ctx,
-    );
+    const { commandHandlers } = captureHandlers();
+    const previousModel = makeModel("anthropic", "claude-3-opus", 15);
+    const ctx = makeFakeCtx({
+      model: makeModel("openai", "gpt-4o", 5),
+      branch: [makeAssistantEntry("anthropic", "claude-3-opus", "e1")],
+      modelRegistry: {
+        isUsingOAuth: () => false,
+        getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
+        find: () => previousModel,
+      } as never,
+    });
+    await commandHandlers["handoff"]("", ctx as never);
     const compactOptions = ctx.compactCalls[0] as { onComplete: () => void };
     expect(getPendingHandoff()).toBeDefined();
     compactOptions.onComplete();
@@ -906,30 +795,18 @@ describe("state clearing", () => {
     setPendingHandoff({
       previousModel: makeModel("anthropic", "opus", 15) as never,
     });
-    const { handlers } = captureHandlers();
-    const modelSelectHandler = handlers["model_select"][0];
-    const ctx = makeFakeCtx({ selectResult: "Create handoff" });
-    vi.mocked(prepareCompaction).mockReturnValue({
-      firstKeptEntryId: "keep-1",
-      messagesToSummarize: [{ role: "user", content: "a".repeat(800000) }],
-      turnPrefixMessages: [],
-      isSplitTurn: false,
-      tokensBefore: 300000,
-      naiveContextTokens: 300000,
-      fileOps: {} as never,
-      settings: {
-        enabled: true,
-        reserveTokens: 16384,
-        keepRecentTokens: 20000,
-      },
-    } as never);
-    await modelSelectHandler(
-      makeModelSelectEvent({
-        previousModel: makeModel("anthropic", "opus", 15),
-        model: makeModel("openai", "gpt-4o", 5),
-      }) as never,
-      ctx,
-    );
+    const { commandHandlers } = captureHandlers();
+    const previousModel = makeModel("anthropic", "claude-3-opus", 15);
+    const ctx = makeFakeCtx({
+      model: makeModel("openai", "gpt-4o", 5),
+      branch: [makeAssistantEntry("anthropic", "claude-3-opus", "e1")],
+      modelRegistry: {
+        isUsingOAuth: () => false,
+        getApiKeyAndHeaders: () => Promise.resolve({ ok: true, apiKey: "key" }),
+        find: () => previousModel,
+      } as never,
+    });
+    await commandHandlers["handoff"]("", ctx as never);
     const compactOptions = ctx.compactCalls[0] as { onError: () => void };
     expect(getPendingHandoff()).toBeDefined();
     compactOptions.onError();

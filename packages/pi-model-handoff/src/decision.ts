@@ -31,20 +31,6 @@ export type HandoffEstimate = {
   estimatedSavingsCost?: number;
 };
 
-export const FULL_CONTEXT_HANDOFF_COST_THRESHOLD_NZD = 0.5;
-export const FULL_CONTEXT_HANDOFF_COST_THRESHOLD_USD = 0.5;
-export const FULL_CONTEXT_HANDOFF_TOKEN_THRESHOLD = 50_000;
-
-export type HandoffDecision =
-  | { kind: "skip"; reason: string }
-  | { kind: "offer"; estimate: HandoffEstimate };
-
-export type HandoffDecisionOptions = {
-  convertFullContextCostToNzd?: (usd: number) => number | undefined;
-  fullContextCostThresholdNzd?: number;
-  fullContextTokenThreshold?: number;
-};
-
 export function getSwitchSkipReason(
   event: ModelSelectEvent,
   mode: "tui" | "rpc" | "json" | "print",
@@ -159,88 +145,4 @@ export function computeHandoffEstimate(
   }
 
   return estimate;
-}
-
-export function makeHandoffDecision(
-  preparation: CompactionPreparation | undefined,
-  targetRef: ModelRef,
-  options: HandoffDecisionOptions = {},
-): HandoffDecision {
-  if (!preparation) {
-    return { kind: "skip", reason: "No compaction preparation available" };
-  }
-
-  const allMessages = [
-    ...preparation.messagesToSummarize,
-    ...preparation.turnPrefixMessages,
-  ];
-  if (allMessages.length === 0) {
-    return { kind: "skip", reason: "No messages to summarize" };
-  }
-
-  const estimate = computeHandoffEstimate(preparation, targetRef);
-
-  // Compute savings fraction for the gate (same scale as the computation)
-  const naiveTotal = Math.max(
-    preparation.naiveContextTokens,
-    estimate.summarizedTokens,
-    1,
-  );
-  const savingsFraction = Math.min(
-    Math.max(
-      (estimate.summarizedTokens - estimate.estimatedSummaryTokens) /
-        naiveTotal,
-      0,
-    ),
-    1,
-  );
-
-  if (savingsFraction < 0.2) {
-    return {
-      kind: "skip",
-      reason: "Estimated context savings are below 20%",
-    };
-  }
-
-  if (estimate.targetFullContextInputCost === undefined) {
-    const thresholdTokens =
-      options.fullContextTokenThreshold ?? FULL_CONTEXT_HANDOFF_TOKEN_THRESHOLD;
-    if (estimate.currentTokens <= thresholdTokens) {
-      return {
-        kind: "skip",
-        reason: "Full context tokens are below handoff warning threshold",
-      };
-    }
-    return { kind: "offer", estimate };
-  }
-
-  const thresholdNzd =
-    options.fullContextCostThresholdNzd ??
-    FULL_CONTEXT_HANDOFF_COST_THRESHOLD_NZD;
-
-  const fullContextCostNzd = options.convertFullContextCostToNzd?.(
-    estimate.targetFullContextInputCost,
-  );
-  if (fullContextCostNzd !== undefined) {
-    if (fullContextCostNzd <= thresholdNzd) {
-      return {
-        kind: "skip",
-        reason: "Full context cost is below handoff warning threshold",
-      };
-    }
-    return { kind: "offer", estimate };
-  }
-
-  // Fallback: same numeric threshold applied directly to USD
-  if (
-    estimate.targetFullContextInputCost <=
-    FULL_CONTEXT_HANDOFF_COST_THRESHOLD_USD
-  ) {
-    return {
-      kind: "skip",
-      reason:
-        "Full context cost is below handoff warning threshold (USD fallback)",
-    };
-  }
-  return { kind: "offer", estimate };
 }

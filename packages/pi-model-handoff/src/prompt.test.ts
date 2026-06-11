@@ -1,10 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  formatHandoffPrompt,
-  HANDOFF_INSTRUCTIONS,
-  OPTION_CREATE_HANDOFF,
-  OPTION_CONTINUE_FULL_CONTEXT,
-} from "./prompt";
+import { formatSwitchNotification, HANDOFF_INSTRUCTIONS } from "./prompt";
 import type { HandoffEstimate, ModelRef } from "./decision";
 
 const convertCurrencyMock = vi.hoisted(() => vi.fn());
@@ -50,103 +45,60 @@ describe("HANDOFF_INSTRUCTIONS", () => {
   });
 });
 
-describe("option labels", () => {
-  it("are stable strings", () => {
-    expect(OPTION_CREATE_HANDOFF).toBe("Create handoff");
-    expect(OPTION_CONTINUE_FULL_CONTEXT).toBe("Continue full context");
-  });
-});
-
-describe("formatHandoffPrompt", () => {
+describe("formatSwitchNotification", () => {
   beforeEach(() => {
     convertCurrencyMock.mockReset();
   });
 
-  it("includes source and target model names", () => {
-    const prompt = formatHandoffPrompt(
-      makeRef({ name: "Claude 3 Opus" }),
-      makeRef({ name: "GPT-4o Mini" }),
-      makeEstimate(),
+  it("includes target model name and context size", () => {
+    const msg = formatSwitchNotification(
+      makeRef({ name: "Kimi K2.6" }),
+      makeEstimate({ currentTokens: 200_000, estimatedHandoffTokens: 6000 }),
     );
-    expect(prompt).toContain("Claude 3 Opus");
-    expect(prompt).toContain("GPT-4o Mini");
-    expect(prompt).toContain("->");
+    expect(msg).toContain("Switched to Kimi K2.6");
+    expect(msg).toContain("200k context");
+    expect(msg).toContain("/handoff (~6.0k)");
   });
 
   it("falls back to provider/id when name is absent", () => {
-    const prompt = formatHandoffPrompt(
+    const msg = formatSwitchNotification(
       makeRef({ name: undefined, provider: "anthropic", id: "claude-opus" }),
-      makeRef({ name: undefined, provider: "openai", id: "gpt-4o" }),
       makeEstimate(),
     );
-    expect(prompt).toContain("anthropic/claude-opus");
-    expect(prompt).toContain("openai/gpt-4o");
+    expect(msg).toContain("anthropic/claude-opus");
   });
 
-  it("shows rounded token estimates", () => {
-    const prompt = formatHandoffPrompt(makeRef(), makeRef(), makeEstimate());
-    expect(prompt).toContain("10k");
-    expect(prompt).toContain("3.2k");
-    expect(prompt).toContain("6.8k");
-  });
-
-  it("shows converted cost estimates when a rate is available", () => {
+  it("shows converted cost when a rate is available", () => {
     convertCurrencyMock.mockImplementation(({ amount }) => amount * 1.7);
-    const prompt = formatHandoffPrompt(
+    const msg = formatSwitchNotification(
       makeRef(),
-      makeRef(),
-      makeEstimate({
-        targetFullContextInputCost: 0.05,
-        estimatedHandoffCost: 0.016,
-        estimatedSavingsCost: 0.034,
-      }),
+      makeEstimate({ targetFullContextInputCost: 0.12 }),
     );
-    expect(prompt).toContain("$0.0850");
-    expect(prompt).toContain("$0.0272");
-    expect(prompt).toContain("$0.0578");
+    expect(msg).toContain("(~$0.20)");
   });
 
-  it("omits costs when unavailable", () => {
-    const prompt = formatHandoffPrompt(
-      makeRef(),
-      makeRef(),
-      makeEstimate({
-        targetFullContextInputCost: undefined,
-        estimatedHandoffCost: undefined,
-        estimatedSavingsCost: undefined,
-      }),
+  it("omits cost parenthetical when pricing is unavailable", () => {
+    const msg = formatSwitchNotification(
+      makeRef({ inputCostPerMillion: undefined }),
+      makeEstimate({ targetFullContextInputCost: undefined }),
     );
-    expect(prompt).not.toContain("$");
+    expect(msg).not.toContain("(~$");
+    expect(msg).toContain("· /handoff");
   });
 
-  it("omits costs when no converted rate is available", () => {
+  it("omits cost when no converted rate is available", () => {
     convertCurrencyMock.mockReturnValue(undefined);
-    const prompt = formatHandoffPrompt(
+    const msg = formatSwitchNotification(
       makeRef(),
-      makeRef(),
-      makeEstimate({
-        targetFullContextInputCost: 0.05,
-        estimatedHandoffCost: 0.016,
-        estimatedSavingsCost: 0.034,
-      }),
+      makeEstimate({ targetFullContextInputCost: 0.12 }),
     );
-    expect(prompt).not.toContain("$");
+    expect(msg).not.toContain("(~$");
   });
 
   it("does not mention break-even turns or ROI", () => {
-    const prompt = formatHandoffPrompt(makeRef(), makeRef(), makeEstimate());
-    expect(prompt).not.toMatch(/break.?even/i);
-    expect(prompt).not.toMatch(/ROI/i);
-    expect(prompt).not.toMatch(/future turn/i);
-  });
-
-  it("labels costs as estimates", () => {
-    convertCurrencyMock.mockImplementation(({ amount }) => amount * 1.7);
-    const prompt = formatHandoffPrompt(
-      makeRef(),
-      makeRef(),
-      makeEstimate({ targetFullContextInputCost: 0.1 }),
-    );
-    expect(prompt).toMatch(/\(~\$.*\)/);
+    const msg = formatSwitchNotification(makeRef(), makeEstimate());
+    expect(msg).not.toMatch(/break.?even/i);
+    expect(msg).not.toMatch(/ROI/i);
+    expect(msg).not.toMatch(/future turn/i);
   });
 });

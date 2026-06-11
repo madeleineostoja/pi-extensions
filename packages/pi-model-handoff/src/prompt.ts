@@ -1,9 +1,6 @@
 import { convertCurrency } from "@pi-extensions/lib";
 import type { HandoffEstimate, ModelRef } from "./decision.ts";
 
-export const OPTION_CREATE_HANDOFF = "Create handoff";
-export const OPTION_CONTINUE_FULL_CONTEXT = "Continue full context";
-
 export const HANDOFF_INSTRUCTIONS =
   `Create an implementation-focused summary that preserves the following: ` +
   `the user's goal, constraints and preferences, concrete decisions made ` +
@@ -29,10 +26,10 @@ function formatConvertedCost(usd: number | undefined): string | undefined {
   if (nzd === undefined) {
     return undefined;
   }
-  return `~$${nzd.toFixed(4)}`;
+  return `~$${nzd.toFixed(2)}`;
 }
 
-function formatTokens(n: number): string {
+export function formatTokens(n: number): string {
   const rounded = roundTo2SigFigs(n);
   if (rounded >= 1000) {
     const k = rounded / 1000;
@@ -44,34 +41,16 @@ function formatTokens(n: number): string {
   return String(rounded);
 }
 
-export function formatHandoffPrompt(
-  sourceRef: ModelRef,
+export function formatSwitchNotification(
   targetRef: ModelRef,
   estimate: HandoffEstimate,
 ): string {
-  const sourceName = sourceRef.name ?? `${sourceRef.provider}/${sourceRef.id}`;
   const targetName = targetRef.name ?? `${targetRef.provider}/${targetRef.id}`;
-
-  let prompt = `Model handoff: ${sourceName} -> ${targetName}\n`;
-  prompt += `- Full context: ~${formatTokens(estimate.currentTokens)}`;
-  const fullCost = formatConvertedCost(estimate.targetFullContextInputCost);
-  if (fullCost !== undefined) {
-    prompt += ` (${fullCost})`;
+  let msg = `Switched to ${targetName} · ${formatTokens(estimate.currentTokens)} context`;
+  const cost = formatConvertedCost(estimate.targetFullContextInputCost);
+  if (cost !== undefined) {
+    msg += ` (${cost})`;
   }
-  prompt += `\n`;
-
-  prompt += `- Estimated handoff context: ~${formatTokens(estimate.estimatedHandoffTokens)}`;
-  const handoffCost = formatConvertedCost(estimate.estimatedHandoffCost);
-  if (handoffCost !== undefined) {
-    prompt += ` (${handoffCost})`;
-  }
-  prompt += `\n`;
-
-  prompt += `- Estimated savings: ~${formatTokens(estimate.estimatedSavingsTokens)}`;
-  const savingsCost = formatConvertedCost(estimate.estimatedSavingsCost);
-  if (savingsCost !== undefined) {
-    prompt += ` (${savingsCost})`;
-  }
-
-  return prompt;
+  msg += ` · /handoff (~${formatTokens(estimate.estimatedHandoffTokens)})`;
+  return msg;
 }
