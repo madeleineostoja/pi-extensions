@@ -6,6 +6,11 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { isModelRef } from "@pi-extensions/lib";
 import {
   readConfig,
@@ -117,8 +122,27 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
   pi.registerMessageRenderer(
     "pi-implement-progress",
     (message, _options, theme) => {
-      const text = theme.fg("accent", "pi-implement") + " " + message.content;
-      return { render: () => [text], invalidate: () => {} };
+      const prefix = theme.fg("accent", "pi-implement") + " ";
+      const prefixWidth = visibleWidth(prefix);
+      return {
+        render: (width: number) => {
+          const body = String(message.content ?? "");
+          const available = Math.max(1, width - prefixWidth);
+          const wrapped = body
+            .split("\n")
+            .flatMap((segment) =>
+              wrapTextWithAnsi(segment, available).map((part) =>
+                truncateToWidth(part, available),
+              ),
+            );
+          if (wrapped.length === 0) {
+            return [prefix.trimEnd()];
+          }
+          const indent = " ".repeat(prefixWidth);
+          return wrapped.map((line, i) => (i === 0 ? prefix : indent) + line);
+        },
+        invalidate: () => {},
+      };
     },
   );
 
