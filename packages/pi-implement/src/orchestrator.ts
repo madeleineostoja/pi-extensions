@@ -3058,12 +3058,13 @@ export function stalledSchedulerReason(
     }
 
     if (task.status === "approved") {
-      const earlierNonLanded = allTasks
-        .filter((t) => t.planIndex < task.planIndex && t.status !== "landed")
-        .map((t) => `${t.id}:${t.status}`);
-      if (earlierNonLanded.length > 0) {
+      const unlandedDeps = task.dependsOn
+        .map((depId) => sched.tasks.get(depId))
+        .filter((dep) => dep && dep.status !== "landed")
+        .map((dep) => `${dep!.id}:${dep!.status}`);
+      if (unlandedDeps.length > 0) {
         lines.push(
-          `- ${task.id}: approved but cannot land until earlier tasks land: ${earlierNonLanded.join(", ")}`,
+          `- ${task.id}: approved but cannot land until dependencies land: ${unlandedDeps.join(", ")}`,
         );
       } else {
         lines.push(`- ${task.id}: approved`);
@@ -3786,7 +3787,7 @@ async function runTaskWorker(args: {
       throw new BlockedError("implementer changed task worktree HEAD");
     }
 
-    const parsed = parseImplementerResult(implementation.result);
+    let parsed = parseImplementerResult(implementation.result);
     deps.updateState((prev) =>
       checkpointPatch(
         prev,
@@ -3822,10 +3823,24 @@ async function runTaskWorker(args: {
     await taskGit.stageAllExcept(planArtifacts);
     const hasStaged = await taskGit.hasStagedChanges();
 
+    // The implementer claimed the task was already satisfied but left staged
+    // changes. The diff is the ground truth, so treat this as a `changed`
+    // candidate and let the reviewer judge whether to commit it or send it
+    // back for rework rather than silently dropping or blindly landing it.
+    let alreadySatisfiedDiscrepancy = false;
     if (hasStaged && parsed.result.outcome === "already_satisfied") {
-      throw new BlockedError(
-        "Implementer reported already_satisfied but produced staged changes; blocked to avoid carrying mutations into a retry.",
-      );
+      alreadySatisfiedDiscrepancy = true;
+      parsed = {
+        ok: true,
+        result: {
+          outcome: "changed",
+          summary: parsed.result.summary,
+          verification: parsed.result.verification,
+          commitMessage: isValidCommitMessage(parsed.result.commitMessage ?? "")
+            ? parsed.result.commitMessage!.trim()
+            : fallbackCommitMessage(task.text),
+        },
+      };
     }
 
     let fingerprintBefore: string | undefined;
@@ -3861,6 +3876,9 @@ async function runTaskWorker(args: {
         scoutFailed,
         stagedSummary,
         validation: validationEvidence,
+        forceReview: alreadySatisfiedDiscrepancy,
+        forceReviewReason:
+          "implementer reported already_satisfied but produced staged changes",
       });
 
       if (reviewDecision.action === "needs_validation") {
@@ -3935,6 +3953,9 @@ async function runTaskWorker(args: {
           scoutFailed,
           stagedSummary,
           validation: validationEvidence,
+          forceReview: alreadySatisfiedDiscrepancy,
+          forceReviewReason:
+            "implementer reported already_satisfied but produced staged changes",
         });
       }
 
@@ -3979,6 +4000,7 @@ async function runTaskWorker(args: {
           outOfScopeTasks,
           priorRequiredChanges: priorReviewRequiredChanges,
           baseSha: worktreePath ? baseSha : undefined,
+          alreadySatisfiedDiscrepancy,
         });
       }
 

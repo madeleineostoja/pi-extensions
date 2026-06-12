@@ -3240,10 +3240,14 @@ describe("runImplementation", () => {
           }),
         },
       },
-    ];
-    subagents.results = [
-      { status: "completed", result: GOOD_IMPL },
-      { status: "completed", result: GOOD_REVIEW },
+      {
+        match: /implement task/,
+        result: { status: "completed", result: GOOD_IMPL },
+      },
+      {
+        match: /review task/,
+        result: { status: "completed", result: GOOD_REVIEW },
+      },
     ];
 
     let blockedError: BlockedError | undefined;
@@ -3270,15 +3274,23 @@ describe("runImplementation", () => {
       }
     }
 
+    // `first` fails at worktree setup, but `second` has no dependency on it and
+    // must still land; `third` depends on `second` and lands once it does.
+    // Only the genuinely-failed task remains in the blocked report.
     expect(blockedError).toBeDefined();
     const message = blockedError!.message;
     expect(message).toContain("Parallel scheduler blocked:");
     expect(message).toContain("first: failed");
     expect(message).toContain("Worktree setup failed");
-    expect(message).toContain(
-      "second: approved but cannot land until earlier tasks land: first:failed",
-    );
-    expect(message).toContain("third: pending, waiting for second");
+    expect(message).not.toContain("cannot land");
+    expect(message).not.toContain("- second:");
+    expect(message).not.toContain("- third:");
+    const events = readEvents(paths);
+    const landed = events
+      .filter((e) => e.type === "task_landed")
+      .map((e) => (e as { taskId: string }).taskId);
+    expect(landed).toContain("second");
+    expect(landed).toContain("third");
   });
 
   it("serial already-satisfied approved marks done without commit", async () => {
@@ -3500,7 +3512,7 @@ describe("runImplementation", () => {
     expect(caught?.message).toContain("Likely causes");
   });
 
-  it("serial already-satisfied with staged changes blocks without retrying dirty mutations", async () => {
+  it("serial already-satisfied with staged changes routes to review and commits on approval", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
     const planPath = join(dir, "plan.md");
     writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
@@ -3512,30 +3524,77 @@ describe("runImplementation", () => {
 
     subagents.results = [
       { status: "completed", result: ALREADY_SATISFIED_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
     ];
 
-    await expect(
-      runImplementation({
-        git,
-        subagents,
-        planPath,
-        mode: "serial",
-        paths,
-        roles: {
-          implementer: { model: "p/m", type: "general-purpose" },
-          reviewer: { model: "p/m", type: "general-purpose" },
-          planner: { model: "p/m", type: "Explore" },
-        },
-        updateState: () => {},
-        shouldStop: () => false,
-      }),
-    ).rejects.toThrow(
-      "Implementer reported already_satisfied but produced staged changes",
-    );
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
 
-    expect(subagents.spawns).toHaveLength(1);
-    expect(readFileSync(planPath, "utf-8")).toContain("- [ ] Do it");
-    expect(git.commits).toHaveLength(0);
+    // The contradiction is reinterpreted as a `changed` candidate, reviewed,
+    // and committed once approved — never silently dropped or hard-blocked.
+    const reviewSpawn = subagents.spawns.find((s) =>
+      s.description?.startsWith("review task"),
+    );
+    expect(reviewSpawn).toBeDefined();
+    expect(reviewSpawn!.prompt).toContain("Outcome Discrepancy");
+    expect(git.commits).toHaveLength(1);
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do it");
+  });
+
+  it("serial already-satisfied with staged changes reworks when review requests changes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const ALREADY_SATISFIED_IMPL =
+      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+    const CHANGES_REVIEW =
+      '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["These edits are out of scope."]}</pi-review-result>';
+
+    subagents.results = [
+      { status: "completed", result: ALREADY_SATISFIED_IMPL },
+      { status: "completed", result: CHANGES_REVIEW },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    // changes_requested triggers a rework attempt rather than a terminal block.
+    const implementerSpawns = subagents.spawns.filter((s) =>
+      s.description?.startsWith("implement task"),
+    );
+    expect(implementerSpawns.length).toBeGreaterThanOrEqual(2);
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do it");
   });
 
   it("serial already-satisfied changes_requested blocks if reviewer dirtied checkout", async () => {

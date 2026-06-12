@@ -168,22 +168,25 @@ export function startTask(run: SchedulerRun, taskId: string): void {
   task.activeAgentRefs = [];
 }
 
+function depsLanded(run: SchedulerRun, task: SchedulerTask): boolean {
+  return task.dependsOn.every(
+    (depId) => run.tasks.get(depId)?.status === "landed",
+  );
+}
+
 export function nextTaskToLand(run: SchedulerRun): string | undefined {
-  const candidates: SchedulerTask[] = [];
+  // Landing cherry-picks onto the shared main HEAD, so it must stay
+  // serialized: never select a new task while one is mid-integration.
   for (const task of run.tasks.values()) {
-    if (task.status === "approved" || task.status === "integrating") {
-      candidates.push(task);
+    if (task.status === "integrating") {
+      return undefined;
     }
   }
-  candidates.sort((a, b) => a.planIndex - b.planIndex);
+  const candidates = [...run.tasks.values()]
+    .filter((task) => task.status === "approved")
+    .sort((a, b) => a.planIndex - b.planIndex);
   for (const task of candidates) {
-    const allEarlierLanded = [...run.tasks.values()].every((t) => {
-      if (t.planIndex >= task.planIndex) {
-        return true;
-      }
-      return t.status === "landed";
-    });
-    if (allEarlierLanded && task.status === "approved") {
+    if (depsLanded(run, task)) {
       return task.id;
     }
   }

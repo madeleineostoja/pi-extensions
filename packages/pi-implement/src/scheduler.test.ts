@@ -124,8 +124,15 @@ describe("landing queue", () => {
     expect(nextTaskToLand(run)).toBe("a");
   });
 
-  it("waits when earlier task is unlanded even if no graph dependency", () => {
+  it("lands an approved task when its dependencies are landed even if an earlier-index task is not", () => {
     const graph = makeGraph([makeNode("a", 1), makeNode("b", 2)]);
+    const run = createSchedulerRun(graph, 3);
+    run.tasks.get("b")!.status = "approved";
+    expect(nextTaskToLand(run)).toBe("b");
+  });
+
+  it("waits when an approved task's own dependency is unlanded", () => {
+    const graph = makeGraph([makeNode("a", 1), makeNode("b", 2, ["a"])]);
     const run = createSchedulerRun(graph, 3);
     run.tasks.get("b")!.status = "approved";
     expect(nextTaskToLand(run)).toBe(undefined);

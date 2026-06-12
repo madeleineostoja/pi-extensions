@@ -93,8 +93,14 @@ export function buildReviewerPrompt(args: {
   outOfScopeTasks?: string[];
   priorRequiredChanges?: string[];
   baseSha?: string;
+  alreadySatisfiedDiscrepancy?: boolean;
 }): string {
   const siblingSection = buildSiblingTasksSection(args.outOfScopeTasks);
+  const discrepancySection = args.alreadySatisfiedDiscrepancy
+    ? `\n## Outcome Discrepancy
+
+The implementer reported \`already_satisfied\` (claiming the task needed no changes) but nonetheless produced the staged diff below. Treat the diff as the ground truth and judge it on its own merits: approve only if these changes correctly and minimally satisfy the selected task. Request changes if the diff is spurious, incomplete, out-of-scope, or if the task is genuinely already satisfied and these edits should not be committed.\n`
+    : "";
   const diffInstructions = args.baseSha
     ? `The candidate diff is committed on this task branch. Use read-only git commands such as:
 - \`cd ${args.worktreePath} && git diff ${args.baseSha}..HEAD\`
@@ -137,7 +143,7 @@ This is review only, not implementation. Do not edit files, stage, reset, commit
 You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands. If you cannot perform necessary validation because of these limitations, request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result. Treat this as a normal \`changes_requested\` result, not a subagent or system failure.
 
 ${reviewModeSection}
-
+${discrepancySection}
 ## Scope Review Rules
 
 - Small prerequisite changes needed for the selected task may be approved.

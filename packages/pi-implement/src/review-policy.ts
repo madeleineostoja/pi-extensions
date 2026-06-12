@@ -30,6 +30,8 @@ export type DecideTaskReviewArgs = {
   scoutFailed: boolean;
   stagedSummary: StagedFileSummary;
   validation: ValidationEvidence;
+  forceReview?: boolean;
+  forceReviewReason?: string;
 };
 
 const DOC_EXTENSIONS = new Set([".md", ".txt", ".rst", ".adoc", ".markdown"]);
@@ -208,7 +210,18 @@ export function decideTaskReview(
     scoutFailed,
     stagedSummary,
     validation,
+    forceReview,
+    forceReviewReason,
   } = args;
+
+  // Caller-mandated review (e.g. an implementer self-report contradiction that
+  // must be independently judged regardless of diff size or config).
+  if (forceReview) {
+    return {
+      action: "review",
+      reason: forceReviewReason ?? "review forced by caller",
+    };
+  }
 
   // Config mode always forces review
   if (effectiveConfig.mode === "always") {
