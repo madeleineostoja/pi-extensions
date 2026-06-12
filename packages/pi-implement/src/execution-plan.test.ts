@@ -1,0 +1,728 @@
+import { describe, expect, it } from "vitest";
+import {
+  parseExecutionPlan,
+  validateExecutionManifest,
+  renderCompiledContract,
+  type CompiledContract,
+  type ExecutionManifest,
+  type ExecutionTask,
+} from "./execution-plan.js";
+
+function makeContract(
+  overrides: Partial<CompiledContract> = {},
+): CompiledContract {
+  return {
+    objective: "Do the thing",
+    inScope: ["Item one"],
+    acceptanceCriteria: ["Criterion one"],
+    outOfScope: ["Nothing else"],
+    ...overrides,
+  };
+}
+
+function makeTask(
+  overrides: Partial<ExecutionTask> & { id: string },
+): ExecutionTask {
+  return {
+    title: "Task title",
+    status: "todo",
+    dependsOn: [],
+    review: { mode: "require" },
+    affectedAreas: [],
+    conflictHints: [],
+    sourceReferences: [],
+    compiledContract: makeContract(),
+    ...overrides,
+  };
+}
+
+function makeManifest(
+  tasks: ExecutionTask[],
+  meta: Partial<ExecutionManifest> = {},
+): ExecutionManifest {
+  return {
+    version: 1,
+    tasks,
+    ...meta,
+  };
+}
+
+describe("parseExecutionPlan", () => {
+  it("parses a valid minimal plan (one task, no deps)", () => {
+    const manifest = makeManifest([makeTask({ id: "t1" })]);
+    const result = parseExecutionPlan(JSON.stringify(manifest));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks).toHaveLength(1);
+      expect(result.value.tasks[0].id).toBe("t1");
+    }
+  });
+
+  it("parses a valid multi-task plan with dependencies", () => {
+    const manifest = makeManifest([
+      makeTask({ id: "t1" }),
+      makeTask({ id: "t2", dependsOn: ["t1"] }),
+    ]);
+    const result = parseExecutionPlan(JSON.stringify(manifest));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks).toHaveLength(2);
+      expect(result.value.tasks[1].dependsOn).toEqual(["t1"]);
+    }
+  });
+
+  it("parses embedded JSON in prose", () => {
+    const manifest = makeManifest([makeTask({ id: "t1" })]);
+    const text = `Here is the plan.\n\n${JSON.stringify(manifest)}\n\nDone.`;
+    const result = parseExecutionPlan(text);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].id).toBe("t1");
+    }
+  });
+
+  it("parses embedded JSON in a markdown fence", () => {
+    const manifest = makeManifest([makeTask({ id: "t1" })]);
+    const text = `\`\`\`json\n${JSON.stringify(manifest)}\n\`\`\``;
+    const result = parseExecutionPlan(text);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].id).toBe("t1");
+    }
+  });
+
+  it("rejects invalid JSON", () => {
+    const result = parseExecutionPlan("{ invalid json }");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("valid JSON");
+    }
+  });
+
+  it("rejects missing version", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({ tasks: [makeTask({ id: "t1" })] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("version");
+    }
+  });
+
+  it("rejects missing tasks", () => {
+    const result = parseExecutionPlan(JSON.stringify({ version: 1 }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("tasks");
+    }
+  });
+
+  it("rejects unknown version", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 2, tasks: [makeTask({ id: "t1" })] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("version");
+    }
+  });
+
+  it("rejects tasks not an array", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 1, tasks: "oops" }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("tasks array");
+    }
+  });
+
+  it("rejects task missing id", () => {
+    const task = { ...makeTask({ id: "t1" }), id: undefined };
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 1, tasks: [task] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("id");
+    }
+  });
+
+  it("rejects task with empty id", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 1, tasks: [makeTask({ id: "   " })] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("id");
+    }
+  });
+
+  it("rejects task missing title", () => {
+    const task = { ...makeTask({ id: "t1" }), title: undefined };
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 1, tasks: [task] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("title");
+    }
+  });
+
+  it("rejects task with empty title", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [{ ...makeTask({ id: "t1" }), title: "   " }],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("title");
+    }
+  });
+
+  it("rejects task missing status", () => {
+    const task = { ...makeTask({ id: "t1" }), status: undefined };
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 1, tasks: [task] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("status");
+    }
+  });
+
+  it("rejects task with invalid status", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [{ ...makeTask({ id: "t1" }), status: "in_progress" }],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("status");
+    }
+  });
+
+  it("accepts status 'done'", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [{ ...makeTask({ id: "t1" }), status: "done" }],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].status).toBe("done");
+    }
+  });
+
+  it("rejects task missing dependsOn", () => {
+    const task = { ...makeTask({ id: "t1" }), dependsOn: undefined };
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 1, tasks: [task] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("dependsOn");
+    }
+  });
+
+  it("rejects task with non-array dependsOn", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [{ ...makeTask({ id: "t1" }), dependsOn: "t0" }],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("dependsOn");
+    }
+  });
+
+  it("rejects task missing review", () => {
+    const task = { ...makeTask({ id: "t1" }), review: undefined };
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 1, tasks: [task] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("review");
+    }
+  });
+
+  it("rejects task with invalid review mode", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [{ ...makeTask({ id: "t1" }), review: { mode: "maybe" } }],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("review mode");
+    }
+  });
+
+  it("rejects task with non-object review", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [{ ...makeTask({ id: "t1" }), review: "skip" }],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("review must be an object");
+    }
+  });
+
+  it("rejects task missing affectedAreas", () => {
+    const task = { ...makeTask({ id: "t1" }), affectedAreas: undefined };
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 1, tasks: [task] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("affectedAreas");
+    }
+  });
+
+  it("rejects task with non-array affectedAreas", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [{ ...makeTask({ id: "t1" }), affectedAreas: "src" }],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("affectedAreas");
+    }
+  });
+
+  it("rejects task missing conflictHints", () => {
+    const task = { ...makeTask({ id: "t1" }), conflictHints: undefined };
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 1, tasks: [task] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("conflictHints");
+    }
+  });
+
+  it("rejects task with non-array conflictHints", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [{ ...makeTask({ id: "t1" }), conflictHints: "none" }],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("conflictHints");
+    }
+  });
+
+  it("rejects task missing sourceReferences", () => {
+    const task = { ...makeTask({ id: "t1" }), sourceReferences: undefined };
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 1, tasks: [task] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("sourceReferences");
+    }
+  });
+
+  it("rejects task with non-array sourceReferences", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [{ ...makeTask({ id: "t1" }), sourceReferences: "docs" }],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("sourceReferences");
+    }
+  });
+
+  it("rejects task missing compiledContract", () => {
+    const task = { ...makeTask({ id: "t1" }), compiledContract: undefined };
+    const result = parseExecutionPlan(
+      JSON.stringify({ version: 1, tasks: [task] }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("compiledContract");
+    }
+  });
+
+  it("rejects task with non-object compiledContract", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [{ ...makeTask({ id: "t1" }), compiledContract: "do it" }],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("compiledContract must be an object");
+    }
+  });
+
+  it("rejects empty inScope array", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            compiledContract: makeContract({ inScope: [] }),
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("inScope");
+    }
+  });
+
+  it("rejects inScope array with blank strings", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            compiledContract: makeContract({ inScope: ["valid", "   "] }),
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("inScope");
+    }
+  });
+
+  it("rejects empty acceptanceCriteria array", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            compiledContract: makeContract({ acceptanceCriteria: [] }),
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("acceptanceCriteria");
+    }
+  });
+
+  it("rejects acceptanceCriteria array with blank strings", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            compiledContract: makeContract({
+              acceptanceCriteria: ["valid", "   "],
+            }),
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("acceptanceCriteria");
+    }
+  });
+
+  it("rejects empty outOfScope array", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            compiledContract: makeContract({ outOfScope: [] }),
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("outOfScope");
+    }
+  });
+
+  it("rejects outOfScope array with blank strings", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            compiledContract: makeContract({
+              outOfScope: ["valid", "   "],
+            }),
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("outOfScope");
+    }
+  });
+
+  it("rejects empty compiledContract objective", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            compiledContract: makeContract({ objective: "   " }),
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("objective");
+    }
+  });
+
+  it("rejects ambiguous multiple JSON objects", () => {
+    const first = makeManifest([makeTask({ id: "t1" })]);
+    const second = makeManifest([makeTask({ id: "t2" })]);
+    const result = parseExecutionPlan(
+      `${JSON.stringify(first)}\n${JSON.stringify(second)}`,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("multiple JSON objects");
+    }
+  });
+
+  it("parses optional top-level metadata fields", () => {
+    const manifest = makeManifest([makeTask({ id: "t1" })], {
+      sourcePlanHash: "abc123",
+      sourcePlanPath: "/plan.md",
+      plannerReason: "Because",
+      plannerConfidence: "high",
+      maxConcurrency: 3,
+    });
+    const result = parseExecutionPlan(JSON.stringify(manifest));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.sourcePlanHash).toBe("abc123");
+      expect(result.value.sourcePlanPath).toBe("/plan.md");
+      expect(result.value.plannerReason).toBe("Because");
+      expect(result.value.plannerConfidence).toBe("high");
+      expect(result.value.maxConcurrency).toBe(3);
+    }
+  });
+
+  it("rejects non-positive maxConcurrency", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [makeTask({ id: "t1" })],
+        maxConcurrency: 0,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.maxConcurrency).toBeUndefined();
+    }
+  });
+
+  it("rejects non-integer maxConcurrency at parse time", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [makeTask({ id: "t1" })],
+        maxConcurrency: 1.5,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.maxConcurrency).toBeUndefined();
+    }
+  });
+
+  it("trims optional string fields", () => {
+    const manifest = makeManifest([makeTask({ id: "t1" })], {
+      sourcePlanHash: "  abc  ",
+      plannerReason: "  Because  ",
+    });
+    const result = parseExecutionPlan(JSON.stringify(manifest));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.sourcePlanHash).toBe("abc");
+      expect(result.value.plannerReason).toBe("Because");
+    }
+  });
+});
+
+describe("validateExecutionManifest", () => {
+  it("accepts a valid single-task manifest", () => {
+    const manifest = makeManifest([makeTask({ id: "t1" })]);
+    expect(validateExecutionManifest(manifest)).toEqual({ ok: true });
+  });
+
+  it("accepts a valid two-task manifest with dependency", () => {
+    const manifest = makeManifest([
+      makeTask({ id: "t1" }),
+      makeTask({ id: "t2", dependsOn: ["t1"] }),
+    ]);
+    expect(validateExecutionManifest(manifest)).toEqual({ ok: true });
+  });
+
+  it("rejects empty task list", () => {
+    const manifest = makeManifest([]);
+    const result = validateExecutionManifest(manifest);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("at least one task");
+    }
+  });
+
+  it("rejects duplicate task ids", () => {
+    const manifest = makeManifest([
+      makeTask({ id: "t1" }),
+      makeTask({ id: "t1" }),
+    ]);
+    const result = validateExecutionManifest(manifest);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("Duplicate task id");
+    }
+  });
+
+  it("rejects unknown dependency id", () => {
+    const manifest = makeManifest([
+      makeTask({ id: "t1", dependsOn: ["unknown"] }),
+    ]);
+    const result = validateExecutionManifest(manifest);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("unknown");
+    }
+  });
+
+  it("rejects self-dependency", () => {
+    const manifest = makeManifest([makeTask({ id: "t1", dependsOn: ["t1"] })]);
+    const result = validateExecutionManifest(manifest);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("itself");
+    }
+  });
+
+  it("rejects a direct cycle", () => {
+    const manifest = makeManifest([
+      makeTask({ id: "t1", dependsOn: ["t2"] }),
+      makeTask({ id: "t2", dependsOn: ["t1"] }),
+    ]);
+    const result = validateExecutionManifest(manifest);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("Cycle");
+    }
+  });
+
+  it("rejects a three-node cycle", () => {
+    const manifest = makeManifest([
+      makeTask({ id: "t1", dependsOn: ["t3"] }),
+      makeTask({ id: "t2", dependsOn: ["t1"] }),
+      makeTask({ id: "t3", dependsOn: ["t2"] }),
+    ]);
+    const result = validateExecutionManifest(manifest);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("Cycle");
+    }
+  });
+
+  it("rejects version not 1", () => {
+    const manifest = makeManifest([makeTask({ id: "t1" })], {
+      version: 2 as 1,
+    });
+    const result = validateExecutionManifest(manifest);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("version");
+    }
+  });
+});
+
+describe("renderCompiledContract", () => {
+  it("renders a minimal contract deterministically", () => {
+    const contract = makeContract();
+    const output = renderCompiledContract(contract);
+    expect(output).toContain("# Task Contract");
+    expect(output).toContain("## Objective");
+    expect(output).toContain("Do the thing");
+    expect(output).toContain("## In-Scope Items");
+    expect(output).toContain("- Item one");
+    expect(output).toContain("## Acceptance Criteria");
+    expect(output).toContain("- Criterion one");
+    expect(output).toContain("## Out-of-Scope Items");
+    expect(output).toContain("- Nothing else");
+    expect(output).not.toContain("Supporting Design Context");
+    expect(output).not.toContain("Implementation Notes");
+    expect(output).not.toContain("Verification Guidance");
+  });
+
+  it("renders a full contract with all optional fields", () => {
+    const contract = makeContract({
+      supportingDesignContext: "Use pattern X",
+      implementationNotes: "Watch out for Y",
+      verificationGuidance: "Run Z",
+    });
+    const output = renderCompiledContract(contract);
+    expect(output).toContain("## Supporting Design Context");
+    expect(output).toContain("Use pattern X");
+    expect(output).toContain("## Implementation Notes");
+    expect(output).toContain("Watch out for Y");
+    expect(output).toContain("## Verification Guidance");
+    expect(output).toContain("Run Z");
+  });
+
+  it("renders multiple items as a list", () => {
+    const contract = makeContract({
+      inScope: ["A", "B", "C"],
+      acceptanceCriteria: ["D", "E"],
+      outOfScope: ["F"],
+    });
+    const output = renderCompiledContract(contract);
+    expect(output).toContain("- A");
+    expect(output).toContain("- B");
+    expect(output).toContain("- C");
+    expect(output).toContain("- D");
+    expect(output).toContain("- E");
+    expect(output).toContain("- F");
+  });
+
+  it("produces deterministic output on repeated calls", () => {
+    const contract = makeContract();
+    const first = renderCompiledContract(contract);
+    const second = renderCompiledContract(contract);
+    expect(first).toBe(second);
+  });
+});

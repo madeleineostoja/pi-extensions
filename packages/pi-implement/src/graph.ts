@@ -152,7 +152,7 @@ export function parseStrategyDecision(
   }
 }
 
-function extractJsonObject(
+export function extractJsonObject(
   text: string,
 ): { ok: true; text: string } | { ok: false; reason: string } {
   const trimmed = text.trim();
@@ -543,12 +543,12 @@ export function validateGraph(
   return { ok: true };
 }
 
-export function detectCycle(
-  nodes: ImplementGraphNode[],
+export type CycleNode = { id: string; dependsOn: string[] };
+
+export function detectCycle<T extends CycleNode>(
+  nodes: T[],
 ): GraphValidationResult {
-  const nodeById = new Map<string, ImplementGraphNode>(
-    nodes.map((n) => [n.id, n]),
-  );
+  const nodeById = new Map<string, T>(nodes.map((n) => [n.id, n]));
   const WHITE = 0,
     GRAY = 1,
     BLACK = 2;
