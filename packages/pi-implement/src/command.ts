@@ -6,11 +6,6 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import {
-  truncateToWidth,
-  visibleWidth,
-  wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
 import { isModelRef } from "@pi-extensions/lib";
 import {
   readConfig,
@@ -119,33 +114,6 @@ function isWarningTerminalPhase(phase: RunState["phase"]): boolean {
 }
 
 export function registerImplementCommand(pi: ExtensionAPI): void {
-  pi.registerMessageRenderer(
-    "pi-implement-progress",
-    (message, _options, theme) => {
-      const prefix = theme.fg("accent", "pi-implement") + " ";
-      const prefixWidth = visibleWidth(prefix);
-      return {
-        render: (width: number) => {
-          const body = String(message.content ?? "");
-          const available = Math.max(1, width - prefixWidth);
-          const wrapped = body
-            .split("\n")
-            .flatMap((segment) =>
-              wrapTextWithAnsi(segment, available).map((part) =>
-                truncateToWidth(part, available),
-              ),
-            );
-          if (wrapped.length === 0) {
-            return [prefix.trimEnd()];
-          }
-          const indent = " ".repeat(prefixWidth);
-          return wrapped.map((line, i) => (i === 0 ? prefix : indent) + line);
-        },
-        invalidate: () => {},
-      };
-    },
-  );
-
   let active: ActiveRun = {
     state: { phase: "idle" },
     stopping: false,
@@ -710,7 +678,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
         setState(ctx, resolved);
         for (const line of diffProgress(prevState, active.state, taskTitles)) {
           pi.sendMessage({
-            customType: "pi-implement-progress",
+            customType: "pi-implement",
             content: line,
             display: true,
           });

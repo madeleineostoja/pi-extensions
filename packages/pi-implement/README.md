@@ -156,7 +156,7 @@ The implementer chooses task-appropriate checks and is instructed to err toward 
 
 ## Live status
 
-In a TUI session, pi-implement shows a status footer summarizing the current phase and a widget listing active subagents with their runtime stats (tokens, tool uses, compaction counts). It also streams `pi-implement-progress` messages into the session as tasks start, finish, get reviewed, and land. These are pi-implement's own authoritative updates — the host agent stays idle while a run is in flight.
+In a TUI session, pi-implement shows a status footer summarizing the current phase and a widget listing active subagents with their runtime stats (tokens, tool uses, compaction counts). It also streams `pi-implement` progress messages into the session as tasks start, finish, get reviewed, and land. These are pi-implement's own authoritative updates — the host agent stays idle while a run is in flight.
 
 Run `/implement view` to inspect active pi-implement subagents. With one active agent it prints fallback instructions to open the agent via `/agents`; with multiple agents it prompts you to pick by pretty label.
 
