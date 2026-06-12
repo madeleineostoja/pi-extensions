@@ -8,29 +8,30 @@ When a new interactive coding session starts from a first user prompt, pi-auto-n
 
 Automatic naming happens on the first non-empty agent prompt in an unnamed session. Generation runs asynchronously so the main agent turn is never delayed.
 
-No model is configured by default. Until you configure one, pi-auto-name warns once per session and skips naming.
+No model is configured by default. Without a configured model, pi-auto-name falls back to a local title derived from the prompt.
 
 Set the model with the slash command:
 
 ```text
-/auto-name openrouter/openai/gpt-oss-20b
+/auto-name openai/gpt-4.1-nano
 ```
 
-Model refs use `provider/model-id` format and are persisted to the global user config at `<agent-dir>/extensions/pi-auto-name/config.json`.
+Model refs use `provider/model-id` format and are persisted to the global user config at `<agent-dir>/extensions/pi-auto-name/config.json`. For best latency and cost, choose a cheap non-reasoning model when available.
 
 You can also edit the config file directly:
 
 ```json
 {
-  "model": "openrouter/openai/gpt-oss-20b"
+  "model": "openai/gpt-4.1-nano"
 }
 ```
 
 ## Behavior
 
 - Never overwrites an existing or manually set session name.
-- Skips cleanly if no model is configured, or if the configured model is missing, unauthenticated, errors, or returns invalid output.
-- Warns once per session until a model is configured, and at most once per session for other configuration or auth problems.
+- Uses only the configured model; there is no built-in default model.
+- Disables reasoning where the selected model/provider supports it, and uses a larger output cap only when reasoning cannot be disabled.
+- Falls back to a local prompt-derived title when no model is configured or the model returns no usable title.
 - Generated titles are sanitized: trimmed, collapsed, stripped of surrounding quotes/backticks and leading `Title:` / `Name:` style prefixes, truncated to 40 characters on a word boundary, and taken from the first non-empty output line only.
 
 ## License

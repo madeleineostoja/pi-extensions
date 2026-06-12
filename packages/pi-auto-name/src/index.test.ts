@@ -86,8 +86,14 @@ function makeCommandCtx(options: { modelFound: boolean }) {
   return { ctx, notifications };
 }
 
-function makeExtensionCtx() {
+function makeExtensionCtx(options?: {
+  model?: Record<string, unknown> | undefined;
+}) {
   const notifications: { message: string; type?: "info" | "warning" }[] = [];
+  const model = options?.model ?? {
+    provider: "openrouter",
+    id: "openai/gpt-oss-20b",
+  };
   const ctx = {
     mode: "tui",
     ui: {
@@ -96,7 +102,7 @@ function makeExtensionCtx() {
       },
     },
     modelRegistry: {
-      find: vi.fn(() => ({ provider: "openrouter", id: "openai/gpt-oss-20b" })),
+      find: vi.fn(() => model),
       getApiKeyAndHeaders: vi.fn(async () => ({
         ok: true,
         apiKey: "test-key",
@@ -216,6 +222,98 @@ describe("automatic session naming", () => {
     await flushPromises();
 
     expect(setSessionName).toHaveBeenCalledWith("Initial prompt fix");
+  });
+
+  it("omits reasoning and uses a small output cap when reasoning can be disabled", async () => {
+    const { handlers } = makeFakePi();
+    const { ctx } = makeExtensionCtx({
+      model: { provider: "deepseek", id: "deepseek-v4-flash", reasoning: true },
+    });
+    const beforeAgentStart = getBeforeAgentStartHandler(handlers);
+    completeSimpleMock.mockResolvedValue({
+      stopReason: "stop",
+      content: [{ type: "text", text: "Token Limit Fix" }],
+    });
+
+    await beforeAgentStart({ prompt: "Fix token limit warning" }, ctx);
+    await flushPromises();
+
+    expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+    expect(completeSimpleMock.mock.calls[0][2]).toMatchObject({
+      maxTokens: 96,
+    });
+    expect(completeSimpleMock.mock.calls[0][2]).not.toHaveProperty("reasoning");
+  });
+
+  it("keeps minimal reasoning with a larger output cap when reasoning cannot be disabled", async () => {
+    const { handlers } = makeFakePi();
+    const { ctx } = makeExtensionCtx({
+      model: {
+        provider: "example",
+        id: "reasoning-only",
+        reasoning: true,
+        thinkingLevelMap: { off: null },
+      },
+    });
+    const beforeAgentStart = getBeforeAgentStartHandler(handlers);
+    completeSimpleMock.mockResolvedValue({
+      stopReason: "stop",
+      content: [{ type: "text", text: "Reasoning Only" }],
+    });
+
+    await beforeAgentStart(
+      { prompt: "Name this with a reasoning-only model" },
+      ctx,
+    );
+    await flushPromises();
+
+    expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+    expect(completeSimpleMock.mock.calls[0][2]).toMatchObject({
+      maxTokens: 1024,
+      reasoning: "minimal",
+    });
+  });
+
+  it("falls back to a local title when the model hits the token limit without text", async () => {
+    const { handlers, setSessionName } = makeFakePi();
+    const { ctx, notifications } = makeExtensionCtx();
+    const beforeAgentStart = getBeforeAgentStartHandler(handlers);
+    completeSimpleMock.mockResolvedValue({
+      stopReason: "length",
+      content: [],
+    });
+
+    await beforeAgentStart(
+      { prompt: "Fix auto name token limit warning" },
+      ctx,
+    );
+    await flushPromises();
+
+    expect(setSessionName).toHaveBeenCalledWith(
+      "Fix auto name token limit warning",
+    );
+    expect(notifications).toEqual([]);
+  });
+
+  it("falls back to a local title when no model is configured", async () => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = mkdtempSync(join(tmpdir(), "pi-auto-name-"));
+    getAgentDirMock.mockReturnValue(tmpDir);
+    const { handlers, setSessionName } = makeFakePi();
+    const { ctx, notifications } = makeExtensionCtx();
+    const beforeAgentStart = getBeforeAgentStartHandler(handlers);
+
+    await beforeAgentStart(
+      { prompt: "Implement local session naming fallback" },
+      ctx,
+    );
+    await flushPromises();
+
+    expect(completeSimpleMock).not.toHaveBeenCalled();
+    expect(setSessionName).toHaveBeenCalledWith(
+      "Implement local session naming fallback",
+    );
+    expect(notifications).toEqual([]);
   });
 
   it("retries transient failures with accumulated early prompts", async () => {

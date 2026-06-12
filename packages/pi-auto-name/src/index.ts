@@ -1,4 +1,7 @@
-import { completeSimple } from "@earendil-works/pi-ai";
+import {
+  completeSimple,
+  getSupportedThinkingLevels,
+} from "@earendil-works/pi-ai";
 import type { UserMessage } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
@@ -129,9 +132,14 @@ async function generateNameAsync(
   promptText: string | readonly string[],
   warn: (ctx: ExtensionContext, msg: string) => void,
 ): Promise<GenerateResult> {
+  const localTitle = fallbackTitle(promptText);
+
   try {
     const configuredModel = resolveConfiguredModel(agentDir);
     if (!configuredModel) {
+      if (localTitle) {
+        return { outcome: "success", title: localTitle };
+      }
       const message = `No model configured. Set ${CONFIG_RELATIVE_PATH} with { "model": "provider/model-id" }.`;
       warn(ctx, message);
       return { outcome: "preflight-failure", message };
@@ -168,14 +176,17 @@ async function generateNameAsync(
       timestamp: Date.now(),
     };
 
+    const supportsReasoningOff =
+      getSupportedThinkingLevels(model).includes("off");
+
     const response = await completeSimple(
       model,
       { systemPrompt, messages: [userMessage] },
       {
         apiKey: auth.apiKey,
         headers: auth.headers,
-        maxTokens: 256,
-        reasoning: "minimal",
+        maxTokens: supportsReasoningOff ? 96 : 1024,
+        ...(supportsReasoningOff ? {} : { reasoning: "minimal" as const }),
         signal: ctx.signal,
       },
     );
@@ -197,6 +208,9 @@ async function generateNameAsync(
 
     const title = sanitizeTitle(text);
     if (!title) {
+      if (localTitle) {
+        return { outcome: "success", title: localTitle };
+      }
       if (response.stopReason === "length") {
         return {
           outcome: "invalid-output",
@@ -212,4 +226,11 @@ async function generateNameAsync(
     const message = err instanceof Error ? err.message : String(err);
     return { outcome: "unknown-error", message };
   }
+}
+
+function fallbackTitle(promptText: string | readonly string[]): string | null {
+  const prompt = (Array.isArray(promptText) ? promptText : [promptText])
+    .map((p) => p.trim())
+    .find(Boolean);
+  return prompt ? sanitizeTitle(prompt) : null;
 }
