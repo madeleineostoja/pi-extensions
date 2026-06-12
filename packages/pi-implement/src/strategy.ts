@@ -5,6 +5,8 @@ import { promisify } from "node:util";
 import type { ParsedPlan, PlanTask } from "./plan.js";
 import type { PlanBundleManifest } from "./manifest.js";
 import { formatBundleMaterial, PlanMaterialSizeError } from "./manifest.js";
+import type { PlanCorpus } from "./corpus.js";
+import { formatCorpusMaterial } from "./corpus.js";
 import type { ImplementConfig } from "./config.js";
 import { resolveMaxParallel } from "./config.js";
 import type { SubagentClient } from "./subagents.js";
@@ -46,6 +48,7 @@ export type StrategyRequest = {
   runId: string;
   signal?: AbortSignal;
   manifest?: PlanBundleManifest;
+  corpus?: PlanCorpus;
   forceSerial?: boolean;
   updateState(state: StatePatch): void;
 };
@@ -287,13 +290,21 @@ async function buildGraphPlannerPrompt(
     }
   }
 
+  let corpusSection = "";
+  if (req.corpus) {
+    const corpus = formatCorpusMaterial(req.corpus);
+    if (corpus) {
+      corpusSection = `\n\n## Plan Corpus\n\n${corpus}`;
+    }
+  }
+
   return `You are a progressive graph planning agent for a parallel code implementation pipeline.
 
 Your job is to analyze the plan and decide whether to run tasks serially or in parallel, and only build a dependency graph when useful independent work exists.
 
 ## Plan
 
-${req.planContent}${bundleSection}
+${req.planContent}${bundleSection}${corpusSection}
 
 ## Unchecked Tasks (${unchecked.length})
 

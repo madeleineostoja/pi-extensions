@@ -39,6 +39,7 @@ function makeStatePaths(): StatePaths {
     runJson: join(tmpRunDir, "run.json"),
     eventsJsonl: join(tmpRunDir, "events.jsonl"),
     planSnapshot: join(tmpRunDir, "plan.snapshot.md"),
+    corpusJson: join(tmpRunDir, "corpus.json"),
     tasksDir: join(tmpRunDir, "tasks"),
     worktreesDir: join(tmpRunDir, "worktrees"),
     lockFile: join(tmpRunDir, "run.lock"),

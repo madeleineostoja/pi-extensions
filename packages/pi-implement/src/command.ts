@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
 import type {
@@ -47,6 +47,7 @@ import {
   buildPlanBundleManifest,
   validatePlanMaterialSizes,
 } from "./manifest.js";
+import { ingestPlanCorpus } from "./corpus.js";
 import { diffProgress } from "./progress.js";
 import {
   getStatePaths,
@@ -511,6 +512,8 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       let planArtifacts: string[];
       let planHash: string;
       let manifest: ReturnType<typeof buildPlanBundleManifest>;
+      let corpus: ReturnType<typeof ingestPlanCorpus>;
+      let corpusFileRecords: Array<{ path: string; hash: string }>;
       try {
         git = new ExecGitClient(ctx.cwd);
         repoRoot = await git.mainRoot();
@@ -535,7 +538,27 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           );
           return;
         }
+
+        corpus = ingestPlanCorpus(planPath);
+        if (corpus.validationErrors.length > 0) {
+          ctx.ui.notify(
+            `pi-implement blocked: corpus validation failed:\n${corpus.validationErrors.join("\n")}`,
+            "warning",
+          );
+          return;
+        }
+
+        corpusFileRecords = corpus.files.map((f) => ({
+          path: f.absolutePath,
+          hash: f.hash,
+        }));
+
         planArtifacts = manifest.allArtifactPaths;
+        for (const corpusPath of corpus.files.map((f) => f.absolutePath)) {
+          if (!planArtifacts.includes(corpusPath)) {
+            planArtifacts.push(corpusPath);
+          }
+        }
         planHash = createHash("sha256").update(planContent).digest("hex");
         if (!(await git.isCleanExcept(planArtifacts))) {
           ctx.ui.notify("pi-implement blocked: dirty worktree", "warning");
@@ -568,6 +591,8 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           checkoutRoot,
           planPath,
           planHash,
+          corpusHash: corpus.corpusHash,
+          corpusFiles: corpusFileRecords,
           baseSha,
           currentPhase: "preflight" as const,
           maxConcurrency,
@@ -588,6 +613,19 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         }
         try {
           createRunState(paths, runJson, planContent);
+          writeFileSync(
+            paths.corpusJson,
+            JSON.stringify(
+              {
+                entryPath: corpus.entryPath,
+                corpusHash: corpus.corpusHash,
+                files: corpusFileRecords,
+              },
+              null,
+              2,
+            ),
+            "utf-8",
+          );
           appendEvent(paths, { type: "run_started", runId });
           break;
         } catch (err) {
@@ -710,6 +748,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           updateState,
           manifest,
           forceSerial,
+          corpus,
         });
         throwIfCommandStopped(isCurrentRun, active, abortController);
         appendEvent(paths, {

@@ -23,6 +23,8 @@ export type RunJson = {
   checkoutRoot?: string;
   planPath: string;
   planHash: string;
+  corpusHash?: string;
+  corpusFiles?: Array<{ path: string; hash: string }>;
   baseSha: string;
   currentPhase: string;
   maxConcurrency: number;
@@ -132,6 +134,7 @@ export type StatePaths = {
   runJson: string;
   eventsJsonl: string;
   planSnapshot: string;
+  corpusJson: string;
   tasksDir: string;
   worktreesDir: string;
   locksDir?: string;
@@ -169,6 +172,7 @@ export function getStatePaths(
     runJson: join(runDir, "run.json"),
     eventsJsonl: join(runDir, "events.jsonl"),
     planSnapshot: join(runDir, "plan.snapshot.md"),
+    corpusJson: join(runDir, "corpus.json"),
     tasksDir: join(runDir, "tasks"),
     worktreesDir: join(baseDir, "worktrees", runId),
     locksDir,
