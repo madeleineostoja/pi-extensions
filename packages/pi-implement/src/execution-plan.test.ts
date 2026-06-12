@@ -20,11 +20,15 @@ function makeContract(
   };
 }
 
+let nextPlanIndex = 1;
+
 function makeTask(
   overrides: Partial<ExecutionTask> & { id: string },
 ): ExecutionTask {
-  return {
+  const task: ExecutionTask = {
+    planIndex: nextPlanIndex++,
     title: "Task title",
+    taskHash: "abc12345",
     status: "todo",
     dependsOn: [],
     review: { mode: "require" },
@@ -34,6 +38,7 @@ function makeTask(
     compiledContract: makeContract(),
     ...overrides,
   };
+  return task;
 }
 
 function makeManifest(

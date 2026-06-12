@@ -5,11 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { selectStrategy } from "./strategy.js";
 import { parsePlan } from "./plan.js";
-import { buildPlanBundleManifest, PlanMaterialSizeError } from "./manifest.js";
+import {
+  buildPlanBundleManifest,
+  computeTaskFingerprint,
+  PlanMaterialSizeError,
+} from "./manifest.js";
 import type { SubagentClient } from "./subagents.js";
 import type { StatePaths } from "./state.js";
 import type { EffectiveRoles } from "./config.js";
 import type { ImplementGraph } from "./graph.js";
+import type { ExecutionManifest, ExecutionTask } from "./execution-plan.js";
 
 const PLAN_PATH = "/repo/plan.md";
 
@@ -29,7 +34,17 @@ function makePlan(taskLines: string[], checked: boolean[] = []) {
     const mark = checked[i] ? "x" : " ";
     return `- [${mark}] ${text}`;
   });
-  return parsePlan(PLAN_PATH, `# Plan\n\n## Tasks\n\n${lines.join("\n")}\n`);
+  return parsePlan(PLAN_PATH, `# Plan\n\n## Tasks\n\n${lines.join("\n")}`);
+}
+
+function makePlanWithTaskBlocks(
+  tasks: Array<{ text: string; blockLines?: string[] }>,
+) {
+  const lines = tasks.flatMap((task) => [
+    `- [ ] ${task.text}`,
+    ...(task.blockLines ?? []),
+  ]);
+  return parsePlan(PLAN_PATH, `# Plan\n\n## Tasks\n\n${lines.join("\n")}`);
 }
 
 function makeStatePaths(): StatePaths {
@@ -51,6 +66,52 @@ function makeRoles(): EffectiveRoles {
     implementer: { model: "p/m", type: "general-purpose" },
     reviewer: { model: "p/m", type: "general-purpose" },
     planner: { model: "p/m", type: "Explore" },
+  };
+}
+
+function makeTask(
+  overrides: Partial<ExecutionTask> & { id: string },
+): ExecutionTask {
+  const title = overrides.title ?? "Task title";
+  const taskHash =
+    overrides.taskHash ??
+    computeTaskFingerprint({
+      index: overrides.planIndex ?? 1,
+      lineNumber: 1,
+      indent: "",
+      checked: false,
+      originalLine: `- [ ] ${title}`,
+      text: title,
+      blockLines: [],
+    });
+  return {
+    planIndex: 1,
+    title,
+    taskHash,
+    status: "todo",
+    dependsOn: [],
+    review: { mode: "require" },
+    affectedAreas: [],
+    conflictHints: [],
+    sourceReferences: [],
+    compiledContract: {
+      objective: "Implement task",
+      inScope: ["do thing"],
+      acceptanceCriteria: ["it works"],
+      outOfScope: ["other task work"],
+    },
+    ...overrides,
+  };
+}
+
+function makeManifest(
+  overrides: Partial<ExecutionManifest> & { tasks: ExecutionTask[] },
+): ExecutionManifest {
+  return {
+    version: 1,
+    plannerReason: "ok",
+    plannerConfidence: "high",
+    ...overrides,
   };
 }
 
@@ -98,8 +159,15 @@ describe("selectStrategy - auto mode deterministic preconditions", () => {
     ).toHaveLength(0);
   });
 
-  it("selects serial when one unchecked task without LLM calls", async () => {
-    const subagents = makeSubagents();
+  it("builds an execution manifest for one unchecked task", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify(
+        makeManifest({
+          maxConcurrency: 1,
+          tasks: [makeTask({ id: "t1", planIndex: 2, title: "Task B" })],
+        }),
+      ),
+    );
     const plan = makePlan(["Task A", "Task B"], [true]);
     const result = await selectStrategy({
       plan,
@@ -117,18 +185,30 @@ describe("selectStrategy - auto mode deterministic preconditions", () => {
     expect(result.mode).toBe("serial");
     expect(
       (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
-    ).toHaveLength(0);
+    ).toHaveLength(1);
+    expect(
+      readFileSync(join(tmpRunDir, "execution-manifest.json"), "utf-8"),
+    ).toContain('"title": "Task B"');
   });
 });
 
 describe("selectStrategy - auto mode planner", () => {
   it("calls planner directly for 2 unchecked tasks in auto mode", async () => {
     const subagents = makeSubagents(
-      JSON.stringify({
-        mode: "serial",
-        reason: "clear sequential dependency",
-        confidence: "high",
-      }),
+      JSON.stringify(
+        makeManifest({
+          maxConcurrency: 1,
+          tasks: [
+            makeTask({ id: "t1", planIndex: 1, title: "packages/foo task" }),
+            makeTask({
+              id: "t2",
+              planIndex: 2,
+              title: "packages/bar task",
+              dependsOn: ["t1"],
+            }),
+          ],
+        }),
+      ),
     );
     const plan = makePlan(["packages/foo task", "packages/bar task"]);
     const result = await selectStrategy({
@@ -152,11 +232,26 @@ describe("selectStrategy - auto mode planner", () => {
 
   it("calls planner directly for 3+ tasks", async () => {
     const subagents = makeSubagents(
-      JSON.stringify({
-        mode: "serial",
-        reason: "clear semantic chain",
-        confidence: "high",
-      }),
+      JSON.stringify(
+        makeManifest({
+          maxConcurrency: 1,
+          tasks: [
+            makeTask({ id: "t1", planIndex: 1, title: "Add the auth model" }),
+            makeTask({
+              id: "t2",
+              planIndex: 2,
+              title: "Test the auth model",
+              dependsOn: ["t1"],
+            }),
+            makeTask({
+              id: "t3",
+              planIndex: 3,
+              title: "Document the auth model",
+              dependsOn: ["t2"],
+            }),
+          ],
+        }),
+      ),
     );
     const plan = makePlan([
       "Add the auth model",
@@ -182,13 +277,58 @@ describe("selectStrategy - auto mode planner", () => {
     expect(result.mode).toBe("serial");
   });
 
-  it("planner can return serial for auto mode", async () => {
+  it("forces serial mode after building an execution manifest", async () => {
     const subagents = makeSubagents(
-      JSON.stringify({
-        mode: "serial",
-        reason: "clear semantic sequence",
-        confidence: "high",
-      }),
+      JSON.stringify(
+        makeManifest({
+          maxConcurrency: 2,
+          tasks: [
+            makeTask({ id: "t1", planIndex: 1, title: "Task A" }),
+            makeTask({ id: "t2", planIndex: 2, title: "Task B" }),
+          ],
+        }),
+      ),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    const result = await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      forceSerial: true,
+      updateState: () => ({}),
+    });
+    expect(result.mode).toBe("serial");
+    if (result.mode === "serial") {
+      expect(result.maxConcurrency).toBe(1);
+    }
+    expect(
+      (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
+    ).toHaveLength(1);
+  });
+
+  it("planner can return serial for auto mode via manifest", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify(
+        makeManifest({
+          maxConcurrency: 1,
+          tasks: [
+            makeTask({ id: "t1", planIndex: 1, title: "Task A" }),
+            makeTask({
+              id: "t2",
+              planIndex: 2,
+              title: "Task B",
+              dependsOn: ["t1"],
+            }),
+          ],
+        }),
+      ),
     );
     const plan = makePlan(["Task A", "Task B"]);
     const result = await selectStrategy({
@@ -211,50 +351,25 @@ describe("selectStrategy - auto mode planner", () => {
   });
 
   it("planner can return parallel for auto mode", async () => {
-    const graph: ImplementGraph = {
-      version: 1,
-      runId: "",
-      baseSha: "",
-      planPath: "",
-      planHash: "",
-      nodes: [
-        {
-          id: "t1",
-          planIndex: 1,
-          title: "Task A",
-          taskHash: "a",
-          dependsOn: [],
-          mode: "parallel",
-          affectedAreas: ["packages/foo"],
-          conflictHints: [],
-          validationCommands: [],
-          confidence: "high",
-          reasons: [],
-          evidencePaths: [],
-        },
-        {
-          id: "t2",
-          planIndex: 2,
-          title: "Task B",
-          taskHash: "b",
-          dependsOn: [],
-          mode: "parallel",
-          affectedAreas: ["packages/bar"],
-          conflictHints: [],
-          validationCommands: [],
-          confidence: "high",
-          reasons: [],
-          evidencePaths: [],
-        },
-      ],
-    };
-    const plannerOutput = JSON.stringify({
-      mode: "parallel",
-      reason: "Independent areas",
-      confidence: "high",
-      maxConcurrency: 2,
-      graph,
-    });
+    const plannerOutput = JSON.stringify(
+      makeManifest({
+        maxConcurrency: 2,
+        tasks: [
+          makeTask({
+            id: "t1",
+            planIndex: 1,
+            title: "Task A",
+            affectedAreas: ["packages/foo"],
+          }),
+          makeTask({
+            id: "t2",
+            planIndex: 2,
+            title: "Task B",
+            affectedAreas: ["packages/bar"],
+          }),
+        ],
+      }),
+    );
     const subagents = makeSubagents(plannerOutput);
     const plan = makePlan(["Task A", "Task B"]);
     const result = await selectStrategy({
@@ -277,52 +392,27 @@ describe("selectStrategy - auto mode planner", () => {
   });
 });
 
-describe("selectStrategy - graph planner fallback", () => {
-  it("calls graph planner and uses a valid parallel graph", async () => {
-    const graph: ImplementGraph = {
-      version: 1,
-      runId: "",
-      baseSha: "",
-      planPath: "",
-      planHash: "",
-      nodes: [
-        {
-          id: "t1",
-          planIndex: 1,
-          title: "Task A",
-          taskHash: "a",
-          dependsOn: [],
-          mode: "parallel",
-          affectedAreas: ["packages/foo"],
-          conflictHints: [],
-          validationCommands: [],
-          confidence: "high",
-          reasons: [],
-          evidencePaths: [],
-        },
-        {
-          id: "t2",
-          planIndex: 2,
-          title: "Task B",
-          taskHash: "b",
-          dependsOn: [],
-          mode: "parallel",
-          affectedAreas: ["packages/bar"],
-          conflictHints: [],
-          validationCommands: [],
-          confidence: "high",
-          reasons: [],
-          evidencePaths: [],
-        },
-      ],
-    };
-    const plannerOutput = JSON.stringify({
-      mode: "parallel",
-      reason: "Independent areas",
-      confidence: "high",
-      maxConcurrency: 2,
-      graph,
-    });
+describe("selectStrategy - execution planner", () => {
+  it("calls execution planner and uses a valid parallel manifest", async () => {
+    const plannerOutput = JSON.stringify(
+      makeManifest({
+        maxConcurrency: 2,
+        tasks: [
+          makeTask({
+            id: "t1",
+            planIndex: 1,
+            title: "Task A",
+            affectedAreas: ["packages/foo"],
+          }),
+          makeTask({
+            id: "t2",
+            planIndex: 2,
+            title: "Task B",
+            affectedAreas: ["packages/bar"],
+          }),
+        ],
+      }),
+    );
     const subagents = makeSubagents(plannerOutput);
     const plan = makePlan(["Task A", "Task B"]);
 
@@ -351,7 +441,7 @@ describe("selectStrategy - graph planner fallback", () => {
     }
   });
 
-  it("falls back to serial with recorded reason when planner output is invalid", async () => {
+  it("blocks with recorded reason when planner output is invalid", async () => {
     const subagents = makeSubagents("not valid json");
     const plan = makePlan(["Task A", "Task B"]);
     const result = await selectStrategy({
@@ -367,56 +457,15 @@ describe("selectStrategy - graph planner fallback", () => {
       runId: "r1",
       updateState: () => ({}),
     });
-    expect(result.mode).toBe("serial");
+    expect(result.mode).toBe("blocked");
     expect(result.reason.length).toBeGreaterThan(0);
   });
 
-  it("falls back to serial when graph validation fails", async () => {
-    const graph: ImplementGraph = {
-      version: 1,
-      runId: "",
-      baseSha: "",
-      planPath: "",
-      planHash: "",
-      nodes: [
-        {
-          id: "t1",
-          planIndex: 1,
-          title: "Task A",
-          taskHash: "a",
-          dependsOn: ["t-unknown"],
-          mode: "parallel",
-          affectedAreas: [],
-          conflictHints: [],
-          validationCommands: [],
-          confidence: "high",
-          reasons: [],
-          evidencePaths: [],
-        },
-        {
-          id: "t2",
-          planIndex: 2,
-          title: "Task B",
-          taskHash: "b",
-          dependsOn: [],
-          mode: "parallel",
-          affectedAreas: [],
-          conflictHints: [],
-          validationCommands: [],
-          confidence: "high",
-          reasons: [],
-          evidencePaths: [],
-        },
-      ],
-    };
-    const subagents = makeSubagents(
-      JSON.stringify({
-        mode: "parallel",
-        reason: "ok",
-        confidence: "high",
-        graph,
-      }),
-    );
+  it("blocks when manifest validation fails", async () => {
+    const manifest = makeManifest({
+      tasks: [makeTask({ id: "t1", planIndex: 1, title: "Task A" })],
+    });
+    const subagents = makeSubagents(JSON.stringify(manifest));
     const plan = makePlan(["Task A", "Task B"]);
     const result = await selectStrategy({
       plan,
@@ -431,8 +480,81 @@ describe("selectStrategy - graph planner fallback", () => {
       runId: "r1",
       updateState: () => ({}),
     });
-    expect(result.mode).toBe("serial");
-    expect(result.reason.toLowerCase()).toContain("serial");
+    expect(result.mode).toBe("blocked");
+    expect(result.reason.toLowerCase()).toContain("mismatch");
+  });
+
+  it("blocks when planIndex and title are swapped", async () => {
+    const plan = makePlan(["Task A", "Task B"]);
+    const manifest = makeManifest({
+      tasks: [
+        makeTask({
+          id: "t1",
+          planIndex: 1,
+          title: "Task B",
+          taskHash: computeTaskFingerprint(plan.tasks[1]),
+        }),
+        makeTask({
+          id: "t2",
+          planIndex: 2,
+          title: "Task A",
+          taskHash: computeTaskFingerprint(plan.tasks[0]),
+        }),
+      ],
+    });
+    const result = await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents: makeSubagents(JSON.stringify(manifest)),
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+    expect(result.mode).toBe("blocked");
+    expect(result.reason).toContain("title mismatch");
+  });
+
+  it("blocks duplicate-title manifests mapped to the wrong task fingerprint", async () => {
+    const plan = makePlanWithTaskBlocks([
+      { text: "Repeat title", blockLines: ["  - first task detail"] },
+      { text: "Repeat title", blockLines: ["  - second task detail"] },
+    ]);
+    const manifest = makeManifest({
+      tasks: [
+        makeTask({
+          id: "t1",
+          planIndex: 1,
+          title: "Repeat title",
+          taskHash: computeTaskFingerprint(plan.tasks[1]),
+        }),
+        makeTask({
+          id: "t2",
+          planIndex: 2,
+          title: "Repeat title",
+          taskHash: computeTaskFingerprint(plan.tasks[0]),
+        }),
+      ],
+    });
+    const result = await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents: makeSubagents(JSON.stringify(manifest)),
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+    expect(result.mode).toBe("blocked");
+    expect(result.reason).toContain("taskHash mismatch");
   });
 
   it("excludes an absolute source plan path from planner git status", async () => {
@@ -547,7 +669,7 @@ describe("selectStrategy - planner prompt content", () => {
     expect(prompt).toContain("Current Git Status");
     expect(prompt).toContain("- [planIndex=1] Task A");
     expect(prompt).toContain("- [planIndex=2] Task B");
-    expect(prompt).toContain("Task hashes:");
+    expect(prompt).toContain("Task fingerprints:");
   });
 
   it("constrains planner exploration to read-only actions", async () => {
@@ -645,8 +767,10 @@ describe("selectStrategy - planner prompt content", () => {
     expect(prompt).toContain("Progressive Decision Process");
     expect(prompt).toContain("First, analyze ONLY the plan");
     expect(prompt).toContain("concrete semantic sequence");
-    expect(prompt).toContain('return "serial" immediately');
-    expect(prompt).toContain("Do not explore the repository");
+    expect(prompt).toContain("you can still return an execution manifest");
+    expect(prompt).toContain(
+      "If serial is not clear, perform minimal targeted exploration",
+    );
   });
 
   it("describes bounded targeted exploration for ambiguous cases", async () => {
@@ -868,51 +992,16 @@ describe("selectStrategy - planner prompt content", () => {
 
 describe("selectStrategy - concurrency clamping", () => {
   it("clamps effective concurrency to min(config.maxParallel, 8)", async () => {
-    const graph: ImplementGraph = {
-      version: 1,
-      runId: "",
-      baseSha: "",
-      planPath: "",
-      planHash: "",
-      nodes: [
-        {
-          id: "t1",
-          planIndex: 1,
-          title: "Task A",
-          taskHash: "a",
-          dependsOn: [],
-          mode: "parallel",
-          affectedAreas: [],
-          conflictHints: [],
-          validationCommands: [],
-          confidence: "high",
-          reasons: [],
-          evidencePaths: [],
-        },
-        {
-          id: "t2",
-          planIndex: 2,
-          title: "Task B",
-          taskHash: "b",
-          dependsOn: [],
-          mode: "parallel",
-          affectedAreas: [],
-          conflictHints: [],
-          validationCommands: [],
-          confidence: "high",
-          reasons: [],
-          evidencePaths: [],
-        },
-      ],
-    };
     const subagents = makeSubagents(
-      JSON.stringify({
-        mode: "parallel",
-        reason: "ok",
-        confidence: "high",
-        maxConcurrency: 10,
-        graph,
-      }),
+      JSON.stringify(
+        makeManifest({
+          maxConcurrency: 10,
+          tasks: [
+            makeTask({ id: "t1", planIndex: 1, title: "Task A" }),
+            makeTask({ id: "t2", planIndex: 2, title: "Task B" }),
+          ],
+        }),
+      ),
     );
     const plan = makePlan(["Task A", "Task B"]);
     const result = await selectStrategy({
@@ -929,69 +1018,23 @@ describe("selectStrategy - concurrency clamping", () => {
       updateState: () => ({}),
     });
     expect(result.mode).toBe("parallel");
-    expect(result.maxConcurrency).toBe(3);
+    if (result.mode === "parallel") {
+      expect(result.maxConcurrency).toBe(3);
+    }
   });
 
   it("clamps for auto mode with planner-proposed maxConcurrency", async () => {
-    const graph: ImplementGraph = {
-      version: 1,
-      runId: "",
-      baseSha: "",
-      planPath: "",
-      planHash: "",
-      nodes: [
-        {
-          id: "t1",
-          planIndex: 1,
-          title: "T1",
-          taskHash: "a",
-          dependsOn: [],
-          mode: "parallel",
-          affectedAreas: [],
-          conflictHints: [],
-          validationCommands: [],
-          confidence: "high",
-          reasons: [],
-          evidencePaths: [],
-        },
-        {
-          id: "t2",
-          planIndex: 2,
-          title: "T2",
-          taskHash: "b",
-          dependsOn: [],
-          mode: "parallel",
-          affectedAreas: [],
-          conflictHints: [],
-          validationCommands: [],
-          confidence: "high",
-          reasons: [],
-          evidencePaths: [],
-        },
-        {
-          id: "t3",
-          planIndex: 3,
-          title: "T3",
-          taskHash: "c",
-          dependsOn: [],
-          mode: "parallel",
-          affectedAreas: [],
-          conflictHints: [],
-          validationCommands: [],
-          confidence: "high",
-          reasons: [],
-          evidencePaths: [],
-        },
-      ],
-    };
     const subagents = makeSubagents(
-      JSON.stringify({
-        mode: "parallel",
-        reason: "ok",
-        confidence: "high",
-        maxConcurrency: 100,
-        graph,
-      }),
+      JSON.stringify(
+        makeManifest({
+          maxConcurrency: 100,
+          tasks: [
+            makeTask({ id: "t1", planIndex: 1, title: "T1" }),
+            makeTask({ id: "t2", planIndex: 2, title: "T2" }),
+            makeTask({ id: "t3", planIndex: 3, title: "T3" }),
+          ],
+        }),
+      ),
     );
     const plan = makePlan([
       "Update packages/auth/login.ts for auth",

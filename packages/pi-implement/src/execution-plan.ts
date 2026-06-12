@@ -1,4 +1,19 @@
-import { detectCycle, extractJsonObject, type CycleNode } from "./graph.js";
+import {
+  detectCycle,
+  extractJsonObject,
+  type CycleNode,
+  type ScoutDirective,
+} from "./graph.js";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import { computeTaskFingerprint } from "./manifest.js";
+import type { PlanTask } from "./plan.js";
 
 export type TaskStatus = "todo" | "done";
 
@@ -19,14 +34,21 @@ export type CompiledContract = {
 
 export type ExecutionTask = {
   id: string;
+  planIndex: number;
   title: string;
+  taskHash: string;
   status: TaskStatus;
   dependsOn: string[];
+  mode?: "serial" | "parallel";
   review: TaskReviewDirective;
   affectedAreas: string[];
   conflictHints: string[];
   sourceReferences: string[];
   compiledContract: CompiledContract;
+  scout?: ScoutDirective;
+  validationCommands?: string[];
+  reasons?: string[];
+  evidencePaths?: string[];
 };
 
 export type ExecutionManifest = {
@@ -113,6 +135,11 @@ export function parseExecutionPlan(
     manifest.maxConcurrency = obj.maxConcurrency;
   }
 
+  const validation = validateExecutionManifest(manifest);
+  if (!validation.ok) {
+    return validation;
+  }
+
   return { ok: true, value: manifest };
 }
 
@@ -189,6 +216,67 @@ function parseExecutionTask(
     };
   }
 
+  if (
+    typeof obj.planIndex !== "number" ||
+    !Number.isInteger(obj.planIndex) ||
+    obj.planIndex < 1
+  ) {
+    return {
+      ok: false,
+      reason: `Execution task "${id}" must have a positive integer planIndex.`,
+    };
+  }
+
+  if (typeof obj.taskHash !== "string" || obj.taskHash.trim().length === 0) {
+    return {
+      ok: false,
+      reason: `Execution task "${id}" must have a non-empty string taskHash.`,
+    };
+  }
+
+  if (
+    obj.mode !== undefined &&
+    obj.mode !== "serial" &&
+    obj.mode !== "parallel"
+  ) {
+    return {
+      ok: false,
+      reason: `Execution task "${id}" mode must be "serial" or "parallel", got: ${String(obj.mode)}.`,
+    };
+  }
+
+  const scoutResult = parseScoutDirective(obj.scout);
+  if (scoutResult !== undefined && !scoutResult.ok) {
+    return { ok: false, reason: scoutResult.reason };
+  }
+
+  const validationCommands = parseStringArray(obj.validationCommands);
+  if (
+    validationCommands === undefined &&
+    obj.validationCommands !== undefined
+  ) {
+    return {
+      ok: false,
+      reason: `Execution task "${id}" validationCommands must be an array of strings.`,
+    };
+  }
+
+  const reasons = parseStringArray(obj.reasons);
+  if (reasons === undefined && obj.reasons !== undefined) {
+    return {
+      ok: false,
+      reason: `Execution task "${id}" reasons must be an array of strings.`,
+    };
+  }
+
+  const evidencePaths = parseStringArray(obj.evidencePaths);
+  if (evidencePaths === undefined && obj.evidencePaths !== undefined) {
+    return {
+      ok: false,
+      reason: `Execution task "${id}" evidencePaths must be an array of strings.`,
+    };
+  }
+
   const contractResult = parseCompiledContract(obj.compiledContract, id);
   if (!contractResult.ok) {
     return { ok: false, reason: contractResult.reason };
@@ -198,16 +286,83 @@ function parseExecutionTask(
     ok: true,
     value: {
       id,
+      planIndex: obj.planIndex,
       title: obj.title.trim(),
+      taskHash: obj.taskHash.trim(),
       status: obj.status as TaskStatus,
       dependsOn,
+      mode: obj.mode as "serial" | "parallel" | undefined,
       review: reviewResult.value,
       affectedAreas,
       conflictHints,
       sourceReferences,
       compiledContract: contractResult.value,
+      scout: scoutResult?.value,
+      validationCommands,
+      reasons,
+      evidencePaths,
     },
   };
+}
+
+function parseScoutDirective(
+  value: unknown,
+):
+  | { ok: true; value: ScoutDirective }
+  | { ok: false; reason: string }
+  | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, reason: "Execution task scout must be an object." };
+  }
+  const obj = value as Record<string, unknown>;
+  if (obj.mode !== "skip" && obj.mode !== "suggest" && obj.mode !== "require") {
+    return {
+      ok: false,
+      reason: `Execution task scout mode must be "skip", "suggest", or "require", got: ${String(obj.mode)}.`,
+    };
+  }
+  const directive: ScoutDirective = { mode: obj.mode };
+  if (obj.reason !== undefined) {
+    if (typeof obj.reason !== "string") {
+      return {
+        ok: false,
+        reason: "Execution task scout reason must be a string.",
+      };
+    }
+    const trimmed = obj.reason.trim();
+    if (trimmed.length > 0) {
+      directive.reason = trimmed;
+    }
+  }
+  if (obj.prompt !== undefined) {
+    if (typeof obj.prompt !== "string") {
+      return {
+        ok: false,
+        reason: "Execution task scout prompt must be a string.",
+      };
+    }
+    const trimmed = obj.prompt.trim();
+    if (trimmed.length > 0) {
+      directive.prompt = trimmed;
+    }
+  }
+  if (obj.breadth !== undefined) {
+    if (
+      obj.breadth !== "quick" &&
+      obj.breadth !== "medium" &&
+      obj.breadth !== "very thorough"
+    ) {
+      return {
+        ok: false,
+        reason: `Execution task scout breadth must be "quick", "medium", or "very thorough", got: ${String(obj.breadth)}.`,
+      };
+    }
+    directive.breadth = obj.breadth;
+  }
+  return { ok: true, value: directive };
 }
 
 function parseTaskReviewDirective(
@@ -368,6 +523,17 @@ export function validateExecutionManifest(
     };
   }
 
+  const seenPlanIndexes = new Set<number>();
+  for (const task of manifest.tasks) {
+    if (seenPlanIndexes.has(task.planIndex)) {
+      return {
+        ok: false,
+        reason: `Duplicate planIndex: ${task.planIndex}.`,
+      };
+    }
+    seenPlanIndexes.add(task.planIndex);
+  }
+
   const seenIds = new Set<string>();
   const taskById = new Map<string, ExecutionTask>();
 
@@ -405,6 +571,87 @@ export function validateExecutionManifest(
   }
 
   return { ok: true };
+}
+
+export function validateManifestAgainstPlan(
+  manifest: ExecutionManifest,
+  uncheckedTasks: PlanTask[],
+): ExecutionValidationResult {
+  if (manifest.tasks.length !== uncheckedTasks.length) {
+    return {
+      ok: false,
+      reason: `Manifest has ${manifest.tasks.length} task(s) but plan has ${uncheckedTasks.length} unchecked task(s).`,
+    };
+  }
+
+  const expectedByIndex = new Map<
+    number,
+    { title: string; taskHash: string }
+  >();
+  for (const task of uncheckedTasks) {
+    expectedByIndex.set(task.index, {
+      title: task.text,
+      taskHash: computeTaskFingerprint(task),
+    });
+  }
+
+  const seenIndexes = new Set<number>();
+  for (const task of manifest.tasks) {
+    if (seenIndexes.has(task.planIndex)) {
+      return {
+        ok: false,
+        reason: `Duplicate planIndex: ${task.planIndex}.`,
+      };
+    }
+    seenIndexes.add(task.planIndex);
+
+    const expected = expectedByIndex.get(task.planIndex);
+    if (!expected) {
+      return {
+        ok: false,
+        reason: `Manifest task "${task.id}" planIndex ${task.planIndex} does not match any unchecked task.`,
+      };
+    }
+    if (task.title !== expected.title) {
+      return {
+        ok: false,
+        reason: `Manifest task "${task.id}" title mismatch: expected "${expected.title}", got "${task.title}".`,
+      };
+    }
+    if (task.taskHash !== expected.taskHash) {
+      return {
+        ok: false,
+        reason: `Manifest task "${task.id}" taskHash mismatch for planIndex ${task.planIndex}.`,
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
+export function writeExecutionManifest(
+  runDir: string,
+  manifest: ExecutionManifest,
+): void {
+  const path = join(runDir, "execution-manifest.json");
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp.${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(manifest, null, 2), "utf-8");
+  renameSync(tmp, path);
+}
+
+export function readExecutionManifest(
+  runDir: string,
+): ExecutionManifest | undefined {
+  const path = join(runDir, "execution-manifest.json");
+  if (!existsSync(path)) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as ExecutionManifest;
+  } catch {
+    return undefined;
+  }
 }
 
 export function renderCompiledContract(contract: CompiledContract): string {

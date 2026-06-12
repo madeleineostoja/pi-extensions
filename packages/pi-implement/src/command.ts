@@ -750,6 +750,9 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           forceSerial,
           corpus,
         });
+        if (strategy.mode === "blocked") {
+          throw new BlockedError(strategy.reason);
+        }
         throwIfCommandStopped(isCurrentRun, active, abortController);
         appendEvent(paths, {
           type: "strategy_selected",

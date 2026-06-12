@@ -1,10 +1,13 @@
-import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { isAbsolute, relative } from "node:path";
 import { promisify } from "node:util";
 import type { ParsedPlan, PlanTask } from "./plan.js";
 import type { PlanBundleManifest } from "./manifest.js";
-import { formatBundleMaterial, PlanMaterialSizeError } from "./manifest.js";
+import {
+  computeTaskFingerprint,
+  formatBundleMaterial,
+  PlanMaterialSizeError,
+} from "./manifest.js";
 import type { PlanCorpus } from "./corpus.js";
 import { formatCorpusMaterial } from "./corpus.js";
 import type { ImplementConfig } from "./config.js";
@@ -13,12 +16,15 @@ import type { SubagentClient } from "./subagents.js";
 import type { EffectiveRoles } from "./config.js";
 import type { StatePaths } from "./state.js";
 import type { AgentDisplayRef, RunState, StatePatch } from "./status.js";
-import {
-  parseStrategyDecision,
-  validateGraph,
-  writeGraphJson,
-} from "./graph.js";
+import { validateGraph, writeGraphJson } from "./graph.js";
 import type { ImplementGraph } from "./graph.js";
+import {
+  parseExecutionPlan,
+  validateExecutionManifest,
+  validateManifestAgainstPlan,
+  writeExecutionManifest,
+  type ExecutionManifest,
+} from "./execution-plan.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -33,6 +39,10 @@ export type StrategyOutcome =
       reason: string;
       maxConcurrency: number;
       graph: ImplementGraph;
+    }
+  | {
+      mode: "blocked";
+      reason: string;
     };
 
 export type StrategyRequest = {
@@ -67,23 +77,7 @@ export async function selectStrategy(
     };
   }
 
-  if (unchecked.length === 1) {
-    return {
-      mode: "serial",
-      reason: "Only one unchecked task; no parallelism needed.",
-      maxConcurrency,
-    };
-  }
-
-  if (req.forceSerial) {
-    return {
-      mode: "serial",
-      reason: "Serial mode forced via --serial flag.",
-      maxConcurrency,
-    };
-  }
-
-  return runGraphPlanner(req, unchecked, maxConcurrency);
+  return runExecutionPlanner(req, unchecked, maxConcurrency);
 }
 
 function addStrategyAgentPatch(
@@ -124,23 +118,22 @@ function removeStrategyAgentPatch(
   };
 }
 
-async function runGraphPlanner(
+async function runExecutionPlanner(
   req: StrategyRequest,
   unchecked: PlanTask[],
   maxConcurrency: number,
 ): Promise<StrategyOutcome> {
   let prompt: string;
   try {
-    prompt = await buildGraphPlannerPrompt(req, unchecked);
+    prompt = await buildExecutionPlannerPrompt(req, unchecked);
   } catch (err) {
     if (err instanceof PlanMaterialSizeError) {
       throw err;
     }
     const message = err instanceof Error ? err.message : String(err);
     return {
-      mode: "serial",
-      reason: `Could not build graph planner prompt: ${message}; defaulting to serial.`,
-      maxConcurrency,
+      mode: "blocked",
+      reason: `Could not build execution planner prompt: ${message}.`,
     };
   }
 
@@ -149,13 +142,14 @@ async function runGraphPlanner(
     const id = await req.subagents.spawn({
       type: req.roles.planner.type,
       prompt,
-      description: "graph planner: build task dependency graph",
+      description:
+        "execution planner: build task contracts and dependency graph",
       model: req.roles.planner.model,
     });
     const plannerRef: AgentDisplayRef = {
       id,
       role: "planner",
-      label: "Planner \u00b7 Select implementation strategy",
+      label: "Planner \u00b7 Build execution manifest",
       startedAt: new Date().toISOString(),
     };
     req.updateState((prev) => addStrategyAgentPatch(prev, plannerRef));
@@ -163,9 +157,8 @@ async function runGraphPlanner(
     req.updateState((prev) => removeStrategyAgentPatch(prev, id));
     if (result.status !== "completed") {
       return {
-        mode: "serial",
-        reason: `Graph planner subagent ${result.status}: ${result.error}; defaulting to serial.`,
-        maxConcurrency,
+        mode: "blocked",
+        reason: `Execution planner subagent ${result.status}: ${result.error}.`,
       };
     }
     rawResult = result.result;
@@ -173,80 +166,121 @@ async function runGraphPlanner(
     req.updateState({ activeSubagentIds: [], activeAgentRefs: [] });
     const message = err instanceof Error ? err.message : String(err);
     return {
-      mode: "serial",
-      reason: `Graph planner subagent error: ${message}; defaulting to serial.`,
-      maxConcurrency,
+      mode: "blocked",
+      reason: `Execution planner subagent error: ${message}.`,
     };
   }
 
-  return processGraphPlannerResult(rawResult, req, unchecked, maxConcurrency);
+  return processExecutionPlannerResult(
+    rawResult,
+    req,
+    unchecked,
+    maxConcurrency,
+  );
 }
 
-function processGraphPlannerResult(
+function processExecutionPlannerResult(
   rawResult: string,
   req: StrategyRequest,
   unchecked: PlanTask[],
-  maxConcurrency: number,
+  _maxConcurrency: number,
 ): StrategyOutcome {
-  const parsed = parseStrategyDecision(rawResult);
+  const parsed = parseExecutionPlan(rawResult);
   if (!parsed.ok) {
     return {
-      mode: "serial",
-      reason: `Planner output invalid: ${parsed.reason}; defaulting to serial.`,
-      maxConcurrency,
+      mode: "blocked",
+      reason: `Planner output invalid: ${parsed.reason}.`,
     };
   }
 
-  const decision = parsed.value;
+  const manifest = parsed.value;
 
-  if (decision.mode === "serial") {
+  const structuralValidation = validateExecutionManifest(manifest);
+  if (!structuralValidation.ok) {
     return {
-      mode: "serial",
-      reason: `Planner recommended serial: ${decision.reason}`,
-      maxConcurrency,
+      mode: "blocked",
+      reason: `Execution manifest validation failed: ${structuralValidation.reason}.`,
     };
   }
 
-  if (!decision.graph) {
+  const planValidation = validateManifestAgainstPlan(manifest, unchecked);
+  if (!planValidation.ok) {
     return {
-      mode: "serial",
-      reason:
-        "Planner recommended parallel but provided no graph; defaulting to serial.",
-      maxConcurrency,
+      mode: "blocked",
+      reason: `Execution manifest plan mismatch: ${planValidation.reason}.`,
     };
   }
 
-  const uncheckedIndexes = unchecked.map((t) => t.index);
-  const validation = validateGraph(decision.graph, uncheckedIndexes);
-  if (!validation.ok) {
-    return {
-      mode: "serial",
-      reason: `Graph validation failed: ${validation.reason}; defaulting to serial.`,
-      maxConcurrency,
-    };
-  }
-
-  const effectiveConcurrency = clampConcurrency(
-    decision.maxConcurrency,
-    req.config,
-  );
+  const effectiveConcurrency = req.forceSerial
+    ? 1
+    : clampConcurrency(manifest.maxConcurrency, req.config);
 
   const graph: ImplementGraph = {
-    ...decision.graph,
+    version: 1,
     runId: req.runId,
     baseSha: req.baseSha,
     planPath: req.plan.path,
     planHash: req.planHash,
+    nodes: manifest.tasks.map((task) => ({
+      id: task.id,
+      planIndex: task.planIndex,
+      title: task.title,
+      taskHash: task.taskHash,
+      dependsOn: task.dependsOn,
+      mode: task.mode ?? "parallel",
+      affectedAreas: task.affectedAreas,
+      conflictHints: task.conflictHints,
+      validationCommands: task.validationCommands ?? [],
+      confidence: "medium",
+      reasons: task.reasons ?? [],
+      evidencePaths: task.evidencePaths ?? [],
+      review: task.review,
+      scout: task.scout,
+    })),
   };
 
+  const uncheckedIndexes = unchecked.map((t) => t.index);
+  const graphValidation = validateGraph(graph, uncheckedIndexes);
+  if (!graphValidation.ok) {
+    return {
+      mode: "blocked",
+      reason: `Dependency graph validation failed: ${graphValidation.reason}.`,
+    };
+  }
+
+  writeExecutionManifest(req.paths.runDir, manifest);
   writeGraphJson(req.paths.runDir, graph);
 
+  const mode: "serial" | "parallel" =
+    req.forceSerial || effectiveConcurrency === 1 || isSerialChain(manifest)
+      ? "serial"
+      : "parallel";
+  const reason = `Planner built execution manifest: ${manifest.plannerReason ?? "(no reason given)"}${
+    req.forceSerial ? "; serial execution was forced" : ""
+  }`;
+
   return {
-    mode: "parallel",
-    reason: `Planner recommended parallel: ${decision.reason}`,
+    mode,
+    reason,
     maxConcurrency: effectiveConcurrency,
     graph,
   };
+}
+
+function isSerialChain(manifest: ExecutionManifest): boolean {
+  if (manifest.tasks.length <= 1) {
+    return true;
+  }
+  // Check if each task (except the first) has exactly one dependency on the previous task in plan order
+  const sorted = [...manifest.tasks].sort((a, b) => a.planIndex - b.planIndex);
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const curr = sorted[i];
+    if (curr.dependsOn.length !== 1 || curr.dependsOn[0] !== prev.id) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function clampConcurrency(
@@ -262,7 +296,7 @@ function clampConcurrency(
   return base;
 }
 
-async function buildGraphPlannerPrompt(
+async function buildExecutionPlannerPrompt(
   req: StrategyRequest,
   unchecked: PlanTask[],
 ): Promise<string> {
@@ -276,10 +310,7 @@ async function buildGraphPlannerPrompt(
   );
 
   const taskHashes = unchecked
-    .map(
-      (t) =>
-        `${t.index}:${createHash("sha256").update(t.text).digest("hex").slice(0, 8)}`,
-    )
+    .map((t) => `${t.index}:${computeTaskFingerprint(t)}`)
     .join(" ");
 
   let bundleSection = "";
@@ -298,9 +329,9 @@ async function buildGraphPlannerPrompt(
     }
   }
 
-  return `You are a progressive graph planning agent for a parallel code implementation pipeline.
+  return `You are an execution planner for a parallel code implementation pipeline.
 
-Your job is to analyze the plan and decide whether to run tasks serially or in parallel, and only build a dependency graph when useful independent work exists.
+Your job is to read the full human plan corpus, produce a compiled task contract for each unchecked task, and build a dependency graph that reflects only concrete semantic dependencies.
 
 ## Plan
 
@@ -310,7 +341,7 @@ ${req.planContent}${bundleSection}${corpusSection}
 
 ${taskLines}
 
-Task hashes: ${taskHashes}
+Task fingerprints: ${taskHashes}
 
 ## Context
 
@@ -330,11 +361,21 @@ ${gitStatus}
 
 ## Progressive Decision Process
 
-1. First, analyze ONLY the plan and unchecked task list. If the tasks clearly form a concrete semantic sequence where each task requires the output of the previous one, return "serial" immediately. Do not explore the repository and do not construct a graph.
+1. First, analyze ONLY the plan and unchecked task list. If the tasks clearly form a concrete semantic sequence where each task requires the output of the previous one, you can still return an execution manifest. Set \`maxConcurrency\` to 1 and/or make \`dependsOn\` form a serial chain.
 
 2. If serial is not clear, perform minimal targeted exploration using available repository search and read tools to identify likely task surface areas. Use only a few targeted searches or reads per task unless the ambiguity materially affects the strategy decision.
 
 3. Build a dependency graph only if at least two tasks can make independent progress.
+
+## Compiled Contract Rules
+
+- Read the full human plan corpus as source material.
+- For each task, produce a compiled contract that includes only the selected-task obligations. Do not include sibling deliverables or requirements belonging to other tasks.
+- \`inScope\` must be specific, concrete items. Do not use vague phrases like "related changes" or "supporting work".
+- \`acceptanceCriteria\` must be verifiable. Each criterion should be independently checkable.
+- \`outOfScope\` must explicitly list requirements from other tasks or the broader plan that this task must NOT implement.
+- \`supportingDesignContext\` is optional. Use it for design notes, patterns, or constraints from the plan that help the implementer but are not themselves acceptance criteria.
+- Keep sibling deliverables out of each task contract. The implementer must not treat another task's acceptance criteria as its own.
 
 ## Dependency Rules
 
@@ -344,51 +385,50 @@ ${gitStatus}
 
 ## Response Format
 
-Respond with strict JSON only. Your final response must begin with { and end with }. Do not include markdown fences, analysis, or any text outside the JSON. Put the full explanation in the JSON "reason" and node "reasons" fields.
+Respond with strict JSON only. Your final response must begin with { and end with }. Do not include markdown fences, analysis, or any text outside the JSON.
 
-For serial, return exactly this shape and omit graph:
-{
-  "mode": "serial",
-  "reason": "...",
-  "confidence": "high" | "medium" | "low"
-}
+Return an execution manifest matching this schema:
 
-For parallel, return this shape:
 {
-  "mode": "parallel",
-  "reason": "...",
-  "confidence": "high" | "medium" | "low",
+  "version": 1,
+  "sourcePlanHash": "${req.planHash}",
+  "sourcePlanPath": "${req.plan.path}",
+  "plannerReason": "...",
+  "plannerConfidence": "high" | "medium" | "low",
   "maxConcurrency": <optional positive integer>,
-  "graph": {
-    "version": 1,
-    "runId": "",
-    "baseSha": "",
-    "planPath": "",
-    "planHash": "",
-    "nodes": [
-      {
-        "id": "unique-node-id",
-        "planIndex": <integer matching task planIndex>,
-        "title": "task title",
-        "taskHash": "short hash",
-        "dependsOn": ["other-node-id"],
-        "mode": "parallel",
-        "affectedAreas": ["packages/foo"],
-        "conflictHints": [],
-        "validationCommands": [],
-        "confidence": "high",
-        "reasons": ["why this can run in parallel"],
-        "evidencePaths": [],
-        "review": { "mode": "skip" | "suggest" | "require", "reason": "optional" },
-        "scout": { "mode": "skip" | "suggest" | "require", "reason": "optional", "prompt": "optional", "breadth": "quick" | "medium" | "very thorough" }
+  "tasks": [
+    {
+      "id": "unique-node-id",
+      "planIndex": <integer matching task planIndex>,
+      "title": "task title",
+      "taskHash": "full task fingerprint from Task fingerprints above",
+      "status": "todo",
+      "dependsOn": ["other-node-id"],
+      "mode": "parallel",
+      "affectedAreas": ["packages/foo"],
+      "conflictHints": [],
+      "validationCommands": [],
+      "reasons": ["why this task is scoped this way"],
+      "evidencePaths": [],
+      "review": { "mode": "skip" | "suggest" | "require", "reason": "optional" },
+      "scout": { "mode": "skip" | "suggest" | "require", "reason": "optional", "prompt": "optional", "breadth": "quick" | "medium" | "very thorough" },
+      "sourceReferences": ["plan.md section X", "sub.md line Y"],
+      "compiledContract": {
+        "objective": "One-line description of what this task must accomplish",
+        "inScope": ["specific requirement 1", "specific requirement 2"],
+        "acceptanceCriteria": ["criterion that must be verifiable"],
+        "outOfScope": ["sibling task requirement 1", "other task deliverable"],
+        "supportingDesignContext": "optional context from the plan that helps implementation but is not part of the acceptance criteria",
+        "implementationNotes": "optional hints",
+        "verificationGuidance": "optional hints on how to verify"
       }
-    ]
-  }
+    }
+  ]
 }
 
 ## Scout Directives
 
-Each graph node may include an optional advisory "scout" field to guide runtime just-in-time exploration before the implementer begins a task. These directives are advisory hints, not authoritative guarantees. The runtime may override them based on config, retry state, and current worktree state.
+Each task may include an optional advisory "scout" field to guide runtime just-in-time exploration before the implementer begins a task. These directives are advisory hints, not authoritative guarantees. The runtime may override them based on config, retry state, and current worktree state.
 
 - "require" — the runtime should run a read-only Scout before this task attempt. Use for broad or ambiguous tasks where early context would materially help the implementer.
 - "suggest" — Scout is preferred but may be skipped if the runtime policy says otherwise or the task is trivial.
@@ -402,7 +442,7 @@ Important: Scout directives are for future runtime hints only. Do not perform or
 
 ## Task Review Directives
 
-Each graph node may include an optional advisory "review" field to guide the runtime task-review policy. These directives are advisory hints, not authoritative guarantees. The runtime may override them based on the actual staged diff, retry state, and validation evidence.
+Each task may include an optional advisory "review" field to guide the runtime task-review policy. These directives are advisory hints, not authoritative guarantees. The runtime may override them based on the actual staged diff, retry state, and validation evidence.
 
 - "require" — the runtime must run per-task review. Use for security/auth, persistence, public API, concurrency/state, migrations, dependency/config changes, broad/multi-area work, low planner confidence, or tasks likely to need subjective correctness review.
 - "suggest" — review is preferred; in v1 the runtime may only skip when the actual candidate is strictly docs-only. Use as the safe default when you see some risk but not enough to force "require".
@@ -410,7 +450,7 @@ Each graph node may include an optional advisory "review" field to guide the run
 - Omit "review" entirely when you have no strong opinion; the runtime will default to reviewing.
 - Do not base review directives on imagined implementation details you cannot verify. Base them only on the plan text, task scope, and files you have observed.
 
-If the correct strategy is serial, set mode to "serial" and omit the graph. Do not wrap the JSON in a markdown code fence.`;
+Do not wrap the JSON in a markdown code fence.`;
 }
 
 async function getFilteredGitStatus(
