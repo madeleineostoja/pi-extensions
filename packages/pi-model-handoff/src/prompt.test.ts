@@ -61,22 +61,7 @@ describe("formatSwitchNotification", () => {
       }),
     );
     expect(notification).toBe(
-      "Switched to Kimi K2.6 · 200k context (~$0.0850) · /handoff (~6.0k)",
-    );
-  });
-
-  it("omits the cost parenthetical for an OAuth target", () => {
-    convertCurrencyMock.mockImplementation(({ amount }) => amount * 1.7);
-    const notification = formatSwitchNotification(
-      makeRef({ name: "GPT-4o", subscription: true }),
-      makeEstimate({
-        currentTokens: 200_000,
-        estimatedHandoffTokens: 6000,
-        targetFullContextInputCost: 0.05,
-      }),
-    );
-    expect(notification).toBe(
-      "Switched to GPT-4o · 200k context · /handoff (~6.0k)",
+      "Switched to Kimi K2.6 · 200k context (~$0.09) · /handoff (~6.0k)",
     );
   });
 

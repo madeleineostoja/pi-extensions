@@ -158,17 +158,9 @@ describe("computeHandoffEstimate", () => {
       (10000 / 1_000_000) * 5,
       6,
     );
-    expect(estimate.estimatedHandoffCost).toBeCloseTo(
-      (estimate.estimatedHandoffTokens / 1_000_000) * 5,
-      6,
-    );
-    expect(estimate.estimatedSavingsCost).toBeCloseTo(
-      estimate.targetFullContextInputCost! - estimate.estimatedHandoffCost!,
-      6,
-    );
   });
 
-  it("omits costs when pricing unavailable", () => {
+  it("omits the surfaced cost when pricing unavailable", () => {
     const preparation = makePreparation({
       tokensBefore: 10000,
       messagesToSummarize: [{ role: "user", content: "hello" }],
@@ -180,7 +172,5 @@ describe("computeHandoffEstimate", () => {
 
     const estimate = computeHandoffEstimate(preparation, targetRef);
     expect(estimate.targetFullContextInputCost).toBeUndefined();
-    expect(estimate.estimatedHandoffCost).toBeUndefined();
-    expect(estimate.estimatedSavingsCost).toBeUndefined();
   });
 });

@@ -28,7 +28,7 @@ export function formatConvertedCost(
   if (nzd === undefined) {
     return undefined;
   }
-  return `~$${nzd.toFixed(4)}`;
+  return `~$${nzd.toFixed(2)}`;
 }
 
 export function formatTokens(n: number): string {
@@ -50,7 +50,7 @@ export function formatSwitchNotification(
   const targetName = targetRef.name ?? `${targetRef.provider}/${targetRef.id}`;
   let msg = `Switched to ${targetName} · ${formatTokens(estimate.currentTokens)} context`;
   const cost = formatConvertedCost(estimate.targetFullContextInputCost);
-  if (cost !== undefined && !targetRef.subscription) {
+  if (cost !== undefined) {
     msg += ` (${cost})`;
   }
   msg += ` · /handoff (~${formatTokens(estimate.estimatedHandoffTokens)})`;
