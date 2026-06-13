@@ -16,6 +16,7 @@ import {
   buildLimitReplacementMessage,
 } from "./limit-error.js";
 import { runOpencodeAuthSetup } from "./config.js";
+import { getAllUsage } from "./providers/opencode.js";
 
 export { buildHeaders } from "./auth.js";
 export { getUsage, providerForModel } from "./provider.js";
@@ -181,10 +182,24 @@ export default function (pi: ExtensionAPI) {
       }
 
       const results = await Promise.all(
-        available.map(async ({ provider, model }) => ({
-          provider: provider.id,
-          snapshot: await getUsage(model, ctx, true),
-        })),
+        available.map(async ({ provider, model }) => {
+          if (provider.id === "opencode") {
+            const accounts = await getAllUsage(model, ctx, true);
+            const activeAccount = accounts.find((a) => a.snapshot?.active);
+            return {
+              provider: provider.id,
+              snapshot: activeAccount?.snapshot ?? null,
+              accounts: accounts.map((a) => ({
+                accountId: a.accountId,
+                snapshot: a.snapshot,
+              })),
+            };
+          }
+          return {
+            provider: provider.id,
+            snapshot: await getUsage(model, ctx, true),
+          };
+        }),
       );
 
       ctx.ui.notify(formatUsageSummary(results), "info");

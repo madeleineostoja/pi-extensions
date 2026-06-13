@@ -111,6 +111,9 @@ function makeCtx(
 async function loadExtension(
   getUsageMock: (...args: unknown[]) => Promise<UsageSnapshot | null>,
   runOpencodeAuthSetupMock = vi.fn(),
+  getAllUsageMock?: (
+    ...args: unknown[]
+  ) => Promise<Array<{ accountId: string; snapshot: UsageSnapshot | null }>>,
 ): Promise<{ pi: FakePi; defaultExport: (pi: FakePi) => void }> {
   vi.resetModules();
   vi.doMock("./provider.js", async (importOriginal) => {
@@ -123,6 +126,17 @@ async function loadExtension(
   vi.doMock("./config.js", async () => {
     return {
       runOpencodeAuthSetup: runOpencodeAuthSetupMock,
+      readConfig: () => null,
+      resolveActiveOpencodeAccount: () => null,
+      resolveAllOpencodeAccounts: () => [],
+    };
+  });
+  vi.doMock("./providers/opencode.js", async () => {
+    return {
+      fetchUsage: async () => null,
+      parseUsage: () => null,
+      getUsage: getUsageMock,
+      getAllUsage: getAllUsageMock ?? (async () => []),
     };
   });
   const mod = await import("./index.js");
@@ -544,14 +558,28 @@ describe("command handler", () => {
       primary: { usedPercent: 12, resetInSec: 3600 },
       fetchedAt: Date.now(),
     }));
-    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    const getAllUsageMock = vi.fn(async () => [
+      {
+        accountId: "opencode-go",
+        snapshot: {
+          provider: "opencode" as const,
+          primary: { usedPercent: 12, resetInSec: 3600 },
+          fetchedAt: Date.now(),
+        },
+      },
+    ]);
+    const { pi, defaultExport } = await loadExtension(
+      getUsageMock,
+      vi.fn(),
+      getAllUsageMock,
+    );
     defaultExport(pi as never);
     const cmd = pi.commands.get("usage")!;
     const ctx = makeCtx("anthropic", true, [
       { provider: "opencode", id: "o1" },
     ]);
     await cmd.handler("", ctx);
-    expect(getUsageMock).toHaveBeenCalledTimes(1);
+    expect(getAllUsageMock).toHaveBeenCalledTimes(1);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
       expect.stringContaining("Opencode"),
       "info",
@@ -559,18 +587,22 @@ describe("command handler", () => {
   });
 
   it("notifies summary for both available providers", async () => {
-    const getUsageMock = vi.fn(async (...args: unknown[]) => {
-      const model = args[0] as FakeModel;
-      if (model.provider === "openai-codex") {
-        return fakeSnapshot;
-      }
-      return {
-        provider: "opencode" as const,
-        primary: { usedPercent: 12, resetInSec: 3600 },
-        fetchedAt: Date.now(),
-      };
-    });
-    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    const getUsageMock = vi.fn(async () => fakeSnapshot);
+    const getAllUsageMock = vi.fn(async () => [
+      {
+        accountId: "opencode-go",
+        snapshot: {
+          provider: "opencode" as const,
+          primary: { usedPercent: 12, resetInSec: 3600 },
+          fetchedAt: Date.now(),
+        },
+      },
+    ]);
+    const { pi, defaultExport } = await loadExtension(
+      getUsageMock,
+      vi.fn(),
+      getAllUsageMock,
+    );
     defaultExport(pi as never);
     const cmd = pi.commands.get("usage")!;
     const ctx = makeCtx("anthropic", true, [
@@ -578,7 +610,8 @@ describe("command handler", () => {
       { provider: "opencode", id: "o1" },
     ]);
     await cmd.handler("", ctx);
-    expect(getUsageMock).toHaveBeenCalledTimes(2);
+    expect(getUsageMock).toHaveBeenCalledTimes(1);
+    expect(getAllUsageMock).toHaveBeenCalledTimes(1);
     const notified = ctx.ui.notify.mock.calls[0][0] as string;
     expect(notified).toContain("Codex");
     expect(notified).toContain("Opencode");
@@ -591,13 +624,29 @@ describe("command handler", () => {
       error:
         "Opencode credentials not configured. Run /usage auth to set them up.",
     }));
-    const { pi, defaultExport } = await loadExtension(getUsageMock);
+    const getAllUsageMock = vi.fn(async () => [
+      {
+        accountId: "opencode-go",
+        snapshot: {
+          provider: "opencode" as const,
+          fetchedAt: Date.now(),
+          error:
+            "Opencode credentials not configured. Run /usage auth to set them up.",
+        },
+      },
+    ]);
+    const { pi, defaultExport } = await loadExtension(
+      getUsageMock,
+      vi.fn(),
+      getAllUsageMock,
+    );
     defaultExport(pi as never);
     const cmd = pi.commands.get("usage")!;
     const ctx = makeCtx("anthropic", true, [
       { provider: "opencode", id: "o1" },
     ]);
     await cmd.handler("", ctx);
+    expect(getAllUsageMock).toHaveBeenCalledTimes(1);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
       expect.stringContaining("Run /usage auth"),
       "info",

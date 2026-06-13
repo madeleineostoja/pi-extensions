@@ -1,8 +1,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Api } from "@earendil-works/pi-ai";
 import type { UsageSnapshot } from "../provider.js";
-import { readConfig, validateOpencodeConfig } from "../config.js";
+import { readConfig } from "../config.js";
 import { TIMEOUT_MS } from "../constants.js";
+import {
+  resolveActiveAccount,
+  resolveAllAccounts,
+} from "./opencode-account.js";
 
 const DASHBOARD_URL = "https://opencode.ai/workspace";
 
@@ -11,8 +15,7 @@ type RawWindow = {
   resetInSec: number;
 };
 
-let lastSnapshot: UsageSnapshot | null = null;
-let lastModelKey: string | undefined;
+const cache = new Map<string, { snapshot: UsageSnapshot; fetchedAt: number }>();
 
 export async function fetchUsage(
   workspaceId: string,
@@ -118,13 +121,12 @@ export async function getUsage(
   _ctx: ExtensionContext,
   force = false,
   readConfigFn = readConfig,
+  runtimeRoot?: string,
 ): Promise<UsageSnapshot | null> {
-  const modelKey = `${model.provider}:${model.id}`;
-
   const config = readConfigFn();
-  const opencodeConfig = validateOpencodeConfig(config);
+  const resolved = resolveActiveAccount(config, runtimeRoot);
 
-  if (!opencodeConfig) {
+  if (!resolved) {
     return {
       provider: "opencode",
       fetchedAt: Date.now(),
@@ -133,29 +135,126 @@ export async function getUsage(
     };
   }
 
-  if (
-    !force &&
-    lastSnapshot &&
-    lastModelKey === modelKey &&
-    Date.now() - lastSnapshot.fetchedAt < 5 * 60 * 1000
-  ) {
-    return lastSnapshot;
+  if (resolved.workspaceId === "") {
+    return {
+      provider: "opencode",
+      fetchedAt: Date.now(),
+      accountId: resolved.accountId,
+      error: `Active pi-multi-auth account ${resolved.accountId} has no workspaceId. Run /usage auth to add it.`,
+    };
   }
 
-  const snapshot = await fetchUsage(
-    opencodeConfig.workspaceId,
-    opencodeConfig.authCookie,
-  );
+  const cacheKey = `${model.provider}:${model.id}:${resolved.accountId}:${resolved.workspaceId}`;
+
+  if (!force) {
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() - cached.fetchedAt < 5 * 60 * 1000) {
+      return cached.snapshot;
+    }
+  }
+
+  const snapshot = await fetchUsage(resolved.workspaceId, resolved.authCookie);
 
   if (snapshot) {
-    lastModelKey = modelKey;
-    lastSnapshot = snapshot;
-    return snapshot;
+    const enriched: UsageSnapshot = {
+      ...snapshot,
+      accountId: resolved.accountId,
+      accountLabel: resolved.label,
+      active: resolved.active,
+    };
+    cache.set(cacheKey, { snapshot: enriched, fetchedAt: Date.now() });
+    return enriched;
   }
 
-  if (lastSnapshot && lastModelKey === modelKey) {
-    return { ...lastSnapshot, stale: true };
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    return { ...cached.snapshot, stale: true };
   }
 
   return null;
+}
+
+export async function getAllUsage(
+  _model: Model<Api>,
+  _ctx: ExtensionContext,
+  force = false,
+  readConfigFn = readConfig,
+  runtimeRoot?: string,
+): Promise<Array<{ accountId: string; snapshot: UsageSnapshot | null }>> {
+  const config = readConfigFn();
+  const accounts = resolveAllAccounts(config, runtimeRoot);
+
+  if (accounts.length === 0) {
+    return [
+      {
+        accountId: "opencode",
+        snapshot: {
+          provider: "opencode",
+          fetchedAt: Date.now(),
+          error:
+            "Opencode credentials not configured. Run /usage auth to set them up.",
+        } as UsageSnapshot,
+      },
+    ];
+  }
+
+  return Promise.all(
+    accounts.map(async (entry) => {
+      if (!entry.ok) {
+        return {
+          accountId: entry.accountId,
+          snapshot: {
+            provider: "opencode",
+            fetchedAt: Date.now(),
+            error: entry.error,
+          } as UsageSnapshot,
+        };
+      }
+
+      const account = entry.account;
+      const cacheKey = `all:${account.accountId}:${account.workspaceId}`;
+
+      if (!force) {
+        const cached = cache.get(cacheKey);
+        if (cached && Date.now() - cached.fetchedAt < 5 * 60 * 1000) {
+          return {
+            accountId: account.accountId,
+            snapshot: cached.snapshot,
+          };
+        }
+      }
+
+      const snapshot = await fetchUsage(
+        account.workspaceId,
+        account.authCookie,
+      );
+      if (snapshot) {
+        const enriched: UsageSnapshot = {
+          ...snapshot,
+          accountId: account.accountId,
+          accountLabel: account.label,
+          active: account.active,
+        };
+        cache.set(cacheKey, { snapshot: enriched, fetchedAt: Date.now() });
+        return { accountId: account.accountId, snapshot: enriched };
+      }
+
+      const cached = cache.get(cacheKey);
+      if (cached) {
+        return {
+          accountId: account.accountId,
+          snapshot: { ...cached.snapshot, stale: true } as UsageSnapshot,
+        };
+      }
+
+      return {
+        accountId: account.accountId,
+        snapshot: {
+          provider: "opencode",
+          fetchedAt: Date.now(),
+          error: "Failed to fetch usage.",
+        } as UsageSnapshot,
+      };
+    }),
+  );
 }

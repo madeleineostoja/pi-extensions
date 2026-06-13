@@ -14,6 +14,10 @@ import {
   validateOpencodeConfig,
   getConfigPath,
   runOpencodeAuthSetup,
+  validateOpencodeAccounts,
+  getOpencodeAccount,
+  resolveActiveOpencodeAccount,
+  resolveAllOpencodeAccounts,
 } from "./config.js";
 
 function makeTempDir(): string {
@@ -35,8 +39,13 @@ describe("readConfig", () => {
     try {
       const config = {
         opencode: {
-          workspaceId: "wrk_abc123",
-          authCookie: "Fe26.2**test",
+          accounts: {
+            "opencode-go": {
+              workspaceId: "wrk_abc123",
+              authCookie: "Fe26.2**test",
+              label: "main",
+            },
+          },
         },
       };
       writeFileSync(getConfigPath(tmpDir), JSON.stringify(config));
@@ -77,96 +86,239 @@ describe("readConfig", () => {
     }
   });
 
-  it("ignores OPENCODE_GO_AUTH_COOKIE env var", () => {
+  it("migrates old top-level config to account config while preserving other fields", () => {
     const tmpDir = makeTempDir();
     try {
-      process.env.OPENCODE_GO_AUTH_COOKIE = "Fe26.2**env";
-      expect(readConfig(tmpDir)).toBeNull();
+      const oldConfig = {
+        codex: { token: "abc" },
+        opencode: {
+          workspaceId: "wrk_old",
+          authCookie: "Fe26.2**old",
+        },
+      };
+      writeFileSync(getConfigPath(tmpDir), JSON.stringify(oldConfig));
+      const result = readConfig(tmpDir);
+      expect(result).toEqual({
+        codex: { token: "abc" },
+        opencode: {
+          accounts: {
+            "opencode-go": {
+              workspaceId: "wrk_old",
+              authCookie: "Fe26.2**old",
+            },
+          },
+        },
+      });
     } finally {
-      delete process.env.OPENCODE_GO_AUTH_COOKIE;
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("validateOpencodeAccounts", () => {
+  it("returns null when opencode section is missing", () => {
+    expect(validateOpencodeAccounts({})).toBeNull();
+    expect(validateOpencodeAccounts(null)).toBeNull();
+  });
+
+  it("returns valid accounts when present", () => {
+    const result = validateOpencodeAccounts({
+      opencode: {
+        accounts: {
+          "opencode-go": {
+            workspaceId: "wrk_abc",
+            authCookie: "Fe26.2**test",
+          },
+          "opencode-go-1": {
+            workspaceId: "wrk_def",
+            label: "side",
+          },
+        },
+      },
+    });
+    expect(result).toEqual({
+      "opencode-go": {
+        workspaceId: "wrk_abc",
+        authCookie: "Fe26.2**test",
+      },
+      "opencode-go-1": {
+        workspaceId: "wrk_def",
+        label: "side",
+      },
+    });
+  });
+
+  it("skips invalid accounts", () => {
+    const result = validateOpencodeAccounts({
+      opencode: {
+        accounts: {
+          "opencode-go": {
+            workspaceId: "wrk_abc",
+          },
+          bad: { authCookie: "cookie" } as never,
+        },
+      },
+    });
+    expect(result).toEqual({
+      "opencode-go": {
+        workspaceId: "wrk_abc",
+      },
+    });
+  });
+});
+
+describe("getOpencodeAccount", () => {
+  it("returns account by id", () => {
+    const result = getOpencodeAccount(
+      {
+        opencode: {
+          accounts: {
+            "opencode-go": { workspaceId: "wrk_abc", authCookie: "cookie" },
+          },
+        },
+      },
+      "opencode-go",
+    );
+    expect(result).toEqual({ workspaceId: "wrk_abc", authCookie: "cookie" });
+  });
+
+  it("returns null for missing account", () => {
+    expect(getOpencodeAccount(null, "opencode-go")).toBeNull();
+  });
+});
+
+describe("resolveActiveOpencodeAccount", () => {
+  it("resolves first account when no multi-auth", () => {
+    const tmpDir = makeTempDir();
+    try {
+      const result = resolveActiveOpencodeAccount(
+        {
+          opencode: {
+            accounts: {
+              "opencode-go": { workspaceId: "wrk_abc", authCookie: "cookie" },
+            },
+          },
+        },
+        tmpDir,
+      );
+      expect(result).toMatchObject({
+        accountId: "opencode-go",
+        account: { workspaceId: "wrk_abc", authCookie: "cookie" },
+        secret: "cookie",
+      });
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when account has no cookie and no multi-auth", () => {
+    const tmpDir = makeTempDir();
+    try {
+      const result = resolveActiveOpencodeAccount(
+        {
+          opencode: {
+            accounts: {
+              "opencode-go": { workspaceId: "wrk_abc" },
+            },
+          },
+        },
+        tmpDir,
+      );
+      expect(result).toBeNull();
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null when no accounts configured", () => {
+    const tmpDir = makeTempDir();
+    try {
+      expect(resolveActiveOpencodeAccount(null, tmpDir)).toBeNull();
+      expect(resolveActiveOpencodeAccount({}, tmpDir)).toBeNull();
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveAllOpencodeAccounts", () => {
+  it("returns all accounts with secrets", () => {
+    const tmpDir = makeTempDir();
+    try {
+      const result = resolveAllOpencodeAccounts(
+        {
+          opencode: {
+            accounts: {
+              "opencode-go": { workspaceId: "wrk_abc", authCookie: "cookie1" },
+              "opencode-go-1": {
+                workspaceId: "wrk_def",
+                authCookie: "cookie2",
+              },
+            },
+          },
+        },
+        tmpDir,
+      );
+      expect(result).toHaveLength(2);
+      expect(result[0]).toMatchObject({
+        accountId: "opencode-go",
+        workspaceId: "wrk_abc",
+        secret: "cookie1",
+      });
+      expect(result[1]).toMatchObject({
+        accountId: "opencode-go-1",
+        workspaceId: "wrk_def",
+        secret: "cookie2",
+      });
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns empty array when no accounts", () => {
+    const tmpDir = makeTempDir();
+    try {
+      expect(resolveAllOpencodeAccounts(null, tmpDir)).toEqual([]);
+    } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 });
 
 describe("validateOpencodeConfig", () => {
-  it("returns valid config when both fields are present", () => {
-    const result = validateOpencodeConfig({
-      opencode: {
+  it("returns valid config from active account", () => {
+    const tmpDir = makeTempDir();
+    try {
+      const result = validateOpencodeConfig(
+        {
+          opencode: {
+            accounts: {
+              "opencode-go": {
+                workspaceId: "wrk_abc",
+                authCookie: "Fe26.2**test",
+              },
+            },
+          },
+        },
+        tmpDir,
+      );
+      expect(result).toMatchObject({
         workspaceId: "wrk_abc",
         authCookie: "Fe26.2**test",
-      },
-    });
-    expect(result).toEqual({
-      workspaceId: "wrk_abc",
-      authCookie: "Fe26.2**test",
-    });
+      });
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
-  it("returns null when opencode section is missing", () => {
-    expect(validateOpencodeConfig({})).toBeNull();
-    expect(validateOpencodeConfig(null)).toBeNull();
-  });
-
-  it("returns null when workspaceId is missing", () => {
-    expect(
-      validateOpencodeConfig({
-        opencode: { authCookie: "Fe26.2**test" } as never,
-      }),
-    ).toBeNull();
-  });
-
-  it("returns null when authCookie is missing", () => {
-    expect(
-      validateOpencodeConfig({
-        opencode: { workspaceId: "wrk_abc" } as never,
-      }),
-    ).toBeNull();
-  });
-
-  it("returns null when workspaceId is empty string", () => {
-    expect(
-      validateOpencodeConfig({
-        opencode: { workspaceId: "", authCookie: "Fe26.2**test" },
-      }),
-    ).toBeNull();
-  });
-
-  it("returns null when authCookie is empty string", () => {
-    expect(
-      validateOpencodeConfig({
-        opencode: { workspaceId: "wrk_abc", authCookie: "" },
-      }),
-    ).toBeNull();
-  });
-
-  it("returns null when workspaceId is wrong type", () => {
-    expect(
-      validateOpencodeConfig({
-        opencode: { workspaceId: 123, authCookie: "Fe26.2**test" } as never,
-      }),
-    ).toBeNull();
-  });
-
-  it("returns null when authCookie is wrong type", () => {
-    expect(
-      validateOpencodeConfig({
-        opencode: { workspaceId: "wrk_abc", authCookie: 123 } as never,
-      }),
-    ).toBeNull();
-  });
-
-  it("trims whitespace from values", () => {
-    const result = validateOpencodeConfig({
-      opencode: {
-        workspaceId: "  wrk_abc  ",
-        authCookie: "  Fe26.2**test  ",
-      },
-    });
-    expect(result).toEqual({
-      workspaceId: "wrk_abc",
-      authCookie: "Fe26.2**test",
-    });
+  it("returns null when no active account has cookie", () => {
+    const tmpDir = makeTempDir();
+    try {
+      expect(validateOpencodeConfig(null)).toBeNull();
+      expect(validateOpencodeConfig({})).toBeNull();
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -176,7 +328,11 @@ describe("writeConfig", () => {
     const nestedDir = join(tmpDir, "nested", "agent");
     try {
       writeConfig(nestedDir, {
-        opencode: { workspaceId: "wrk_x", authCookie: "cookie" },
+        opencode: {
+          accounts: {
+            "opencode-go": { workspaceId: "wrk_x", authCookie: "cookie" },
+          },
+        },
       });
       const path = getConfigPath(nestedDir);
       const content = readFileSync(path, "utf8");
@@ -186,24 +342,37 @@ describe("writeConfig", () => {
     }
   });
 
-  it("preserves unrelated top-level fields", () => {
+  it("preserves unrelated top-level fields and merges accounts", () => {
     const tmpDir = makeTempDir();
     try {
       const path = getConfigPath(tmpDir);
       writeFileSync(
         path,
         JSON.stringify({
-          codex: { something: "else" },
-          opencode: { workspaceId: "wrk_old", authCookie: "old" },
+          codex: { token: "abc" },
+          opencode: {
+            accounts: {
+              "opencode-go": { workspaceId: "wrk_old", authCookie: "old" },
+            },
+          },
         }),
       );
       writeConfig(tmpDir, {
-        opencode: { workspaceId: "wrk_new", authCookie: "new" },
+        opencode: {
+          accounts: {
+            "opencode-go-1": { workspaceId: "wrk_new", authCookie: "new" },
+          },
+        },
       });
       const result = readConfig(tmpDir);
       expect(result).toEqual({
-        codex: { something: "else" },
-        opencode: { workspaceId: "wrk_new", authCookie: "new" },
+        codex: { token: "abc" },
+        opencode: {
+          accounts: {
+            "opencode-go": { workspaceId: "wrk_old", authCookie: "old" },
+            "opencode-go-1": { workspaceId: "wrk_new", authCookie: "new" },
+          },
+        },
       });
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
@@ -264,14 +433,15 @@ describe("runOpencodeAuthSetup", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("cancels when second prompt returns undefined", async () => {
+  it("cancels when workspace prompt returns undefined", async () => {
     const tmpDir = makeTempDir();
     const ctx = {
       mode: "tui",
       ui: {
         input: vi
           .fn()
-          .mockResolvedValueOnce("wrk_abc")
+          .mockResolvedValueOnce("opencode-go")
+          .mockResolvedValueOnce(undefined)
           .mockResolvedValueOnce(undefined),
         notify: vi.fn(),
       },
@@ -284,14 +454,16 @@ describe("runOpencodeAuthSetup", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("cancels when second prompt returns whitespace", async () => {
+  it("cancels when workspace prompt returns whitespace", async () => {
     const tmpDir = makeTempDir();
     const ctx = {
       mode: "tui",
       ui: {
         input: vi
           .fn()
-          .mockResolvedValueOnce("wrk_abc")
+          .mockResolvedValueOnce("opencode-go")
+          .mockResolvedValueOnce("   ")
+          .mockResolvedValueOnce("   ")
           .mockResolvedValueOnce("   "),
         notify: vi.fn(),
       },
@@ -304,13 +476,15 @@ describe("runOpencodeAuthSetup", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes config and notifies when both prompts succeed", async () => {
+  it("writes account-scoped config and notifies when prompts succeed", async () => {
     const tmpDir = makeTempDir();
     const ctx = {
       mode: "tui",
       ui: {
         input: vi
           .fn()
+          .mockResolvedValueOnce("opencode-go")
+          .mockResolvedValueOnce("main")
           .mockResolvedValueOnce("wrk_abc")
           .mockResolvedValueOnce("Fe26.2**cookie"),
         notify: vi.fn(),
@@ -318,11 +492,12 @@ describe("runOpencodeAuthSetup", () => {
     };
     await runOpencodeAuthSetup(ctx as never, tmpDir);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      "Opencode auth saved to ~/.pi/agent/pi-usage.json",
+      expect.stringContaining("Opencode auth saved"),
       "info",
     );
     const config = readConfig(tmpDir);
-    expect(config?.opencode).toEqual({
+    expect(config?.opencode?.accounts?.["opencode-go"]).toEqual({
+      label: "main",
       workspaceId: "wrk_abc",
       authCookie: "Fe26.2**cookie",
     });
@@ -336,6 +511,8 @@ describe("runOpencodeAuthSetup", () => {
       ui: {
         input: vi
           .fn()
+          .mockResolvedValueOnce("opencode-go")
+          .mockResolvedValueOnce("test")
           .mockResolvedValueOnce("bad-id")
           .mockResolvedValueOnce("bad-cookie"),
         notify: vi.fn(),
@@ -347,7 +524,8 @@ describe("runOpencodeAuthSetup", () => {
       "info",
     );
     const config = readConfig(tmpDir);
-    expect(config?.opencode).toEqual({
+    expect(config?.opencode?.accounts?.["opencode-go"]).toEqual({
+      label: "test",
       workspaceId: "bad-id",
       authCookie: "bad-cookie",
     });
@@ -362,7 +540,11 @@ describe("runOpencodeAuthSetup", () => {
       path,
       JSON.stringify({
         codex: { token: "abc" },
-        opencode: { workspaceId: "old", authCookie: "old" },
+        opencode: {
+          accounts: {
+            "opencode-go": { workspaceId: "old", authCookie: "old" },
+          },
+        },
       }),
     );
     const ctx = {
@@ -370,6 +552,8 @@ describe("runOpencodeAuthSetup", () => {
       ui: {
         input: vi
           .fn()
+          .mockResolvedValueOnce("opencode-go-1")
+          .mockResolvedValueOnce("new")
           .mockResolvedValueOnce("wrk_new")
           .mockResolvedValueOnce("Fe26.2**new"),
         notify: vi.fn(),
@@ -379,7 +563,16 @@ describe("runOpencodeAuthSetup", () => {
     const config = readConfig(tmpDir);
     expect(config).toEqual({
       codex: { token: "abc" },
-      opencode: { workspaceId: "wrk_new", authCookie: "Fe26.2**new" },
+      opencode: {
+        accounts: {
+          "opencode-go": { workspaceId: "old", authCookie: "old" },
+          "opencode-go-1": {
+            workspaceId: "wrk_new",
+            authCookie: "Fe26.2**new",
+            label: "new",
+          },
+        },
+      },
     });
     rmSync(tmpDir, { recursive: true, force: true });
   });

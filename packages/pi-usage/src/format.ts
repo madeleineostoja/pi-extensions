@@ -47,7 +47,10 @@ export function formatStatus(
     return formatColoredStatus("warning", "warning", label, theme);
   }
 
-  const label = snapshot.provider;
+  const accountLabel = snapshot.accountLabel ?? snapshot.accountId;
+  const label = accountLabel
+    ? `${snapshot.provider} ${accountLabel}`
+    : snapshot.provider;
   const parts: string[] = [];
   const percents: number[] = [];
 
@@ -169,7 +172,11 @@ function formatDurationLong(seconds: number): string {
 }
 
 export function formatUsageSummary(
-  entries: Array<{ provider: UsageProviderId; snapshot: UsageSnapshot | null }>,
+  entries: Array<{
+    provider: UsageProviderId;
+    snapshot: UsageSnapshot | null;
+    accounts?: Array<{ accountId: string; snapshot: UsageSnapshot | null }>;
+  }>,
 ): string {
   if (entries.length === 0) {
     return "No usage providers configured.";
@@ -177,11 +184,79 @@ export function formatUsageSummary(
 
   const lines: string[] = [];
 
-  for (const { provider, snapshot } of entries) {
+  for (const { provider, snapshot, accounts } of entries) {
     if (lines.length > 0) {
       lines.push("");
     }
     lines.push(capitalize(provider));
+
+    if (accounts && accounts.length > 0) {
+      for (const { accountId, snapshot: accountSnapshot } of accounts) {
+        if (accountSnapshot === null) {
+          lines.push(`  ${accountId}: Failed to fetch usage data.`);
+          continue;
+        }
+        if (accountSnapshot.error) {
+          lines.push(`  ${accountId}: ${accountSnapshot.error}`);
+          continue;
+        }
+
+        const marker = accountSnapshot.active ? "→ " : "  ";
+        const label =
+          accountSnapshot.accountLabel ??
+          accountSnapshot.accountId ??
+          accountId;
+        const display =
+          accountSnapshot.accountLabel && accountSnapshot.accountId
+            ? `${label} (${accountSnapshot.accountId})`
+            : label;
+        lines.push(`${marker}${display}`);
+
+        if (accountSnapshot.primary !== undefined) {
+          const pct = Math.round(
+            clampPercent(accountSnapshot.primary.usedPercent),
+          );
+          const remaining = formatResetInSec(
+            accountSnapshot.primary.resetInSec,
+            accountSnapshot.fetchedAt,
+          );
+          if (remaining) {
+            lines.push(`    Rolling: ${pct}% used. Resets in ${remaining}.`);
+          } else {
+            lines.push(`    Rolling: ${pct}% used.`);
+          }
+        }
+        if (accountSnapshot.secondary !== undefined) {
+          const pct = Math.round(
+            clampPercent(accountSnapshot.secondary.usedPercent),
+          );
+          const remaining = formatResetInSec(
+            accountSnapshot.secondary.resetInSec,
+            accountSnapshot.fetchedAt,
+          );
+          if (remaining) {
+            lines.push(`    Weekly: ${pct}% used. Resets in ${remaining}.`);
+          } else {
+            lines.push(`    Weekly: ${pct}% used.`);
+          }
+        }
+        if (accountSnapshot.monthly !== undefined) {
+          const pct = Math.round(
+            clampPercent(accountSnapshot.monthly.usedPercent),
+          );
+          const remaining = formatResetInSec(
+            accountSnapshot.monthly.resetInSec,
+            accountSnapshot.fetchedAt,
+          );
+          if (remaining) {
+            lines.push(`    Monthly: ${pct}% used. Resets in ${remaining}.`);
+          } else {
+            lines.push(`    Monthly: ${pct}% used.`);
+          }
+        }
+      }
+      continue;
+    }
 
     if (!snapshot) {
       lines.push("Failed to fetch usage data.");

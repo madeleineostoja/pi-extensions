@@ -15,6 +15,9 @@ export type UsageWindow = {
 
 export type UsageSnapshot = {
   provider: UsageProviderId;
+  accountId?: string;
+  accountLabel?: string;
+  active?: boolean;
   primary?: UsageWindow;
   secondary?: UsageWindow;
   monthly?: UsageWindow;
@@ -162,7 +165,12 @@ export async function getUsage(
   }
 
   const snapshot = await provider.getUsage(model, ctx, force);
-  if (snapshot && !snapshot.error && !snapshot.stale) {
+  if (
+    snapshot &&
+    !snapshot.error &&
+    !snapshot.stale &&
+    provider.id !== "opencode"
+  ) {
     cache.set(key, { snapshot, fetchedAt: Date.now() });
   }
   return snapshot;
