@@ -37,7 +37,9 @@ export function formatExecutionManifestSummary(
   for (const task of manifest.tasks) {
     parts.push(`#### ${task.id}: ${task.title}`);
     parts.push(`- Objective: ${task.compiledContract.objective}`);
-    parts.push(`- In scope: ${task.compiledContract.inScope.join(", ")}`);
+    parts.push(
+      `- In scope: ${task.compiledContract.inScope.join(", ")}`,
+    );
     parts.push(
       `- Acceptance criteria: ${task.compiledContract.acceptanceCriteria.join(", ")}`,
     );
@@ -50,7 +52,7 @@ export function formatExecutionManifestSummary(
   parts.push(
     "### Review Focus",
     "",
-    "- Check for planner/compiler omissions: requirements in the original plan that were missed because no compiled contract covered them.",
+    "- Check for planner/compiler omissions: requirements in the original plan that were missed because no compiled task contract covered them.",
     "- Verify that tasks integrate correctly even though they were implemented in isolation.",
     "- Confirm cross-task gaps and edge cases from the original plan were addressed.",
     "",
@@ -67,26 +69,19 @@ function buildSiblingTasksSection(outOfScopeTasks?: string[]): string {
 }
 
 export function buildImplementerPrompt(args: {
-  taskPacket?: string;
-  compiledContract?: string;
+  compiledContract: string;
   worktreePath: string;
   feedback?: string;
   priorSummary?: string;
   scoutContext?: string;
 }): string {
-  const contract = args.compiledContract ?? args.taskPacket;
-  if (!contract) {
-    throw new Error("Either taskPacket or compiledContract must be provided");
-  }
-  const isCompiled = args.compiledContract !== undefined;
   const retry = args.feedback
     ? `\n## Retry Context\n\nPrevious attempt summary:\n${args.priorSummary ?? "(none)"}\n\nFeedback to address:\n${args.feedback}\n`
     : "";
   const scout = args.scoutContext
-    ? `\n## Scout Context\n\nThe following context was gathered by a read-only Scout for this attempt only. It is a starting map, not authoritative truth.\n\n- Treat Scout findings as hints, not facts. Read relevant files yourself before editing.\n- Do not expand your implementation scope based on Scout discoveries. Stick to the selected task ${isCompiled ? "contract" : "packet"}.\n- Avoid broad repository searches unless the Scout context is clearly insufficient for the task.\n\n${args.scoutContext}\n`
+    ? `\n## Scout Context\n\nThe following context was gathered by a read-only Scout for this attempt only. It is a starting map, not authoritative truth.\n\n- Treat Scout findings as hints, not facts. Read relevant files yourself before editing.\n- Do not expand your implementation scope based on Scout discoveries. Stick to the selected task contract.\n- Avoid broad repository searches unless the Scout context is clearly insufficient for the task.\n\n${args.scoutContext}\n`
     : "";
-  const intro = isCompiled
-    ? `You are the pi-implement implementer for exactly one task. This prompt is the complete task contract and must work even if your subagent definition is generic.
+  const intro = `You are the pi-implement implementer for exactly one task. This prompt is the complete task contract and must work even if your subagent definition is generic.
 
 Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification, never ask how to proceed, and never wait for input. Make reasonable decisions yourself and finish with the result block.
 
@@ -106,35 +101,11 @@ Do not edit source plan files or checklist state. Do not stage, commit, reset, c
 
 Make the necessary code, documentation, and test changes for the selected task. Choose and run task-appropriate verification. When in doubt, run more verification rather than less: time is cheap, missed regressions are not. Precommit hooks will run on commit and cannot be bypassed, so satisfy lint, format, typecheck, and test expectations from the start. If verification is limited or fails, report that clearly.
 
-If blocked, leave the repository in a safe state and explain the blocker in the result block.`
-    : `You are the pi-implement implementer for exactly one task from a /plan artifact. This prompt is the complete task contract and must work even if your subagent definition is generic.
-
-Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification, never ask how to proceed, and never wait for input. Make reasonable decisions yourself and finish with the result block.
-
-You have been assigned a dedicated Git worktree for this task. Read and write only inside the assigned worktree:
-
-  ${args.worktreePath}
-
-Do not read or write files outside the assigned worktree. Any shell command that touches project files must run from or explicitly target the assigned worktree path above.
-
-The task packet below is the complete, authoritative plan context for this task. Sibling task lines are intentionally omitted — they are not truncation and not your concern. They do not expand your scope.
-
-**Required implementation scope:** Only the selected task line plus its indented block. Other sections in the task packet are background context to help you understand the task, unless the selected task explicitly references them. Do not implement sibling tasks or unrelated cleanup, even when global plan context mentions them.
-
-The packet may contain referenced plan material that is broader than the selected task. Use that material only for context directly relevant to the selected task. Do not implement unrelated requirements merely because they appear in referenced material.
-
-If you notice you are implementing an unselected sibling task, stop and narrow the change to only what is necessary for the selected task. If the selected task is impossible without some prerequisite work from a sibling task, do only the minimal prerequisite and explain it in your summary and verification. Do not complete the sibling task's own deliverable.
-
-Do not edit source plan files or checklist state. Do not stage, commit, reset, checkout, rebase, merge, tag, push, clean, or force-add ignored files.
-
-Make the necessary code, documentation, and test changes for the selected task. Choose and run task-appropriate verification. When in doubt, run more verification rather than less: time is cheap, missed regressions are not. Precommit hooks will run on commit and cannot be bypassed, so satisfy lint, format, typecheck, and test expectations from the start. If verification is limited or fails, report that clearly.
-
 If blocked, leave the repository in a safe state and explain the blocker in the result block.`;
-  const section = isCompiled ? "## Compiled Task Contract" : "## Task Packet";
   return `${intro}${retry}${scout}
-${section}
+## Compiled Task Contract
 
-${contract}
+${args.compiledContract}
 
 End with exactly one <pi-implement-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
 
@@ -175,8 +146,7 @@ Or for already-satisfied:
 }
 
 export function buildReviewerPrompt(args: {
-  taskPacket?: string;
-  compiledContract?: string;
+  compiledContract: string;
   worktreePath: string;
   implementer: ParsedImplementerResult;
   outOfScopeTasks?: string[];
@@ -184,11 +154,6 @@ export function buildReviewerPrompt(args: {
   baseSha?: string;
   alreadySatisfiedDiscrepancy?: boolean;
 }): string {
-  const contract = args.compiledContract ?? args.taskPacket;
-  if (!contract) {
-    throw new Error("Either taskPacket or compiledContract must be provided");
-  }
-  const isCompiled = args.compiledContract !== undefined;
   const siblingSection = buildSiblingTasksSection(args.outOfScopeTasks);
   const discrepancySection = args.alreadySatisfiedDiscrepancy
     ? `\n## Outcome Discrepancy
@@ -221,11 +186,10 @@ ${args.priorRequiredChanges!.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
 Perform one complete pass for material task-level blockers. List every blocking issue that must be fixed before this task can be committed.
 
 You may request meaningful cleanup or code-quality fixes when they materially affect maintainability or are naturally coupled to larger required changes. Do not block solely for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or optional refactors. Non-blocking observations should not be included in \`requiredChanges\`; leave broader concerns for the final overall review.`;
-  const section = isCompiled ? "## Compiled Task Contract" : "## Task Packet";
 
-  return `You are the pi-implement reviewer for exactly one staged ${isCompiled ? "task" : "/plan task"} candidate. This prompt is the complete review contract and must work even if your subagent definition is generic.
+  return `You are the pi-implement reviewer for exactly one staged task candidate. This prompt is the complete review contract and must work even if your subagent definition is generic.
 
-Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The ${isCompiled ? "compiled task contract" : "task packet"} is a deliberate single-task slice; sibling ${isCompiled ? "task contracts" : "task lines"} are intentionally omitted and are out of scope.
+Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The compiled task contract is a deliberate single-task slice; sibling task contracts are intentionally omitted and are out of scope.
 
 The candidate diff lives in the assigned worktree for this task:
 
@@ -245,9 +209,9 @@ ${discrepancySection}
 - Request changes if the staged diff substantially implements an unselected sibling task, broad remaining-plan work, or unrelated cleanup that is not a necessary minimal prerequisite for the selected task.
 - Completing a sibling task's own deliverable is scope creep, even if it seems convenient.${siblingSection}
 
-${section}
+## Compiled Task Contract
 
-${contract}
+${args.compiledContract}
 
 ## Implementer Summary
 
@@ -279,8 +243,7 @@ Or request changes with at most 5 concise required changes:
 }
 
 export function buildAlreadySatisfiedReviewerPrompt(args: {
-  taskPacket?: string;
-  compiledContract?: string;
+  compiledContract: string;
   worktreePath: string;
   implementer: ParsedImplementerResult;
   headSha: string;
@@ -288,43 +251,23 @@ export function buildAlreadySatisfiedReviewerPrompt(args: {
   outOfScopeTasks?: string[];
   priorRequiredChanges?: string[];
 }): string {
-  const contract = args.compiledContract ?? args.taskPacket;
-  if (!contract) {
-    throw new Error("Either taskPacket or compiledContract must be provided");
-  }
-  const isCompiled = args.compiledContract !== undefined;
   const siblingSection = buildSiblingTasksSection(args.outOfScopeTasks);
   const diffSection =
     args.accumulatedDiff !== undefined
-      ? `## Accumulated Run Diff
-
-\`\`\`diff\n${args.accumulatedDiff}\n\`\`\`\n`
-      : `## Accumulated Run Diff
-
-The accumulated diff from the run start to current HEAD was too large to include or was not available. Inspect the current repository state directly using read-only git and file commands.\n`;
+      ? `## Accumulated Run Diff\n\n\`\`\`diff\n${args.accumulatedDiff}\n\`\`\`\n`
+      : `## Accumulated Run Diff\n\nThe accumulated diff from the run start to current HEAD was too large to include or was not available. Inspect the current repository state directly using read-only git and file commands.\n`;
   const isAnchored = (args.priorRequiredChanges?.length ?? 0) > 0;
   const reviewModeSection = isAnchored
-    ? `## Review Mode: Anchored Re-review
+    ? `## Review Mode: Anchored Re-review\n\nAssess only whether each prior required change is resolved. If requesting changes, \`requiredChanges\` must contain exact copies of unresolved prior item text only. Do not restate, broaden, or introduce new issues, even if you notice one during re-review. New or broader concerns belong to the final overall review/rework loop.\n\n## Prior Required Changes\n\n${args.priorRequiredChanges!.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
+    : `## Review Mode: Initial Material Review\n\nPerform one complete pass for material task-level blockers. List every blocking issue that must be fixed before this task can be accepted as already satisfied.\n\nYou may request meaningful cleanup or code-quality fixes when they materially affect maintainability or are naturally coupled to larger required changes. Do not block solely for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or optional refactors. Non-blocking observations should not be included in \`requiredChanges\`; leave broader concerns for the final overall review.`;
 
-Assess only whether each prior required change is resolved. If requesting changes, \`requiredChanges\` must contain exact copies of unresolved prior item text only. Do not restate, broaden, or introduce new issues, even if you notice one during re-review. New or broader concerns belong to the final overall review/rework loop.
+  return `You are the pi-implement reviewer for exactly one task. This prompt is the complete review contract and must work even if your subagent definition is generic.
 
-## Prior Required Changes
-
-${args.priorRequiredChanges!.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
-    : `## Review Mode: Initial Material Review
-
-Perform one complete pass for material task-level blockers. List every blocking issue that must be fixed before this task can be accepted as already satisfied.
-
-You may request meaningful cleanup or code-quality fixes when they materially affect maintainability or are naturally coupled to larger required changes. Do not block solely for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or optional refactors. Non-blocking observations should not be included in \`requiredChanges\`; leave broader concerns for the final overall review.`;
-  const section = isCompiled ? "## Compiled Task Contract" : "## Task Packet";
-
-  return `You are the pi-implement reviewer for exactly one ${isCompiled ? "task" : "/plan task"}. This prompt is the complete review contract and must work even if your subagent definition is generic.
-
-Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The ${isCompiled ? "compiled task contract" : "task packet"} is a deliberate single-task slice; sibling ${isCompiled ? "task contracts" : "task lines"} are intentionally omitted and are out of scope.
+Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The compiled task contract is a deliberate single-task slice; sibling task contracts are intentionally omitted and are out of scope.
 
 There is no staged candidate diff for this task. The implementer claims the selected task is already satisfied by the current repository state. Your job is to verify that claim.
 
-${isCompiled ? "The selected task's required scope is defined in the compiled task contract. Approve when the compiled contract is satisfied now." : "The selected task's required scope is the selected task line plus its indented block. Approve when that selected task line and indented block are satisfied now."} Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task.
+The selected task's required scope is defined in the compiled task contract. Approve when the compiled contract is satisfied now. Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task.
 
 Inspect the current repository state in the assigned worktree:
 
@@ -336,9 +279,9 @@ You are a read-only reviewer and may be unable to install dependencies, run writ
 
 ${reviewModeSection}${siblingSection}
 
-${section}
+## Compiled Task Contract
 
-${contract}
+${args.compiledContract}
 
 ## Implementer Summary
 
@@ -503,8 +446,7 @@ ${args.graphSummary}
 
 ## Recent Events
 
-${args.eventsTail}
-${artifactSection}${branchSection}${worktreeSection}
+${args.eventsTail}${artifactSection}${branchSection}${worktreeSection}
 ## Git Status
 
 \`\`\`

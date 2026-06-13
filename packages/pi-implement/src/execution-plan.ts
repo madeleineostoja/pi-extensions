@@ -716,6 +716,38 @@ export function readExecutionManifest(
   }
 }
 
+export function generateMinimalExecutionManifest(
+  tasks: PlanTask[],
+  planPath: string,
+): ExecutionManifest {
+  return {
+    version: 1,
+    tasks: tasks.map((task) => ({
+      id: `t${String(task.index).padStart(3, "0")}-${task.text.toLowerCase().replace(/\s+/g, "-")}`,
+      planIndex: task.index,
+      title: task.text,
+      taskHash: computeTaskFingerprint(task),
+      status: "todo",
+      dependsOn: [],
+      review: { mode: "require" },
+      affectedAreas: [],
+      conflictHints: [],
+      sourceReferences: [],
+      sourceCheckbox: {
+        path: planPath,
+        lineNumber: task.lineNumber,
+        lineText: task.originalLine,
+      },
+      compiledContract: {
+        objective: task.text,
+        inScope: [task.text],
+        acceptanceCriteria: ["Task is complete and verified"],
+        outOfScope: ["Other tasks"],
+      },
+    })),
+  };
+}
+
 export function renderCompiledContract(contract: CompiledContract): string {
   const parts: string[] = [
     "# Task Contract",

@@ -40,13 +40,19 @@ Passing `--serial` forces serial execution and skips the planner entirely.
 
 Parallel execution runs independent tasks concurrently up to `maxParallel` from config, with a hard maximum of `8`.
 
+## Execution planning and compiled task contracts
+
+`/implement` accepts a human plan file, compiles an internal execution manifest, and executes compiled task contracts. The execution planner reads the human plan corpus, derives scoped task contracts and a dependency graph, and the orchestrator gives implementer/reviewer agents only the selected compiled contract.
+
+The source plan remains the human-facing contract. The compiled execution manifest is an internal pi-implement artifact used to execute that human plan safely. Legacy Markdown checkbox plans are still supported as an ingestion fallback: the orchestrator parses the source plan, auto-generates a minimal compiled contract for each task, and projects checkbox state back to the source file.
+
 ## The per-task loop
 
 For each unchecked task, pi-implement:
 
-1. Builds a single-task packet (the task line, its indented block, and any referenced plan material) and spawns an implementer subagent.
+1. Loads the compiled task contract for the selected task from the execution manifest. The contract includes a precise objective, in-scope items, acceptance criteria, and out-of-scope items. Sibling task contracts are intentionally omitted.
 2. Stages the candidate changes, excluding plan artifacts and never force-adding ignored files. Staging before review lets the reviewer see new untracked files via `git diff --cached HEAD`.
-3. Spawns a reviewer subagent to judge the staged candidate.
+3. Spawns a reviewer subagent to judge the staged candidate against the compiled contract.
 4. On approval, commits the task. On changes requested, resets the candidate and re-runs the implementer with the reviewer's feedback.
 
 The loop is bounded: reviewer change requests and system/commit failures each have a retry ceiling, after which the run is blocked with the accumulated reason rather than looping forever.
@@ -96,7 +102,13 @@ For index-style plans, a task can reference supporting markdown files with inden
 
 Supported references contain exactly one `Plan:` target per line, written as either a backticked or angle-bracketed local markdown path. Multiple `Plan:` lines under one task are allowed. URLs, non-markdown targets, directories, missing files, empty files, malformed references, and multiple references on one line block execution before implementation.
 
-Referenced supporting file contents are inlined as raw markdown in the implementer's task packet under `Referenced Plan Material`. The selected checkbox remains the only unit of work: implementers are instructed to use referenced material only for requirements directly relevant to the selected task, and they are not directed to read the whole source plan. Sibling task lines are omitted from implementer packets; reviewers receive sibling task context only as a scope-creep guard.
+During the execution planning phase, the planner reads referenced supporting files as source material and produces compiled task contracts that exclude sibling deliverables. Implementer and reviewer prompts contain only the compiled task contract for the selected task; they do not receive whole referenced supporting files as selected-task scope. The overall reviewer receives the full plan corpus, including referenced material, to check for planner/compiler omissions.
+
+## Source checkbox projection
+
+Each compiled task contract may include a `sourceCheckbox` reference that maps the task back to a specific checkbox line in the source plan file. The orchestrator uses this reference to update the human-readable source plan after a task is completed. If the recorded line no longer matches the recorded text (modulo checkbox marker state), the update is skipped to avoid corrupting the source file.
+
+Plan checkbox updates are intentionally not part of any commit. Plan files may be gitignored or live outside the repository, as long as `/implement` is run from inside the target repository.
 
 ## Config
 

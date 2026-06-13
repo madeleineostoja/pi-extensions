@@ -20,17 +20,17 @@ import {
   formatExecutionManifestSummary,
 } from "./prompts.js";
 import {
-  buildTaskPacket,
   markTaskDone,
   markTaskUndone,
-  nextUncheckedTask,
   parsePlanFile,
 } from "./plan.js";
 import type { PlanTask } from "./plan.js";
 import {
+  generateMinimalExecutionManifest,
   readExecutionManifest,
   renderCompiledContract,
 } from "./execution-plan.js";
+import { computeTaskFingerprint } from "./manifest.js";
 import {
   tryMarkSourceCheckboxDone,
   tryMarkSourceCheckboxUndone,
@@ -181,9 +181,14 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
     ? (readRunJson(deps.paths)?.baseSha ?? (await deps.git.head()))
     : await deps.git.head();
 
-  const executionManifest = deps.paths
-    ? readExecutionManifest(deps.paths.runDir)
-    : undefined;
+  let executionManifest = deps.executionManifest;
+  if (!executionManifest && deps.paths) {
+    executionManifest = readExecutionManifest(deps.paths.runDir);
+  }
+  if (!executionManifest) {
+    const plan = parsePlanFile(deps.planPath);
+    executionManifest = generateMinimalExecutionManifest(plan.tasks, deps.planPath);
+  }
   deps = { ...deps, executionManifest };
 
   if (deps.mode === "serial") {
@@ -222,17 +227,15 @@ async function runSerialImplementation(
     if (!(await deps.git.isCleanExcept(planArtifacts))) {
       throw new BlockedError("dirty worktree");
     }
-    let task: PlanTask | undefined;
-    if (deps.executionManifest) {
-      const next = nextUncheckedManifestTask(
-        plan,
-        deps.executionManifest,
-        deps.paths,
-      );
-      task = next?.planTask;
-    } else {
-      task = nextUncheckedTask(plan);
+    if (!deps.executionManifest) {
+      throw new BlockedError("no execution manifest available");
     }
+    const next = nextUncheckedManifestTask(
+      plan,
+      deps.executionManifest,
+      deps.paths,
+    );
+    const task = next?.planTask;
     deps.updateState({
       taskIndex: task?.index ?? completedPlanTaskIndex(plan),
       totalTasks: plan.tasks.length,
@@ -3536,13 +3539,20 @@ async function runTaskWorker(args: {
     const compiledContractEntry = deps.executionManifest?.tasks.find(
       (mt) => mt.planIndex === task.index,
     );
-    const compiledContract = compiledContractEntry
-      ? renderCompiledContract(compiledContractEntry.compiledContract)
-      : undefined;
-    const packet = compiledContract
-      ? undefined
-      : buildTaskPacket(plan, task, deps.manifest);
-    const taskContract = compiledContract ?? packet!.markdown;
+    if (!compiledContractEntry) {
+      throw new BlockedError(
+        `Task ${task.index} missing from execution manifest`,
+      );
+    }
+    const currentFingerprint = computeTaskFingerprint(task);
+    if (compiledContractEntry.taskHash !== currentFingerprint) {
+      throw new BlockedError(
+        `Task fingerprint mismatch for task ${task.index}: plan may have changed since manifest was built.`,
+      );
+    }
+    const compiledContract = renderCompiledContract(
+      compiledContractEntry.compiledContract,
+    );
     const effectiveWorktreePath = worktreePath ?? (await deps.git.root());
 
     // ── Scout phase ──
@@ -3561,7 +3571,7 @@ async function runTaskWorker(args: {
         attemptOrdinal: totalAttempt,
         feedback: feedback ?? initialFeedback,
         taskText: task.text,
-        taskPacket: taskContract,
+        compiledContract,
       });
 
       if (!decision.run) {
@@ -3575,8 +3585,7 @@ async function runTaskWorker(args: {
       if (decision.run) {
         const scoutPrompt = buildScoutPrompt({
           worktreePath: effectiveWorktreePath,
-          compiledContract: compiledContract ?? undefined,
-          taskPacket: packet?.markdown,
+          compiledContract,
           planArtifacts,
           directive: scoutDirective,
           isRetry,
@@ -3743,8 +3752,7 @@ async function runTaskWorker(args: {
     }
 
     const implementerPrompt = buildImplementerPrompt({
-      compiledContract: compiledContract ?? undefined,
-      taskPacket: packet?.markdown,
+      compiledContract,
       worktreePath: effectiveWorktreePath,
       feedback: feedback ? formatFeedback(feedback) : undefined,
       scoutContext,
@@ -4101,8 +4109,7 @@ async function runTaskWorker(args: {
               .filter((t) => t.index !== task.index)
               .map((t) => t.originalLine);
         reviewerPrompt = buildReviewerPrompt({
-          compiledContract: compiledContract ?? undefined,
-          taskPacket: packet?.markdown,
+          compiledContract,
           worktreePath: effectiveWorktreePath,
           implementer: parsed.result,
           outOfScopeTasks,
@@ -4158,8 +4165,7 @@ async function runTaskWorker(args: {
             .filter((t) => t.index !== task.index)
             .map((t) => t.originalLine);
       reviewerPrompt = buildAlreadySatisfiedReviewerPrompt({
-        compiledContract: compiledContract ?? undefined,
-        taskPacket: packet?.markdown,
+        compiledContract,
         worktreePath: effectiveWorktreePath,
         implementer: parsed.result,
         headSha: reviewHeadBefore,

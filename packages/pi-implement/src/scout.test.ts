@@ -35,7 +35,7 @@ function makeDirective(
 }
 
 const TASK_TEXT = "Implement the thing";
-const TASK_PACKET = "# Task Packet\n\n- [ ] Implement the thing\n";
+const COMPILED_CONTRACT = "# Task Contract\n\n## Objective\n\nDo the thing.";
 const WORKTREE = "/repo/worktrees/r1/t001-task";
 const PLAN_ARTIFACTS = ["/repo/plan.md"];
 
@@ -46,7 +46,7 @@ describe("decideScout", () => {
       isRetry: false,
       attemptOrdinal: 1,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({ run: false, reason: "Scout disabled by config" });
   });
@@ -57,7 +57,7 @@ describe("decideScout", () => {
       isRetry: false,
       attemptOrdinal: 1,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({ run: false, reason: "Scout disabled by config" });
   });
@@ -68,7 +68,7 @@ describe("decideScout", () => {
       isRetry: false,
       attemptOrdinal: 1,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({ run: true, reason: "Scout mode is always" });
   });
@@ -80,7 +80,7 @@ describe("decideScout", () => {
       isRetry: false,
       attemptOrdinal: 1,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({
       run: true,
@@ -95,7 +95,7 @@ describe("decideScout", () => {
       isRetry: false,
       attemptOrdinal: 1,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({
       run: true,
@@ -110,7 +110,7 @@ describe("decideScout", () => {
       isRetry: false,
       attemptOrdinal: 1,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({
       run: false,
@@ -125,7 +125,7 @@ describe("decideScout", () => {
       isRetry: true,
       attemptOrdinal: 2,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({
       run: true,
@@ -141,7 +141,7 @@ describe("decideScout", () => {
       attemptOrdinal: 1,
       feedback: { source: "reviewer", message: "fix the bug" },
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({
       run: true,
@@ -155,7 +155,7 @@ describe("decideScout", () => {
       isRetry: true,
       attemptOrdinal: 2,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({
       run: true,
@@ -169,7 +169,7 @@ describe("decideScout", () => {
       isRetry: false,
       attemptOrdinal: 2,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({
       run: true,
@@ -184,7 +184,7 @@ describe("decideScout", () => {
       attemptOrdinal: 1,
       feedback: { source: "system", message: "validation failed" },
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({
       run: true,
@@ -199,7 +199,7 @@ describe("decideScout", () => {
       attemptOrdinal: 1,
       feedback: { source: "system", message: "   " },
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({
       run: false,
@@ -214,7 +214,7 @@ describe("decideScout", () => {
       isRetry: false,
       attemptOrdinal: 1,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({
       run: false,
@@ -229,7 +229,7 @@ describe("decideScout", () => {
       isRetry: false,
       attemptOrdinal: 1,
       taskText: "Refactor the entire codebase and add new features",
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({
       run: false,
@@ -245,7 +245,7 @@ describe("decideScout", () => {
       isRetry: false,
       attemptOrdinal: 1,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({ run: true, reason: "Scout mode is always" });
   });
@@ -256,7 +256,7 @@ describe("decideScout", () => {
       isRetry: false,
       attemptOrdinal: 1,
       taskText: TASK_TEXT,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
     });
     expect(result).toEqual({ run: false, reason: "Scout disabled by config" });
   });
@@ -266,7 +266,7 @@ describe("buildScoutPrompt", () => {
   it("includes the read-only contract and worktree path", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       isRetry: false,
     });
@@ -276,20 +276,20 @@ describe("buildScoutPrompt", () => {
     expect(prompt).toContain("Do not edit, write, stage, commit");
   });
 
-  it("includes the task packet", () => {
+  it("includes the compiled contract", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       isRetry: false,
     });
-    expect(prompt).toContain(TASK_PACKET.trim());
+    expect(prompt).toContain(COMPILED_CONTRACT.trim());
   });
 
   it("lists plan artifacts as read-only", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: ["/repo/plan.md", "/repo/spec.md"],
       isRetry: false,
     });
@@ -301,7 +301,7 @@ describe("buildScoutPrompt", () => {
   it("shows (none) when plan artifacts are empty", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: [],
       isRetry: false,
     });
@@ -313,7 +313,7 @@ describe("buildScoutPrompt", () => {
   it("does not ask to design or implement the solution", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       isRetry: false,
     });
@@ -325,7 +325,7 @@ describe("buildScoutPrompt", () => {
   it("requests concise implementation-oriented output sections", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       isRetry: false,
     });
@@ -339,7 +339,7 @@ describe("buildScoutPrompt", () => {
   it("includes directive mode, reason, and breadth when provided", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       directive: {
         mode: "require",
@@ -356,7 +356,7 @@ describe("buildScoutPrompt", () => {
   it("includes custom prompt from directive", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       directive: {
         mode: "require",
@@ -372,7 +372,7 @@ describe("buildScoutPrompt", () => {
   it("omits directive section when no directive is given", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       isRetry: false,
     });
@@ -382,7 +382,7 @@ describe("buildScoutPrompt", () => {
   it("includes retry feedback when provided", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       isRetry: true,
       feedback: { source: "reviewer", message: "fix the bug" },
@@ -395,7 +395,7 @@ describe("buildScoutPrompt", () => {
   it("uses retry fallback request when isRetry is true without custom prompt", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       isRetry: true,
       feedback: { source: "reviewer", message: "fix the bug" },
@@ -408,7 +408,7 @@ describe("buildScoutPrompt", () => {
   it("uses default request on first attempt without directive", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       isRetry: false,
     });
@@ -420,7 +420,7 @@ describe("buildScoutPrompt", () => {
   it("prioritizes directive custom prompt over retry fallback", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       directive: {
         mode: "require",
@@ -438,7 +438,7 @@ describe("buildScoutPrompt", () => {
   it("uses feedback fallback when feedback is present but isRetry is false", () => {
     const prompt = buildScoutPrompt({
       worktreePath: WORKTREE,
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       planArtifacts: PLAN_ARTIFACTS,
       isRetry: false,
       feedback: { source: "commit-hook", message: "lint failed" },
@@ -538,34 +538,5 @@ describe("buildScoutUnavailableNote", () => {
     const note = buildScoutUnavailableNote("timeout");
     expect(note).toContain("Scout was unavailable for this attempt (timeout)");
     expect(note).toContain("missing optimization, not a blocker");
-  });
-});
-
-const COMPILED_CONTRACT = "# Task Contract\n\n## Objective\n\nDo the thing.";
-
-describe("buildScoutPrompt with compiledContract", () => {
-  it("uses compiled task contract label and content", () => {
-    const prompt = buildScoutPrompt({
-      worktreePath: WORKTREE,
-      compiledContract: COMPILED_CONTRACT,
-      planArtifacts: PLAN_ARTIFACTS,
-      isRetry: false,
-    });
-    expect(prompt).toContain("Compiled task contract:");
-    expect(prompt).toContain(COMPILED_CONTRACT.trim());
-    expect(prompt).not.toContain("Task packet:");
-  });
-
-  it("prefers compiledContract over taskPacket when both provided", () => {
-    const prompt = buildScoutPrompt({
-      worktreePath: WORKTREE,
-      compiledContract: COMPILED_CONTRACT,
-      taskPacket: TASK_PACKET,
-      planArtifacts: PLAN_ARTIFACTS,
-      isRetry: false,
-    });
-    expect(prompt).toContain("Compiled task contract:");
-    expect(prompt).toContain(COMPILED_CONTRACT.trim());
-    expect(prompt).not.toContain("Task packet:");
   });
 });

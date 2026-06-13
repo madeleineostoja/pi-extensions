@@ -10,28 +10,6 @@ import {
 
 const WORKTREE_PATH = "/repo/.pi/implement/worktrees/r1/t001-my-task";
 
-const TASK_PACKET = `# Task Packet
-
-## Selected Task
-
-- [ ] My task
-`;
-
-const REFERENCED_TASK_PACKET = `# Task Packet
-
-## Selected Task
-
-- [ ] My task
-
-## Referenced Plan Material
-
-### auth.md
-
-# Auth Plan
-
-Raw auth requirement.
-`;
-
 const IMPLEMENTER_RESULT = {
   outcome: "changed" as const,
   summary: "Did the thing",
@@ -41,14 +19,33 @@ const IMPLEMENTER_RESULT = {
   commitMessage: "feat: my task",
 };
 
+const COMPILED_CONTRACT = `# Task Contract
+
+## Objective
+
+Do the thing.
+
+## In-Scope Items
+
+- Item 1
+
+## Acceptance Criteria
+
+- Criterion 1
+
+## Out-of-Scope Items
+
+- Sibling item
+`;
+
 describe("buildImplementerPrompt", () => {
-  it("carries the task packet and assigned worktree contract", () => {
+  it("carries the compiled contract and assigned worktree contract", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
     });
 
-    expect(prompt).toContain(TASK_PACKET.trim());
+    expect(prompt).toContain(COMPILED_CONTRACT.trim());
     expect(prompt).toContain(WORKTREE_PATH);
     expect(prompt).toContain(
       "Read and write only inside the assigned worktree",
@@ -58,23 +55,23 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
-  it("states the required implementation scope is only the selected task", () => {
+  it("states the required implementation scope is only the compiled contract", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
     });
 
     expect(prompt).toContain(
-      "**Required implementation scope:** Only the selected task line plus its indented block",
+      "Only the items listed in the compiled task contract",
     );
     expect(prompt).toContain(
-      "Do not implement sibling tasks or unrelated cleanup, even when global plan context mentions them",
+      "Do not implement sibling tasks or unrelated cleanup, even when broader context mentions them",
     );
   });
 
   it("does not invite the implementer to read the full plan as a general scope expansion", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
     });
 
@@ -83,13 +80,13 @@ describe("buildImplementerPrompt", () => {
     );
     expect(prompt).not.toContain("read the full plan file");
     expect(prompt).toContain(
-      "The task packet below is the complete, authoritative plan context for this task",
+      "The compiled task contract below is the complete, authoritative implementation scope for this task",
     );
   });
 
   it("does not suggest reading the source plan file for background context", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
     });
 
@@ -99,7 +96,7 @@ describe("buildImplementerPrompt", () => {
 
   it("tells the implementer to stop and narrow when implementing an unselected sibling task", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
     });
 
@@ -112,39 +109,21 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
-  it("tells the implementer to use referenced material only for selected-task context", () => {
+  it("does not include referenced plan material in the implementer prompt", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
     });
 
-    expect(prompt).toContain(
-      "The packet may contain referenced plan material that is broader than the selected task",
-    );
-    expect(prompt).toContain(
-      "Use that material only for context directly relevant to the selected task",
-    );
-    expect(prompt).toContain(
-      "Do not implement unrelated requirements merely because they appear in referenced material",
-    );
-  });
-
-  it("includes referenced material without adding sibling task scope", () => {
-    const prompt = buildImplementerPrompt({
-      taskPacket: REFERENCED_TASK_PACKET,
-      worktreePath: WORKTREE_PATH,
-    });
-
-    expect(prompt).toContain("## Referenced Plan Material");
-    expect(prompt).toContain("### auth.md");
-    expect(prompt).toContain("Raw auth requirement.");
+    expect(prompt).not.toContain("## Referenced Plan Material");
+    expect(prompt).not.toContain("Raw auth requirement.");
     expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
     expect(prompt).not.toContain("Sibling task A");
   });
 
   it("documents both outcome values in the result schema", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
     });
 
@@ -160,7 +139,7 @@ describe("buildImplementerPrompt", () => {
 
   it("includes retry context when reviewer feedback is supplied", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       feedback: "fix the bug",
       priorSummary: "tried but failed",
@@ -172,7 +151,7 @@ describe("buildImplementerPrompt", () => {
 
   it("omits Scout Context when no scoutContext is provided", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
     });
 
@@ -180,9 +159,9 @@ describe("buildImplementerPrompt", () => {
     expect(prompt).not.toContain("read-only Scout");
   });
 
-  it("includes Scout Context before Task Packet when scoutContext is provided", () => {
+  it("includes Scout Context before Compiled Task Contract when scoutContext is provided", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       scoutContext: "Relevant file: src/foo.ts",
     });
@@ -190,15 +169,15 @@ describe("buildImplementerPrompt", () => {
     expect(prompt).toContain("## Scout Context");
     expect(prompt).toContain("Relevant file: src/foo.ts");
     const scoutIndex = prompt.indexOf("## Scout Context");
-    const packetIndex = prompt.indexOf("## Task Packet");
+    const contractIndex = prompt.indexOf("## Compiled Task Contract");
     expect(scoutIndex).toBeGreaterThan(0);
-    expect(packetIndex).toBeGreaterThan(0);
-    expect(scoutIndex).toBeLessThan(packetIndex);
+    expect(contractIndex).toBeGreaterThan(0);
+    expect(scoutIndex).toBeLessThan(contractIndex);
   });
 
   it("tells the implementer to treat Scout as a map, not truth", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       scoutContext: "some context",
     });
@@ -211,19 +190,19 @@ describe("buildImplementerPrompt", () => {
 
   it("tells the implementer to avoid expanding scope based on Scout discoveries", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       scoutContext: "some context",
     });
 
     expect(prompt).toContain(
-      "Do not expand your implementation scope based on Scout discoveries. Stick to the selected task packet.",
+      "Do not expand your implementation scope based on Scout discoveries. Stick to the selected task contract.",
     );
   });
 
   it("tells the implementer to avoid broad repo search unless Scout is clearly insufficient", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       scoutContext: "some context",
     });
@@ -235,7 +214,7 @@ describe("buildImplementerPrompt", () => {
 
   it("places Scout Context after Retry Context when both are present", () => {
     const prompt = buildImplementerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       feedback: "fix the bug",
       priorSummary: "tried but failed",
@@ -244,21 +223,21 @@ describe("buildImplementerPrompt", () => {
 
     const retryIndex = prompt.indexOf("## Retry Context");
     const scoutIndex = prompt.indexOf("## Scout Context");
-    const packetIndex = prompt.indexOf("## Task Packet");
+    const contractIndex = prompt.indexOf("## Compiled Task Contract");
     expect(retryIndex).toBeLessThan(scoutIndex);
-    expect(scoutIndex).toBeLessThan(packetIndex);
+    expect(scoutIndex).toBeLessThan(contractIndex);
   });
 });
 
 describe("buildReviewerPrompt", () => {
-  it("carries the task packet, assigned worktree, and staged-diff contract", () => {
+  it("carries the compiled contract, assigned worktree, and staged-diff contract", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
     });
 
-    expect(prompt).toContain(TASK_PACKET.trim());
+    expect(prompt).toContain(COMPILED_CONTRACT.trim());
     expect(prompt).toContain(WORKTREE_PATH);
     expect(prompt).toContain("staged candidate diff");
     expect(prompt).toContain("Do not edit files");
@@ -267,7 +246,7 @@ describe("buildReviewerPrompt", () => {
 
   it("inspects the committed range when baseSha is provided", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       baseSha: "base123",
@@ -281,7 +260,7 @@ describe("buildReviewerPrompt", () => {
 
   it("includes out-of-scope sibling tasks when provided", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       outOfScopeTasks: ["- [ ] Sibling task A", "- [ ] Sibling task B"],
@@ -294,7 +273,7 @@ describe("buildReviewerPrompt", () => {
 
   it("omits the sibling section when no out-of-scope tasks are provided", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
     });
@@ -304,7 +283,7 @@ describe("buildReviewerPrompt", () => {
 
   it("tells reviewers to request changes for substantial sibling-task implementation", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       outOfScopeTasks: ["- [ ] Sibling task"],
@@ -323,7 +302,7 @@ describe("buildReviewerPrompt", () => {
 
   it("uses the target sibling-task wording in the out-of-scope section", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       outOfScopeTasks: ["- [ ] Sibling task"],
@@ -334,24 +313,22 @@ describe("buildReviewerPrompt", () => {
     );
   });
 
-  it("retains referenced material and reviewer-only sibling context together", () => {
+  it("does not include referenced plan material in the reviewer prompt", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: REFERENCED_TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       outOfScopeTasks: ["- [ ] Sibling task A"],
     });
 
-    expect(prompt).toContain("## Referenced Plan Material");
-    expect(prompt).toContain("### auth.md");
-    expect(prompt).toContain("Raw auth requirement.");
+    expect(prompt).not.toContain("## Referenced Plan Material");
     expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(prompt).toContain("- [ ] Sibling task A");
   });
 
   it("contains the initial material-blocking-set contract when no prior required changes are given", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
     });
@@ -367,7 +344,7 @@ describe("buildReviewerPrompt", () => {
 
   it("allows meaningful material quality cleanup in initial review", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
     });
@@ -379,7 +356,7 @@ describe("buildReviewerPrompt", () => {
 
   it("does not invite nit-only blocking in initial review", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
     });
@@ -397,7 +374,7 @@ describe("buildReviewerPrompt", () => {
 
   it("contains reviewer validation-limitation handoff instructions", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
     });
@@ -415,7 +392,7 @@ describe("buildReviewerPrompt", () => {
 
   it("contains the anchored re-review mode and prior required changes list", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       priorRequiredChanges: [
@@ -432,7 +409,7 @@ describe("buildReviewerPrompt", () => {
 
   it("requires exact copies of unresolved prior items only in anchored re-review", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       priorRequiredChanges: ["Fix the off-by-one error"],
@@ -445,7 +422,7 @@ describe("buildReviewerPrompt", () => {
 
   it("forbids introducing new issues in anchored re-review", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       priorRequiredChanges: ["Fix the off-by-one error"],
@@ -461,7 +438,7 @@ describe("buildReviewerPrompt", () => {
 
   it("does not include critical-issue escape wording in anchored re-review", () => {
     const prompt = buildReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       priorRequiredChanges: ["Fix the off-by-one error"],
@@ -475,7 +452,7 @@ describe("buildReviewerPrompt", () => {
 describe("buildAlreadySatisfiedReviewerPrompt", () => {
   it("tells the reviewer there is no staged diff and the task is claimed already satisfied", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -485,7 +462,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
     expect(prompt).toContain(
       "The implementer claims the selected task is already satisfied by the current repository state",
     );
-    expect(prompt).toContain(TASK_PACKET.trim());
+    expect(prompt).toContain(COMPILED_CONTRACT.trim());
     expect(prompt).toContain(WORKTREE_PATH);
     expect(prompt).toContain("Do not edit files");
     expect(prompt).toContain("change HEAD");
@@ -493,17 +470,17 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("restores the already-satisfied acceptance contract", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
     });
 
     expect(prompt).toContain(
-      "The selected task's required scope is the selected task line plus its indented block",
+      "The selected task's required scope is defined in the compiled task contract",
     );
     expect(prompt).toContain(
-      "Approve when that selected task line and indented block are satisfied now",
+      "Approve when the compiled contract is satisfied now",
     );
     expect(prompt).toContain(
       "Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task",
@@ -512,7 +489,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("includes the accumulated diff when provided", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -525,7 +502,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("includes an available empty accumulated diff", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -539,7 +516,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("omits the accumulated diff and instructs direct inspection when not provided", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -552,7 +529,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("includes out-of-scope sibling tasks when provided", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -569,7 +546,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("omits the sibling section when no out-of-scope tasks are provided", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -578,25 +555,23 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
     expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
   });
 
-  it("retains referenced material and reviewer-only sibling context together", () => {
+  it("does not include referenced plan material in the already-satisfied reviewer prompt", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: REFERENCED_TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
       outOfScopeTasks: ["- [ ] Sibling task A"],
     });
 
-    expect(prompt).toContain("## Referenced Plan Material");
-    expect(prompt).toContain("### auth.md");
-    expect(prompt).toContain("Raw auth requirement.");
+    expect(prompt).not.toContain("## Referenced Plan Material");
     expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(prompt).toContain("- [ ] Sibling task A");
   });
 
   it("contains the initial material-blocking-set contract when no prior required changes are given", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -613,7 +588,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("allows meaningful material quality cleanup in initial review", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -626,7 +601,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("does not invite nit-only blocking in initial review", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -645,7 +620,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("contains reviewer validation-limitation handoff instructions", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -664,7 +639,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("contains the anchored re-review mode and prior required changes list", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -682,7 +657,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("requires exact copies of unresolved prior items only in anchored re-review", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -696,7 +671,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("forbids introducing new issues in anchored re-review", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -713,7 +688,7 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
   it("does not include critical-issue escape wording in anchored re-review", () => {
     const prompt = buildAlreadySatisfiedReviewerPrompt({
-      taskPacket: TASK_PACKET,
+      compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
@@ -830,129 +805,6 @@ describe("buildOverallReviewerPrompt", () => {
 
     expect(prompt).toContain(
       "This file contains a requirement that must be verified in the final review even though it was not part of any compiled task contract.",
-    );
-  });
-});
-
-const COMPILED_CONTRACT = `# Task Contract
-
-## Objective
-
-Do the thing.
-
-## In-Scope Items
-
-- Item 1
-
-## Acceptance Criteria
-
-- Criterion 1
-
-## Out-of-Scope Items
-
-- Sibling item
-`;
-
-describe("buildImplementerPrompt with compiledContract", () => {
-  it("uses compiled contract section and omits task packet", () => {
-    const prompt = buildImplementerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-    });
-
-    expect(prompt).toContain("## Compiled Task Contract");
-    expect(prompt).toContain("## Objective");
-    expect(prompt).not.toContain("## Task Packet");
-    expect(prompt).not.toContain("## Referenced Plan Material");
-  });
-
-  it("describes the compiled contract as the authoritative scope", () => {
-    const prompt = buildImplementerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-    });
-
-    expect(prompt).toContain(
-      "The compiled task contract below is the complete, authoritative implementation scope for this task",
-    );
-    expect(prompt).toContain(
-      "Only the items listed in the compiled task contract",
-    );
-  });
-
-  it("tells the implementer to stick to the selected task contract in scout context", () => {
-    const prompt = buildImplementerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      scoutContext: "some context",
-    });
-
-    expect(prompt).toContain("Stick to the selected task contract.");
-  });
-});
-
-describe("buildReviewerPrompt with compiledContract", () => {
-  it("uses compiled contract section and omits task packet", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain("## Compiled Task Contract");
-    expect(prompt).toContain("## Objective");
-    expect(prompt).not.toContain("## Task Packet");
-  });
-
-  it("describes the compiled task contract as the review slice", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain(
-      "The compiled task contract is a deliberate single-task slice",
-    );
-  });
-
-  it("includes out-of-scope sibling tasks with compiled contract", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      outOfScopeTasks: ["- Sibling task A"],
-    });
-
-    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
-    expect(prompt).toContain("- Sibling task A");
-  });
-});
-
-describe("buildAlreadySatisfiedReviewerPrompt with compiledContract", () => {
-  it("uses compiled contract section and omits task packet", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-    });
-
-    expect(prompt).toContain("## Compiled Task Contract");
-    expect(prompt).toContain("## Objective");
-    expect(prompt).not.toContain("## Task Packet");
-  });
-
-  it("describes scope in terms of compiled contract", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-    });
-
-    expect(prompt).toContain(
-      "The selected task's required scope is defined in the compiled task contract",
     );
   });
 });

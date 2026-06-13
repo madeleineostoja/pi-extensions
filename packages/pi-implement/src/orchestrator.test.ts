@@ -28,7 +28,7 @@ import type { RunJson, StatePaths } from "./state.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SpawnArgs, SubagentClient, SubagentResult } from "./subagents.js";
 import type { RunState } from "./status.js";
-import { buildPlanBundleManifest } from "./manifest.js";
+import { buildPlanBundleManifest, computeTaskFingerprint } from "./manifest.js";
 import { parsePlanFile } from "./plan.js";
 
 class FakeGit implements GitClient {
@@ -275,6 +275,35 @@ function makeRunJson(dir: string, planPath: string, runId = "r1"): RunJson {
   };
 }
 
+function makeExecutionManifest(plan: ReturnType<typeof parsePlanFile>): ExecutionManifest {
+  return {
+    version: 1,
+    tasks: plan.tasks.map((task) => ({
+      id: `t${String(task.index).padStart(3, "0")}-${task.text.toLowerCase().replace(/\s+/g, "-")}`,
+      planIndex: task.index,
+      title: task.text,
+      taskHash: computeTaskFingerprint(task),
+      status: "todo" as const,
+      dependsOn: [],
+      review: { mode: "require" as const },
+      affectedAreas: [],
+      conflictHints: [],
+      sourceReferences: [],
+      sourceCheckbox: {
+        path: plan.path,
+        lineNumber: task.lineNumber,
+        lineText: task.originalLine,
+      },
+      compiledContract: {
+        objective: task.text,
+        inScope: [task.text],
+        acceptanceCriteria: ["Task is complete and verified"],
+        outOfScope: ["Other tasks"],
+      },
+    })),
+  };
+}
+
 const GOOD_OVERALL_REVIEW =
   '<pi-overall-review-result>{"verdict":"approved"}</pi-overall-review-result>';
 const BAD_OVERALL_REVIEW =
@@ -370,7 +399,9 @@ describe("runImplementation", () => {
       "utf-8",
     );
     writeFileSync(subPath, "# Subplan\n", "utf-8");
-    const manifest = buildPlanBundleManifest(planPath, parsePlanFile(planPath));
+    const originalPlan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, originalPlan);
+    const executionManifest = makeExecutionManifest(originalPlan);
     writeFileSync(
       planPath,
       "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan: `sub.md`\n  - Edited after preflight\n",
@@ -385,6 +416,7 @@ describe("runImplementation", () => {
         subagents,
         planPath,
         manifest,
+        executionManifest,
         roles: {
           implementer: { model: "p/m", type: "general-purpose" },
           reviewer: { model: "p/m", type: "general-purpose" },
@@ -591,7 +623,7 @@ describe("runImplementation", () => {
 
     expect(implPrompt).not.toContain("Task two");
     expect(reviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
-    expect(reviewerPrompt).toContain("- [x] Task two");
+    expect(reviewerPrompt).toContain("- Task two");
     expect(reviewerPrompt).toContain(
       "Completing a sibling task's own deliverable is scope creep",
     );
@@ -639,22 +671,19 @@ describe("runImplementation", () => {
     const reviewerPrompt = subagents.spawns[1]?.prompt ?? "";
     const overallReviewPrompt = subagents.spawns[4]?.prompt ?? "";
 
-    // Implementer prompt
-    expect(implPrompt).toContain("## Referenced Plan Material");
-    expect(implPrompt).toContain("### sub.md");
-    expect(implPrompt).toContain("# Subplan");
-    expect(implPrompt).toContain("Acceptance: do it.");
+    // Implementer prompt uses compiled contract, not raw referenced material
+    expect(implPrompt).toContain("## Compiled Task Contract");
+    expect(implPrompt).not.toContain("## Referenced Plan Material");
     expect(implPrompt).not.toContain("## Out-of-Scope Sibling Tasks");
     expect(implPrompt).not.toContain("Task two");
 
-    // Reviewer prompt
-    expect(reviewerPrompt).toContain("## Referenced Plan Material");
-    expect(reviewerPrompt).toContain("### sub.md");
-    expect(reviewerPrompt).toContain("# Subplan");
+    // Reviewer prompt uses compiled contract, not raw referenced material
+    expect(reviewerPrompt).toContain("## Compiled Task Contract");
+    expect(reviewerPrompt).not.toContain("## Referenced Plan Material");
     expect(reviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
-    expect(reviewerPrompt).toContain("- [ ] Task two");
+    expect(reviewerPrompt).toContain("- Task two");
 
-    // Overall reviewer prompt
+    // Overall reviewer prompt still has full referenced material
     expect(overallReviewPrompt).toContain("## Referenced Plan Material");
     expect(overallReviewPrompt).toContain("### sub.md");
     expect(overallReviewPrompt).toContain("# Subplan");
@@ -697,7 +726,7 @@ describe("runImplementation", () => {
 
     expect(implPrompt).not.toContain("Task two");
     expect(reviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
-    expect(reviewerPrompt).toContain("- [ ] Task two");
+    expect(reviewerPrompt).toContain("- Task two");
     expect(reviewerPrompt).toContain(
       "Completing a sibling task's own deliverable is scope creep",
     );
@@ -709,6 +738,90 @@ describe("runImplementation", () => {
     const updatedPlan = readFileSync(planPath, "utf-8");
     expect(updatedPlan).toContain("- [x] Task one");
     expect(updatedPlan).toContain("- [x] Task two");
+  });
+
+  it("regression: compiled contract excludes sibling deliverables from a shared plan file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    const sharedPath = join(dir, "shared.md");
+    writeFileSync(
+      planPath,
+      `# Plan
+
+## Tasks
+
+- [ ] Add public tools API
+  - Plan: \`shared.md\`
+- [ ] Migrate injected explore to pi-implement
+  - Plan: \`shared.md\`
+`,
+      "utf-8",
+    );
+    writeFileSync(
+      sharedPath,
+      `# Shared Decisions
+
+## Public Tools
+- Must expose the public tools surface.
+
+## Injected Explore
+- Must migrate injected explore to pi-implement.
+
+## Auth
+- All features must use auth.
+`,
+      "utf-8",
+    );
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      executionManifest,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns).toHaveLength(5);
+    const task1ImplPrompt = subagents.spawns[0]?.prompt ?? "";
+    const task1ReviewerPrompt = subagents.spawns[1]?.prompt ?? "";
+    const overallReviewPrompt = subagents.spawns[4]?.prompt ?? "";
+
+    // Task 1 implementer must NOT see sibling deliverables from shared.md
+    expect(task1ImplPrompt).toContain("## Compiled Task Contract");
+    expect(task1ImplPrompt).not.toContain("## Referenced Plan Material");
+    expect(task1ImplPrompt).not.toContain("Must migrate injected explore");
+    expect(task1ImplPrompt).not.toContain("Migrate injected explore");
+
+    // Task 1 reviewer must NOT see sibling deliverables from shared.md
+    expect(task1ReviewerPrompt).toContain("## Compiled Task Contract");
+    expect(task1ReviewerPrompt).not.toContain("## Referenced Plan Material");
+    expect(task1ReviewerPrompt).not.toContain("Must migrate injected explore");
+    expect(task1ReviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(task1ReviewerPrompt).toContain("- Migrate injected explore");
+
+    // Overall reviewer sees the full plan corpus for omission checks
+    expect(overallReviewPrompt).toContain("## Referenced Plan Material");
+    expect(overallReviewPrompt).toContain("Must migrate injected explore");
   });
 
   it("tracks reviewer requests separately from system failures", async () => {
@@ -1074,6 +1187,7 @@ describe("runImplementation", () => {
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
     const runId = "r1";
+    const plan = parsePlanFile(planPath);
     const manifest: ExecutionManifest = {
       version: 1,
       tasks: [
@@ -1081,7 +1195,7 @@ describe("runImplementation", () => {
           id: "t001-do-thing",
           planIndex: 1,
           title: "Do thing",
-          taskHash: "hash",
+          taskHash: computeTaskFingerprint(plan.tasks[0]),
           status: "todo",
           dependsOn: [],
           review: { mode: "skip" },
@@ -1136,6 +1250,7 @@ describe("runImplementation", () => {
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
     const runId = "r1";
+    const plan = parsePlanFile(planPath);
     const manifest: ExecutionManifest = {
       version: 1,
       tasks: [
@@ -1143,7 +1258,7 @@ describe("runImplementation", () => {
           id: "t001-do-thing",
           planIndex: 1,
           title: "Do thing",
-          taskHash: "hash",
+          taskHash: computeTaskFingerprint(plan.tasks[0]),
           status: "todo",
           dependsOn: [],
           review: { mode: "skip" },
@@ -1208,6 +1323,7 @@ describe("runImplementation", () => {
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
     const runId = "r1";
+    const plan = parsePlanFile(planPath);
     const manifest: ExecutionManifest = {
       version: 1,
       tasks: [
@@ -1215,7 +1331,7 @@ describe("runImplementation", () => {
           id: "t001-do-thing",
           planIndex: 1,
           title: "Do thing",
-          taskHash: "hash",
+          taskHash: computeTaskFingerprint(plan.tasks[0]),
           status: "todo",
           dependsOn: [],
           review: { mode: "skip" },

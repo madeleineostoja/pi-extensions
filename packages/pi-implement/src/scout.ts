@@ -8,7 +8,7 @@ export type ScoutDecisionInput = {
   attemptOrdinal: number;
   feedback?: { source: string; message: string };
   taskText: string;
-  taskPacket: string;
+  compiledContract: string;
 };
 
 export type ScoutDecision =
@@ -62,8 +62,7 @@ export function decideScout(input: ScoutDecisionInput): ScoutDecision {
 
 export type ScoutPromptInput = {
   worktreePath: string;
-  taskPacket?: string;
-  compiledContract?: string;
+  compiledContract: string;
   planArtifacts: string[];
   directive?: ScoutDirective;
   isRetry: boolean;
@@ -73,7 +72,6 @@ export type ScoutPromptInput = {
 export function buildScoutPrompt(input: ScoutPromptInput): string {
   const {
     worktreePath,
-    taskPacket,
     compiledContract,
     planArtifacts,
     directive,
@@ -81,19 +79,14 @@ export function buildScoutPrompt(input: ScoutPromptInput): string {
     feedback,
   } = input;
 
-  const contract = compiledContract ?? taskPacket;
-  if (!contract) {
-    throw new Error("Either taskPacket or compiledContract must be provided");
-  }
-
   const lines: string[] = [
     "You are a read-only Scout for pi-implement. Explore the assigned worktree to locate implementation context for exactly one selected task. Do not edit, write, stage, commit, install dependencies, or run mutating commands.",
     "",
     `Assigned worktree: ${worktreePath}`,
     `Plan artifacts are read-only and must not be edited: ${planArtifacts.join(", ") || "(none)"}`,
     "",
-    compiledContract ? "Compiled task contract:" : "Task packet:",
-    contract,
+    "Compiled task contract:",
+    compiledContract,
   ];
 
   if (directive) {

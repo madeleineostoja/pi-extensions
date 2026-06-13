@@ -1,10 +1,4 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import type { PlanBundleManifest, ReferencedMaterial } from "./manifest.js";
-import {
-  computeTaskFingerprint,
-  extractPlanReference,
-  formatReferencedMaterial,
-} from "./manifest.js";
 import { normalizeCheckboxMarker } from "./source-checkbox.js";
 
 export type PlanTask = {
@@ -26,10 +20,6 @@ export type ParsedPlan = {
   tasks: PlanTask[];
 };
 
-export type TaskPacket = {
-  markdown: string;
-  task: PlanTask;
-};
 
 const CHECKBOX_RE = /^([ \t]*)[-*][ \t]+\[([ xX])\][ \t]+(.+)$/;
 
@@ -116,71 +106,6 @@ export function parsePlanFile(path: string): ParsedPlan {
 
 export function nextUncheckedTask(plan: ParsedPlan): PlanTask | undefined {
   return plan.tasks.find((task) => !task.checked);
-}
-
-export function buildTaskPacket(
-  plan: ParsedPlan,
-  task: PlanTask,
-  manifest?: PlanBundleManifest,
-): TaskPacket {
-  const parts: string[] = [
-    "# Task Packet",
-    "",
-    "## Selected Task",
-    "",
-    task.originalLine,
-  ];
-
-  const consumedReferences = manifest
-    ? task.blockLines.filter((line) => extractPlanReference(line) !== undefined)
-    : [];
-  const notesLines =
-    consumedReferences.length > 0
-      ? task.blockLines.filter(
-          (line) => extractPlanReference(line) === undefined,
-        )
-      : task.blockLines;
-  if (notesLines.some((line) => line.trim() !== "")) {
-    parts.push("## Selected Task Notes", "", ...notesLines);
-  }
-  parts.push("");
-
-  let materials: ReferencedMaterial[] = [];
-  if (manifest) {
-    const entry = manifest.tasks.find((t) => t.planIndex === task.index);
-    if (!entry) {
-      throw new Error(
-        `Task ${task.index} is missing from the plan bundle manifest: plan may have changed since manifest was built.`,
-      );
-    }
-    const currentFingerprint = computeTaskFingerprint(task);
-    if (entry.fingerprint !== currentFingerprint) {
-      throw new Error(
-        `Task fingerprint mismatch for task ${task.index}: plan may have changed since manifest was built.`,
-      );
-    }
-    materials = entry.referencedMaterials;
-  }
-
-  if (materials.length > 0) {
-    const referencedSection = formatReferencedMaterial(materials);
-    parts.push("## Referenced Plan Material", "", referencedSection, "");
-  }
-
-  const nonTask = [
-    ...plan.lines.slice(0, plan.tasksStartLine - 1),
-    ...plan.lines.slice(plan.tasksEndLine - 1),
-  ]
-    .join("\n")
-    .trim();
-  if (nonTask) {
-    parts.push("## Background Context", "", nonTask, "");
-  }
-
-  return {
-    markdown: `${parts.join("\n").trim()}\n`,
-    task,
-  };
 }
 
 export function markTaskDoneInContent(content: string, task: PlanTask): string {
