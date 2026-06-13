@@ -47,7 +47,7 @@ import {
   buildPlanBundleManifest,
   validatePlanMaterialSizes,
 } from "./manifest.js";
-import { ingestPlanCorpus } from "./corpus.js";
+import { ingestPlanCorpus, formatCorpusMaterial } from "./corpus.js";
 import { diffProgress } from "./progress.js";
 import {
   getStatePaths,
@@ -783,6 +783,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           planPath,
           planArtifacts,
           manifest,
+          corpusMaterial: formatCorpusMaterial(corpus),
           roles: effective.roles,
           mode: strategy.mode,
           maxConcurrency: strategy.maxConcurrency,

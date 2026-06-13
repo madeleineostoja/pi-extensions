@@ -1,4 +1,63 @@
+import type { ExecutionManifest } from "./execution-plan.js";
 import type { ParsedImplementerResult } from "./verdict.js";
+
+export function formatExecutionManifestSummary(
+  manifest?: ExecutionManifest,
+): string {
+  if (!manifest) {
+    return "";
+  }
+
+  const parts: string[] = [
+    "## Execution Manifest",
+    "",
+    "The per-task implementers were given only compiled task contracts, not the full plan. The manifest below records the contracts that controlled each task's scope. Your job is to verify that the completed implementation satisfies the full original human plan intent, not just the individual contracts.",
+    "",
+  ];
+
+  if (manifest.sourcePlanPath) {
+    parts.push(`- Source plan: ${manifest.sourcePlanPath}`);
+  }
+  if (manifest.sourcePlanHash) {
+    parts.push(`- Source plan hash: ${manifest.sourcePlanHash}`);
+  }
+  if (manifest.plannerReason) {
+    parts.push(`- Planner reason: ${manifest.plannerReason}`);
+  }
+  if (manifest.plannerConfidence) {
+    parts.push(`- Planner confidence: ${manifest.plannerConfidence}`);
+  }
+
+  parts.push("", "### Compiled Task Contracts", "");
+  parts.push(
+    "Each per-task implementer received only its own compiled contract. The contracts below controlled the scope of each task during execution.",
+    "",
+  );
+
+  for (const task of manifest.tasks) {
+    parts.push(`#### ${task.id}: ${task.title}`);
+    parts.push(`- Objective: ${task.compiledContract.objective}`);
+    parts.push(`- In scope: ${task.compiledContract.inScope.join(", ")}`);
+    parts.push(
+      `- Acceptance criteria: ${task.compiledContract.acceptanceCriteria.join(", ")}`,
+    );
+    parts.push(
+      `- Out of scope: ${task.compiledContract.outOfScope.join(", ")}`,
+    );
+    parts.push("");
+  }
+
+  parts.push(
+    "### Review Focus",
+    "",
+    "- Check for planner/compiler omissions: requirements in the original plan that were missed because no compiled contract covered them.",
+    "- Verify that tasks integrate correctly even though they were implemented in isolation.",
+    "- Confirm cross-task gaps and edge cases from the original plan were addressed.",
+    "",
+  );
+
+  return parts.join("\n");
+}
 
 function buildSiblingTasksSection(outOfScopeTasks?: string[]): string {
   if (!outOfScopeTasks || outOfScopeTasks.length === 0) {
@@ -495,6 +554,8 @@ export function buildOverallReviewerPrompt(args: {
   runId?: string;
   landedTasks?: Array<{ id: string; title: string; commitSha?: string }>;
   bundleMaterial?: string;
+  corpusMaterial?: string;
+  executionManifest?: ExecutionManifest;
 }): string {
   const runSection = args.runId ? `\nRun ID: ${args.runId}\n` : "\n";
   const taskSection =
@@ -504,6 +565,12 @@ export function buildOverallReviewerPrompt(args: {
   const bundleSection = args.bundleMaterial
     ? `\n\n## Referenced Plan Material\n\n${args.bundleMaterial}`
     : "";
+  const corpusSection = args.corpusMaterial
+    ? `\n\n## Plan Corpus\n\n${args.corpusMaterial}`
+    : "";
+  const manifestSection = formatExecutionManifestSummary(
+    args.executionManifest,
+  );
   return `You are the pi-implement overall reviewer. This is a read-only whole-feature review after all planned tasks have been implemented and committed.
 
 Assess whether the combined implementation satisfies the original plan, whether cross-task gaps or edge cases were missed, and whether the tasks fit together correctly.
@@ -516,9 +583,9 @@ Source: ${args.planPath}
 Base SHA: ${args.baseSha}
 Head SHA: ${args.headSha}${runSection}${taskSection}
 
-${args.planContent}${bundleSection}
+${args.planContent}${bundleSection}${corpusSection}
 
-## Combined Diff
+${manifestSection}## Combined Diff
 
 \`\`\`diff
 ${args.diff}
@@ -528,7 +595,7 @@ ${args.diff}
 
 - Approve if the feature is complete, correct, and the tasks integrate well.
 - Request changes if there are material gaps, missed edge cases, integration problems, or insufficient verification.
-- Be specific about what must change.
+- Be specific about what must change. In particular, check for planner/compiler omissions: requirements in the original plan that may have been missed because no compiled task contract covered them.
 
 End with exactly one <pi-overall-review-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
 
@@ -561,9 +628,11 @@ export function buildOverallReworkPrompt(args: {
   runId?: string;
   landedTasks?: Array<{ id: string; title: string; commitSha?: string }>;
   bundleMaterial?: string;
+  corpusMaterial?: string;
   requiredChanges: string[];
   recommendationMarkdown?: string;
   priorAttemptFailures?: string[];
+  executionManifest?: ExecutionManifest;
 }): string {
   const runSection = args.runId ? `\nRun ID: ${args.runId}\n` : "\n";
   const taskSection =
@@ -573,6 +642,9 @@ export function buildOverallReworkPrompt(args: {
   const bundleSection = args.bundleMaterial
     ? `\n\n## Referenced Plan Material\n\n${args.bundleMaterial}`
     : "";
+  const corpusSection = args.corpusMaterial
+    ? `\n\n## Plan Corpus\n\n${args.corpusMaterial}`
+    : "";
   const priorFailuresSection =
     args.priorAttemptFailures && args.priorAttemptFailures.length > 0
       ? `\n## Prior Rework Attempt Failures\n\n${args.priorAttemptFailures.map((f, i) => `${i + 1}. ${f}`).join("\n")}\n`
@@ -580,6 +652,9 @@ export function buildOverallReworkPrompt(args: {
   const recommendationSection = args.recommendationMarkdown
     ? `\n## Recommendation\n\n${args.recommendationMarkdown}\n`
     : "";
+  const manifestSection = formatExecutionManifestSummary(
+    args.executionManifest,
+  );
 
   return `You are the pi-implement overall rework implementer. Your job is to address the overall review feedback for the completed feature.
 
@@ -599,9 +674,9 @@ Source: ${args.planPath}
 Base SHA: ${args.baseSha}
 Head SHA: ${args.headSha}${runSection}${taskSection}
 
-${args.planContent}${bundleSection}
+${args.planContent}${bundleSection}${corpusSection}
 
-## Combined Diff
+${manifestSection}## Combined Diff
 
 \`\`\`diff
 ${args.diff}

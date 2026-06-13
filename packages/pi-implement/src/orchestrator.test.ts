@@ -2038,6 +2038,71 @@ describe("runImplementation", () => {
     expect(content).toContain("Rework Attempts");
   });
 
+  it("includes corpus material in the overall review artifact when provided", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    writeFileSync(
+      paths.runJson,
+      JSON.stringify({
+        version: 1,
+        runId: "r1",
+        mode: "serial",
+        strategyReason: "serial",
+        repoRoot: dir,
+        planPath,
+        planHash: "hash",
+        baseSha: "old-sha",
+        currentPhase: "preflight",
+        maxConcurrency: 1,
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    git.headValue = "base-sha";
+    const subagents = new FakeSubagents();
+    subagents.resultsByDescription = [
+      {
+        match: "overall review",
+        result: { status: "completed", result: BAD_OVERALL_REVIEW },
+      },
+    ];
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: "invalid rework" },
+      { status: "completed", result: "invalid rework" },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        paths,
+        corpusMaterial:
+          "### background.md\n\nAll features must support dark mode.",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(OverallReviewFollowupError);
+
+    const artifactPath = join(dir, "plan.overall-review.md");
+    expect(existsSync(artifactPath)).toBe(true);
+    const content = readFileSync(artifactPath, "utf-8");
+    expect(content).toContain("## Plan Corpus");
+    expect(content).toContain("All features must support dark mode.");
+  });
+
   it("skips overall review when baseSha equals headSha", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");

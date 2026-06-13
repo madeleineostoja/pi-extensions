@@ -17,6 +17,7 @@ import {
   buildOverallReworkPrompt,
   buildReviewerPrompt,
   buildSchedulerSelfHealPrompt,
+  formatExecutionManifestSummary,
 } from "./prompts.js";
 import {
   buildTaskPacket,
@@ -136,6 +137,7 @@ export type OrchestratorDeps = {
   planArtifacts?: string[];
   manifest?: PlanBundleManifest;
   executionManifest?: ExecutionManifest;
+  corpusMaterial?: string;
   roles: EffectiveRoles;
   mode?: RunMode;
   maxConcurrency?: number;
@@ -2370,6 +2372,8 @@ async function runOverallReviewOnce(
     runId: deps.runId,
     landedTasks,
     bundleMaterial,
+    corpusMaterial: deps.corpusMaterial,
+    executionManifest: deps.executionManifest,
   });
 
   deps.updateState({ phase: "final_review", activeSubagentId: undefined });
@@ -2515,9 +2519,11 @@ async function runOverallReworkAttempt(
     runId: deps.runId,
     landedTasks,
     bundleMaterial,
+    corpusMaterial: deps.corpusMaterial,
     requiredChanges: review.requiredChanges,
     recommendationMarkdown: review.recommendationMarkdown,
     priorAttemptFailures,
+    executionManifest: deps.executionManifest,
   });
 
   deps.updateState({ phase: "final_rework", activeSubagentId: undefined });
@@ -2905,6 +2911,14 @@ function buildOverallReviewArtifactContent(
       ? `\n## Rework Attempts\n\n${reworkFailures.map((f, i) => `- Attempt ${i + 1}: ${f}`).join("\n")}\n`
       : "";
 
+  const manifestSection = formatExecutionManifestSummary(
+    deps.executionManifest,
+  );
+
+  const corpusSection = deps.corpusMaterial
+    ? `\n## Plan Corpus\n\n${deps.corpusMaterial}\n`
+    : "";
+
   return `# Overall Review: Changes Requested
 
 ## Verdict
@@ -2924,7 +2938,7 @@ ${recommendation}
 - Plan: ${deps.planPath}
 - Base SHA: ${baseSha}
 - Head SHA: ${headSha}
-${deps.runId ? `- Run ID: ${deps.runId}\n` : ""}${reworkSection}
+${deps.runId ? `- Run ID: ${deps.runId}\n` : ""}${reworkSection}${manifestSection}${corpusSection}
 ## Raw Result
 
 ${lastReview.rawResult}

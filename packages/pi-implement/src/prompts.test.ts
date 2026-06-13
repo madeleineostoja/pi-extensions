@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { ExecutionManifest } from "./execution-plan.js";
 import {
   buildAlreadySatisfiedReviewerPrompt,
   buildImplementerPrompt,
   buildOverallReviewerPrompt,
+  buildOverallReworkPrompt,
   buildReviewerPrompt,
 } from "./prompts.js";
 
@@ -787,6 +789,49 @@ describe("buildOverallReviewerPrompt", () => {
     expect(prompt).toContain("### auth.md");
     expect(prompt).toContain("# Auth");
   });
+
+  it("does not include a corpus section when not provided", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan\n",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+    });
+
+    expect(prompt).not.toContain("## Plan Corpus");
+  });
+
+  it("includes corpus material when provided", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan\n",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      corpusMaterial: "### requirements.md\n\n# Corpus-only requirement\n",
+    });
+
+    expect(prompt).toContain("## Plan Corpus");
+    expect(prompt).toContain("### requirements.md");
+    expect(prompt).toContain("# Corpus-only requirement");
+  });
+
+  it("includes corpus-only requirements for planner/compiler omission checks", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan\n",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      corpusMaterial:
+        "### tasks.md\n\nThis file contains a requirement that must be verified in the final review even though it was not part of any compiled task contract.",
+    });
+
+    expect(prompt).toContain(
+      "This file contains a requirement that must be verified in the final review even though it was not part of any compiled task contract.",
+    );
+  });
 });
 
 const COMPILED_CONTRACT = `# Task Contract
@@ -908,6 +953,225 @@ describe("buildAlreadySatisfiedReviewerPrompt with compiledContract", () => {
 
     expect(prompt).toContain(
       "The selected task's required scope is defined in the compiled task contract",
+    );
+  });
+});
+
+const SAMPLE_MANIFEST: ExecutionManifest = {
+  version: 1,
+  sourcePlanPath: "/repo/plans/feature.md",
+  sourcePlanHash: "abc1234",
+  plannerReason: "Independent tasks",
+  plannerConfidence: "high",
+  tasks: [
+    {
+      id: "t1",
+      planIndex: 1,
+      title: "Task 1",
+      taskHash: "h1",
+      status: "todo",
+      dependsOn: [],
+      review: { mode: "require" },
+      affectedAreas: [],
+      conflictHints: [],
+      sourceReferences: [],
+      compiledContract: {
+        objective: "Implement feature A",
+        inScope: ["Add A"],
+        acceptanceCriteria: ["A works"],
+        outOfScope: ["B"],
+      },
+    },
+    {
+      id: "t2",
+      planIndex: 2,
+      title: "Task 2",
+      taskHash: "h2",
+      status: "todo",
+      dependsOn: ["t1"],
+      review: { mode: "require" },
+      affectedAreas: [],
+      conflictHints: [],
+      sourceReferences: [],
+      compiledContract: {
+        objective: "Implement feature B",
+        inScope: ["Add B"],
+        acceptanceCriteria: ["B works"],
+        outOfScope: ["A"],
+      },
+    },
+  ],
+};
+
+describe("buildOverallReviewerPrompt with executionManifest", () => {
+  it("includes execution manifest summary and planner/compiler omission guidance", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      executionManifest: SAMPLE_MANIFEST,
+    });
+
+    expect(prompt).toContain("## Execution Manifest");
+    expect(prompt).toContain("Source plan: /repo/plans/feature.md");
+    expect(prompt).toContain("Source plan hash: abc1234");
+    expect(prompt).toContain("Planner reason: Independent tasks");
+    expect(prompt).toContain("Planner confidence: high");
+    expect(prompt).toContain("### Compiled Task Contracts");
+    expect(prompt).toContain("#### t1: Task 1");
+    expect(prompt).toContain("Objective: Implement feature A");
+    expect(prompt).toContain("In scope: Add A");
+    expect(prompt).toContain("Acceptance criteria: A works");
+    expect(prompt).toContain("Out of scope: B");
+    expect(prompt).toContain("#### t2: Task 2");
+    expect(prompt).toContain("Objective: Implement feature B");
+    expect(prompt).toContain("### Review Focus");
+    expect(prompt).toContain("planner/compiler omissions");
+    expect(prompt).toContain("full original human plan intent");
+  });
+
+  it("omits manifest section when no executionManifest is provided", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+    });
+
+    expect(prompt).not.toContain("## Execution Manifest");
+  });
+
+  it("still includes omission guidance in review rules even without manifest", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+    });
+
+    expect(prompt).toContain("planner/compiler omissions");
+  });
+
+  it("includes corpus material alongside execution manifest for full-plan audit", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      executionManifest: SAMPLE_MANIFEST,
+      corpusMaterial:
+        "### background.md\n\nAll features must support dark mode.",
+    });
+
+    expect(prompt).toContain("## Execution Manifest");
+    expect(prompt).toContain("## Plan Corpus");
+    expect(prompt).toContain("All features must support dark mode.");
+    const corpusIndex = prompt.indexOf("## Plan Corpus");
+    const manifestIndex = prompt.indexOf("## Execution Manifest");
+    expect(corpusIndex).toBeGreaterThan(0);
+    expect(manifestIndex).toBeGreaterThan(0);
+  });
+});
+
+describe("buildOverallReworkPrompt", () => {
+  it("includes execution manifest when provided", () => {
+    const prompt = buildOverallReworkPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      requiredChanges: ["Fix integration"],
+      executionManifest: SAMPLE_MANIFEST,
+    });
+
+    expect(prompt).toContain("## Execution Manifest");
+    expect(prompt).toContain("Source plan: /repo/plans/feature.md");
+    expect(prompt).toContain("t1: Task 1");
+    expect(prompt).toContain("t2: Task 2");
+    expect(prompt).toContain("full original human plan intent");
+  });
+
+  it("omits manifest section when no executionManifest is provided", () => {
+    const prompt = buildOverallReworkPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      requiredChanges: ["Fix integration"],
+    });
+
+    expect(prompt).not.toContain("## Execution Manifest");
+  });
+
+  it("includes required changes and recommendation", () => {
+    const prompt = buildOverallReworkPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      requiredChanges: ["Fix integration", "Add tests"],
+      recommendationMarkdown: "## Suggested Fix\n\nRefactor...",
+      priorAttemptFailures: ["Attempt 1: tests failed"],
+    });
+
+    expect(prompt).toContain("- Fix integration");
+    expect(prompt).toContain("- Add tests");
+    expect(prompt).toContain("## Suggested Fix");
+    expect(prompt).toContain("## Prior Rework Attempt Failures");
+    expect(prompt).toContain("Attempt 1: tests failed");
+  });
+
+  it("does not include a corpus section when not provided", () => {
+    const prompt = buildOverallReworkPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      requiredChanges: ["Fix integration"],
+    });
+
+    expect(prompt).not.toContain("## Plan Corpus");
+  });
+
+  it("includes corpus material when provided", () => {
+    const prompt = buildOverallReworkPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      requiredChanges: ["Fix integration"],
+      corpusMaterial: "### requirements.md\n\n# Corpus-only requirement\n",
+    });
+
+    expect(prompt).toContain("## Plan Corpus");
+    expect(prompt).toContain("### requirements.md");
+    expect(prompt).toContain("# Corpus-only requirement");
+  });
+
+  it("includes corpus-only requirements for planner/compiler omission checks", () => {
+    const prompt = buildOverallReworkPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plans/feature.md",
+      baseSha: "abc1234",
+      headSha: "def5678",
+      diff: "diff --git a/file.ts b/file.ts\n",
+      requiredChanges: ["Fix integration"],
+      corpusMaterial:
+        "### tasks.md\n\nThis file contains a requirement that must be verified in the final rework even though it was not part of any compiled task contract.",
+    });
+
+    expect(prompt).toContain(
+      "This file contains a requirement that must be verified in the final rework even though it was not part of any compiled task contract.",
     );
   });
 });
