@@ -6,6 +6,11 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { isModelRef } from "@pi-extensions/lib";
 import {
   readConfig,
@@ -17,8 +22,9 @@ import {
   resolveEffectiveTaskReview,
 } from "./config.js";
 import { ExecGitClient } from "./git.js";
+import { getSubagentRuntime } from "pi-subagents/runtime";
 import {
-  EventSubagentClient,
+  DirectSubagentClient,
   type SpawnArgs,
   type SubagentClient,
   type SubagentResult,
@@ -115,6 +121,33 @@ function isWarningTerminalPhase(phase: RunState["phase"]): boolean {
 }
 
 export function registerImplementCommand(pi: ExtensionAPI): void {
+  pi.registerMessageRenderer(
+    "pi-implement-progress",
+    (message, _options, theme) => {
+      const prefix = theme.fg("accent", "pi-implement") + " ";
+      const prefixWidth = visibleWidth(prefix);
+      return {
+        render: (width: number) => {
+          const body = String(message.content ?? "");
+          const available = Math.max(1, width - prefixWidth);
+          const wrapped = body
+            .split("\n")
+            .flatMap((segment) =>
+              wrapTextWithAnsi(segment, available).map((part) =>
+                truncateToWidth(part, available),
+              ),
+            );
+          if (wrapped.length === 0) {
+            return [prefix.trimEnd()];
+          }
+          const indent = " ".repeat(prefixWidth);
+          return wrapped.map((line, i) => (i === 0 ? prefix : indent) + line);
+        },
+        invalidate: () => {},
+      };
+    },
+  );
+
   let active: ActiveRun = {
     state: { phase: "idle" },
     stopping: false,
@@ -159,10 +192,10 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
     active.stopping = true;
     active.abortController?.abort();
     const ids = activeSubagentIds(active);
-    const client = new EventSubagentClient(pi.events);
+    const runtime = getSubagentRuntime();
     for (const id of ids) {
       try {
-        await client.stop(id);
+        await runtime.stop(id);
       } catch {
         // Best-effort: session is shutting down anyway.
       }
@@ -238,10 +271,10 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           const ids = activeSubagentIds(active);
           const failedStops: string[] = [];
           if (ids.length > 0) {
-            const client = new EventSubagentClient(pi.events);
+            const runtime = getSubagentRuntime();
             for (const id of ids) {
               try {
-                await client.stop(id);
+                await runtime.stop(id);
               } catch (err) {
                 const reason = err instanceof Error ? err.message : String(err);
                 failedStops.push(`${id} (${reason})`);
@@ -430,15 +463,6 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       if (!canStartImplementRun(active.state.phase)) {
         ctx.ui.notify(
           `pi-implement is already running.\n\n${formatRunStatus(active.state)}`,
-          "warning",
-        );
-        return;
-      }
-
-      const probe = await new EventSubagentClient(pi.events).probe();
-      if (!probe.ok) {
-        ctx.ui.notify(
-          "pi-implement requires the pi-subagents extension, which is not installed or not responding. Install @tintinweb/pi-subagents and reload.",
           "warning",
         );
         return;
@@ -687,7 +711,8 @@ Stay idle until the run ends or the user asks you something directly. Do not res
       });
 
       const isCurrentRun = () => active.runId === runIdNum;
-      const rawClient = new EventSubagentClient(pi.events);
+      const runtime = getSubagentRuntime();
+      const rawClient = new DirectSubagentClient(runtime);
       const client = new TrackingSubagentClient(
         rawClient,
         abortController.signal,
@@ -716,7 +741,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
         setState(ctx, resolved);
         for (const line of diffProgress(prevState, active.state, taskTitles)) {
           pi.sendMessage({
-            customType: "pi-implement",
+            customType: "pi-implement-progress",
             content: line,
             display: true,
           });
@@ -940,7 +965,6 @@ class TrackingSubagentClient implements SubagentClient {
 
   async spawn(args: SpawnArgs): Promise<string> {
     const id = await this.inner.spawn(args);
-    markWorkerConsumed(id);
     this.activeIds.add(id);
     this.emitChange();
     return id;
@@ -1015,118 +1039,22 @@ function syncWidget(ctx: ExtensionCommandContext, state: RunState): void {
   ctx.ui.setWidget(WIDGET_KEY, lines.length > 0 ? lines : undefined);
 }
 
-function resolveUsageTotal(value: unknown): number | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-  const u = value as Record<string, unknown>;
-  if (typeof u.totalTokens === "number" && Number.isFinite(u.totalTokens)) {
-    return u.totalTokens;
-  }
-  if (typeof u.contextTokens === "number" && Number.isFinite(u.contextTokens)) {
-    return u.contextTokens;
-  }
-  const input = typeof u.input === "number" ? u.input : 0;
-  const output = typeof u.output === "number" ? u.output : 0;
-  const cacheRead = typeof u.cacheRead === "number" ? u.cacheRead : 0;
-  const cacheWrite = typeof u.cacheWrite === "number" ? u.cacheWrite : 0;
-  const total = input + output + cacheRead + cacheWrite;
-  return Number.isFinite(total) && total > 0 ? total : undefined;
-}
-
-function getSubagentRecord(id: string): Record<string, unknown> | undefined {
-  const manager = (globalThis as Record<symbol, unknown>)[
-    Symbol.for("pi-subagents:manager")
-  ];
-  if (!manager || typeof manager !== "object" || !("getRecord" in manager)) {
-    return undefined;
-  }
-  const getRecord = (manager as Record<string, unknown>).getRecord;
-  if (typeof getRecord !== "function") {
-    return undefined;
-  }
-  try {
-    const record = (getRecord as (id: string) => unknown)(id);
-    if (record && typeof record === "object") {
-      return record as Record<string, unknown>;
-    }
-  } catch {
-    // Best-effort
-  }
-  return undefined;
-}
-
-function markWorkerConsumed(id: string): void {
-  const r = getSubagentRecord(id);
-  if (!r) {
-    return;
-  }
-  try {
-    r.resultConsumed = true;
-  } catch {
-    // Best-effort: pi-subagents record shape may change
-  }
-}
-
 function collectRuntimeSnapshots(ids: string[]): AgentRuntimeSnapshot[] {
+  const runtime = getSubagentRuntime();
   const snapshots: AgentRuntimeSnapshot[] = [];
   for (const id of ids) {
-    const r = getSubagentRecord(id);
-    if (!r) {
+    const record = runtime.getRecord(id);
+    if (!record) {
       continue;
     }
-    try {
-      const snapshot: AgentRuntimeSnapshot = { id };
-      if (typeof r.status === "string") {
-        snapshot.status = r.status;
-      }
-      if (typeof r.description === "string") {
-        snapshot.description = r.description;
-      }
-      if (typeof r.toolUses === "number" && Number.isFinite(r.toolUses)) {
-        snapshot.toolUses = r.toolUses;
-      }
-      if (
-        typeof r.compactionCount === "number" &&
-        Number.isFinite(r.compactionCount)
-      ) {
-        snapshot.compactionCount = r.compactionCount;
-      }
-      let tokensTotal: number | undefined;
-      if (typeof r.lifetimeUsage === "object" && r.lifetimeUsage !== null) {
-        tokensTotal = resolveUsageTotal(r.lifetimeUsage);
-      }
-      if (
-        tokensTotal === undefined &&
-        typeof r.totalTokens === "number" &&
-        Number.isFinite(r.totalTokens)
-      ) {
-        tokensTotal = r.totalTokens;
-      }
-      if (
-        tokensTotal === undefined &&
-        typeof r.usage === "object" &&
-        r.usage !== null
-      ) {
-        tokensTotal = resolveUsageTotal(r.usage);
-      }
-      if (
-        tokensTotal === undefined &&
-        typeof r.currentResult === "object" &&
-        r.currentResult !== null
-      ) {
-        const cr = r.currentResult as Record<string, unknown>;
-        if (typeof cr.usage === "object" && cr.usage !== null) {
-          tokensTotal = resolveUsageTotal(cr.usage);
-        }
-      }
-      if (tokensTotal !== undefined) {
-        snapshot.tokensTotal = tokensTotal;
-      }
-      snapshots.push(snapshot);
-    } catch {
-      // Best-effort: skip records that throw
-    }
+    snapshots.push({
+      id: record.id,
+      status: record.status,
+      description: record.description,
+      toolUses: record.toolUses,
+      tokensTotal: record.tokensTotal,
+      compactionCount: record.compactionCount,
+    });
   }
   return snapshots;
 }

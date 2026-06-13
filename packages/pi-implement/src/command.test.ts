@@ -65,6 +65,7 @@ function setup(events = createPingOnlyEventBus()) {
   const pi = {
     events,
     on: () => {},
+    registerMessageRenderer: () => {},
     registerCommand: (name: string, options: { handler: Handler }) => {
       handlers[name] = options.handler;
     },

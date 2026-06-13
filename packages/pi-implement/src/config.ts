@@ -58,7 +58,7 @@ export type EffectiveScoutConfig = {
   timeoutMs: number;
 };
 
-export const DEFAULT_SUBAGENT_TYPE = "general-purpose";
+export const DEFAULT_SUBAGENT_TYPE = "pi-implement/implementer";
 const DEFAULT_PLANNER_TYPE = "Explore";
 const DEFAULT_MAX_PARALLEL = 3;
 const HARD_MAX_PARALLEL = 8;
@@ -385,7 +385,7 @@ export function reviewerDefaultTypeWarning(
   if (roles.reviewer.type !== DEFAULT_SUBAGENT_TYPE) {
     return undefined;
   }
-  return "Reviewer subagent is using the default general-purpose type. Review safety is instruction-enforced only; configure reviewer.type to a dedicated read-only review agent for stronger isolation.";
+  return `Reviewer subagent is using the default ${DEFAULT_SUBAGENT_TYPE} type. Review safety is instruction-enforced only; configure reviewer.type to a dedicated read-only review agent for stronger isolation.`;
 }
 
 export function formatConfigStatus(

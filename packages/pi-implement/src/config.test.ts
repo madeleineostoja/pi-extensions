@@ -82,8 +82,8 @@ describe("config", () => {
     expect(result).toEqual({
       ok: true,
       roles: {
-        implementer: { model: undefined, type: "general-purpose" },
-        reviewer: { model: undefined, type: "general-purpose" },
+        implementer: { model: undefined, type: "pi-implement/implementer" },
+        reviewer: { model: undefined, type: "pi-implement/implementer" },
         planner: { model: undefined, type: "Explore" },
       },
     });
@@ -102,7 +102,7 @@ describe("config", () => {
       ok: true,
       roles: {
         implementer: { model: "p/impl", type: "Implement" },
-        reviewer: { model: "p/review", type: "general-purpose" },
+        reviewer: { model: "p/review", type: "pi-implement/implementer" },
         planner: { model: "p/plan", type: "Explore" },
       },
     });
@@ -115,17 +115,17 @@ describe("config", () => {
     expect(resolveMaxParallel({ maxParallel: 10 })).toBe(8);
   });
 
-  it("warns when reviewer uses the default general-purpose subagent", () => {
+  it("warns when reviewer uses the default implementer subagent", () => {
     expect(
       reviewerDefaultTypeWarning({
-        implementer: { model: "p/m", type: "general-purpose" },
-        reviewer: { model: "p/m", type: "general-purpose" },
+        implementer: { model: "p/m", type: "pi-implement/implementer" },
+        reviewer: { model: "p/m", type: "pi-implement/implementer" },
         planner: { model: "p/m", type: "Explore" },
       }),
-    ).toContain("general-purpose");
+    ).toContain("pi-implement/implementer");
     expect(
       reviewerDefaultTypeWarning({
-        implementer: { model: "p/m", type: "general-purpose" },
+        implementer: { model: "p/m", type: "pi-implement/implementer" },
         reviewer: { model: "p/m", type: "review" },
         planner: { model: "p/m", type: "Explore" },
       }),
