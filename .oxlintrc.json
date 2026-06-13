@@ -10,5 +10,5 @@
     "curly": "error",
     "no-await-in-loop": "off"
   },
-  "ignorePatterns": ["node_modules", "packages/pi-sandbox/bin"]
+  "ignorePatterns": ["node_modules", "packages/pi-sandbox/bin", ".pi", "tmp"]
 }
