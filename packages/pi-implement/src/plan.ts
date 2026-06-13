@@ -20,7 +20,6 @@ export type ParsedPlan = {
   tasks: PlanTask[];
 };
 
-
 const CHECKBOX_RE = /^([ \t]*)[-*][ \t]+\[([ xX])\][ \t]+(.+)$/;
 
 export function parsePlan(path: string, content: string): ParsedPlan {

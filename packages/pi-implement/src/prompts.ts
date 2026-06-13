@@ -37,9 +37,7 @@ export function formatExecutionManifestSummary(
   for (const task of manifest.tasks) {
     parts.push(`#### ${task.id}: ${task.title}`);
     parts.push(`- Objective: ${task.compiledContract.objective}`);
-    parts.push(
-      `- In scope: ${task.compiledContract.inScope.join(", ")}`,
-    );
+    parts.push(`- In scope: ${task.compiledContract.inScope.join(", ")}`);
     parts.push(
       `- Acceptance criteria: ${task.compiledContract.acceptanceCriteria.join(", ")}`,
     );

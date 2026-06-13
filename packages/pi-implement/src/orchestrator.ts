@@ -1,4 +1,5 @@
 import { exec, execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -19,11 +20,7 @@ import {
   buildSchedulerSelfHealPrompt,
   formatExecutionManifestSummary,
 } from "./prompts.js";
-import {
-  markTaskDone,
-  markTaskUndone,
-  parsePlanFile,
-} from "./plan.js";
+import { markTaskDone, markTaskUndone, parsePlanFile } from "./plan.js";
 import type { PlanTask } from "./plan.js";
 import {
   generateMinimalExecutionManifest,
@@ -187,9 +184,13 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
   }
   if (!executionManifest) {
     const plan = parsePlanFile(deps.planPath);
-    executionManifest = generateMinimalExecutionManifest(plan.tasks, deps.planPath);
+    executionManifest = generateMinimalExecutionManifest(
+      plan.tasks,
+      deps.planPath,
+    );
   }
   deps = { ...deps, executionManifest };
+  validateRecordedPlanCorpus(deps);
 
   if (deps.mode === "serial") {
     await runSerialImplementation(deps, plan, planArtifacts, runBaseSha);
@@ -230,6 +231,7 @@ async function runSerialImplementation(
     if (!deps.executionManifest) {
       throw new BlockedError("no execution manifest available");
     }
+    validateRecordedPlanCorpus(deps);
     const next = nextUncheckedManifestTask(
       plan,
       deps.executionManifest,
@@ -388,6 +390,7 @@ async function runParallelImplementation(
 
     throwIfStopped(deps);
     plan = parsePlanFile(deps.planPath);
+    validateRecordedPlanCorpus(deps);
 
     // ── Start ready tasks ──
     const ready = computeReadyTasks(sched).filter((id) =>
@@ -3131,6 +3134,91 @@ export function stalledSchedulerReason(
   }
 
   return lines.join("\n");
+}
+
+function hashText(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function normalizePlanCheckboxes(text: string): string {
+  return text.replace(/^(\s*[-*+]\s+\[)[ xX](\]\s+)/gm, "$1 $2");
+}
+
+function readRecordedCorpusFileRecords(paths: StatePaths): {
+  entryPath?: string;
+  files: Array<{ path: string; hash: string }>;
+} {
+  const run = readRunJson(paths);
+  let entryPath = run?.planPath;
+  let files = run?.corpusFiles ?? [];
+
+  if (existsSync(paths.corpusJson)) {
+    try {
+      const parsed = JSON.parse(readFileSync(paths.corpusJson, "utf-8")) as {
+        entryPath?: unknown;
+        files?: unknown;
+      };
+      if (typeof parsed.entryPath === "string" && parsed.entryPath) {
+        entryPath = parsed.entryPath;
+      }
+      if (Array.isArray(parsed.files)) {
+        files = parsed.files.filter(
+          (file): file is { path: string; hash: string } =>
+            typeof file === "object" &&
+            file !== null &&
+            typeof (file as { path?: unknown }).path === "string" &&
+            typeof (file as { hash?: unknown }).hash === "string",
+        );
+      }
+    } catch {
+      throw new BlockedError("recorded plan corpus metadata is unreadable");
+    }
+  }
+
+  return { entryPath, files };
+}
+
+function validateRecordedPlanCorpus(deps: OrchestratorDeps): void {
+  if (!deps.paths || !deps.executionManifest) {
+    return;
+  }
+
+  const { entryPath, files } = readRecordedCorpusFileRecords(deps.paths);
+  if (files.length === 0) {
+    return;
+  }
+
+  for (const file of files) {
+    if (!existsSync(file.path)) {
+      throw new BlockedError(
+        `plan corpus changed since execution manifest was built: missing ${file.path}`,
+      );
+    }
+
+    const content = readFileSync(file.path, "utf-8");
+    if (
+      entryPath &&
+      file.path === entryPath &&
+      existsSync(deps.paths.planSnapshot)
+    ) {
+      const snapshot = readFileSync(deps.paths.planSnapshot, "utf-8");
+      if (
+        hashText(normalizePlanCheckboxes(content)) !==
+        hashText(normalizePlanCheckboxes(snapshot))
+      ) {
+        throw new BlockedError(
+          `plan corpus changed since execution manifest was built: ${file.path}`,
+        );
+      }
+      continue;
+    }
+
+    if (hashText(content) !== file.hash) {
+      throw new BlockedError(
+        `plan corpus changed since execution manifest was built: ${file.path}`,
+      );
+    }
+  }
 }
 
 function readTaskJsonByPlanIndex(

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -275,7 +276,13 @@ function makeRunJson(dir: string, planPath: string, runId = "r1"): RunJson {
   };
 }
 
-function makeExecutionManifest(plan: ReturnType<typeof parsePlanFile>): ExecutionManifest {
+function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function makeExecutionManifest(
+  plan: ReturnType<typeof parsePlanFile>,
+): ExecutionManifest {
   return {
     version: 1,
     tasks: plan.tasks.map((task) => ({
@@ -426,6 +433,68 @@ describe("runImplementation", () => {
         shouldStop: () => false,
       }),
     ).rejects.toThrow("fingerprint mismatch");
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
+  it("blocks when recorded supporting plan corpus changed before task execution", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const supportPath = join(dir, "support.md");
+    const planContent =
+      "# Plan\n\nSee [support](support.md).\n\n## Tasks\n\n- [ ] Do thing\n";
+    const supportContent = "# Support\n\nKeep this requirement.\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(supportPath, supportContent, "utf-8");
+
+    const plan = parsePlanFile(planPath);
+    const paths = makePaths(dir);
+    const runJson = makeRunJson(dir, planPath);
+    writeRunJson(paths, {
+      ...runJson,
+      corpusHash: sha256(`${sha256(planContent)}${sha256(supportContent)}`),
+      corpusFiles: [
+        { path: planPath, hash: sha256(planContent) },
+        { path: supportPath, hash: sha256(supportContent) },
+      ],
+    });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(`${sha256(planContent)}${sha256(supportContent)}`),
+          files: [
+            { path: planPath, hash: sha256(planContent) },
+            { path: supportPath, hash: sha256(supportContent) },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    writeExecutionManifest(paths.runDir, makeExecutionManifest(plan));
+    writeFileSync(supportPath, "# Support\n\nChanged requirement.\n", "utf-8");
+
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("plan corpus changed");
     expect(subagents.spawns).toHaveLength(0);
   });
 
