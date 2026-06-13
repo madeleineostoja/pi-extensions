@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildTaskPacket, markTaskDoneInContent, parsePlan } from "./plan.js";
+import {
+  buildTaskPacket,
+  markTaskDoneInContent,
+  markTaskUndoneInContent,
+  parsePlan,
+} from "./plan.js";
 import { buildPlanBundleManifest, computeTaskFingerprint } from "./manifest.js";
 
 const planPath = "/repo/tmp/plans/index.md";
@@ -68,6 +73,42 @@ describe("parsePlan", () => {
 - [ ] First
 - [x] Second
 `);
+  });
+
+  it("throws when the exact line no longer matches", () => {
+    const content = `# Plan
+
+## Tasks
+
+- [ ] First
+- [ ] Second
+`;
+    const parsed = parsePlan(planPath, content);
+    const modified = content.replace("- [ ] Second", "- [ ] Edited");
+    expect(() => markTaskDoneInContent(modified, parsed.tasks[1])).toThrow(
+      "Stale source checkbox",
+    );
+  });
+
+  it("normalizes checkbox marker so undo works after marking done", () => {
+    const content = `# Plan
+
+## Tasks
+
+- [ ] First
+- [ ] Second
+`;
+    const parsed = parsePlan(planPath, content);
+    const done = markTaskDoneInContent(content, parsed.tasks[1]);
+    expect(done).toBe(`# Plan
+
+## Tasks
+
+- [ ] First
+- [x] Second
+`);
+    const undone = markTaskUndoneInContent(done, parsed.tasks[1]);
+    expect(undone).toBe(content);
   });
 });
 

@@ -889,6 +889,44 @@ describe("selectStrategy - planner prompt content", () => {
     );
   });
 
+  it("documents sourceCheckbox references in the planner schema", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain(
+      '"sourceCheckbox": { "path": "plan.md", "lineNumber": 5, "lineText": "- [ ] Task title" }',
+    );
+    expect(prompt).toContain("## Source Checkbox References");
+    expect(prompt).toContain("single, unambiguous checkbox line");
+    expect(prompt).toContain("1-based line number");
+    expect(prompt).toContain(
+      'Omit "sourceCheckbox" when the task does not map to a single checkbox line',
+    );
+  });
+
   it("requires concrete semantic dependencies for dependsOn", async () => {
     const subagents = makeSubagents(
       JSON.stringify({

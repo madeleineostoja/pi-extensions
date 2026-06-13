@@ -731,3 +731,133 @@ describe("renderCompiledContract", () => {
     expect(first).toBe(second);
   });
 });
+
+describe("parseExecutionPlan sourceCheckbox", () => {
+  it("parses a task with sourceCheckbox", () => {
+    const manifest = makeManifest([
+      makeTask({
+        id: "t1",
+        sourceCheckbox: {
+          path: "plan.md",
+          lineNumber: 5,
+          lineText: "- [ ] Do thing",
+        },
+      }),
+    ]);
+    const result = parseExecutionPlan(JSON.stringify(manifest));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].sourceCheckbox).toEqual({
+        path: "plan.md",
+        lineNumber: 5,
+        lineText: "- [ ] Do thing",
+      });
+    }
+  });
+
+  it("accepts a task without sourceCheckbox", () => {
+    const manifest = makeManifest([makeTask({ id: "t1" })]);
+    const result = parseExecutionPlan(JSON.stringify(manifest));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].sourceCheckbox).toBeUndefined();
+    }
+  });
+
+  it("rejects non-object sourceCheckbox", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [{ ...makeTask({ id: "t1" }), sourceCheckbox: "plan.md" }],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("sourceCheckbox must be an object");
+    }
+  });
+
+  it("rejects sourceCheckbox with empty path", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            sourceCheckbox: {
+              path: "",
+              lineNumber: 5,
+              lineText: "- [ ] Do thing",
+            },
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("path must be a non-empty string");
+    }
+  });
+
+  it("rejects sourceCheckbox with non-integer lineNumber", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            sourceCheckbox: {
+              path: "plan.md",
+              lineNumber: 1.5,
+              lineText: "- [ ] Do thing",
+            },
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("lineNumber must be a positive integer");
+    }
+  });
+
+  it("rejects sourceCheckbox with zero lineNumber", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            sourceCheckbox: {
+              path: "plan.md",
+              lineNumber: 0,
+              lineText: "- [ ] Do thing",
+            },
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("lineNumber must be a positive integer");
+    }
+  });
+
+  it("rejects sourceCheckbox with non-string lineText", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            sourceCheckbox: { path: "plan.md", lineNumber: 5, lineText: 123 },
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("lineText must be a string");
+    }
+  });
+});

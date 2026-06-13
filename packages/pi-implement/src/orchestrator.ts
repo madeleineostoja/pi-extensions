@@ -30,6 +30,10 @@ import {
   readExecutionManifest,
   renderCompiledContract,
 } from "./execution-plan.js";
+import {
+  tryMarkSourceCheckboxDone,
+  tryMarkSourceCheckboxUndone,
+} from "./source-checkbox.js";
 import type { ExecutionManifest } from "./execution-plan.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SubagentClient, SubagentResult } from "./subagents.js";
@@ -218,7 +222,11 @@ async function runSerialImplementation(
     }
     let task: PlanTask | undefined;
     if (deps.executionManifest) {
-      const next = nextUncheckedManifestTask(plan, deps.executionManifest);
+      const next = nextUncheckedManifestTask(
+        plan,
+        deps.executionManifest,
+        deps.paths,
+      );
       task = next?.planTask;
     } else {
       task = nextUncheckedTask(plan);
@@ -970,7 +978,7 @@ async function landApprovedTask(
       );
     }
 
-    markTaskDone(deps.planPath, planTask);
+    markSourceCheckboxDone(deps, taskId, planTask);
 
     task.status = "landed";
     task.landedCommitSha = landedHead;
@@ -3108,9 +3116,32 @@ export function stalledSchedulerReason(
   return lines.join("\n");
 }
 
+function readTaskJsonByPlanIndex(
+  paths: StatePaths,
+  planIndex: number,
+): TaskJson | undefined {
+  if (!existsSync(paths.tasksDir)) {
+    return undefined;
+  }
+  for (const dirent of readdirSync(paths.tasksDir, { withFileTypes: true })) {
+    if (!dirent.isDirectory()) {
+      continue;
+    }
+    const taskJson = readTaskJson(paths, dirent.name);
+    if (
+      taskJson &&
+      (taskJson.planIndex === planIndex || taskJson.planIndex === planIndex - 1)
+    ) {
+      return taskJson;
+    }
+  }
+  return undefined;
+}
+
 function nextUncheckedManifestTask(
   plan: ReturnType<typeof parsePlanFile>,
   manifest: ExecutionManifest,
+  paths?: StatePaths,
 ):
   | {
       planTask: PlanTask;
@@ -3119,7 +3150,18 @@ function nextUncheckedManifestTask(
   | undefined {
   for (const manifestTask of manifest.tasks) {
     const planTask = plan.tasks.find((t) => t.index === manifestTask.planIndex);
-    if (planTask && !planTask.checked) {
+    if (!planTask) {
+      continue;
+    }
+    if (!planTask.checked) {
+      // If run state says the task is already landed/satisfied, trust
+      // canonical run state over the source checkbox.
+      if (paths) {
+        const taskJson = readTaskJsonByPlanIndex(paths, manifestTask.planIndex);
+        if (taskJson?.status === "landed" || taskJson?.status === "satisfied") {
+          continue;
+        }
+      }
       return { planTask, manifestTask };
     }
   }
@@ -4354,9 +4396,9 @@ async function runTaskWorker(args: {
           "satisfied approval succeeded but worktree is dirty",
         );
       }
-      markTaskDone(deps.planPath, task);
+      markSourceCheckboxDone(deps, taskId, task);
       if (!(await deps.git.isCleanExcept(planArtifacts))) {
-        markTaskUndone(deps.planPath, task);
+        markSourceCheckboxUndone(deps, taskId, task);
         throw new BlockedError(
           "satisfied task marked done but worktree became dirty",
         );
@@ -4365,7 +4407,7 @@ async function runTaskWorker(args: {
         throwIfStopped(deps);
       } catch (err) {
         if (err instanceof StoppedError) {
-          markTaskUndone(deps.planPath, task);
+          markSourceCheckboxUndone(deps, taskId, task);
           await taskGit.reset();
         }
         throw err;
@@ -4523,12 +4565,12 @@ async function runTaskWorker(args: {
     }
 
     // Non-worktree serial mode
-    markTaskDone(deps.planPath, task);
+    markSourceCheckboxDone(deps, taskId, task);
     try {
       throwIfStopped(deps);
     } catch (err) {
       if (err instanceof StoppedError) {
-        markTaskUndone(deps.planPath, task);
+        markSourceCheckboxUndone(deps, taskId, task);
         await taskGit.reset();
       }
       throw err;
@@ -4579,13 +4621,7 @@ async function runTaskWorker(args: {
         "commit failed but HEAD changed; inspect manually",
       );
     }
-    try {
-      markTaskUndone(deps.planPath, task);
-    } catch (err) {
-      throw new BlockedError(
-        `commit failed and checkbox rollback failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    markSourceCheckboxUndone(deps, taskId, task);
     await taskGit.reset();
     feedback = recordSystemFailure(
       task.index,
@@ -4705,6 +4741,98 @@ export class OverallReviewFollowupError extends Error {
     super(message);
     this.name = "OverallReviewFollowupError";
     this.artifactPath = artifactPath;
+  }
+}
+
+function markSourceCheckboxDone(
+  deps: OrchestratorDeps,
+  taskId: string,
+  planTask: PlanTask,
+): void {
+  if (deps.executionManifest) {
+    const manifestTask = deps.executionManifest.tasks.find(
+      (t) => t.planIndex === planTask.index,
+    );
+    const ref = manifestTask?.sourceCheckbox;
+    if (ref) {
+      const result = tryMarkSourceCheckboxDone(ref);
+      if (!result.ok && deps.paths) {
+        persistTaskArtifact(
+          deps.paths,
+          taskId,
+          "source-checkbox.md",
+          `# Source checkbox update skipped\n\n${result.reason}\n`,
+        );
+      }
+    } else if (deps.paths) {
+      persistTaskArtifact(
+        deps.paths,
+        taskId,
+        "source-checkbox.md",
+        `# Source checkbox update skipped\n\nNo sourceCheckbox mapping in execution manifest for planIndex ${planTask.index}.\n`,
+      );
+    }
+    return;
+  }
+
+  try {
+    markTaskDone(deps.planPath, planTask);
+  } catch (err) {
+    if (deps.paths) {
+      const reason = err instanceof Error ? err.message : String(err);
+      persistTaskArtifact(
+        deps.paths,
+        taskId,
+        "source-checkbox.md",
+        `# Source checkbox update failed\n\n${reason}\n`,
+      );
+    }
+  }
+}
+
+function markSourceCheckboxUndone(
+  deps: OrchestratorDeps,
+  taskId: string,
+  planTask: PlanTask,
+): void {
+  if (deps.executionManifest) {
+    const manifestTask = deps.executionManifest.tasks.find(
+      (t) => t.planIndex === planTask.index,
+    );
+    const ref = manifestTask?.sourceCheckbox;
+    if (ref) {
+      const result = tryMarkSourceCheckboxUndone(ref);
+      if (!result.ok && deps.paths) {
+        persistTaskArtifact(
+          deps.paths,
+          taskId,
+          "source-checkbox.md",
+          `# Source checkbox undo skipped\n\n${result.reason}\n`,
+        );
+      }
+    } else if (deps.paths) {
+      persistTaskArtifact(
+        deps.paths,
+        taskId,
+        "source-checkbox.md",
+        `# Source checkbox undo skipped\n\nNo sourceCheckbox mapping in execution manifest for planIndex ${planTask.index}.\n`,
+      );
+    }
+    return;
+  }
+
+  try {
+    markTaskUndone(deps.planPath, planTask);
+  } catch (err) {
+    if (deps.paths) {
+      const reason = err instanceof Error ? err.message : String(err);
+      persistTaskArtifact(
+        deps.paths,
+        taskId,
+        "source-checkbox.md",
+        `# Source checkbox undo failed\n\n${reason}\n`,
+      );
+    }
   }
 }
 

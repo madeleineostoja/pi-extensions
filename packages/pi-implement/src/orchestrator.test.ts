@@ -1066,6 +1066,238 @@ describe("runImplementation", () => {
     expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
   });
 
+  it("uses sourceCheckbox from execution manifest when available", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const runId = "r1";
+    const manifest: ExecutionManifest = {
+      version: 1,
+      tasks: [
+        {
+          id: "t001-do-thing",
+          planIndex: 1,
+          title: "Do thing",
+          taskHash: "hash",
+          status: "todo",
+          dependsOn: [],
+          review: { mode: "skip" },
+          affectedAreas: [],
+          conflictHints: [],
+          sourceReferences: [],
+          compiledContract: {
+            objective: "Do the thing",
+            inScope: ["Thing"],
+            acceptanceCriteria: ["Thing is done"],
+            outOfScope: ["Other things"],
+          },
+          sourceCheckbox: {
+            path: planPath,
+            lineNumber: 5,
+            lineText: "- [ ] Do thing",
+          },
+        },
+      ],
+    };
+    writeExecutionManifest(paths.runDir, manifest);
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      runId,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
+  });
+
+  it("skips source checkbox update and records a note when sourceCheckbox is stale", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const runId = "r1";
+    const manifest: ExecutionManifest = {
+      version: 1,
+      tasks: [
+        {
+          id: "t001-do-thing",
+          planIndex: 1,
+          title: "Do thing",
+          taskHash: "hash",
+          status: "todo",
+          dependsOn: [],
+          review: { mode: "skip" },
+          affectedAreas: [],
+          conflictHints: [],
+          sourceReferences: [],
+          compiledContract: {
+            objective: "Do the thing",
+            inScope: ["Thing"],
+            acceptanceCriteria: ["Thing is done"],
+            outOfScope: ["Other things"],
+          },
+          sourceCheckbox: {
+            path: planPath,
+            lineNumber: 5,
+            lineText: "- [ ] Stale text",
+          },
+        },
+      ],
+    };
+    writeExecutionManifest(paths.runDir, manifest);
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      runId,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    // Checkbox should remain unchanged because the mapping was stale
+    expect(readFileSync(planPath, "utf-8")).toContain("- [ ] Do thing");
+    // A note should be recorded in the task artifacts
+    const notePath = join(
+      paths.tasksDir,
+      "t001-do-thing",
+      "source-checkbox.md",
+    );
+    expect(existsSync(notePath)).toBe(true);
+    const note = readFileSync(notePath, "utf-8");
+    expect(note).toContain("Stale");
+  });
+
+  it("skips source checkbox update and records a note when sourceCheckbox is missing in manifest", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    const runId = "r1";
+    const manifest: ExecutionManifest = {
+      version: 1,
+      tasks: [
+        {
+          id: "t001-do-thing",
+          planIndex: 1,
+          title: "Do thing",
+          taskHash: "hash",
+          status: "todo",
+          dependsOn: [],
+          review: { mode: "skip" },
+          affectedAreas: [],
+          conflictHints: [],
+          sourceReferences: [],
+          compiledContract: {
+            objective: "Do the thing",
+            inScope: ["Thing"],
+            acceptanceCriteria: ["Thing is done"],
+            outOfScope: ["Other things"],
+          },
+        },
+      ],
+    };
+    writeExecutionManifest(paths.runDir, manifest);
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      runId,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    // Checkbox should remain unchanged because there was no sourceCheckbox mapping
+    expect(readFileSync(planPath, "utf-8")).toContain("- [ ] Do thing");
+    // A note should be recorded in the task artifacts
+    const notePath = join(
+      paths.tasksDir,
+      "t001-do-thing",
+      "source-checkbox.md",
+    );
+    expect(existsSync(notePath)).toBe(true);
+    const note = readFileSync(notePath, "utf-8");
+    expect(note).toContain("No sourceCheckbox mapping");
+  });
+
+  it("falls back to legacy markTaskDone when no execution manifest is present", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
+  });
+
   it("blocks and preserves state if implementer changes main HEAD", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");

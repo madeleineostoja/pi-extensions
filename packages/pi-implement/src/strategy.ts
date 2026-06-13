@@ -413,6 +413,7 @@ Return an execution manifest matching this schema:
       "review": { "mode": "skip" | "suggest" | "require", "reason": "optional" },
       "scout": { "mode": "skip" | "suggest" | "require", "reason": "optional", "prompt": "optional", "breadth": "quick" | "medium" | "very thorough" },
       "sourceReferences": ["plan.md section X", "sub.md line Y"],
+      "sourceCheckbox": { "path": "plan.md", "lineNumber": 5, "lineText": "- [ ] Task title" },
       "compiledContract": {
         "objective": "One-line description of what this task must accomplish",
         "inScope": ["specific requirement 1", "specific requirement 2"],
@@ -425,6 +426,17 @@ Return an execution manifest matching this schema:
     }
   ]
 }
+
+## Source Checkbox References
+
+Each task may include an optional "sourceCheckbox" field to enable the orchestrator to update the human-readable source plan after a task is completed. This preserves progress visibility in the source plan without making Markdown checkboxes the canonical execution state.
+
+- Include "sourceCheckbox" when the task maps to a single, unambiguous checkbox line in the source plan (normal single-file plans and index-file plans).
+- "path" — the absolute or relative path to the source plan file containing the checkbox.
+- "lineNumber" — the 1-based line number of the checkbox line in the file.
+- "lineText" — the exact text of the checkbox line at planning time, including the "[ ]" marker.
+- Omit "sourceCheckbox" when the task does not map to a single checkbox line (e.g., multi-file plans, generated plans, or ambiguous mappings).
+- The orchestrator will update the checkbox only when the recorded lineNumber still exactly matches the recorded lineText (modulo checkbox marker state). If the line has changed, the update is skipped to avoid corrupting the source file.
 
 ## Scout Directives
 

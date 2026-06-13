@@ -22,6 +22,12 @@ export type TaskReviewDirective = {
   reason?: string;
 };
 
+export type SourceCheckboxRef = {
+  path: string;
+  lineNumber: number;
+  lineText: string;
+};
+
 export type CompiledContract = {
   objective: string;
   inScope: string[];
@@ -49,6 +55,7 @@ export type ExecutionTask = {
   validationCommands?: string[];
   reasons?: string[];
   evidencePaths?: string[];
+  sourceCheckbox?: SourceCheckboxRef;
 };
 
 export type ExecutionManifest = {
@@ -277,6 +284,11 @@ function parseExecutionTask(
     };
   }
 
+  const sourceCheckboxResult = parseSourceCheckbox(obj.sourceCheckbox);
+  if (sourceCheckboxResult !== undefined && !sourceCheckboxResult.ok) {
+    return { ok: false, reason: sourceCheckboxResult.reason };
+  }
+
   const contractResult = parseCompiledContract(obj.compiledContract, id);
   if (!contractResult.ok) {
     return { ok: false, reason: contractResult.reason };
@@ -301,6 +313,56 @@ function parseExecutionTask(
       validationCommands,
       reasons,
       evidencePaths,
+      sourceCheckbox: sourceCheckboxResult?.value,
+    },
+  };
+}
+
+function parseSourceCheckbox(
+  value: unknown,
+):
+  | { ok: true; value: SourceCheckboxRef }
+  | { ok: false; reason: string }
+  | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {
+      ok: false,
+      reason: "Execution task sourceCheckbox must be an object.",
+    };
+  }
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.path !== "string" || obj.path.trim().length === 0) {
+    return {
+      ok: false,
+      reason: "Execution task sourceCheckbox path must be a non-empty string.",
+    };
+  }
+  if (
+    typeof obj.lineNumber !== "number" ||
+    !Number.isInteger(obj.lineNumber) ||
+    obj.lineNumber < 1
+  ) {
+    return {
+      ok: false,
+      reason:
+        "Execution task sourceCheckbox lineNumber must be a positive integer.",
+    };
+  }
+  if (typeof obj.lineText !== "string") {
+    return {
+      ok: false,
+      reason: "Execution task sourceCheckbox lineText must be a string.",
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      path: obj.path.trim(),
+      lineNumber: obj.lineNumber,
+      lineText: obj.lineText,
     },
   };
 }

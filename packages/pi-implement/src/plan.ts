@@ -5,6 +5,7 @@ import {
   extractPlanReference,
   formatReferencedMaterial,
 } from "./manifest.js";
+import { normalizeCheckboxMarker } from "./source-checkbox.js";
 
 export type PlanTask = {
   index: number;
@@ -211,24 +212,17 @@ function replaceTaskMarker(
   const lineEnding = content.includes("\r\n") ? "\r\n" : "\n";
   const lines = content.split(/\r?\n/);
   const index = task.lineNumber - 1;
-  if (lines[index] === task.originalLine) {
+  if (
+    normalizeCheckboxMarker(lines[index]) ===
+    normalizeCheckboxMarker(task.originalLine)
+  ) {
     lines[index] = replaceMarker(lines[index], marker);
     return lines.join(lineEnding);
   }
 
-  const reparsed = parsePlan("<memory>", content);
-  const matches = reparsed.tasks.filter(
-    (candidate) =>
-      candidate.text === task.text && candidate.checked !== (marker === "x"),
+  throw new Error(
+    `Stale source checkbox: line ${task.lineNumber} no longer matches recorded text.`,
   );
-  if (matches.length !== 1) {
-    throw new Error(`Could not safely update task checkbox for: ${task.text}`);
-  }
-  lines[matches[0].lineNumber - 1] = replaceMarker(
-    matches[0].originalLine,
-    marker,
-  );
-  return lines.join(lineEnding);
 }
 
 function replaceMarker(line: string, marker: "x" | " "): string {
