@@ -25,6 +25,12 @@ import {
   nextUncheckedTask,
   parsePlanFile,
 } from "./plan.js";
+import type { PlanTask } from "./plan.js";
+import {
+  readExecutionManifest,
+  renderCompiledContract,
+} from "./execution-plan.js";
+import type { ExecutionManifest } from "./execution-plan.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SubagentClient, SubagentResult } from "./subagents.js";
 import type {
@@ -125,6 +131,7 @@ export type OrchestratorDeps = {
   planPath: string;
   planArtifacts?: string[];
   manifest?: PlanBundleManifest;
+  executionManifest?: ExecutionManifest;
   roles: EffectiveRoles;
   mode?: RunMode;
   maxConcurrency?: number;
@@ -168,6 +175,11 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
     ? (readRunJson(deps.paths)?.baseSha ?? (await deps.git.head()))
     : await deps.git.head();
 
+  const executionManifest = deps.paths
+    ? readExecutionManifest(deps.paths.runDir)
+    : undefined;
+  deps = { ...deps, executionManifest };
+
   if (deps.mode === "serial") {
     await runSerialImplementation(deps, plan, planArtifacts, runBaseSha);
     return;
@@ -204,7 +216,13 @@ async function runSerialImplementation(
     if (!(await deps.git.isCleanExcept(planArtifacts))) {
       throw new BlockedError("dirty worktree");
     }
-    const task = nextUncheckedTask(plan);
+    let task: PlanTask | undefined;
+    if (deps.executionManifest) {
+      const next = nextUncheckedManifestTask(plan, deps.executionManifest);
+      task = next?.planTask;
+    } else {
+      task = nextUncheckedTask(plan);
+    }
     deps.updateState({
       taskIndex: task?.index ?? completedPlanTaskIndex(plan),
       totalTasks: plan.tasks.length,
@@ -3090,6 +3108,24 @@ export function stalledSchedulerReason(
   return lines.join("\n");
 }
 
+function nextUncheckedManifestTask(
+  plan: ReturnType<typeof parsePlanFile>,
+  manifest: ExecutionManifest,
+):
+  | {
+      planTask: PlanTask;
+      manifestTask: import("./execution-plan.js").ExecutionTask;
+    }
+  | undefined {
+  for (const manifestTask of manifest.tasks) {
+    const planTask = plan.tasks.find((t) => t.index === manifestTask.planIndex);
+    if (planTask && !planTask.checked) {
+      return { planTask, manifestTask };
+    }
+  }
+  return undefined;
+}
+
 function completedPlanTaskIndex(
   plan: ReturnType<typeof parsePlanFile>,
 ): number | undefined {
@@ -3441,7 +3477,16 @@ async function runTaskWorker(args: {
     const mainHeadBefore = await deps.git.head();
     const taskHeadBefore = worktreePath ? await taskGit.head() : undefined;
     const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
-    const packet = buildTaskPacket(plan, task, deps.manifest);
+    const compiledContractEntry = deps.executionManifest?.tasks.find(
+      (mt) => mt.planIndex === task.index,
+    );
+    const compiledContract = compiledContractEntry
+      ? renderCompiledContract(compiledContractEntry.compiledContract)
+      : undefined;
+    const packet = compiledContract
+      ? undefined
+      : buildTaskPacket(plan, task, deps.manifest);
+    const taskContract = compiledContract ?? packet!.markdown;
     const effectiveWorktreePath = worktreePath ?? (await deps.git.root());
 
     // ── Scout phase ──
@@ -3460,7 +3505,7 @@ async function runTaskWorker(args: {
         attemptOrdinal: totalAttempt,
         feedback: feedback ?? initialFeedback,
         taskText: task.text,
-        taskPacket: packet.markdown,
+        taskPacket: taskContract,
       });
 
       if (!decision.run) {
@@ -3474,7 +3519,8 @@ async function runTaskWorker(args: {
       if (decision.run) {
         const scoutPrompt = buildScoutPrompt({
           worktreePath: effectiveWorktreePath,
-          taskPacket: packet.markdown,
+          compiledContract: compiledContract ?? undefined,
+          taskPacket: packet?.markdown,
           planArtifacts,
           directive: scoutDirective,
           isRetry,
@@ -3641,7 +3687,8 @@ async function runTaskWorker(args: {
     }
 
     const implementerPrompt = buildImplementerPrompt({
-      taskPacket: packet.markdown,
+      compiledContract: compiledContract ?? undefined,
+      taskPacket: packet?.markdown,
       worktreePath: effectiveWorktreePath,
       feedback: feedback ? formatFeedback(feedback) : undefined,
       scoutContext,
@@ -3990,11 +4037,16 @@ async function runTaskWorker(args: {
           ),
         );
       } else {
-        const outOfScopeTasks = plan.tasks
-          .filter((t) => t.index !== task.index)
-          .map((t) => t.originalLine);
+        const outOfScopeTasks = deps.executionManifest
+          ? deps.executionManifest.tasks
+              .filter((mt) => mt.planIndex !== task.index)
+              .map((mt) => `- ${mt.title}`)
+          : plan.tasks
+              .filter((t) => t.index !== task.index)
+              .map((t) => t.originalLine);
         reviewerPrompt = buildReviewerPrompt({
-          taskPacket: packet.markdown,
+          compiledContract: compiledContract ?? undefined,
+          taskPacket: packet?.markdown,
           worktreePath: effectiveWorktreePath,
           implementer: parsed.result,
           outOfScopeTasks,
@@ -4042,11 +4094,16 @@ async function runTaskWorker(args: {
         }
       }
 
-      const outOfScopeTasks = plan.tasks
-        .filter((t) => t.index !== task.index)
-        .map((t) => t.originalLine);
+      const outOfScopeTasks = deps.executionManifest
+        ? deps.executionManifest.tasks
+            .filter((mt) => mt.planIndex !== task.index)
+            .map((mt) => `- ${mt.title}`)
+        : plan.tasks
+            .filter((t) => t.index !== task.index)
+            .map((t) => t.originalLine);
       reviewerPrompt = buildAlreadySatisfiedReviewerPrompt({
-        taskPacket: packet.markdown,
+        compiledContract: compiledContract ?? undefined,
+        taskPacket: packet?.markdown,
         worktreePath: effectiveWorktreePath,
         implementer: parsed.result,
         headSha: reviewHeadBefore,

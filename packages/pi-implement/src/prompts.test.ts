@@ -788,3 +788,126 @@ describe("buildOverallReviewerPrompt", () => {
     expect(prompt).toContain("# Auth");
   });
 });
+
+const COMPILED_CONTRACT = `# Task Contract
+
+## Objective
+
+Do the thing.
+
+## In-Scope Items
+
+- Item 1
+
+## Acceptance Criteria
+
+- Criterion 1
+
+## Out-of-Scope Items
+
+- Sibling item
+`;
+
+describe("buildImplementerPrompt with compiledContract", () => {
+  it("uses compiled contract section and omits task packet", () => {
+    const prompt = buildImplementerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).toContain("## Compiled Task Contract");
+    expect(prompt).toContain("## Objective");
+    expect(prompt).not.toContain("## Task Packet");
+    expect(prompt).not.toContain("## Referenced Plan Material");
+  });
+
+  it("describes the compiled contract as the authoritative scope", () => {
+    const prompt = buildImplementerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).toContain(
+      "The compiled task contract below is the complete, authoritative implementation scope for this task",
+    );
+    expect(prompt).toContain(
+      "Only the items listed in the compiled task contract",
+    );
+  });
+
+  it("tells the implementer to stick to the selected task contract in scout context", () => {
+    const prompt = buildImplementerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      scoutContext: "some context",
+    });
+
+    expect(prompt).toContain("Stick to the selected task contract.");
+  });
+});
+
+describe("buildReviewerPrompt with compiledContract", () => {
+  it("uses compiled contract section and omits task packet", () => {
+    const prompt = buildReviewerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain("## Compiled Task Contract");
+    expect(prompt).toContain("## Objective");
+    expect(prompt).not.toContain("## Task Packet");
+  });
+
+  it("describes the compiled task contract as the review slice", () => {
+    const prompt = buildReviewerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain(
+      "The compiled task contract is a deliberate single-task slice",
+    );
+  });
+
+  it("includes out-of-scope sibling tasks with compiled contract", () => {
+    const prompt = buildReviewerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      outOfScopeTasks: ["- Sibling task A"],
+    });
+
+    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(prompt).toContain("- Sibling task A");
+  });
+});
+
+describe("buildAlreadySatisfiedReviewerPrompt with compiledContract", () => {
+  it("uses compiled contract section and omits task packet", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+    });
+
+    expect(prompt).toContain("## Compiled Task Contract");
+    expect(prompt).toContain("## Objective");
+    expect(prompt).not.toContain("## Task Packet");
+  });
+
+  it("describes scope in terms of compiled contract", () => {
+    const prompt = buildAlreadySatisfiedReviewerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      headSha: "abc1234",
+    });
+
+    expect(prompt).toContain(
+      "The selected task's required scope is defined in the compiled task contract",
+    );
+  });
+});

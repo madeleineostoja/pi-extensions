@@ -540,3 +540,32 @@ describe("buildScoutUnavailableNote", () => {
     expect(note).toContain("missing optimization, not a blocker");
   });
 });
+
+const COMPILED_CONTRACT = "# Task Contract\n\n## Objective\n\nDo the thing.";
+
+describe("buildScoutPrompt with compiledContract", () => {
+  it("uses compiled task contract label and content", () => {
+    const prompt = buildScoutPrompt({
+      worktreePath: WORKTREE,
+      compiledContract: COMPILED_CONTRACT,
+      planArtifacts: PLAN_ARTIFACTS,
+      isRetry: false,
+    });
+    expect(prompt).toContain("Compiled task contract:");
+    expect(prompt).toContain(COMPILED_CONTRACT.trim());
+    expect(prompt).not.toContain("Task packet:");
+  });
+
+  it("prefers compiledContract over taskPacket when both provided", () => {
+    const prompt = buildScoutPrompt({
+      worktreePath: WORKTREE,
+      compiledContract: COMPILED_CONTRACT,
+      taskPacket: TASK_PACKET,
+      planArtifacts: PLAN_ARTIFACTS,
+      isRetry: false,
+    });
+    expect(prompt).toContain("Compiled task contract:");
+    expect(prompt).toContain(COMPILED_CONTRACT.trim());
+    expect(prompt).not.toContain("Task packet:");
+  });
+});

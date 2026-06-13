@@ -21,6 +21,8 @@ import {
 } from "./orchestrator.js";
 import { createSchedulerRun } from "./scheduler.js";
 import { writeGraphJson } from "./graph.js";
+import { writeExecutionManifest } from "./execution-plan.js";
+import type { ExecutionManifest } from "./execution-plan.js";
 import { readEvents, readTaskJson, writeRunJson } from "./state.js";
 import type { RunJson, StatePaths } from "./state.js";
 import type { CommandResult, GitClient } from "./git.js";
@@ -9657,5 +9659,121 @@ describe("runImplementation", () => {
     const started = events.find((e) => e.type === "overall_rework_started");
     expect(started).toBeDefined();
     expect(started?.artifactPath).toContain("rework-prompt-1.md");
+  });
+
+  it("uses compiled contracts when execution manifest is present; implementer prompt omits raw referenced material and sibling deliverables", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
+    const planPath = join(dir, "plan.md");
+    const subPath = join(dir, "sub.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task one\n  - Plan: `sub.md`\n- [ ] Task two\n",
+      "utf-8",
+    );
+    writeFileSync(
+      subPath,
+      "# Subplan\n\nAcceptance for task one: do it.\nAcceptance for task two: do other thing.\n",
+      "utf-8",
+    );
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    const paths = makePaths(dir);
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+
+    const task1Hash = manifest.tasks[0]!.fingerprint;
+    const task2Hash = manifest.tasks[1]!.fingerprint;
+
+    const executionManifest = {
+      version: 1,
+      sourcePlanPath: planPath,
+      tasks: [
+        {
+          id: "t1",
+          planIndex: 1,
+          title: "Task one",
+          taskHash: task1Hash,
+          status: "todo",
+          dependsOn: [],
+          mode: "serial",
+          affectedAreas: [],
+          conflictHints: [],
+          sourceReferences: ["sub.md"],
+          review: { mode: "require" },
+          compiledContract: {
+            objective: "Implement task one",
+            inScope: ["Task one work"],
+            acceptanceCriteria: ["Task one criterion: do it."],
+            outOfScope: ["Task two deliverable: do other thing."],
+          },
+        },
+        {
+          id: "t2",
+          planIndex: 2,
+          title: "Task two",
+          taskHash: task2Hash,
+          status: "todo",
+          dependsOn: [],
+          mode: "serial",
+          affectedAreas: [],
+          conflictHints: [],
+          sourceReferences: [],
+          review: { mode: "require" },
+          compiledContract: {
+            objective: "Implement task two",
+            inScope: ["Task two work"],
+            acceptanceCriteria: ["Task two criterion: do other thing."],
+            outOfScope: ["Task one deliverable"],
+          },
+        },
+      ],
+    } satisfies ExecutionManifest;
+
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      paths,
+      runId: "r1",
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns).toHaveLength(5);
+    const implPrompt = subagents.spawns[0]?.prompt ?? "";
+    const reviewerPrompt = subagents.spawns[1]?.prompt ?? "";
+
+    // Implementer prompt should use compiled contract, not raw referenced material
+    expect(implPrompt).toContain("## Compiled Task Contract");
+    expect(implPrompt).toContain("Task one criterion: do it.");
+    expect(implPrompt).not.toContain("## Referenced Plan Material");
+    expect(implPrompt).not.toContain("# Subplan");
+    expect(implPrompt).not.toContain("Acceptance for task two");
+    // Sibling deliverable is listed as out-of-scope in the compiled contract
+    expect(implPrompt).toContain("Task two deliverable: do other thing.");
+
+    // Reviewer prompt should use compiled contract and include sibling scope
+    expect(reviewerPrompt).toContain("## Compiled Task Contract");
+    expect(reviewerPrompt).toContain("Task one criterion: do it.");
+    expect(reviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
+    expect(reviewerPrompt).toContain("- Task two");
+    expect(reviewerPrompt).not.toContain("## Referenced Plan Material");
+    expect(reviewerPrompt).not.toContain("# Subplan");
   });
 });

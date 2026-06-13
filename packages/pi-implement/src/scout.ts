@@ -62,7 +62,8 @@ export function decideScout(input: ScoutDecisionInput): ScoutDecision {
 
 export type ScoutPromptInput = {
   worktreePath: string;
-  taskPacket: string;
+  taskPacket?: string;
+  compiledContract?: string;
   planArtifacts: string[];
   directive?: ScoutDirective;
   isRetry: boolean;
@@ -73,11 +74,17 @@ export function buildScoutPrompt(input: ScoutPromptInput): string {
   const {
     worktreePath,
     taskPacket,
+    compiledContract,
     planArtifacts,
     directive,
     isRetry,
     feedback,
   } = input;
+
+  const contract = compiledContract ?? taskPacket;
+  if (!contract) {
+    throw new Error("Either taskPacket or compiledContract must be provided");
+  }
 
   const lines: string[] = [
     "You are a read-only Scout for pi-implement. Explore the assigned worktree to locate implementation context for exactly one selected task. Do not edit, write, stage, commit, install dependencies, or run mutating commands.",
@@ -85,8 +92,8 @@ export function buildScoutPrompt(input: ScoutPromptInput): string {
     `Assigned worktree: ${worktreePath}`,
     `Plan artifacts are read-only and must not be edited: ${planArtifacts.join(", ") || "(none)"}`,
     "",
-    "Task packet:",
-    taskPacket,
+    compiledContract ? "Compiled task contract:" : "Task packet:",
+    contract,
   ];
 
   if (directive) {
@@ -172,5 +179,5 @@ export function formatScoutContext(
 }
 
 export function buildScoutUnavailableNote(reason: string): string {
-  return `Scout was unavailable for this attempt (${reason}). Treat this as a missing optimization, not a blocker. Proceed with the task using the task packet and your own exploration.`;
+  return `Scout was unavailable for this attempt (${reason}). Treat this as a missing optimization, not a blocker. Proceed with the task using the task contract and your own exploration.`;
 }
