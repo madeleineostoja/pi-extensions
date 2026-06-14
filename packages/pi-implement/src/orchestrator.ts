@@ -27,7 +27,6 @@ import {
   readExecutionManifest,
   renderCompiledContract,
 } from "./execution-plan.js";
-import { computeTaskFingerprint } from "./manifest.js";
 import {
   tryMarkSourceCheckboxDone,
   tryMarkSourceCheckboxUndone,
@@ -189,7 +188,7 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
       deps.planPath,
     );
   }
-  deps = { ...deps, executionManifest };
+  deps = { ...deps, executionManifest, planArtifacts };
   validateRecordedPlanCorpus(deps);
 
   if (deps.mode === "serial") {
@@ -3191,7 +3190,7 @@ function validateRecordedPlanCorpus(deps: OrchestratorDeps): void {
   for (const file of files) {
     if (!existsSync(file.path)) {
       throw new BlockedError(
-        `plan corpus changed since execution manifest was built: missing ${file.path}`,
+        `plan corpus changed since execution manifest was built: missing ${file.path}; re-run pi-implement to re-ingest and replan before executing further tasks.`,
       );
     }
 
@@ -3207,7 +3206,7 @@ function validateRecordedPlanCorpus(deps: OrchestratorDeps): void {
         hashText(normalizePlanCheckboxes(snapshot))
       ) {
         throw new BlockedError(
-          `plan corpus changed since execution manifest was built: ${file.path}`,
+          `plan corpus changed since execution manifest was built: ${file.path}; re-run pi-implement to re-ingest and replan before executing further tasks.`,
         );
       }
       continue;
@@ -3215,7 +3214,7 @@ function validateRecordedPlanCorpus(deps: OrchestratorDeps): void {
 
     if (hashText(content) !== file.hash) {
       throw new BlockedError(
-        `plan corpus changed since execution manifest was built: ${file.path}`,
+        `plan corpus changed since execution manifest was built: ${file.path}; re-run pi-implement to re-ingest and replan before executing further tasks.`,
       );
     }
   }
@@ -3630,12 +3629,6 @@ async function runTaskWorker(args: {
     if (!compiledContractEntry) {
       throw new BlockedError(
         `Task ${task.index} missing from execution manifest`,
-      );
-    }
-    const currentFingerprint = computeTaskFingerprint(task);
-    if (compiledContractEntry.taskHash !== currentFingerprint) {
-      throw new BlockedError(
-        `Task fingerprint mismatch for task ${task.index}: plan may have changed since manifest was built.`,
       );
     }
     const compiledContract = renderCompiledContract(
@@ -4863,7 +4856,13 @@ function markSourceCheckboxDone(
     );
     const ref = manifestTask?.sourceCheckbox;
     if (ref) {
-      const result = tryMarkSourceCheckboxDone(ref);
+      const result = tryMarkSourceCheckboxDone(ref, {
+        title: manifestTask.title,
+        taskId: manifestTask.id,
+        sourceRefs: manifestTask.sourceRefs,
+        fallbackPath: deps.planPath,
+        allowedPaths: deps.planArtifacts,
+      });
       if (!result.ok && deps.paths) {
         persistTaskArtifact(
           deps.paths,
@@ -4872,13 +4871,22 @@ function markSourceCheckboxDone(
           `# Source checkbox update skipped\n\n${result.reason}\n`,
         );
       }
-    } else if (deps.paths) {
-      persistTaskArtifact(
-        deps.paths,
-        taskId,
-        "source-checkbox.md",
-        `# Source checkbox update skipped\n\nNo sourceCheckbox mapping in execution manifest for planIndex ${planTask.index}.\n`,
-      );
+    } else {
+      const result = tryMarkSourceCheckboxDone(undefined, {
+        title: manifestTask?.title ?? planTask.text,
+        taskId: manifestTask?.id,
+        sourceRefs: manifestTask?.sourceRefs,
+        fallbackPath: deps.planPath,
+        allowedPaths: deps.planArtifacts,
+      });
+      if (!result.ok && deps.paths) {
+        persistTaskArtifact(
+          deps.paths,
+          taskId,
+          "source-checkbox.md",
+          `# Source checkbox update skipped\n\n${result.reason}\n`,
+        );
+      }
     }
     return;
   }
@@ -4909,7 +4917,13 @@ function markSourceCheckboxUndone(
     );
     const ref = manifestTask?.sourceCheckbox;
     if (ref) {
-      const result = tryMarkSourceCheckboxUndone(ref);
+      const result = tryMarkSourceCheckboxUndone(ref, {
+        title: manifestTask.title,
+        taskId: manifestTask.id,
+        sourceRefs: manifestTask.sourceRefs,
+        fallbackPath: deps.planPath,
+        allowedPaths: deps.planArtifacts,
+      });
       if (!result.ok && deps.paths) {
         persistTaskArtifact(
           deps.paths,
@@ -4918,13 +4932,22 @@ function markSourceCheckboxUndone(
           `# Source checkbox undo skipped\n\n${result.reason}\n`,
         );
       }
-    } else if (deps.paths) {
-      persistTaskArtifact(
-        deps.paths,
-        taskId,
-        "source-checkbox.md",
-        `# Source checkbox undo skipped\n\nNo sourceCheckbox mapping in execution manifest for planIndex ${planTask.index}.\n`,
-      );
+    } else {
+      const result = tryMarkSourceCheckboxUndone(undefined, {
+        title: manifestTask?.title ?? planTask.text,
+        taskId: manifestTask?.id,
+        sourceRefs: manifestTask?.sourceRefs,
+        fallbackPath: deps.planPath,
+        allowedPaths: deps.planArtifacts,
+      });
+      if (!result.ok && deps.paths) {
+        persistTaskArtifact(
+          deps.paths,
+          taskId,
+          "source-checkbox.md",
+          `# Source checkbox undo skipped\n\n${result.reason}\n`,
+        );
+      }
     }
     return;
   }

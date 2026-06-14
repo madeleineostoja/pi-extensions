@@ -396,7 +396,7 @@ describe("runImplementation", () => {
     expect(subagents.spawns).toHaveLength(0);
   });
 
-  it("blocks if a task fingerprint changes after manifest preflight", async () => {
+  it("continues when a task fingerprint changes after manifest preflight", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
     const subPath = join(dir, "sub.md");
@@ -432,11 +432,11 @@ describe("runImplementation", () => {
         updateState: () => {},
         shouldStop: () => false,
       }),
-    ).rejects.toThrow("fingerprint mismatch");
-    expect(subagents.spawns).toHaveLength(0);
+    ).rejects.toThrow("missing fake result");
+    expect(subagents.spawns).toHaveLength(1);
   });
 
-  it("blocks when recorded supporting plan corpus changed before task execution", async () => {
+  it("blocks when supporting plan corpus changed before task execution", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
     const supportPath = join(dir, "support.md");
@@ -494,7 +494,7 @@ describe("runImplementation", () => {
         updateState: () => {},
         shouldStop: () => false,
       }),
-    ).rejects.toThrow("plan corpus changed");
+    ).rejects.toThrow("re-ingest and replan");
     expect(subagents.spawns).toHaveLength(0);
   });
 
@@ -1371,17 +1371,14 @@ describe("runImplementation", () => {
       shouldStop: () => false,
     });
 
-    // Checkbox should remain unchanged because the mapping was stale
-    expect(readFileSync(planPath, "utf-8")).toContain("- [ ] Do thing");
-    // A note should be recorded in the task artifacts
+    // Stale line metadata falls back to a unique title/source-ref match.
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
     const notePath = join(
       paths.tasksDir,
       "t001-do-thing",
       "source-checkbox.md",
     );
-    expect(existsSync(notePath)).toBe(true);
-    const note = readFileSync(notePath, "utf-8");
-    expect(note).toContain("Stale");
+    expect(existsSync(notePath)).toBe(false);
   });
 
   it("skips source checkbox update and records a note when sourceCheckbox is missing in manifest", async () => {
@@ -1439,17 +1436,14 @@ describe("runImplementation", () => {
       shouldStop: () => false,
     });
 
-    // Checkbox should remain unchanged because there was no sourceCheckbox mapping
-    expect(readFileSync(planPath, "utf-8")).toContain("- [ ] Do thing");
-    // A note should be recorded in the task artifacts
+    // Missing sourceCheckbox falls back to a unique title/source-ref match.
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
     const notePath = join(
       paths.tasksDir,
       "t001-do-thing",
       "source-checkbox.md",
     );
-    expect(existsSync(notePath)).toBe(true);
-    const note = readFileSync(notePath, "utf-8");
-    expect(note).toContain("No sourceCheckbox mapping");
+    expect(existsSync(notePath)).toBe(false);
   });
 
   it("falls back to legacy markTaskDone when no execution manifest is present", async () => {
