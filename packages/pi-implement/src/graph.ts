@@ -466,7 +466,7 @@ function parseStringArray(value: unknown): string[] | undefined {
 
 export function validateGraph(
   graph: ImplementGraph,
-  uncheckedPlanIndexes: number[],
+  _uncheckedPlanIndexes: number[],
 ): GraphValidationResult {
   if (graph.version !== 1) {
     return {
@@ -475,16 +475,7 @@ export function validateGraph(
     };
   }
 
-  if (graph.nodes.length !== uncheckedPlanIndexes.length) {
-    return {
-      ok: false,
-      reason: `Graph has ${graph.nodes.length} node(s) but plan has ${uncheckedPlanIndexes.length} unchecked task(s).`,
-    };
-  }
-
   const seenIds = new Set<string>();
-  const seenIndexes = new Set<number>();
-  const uncheckedSet = new Set(uncheckedPlanIndexes);
   const nodeById = new Map<string, ImplementGraphNode>();
 
   for (const node of graph.nodes) {
@@ -492,21 +483,6 @@ export function validateGraph(
       return { ok: false, reason: `Duplicate node id: "${node.id}".` };
     }
     seenIds.add(node.id);
-
-    if (seenIndexes.has(node.planIndex)) {
-      return {
-        ok: false,
-        reason: `Duplicate planIndex: ${node.planIndex}.`,
-      };
-    }
-    seenIndexes.add(node.planIndex);
-
-    if (!uncheckedSet.has(node.planIndex)) {
-      return {
-        ok: false,
-        reason: `Node "${node.id}" planIndex ${node.planIndex} does not match any unchecked task.`,
-      };
-    }
 
     nodeById.set(node.id, node);
   }
@@ -523,13 +499,6 @@ export function validateGraph(
         return {
           ok: false,
           reason: `Node "${node.id}" dependsOn unknown id "${depId}".`,
-        };
-      }
-      const dep = nodeById.get(depId);
-      if (dep && dep.planIndex >= node.planIndex) {
-        return {
-          ok: false,
-          reason: `Node "${node.id}" (planIndex ${node.planIndex}) depends on "${depId}" (planIndex ${dep.planIndex}) which is not earlier in plan order.`,
         };
       }
     }

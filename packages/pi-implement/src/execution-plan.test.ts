@@ -333,14 +333,14 @@ describe("parseExecutionPlan", () => {
     }
   });
 
-  it("rejects task missing sourceReferences", () => {
+  it("accepts task missing legacy sourceReferences", () => {
     const task = { ...makeTask({ id: "t1" }), sourceReferences: undefined };
     const result = parseExecutionPlan(
       JSON.stringify({ version: 1, tasks: [task] }),
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("sourceReferences");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].sourceReferences).toEqual([]);
     }
   });
 

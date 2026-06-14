@@ -209,13 +209,9 @@ describe("validateGraph", () => {
     }
   });
 
-  it("rejects when node count differs from unchecked task count", () => {
+  it("accepts node count drift because tasks are planner-owned", () => {
     const graph = makeGraph([makeNode({ id: "t1", planIndex: 1 })]);
-    const result = validateGraph(graph, [1, 2]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("node");
-    }
+    expect(validateGraph(graph, [1, 2])).toEqual({ ok: true });
   });
 
   it("rejects duplicate node id", () => {
@@ -230,25 +226,17 @@ describe("validateGraph", () => {
     }
   });
 
-  it("rejects duplicate planIndex", () => {
+  it("accepts duplicate planIndex values as non-canonical hints", () => {
     const graph = makeGraph([
       makeNode({ id: "t1", planIndex: 1 }),
       makeNode({ id: "t2", planIndex: 1 }),
     ]);
-    const result = validateGraph(graph, [1, 2]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("Duplicate planIndex");
-    }
+    expect(validateGraph(graph, [1, 2])).toEqual({ ok: true });
   });
 
-  it("rejects planIndex not in unchecked list", () => {
+  it("accepts planIndex values outside the parser unchecked list", () => {
     const graph = makeGraph([makeNode({ id: "t1", planIndex: 5 })]);
-    const result = validateGraph(graph, [1]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("planIndex");
-    }
+    expect(validateGraph(graph, [1])).toEqual({ ok: true });
   });
 
   it("rejects dependsOn referencing unknown node", () => {
@@ -262,26 +250,12 @@ describe("validateGraph", () => {
     }
   });
 
-  it("rejects cycle among nodes where earlier depends on later (caught by plan-order check)", () => {
+  it("accepts dependencies on later planIndex values", () => {
     const graph = makeGraph([
       makeNode({ id: "t1", planIndex: 1, dependsOn: ["t2"] }),
       makeNode({ id: "t2", planIndex: 2 }),
     ]);
-    const result = validateGraph(graph, [1, 2]);
-    expect(result.ok).toBe(false);
-    expect(result.ok === false && result.reason).toBeTruthy();
-  });
-
-  it("rejects dependency pointing to a later planIndex", () => {
-    const graph = makeGraph([
-      makeNode({ id: "t1", planIndex: 1, dependsOn: ["t2"] }),
-      makeNode({ id: "t2", planIndex: 2 }),
-    ]);
-    const result = validateGraph(graph, [1, 2]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("not earlier");
-    }
+    expect(validateGraph(graph, [1, 2])).toEqual({ ok: true });
   });
 
   it("allows two nodes with the same affectedAreas to remain independent", () => {
@@ -292,17 +266,13 @@ describe("validateGraph", () => {
     expect(validateGraph(graph, [1, 2])).toEqual({ ok: true });
   });
 
-  it("rejects three-node dependency pointing to later planIndex (caught by plan-order check, not DFS)", () => {
+  it("accepts three-node dependencies on later planIndex values", () => {
     const graph = makeGraph([
       makeNode({ id: "t1", planIndex: 1, dependsOn: ["t3"] }),
       makeNode({ id: "t2", planIndex: 2, dependsOn: ["t3"] }),
       makeNode({ id: "t3", planIndex: 3 }),
     ]);
-    const result = validateGraph(graph, [1, 2, 3]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("not earlier");
-    }
+    expect(validateGraph(graph, [1, 2, 3])).toEqual({ ok: true });
   });
 
   it("rejects self-referencing dependsOn", () => {

@@ -441,7 +441,7 @@ describe("selectStrategy - execution planner", () => {
     }
   });
 
-  it("blocks with recorded reason when planner output is invalid", async () => {
+  it("falls back to a conservative serial manifest when planner output is invalid", async () => {
     const subagents = makeSubagents("not valid json");
     const plan = makePlan(["Task A", "Task B"]);
     const result = await selectStrategy({
@@ -457,11 +457,73 @@ describe("selectStrategy - execution planner", () => {
       runId: "r1",
       updateState: () => ({}),
     });
-    expect(result.mode).toBe("blocked");
-    expect(result.reason.length).toBeGreaterThan(0);
+    expect(result.mode).toBe("serial");
+    expect(result.reason).toContain("conservative serial fallback");
   });
 
-  it("blocks when manifest validation fails", async () => {
+  it("falls back when planner source refs are not grounded in the plan corpus", async () => {
+    const manifest = makeManifest({
+      tasks: [
+        makeTask({
+          id: "t1",
+          planIndex: 1,
+          title: "Task A",
+          sourceRefs: [{ path: PLAN_PATH, quote: "Not in the plan" }],
+        }),
+        makeTask({ id: "t2", planIndex: 2, title: "Task B" }),
+      ],
+    });
+    const subagents = makeSubagents(JSON.stringify(manifest));
+    const plan = makePlan(["Task A", "Task B"]);
+    const result = await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+    expect(result.mode).toBe("serial");
+    expect(result.reason).toContain("grounding failed");
+  });
+
+  it("does not ground source refs against arbitrary existing files", async () => {
+    const outsidePath = join(tmpRunDir, "outside.md");
+    writeFileSync(outsidePath, "Task A\n", "utf-8");
+    const manifest = makeManifest({
+      tasks: [
+        makeTask({
+          id: "t1",
+          planIndex: 1,
+          title: "Task A",
+          sourceRefs: [{ path: outsidePath, quote: "Task A" }],
+        }),
+        makeTask({ id: "t2", planIndex: 2, title: "Task B" }),
+      ],
+    });
+    const result = await selectStrategy({
+      plan: makePlan(["Task A", "Task B"]),
+      planContent: makePlan(["Task A", "Task B"]).content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents: makeSubagents(JSON.stringify(manifest)),
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+    expect(result.mode).toBe("serial");
+    expect(result.reason).toContain("grounding failed");
+  });
+
+  it("falls back when manifest task coverage does not mirror parser output", async () => {
     const manifest = makeManifest({
       tasks: [makeTask({ id: "t1", planIndex: 1, title: "Task A" })],
     });
@@ -480,11 +542,11 @@ describe("selectStrategy - execution planner", () => {
       runId: "r1",
       updateState: () => ({}),
     });
-    expect(result.mode).toBe("blocked");
-    expect(result.reason.toLowerCase()).toContain("mismatch");
+    expect(result.mode).toBe("serial");
+    expect(result.reason).toContain("Planner built execution manifest");
   });
 
-  it("blocks when planIndex and title are swapped", async () => {
+  it("does not block when planIndex and title are swapped", async () => {
     const plan = makePlan(["Task A", "Task B"]);
     const manifest = makeManifest({
       tasks: [
@@ -515,11 +577,17 @@ describe("selectStrategy - execution planner", () => {
       runId: "r1",
       updateState: () => ({}),
     });
-    expect(result.mode).toBe("blocked");
-    expect(result.reason).toContain("title mismatch");
+    expect(result.mode).not.toBe("blocked");
+    const persisted = JSON.parse(
+      readFileSync(join(tmpRunDir, "execution-manifest.json"), "utf-8"),
+    ) as ExecutionManifest;
+    expect(persisted.tasks.map((task) => [task.id, task.planIndex])).toEqual([
+      ["t1", 2],
+      ["t2", 1],
+    ]);
   });
 
-  it("blocks duplicate-title manifests mapped to the wrong task fingerprint", async () => {
+  it("does not block duplicate-title manifests with parser taskHash drift", async () => {
     const plan = makePlanWithTaskBlocks([
       { text: "Repeat title", blockLines: ["  - first task detail"] },
       { text: "Repeat title", blockLines: ["  - second task detail"] },
@@ -553,8 +621,7 @@ describe("selectStrategy - execution planner", () => {
       runId: "r1",
       updateState: () => ({}),
     });
-    expect(result.mode).toBe("blocked");
-    expect(result.reason).toContain("taskHash mismatch");
+    expect(result.mode).not.toBe("blocked");
   });
 
   it("excludes an absolute source plan path from planner git status", async () => {
@@ -669,7 +736,7 @@ describe("selectStrategy - planner prompt content", () => {
     expect(prompt).toContain("Current Git Status");
     expect(prompt).toContain("- [planIndex=1] Task A");
     expect(prompt).toContain("- [planIndex=2] Task B");
-    expect(prompt).toContain("Task fingerprints:");
+    expect(prompt).toContain('"sourceRefs"');
   });
 
   it("constrains planner exploration to read-only actions", async () => {

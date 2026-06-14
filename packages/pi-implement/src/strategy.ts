@@ -1,13 +1,9 @@
 import { execFile } from "node:child_process";
-import { isAbsolute, relative } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ParsedPlan, PlanTask } from "./plan.js";
 import type { PlanBundleManifest } from "./manifest.js";
-import {
-  computeTaskFingerprint,
-  formatBundleMaterial,
-  PlanMaterialSizeError,
-} from "./manifest.js";
+import { formatBundleMaterial, PlanMaterialSizeError } from "./manifest.js";
 import type { PlanCorpus } from "./corpus.js";
 import { formatCorpusMaterial } from "./corpus.js";
 import type { ImplementConfig } from "./config.js";
@@ -20,10 +16,11 @@ import { validateGraph, writeGraphJson } from "./graph.js";
 import type { ImplementGraph } from "./graph.js";
 import {
   parseExecutionPlan,
+  generateMinimalExecutionManifest,
   validateExecutionManifest,
-  validateManifestAgainstPlan,
   writeExecutionManifest,
   type ExecutionManifest,
+  type ExecutionTask,
 } from "./execution-plan.js";
 
 const execFileAsync = promisify(execFile);
@@ -171,12 +168,66 @@ async function runExecutionPlanner(
     };
   }
 
+  const initialParse = parseExecutionPlan(rawResult);
+  if (!initialParse.ok && isMalformedPlannerJsonReason(initialParse.reason)) {
+    rawResult = await tryRepairExecutionPlannerOutput(req, rawResult);
+  }
+
   return processExecutionPlannerResult(
     rawResult,
     req,
     unchecked,
     maxConcurrency,
   );
+}
+
+function isMalformedPlannerJsonReason(reason: string): boolean {
+  return (
+    reason.includes("valid JSON") ||
+    reason.includes("multiple JSON objects") ||
+    reason.includes("No JSON object")
+  );
+}
+
+async function tryRepairExecutionPlannerOutput(
+  req: StrategyRequest,
+  rawResult: string,
+): Promise<string> {
+  const prompt = `The execution planner returned output that could not be parsed as the required JSON manifest.
+
+Repair the formatting only. Preserve the intended tasks, ids, titles, dependencies, contracts, review/scout hints, and source references. Do not add implementation work. Return strict JSON only, beginning with { and ending with }.
+
+Original output:
+
+${rawResult}`;
+  let repairId: string | undefined;
+  try {
+    const id = await req.subagents.spawn({
+      type: req.roles.planner.type,
+      prompt,
+      description: "execution planner: repair manifest JSON",
+      model: req.roles.planner.model,
+    });
+    repairId = id;
+    const plannerRef: AgentDisplayRef = {
+      id,
+      role: "planner",
+      label: "Planner · Repair execution manifest JSON",
+      startedAt: new Date().toISOString(),
+    };
+    req.updateState((prev) => addStrategyAgentPatch(prev, plannerRef));
+    const result = await req.subagents.waitFor(id, req.signal);
+    req.updateState((prev) => removeStrategyAgentPatch(prev, id));
+    if (result.status === "completed" && parseExecutionPlan(result.result).ok) {
+      return result.result;
+    }
+  } catch {
+    const id = repairId;
+    if (id) {
+      req.updateState((prev) => removeStrategyAgentPatch(prev, id));
+    }
+  }
+  return rawResult;
 }
 
 function processExecutionPlannerResult(
@@ -186,28 +237,44 @@ function processExecutionPlannerResult(
   _maxConcurrency: number,
 ): StrategyOutcome {
   const parsed = parseExecutionPlan(rawResult);
-  if (!parsed.ok) {
-    return {
-      mode: "blocked",
-      reason: `Planner output invalid: ${parsed.reason}.`,
-    };
+  let manifest = parsed.ok
+    ? normalizePlannerManifest(parsed.value, unchecked, req)
+    : fallbackPlannerManifest(
+        unchecked,
+        req,
+        `Planner output invalid: ${parsed.reason}`,
+      );
+
+  const groundingValidation = validateManifestGrounding(manifest, req);
+  if (!groundingValidation.ok) {
+    manifest = fallbackPlannerManifest(
+      unchecked,
+      req,
+      `Execution manifest grounding failed: ${groundingValidation.reason}`,
+    );
   }
 
-  const manifest = parsed.value;
-
-  const structuralValidation = validateExecutionManifest(manifest);
+  let structuralValidation = validateExecutionManifest(manifest);
   if (!structuralValidation.ok) {
-    return {
-      mode: "blocked",
-      reason: `Execution manifest validation failed: ${structuralValidation.reason}.`,
-    };
+    manifest = fallbackPlannerManifest(
+      unchecked,
+      req,
+      `Execution manifest validation failed: ${structuralValidation.reason}`,
+    );
+    structuralValidation = validateExecutionManifest(manifest);
+    if (!structuralValidation.ok) {
+      return {
+        mode: "blocked",
+        reason: `Fallback execution manifest invalid: ${structuralValidation.reason}.`,
+      };
+    }
   }
 
-  const planValidation = validateManifestAgainstPlan(manifest, unchecked);
-  if (!planValidation.ok) {
+  const fallbackGroundingValidation = validateManifestGrounding(manifest, req);
+  if (!fallbackGroundingValidation.ok) {
     return {
       mode: "blocked",
-      reason: `Execution manifest plan mismatch: ${planValidation.reason}.`,
+      reason: `Execution manifest grounding failed: ${fallbackGroundingValidation.reason}.`,
     };
   }
 
@@ -240,12 +307,33 @@ function processExecutionPlannerResult(
   };
 
   const uncheckedIndexes = unchecked.map((t) => t.index);
-  const graphValidation = validateGraph(graph, uncheckedIndexes);
+  let graphValidation = validateGraph(graph, uncheckedIndexes);
   if (!graphValidation.ok) {
-    return {
-      mode: "blocked",
-      reason: `Dependency graph validation failed: ${graphValidation.reason}.`,
-    };
+    const graphValidationReason = graphValidation.reason;
+    manifest = serialManifest(manifest, graphValidationReason);
+    graph.nodes = manifest.tasks.map((task) => ({
+      id: task.id,
+      planIndex: task.planIndex,
+      title: task.title,
+      taskHash: task.taskHash,
+      dependsOn: task.dependsOn,
+      mode: "serial",
+      affectedAreas: task.affectedAreas,
+      conflictHints: task.conflictHints,
+      validationCommands: task.validationCommands ?? [],
+      confidence: "low",
+      reasons: [...(task.reasons ?? []), graphValidationReason],
+      evidencePaths: task.evidencePaths ?? [],
+      review: task.review,
+      scout: task.scout,
+    }));
+    graphValidation = validateGraph(graph, uncheckedIndexes);
+    if (!graphValidation.ok) {
+      return {
+        mode: "blocked",
+        reason: `Dependency graph validation failed after serial fallback: ${graphValidation.reason}.`,
+      };
+    }
   }
 
   writeExecutionManifest(req.paths.runDir, manifest);
@@ -264,6 +352,247 @@ function processExecutionPlannerResult(
     reason,
     maxConcurrency: effectiveConcurrency,
     graph,
+  };
+}
+
+function fallbackPlannerManifest(
+  unchecked: PlanTask[],
+  req: StrategyRequest,
+  reason: string,
+): ExecutionManifest {
+  return {
+    ...generateMinimalExecutionManifest(unchecked, req.plan.path),
+    sourcePlanHash: req.planHash,
+    sourcePlanPath: req.plan.path,
+    sourceCorpusHash: req.corpus?.corpusHash,
+    plannerReason: `${reason}; using conservative serial fallback.`,
+    plannerConfidence: "low",
+    maxConcurrency: 1,
+  };
+}
+
+function normalizePlannerManifest(
+  manifest: ExecutionManifest,
+  unchecked: PlanTask[],
+  req: StrategyRequest,
+): ExecutionManifest {
+  if (manifest.tasks.length !== unchecked.length) {
+    return fallbackPlannerManifest(
+      unchecked,
+      req,
+      `Planner returned ${manifest.tasks.length} task(s) for ${unchecked.length} unchecked task(s)`,
+    );
+  }
+
+  const tasks = manifest.tasks.map((task, index) => {
+    const mappedPlanTask =
+      matchPlannerTaskToPlanTask(task, unchecked) ?? unchecked[index];
+    const normalized: ExecutionTask = {
+      ...task,
+      planIndex: mappedPlanTask?.index ?? task.planIndex,
+      taskHash: task.taskHash || `planner-owned:${task.id}`,
+      review: task.review ?? { mode: "require" },
+      affectedAreas: task.affectedAreas ?? [],
+      conflictHints: task.conflictHints ?? [],
+      sourceRefs: normalizeSourceRefs(task, req),
+      sourceReferences: task.sourceReferences ?? [],
+      compiledContract: task.compiledContract,
+    };
+    return normalized;
+  });
+
+  const uncheckedIndexes = new Set(unchecked.map((task) => task.index));
+  const coveredIndexes = new Set(tasks.map((task) => task.planIndex));
+  if (
+    coveredIndexes.size !== unchecked.length ||
+    [...coveredIndexes].some((index) => !uncheckedIndexes.has(index))
+  ) {
+    return fallbackPlannerManifest(
+      unchecked,
+      req,
+      "Planner task coverage could not be reconciled to unchecked tasks",
+    );
+  }
+
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const invalidDependencyReasons: string[] = [];
+  for (const task of tasks) {
+    const validDeps: string[] = [];
+    for (const depId of task.dependsOn) {
+      if (depId === task.id) {
+        invalidDependencyReasons.push(`task ${task.id} depends on itself`);
+      } else if (!taskIds.has(depId)) {
+        invalidDependencyReasons.push(
+          `task ${task.id} depends on unknown id ${depId}`,
+        );
+      } else {
+        validDeps.push(depId);
+      }
+    }
+    task.dependsOn = validDeps;
+  }
+
+  const repaired: ExecutionManifest = {
+    ...manifest,
+    sourceCorpusHash: manifest.sourceCorpusHash ?? req.corpus?.corpusHash,
+    tasks,
+  };
+  if (invalidDependencyReasons.length > 0) {
+    return serialManifest(repaired, invalidDependencyReasons.join("; "));
+  }
+
+  const graphValidation = validateExecutionManifest(repaired);
+  if (graphValidation.ok) {
+    return repaired;
+  }
+  if (graphValidation.reason.includes("Cycle detected")) {
+    return serialManifest(repaired, graphValidation.reason);
+  }
+  return repaired;
+}
+
+function matchPlannerTaskToPlanTask(
+  task: ExecutionTask,
+  unchecked: PlanTask[],
+): PlanTask | undefined {
+  const needles = [
+    task.title,
+    ...(task.sourceRefs ?? []).map((ref) => ref.quote),
+  ]
+    .map(normalizeTaskText)
+    .filter((value): value is string => value !== undefined);
+
+  const semanticMatches = unchecked.filter((planTask) => {
+    const planNeedles = [planTask.text, planTask.originalLine]
+      .map(normalizeTaskText)
+      .filter((value): value is string => value !== undefined);
+    return needles.some((needle) =>
+      planNeedles.some(
+        (planNeedle) =>
+          planNeedle.includes(needle) || needle.includes(planNeedle),
+      ),
+    );
+  });
+
+  if (semanticMatches.length === 1) {
+    return semanticMatches[0];
+  }
+
+  return unchecked.find((planTask) => planTask.index === task.planIndex);
+}
+
+function normalizeTaskText(value: string | undefined): string | undefined {
+  const normalized = value
+    ?.replace(/^\s*[-*]\s+\[[ xX]\]\s*/, "")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 $2")
+    .replace(/[`*_#]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return normalized && normalized.length >= 3 ? normalized : undefined;
+}
+
+function validateManifestGrounding(
+  manifest: ExecutionManifest,
+  req: StrategyRequest,
+): { ok: true } | { ok: false; reason: string } {
+  for (const task of manifest.tasks) {
+    const refs = task.sourceRefs ?? [];
+    if (refs.length === 0) {
+      return {
+        ok: false,
+        reason: `task "${task.id}" has no sourceRefs`,
+      };
+    }
+
+    let grounded = false;
+    const failures: string[] = [];
+    for (const ref of refs) {
+      const content = readSourceRefContent(ref.path, req);
+      if (content === undefined) {
+        failures.push(`${ref.path}: file does not exist`);
+        continue;
+      }
+      if (!ref.quote || content.includes(ref.quote)) {
+        grounded = true;
+        break;
+      }
+      failures.push(`${ref.path}: quote not found`);
+    }
+
+    if (!grounded) {
+      return {
+        ok: false,
+        reason: `task "${task.id}" sourceRefs are not grounded (${failures.join("; ")})`,
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
+function readSourceRefContent(
+  sourcePath: string,
+  req: StrategyRequest,
+): string | undefined {
+  const candidates = isAbsolute(sourcePath)
+    ? [resolve(sourcePath)]
+    : [
+        resolve(dirname(req.plan.path), sourcePath),
+        resolve(req.repoRoot, sourcePath),
+      ];
+
+  const materialByPath = new Map<string, string>();
+  materialByPath.set(resolve(req.plan.path), req.planContent);
+  for (const file of req.corpus?.files ?? []) {
+    materialByPath.set(resolve(file.absolutePath), file.content);
+  }
+  for (const task of req.manifest?.tasks ?? []) {
+    for (const material of task.referencedMaterials) {
+      materialByPath.set(resolve(material.absolutePath), material.content);
+    }
+  }
+
+  for (const candidate of candidates) {
+    const content = materialByPath.get(candidate);
+    if (content !== undefined) {
+      return content;
+    }
+  }
+  return undefined;
+}
+
+function normalizeSourceRefs(
+  task: ExecutionTask,
+  req: StrategyRequest,
+): ExecutionTask["sourceRefs"] {
+  const sourceRefs = task.sourceRefs ?? [];
+  const refs =
+    sourceRefs.length > 0
+      ? sourceRefs
+      : task.sourceReferences.map((path) => ({ path }));
+  if (refs.length > 0) {
+    return refs;
+  }
+  return [{ path: req.plan.path, quote: task.title }];
+}
+
+function serialManifest(
+  manifest: ExecutionManifest,
+  reason: string,
+): ExecutionManifest {
+  return {
+    ...manifest,
+    maxConcurrency: 1,
+    tasks: manifest.tasks.map((task, index, tasks) => ({
+      ...task,
+      mode: "serial",
+      dependsOn: index === 0 ? [] : [tasks[index - 1].id],
+      reasons: [
+        ...(task.reasons ?? []),
+        `Dependency graph repaired: ${reason}`,
+      ],
+    })),
   };
 }
 
@@ -309,10 +638,6 @@ async function buildExecutionPlannerPrompt(
     req.manifest?.allArtifactPaths ?? [req.plan.path],
   );
 
-  const taskHashes = unchecked
-    .map((t) => `${t.index}:${computeTaskFingerprint(t)}`)
-    .join(" ");
-
   let bundleSection = "";
   if (req.manifest) {
     const bundle = formatBundleMaterial(req.manifest);
@@ -340,8 +665,6 @@ ${req.planContent}${bundleSection}${corpusSection}
 ## Unchecked Tasks (${unchecked.length})
 
 ${taskLines}
-
-Task fingerprints: ${taskHashes}
 
 ## Context
 
@@ -379,7 +702,7 @@ ${gitStatus}
 
 ## Dependency Rules
 
-- Use \`dependsOn\` only for concrete semantic or business dependencies where a later task genuinely requires an earlier task's output. Each dependency MUST point to a node with a LOWER planIndex.
+- Use \`dependsOn\` only for concrete semantic or business dependencies where a later task genuinely requires an earlier task's output. Dependencies may point to any known task id; do not use plan order as proof of dependency.
 - Do NOT add dependency edges merely because tasks share files, packages, subsystems, test suites, or infrastructure. Shared surface areas are not automatic dependencies. Record those as \`conflictHints\`, \`affectedAreas\`, or integration risk in \`reasons\` and \`evidencePaths\` instead.
 - Do not choose serial because of insufficient evidence, possible file conflicts, or shared systems. If uncertainty remains after bounded exploration, prefer the least restrictive graph supported by concrete dependencies, lower confidence, and explain the risk.
 
@@ -393,15 +716,15 @@ Return an execution manifest matching this schema:
   "version": 1,
   "sourcePlanHash": "${req.planHash}",
   "sourcePlanPath": "${req.plan.path}",
+  "sourceCorpusHash": "${req.corpus?.corpusHash ?? req.planHash}",
   "plannerReason": "...",
   "plannerConfidence": "high" | "medium" | "low",
   "maxConcurrency": <optional positive integer>,
   "tasks": [
     {
       "id": "unique-node-id",
-      "planIndex": <integer matching task planIndex>,
+      "planIndex": <optional integer hint from the unchecked-task list when unambiguous>,
       "title": "task title",
-      "taskHash": "full task fingerprint from Task fingerprints above",
       "status": "todo",
       "dependsOn": ["other-node-id"],
       "mode": "parallel",
@@ -412,7 +735,7 @@ Return an execution manifest matching this schema:
       "evidencePaths": [],
       "review": { "mode": "skip" | "suggest" | "require", "reason": "optional" },
       "scout": { "mode": "skip" | "suggest" | "require", "reason": "optional", "prompt": "optional", "breadth": "quick" | "medium" | "very thorough" },
-      "sourceReferences": ["plan.md section X", "sub.md line Y"],
+      "sourceRefs": [{ "path": "${req.plan.path}", "quote": "short exact source quote grounding this task" }],
       "sourceCheckbox": { "path": "plan.md", "lineNumber": 5, "lineText": "- [ ] Task title" },
       "compiledContract": {
         "objective": "One-line description of what this task must accomplish",
@@ -426,6 +749,15 @@ Return an execution manifest matching this schema:
     }
   ]
 }
+
+## Source References
+
+Each task must include \`sourceRefs\` when possible. A source ref grounds the planner-owned task in the plan corpus without making Markdown syntax canonical:
+
+- \`path\` — use the exact corpus file path when known.
+- \`quote\` — include a short exact quote/snippet from that file that supports the task.
+- Prefer the checkbox line, linked task heading, or task-file text that identifies the executable work.
+- Source refs are grounding evidence only; do not copy Markdown link syntax into the task title unless it is part of the human title.
 
 ## Source Checkbox References
 

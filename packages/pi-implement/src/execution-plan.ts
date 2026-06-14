@@ -28,6 +28,11 @@ export type SourceCheckboxRef = {
   lineText: string;
 };
 
+export type SourceRef = {
+  path: string;
+  quote?: string;
+};
+
 export type CompiledContract = {
   objective: string;
   inScope: string[];
@@ -49,6 +54,7 @@ export type ExecutionTask = {
   review: TaskReviewDirective;
   affectedAreas: string[];
   conflictHints: string[];
+  sourceRefs?: SourceRef[];
   sourceReferences: string[];
   compiledContract: CompiledContract;
   scout?: ScoutDirective;
@@ -62,6 +68,7 @@ export type ExecutionManifest = {
   version: 1;
   sourcePlanHash?: string;
   sourcePlanPath?: string;
+  sourceCorpusHash?: string;
   plannerReason?: string;
   plannerConfidence?: "high" | "medium" | "low";
   maxConcurrency?: number;
@@ -105,8 +112,8 @@ export function parseExecutionPlan(
   }
 
   const tasks: ExecutionTask[] = [];
-  for (const rawTask of obj.tasks) {
-    const taskResult = parseExecutionTask(rawTask);
+  for (let i = 0; i < obj.tasks.length; i++) {
+    const taskResult = parseExecutionTask(obj.tasks[i], i + 1);
     if (!taskResult.ok) {
       return taskResult;
     }
@@ -123,6 +130,9 @@ export function parseExecutionPlan(
   }
   if (typeof obj.sourcePlanPath === "string") {
     manifest.sourcePlanPath = obj.sourcePlanPath.trim();
+  }
+  if (typeof obj.sourceCorpusHash === "string") {
+    manifest.sourceCorpusHash = obj.sourceCorpusHash.trim();
   }
   if (typeof obj.plannerReason === "string") {
     manifest.plannerReason = obj.plannerReason.trim();
@@ -142,16 +152,12 @@ export function parseExecutionPlan(
     manifest.maxConcurrency = obj.maxConcurrency;
   }
 
-  const validation = validateExecutionManifest(manifest);
-  if (!validation.ok) {
-    return validation;
-  }
-
   return { ok: true, value: manifest };
 }
 
 function parseExecutionTask(
   value: unknown,
+  fallbackPlanIndex: number,
 ): { ok: true; value: ExecutionTask } | { ok: false; reason: string } {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { ok: false, reason: "Execution task must be an object." };
@@ -215,31 +221,34 @@ function parseExecutionTask(
     };
   }
 
-  const sourceReferences = parseStringArray(obj.sourceReferences);
-  if (sourceReferences === undefined) {
+  const parsedSourceReferences = parseStringArray(obj.sourceReferences);
+  if (
+    obj.sourceReferences !== undefined &&
+    parsedSourceReferences === undefined
+  ) {
     return {
       ok: false,
       reason: `Execution task "${id}" sourceReferences must be an array of strings.`,
     };
   }
 
-  if (
-    typeof obj.planIndex !== "number" ||
-    !Number.isInteger(obj.planIndex) ||
-    obj.planIndex < 1
-  ) {
-    return {
-      ok: false,
-      reason: `Execution task "${id}" must have a positive integer planIndex.`,
-    };
+  const sourceReferences = parsedSourceReferences ?? [];
+  const sourceRefsResult = parseSourceRefs(obj.sourceRefs, sourceReferences);
+  if (!sourceRefsResult.ok) {
+    return { ok: false, reason: sourceRefsResult.reason };
   }
 
-  if (typeof obj.taskHash !== "string" || obj.taskHash.trim().length === 0) {
-    return {
-      ok: false,
-      reason: `Execution task "${id}" must have a non-empty string taskHash.`,
-    };
-  }
+  const planIndex =
+    typeof obj.planIndex === "number" &&
+    Number.isInteger(obj.planIndex) &&
+    obj.planIndex >= 1
+      ? obj.planIndex
+      : fallbackPlanIndex;
+
+  const taskHash =
+    typeof obj.taskHash === "string" && obj.taskHash.trim().length > 0
+      ? obj.taskHash.trim()
+      : `planner-owned:${id}`;
 
   if (
     obj.mode !== undefined &&
@@ -298,15 +307,16 @@ function parseExecutionTask(
     ok: true,
     value: {
       id,
-      planIndex: obj.planIndex,
+      planIndex,
       title: obj.title.trim(),
-      taskHash: obj.taskHash.trim(),
+      taskHash,
       status: obj.status as TaskStatus,
       dependsOn,
       mode: obj.mode as "serial" | "parallel" | undefined,
       review: reviewResult.value,
       affectedAreas,
       conflictHints,
+      sourceRefs: sourceRefsResult.value,
       sourceReferences,
       compiledContract: contractResult.value,
       scout: scoutResult?.value,
@@ -316,6 +326,51 @@ function parseExecutionTask(
       sourceCheckbox: sourceCheckboxResult?.value,
     },
   };
+}
+
+function parseSourceRefs(
+  value: unknown,
+  legacyReferences: string[],
+): { ok: true; value: SourceRef[] } | { ok: false; reason: string } {
+  if (value === undefined) {
+    return {
+      ok: true,
+      value: legacyReferences.map((ref) => ({ path: ref })),
+    };
+  }
+  if (!Array.isArray(value)) {
+    return { ok: false, reason: "Execution task sourceRefs must be an array." };
+  }
+  const refs: SourceRef[] = [];
+  for (const item of value) {
+    if (typeof item === "string") {
+      const trimmed = item.trim();
+      if (trimmed.length > 0) {
+        refs.push({ path: trimmed });
+      }
+      continue;
+    }
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return {
+        ok: false,
+        reason: "Execution task sourceRefs entries must be strings or objects.",
+      };
+    }
+    const obj = item as Record<string, unknown>;
+    if (typeof obj.path !== "string" || obj.path.trim().length === 0) {
+      return {
+        ok: false,
+        reason:
+          "Execution task sourceRefs entries must include a non-empty path.",
+      };
+    }
+    const ref: SourceRef = { path: obj.path.trim() };
+    if (typeof obj.quote === "string" && obj.quote.trim().length > 0) {
+      ref.quote = obj.quote.trim();
+    }
+    refs.push(ref);
+  }
+  return { ok: true, value: refs };
 }
 
 function parseSourceCheckbox(
@@ -585,17 +640,6 @@ export function validateExecutionManifest(
     };
   }
 
-  const seenPlanIndexes = new Set<number>();
-  for (const task of manifest.tasks) {
-    if (seenPlanIndexes.has(task.planIndex)) {
-      return {
-        ok: false,
-        reason: `Duplicate planIndex: ${task.planIndex}.`,
-      };
-    }
-    seenPlanIndexes.add(task.planIndex);
-  }
-
   const seenIds = new Set<string>();
   const taskById = new Map<string, ExecutionTask>();
 
@@ -636,58 +680,9 @@ export function validateExecutionManifest(
 }
 
 export function validateManifestAgainstPlan(
-  manifest: ExecutionManifest,
-  uncheckedTasks: PlanTask[],
+  _manifest: ExecutionManifest,
+  _uncheckedTasks: PlanTask[],
 ): ExecutionValidationResult {
-  if (manifest.tasks.length !== uncheckedTasks.length) {
-    return {
-      ok: false,
-      reason: `Manifest has ${manifest.tasks.length} task(s) but plan has ${uncheckedTasks.length} unchecked task(s).`,
-    };
-  }
-
-  const expectedByIndex = new Map<
-    number,
-    { title: string; taskHash: string }
-  >();
-  for (const task of uncheckedTasks) {
-    expectedByIndex.set(task.index, {
-      title: task.text,
-      taskHash: computeTaskFingerprint(task),
-    });
-  }
-
-  const seenIndexes = new Set<number>();
-  for (const task of manifest.tasks) {
-    if (seenIndexes.has(task.planIndex)) {
-      return {
-        ok: false,
-        reason: `Duplicate planIndex: ${task.planIndex}.`,
-      };
-    }
-    seenIndexes.add(task.planIndex);
-
-    const expected = expectedByIndex.get(task.planIndex);
-    if (!expected) {
-      return {
-        ok: false,
-        reason: `Manifest task "${task.id}" planIndex ${task.planIndex} does not match any unchecked task.`,
-      };
-    }
-    if (task.title !== expected.title) {
-      return {
-        ok: false,
-        reason: `Manifest task "${task.id}" title mismatch: expected "${expected.title}", got "${task.title}".`,
-      };
-    }
-    if (task.taskHash !== expected.taskHash) {
-      return {
-        ok: false,
-        reason: `Manifest task "${task.id}" taskHash mismatch for planIndex ${task.planIndex}.`,
-      };
-    }
-  }
-
   return { ok: true };
 }
 
@@ -732,6 +727,7 @@ export function generateMinimalExecutionManifest(
       review: { mode: "require" },
       affectedAreas: [],
       conflictHints: [],
+      sourceRefs: [{ path: planPath, quote: task.text }],
       sourceReferences: [],
       sourceCheckbox: {
         path: planPath,
