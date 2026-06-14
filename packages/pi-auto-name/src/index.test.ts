@@ -224,7 +224,7 @@ describe("automatic session naming", () => {
     expect(setSessionName).toHaveBeenCalledWith("Initial prompt fix");
   });
 
-  it("omits reasoning and uses a small output cap when reasoning can be disabled", async () => {
+  it("uses minimal reasoning for title generation", async () => {
     const { handlers } = makeFakePi();
     const { ctx } = makeExtensionCtx({
       model: { provider: "deepseek", id: "deepseek-v4-flash", reasoning: true },
@@ -236,35 +236,6 @@ describe("automatic session naming", () => {
     });
 
     await beforeAgentStart({ prompt: "Fix token limit warning" }, ctx);
-    await flushPromises();
-
-    expect(completeSimpleMock).toHaveBeenCalledTimes(1);
-    expect(completeSimpleMock.mock.calls[0][2]).toMatchObject({
-      maxTokens: 96,
-    });
-    expect(completeSimpleMock.mock.calls[0][2]).not.toHaveProperty("reasoning");
-  });
-
-  it("keeps minimal reasoning with a larger output cap when reasoning cannot be disabled", async () => {
-    const { handlers } = makeFakePi();
-    const { ctx } = makeExtensionCtx({
-      model: {
-        provider: "example",
-        id: "reasoning-only",
-        reasoning: true,
-        thinkingLevelMap: { off: null },
-      },
-    });
-    const beforeAgentStart = getBeforeAgentStartHandler(handlers);
-    completeSimpleMock.mockResolvedValue({
-      stopReason: "stop",
-      content: [{ type: "text", text: "Reasoning Only" }],
-    });
-
-    await beforeAgentStart(
-      { prompt: "Name this with a reasoning-only model" },
-      ctx,
-    );
     await flushPromises();
 
     expect(completeSimpleMock).toHaveBeenCalledTimes(1);

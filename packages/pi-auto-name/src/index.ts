@@ -1,7 +1,4 @@
-import {
-  completeSimple,
-  getSupportedThinkingLevels,
-} from "@earendil-works/pi-ai";
+import { completeSimple } from "@earendil-works/pi-ai";
 import type { UserMessage } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
@@ -176,17 +173,14 @@ async function generateNameAsync(
       timestamp: Date.now(),
     };
 
-    const supportsReasoningOff =
-      getSupportedThinkingLevels(model).includes("off");
-
     const response = await completeSimple(
       model,
       { systemPrompt, messages: [userMessage] },
       {
         apiKey: auth.apiKey,
         headers: auth.headers,
-        maxTokens: supportsReasoningOff ? 96 : 1024,
-        ...(supportsReasoningOff ? {} : { reasoning: "minimal" as const }),
+        maxTokens: 1024,
+        reasoning: "minimal",
         signal: ctx.signal,
       },
     );

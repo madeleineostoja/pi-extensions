@@ -30,7 +30,7 @@ You can also edit the config file directly:
 
 - Never overwrites an existing or manually set session name.
 - Uses only the configured model; there is no built-in default model.
-- Disables reasoning where the selected model/provider supports it, and uses a larger output cap only when reasoning cannot be disabled.
+- Requests minimal reasoning to support providers that require an explicit reasoning level.
 - Falls back to a local prompt-derived title when no model is configured or the model returns no usable title.
 - Generated titles are sanitized: trimmed, collapsed, stripped of surrounding quotes/backticks and leading `Title:` / `Name:` style prefixes, truncated to 40 characters on a word boundary, and taken from the first non-empty output line only.
 
