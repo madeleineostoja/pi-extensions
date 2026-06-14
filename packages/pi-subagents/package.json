@@ -1,0 +1,27 @@
+{
+  "name": "pi-subagents",
+  "description": "Shared in-process subagent runtime for Pi extensions.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "subagents"
+  ],
+  "scripts": {
+    "test": "vitest run --testTimeout 15000"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./runtime": "./src/runtime.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
