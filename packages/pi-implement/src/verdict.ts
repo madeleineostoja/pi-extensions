@@ -1,3 +1,5 @@
+import { extractJsonObject } from "./graph.js";
+
 export type VerificationStep = {
   command: string;
   result: string;
@@ -61,11 +63,27 @@ export function parseImplementerResult(
 ):
   | { ok: true; result: ParsedImplementerResult }
   | { ok: false; reason: string } {
-  const parsed = parseTaggedJsonObject(text, "pi-implement-result");
-  if (!parsed.ok) {
-    return parsed;
+  const parsedValues = parseTaggedJsonObjects(text, "pi-implement-result");
+  if (!parsedValues.ok) {
+    return parsedValues;
   }
-  const value = parsed.value;
+
+  let lastReason = "Implementer JSON could not be parsed.";
+  for (const value of parsedValues.values) {
+    const result = parseImplementerResultValue(value);
+    if (result.ok) {
+      return result;
+    }
+    lastReason = result.reason;
+  }
+  return { ok: false, reason: lastReason };
+}
+
+function parseImplementerResultValue(
+  value: Record<string, unknown>,
+):
+  | { ok: true; result: ParsedImplementerResult }
+  | { ok: false; reason: string } {
   const summary = value.summary;
   const verification = value.verification;
   const commitMessage = value.commitMessage;
@@ -423,29 +441,61 @@ function parseTaggedJsonObject(
 ):
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; reason: string } {
-  const candidate = lastTaggedContent(text, tag);
-  if (!candidate) {
-    return { ok: false, reason: `Response did not include <${tag}> output.` };
+  const parsed = parseTaggedJsonObjects(text, tag);
+  if (!parsed.ok) {
+    return parsed;
   }
-  try {
-    const parsed = JSON.parse(candidate) as unknown;
-    if (!isRecord(parsed)) {
-      return { ok: false, reason: "Tagged JSON output must be an object." };
-    }
-    return { ok: true, value: parsed };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      reason: `Could not parse tagged JSON output: ${message}`,
-    };
-  }
+  return { ok: true, value: parsed.values[0] };
 }
 
-function lastTaggedContent(text: string, tag: string): string | undefined {
-  const pattern = new RegExp(`<${tag}>\\s*([\\s\\S]*?)\\s*</${tag}>`, "gi");
-  const matches = [...text.matchAll(pattern)];
-  return matches.at(-1)?.[1]?.trim();
+function parseTaggedJsonObjects(
+  text: string,
+  tag: string,
+): { ok: true; values: Record<string, unknown>[] } | { ok: false; reason: string } {
+  const candidates = taggedContents(text, tag);
+  if (candidates.length === 0) {
+    return { ok: false, reason: `Response did not include <${tag}> output.` };
+  }
+
+  let lastReason = "Tagged JSON output could not be parsed.";
+  const values: Record<string, unknown>[] = [];
+  for (const candidate of [...candidates].reverse()) {
+    const json = extractJsonObject(stripMarkdownFence(candidate));
+    if (!json.ok) {
+      lastReason = json.reason;
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(json.text) as unknown;
+      if (!isRecord(parsed)) {
+        lastReason = "Tagged JSON output must be an object.";
+        continue;
+      }
+      values.push(parsed);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      lastReason = `Could not parse tagged JSON output: ${message}`;
+    }
+  }
+
+  if (values.length === 0) {
+    return { ok: false, reason: lastReason };
+  }
+  return { ok: true, values };
+}
+
+function taggedContents(text: string, tag: string): string[] {
+  const pattern = new RegExp(
+    `<\\s*${tag}\\s*>\\s*([\\s\\S]*?)\\s*</\\s*${tag}\\s*>`,
+    "gi",
+  );
+  return [...text.matchAll(pattern)].map((match) => match[1]?.trim() ?? "");
+}
+
+function stripMarkdownFence(text: string): string {
+  const trimmed = text.trim();
+  const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fence?.[1]?.trim() ?? trimmed;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

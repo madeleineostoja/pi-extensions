@@ -157,6 +157,35 @@ describe("parseImplementerResult", () => {
     });
   });
 
+  it("accepts fenced JSON inside tags with whitespace around tag names", () => {
+    const result = parseImplementerResult(`< pi-implement-result >
+\`\`\`json
+{"outcome":"changed","summary":"did stuff","verification":[{"command":"npm test","result":"passed","rationale":"covers it"}],"commitMessage":"feat: do stuff"}
+\`\`\`
+</ pi-implement-result >`);
+    expect(result).toMatchObject({
+      ok: true,
+      result: {
+        outcome: "changed",
+        commitMessage: "feat: do stuff",
+      },
+    });
+  });
+
+  it("accepts the last valid tagged JSON block", () => {
+    const result = parseImplementerResult(`
+<pi-implement-result>{"summary":"bad"}</pi-implement-result>
+<pi-implement-result>{"outcome":"changed","summary":"did stuff","verification":[{"command":"npm test","result":"passed","rationale":"covers it"}],"commitMessage":"feat: do stuff"}</pi-implement-result>`);
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it("uses an earlier valid tagged JSON block when a later block is invalid", () => {
+    const result = parseImplementerResult(`
+<pi-implement-result>{"outcome":"changed","summary":"did stuff","verification":[{"command":"npm test","result":"passed","rationale":"covers it"}],"commitMessage":"feat: do stuff"}</pi-implement-result>
+<pi-implement-result>{"summary":"bad"}</pi-implement-result>`);
+    expect(result).toMatchObject({ ok: true });
+  });
+
   it("rejects missing fields", () => {
     expect(
       parseImplementerResult(
