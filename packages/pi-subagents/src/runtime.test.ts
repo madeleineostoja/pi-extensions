@@ -26,6 +26,29 @@ describe("SubagentRuntime", () => {
     );
   });
 
+  it("scopes snapshots to the active session", () => {
+    const { pi } = fakePi();
+    const runtime = new SubagentRuntime(pi as never);
+    const previous = runtime.queue({
+      owner: "owner",
+      type: "General",
+      description: "previous session",
+      cwd: "/workspace",
+    });
+
+    runtime.beginSession();
+    const current = runtime.queue({
+      owner: "owner",
+      type: "General",
+      description: "current session",
+      cwd: "/workspace",
+    });
+
+    expect(runtime.snapshots()).toEqual([current]);
+    expect(runtime.snapshot(previous.id)).toBeUndefined();
+    expect(runtime.snapshot(current.id)).toEqual(current);
+  });
+
   it("models queued, running, and completed snapshots with metadata", async () => {
     const { pi } = fakePi();
     const runtime = new SubagentRuntime(pi as never);

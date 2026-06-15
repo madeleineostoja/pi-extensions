@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { showAgentsDashboard } from "./agents-dashboard.js";
 import { getSubagentRuntime, type RuntimeSnapshot } from "./runtime.js";
 
 export {
@@ -87,6 +88,7 @@ export default function (pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx) => {
     currentCtx = ctx;
+    runtime.beginSession();
   });
 
   pi.events.on("subagents:rpc:ping", (payload) => {
@@ -179,6 +181,11 @@ export default function (pi: ExtensionAPI): void {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  });
+
+  pi.registerCommand("agents", {
+    description: "Inspect and stop current-session subagents",
+    handler: async (_args, ctx) => showAgentsDashboard(runtime, ctx),
   });
 
   pi.registerTool({

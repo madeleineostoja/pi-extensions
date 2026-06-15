@@ -56,6 +56,20 @@ export type RuntimeOwner =
       tool: string;
     };
 
+export type RuntimeHealth = {
+  turns?: number;
+  toolUses?: number;
+  tokensTotal?: number;
+  activeTool?: string;
+  lastActivity?: string;
+  lastAssistantText?: string;
+  resultPreview?: string;
+  transcript?: {
+    sessionId?: string;
+    sessionFile?: string;
+  };
+};
+
 export type RuntimeSnapshot = {
   id: string;
   status: SubagentRuntimeStatus;
@@ -68,6 +82,7 @@ export type RuntimeSnapshot = {
   extensionBinding: ExtensionBindingStatus;
   sandboxMode?: SandboxMode;
   timestamps: RuntimeTimestamps;
+  health?: RuntimeHealth;
   result?: unknown;
   error?: string;
 };
@@ -112,9 +127,12 @@ export type RunPublicAgentInput = Omit<RunManagedAgentInput, "type"> & {
 
 type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
   RuntimeTimestamps & {
+    runtimeSessionId: number;
     session?: PublicAgentSession;
     canSteer?: boolean;
     steeringQueue: string[];
+    health?: RuntimeHealth;
+    unsubscribeSession?: () => void;
   };
 
 type PublicAgentSession = Pick<
@@ -129,6 +147,10 @@ type PublicAgentSession = Pick<
   | "extensionRunner"
 > & {
   readonly state?: { readonly errorMessage?: string };
+  readonly messages?: unknown[];
+  readonly sessionId?: string;
+  readonly sessionFile?: string;
+  subscribe?: (listener: (event: unknown) => void) => () => void;
   getAllTools?: () => Array<{ name: string }>;
 };
 
@@ -145,6 +167,7 @@ type Waiter = {
 };
 
 const runtimes = new WeakMap<ExtensionAPI, SubagentRuntime>();
+const runtimeManagerKey = Symbol.for("pi-subagents:manager");
 const publicTypes = new Set<string>(PUBLIC_BUILTIN_TYPES);
 const publicToolNames = new Set([
   "Agent",
@@ -177,6 +200,7 @@ function errorText(error: unknown): string {
 }
 
 function snapshot(record: RuntimeRecord): RuntimeSnapshot {
+  updateRecordHealth(record);
   return {
     id: record.id,
     status: record.status,
@@ -200,6 +224,7 @@ function snapshot(record: RuntimeRecord): RuntimeSnapshot {
         : { completedAt: record.completedAt }),
       updatedAt: record.updatedAt,
     },
+    ...(record.health === undefined ? {} : { health: { ...record.health } }),
     ...(record.result === undefined ? {} : { result: record.result }),
     ...(record.error === undefined ? {} : { error: record.error }),
   };
@@ -207,6 +232,147 @@ function snapshot(record: RuntimeRecord): RuntimeSnapshot {
 
 function isTerminal(status: SubagentRuntimeStatus): boolean {
   return status === "completed" || status === "failed" || status === "stopped";
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function usageTokens(value: unknown): number | undefined {
+  if (!isObject(value)) {
+    return undefined;
+  }
+  const total = finiteNumber(value.totalTokens) ?? finiteNumber(value.total);
+  if (total !== undefined) {
+    return total;
+  }
+  const input = finiteNumber(value.input) ?? 0;
+  const output = finiteNumber(value.output) ?? 0;
+  const cacheRead = finiteNumber(value.cacheRead) ?? 0;
+  const cacheWrite = finiteNumber(value.cacheWrite) ?? 0;
+  const sum = input + output + cacheRead + cacheWrite;
+  return sum > 0 ? sum : undefined;
+}
+
+function textPreview(value: unknown, max = 600): string | undefined {
+  let text: string;
+  if (typeof value === "string") {
+    text = value;
+  } else if (value === undefined || value === null) {
+    return undefined;
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
+  }
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return undefined;
+  }
+  return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
+}
+
+function messageText(message: unknown): string | undefined {
+  if (!isObject(message)) {
+    return undefined;
+  }
+  const content = message.content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  return content
+    .map((part) =>
+      isObject(part) && typeof part.text === "string" ? part.text : "",
+    )
+    .filter(Boolean)
+    .join("\n");
+}
+
+function updateRecordHealth(record: RuntimeRecord): void {
+  const session = record.session;
+  if (!session) {
+    if (record.result !== undefined) {
+      record.health = {
+        ...record.health,
+        resultPreview: textPreview(record.result),
+      };
+    }
+    return;
+  }
+  const messages = Array.isArray(session.messages) ? session.messages : [];
+  const assistantMessages = messages.filter(
+    (message) => isObject(message) && message.role === "assistant",
+  );
+  const toolResults = messages.filter(
+    (message) => isObject(message) && message.role === "toolResult",
+  );
+  let toolUses = 0;
+  let tokensTotal = 0;
+  let activeTool: string | undefined;
+  let lastActivity: string | undefined;
+  let lastAssistantText: string | undefined;
+  for (const message of messages) {
+    if (!isObject(message)) {
+      continue;
+    }
+    if (typeof message.timestamp === "number") {
+      lastActivity = new Date(message.timestamp).toISOString();
+    }
+    if (message.role === "assistant") {
+      const usage = usageTokens(message.usage);
+      if (usage !== undefined) {
+        tokensTotal += usage;
+      }
+      const preview = textPreview(messageText(message));
+      if (preview) {
+        lastAssistantText = preview;
+      }
+      const content = Array.isArray(message.content) ? message.content : [];
+      for (const part of content) {
+        if (isObject(part) && part.type === "toolCall") {
+          toolUses += 1;
+          if (typeof part.name === "string") {
+            activeTool = part.name;
+          }
+        }
+      }
+    }
+    if (message.role === "toolResult" && typeof message.toolName === "string") {
+      activeTool = message.toolName;
+    }
+  }
+  const sessionId =
+    typeof session.sessionId === "string" ? session.sessionId : undefined;
+  const sessionFile =
+    typeof session.sessionFile === "string" ? session.sessionFile : undefined;
+  record.health = {
+    ...record.health,
+    turns: assistantMessages.length,
+    toolUses: toolUses || toolResults.length || undefined,
+    tokensTotal: tokensTotal || undefined,
+    activeTool,
+    lastActivity,
+    lastAssistantText:
+      lastAssistantText ?? textPreview(session.getLastAssistantText?.()),
+    resultPreview:
+      record.result === undefined
+        ? record.health?.resultPreview
+        : textPreview(record.result),
+    ...(sessionId || sessionFile
+      ? { transcript: { sessionId, sessionFile } }
+      : {}),
+  };
 }
 
 function isPublicBuiltinType(type: string): type is PublicBuiltinType {
@@ -372,6 +538,7 @@ export class SubagentRuntime {
   #records = new Map<string, RuntimeRecord>();
   #waiters = new Map<string, Waiter[]>();
   #nextId = 1;
+  #currentSessionId = 0;
   #createSession: CreateSession;
 
   constructor(
@@ -382,6 +549,7 @@ export class SubagentRuntime {
     } = {},
   ) {
     runtimes.set(pi, this);
+    (globalThis as Record<symbol, unknown>)[runtimeManagerKey] = this;
     this.definitions = createAgentDefinitionRegistry();
     this.#createSession = options.createSession ?? createAgentSession;
     this.publicConfig =
@@ -399,6 +567,10 @@ export class SubagentRuntime {
           }
         },
       });
+  }
+
+  beginSession(): void {
+    this.#currentSessionId += 1;
   }
 
   queue(input: QueueSubagentInput): RuntimeSnapshot {
@@ -421,6 +593,7 @@ export class SubagentRuntime {
 
     const record: RuntimeRecord = {
       id,
+      runtimeSessionId: this.#currentSessionId,
       status: "queued",
       owner: input.owner,
       type: input.type,
@@ -654,11 +827,18 @@ export class SubagentRuntime {
 
   snapshot(id: string): RuntimeSnapshot | undefined {
     const record = this.#records.get(id);
-    return record ? snapshot(record) : undefined;
+    return record?.runtimeSessionId === this.#currentSessionId
+      ? snapshot(record)
+      : undefined;
+  }
+
+  getRecord(id: string): RuntimeSnapshot | undefined {
+    return this.snapshot(id);
   }
 
   snapshots(options: { includeNested?: boolean } = {}): RuntimeSnapshot[] {
     return [...this.#records.values()]
+      .filter((record) => record.runtimeSessionId === this.#currentSessionId)
       .filter((record) => options.includeNested || !isNestedOwner(record.owner))
       .map((record) => snapshot(record));
   }
@@ -703,6 +883,23 @@ export class SubagentRuntime {
         return snapshot(record);
       }
       record.session = session;
+      record.unsubscribeSession = session.subscribe?.((event) => {
+        const candidate = isObject(event) ? event : undefined;
+        const toolName =
+          candidate &&
+          isObject(candidate.toolCall) &&
+          typeof candidate.toolCall.name === "string"
+            ? candidate.toolCall.name
+            : candidate && typeof candidate.toolName === "string"
+              ? candidate.toolName
+              : undefined;
+        record.health = {
+          ...record.health,
+          ...(toolName === undefined ? {} : { activeTool: toolName }),
+          lastActivity: now(),
+        };
+        record.updatedAt = now();
+      });
       await session.bindExtensions({
         mode: "print",
         abortHandler: () => void session.abort(),
@@ -752,6 +949,13 @@ export class SubagentRuntime {
   }
 
   async #disposeSession(session: PublicAgentSession): Promise<void> {
+    for (const record of this.#records.values()) {
+      if (record.session === session) {
+        record.unsubscribeSession?.();
+        record.unsubscribeSession = undefined;
+        updateRecordHealth(record);
+      }
+    }
     if (session.extensionRunner.hasHandlers("session_shutdown")) {
       await session.extensionRunner.emit({
         type: "session_shutdown",

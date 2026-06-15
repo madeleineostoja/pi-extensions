@@ -62,6 +62,7 @@ function makePi(
       on: vi.fn((event: string, handler: (payload: unknown) => void) => {
         events.on(event, handler);
       }),
+      registerCommand: vi.fn(),
       registerTool: (tool: ToolDef) => tools.push(tool),
       sendMessage: (message: Message) => messages.push(message),
       getActiveTools: () => activeTools,
