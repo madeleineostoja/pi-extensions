@@ -17,17 +17,27 @@ describe("config", () => {
     );
   });
 
-  it("parses valid role models and types", () => {
+  it("parses valid role models, types, and thinking", () => {
     expect(
       parseConfig(
         JSON.stringify({
-          implementer: { model: "a/b", type: "general-purpose" },
-          reviewer: { model: "c/d", type: "reviewer" },
+          implementer: {
+            model: "a/b",
+            type: "general-purpose",
+            thinking: "high",
+          },
+          reviewer: { model: "c/d", type: "reviewer", thinking: "low" },
+          selfHeal: { model: "e/f", thinking: "xhigh" },
         }),
       ).config,
     ).toEqual({
-      implementer: { model: "a/b", type: "general-purpose" },
-      reviewer: { model: "c/d", type: "reviewer" },
+      implementer: {
+        model: "a/b",
+        type: "general-purpose",
+        thinking: "high",
+      },
+      reviewer: { model: "c/d", type: "reviewer", thinking: "low" },
+      selfHeal: { model: "e/f", thinking: "xhigh" },
     });
   });
 
@@ -82,9 +92,22 @@ describe("config", () => {
     expect(result).toEqual({
       ok: true,
       roles: {
-        implementer: { model: undefined, type: "general-purpose" },
-        reviewer: { model: undefined, type: "general-purpose" },
-        planner: { model: undefined, type: "Explore" },
+        implementer: {
+          model: undefined,
+          type: "general-purpose",
+          thinking: undefined,
+        },
+        reviewer: {
+          model: undefined,
+          type: "general-purpose",
+          thinking: undefined,
+        },
+        planner: { model: undefined, type: "Explore", thinking: undefined },
+        selfHeal: {
+          model: undefined,
+          type: "general-purpose",
+          thinking: undefined,
+        },
       },
     });
   });
@@ -101,10 +124,44 @@ describe("config", () => {
     expect(result).toEqual({
       ok: true,
       roles: {
-        implementer: { model: "p/impl", type: "Implement" },
-        reviewer: { model: "p/review", type: "general-purpose" },
-        planner: { model: "p/plan", type: "Explore" },
+        implementer: {
+          model: "p/impl",
+          type: "Implement",
+          thinking: undefined,
+        },
+        reviewer: {
+          model: "p/review",
+          type: "general-purpose",
+          thinking: undefined,
+        },
+        planner: { model: "p/plan", type: "Explore", thinking: undefined },
+        selfHeal: {
+          model: "p/impl",
+          type: "general-purpose",
+          thinking: undefined,
+        },
       },
+    });
+  });
+
+  it("inherits implementer model and thinking for self-heal by default", () => {
+    const result = resolveEffectiveRoles(
+      {
+        implementer: { model: "p/impl", thinking: "high" },
+        selfHeal: { thinking: "low" },
+      },
+      {} as never,
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      roles: expect.objectContaining({
+        selfHeal: {
+          model: "p/impl",
+          type: "general-purpose",
+          thinking: "low",
+        },
+      }),
     });
   });
 
@@ -121,6 +178,7 @@ describe("config", () => {
         implementer: { model: "p/m", type: "general-purpose" },
         reviewer: { model: "p/m", type: "general-purpose" },
         planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
       }),
     ).toContain("general-purpose");
     expect(
@@ -128,14 +186,26 @@ describe("config", () => {
         implementer: { model: "p/m", type: "general-purpose" },
         reviewer: { model: "p/m", type: "review" },
         planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
       }),
     ).toBeUndefined();
   });
 
   it("formats config status", () => {
-    expect(
-      formatConfigStatus({ path: "/x/config.json", config: {} }),
-    ).toContain("Config: /x/config.json");
+    const status = formatConfigStatus({
+      path: "/x/config.json",
+      config: {
+        implementer: { thinking: "high" },
+        reviewer: { thinking: "low" },
+        planner: { thinking: "medium" },
+        selfHeal: { thinking: "xhigh" },
+      },
+    });
+    expect(status).toContain("Config: /x/config.json");
+    expect(status).toContain("Implementer thinking: high");
+    expect(status).toContain("Reviewer thinking: low");
+    expect(status).toContain("Planner thinking: medium");
+    expect(status).toContain("Self-heal thinking: xhigh");
   });
 });
 

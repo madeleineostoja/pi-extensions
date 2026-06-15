@@ -60,7 +60,7 @@ type FakeContext = {
   modelRegistry: { find(provider: string, id: string): unknown };
 };
 
-function setup(events = createPingOnlyEventBus()) {
+function setup(events = createEventBus()) {
   const handlers: Record<string, Handler> = {};
   const pi = {
     events,
@@ -103,7 +103,7 @@ function setup(events = createPingOnlyEventBus()) {
   return { handler, buildHandler, ctx };
 }
 
-function createPingOnlyEventBus() {
+function createEventBus() {
   const handlers = new Map<string, Array<(payload: unknown) => void>>();
   return {
     on(event: string, handler: (payload: unknown) => void) {
@@ -118,14 +118,8 @@ function createPingOnlyEventBus() {
       };
     },
     emit(event: string, payload: unknown) {
-      if (event !== "subagents:rpc:ping") {
-        return;
-      }
-      const request = payload as { requestId?: string };
-      for (const handler of handlers.get(
-        `subagents:rpc:ping:reply:${request.requestId}`,
-      ) ?? []) {
-        handler({ success: true, data: { version: 1 } });
+      for (const handler of handlers.get(event) ?? []) {
+        handler(payload);
       }
     },
   };

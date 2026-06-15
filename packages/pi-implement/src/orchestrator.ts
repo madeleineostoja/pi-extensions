@@ -7,6 +7,7 @@ import {
   readdirSync,
   rmSync,
   writeFileSync,
+  renameSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -80,9 +81,10 @@ import {
   readTaskJson,
   readRunJson,
   readEvents,
+  writeRunJson,
 } from "./state.js";
 import type { RunMode } from "./state.js";
-import { readGraphJson } from "./graph.js";
+import { readGraphJson, writeGraphJson } from "./graph.js";
 import type {
   ImplementGraph,
   ScoutDirective,
@@ -1161,10 +1163,15 @@ async function tryIntegrationSelfHeal(
   }
 
   const id = await deps.subagents.spawn({
-    type: deps.roles.implementer.type,
+    type: deps.roles.selfHeal.type,
     prompt,
     description: `integration self-heal ${taskId}`,
-    model: deps.roles.implementer.model,
+    model: deps.roles.selfHeal.model,
+    thinking: deps.roles.selfHeal.thinking,
+    role: "selfHeal",
+    taskId,
+    cwd: task.worktreePath,
+    sandboxMode: "workspace-write",
   });
   const ref: AgentDisplayRef = {
     id,
@@ -1400,10 +1407,14 @@ async function trySchedulerSelfHeal(
 
   try {
     const id = await deps.subagents.spawn({
-      type: deps.roles.implementer.type,
+      type: deps.roles.selfHeal.type,
       prompt,
       description: `scheduler self-heal ${runId}`,
-      model: deps.roles.implementer.model,
+      model: deps.roles.selfHeal.model,
+      thinking: deps.roles.selfHeal.thinking,
+      role: "selfHeal",
+      cwd: await deps.git.root(),
+      sandboxMode: "workspace-write",
     });
     const ref: AgentDisplayRef = {
       id,
@@ -1462,10 +1473,10 @@ type SchedulerSelfHealBaseline = {
   branches: string[];
   worktrees: string[];
   taskStates: Map<string, { status: SchedulerTaskStatus; lastReason?: string }>;
-  taskJsonStates: Map<
-    string,
-    { status: SchedulerTaskStatus; lastReason?: string } | undefined
-  >;
+  taskJsonStates: Map<string, TaskJson | undefined>;
+  runJson: unknown;
+  graphJson: unknown;
+  lockJson: unknown;
   setupBlockers: Map<
     string,
     { branchExists: boolean; worktreeExists: boolean; aheadOfBase: boolean }
@@ -1490,14 +1501,16 @@ export async function captureSchedulerSelfHealBaseline(
     string,
     { status: SchedulerTaskStatus; lastReason?: string }
   >();
-  const taskJsonStates = new Map<
-    string,
-    { status: SchedulerTaskStatus; lastReason?: string } | undefined
-  >();
+  const taskJsonStates = new Map<string, TaskJson | undefined>();
   const setupBlockers = new Map<
     string,
     { branchExists: boolean; worktreeExists: boolean; aheadOfBase: boolean }
   >();
+  const runJson = deps.paths ? readJsonFile(deps.paths.runJson) : undefined;
+  const graphJson = deps.paths
+    ? readJsonFile(join(deps.paths.runDir, "graph.json"))
+    : undefined;
+  const lockJson = deps.paths ? readJsonFile(deps.paths.lockFile) : undefined;
 
   for (const task of sched.tasks.values()) {
     taskStates.set(task.id, {
@@ -1506,15 +1519,7 @@ export async function captureSchedulerSelfHealBaseline(
     });
     if (deps.paths) {
       const onDisk = readTaskJson(deps.paths, task.id);
-      taskJsonStates.set(
-        task.id,
-        onDisk
-          ? {
-              status: onDisk.status as SchedulerTaskStatus,
-              lastReason: onDisk.lastReason ?? undefined,
-            }
-          : undefined,
-      );
+      taskJsonStates.set(task.id, onDisk);
     }
     if (task.status === "failed" && isSetupFailureReason(task.lastReason)) {
       const branchName = `pi-implement/${runId}/${task.id}`;
@@ -1546,6 +1551,9 @@ export async function captureSchedulerSelfHealBaseline(
     worktrees,
     taskStates,
     taskJsonStates,
+    runJson,
+    graphJson,
+    lockJson,
     setupBlockers,
   };
 }
@@ -1567,9 +1575,10 @@ export async function checkSchedulerSelfHealProgress(
     return { hasProgress: false, revivedTaskIds };
   }
 
-  // Re-read durable run/lock state to verify self-heal did not corrupt
-  // or switch run.json / graph.json / lock to a different run id.
-  if (deps.paths && !durableRunStateMatches(deps.paths, deps.runId ?? "run")) {
+  if (
+    deps.paths &&
+    !restoreSchedulerSelfHealDurableState(deps.paths, baseline)
+  ) {
     return { hasProgress: false, revivedTaskIds };
   }
 
@@ -1599,24 +1608,6 @@ export async function checkSchedulerSelfHealProgress(
       task.lastReason !== preState.lastReason
     ) {
       return { hasProgress: false, revivedTaskIds };
-    }
-  }
-
-  // On-disk task JSON integrity: the self-heal agent must not write task.json
-  // to mark tasks landed or alter their durable state.
-  if (deps.paths) {
-    for (const [taskId, preDiskState] of baseline.taskJsonStates) {
-      const onDisk = readTaskJson(deps.paths, taskId);
-      const currentDiskState = onDisk
-        ? { status: onDisk.status, lastReason: onDisk.lastReason ?? undefined }
-        : undefined;
-      const pre = preDiskState ?? undefined;
-      if (
-        currentDiskState?.status !== pre?.status ||
-        currentDiskState?.lastReason !== pre?.lastReason
-      ) {
-        return { hasProgress: false, revivedTaskIds };
-      }
     }
   }
 
@@ -1710,23 +1701,91 @@ export async function checkSchedulerSelfHealProgress(
   return { hasProgress: false, revivedTaskIds };
 }
 
-function durableRunStateMatches(paths: StatePaths, runId: string): boolean {
-  const currentRunJson = readRunJson(paths);
-  const currentGraphJson = readGraphJson(paths.runDir);
-  if (currentRunJson?.runId !== runId || currentGraphJson?.runId !== runId) {
+function restoreSchedulerSelfHealDurableState(
+  paths: StatePaths,
+  baseline: SchedulerSelfHealBaseline,
+): boolean {
+  if (
+    !isObjectWithRunId(baseline.runJson) ||
+    !isObjectWithRunId(baseline.graphJson) ||
+    !isObjectWithRunId(baseline.lockJson)
+  ) {
     return false;
   }
+
+  const currentRunJson = readJsonFile(paths.runJson);
+  if (!deepEqualJson(currentRunJson, baseline.runJson)) {
+    writeRunJson(paths, baseline.runJson as never);
+  }
+
+  const currentGraphJson = readJsonFile(join(paths.runDir, "graph.json"));
+  if (!deepEqualJson(currentGraphJson, baseline.graphJson)) {
+    writeGraphJson(paths.runDir, baseline.graphJson as never);
+  }
+
   if (!existsSync(paths.lockFile)) {
     return false;
   }
-  try {
-    const lock = JSON.parse(readFileSync(paths.lockFile, "utf-8")) as {
-      runId?: string;
-    };
-    return lock.runId === runId;
-  } catch {
+  const currentLockJson = readJsonFile(paths.lockFile);
+  if (!isObjectWithRunId(currentLockJson)) {
     return false;
   }
+  if (currentLockJson.runId !== baseline.lockJson.runId) {
+    return false;
+  }
+  if (!deepEqualJson(currentLockJson, baseline.lockJson)) {
+    writeAtomicJson(paths.lockFile, baseline.lockJson);
+  }
+
+  for (const [taskId, preDiskState] of baseline.taskJsonStates) {
+    const onDisk = readTaskJson(paths, taskId);
+    if (!preDiskState) {
+      if (onDisk) {
+        rmSync(join(paths.tasksDir, taskId, "task.json"), { force: true });
+      }
+      continue;
+    }
+    if (!onDisk) {
+      writeTaskJson(paths, taskId, preDiskState);
+      continue;
+    }
+    if (!deepEqualJson(onDisk, preDiskState)) {
+      writeTaskJson(paths, taskId, preDiskState);
+    }
+  }
+
+  return true;
+}
+
+function readJsonFile<T = unknown>(path: string): T | undefined {
+  if (!existsSync(path)) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeAtomicJson(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp.${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(value, null, 2), "utf-8");
+  renameSync(tmp, path);
+}
+
+function isObjectWithRunId(value: unknown): value is { runId: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof (value as { runId?: unknown }).runId === "string"
+  );
+}
+
+function deepEqualJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function hasNonPlanChangedPath(
@@ -2225,6 +2284,12 @@ Or:
     prompt,
     description: `integration review ${taskId}`,
     model: deps.roles.reviewer.model,
+    thinking: deps.roles.reviewer.thinking,
+    role: "reviewer",
+    taskId,
+    cwd: await deps.git.root(),
+    readOnly: true,
+    sandboxMode: "read-only",
   });
   const ref: AgentDisplayRef = {
     id,
@@ -2394,6 +2459,11 @@ async function runOverallReviewOnce(
     prompt,
     description: "overall review",
     model: deps.roles.reviewer.model,
+    thinking: deps.roles.reviewer.thinking,
+    role: "reviewer",
+    cwd: await deps.git.root(),
+    readOnly: true,
+    sandboxMode: "read-only",
   });
   const ref: AgentDisplayRef = {
     id,
@@ -2554,6 +2624,10 @@ async function runOverallReworkAttempt(
     prompt,
     description: `overall rework attempt ${attemptNumber}`,
     model: deps.roles.implementer.model,
+    thinking: deps.roles.implementer.thinking,
+    role: "implementer",
+    cwd: await deps.git.root(),
+    sandboxMode: "workspace-write",
   });
   const ref: AgentDisplayRef = {
     id,
@@ -3620,8 +3694,9 @@ async function runTaskWorker(args: {
 
   for (;;) {
     throwIfStopped(deps);
-    const mainHeadBefore = await deps.git.head();
-    const taskHeadBefore = worktreePath ? await taskGit.head() : undefined;
+    const taskHeadBefore = worktreePath
+      ? await taskGit.head()
+      : await deps.git.head();
     const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
     const compiledContractEntry = deps.executionManifest?.tasks.find(
       (mt) => mt.planIndex === task.index,
@@ -3689,6 +3764,11 @@ async function runTaskWorker(args: {
             prompt: scoutPrompt,
             description: `scout task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
             model: deps.scout.model,
+            role: "scout",
+            taskId,
+            cwd: effectiveWorktreePath,
+            readOnly: true,
+            sandboxMode: "read-only",
           });
         } catch (spawnErr) {
           const note = buildScoutUnavailableNote(
@@ -3857,7 +3937,11 @@ async function runTaskWorker(args: {
       prompt: implementerPrompt,
       description: `implement task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
       model: deps.roles.implementer.model,
-      cwd: worktreePath,
+      thinking: deps.roles.implementer.thinking,
+      role: "implementer",
+      taskId,
+      cwd: effectiveWorktreePath,
+      sandboxMode: "workspace-write",
     });
     const implementerRef: AgentDisplayRef = {
       id: implementerId,
@@ -3958,7 +4042,7 @@ async function runTaskWorker(args: {
     }
 
     // Boundary checks
-    if ((await deps.git.head()) !== mainHeadBefore) {
+    if (!worktreePath && (await deps.git.head()) !== taskHeadBefore) {
       throw new BlockedError("implementer changed HEAD");
     }
     const changedPlanArtifact = changedSnapshotPath(
@@ -3968,11 +4052,6 @@ async function runTaskWorker(args: {
     if (changedPlanArtifact) {
       throw new BlockedError(
         `implementer changed a plan artifact: ${changedPlanArtifact}`,
-      );
-    }
-    if (worktreePath && !(await deps.git.isCleanExcept(planArtifacts))) {
-      throw new BlockedError(
-        "implementer dirtied the main checkout outside the task worktree",
       );
     }
     if (worktreePath && (await taskGit.head()) !== taskHeadBefore) {
@@ -4285,6 +4364,12 @@ async function runTaskWorker(args: {
         prompt: reviewerPrompt!,
         description: `review task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
         model: deps.roles.reviewer.model,
+        thinking: deps.roles.reviewer.thinking,
+        role: "reviewer",
+        taskId,
+        cwd: effectiveWorktreePath,
+        readOnly: true,
+        sandboxMode: "read-only",
       });
       const reviewerRef: AgentDisplayRef = {
         id: reviewerId,
@@ -4357,7 +4442,7 @@ async function runTaskWorker(args: {
       }
 
       // Boundary checks
-      if ((await deps.git.head()) !== mainHeadBefore) {
+      if (!worktreePath && (await deps.git.head()) !== taskHeadBefore) {
         throw new BlockedError("reviewer changed HEAD");
       }
       const changedPlanArtifactAfterReview = changedSnapshotPath(
@@ -4367,11 +4452,6 @@ async function runTaskWorker(args: {
       if (changedPlanArtifactAfterReview) {
         throw new BlockedError(
           `reviewer changed a plan artifact: ${changedPlanArtifactAfterReview}`,
-        );
-      }
-      if (worktreePath && !(await deps.git.isCleanExcept(planArtifacts))) {
-        throw new BlockedError(
-          "reviewer dirtied the main checkout outside the task worktree",
         );
       }
       if ((await taskGit.head()) !== reviewHeadBefore) {
@@ -4626,16 +4706,10 @@ async function runTaskWorker(args: {
       if (taskCommitSha === reviewHeadBefore) {
         throw new BlockedError("task reword succeeded but HEAD did not change");
       }
-      if ((await deps.git.head()) !== mainHeadBefore) {
-        throw new BlockedError("task commit changed main checkout HEAD");
-      }
       if (!(await taskGit.isCleanExcept(planArtifacts))) {
         throw new BlockedError(
           "task commit succeeded but task worktree is dirty",
         );
-      }
-      if (!(await deps.git.isCleanExcept(planArtifacts))) {
-        throw new BlockedError("task commit dirtied the main checkout");
       }
 
       if (deps.paths) {

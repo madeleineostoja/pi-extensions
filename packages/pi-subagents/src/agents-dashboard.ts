@@ -161,6 +161,9 @@ function ownerLabel(owner: RuntimeOwner): string {
   if (owner.kind === "nested") {
     return `nested:${owner.tool} parent=${owner.parentId}`;
   }
+  if (owner.kind === "pi-implement") {
+    return `pi-implement:${owner.runId}/${owner.role}${owner.taskId ? `/${owner.taskId}` : ""}`;
+  }
   return `${owner.kind}:${owner.name}`;
 }
 

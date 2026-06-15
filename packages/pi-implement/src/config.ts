@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ThinkingLevel } from "pi-subagents/runtime";
 
 export type RoleConfig = {
   model?: string;
   type?: string;
+  thinking?: ThinkingLevel;
 };
 
 export type TaskReviewConfig = {
@@ -28,6 +30,7 @@ export type ImplementConfig = {
   maxParallel?: number;
   verifyCommand?: string;
   planner?: RoleConfig;
+  selfHeal?: RoleConfig;
   taskReview?: TaskReviewConfig;
   scout?: ScoutConfig;
 };
@@ -41,12 +44,14 @@ export type ConfigReadResult = {
 export type EffectiveRole = {
   model?: string;
   type: string;
+  thinking?: ThinkingLevel;
 };
 
 export type EffectiveRoles = {
   implementer: EffectiveRole;
   reviewer: EffectiveRole;
   planner: EffectiveRole;
+  selfHeal: EffectiveRole;
 };
 
 export type EffectiveScoutConfig = {
@@ -60,6 +65,15 @@ export type EffectiveScoutConfig = {
 
 export const DEFAULT_SUBAGENT_TYPE = "general-purpose";
 const DEFAULT_PLANNER_TYPE = "Explore";
+const DEFAULT_SELF_HEAL_TYPE = DEFAULT_SUBAGENT_TYPE;
+const THINKING_LEVELS = new Set<ThinkingLevel>([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]);
 const DEFAULT_MAX_PARALLEL = 3;
 const HARD_MAX_PARALLEL = 8;
 
@@ -233,7 +247,12 @@ export function parseConfig(raw: string): {
       }
     }
 
-    for (const role of ["implementer", "reviewer", "planner"] as const) {
+    for (const role of [
+      "implementer",
+      "reviewer",
+      "planner",
+      "selfHeal",
+    ] as const) {
       const value = object[role];
       if (value === undefined) {
         continue;
@@ -262,6 +281,18 @@ export function parseConfig(raw: string): {
           }
         } else {
           warningParts.push(`${role}.type must be a string`);
+        }
+      }
+      if (roleObject.thinking !== undefined) {
+        if (
+          typeof roleObject.thinking === "string" &&
+          THINKING_LEVELS.has(roleObject.thinking as ThinkingLevel)
+        ) {
+          roleConfig.thinking = roleObject.thinking as ThinkingLevel;
+        } else {
+          warningParts.push(
+            `${role}.thinking must be one of off, minimal, low, medium, high, xhigh`,
+          );
         }
       }
       config[role] = roleConfig;
@@ -366,14 +397,22 @@ export function resolveEffectiveRoles(
       implementer: {
         model: config.implementer?.model,
         type: config.implementer?.type ?? DEFAULT_SUBAGENT_TYPE,
+        thinking: config.implementer?.thinking,
       },
       reviewer: {
         model: config.reviewer?.model,
         type: config.reviewer?.type ?? DEFAULT_SUBAGENT_TYPE,
+        thinking: config.reviewer?.thinking,
       },
       planner: {
         model: config.planner?.model,
         type: config.planner?.type ?? DEFAULT_PLANNER_TYPE,
+        thinking: config.planner?.thinking,
+      },
+      selfHeal: {
+        model: config.selfHeal?.model ?? config.implementer?.model,
+        type: config.selfHeal?.type ?? DEFAULT_SELF_HEAL_TYPE,
+        thinking: config.selfHeal?.thinking ?? config.implementer?.thinking,
       },
     },
   };
@@ -403,16 +442,34 @@ export function formatConfigStatus(
     `Implementer subagent: ${roles?.implementer.type ?? result.config.implementer?.type ?? DEFAULT_SUBAGENT_TYPE}`,
   );
   lines.push(
+    `Implementer thinking: ${roles?.implementer.thinking ?? result.config.implementer?.thinking ?? "(session default)"}`,
+  );
+  lines.push(
     `Reviewer model: ${roles?.reviewer.model ?? result.config.reviewer?.model ?? "(subagent type default)"}`,
   );
   lines.push(
     `Reviewer subagent: ${roles?.reviewer.type ?? result.config.reviewer?.type ?? DEFAULT_SUBAGENT_TYPE}`,
   );
   lines.push(
+    `Reviewer thinking: ${roles?.reviewer.thinking ?? result.config.reviewer?.thinking ?? "(session default)"}`,
+  );
+  lines.push(
     `Planner model: ${roles?.planner.model ?? result.config.planner?.model ?? "(subagent type default)"}`,
   );
   lines.push(
     `Planner subagent: ${roles?.planner.type ?? result.config.planner?.type ?? DEFAULT_PLANNER_TYPE}`,
+  );
+  lines.push(
+    `Planner thinking: ${roles?.planner.thinking ?? result.config.planner?.thinking ?? "(session default)"}`,
+  );
+  lines.push(
+    `Self-heal model: ${roles?.selfHeal.model ?? result.config.selfHeal?.model ?? result.config.implementer?.model ?? "(subagent type default)"}`,
+  );
+  lines.push(
+    `Self-heal subagent: ${roles?.selfHeal.type ?? result.config.selfHeal?.type ?? DEFAULT_SELF_HEAL_TYPE}`,
+  );
+  lines.push(
+    `Self-heal thinking: ${roles?.selfHeal.thinking ?? result.config.selfHeal?.thinking ?? result.config.implementer?.thinking ?? "(session default)"}`,
   );
   if (roles) {
     const defaultReviewerWarning = reviewerDefaultTypeWarning(roles);

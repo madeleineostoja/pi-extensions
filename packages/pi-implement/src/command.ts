@@ -18,7 +18,7 @@ import {
 } from "./config.js";
 import { ExecGitClient } from "./git.js";
 import {
-  EventSubagentClient,
+  RuntimeSubagentClient,
   type SpawnArgs,
   type SubagentClient,
   type SubagentResult,
@@ -29,12 +29,7 @@ import {
   StoppedError,
   OverallReviewFollowupError,
 } from "./orchestrator.js";
-import type {
-  RunState,
-  AgentDisplayRef,
-  StatePatch,
-  AgentRuntimeSnapshot,
-} from "./status.js";
+import type { RunState, AgentDisplayRef, StatePatch } from "./status.js";
 import {
   formatFooterStatusParts,
   formatRunStatus,
@@ -68,6 +63,7 @@ import {
 
 const STATUS_KEY = "pi-implement.status";
 const WIDGET_KEY = "pi-implement.progress";
+let currentSnapshotClient: SubagentClient | undefined;
 
 type ActiveRun = {
   state: RunState;
@@ -159,10 +155,9 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
     active.stopping = true;
     active.abortController?.abort();
     const ids = activeSubagentIds(active);
-    const client = new EventSubagentClient(pi.events);
     for (const id of ids) {
       try {
-        await client.stop(id);
+        await currentSnapshotClient?.stop(id);
       } catch {
         // Best-effort: session is shutting down anyway.
       }
@@ -238,10 +233,9 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           const ids = activeSubagentIds(active);
           const failedStops: string[] = [];
           if (ids.length > 0) {
-            const client = new EventSubagentClient(pi.events);
             for (const id of ids) {
               try {
-                await client.stop(id);
+                await currentSnapshotClient?.stop(id);
               } catch (err) {
                 const reason = err instanceof Error ? err.message : String(err);
                 failedStops.push(`${id} (${reason})`);
@@ -435,15 +429,6 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         return;
       }
 
-      const probe = await new EventSubagentClient(pi.events).probe();
-      if (!probe.ok) {
-        ctx.ui.notify(
-          "pi-implement requires the pi-subagents extension, which is not installed or not responding. Install @tintinweb/pi-subagents and reload.",
-          "warning",
-        );
-        return;
-      }
-
       const config = readConfig(getAgentDir());
       if (config.warning) {
         ctx.ui.notify(config.warning, "warning");
@@ -464,6 +449,8 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       const configuredWorkerModels = [
         effective.roles.implementer.model,
         effective.roles.reviewer.model,
+        effective.roles.planner.model,
+        effective.roles.selfHeal.model,
       ].filter((model): model is string => model !== undefined);
       const invalid = configuredWorkerModels.filter(
         (model) => !isModelRef(model),
@@ -484,23 +471,6 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           "warning",
         );
         return;
-      }
-
-      if (effective.roles.planner.model !== undefined) {
-        if (!isModelRef(effective.roles.planner.model)) {
-          ctx.ui.notify(
-            `Invalid planner model reference: ${effective.roles.planner.model}. Expected provider/model-id.`,
-            "warning",
-          );
-          return;
-        }
-        if (!modelExists(ctx, effective.roles.planner.model)) {
-          ctx.ui.notify(
-            `Planner model not found: ${effective.roles.planner.model}`,
-            "warning",
-          );
-          return;
-        }
       }
 
       let git: ExecGitClient;
@@ -687,7 +657,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
       });
 
       const isCurrentRun = () => active.runId === runIdNum;
-      const rawClient = new EventSubagentClient(pi.events);
+      const rawClient = new RuntimeSubagentClient(pi, ctx, runId);
       const client = new TrackingSubagentClient(
         rawClient,
         abortController.signal,
@@ -702,6 +672,8 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           });
         },
       );
+
+      currentSnapshotClient = client;
 
       const updateState = (patch: StatePatch) => {
         if (!isCurrentRun()) {
@@ -801,6 +773,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
         });
       })()
         .then(() => {
+          currentSnapshotClient = undefined;
           if (!isCurrentRun()) {
             return;
           }
@@ -832,6 +805,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           }
         })
         .catch((err: unknown) => {
+          currentSnapshotClient = undefined;
           if (!isCurrentRun()) {
             return;
           }
@@ -940,7 +914,6 @@ class TrackingSubagentClient implements SubagentClient {
 
   async spawn(args: SpawnArgs): Promise<string> {
     const id = await this.inner.spawn(args);
-    markWorkerConsumed(id);
     this.activeIds.add(id);
     this.emitChange();
     return id;
@@ -957,6 +930,10 @@ class TrackingSubagentClient implements SubagentClient {
       this.activeIds.delete(id);
       this.emitChange();
     }
+  }
+
+  snapshots(ids?: string[]) {
+    return this.inner.snapshots?.(ids) ?? [];
   }
 
   private emitChange(): void {
@@ -1010,125 +987,9 @@ function syncWidget(ctx: ExtensionCommandContext, state: RunState): void {
     ...(state.activeSubagentIds ?? []),
     ...(state.activeSubagentId ? [state.activeSubagentId] : []),
   ].filter((id, index, arr) => arr.indexOf(id) === index);
-  const snapshots = collectRuntimeSnapshots(ids);
+  const snapshots = currentSnapshotClient?.snapshots?.(ids) ?? [];
   const lines = formatWidgetLines(state, Date.now(), snapshots);
   ctx.ui.setWidget(WIDGET_KEY, lines.length > 0 ? lines : undefined);
-}
-
-function resolveUsageTotal(value: unknown): number | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-  const u = value as Record<string, unknown>;
-  if (typeof u.totalTokens === "number" && Number.isFinite(u.totalTokens)) {
-    return u.totalTokens;
-  }
-  if (typeof u.contextTokens === "number" && Number.isFinite(u.contextTokens)) {
-    return u.contextTokens;
-  }
-  const input = typeof u.input === "number" ? u.input : 0;
-  const output = typeof u.output === "number" ? u.output : 0;
-  const cacheRead = typeof u.cacheRead === "number" ? u.cacheRead : 0;
-  const cacheWrite = typeof u.cacheWrite === "number" ? u.cacheWrite : 0;
-  const total = input + output + cacheRead + cacheWrite;
-  return Number.isFinite(total) && total > 0 ? total : undefined;
-}
-
-function getSubagentRecord(id: string): Record<string, unknown> | undefined {
-  const manager = (globalThis as Record<symbol, unknown>)[
-    Symbol.for("pi-subagents:manager")
-  ];
-  if (!manager || typeof manager !== "object" || !("getRecord" in manager)) {
-    return undefined;
-  }
-  const getRecord = (manager as Record<string, unknown>).getRecord;
-  if (typeof getRecord !== "function") {
-    return undefined;
-  }
-  try {
-    const record = (getRecord as (id: string) => unknown)(id);
-    if (record && typeof record === "object") {
-      return record as Record<string, unknown>;
-    }
-  } catch {
-    // Best-effort
-  }
-  return undefined;
-}
-
-function markWorkerConsumed(id: string): void {
-  const r = getSubagentRecord(id);
-  if (!r) {
-    return;
-  }
-  try {
-    r.resultConsumed = true;
-  } catch {
-    // Best-effort: pi-subagents record shape may change
-  }
-}
-
-function collectRuntimeSnapshots(ids: string[]): AgentRuntimeSnapshot[] {
-  const snapshots: AgentRuntimeSnapshot[] = [];
-  for (const id of ids) {
-    const r = getSubagentRecord(id);
-    if (!r) {
-      continue;
-    }
-    try {
-      const snapshot: AgentRuntimeSnapshot = { id };
-      if (typeof r.status === "string") {
-        snapshot.status = r.status;
-      }
-      if (typeof r.description === "string") {
-        snapshot.description = r.description;
-      }
-      if (typeof r.toolUses === "number" && Number.isFinite(r.toolUses)) {
-        snapshot.toolUses = r.toolUses;
-      }
-      if (
-        typeof r.compactionCount === "number" &&
-        Number.isFinite(r.compactionCount)
-      ) {
-        snapshot.compactionCount = r.compactionCount;
-      }
-      let tokensTotal: number | undefined;
-      if (typeof r.lifetimeUsage === "object" && r.lifetimeUsage !== null) {
-        tokensTotal = resolveUsageTotal(r.lifetimeUsage);
-      }
-      if (
-        tokensTotal === undefined &&
-        typeof r.totalTokens === "number" &&
-        Number.isFinite(r.totalTokens)
-      ) {
-        tokensTotal = r.totalTokens;
-      }
-      if (
-        tokensTotal === undefined &&
-        typeof r.usage === "object" &&
-        r.usage !== null
-      ) {
-        tokensTotal = resolveUsageTotal(r.usage);
-      }
-      if (
-        tokensTotal === undefined &&
-        typeof r.currentResult === "object" &&
-        r.currentResult !== null
-      ) {
-        const cr = r.currentResult as Record<string, unknown>;
-        if (typeof cr.usage === "object" && cr.usage !== null) {
-          tokensTotal = resolveUsageTotal(cr.usage);
-        }
-      }
-      if (tokensTotal !== undefined) {
-        snapshot.tokensTotal = tokensTotal;
-      }
-      snapshots.push(snapshot);
-    } catch {
-      // Best-effort: skip records that throw
-    }
-  }
-  return snapshots;
 }
 
 function activeAgentRefs(state: RunState): AgentDisplayRef[] {

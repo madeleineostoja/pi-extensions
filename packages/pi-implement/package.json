@@ -15,7 +15,9 @@
     "test": "vitest run --testTimeout 15000"
   },
   "dependencies": {
-    "@pi-extensions/lib": "0.1.0"
+    "@pi-extensions/lib": "0.1.0",
+    "pi-sandbox": "*",
+    "pi-subagents": "*"
   },
   "pi": {
     "extensions": [

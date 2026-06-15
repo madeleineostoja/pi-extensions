@@ -20,6 +20,7 @@ import {
   type ResolvedPublicSubagentsConfig,
   type ThinkingLevel,
 } from "./config.js";
+export type { ThinkingLevel } from "./config.js";
 
 export type SubagentRuntimeStatus =
   | "queued"
@@ -49,6 +50,12 @@ export type RuntimeOwner =
   | {
       kind: "public" | "internal";
       name: string;
+    }
+  | {
+      kind: "pi-implement";
+      runId: string;
+      role: string;
+      taskId?: string;
     }
   | {
       kind: "nested";
@@ -119,6 +126,8 @@ export type RunManagedAgentInput = {
   signal?: AbortSignal;
   sandboxMode?: SandboxMode;
   owner?: RuntimeOwner;
+  tools?: string[];
+  excludeTools?: string[];
 };
 
 export type RunPublicAgentInput = Omit<RunManagedAgentInput, "type"> & {
@@ -870,11 +879,20 @@ export class SubagentRuntime {
           : { sandboxMode: record.sandboxMode }),
         ...(nested
           ? {
-              tools: readOnlyToolNames,
-              excludeTools: ["explore", ...publicToolNames, "edit", "write"],
+              tools: input.tools ?? readOnlyToolNames,
+              excludeTools: input.excludeTools ?? [
+                "explore",
+                ...publicToolNames,
+                "edit",
+                "write",
+              ],
               customTools: this.#nestedCustomToolsFor(record),
             }
           : {
+              ...(input.tools === undefined ? {} : { tools: input.tools }),
+              ...(input.excludeTools === undefined
+                ? {}
+                : { excludeTools: input.excludeTools }),
               customTools: this.#customToolsFor(record),
             }),
       });
@@ -906,7 +924,7 @@ export class SubagentRuntime {
         shutdownHandler: () => {},
       });
       record.extensionBinding = "bound";
-      this.#inheritActiveTools(record, session);
+      this.#inheritActiveTools(record, session, input.tools);
       const prompt = session.prompt(input.prompt, { source: "extension" });
       record.canSteer = true;
       await this.#flushSteering(record);
@@ -968,8 +986,13 @@ export class SubagentRuntime {
   #inheritActiveTools(
     record: RuntimeRecord,
     session: PublicAgentSession,
+    explicitTools?: string[],
   ): void {
     const getActiveTools = this.pi.getActiveTools?.bind(this.pi);
+    if (explicitTools) {
+      session.setActiveToolsByName([...new Set(explicitTools)]);
+      return;
+    }
     if (!getActiveTools && !isNestedOwner(record.owner)) {
       return;
     }

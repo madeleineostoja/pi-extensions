@@ -1,23 +1,56 @@
-type EventBus = {
-  on(event: string, handler: (payload: unknown) => void): () => void;
-  emit(event: string, payload: unknown): void;
-};
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
+import { getSubagentRuntime } from "pi-subagents/runtime";
+import type {
+  RuntimeSnapshot,
+  SandboxMode,
+  ThinkingLevel,
+} from "pi-subagents/runtime";
+import { getNonoPath } from "pi-sandbox/src/runtime/binary.js";
 
 export type SubagentClient = {
   probe(timeoutMs?: number): Promise<ProbeResult>;
   spawn(args: SpawnArgs): Promise<string>;
   stop(id: string): Promise<void>;
   waitFor(id: string, signal?: AbortSignal): Promise<SubagentResult>;
+  snapshots?(ids?: string[]): AgentSnapshot[];
 };
 
 export type ProbeResult = { ok: true; version?: number } | { ok: false };
+
+export type PiImplementWorkerRole =
+  | "implementer"
+  | "reviewer"
+  | "planner"
+  | "selfHeal"
+  | "scout";
 
 export type SpawnArgs = {
   type: string;
   prompt: string;
   description: string;
   model?: string;
+  thinking?: ThinkingLevel;
   cwd?: string;
+  role?: PiImplementWorkerRole;
+  taskId?: string;
+  sandboxMode?: SandboxMode;
+  readOnly?: boolean;
+};
+
+export type AgentSnapshot = {
+  id: string;
+  status?: string;
+  description?: string;
+  toolUses?: number;
+  tokensTotal?: number;
+  compactionCount?: number;
+  cwd?: string;
+  model?: string;
+  thinking?: ThinkingLevel;
+  sandboxMode?: SandboxMode;
 };
 
 export type SubagentResult =
@@ -25,157 +58,182 @@ export type SubagentResult =
   | { status: "failed"; error: string }
   | { status: "stopped"; error: string };
 
-type RpcReply =
-  | { success: true; data?: unknown }
-  | { success: false; error?: string };
+const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"];
+const MUTATING_TOOLS = [
+  "edit",
+  "write",
+  "Agent",
+  "get_subagent_result",
+  "steer_subagent",
+  "explore",
+];
+const SANDBOXED_MODES = new Set<SandboxMode>([
+  "inherit",
+  "read-only",
+  "workspace-write",
+]);
 
-export class EventSubagentClient implements SubagentClient {
-  private counter = 0;
+export class RuntimeSubagentClient implements SubagentClient {
+  private readonly runtime;
 
   constructor(
-    private readonly events: EventBus,
-    private readonly rpcTimeoutMs = 10_000,
-  ) {}
+    pi: ExtensionAPI,
+    private readonly ctx: ExtensionCommandContext,
+    private readonly runId: string,
+  ) {
+    this.runtime = getSubagentRuntime(pi);
+    registerPiImplementDefinitions(this.runtime);
+  }
 
-  async probe(timeoutMs = 2_000): Promise<ProbeResult> {
-    try {
-      const data = await this.rpc<{ version?: number }>("ping", {}, timeoutMs);
-      return { ok: true, version: data.version };
-    } catch {
-      return { ok: false };
-    }
+  async probe(): Promise<ProbeResult> {
+    return { ok: true, version: 3 };
   }
 
   async spawn(args: SpawnArgs): Promise<string> {
-    const options: {
-      description: string;
-      isBackground: boolean;
-      model?: string;
-      cwd?: string;
-    } = {
-      description: args.description,
-      isBackground: true,
-    };
-    if (args.model !== undefined) {
-      options.model = args.model;
-    }
-    if (args.cwd !== undefined) {
-      options.cwd = args.cwd;
-    }
-    const data = await this.rpc<{ id?: string }>("spawn", {
+    const cwd = args.cwd ?? this.ctx.cwd;
+    const role = args.role ?? "implementer";
+    const sandboxMode = args.sandboxMode ?? defaultSandboxForRole(role);
+    assertSandboxAvailable(sandboxMode);
+    const snapshot = await this.runtime.runManagedAgent({
+      owner: {
+        kind: "pi-implement",
+        runId: this.runId,
+        role,
+        ...(args.taskId === undefined ? {} : { taskId: args.taskId }),
+      },
       type: args.type,
       prompt: args.prompt,
-      options,
+      description: args.description,
+      cwd,
+      model: args.model,
+      thinking: args.thinking,
+      sandboxMode,
+      mode: "background",
+      ctx: this.ctx,
+      ...(args.readOnly ||
+      role === "reviewer" ||
+      role === "planner" ||
+      role === "scout"
+        ? { tools: READ_ONLY_TOOLS, excludeTools: MUTATING_TOOLS }
+        : {}),
     });
-    if (!data.id) {
-      throw new Error("pi-subagents spawn reply did not include an agent id.");
-    }
-    return data.id;
+    return snapshot.id;
   }
 
   async stop(id: string): Promise<void> {
-    await this.rpc("stop", { agentId: id });
+    this.runtime.stop(id);
   }
 
   waitFor(id: string, signal?: AbortSignal): Promise<SubagentResult> {
+    if (signal?.aborted) {
+      return Promise.resolve({ status: "stopped", error: "Stopped by user." });
+    }
     return new Promise((resolve) => {
-      let offCompleted = () => {};
-      let offFailed = () => {};
-      let offAbort = () => {};
       let settled = false;
-      const done = (result: SubagentResult) => {
+      const finish = (result: SubagentResult) => {
         if (settled) {
           return;
         }
         settled = true;
-        offCompleted();
-        offFailed();
-        offAbort();
+        signal?.removeEventListener("abort", abort);
         resolve(result);
       };
-      const abort = () =>
-        done({ status: "stopped", error: "Stopped by user." });
-      if (signal?.aborted) {
-        abort();
-        return;
-      }
-      if (signal) {
-        signal.addEventListener("abort", abort, { once: true });
-        offAbort = () => signal.removeEventListener("abort", abort);
-      }
-      offCompleted = this.events.on("subagents:completed", (payload) => {
-        const event = payload as {
-          id?: string;
-          result?: unknown;
-          status?: string;
-        };
-        if (event.id !== id) {
-          return;
+      const abort = () => {
+        try {
+          this.runtime.stop(id);
+        } catch {
+          // The runtime may already have completed the worker.
         }
-        if (event.status === "stopped") {
-          done({ status: "stopped", error: "Subagent stopped." });
-        } else {
-          done({
+        finish({ status: "stopped", error: "Stopped by user." });
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      void this.runtime.wait(id).then((snapshot) => {
+        if (snapshot.status === "completed") {
+          finish({
             status: "completed",
-            result: subagentResultText(event.result),
+            result: subagentResultText(snapshot.result),
           });
-        }
-      });
-      offFailed = this.events.on("subagents:failed", (payload) => {
-        const event = payload as {
-          id?: string;
-          error?: unknown;
-          status?: string;
-        };
-        if (event.id !== id) {
           return;
         }
-        done({
-          status: event.status === "stopped" ? "stopped" : "failed",
-          error: String(event.error ?? "Subagent failed."),
+        finish({
+          status: snapshot.status === "stopped" ? "stopped" : "failed",
+          error: snapshot.error ?? `Subagent ${snapshot.status}.`,
         });
       });
     });
   }
 
-  private rpc<T>(
-    method: "ping" | "spawn" | "stop",
-    payload: Record<string, unknown>,
-    timeoutMs = this.rpcTimeoutMs,
-  ): Promise<T> {
-    const requestId = `pi-implement-${Date.now()}-${++this.counter}`;
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const timeout = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        unsubscribe();
-        reject(
-          new Error(`Timed out waiting for pi-subagents ${method} reply.`),
-        );
-      }, timeoutMs);
-      const unsubscribe = this.events.on(
-        `subagents:rpc:${method}:reply:${requestId}`,
-        (raw) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          clearTimeout(timeout);
-          unsubscribe();
-          const reply = raw as RpcReply;
-          if (!reply.success) {
-            reject(new Error(reply.error ?? `pi-subagents ${method} failed.`));
-            return;
-          }
-          resolve((reply.data ?? {}) as T);
-        },
-      );
-      this.events.emit(`subagents:rpc:${method}`, { requestId, ...payload });
-    });
+  snapshots(ids?: string[]): AgentSnapshot[] {
+    const idSet = ids ? new Set(ids) : undefined;
+    return this.runtime
+      .snapshots({ includeNested: true })
+      .filter((snapshot: RuntimeSnapshot) => !idSet || idSet.has(snapshot.id))
+      .map(toAgentSnapshot);
   }
+}
+
+function registerPiImplementDefinitions(
+  runtime: ReturnType<typeof getSubagentRuntime>,
+): void {
+  for (const definition of [
+    {
+      type: "pi-implement:implementer",
+      title: "pi-implement implementer",
+      description: "Internal write-capable worker for one pi-implement task.",
+    },
+    {
+      type: "pi-implement:reviewer",
+      title: "pi-implement reviewer",
+      description:
+        "Internal read-only reviewer for pi-implement task candidates.",
+    },
+    {
+      type: "pi-implement:planner",
+      title: "pi-implement planner",
+      description:
+        "Internal read-only execution manifest planner for pi-implement.",
+    },
+    {
+      type: "pi-implement:self-heal",
+      title: "pi-implement self-heal",
+      description:
+        "Internal worker for scheduler and integration repair prompts.",
+    },
+  ]) {
+    runtime.definitions.register({ ...definition, visibility: "internal" });
+  }
+}
+
+function defaultSandboxForRole(role: PiImplementWorkerRole): SandboxMode {
+  return role === "implementer" || role === "selfHeal"
+    ? "workspace-write"
+    : "read-only";
+}
+
+function assertSandboxAvailable(sandboxMode: SandboxMode | undefined): void {
+  if (
+    sandboxMode &&
+    SANDBOXED_MODES.has(sandboxMode) &&
+    getNonoPath() === null
+  ) {
+    throw new Error(
+      `pi-implement requires pi-sandbox subprocess confinement for sandbox mode '${sandboxMode}', but nono is unavailable. Install nono before running autonomous workers.`,
+    );
+  }
+}
+
+function toAgentSnapshot(snapshot: RuntimeSnapshot): AgentSnapshot {
+  return {
+    id: snapshot.id,
+    status: snapshot.status,
+    description: snapshot.description,
+    toolUses: snapshot.health?.toolUses,
+    tokensTotal: snapshot.health?.tokensTotal,
+    cwd: snapshot.cwd,
+    model: snapshot.model,
+    thinking: snapshot.thinking,
+    sandboxMode: snapshot.sandboxMode,
+  };
 }
 
 export function subagentResultText(value: unknown): string {

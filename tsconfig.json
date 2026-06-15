@@ -3,6 +3,11 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "pi-subagents/runtime": ["packages/pi-subagents/src/runtime.ts"],
+      "pi-sandbox/src/*": ["packages/pi-sandbox/src/*"]
+    },
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,

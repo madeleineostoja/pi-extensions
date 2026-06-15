@@ -66,6 +66,7 @@ function makeRoles(): EffectiveRoles {
     implementer: { model: "p/m", type: "general-purpose" },
     reviewer: { model: "p/m", type: "general-purpose" },
     planner: { model: "p/m", type: "Explore" },
+    selfHeal: { model: "p/m", type: "general-purpose" },
   };
 }
 

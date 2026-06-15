@@ -142,6 +142,11 @@ async function runExecutionPlanner(
       description:
         "execution planner: build task contracts and dependency graph",
       model: req.roles.planner.model,
+      thinking: req.roles.planner.thinking,
+      role: "planner",
+      readOnly: true,
+      sandboxMode: "read-only",
+      cwd: req.repoRoot,
     });
     const plannerRef: AgentDisplayRef = {
       id,
@@ -207,6 +212,11 @@ ${rawResult}`;
       prompt,
       description: "execution planner: repair manifest JSON",
       model: req.roles.planner.model,
+      thinking: req.roles.planner.thinking,
+      role: "planner",
+      readOnly: true,
+      sandboxMode: "read-only",
+      cwd: req.repoRoot,
     });
     repairId = id;
     const plannerRef: AgentDisplayRef = {
