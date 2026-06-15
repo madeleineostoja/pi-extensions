@@ -61,6 +61,7 @@ export type RuntimeOwner =
       kind: "nested";
       parentId: string;
       tool: string;
+      parentOwner?: RuntimeOwner;
     };
 
 export type RuntimeHealth = {
@@ -198,6 +199,8 @@ const exploreEligibleTypes = new Set([
   "Implement",
   "Reviewer",
   "reviewer",
+  "pi-implement:implementer",
+  "pi-implement:reviewer",
 ]);
 
 function now(): string {
@@ -731,7 +734,16 @@ export class SubagentRuntime {
         ctx,
         signal: timeout.signal,
         sandboxMode: parent.sandboxMode,
-        owner: { kind: "nested", parentId: parent.id, tool: "explore" },
+        owner:
+          typeof parent.owner === "object" &&
+          parent.owner.kind === "pi-implement"
+            ? {
+                kind: "nested",
+                parentId: parent.id,
+                tool: "explore",
+                parentOwner: parent.owner,
+              }
+            : { kind: "nested", parentId: parent.id, tool: "explore" },
       });
       const finalSnapshot = await this.wait(started.id);
       return exploreToolResult(finalSnapshot);
@@ -990,7 +1002,10 @@ export class SubagentRuntime {
   ): void {
     const getActiveTools = this.pi.getActiveTools?.bind(this.pi);
     if (explicitTools) {
-      session.setActiveToolsByName([...new Set(explicitTools)]);
+      const activeTools = isExploreEligible(record.type)
+        ? [...explicitTools, "explore"]
+        : explicitTools;
+      session.setActiveToolsByName([...new Set(activeTools)]);
       return;
     }
     if (!getActiveTools && !isNestedOwner(record.owner)) {

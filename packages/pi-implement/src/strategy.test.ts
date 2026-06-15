@@ -913,7 +913,7 @@ describe("selectStrategy - planner prompt content", () => {
     );
   });
 
-  it("documents advisory scout directives in the planner schema", async () => {
+  it("documents injected exploration guidance without per-task scout directives", async () => {
     const subagents = makeSubagents(
       JSON.stringify({
         mode: "serial",
@@ -940,21 +940,11 @@ describe("selectStrategy - planner prompt content", () => {
       mock: { calls: Array<Array<{ prompt: string }>> };
     };
     const prompt = spawnMock.mock.calls[0][0].prompt;
-    expect(prompt).toContain(
-      '"scout": { "mode": "skip" | "suggest" | "require", "reason": "optional", "prompt": "optional", "breadth": "quick" | "medium" | "very thorough" }',
-    );
-    expect(prompt).toContain("## Scout Directives");
-    expect(prompt).toContain('optional advisory "scout" field');
-    expect(prompt).toContain("advisory hints, not authoritative guarantees");
-    expect(prompt).toContain("runtime just-in-time exploration");
-    expect(prompt).toContain("future runtime hints only");
-    expect(prompt).toContain(
-      "Do not perform or claim durable repo exploration at planning time",
-    );
-    expect(prompt).toContain("The codebase will change before the task runs");
-    expect(prompt).toContain(
-      "Do not assert that Scout results are already known",
-    );
+    expect(prompt).not.toContain('"scout"');
+    expect(prompt).not.toContain("## Scout Directives");
+    expect(prompt).toContain("## Exploration Guidance");
+    expect(prompt).toContain("injected explore on demand");
+    expect(prompt).toContain("Do not add per-task exploration directives");
   });
 
   it("documents sourceCheckbox references in the planner schema", async () => {

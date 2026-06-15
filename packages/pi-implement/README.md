@@ -132,14 +132,6 @@ Global config lives at:
     "model": "provider/model-id",
     "type": "Explore"
   },
-  "scout": {
-    "enabled": true,
-    "mode": "auto",
-    "type": "Explore",
-    "model": "provider/model-id",
-    "maxResultChars": 50000,
-    "timeoutMs": 120000
-  },
   "maxParallel": 3,
   "verifyCommand": "npm test",
   "taskReview": {
@@ -152,7 +144,7 @@ Global config lives at:
 
 If a role model is omitted, pi-implement does not pass a model override, so `pi-subagents` uses the role's subagent type default model (and then the current session model if that type has no default). If a role type is omitted, `general-purpose` is used for implementer and reviewer, and `Explore` is used for the planner. The runtime prompts are self-contained enough to work with `general-purpose`, but reviewer safety is only instruction-enforced in that mode; configure `reviewer.type` to a dedicated read-only review agent for stronger isolation.
 
-`scout` controls just-in-time read-only exploration before task attempts. It defaults to enabled `auto` mode with the `Explore` subagent type, no model override, `50000` max result chars, and a `120000`ms timeout. `mode` can be `auto`, `always`, or `off`: `off` disables Scout, `always` runs Scout before each task attempt, and `auto` runs only when the planner suggests/requires Scout or retry/rework feedback needs fresh context. `scout.model` optionally overrides the Scout model, while `scout.maxResultChars` and `scout.timeoutMs` are positive integers clamped to hard maximums. Scout output is bounded, attempt-scoped context for the implementer to verify; it does not expand task scope and is skipped silently when policy says it is unnecessary.
+Implementer and reviewer workers can use injected read-only exploration on demand for broad map-building or targeted context checks. Exploration is not configured separately in pi-implement and does not expand task scope.
 
 `maxParallel` defaults to `3` and is clamped to a hard maximum of `8`. Invalid values are ignored with a warning.
 
@@ -160,7 +152,7 @@ If a role model is omitted, pi-implement does not pass a model override, so `pi-
 
 `verifyCommand` is an optional non-empty shell command. In parallel mode it runs from the repository root during per-task integration and final validation. If omitted, pi-implement auto-detects `test`, `typecheck`, and `build` package scripts (respecting the repo's npm/pnpm/yarn lockfile); if none exist, it falls back to an LLM integration review.
 
-Run `/implement config` to print the resolved configuration, configured role model overrides, and effective Scout settings.
+Run `/implement config` to print the resolved configuration and configured role model overrides.
 
 ## Verification
 

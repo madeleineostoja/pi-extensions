@@ -27,7 +27,6 @@ export type DecideTaskReviewArgs = {
   plannerDirective?: TaskReviewDirective;
   isRetry: boolean;
   implementerOutcome: "changed" | "already_satisfied";
-  scoutFailed: boolean;
   stagedSummary: StagedFileSummary;
   validation: ValidationEvidence;
   forceReview?: boolean;
@@ -207,7 +206,6 @@ export function decideTaskReview(
     plannerDirective,
     isRetry,
     implementerOutcome,
-    scoutFailed,
     stagedSummary,
     validation,
     forceReview,
@@ -239,14 +237,6 @@ export function decideTaskReview(
   // Retry/rework attempts always get review
   if (isRetry) {
     return { action: "review", reason: "retry/rework attempt" };
-  }
-
-  // Scout failure on a non-trivial candidate forces review
-  if (scoutFailed) {
-    return {
-      action: "review",
-      reason: "scout failure on non-trivial candidate",
-    };
   }
 
   // No planner directive means review (preserves serial-mode and fallback behavior)

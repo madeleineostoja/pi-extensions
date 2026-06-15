@@ -71,13 +71,9 @@ export function buildImplementerPrompt(args: {
   worktreePath: string;
   feedback?: string;
   priorSummary?: string;
-  scoutContext?: string;
 }): string {
   const retry = args.feedback
     ? `\n## Retry Context\n\nPrevious attempt summary:\n${args.priorSummary ?? "(none)"}\n\nFeedback to address:\n${args.feedback}\n`
-    : "";
-  const scout = args.scoutContext
-    ? `\n## Scout Context\n\nThe following context was gathered by a read-only Scout for this attempt only. It is a starting map, not authoritative truth.\n\n- Treat Scout findings as hints, not facts. Read relevant files yourself before editing.\n- Do not expand your implementation scope based on Scout discoveries. Stick to the selected task contract.\n- Avoid broad repository searches unless the Scout context is clearly insufficient for the task.\n\n${args.scoutContext}\n`
     : "";
   const intro = `You are the pi-implement implementer for exactly one task. This prompt is the complete task contract and must work even if your subagent definition is generic.
 
@@ -99,8 +95,10 @@ Do not edit source plan files or checklist state. Do not stage, commit, reset, c
 
 Make the necessary code, documentation, and test changes for the selected task. Choose and run task-appropriate verification. When in doubt, run more verification rather than less: time is cheap, missed regressions are not. Precommit hooks will run on commit and cannot be bypassed, so satisfy lint, format, typecheck, and test expectations from the start. If verification is limited or fails, report that clearly.
 
+If useful, call the injected \`explore\` tool for broad map-building or targeted context checks before direct reads/searches. Treat exploration as guidance only: verify relevant findings yourself and do not expand scope based on exploration results.
+
 If blocked, leave the repository in a safe state and explain the blocker in the result block.`;
-  return `${intro}${retry}${scout}
+  return `${intro}${retry}
 ## Compiled Task Contract
 
 ${args.compiledContract}
@@ -197,7 +195,7 @@ ${diffInstructions}
 
 This is review only, not implementation. Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, run formatters with write/fix flags, or change HEAD. You may run read-only commands and read/search relevant files to understand the current implementation.
 
-You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands. If you cannot perform necessary validation because of these limitations, request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result. Treat this as a normal \`changes_requested\` result, not a subagent or system failure.
+You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands. If useful, call the injected \`explore\` tool for broad map-building or targeted context checks before direct reads/searches. Treat exploration as guidance only: verify relevant findings yourself and do not expand scope based on exploration results. If you cannot perform necessary validation because of these limitations, request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result. Treat this as a normal \`changes_requested\` result, not a subagent or system failure.
 
 ${reviewModeSection}
 ${discrepancySection}
@@ -273,7 +271,7 @@ Inspect the current repository state in the assigned worktree:
 
 Use read-only git commands and file inspection to verify the claim. Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, run formatters with write/fix flags, or change HEAD.
 
-You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands. If you cannot perform necessary validation because of these limitations, request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result. Treat this as a normal \`changes_requested\` result, not a subagent or system failure.
+You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands. If useful, call the injected \`explore\` tool for broad map-building or targeted context checks before direct reads/searches. Treat exploration as guidance only: verify relevant findings yourself and do not expand scope based on exploration results. If you cannot perform necessary validation because of these limitations, request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result. Treat this as a normal \`changes_requested\` result, not a subagent or system failure.
 
 ${reviewModeSection}${siblingSection}
 

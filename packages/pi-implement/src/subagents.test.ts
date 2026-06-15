@@ -82,7 +82,7 @@ describe("RuntimeSubagentClient", () => {
     );
   });
 
-  it("makes reviewer workers mechanically read-only", async () => {
+  it("makes reviewer workers mechanically read-only without excluding injected explore", async () => {
     const runtime = makeRuntime();
     const pi = { __runtime: runtime };
     const ctx = { cwd: "/repo", modelRegistry: { find: vi.fn() } };
@@ -106,6 +106,25 @@ describe("RuntimeSubagentClient", () => {
         tools: ["read", "bash", "grep", "find", "ls"],
         excludeTools: expect.arrayContaining(["edit", "write", "Agent"]),
       }),
+    );
+    const call = runtime.runManagedAgent.mock.calls.at(-1)?.[0];
+    expect(call.excludeTools).not.toContain("explore");
+  });
+
+  it("lets pi-implement-owned implementer and reviewer types receive injected explore", async () => {
+    const runtime = makeRuntime();
+    const pi = { __runtime: runtime };
+    const ctx = { cwd: "/repo", modelRegistry: { find: vi.fn() } };
+    new RuntimeSubagentClient(pi as never, ctx as never, "run-1");
+
+    expect(runtime.definitions.register).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pi-implement:implementer" }),
+    );
+    expect(runtime.definitions.register).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pi-implement:reviewer" }),
+    );
+    expect(runtime.definitions.register).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "Explore" }),
     );
   });
 

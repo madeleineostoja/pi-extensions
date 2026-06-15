@@ -136,7 +136,7 @@ export function formatDetail(
 
 function roleLabel(snapshot: RuntimeSnapshot): string {
   const lowerDescription = snapshot.description.toLowerCase();
-  const knownRoles = ["implementer", "reviewer", "planner", "triage", "scout"];
+  const knownRoles = ["implementer", "reviewer", "planner", "triage"];
   const role = knownRoles.find((candidate) =>
     lowerDescription.includes(candidate),
   );

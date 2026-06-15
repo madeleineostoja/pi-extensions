@@ -24,8 +24,7 @@ export type PiImplementWorkerRole =
   | "implementer"
   | "reviewer"
   | "planner"
-  | "selfHeal"
-  | "scout";
+  | "selfHeal";
 
 export type SpawnArgs = {
   type: string;
@@ -65,7 +64,6 @@ const MUTATING_TOOLS = [
   "Agent",
   "get_subagent_result",
   "steer_subagent",
-  "explore",
 ];
 const SANDBOXED_MODES = new Set<SandboxMode>([
   "inherit",
@@ -110,10 +108,7 @@ export class RuntimeSubagentClient implements SubagentClient {
       sandboxMode,
       mode: "background",
       ctx: this.ctx,
-      ...(args.readOnly ||
-      role === "reviewer" ||
-      role === "planner" ||
-      role === "scout"
+      ...(args.readOnly || role === "reviewer" || role === "planner"
         ? { tools: READ_ONLY_TOOLS, excludeTools: MUTATING_TOOLS }
         : {}),
     });

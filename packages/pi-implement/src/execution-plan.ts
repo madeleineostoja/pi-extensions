@@ -1,9 +1,4 @@
-import {
-  detectCycle,
-  extractJsonObject,
-  type CycleNode,
-  type ScoutDirective,
-} from "./graph.js";
+import { detectCycle, extractJsonObject, type CycleNode } from "./graph.js";
 import {
   existsSync,
   mkdirSync,
@@ -57,7 +52,6 @@ export type ExecutionTask = {
   sourceRefs?: SourceRef[];
   sourceReferences: string[];
   compiledContract: CompiledContract;
-  scout?: ScoutDirective;
   validationCommands?: string[];
   reasons?: string[];
   evidencePaths?: string[];
@@ -261,11 +255,6 @@ function parseExecutionTask(
     };
   }
 
-  const scoutResult = parseScoutDirective(obj.scout);
-  if (scoutResult !== undefined && !scoutResult.ok) {
-    return { ok: false, reason: scoutResult.reason };
-  }
-
   const validationCommands = parseStringArray(obj.validationCommands);
   if (
     validationCommands === undefined &&
@@ -319,7 +308,6 @@ function parseExecutionTask(
       sourceRefs: sourceRefsResult.value,
       sourceReferences,
       compiledContract: contractResult.value,
-      scout: scoutResult?.value,
       validationCommands,
       reasons,
       evidencePaths,
@@ -420,66 +408,6 @@ function parseSourceCheckbox(
       lineText: obj.lineText,
     },
   };
-}
-
-function parseScoutDirective(
-  value: unknown,
-):
-  | { ok: true; value: ScoutDirective }
-  | { ok: false; reason: string }
-  | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return { ok: false, reason: "Execution task scout must be an object." };
-  }
-  const obj = value as Record<string, unknown>;
-  if (obj.mode !== "skip" && obj.mode !== "suggest" && obj.mode !== "require") {
-    return {
-      ok: false,
-      reason: `Execution task scout mode must be "skip", "suggest", or "require", got: ${String(obj.mode)}.`,
-    };
-  }
-  const directive: ScoutDirective = { mode: obj.mode };
-  if (obj.reason !== undefined) {
-    if (typeof obj.reason !== "string") {
-      return {
-        ok: false,
-        reason: "Execution task scout reason must be a string.",
-      };
-    }
-    const trimmed = obj.reason.trim();
-    if (trimmed.length > 0) {
-      directive.reason = trimmed;
-    }
-  }
-  if (obj.prompt !== undefined) {
-    if (typeof obj.prompt !== "string") {
-      return {
-        ok: false,
-        reason: "Execution task scout prompt must be a string.",
-      };
-    }
-    const trimmed = obj.prompt.trim();
-    if (trimmed.length > 0) {
-      directive.prompt = trimmed;
-    }
-  }
-  if (obj.breadth !== undefined) {
-    if (
-      obj.breadth !== "quick" &&
-      obj.breadth !== "medium" &&
-      obj.breadth !== "very thorough"
-    ) {
-      return {
-        ok: false,
-        reason: `Execution task scout breadth must be "quick", "medium", or "very thorough", got: ${String(obj.breadth)}.`,
-      };
-    }
-    directive.breadth = obj.breadth;
-  }
-  return { ok: true, value: directive };
 }
 
 function parseTaskReviewDirective(

@@ -14,13 +14,6 @@ export type TaskReviewDirective = {
   reason?: string;
 };
 
-export type ScoutDirective = {
-  mode: "skip" | "suggest" | "require";
-  reason?: string;
-  prompt?: string;
-  breadth?: "quick" | "medium" | "very thorough";
-};
-
 export type ImplementGraphNode = {
   id: string;
   planIndex: number;
@@ -40,7 +33,6 @@ export type ImplementGraphNode = {
   reasons: string[];
   evidencePaths: string[];
   review?: TaskReviewDirective;
-  scout?: ScoutDirective;
 };
 
 export type ImplementGraph = {
@@ -333,11 +325,6 @@ function parseGraphNode(
   if (review !== undefined && !review.ok) {
     return { ok: false, reason: review.reason };
   }
-  const scout = parseScoutDirective(obj.scout);
-  if (scout !== undefined && !scout.ok) {
-    return { ok: false, reason: scout.reason };
-  }
-
   return {
     ok: true,
     value: {
@@ -354,7 +341,6 @@ function parseGraphNode(
       reasons,
       evidencePaths,
       review: review?.value,
-      scout: scout?.value,
     },
   };
 }
@@ -390,66 +376,6 @@ function parseTaskReviewDirective(
     if (trimmed.length > 0) {
       directive.reason = trimmed;
     }
-  }
-  return { ok: true, value: directive };
-}
-
-function parseScoutDirective(
-  value: unknown,
-):
-  | { ok: true; value: ScoutDirective }
-  | { ok: false; reason: string }
-  | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return { ok: false, reason: "Graph node scout must be an object." };
-  }
-  const obj = value as Record<string, unknown>;
-  if (obj.mode !== "skip" && obj.mode !== "suggest" && obj.mode !== "require") {
-    return {
-      ok: false,
-      reason: `Graph node scout mode must be "skip", "suggest", or "require", got: ${String(obj.mode)}.`,
-    };
-  }
-  const directive: ScoutDirective = { mode: obj.mode };
-  if (obj.reason !== undefined) {
-    if (typeof obj.reason !== "string") {
-      return {
-        ok: false,
-        reason: "Graph node scout reason must be a string.",
-      };
-    }
-    const trimmed = obj.reason.trim();
-    if (trimmed.length > 0) {
-      directive.reason = trimmed;
-    }
-  }
-  if (obj.prompt !== undefined) {
-    if (typeof obj.prompt !== "string") {
-      return {
-        ok: false,
-        reason: "Graph node scout prompt must be a string.",
-      };
-    }
-    const trimmed = obj.prompt.trim();
-    if (trimmed.length > 0) {
-      directive.prompt = trimmed;
-    }
-  }
-  if (obj.breadth !== undefined) {
-    if (
-      obj.breadth !== "quick" &&
-      obj.breadth !== "medium" &&
-      obj.breadth !== "very thorough"
-    ) {
-      return {
-        ok: false,
-        reason: `Graph node scout breadth must be "quick", "medium", or "very thorough", got: ${String(obj.breadth)}.`,
-      };
-    }
-    directive.breadth = obj.breadth;
   }
   return { ok: true, value: directive };
 }

@@ -13,7 +13,6 @@ import {
   formatConfigStatus,
   resolveMaxParallel,
   reviewerDefaultTypeWarning,
-  resolveEffectiveScoutConfig,
   resolveEffectiveTaskReview,
 } from "./config.js";
 import { ExecGitClient } from "./git.js";
@@ -346,17 +345,6 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
                 ? ` (${task.review.lastDecision})`
                 : "";
               let line = `${task.id} [${task.status}${review}] → ${wt}`;
-              if (task.scout) {
-                let scoutPart = ` · scout: ${task.scout.calls} call${task.scout.calls === 1 ? "" : "s"}${task.scout.lastStatus ? `, last=${task.scout.lastStatus}` : ""}`;
-                if (task.scout.lastReason) {
-                  const reason =
-                    task.scout.lastReason.length <= 60
-                      ? task.scout.lastReason
-                      : `${task.scout.lastReason.slice(0, 59)}…`;
-                  scoutPart += ` (${reason})`;
-                }
-                line += scoutPart;
-              }
               lines.push(line);
             }
           }
@@ -768,7 +756,6 @@ Stay idle until the run ends or the user asks you something directly. Do not res
             abortController.signal.aborted,
           signal: abortController.signal,
           verifyCommand: config.config.verifyCommand,
-          scout: resolveEffectiveScoutConfig(config.config),
           effectiveTaskReview: resolveEffectiveTaskReview(config.config),
         });
       })()

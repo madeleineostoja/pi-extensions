@@ -200,7 +200,7 @@ async function tryRepairExecutionPlannerOutput(
 ): Promise<string> {
   const prompt = `The execution planner returned output that could not be parsed as the required JSON manifest.
 
-Repair the formatting only. Preserve the intended tasks, ids, titles, dependencies, contracts, review/scout hints, and source references. Do not add implementation work. Return strict JSON only, beginning with { and ending with }.
+Repair the formatting only. Preserve the intended tasks, ids, titles, dependencies, contracts, review hints, and source references. Do not add implementation work. Return strict JSON only, beginning with { and ending with }.
 
 Original output:
 
@@ -312,7 +312,6 @@ function processExecutionPlannerResult(
       reasons: task.reasons ?? [],
       evidencePaths: task.evidencePaths ?? [],
       review: task.review,
-      scout: task.scout,
     })),
   };
 
@@ -335,7 +334,6 @@ function processExecutionPlannerResult(
       reasons: [...(task.reasons ?? []), graphValidationReason],
       evidencePaths: task.evidencePaths ?? [],
       review: task.review,
-      scout: task.scout,
     }));
     graphValidation = validateGraph(graph, uncheckedIndexes);
     if (!graphValidation.ok) {
@@ -744,7 +742,6 @@ Return an execution manifest matching this schema:
       "reasons": ["why this task is scoped this way"],
       "evidencePaths": [],
       "review": { "mode": "skip" | "suggest" | "require", "reason": "optional" },
-      "scout": { "mode": "skip" | "suggest" | "require", "reason": "optional", "prompt": "optional", "breadth": "quick" | "medium" | "very thorough" },
       "sourceRefs": [{ "path": "${req.plan.path}", "quote": "short exact source quote grounding this task" }],
       "sourceCheckbox": { "path": "plan.md", "lineNumber": 5, "lineText": "- [ ] Task title" },
       "compiledContract": {
@@ -780,19 +777,9 @@ Each task may include an optional "sourceCheckbox" field to enable the orchestra
 - Omit "sourceCheckbox" when the task does not map to a single checkbox line (e.g., multi-file plans, generated plans, or ambiguous mappings).
 - The orchestrator will update the checkbox only when the recorded lineNumber still exactly matches the recorded lineText (modulo checkbox marker state). If the line has changed, the update is skipped to avoid corrupting the source file.
 
-## Scout Directives
+## Exploration Guidance
 
-Each task may include an optional advisory "scout" field to guide runtime just-in-time exploration before the implementer begins a task. These directives are advisory hints, not authoritative guarantees. The runtime may override them based on config, retry state, and current worktree state.
-
-- "require" — the runtime should run a read-only Scout before this task attempt. Use for broad or ambiguous tasks where early context would materially help the implementer.
-- "suggest" — Scout is preferred but may be skipped if the runtime policy says otherwise or the task is trivial.
-- "skip" — the planner believes this task needs no Scout exploration. Use for narrow, obvious, or docs-only tasks.
-- "prompt" — an optional custom Scout prompt or question. The runtime may include it in the Scout request.
-- "breadth" — optional exploration depth hint: "quick" for a few file lookups, "medium" for targeted search, "very thorough" for broad repo tracing.
-
-Omit "scout" entirely when you have no strong opinion.
-
-Important: Scout directives are for future runtime hints only. Do not perform or claim durable repo exploration at planning time. The codebase will change before the task runs. Do not assert that Scout results are already known unless supported by the bounded exploration you performed for strategy decisions.
+Do not add per-task exploration directives. Implementer and reviewer workers can call injected explore on demand for broad map-building or targeted context checks when useful, and must keep findings within the compiled task scope.
 
 ## Task Review Directives
 

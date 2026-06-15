@@ -13,7 +13,6 @@ function makeArgs(
     },
     isRetry: false,
     implementerOutcome: "changed",
-    scoutFailed: false,
     stagedSummary: {
       fileCount: 1,
       diffChars: 100,
@@ -115,17 +114,6 @@ describe("decideTaskReview", () => {
     );
     expect(result.action).toBe("review");
     expect(result.reason).toContain("retry");
-  });
-
-  it("reviews when scout failed", () => {
-    const result = decideTaskReview(
-      makeArgs({
-        scoutFailed: true,
-        plannerDirective: { mode: "skip" },
-      }),
-    );
-    expect(result.action).toBe("review");
-    expect(result.reason).toContain("scout");
   });
 
   it("reviews when no planner directive exists", () => {

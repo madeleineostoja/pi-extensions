@@ -149,83 +149,18 @@ describe("buildImplementerPrompt", () => {
     expect(prompt).toContain("tried but failed");
   });
 
-  it("omits Scout Context when no scoutContext is provided", () => {
+  it("instructs the implementer to use injected explore without expanding scope", () => {
     const prompt = buildImplementerPrompt({
       compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
     });
 
+    expect(prompt).toContain("injected `explore` tool");
+    expect(prompt).toContain("broad map-building or targeted context checks");
+    expect(prompt).toContain(
+      "do not expand scope based on exploration results",
+    );
     expect(prompt).not.toContain("## Scout Context");
-    expect(prompt).not.toContain("read-only Scout");
-  });
-
-  it("includes Scout Context before Compiled Task Contract when scoutContext is provided", () => {
-    const prompt = buildImplementerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      scoutContext: "Relevant file: src/foo.ts",
-    });
-
-    expect(prompt).toContain("## Scout Context");
-    expect(prompt).toContain("Relevant file: src/foo.ts");
-    const scoutIndex = prompt.indexOf("## Scout Context");
-    const contractIndex = prompt.indexOf("## Compiled Task Contract");
-    expect(scoutIndex).toBeGreaterThan(0);
-    expect(contractIndex).toBeGreaterThan(0);
-    expect(scoutIndex).toBeLessThan(contractIndex);
-  });
-
-  it("tells the implementer to treat Scout as a map, not truth", () => {
-    const prompt = buildImplementerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      scoutContext: "some context",
-    });
-
-    expect(prompt).toContain("starting map, not authoritative truth");
-    expect(prompt).toContain(
-      "Treat Scout findings as hints, not facts. Read relevant files yourself before editing.",
-    );
-  });
-
-  it("tells the implementer to avoid expanding scope based on Scout discoveries", () => {
-    const prompt = buildImplementerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      scoutContext: "some context",
-    });
-
-    expect(prompt).toContain(
-      "Do not expand your implementation scope based on Scout discoveries. Stick to the selected task contract.",
-    );
-  });
-
-  it("tells the implementer to avoid broad repo search unless Scout is clearly insufficient", () => {
-    const prompt = buildImplementerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      scoutContext: "some context",
-    });
-
-    expect(prompt).toContain(
-      "Avoid broad repository searches unless the Scout context is clearly insufficient for the task.",
-    );
-  });
-
-  it("places Scout Context after Retry Context when both are present", () => {
-    const prompt = buildImplementerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      feedback: "fix the bug",
-      priorSummary: "tried but failed",
-      scoutContext: "Relevant file: src/foo.ts",
-    });
-
-    const retryIndex = prompt.indexOf("## Retry Context");
-    const scoutIndex = prompt.indexOf("## Scout Context");
-    const contractIndex = prompt.indexOf("## Compiled Task Contract");
-    expect(retryIndex).toBeLessThan(scoutIndex);
-    expect(scoutIndex).toBeLessThan(contractIndex);
   });
 });
 
@@ -381,6 +316,11 @@ describe("buildReviewerPrompt", () => {
 
     expect(prompt).toContain(
       "You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands",
+    );
+    expect(prompt).toContain("injected `explore` tool");
+    expect(prompt).toContain("broad map-building or targeted context checks");
+    expect(prompt).toContain(
+      "do not expand scope based on exploration results",
     );
     expect(prompt).toContain(
       "request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result",
@@ -628,6 +568,11 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
 
     expect(prompt).toContain(
       "You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands",
+    );
+    expect(prompt).toContain("injected `explore` tool");
+    expect(prompt).toContain("broad map-building or targeted context checks");
+    expect(prompt).toContain(
+      "do not expand scope based on exploration results",
     );
     expect(prompt).toContain(
       "request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result",

@@ -46,6 +46,8 @@ describe("runtime-injected explore tool", () => {
       makeSession("general"),
       makeSession("internal"),
       makeSession("reviewer"),
+      makeSession("pi-implement implementer"),
+      makeSession("pi-implement reviewer"),
       makeSession("explore"),
     ];
     const createSession = vi.fn(async () => ({ session: sessions.shift()! }));
@@ -71,6 +73,32 @@ describe("runtime-injected explore tool", () => {
       cwd: "/workspace",
       ctx: makeCtx() as never,
     });
+    await runtime.runManagedAgent({
+      owner: {
+        kind: "pi-implement",
+        runId: "r1",
+        role: "implementer",
+        taskId: "t1",
+      },
+      type: "pi-implement:implementer",
+      prompt: "implement",
+      cwd: "/task-worktree",
+      sandboxMode: "workspace-write",
+      ctx: makeCtx() as never,
+    });
+    await runtime.runManagedAgent({
+      owner: {
+        kind: "pi-implement",
+        runId: "r1",
+        role: "reviewer",
+        taskId: "t1",
+      },
+      type: "pi-implement:reviewer",
+      prompt: "review",
+      cwd: "/task-worktree",
+      sandboxMode: "read-only",
+      ctx: makeCtx() as never,
+    });
     await runtime.runPublicAgent({
       type: "Explore",
       prompt: "inspect",
@@ -89,10 +117,64 @@ describe("runtime-injected explore tool", () => {
     expect(calls[2]?.[0].customTools?.map((tool: any) => tool.name)).toEqual([
       "explore",
     ]);
-    expect(calls[3]?.[0].customTools).toBeUndefined();
+    expect(calls[3]?.[0].customTools?.map((tool: any) => tool.name)).toEqual([
+      "explore",
+    ]);
+    expect(calls[4]?.[0].customTools?.map((tool: any) => tool.name)).toEqual([
+      "explore",
+    ]);
+    expect(calls[5]?.[0].customTools).toBeUndefined();
   });
 
-  it("creates nested Explore metadata with inherited cwd, model, thinking, sandbox, and read-only tools", async () => {
+  it("activates injected explore for pi-implement read-only reviewer workers with explicit tools", async () => {
+    const reviewer = makeSession("reviewer");
+    const explore = makeSession("explore");
+    const sessions = [reviewer, explore];
+    const createSession = vi.fn(async () => ({ session: sessions.shift()! }));
+    const runtime = new SubagentRuntime(makePi() as never, { createSession });
+    const readOnlyTools = ["read", "bash", "grep", "find", "ls"];
+
+    await runtime.runManagedAgent({
+      owner: {
+        kind: "pi-implement",
+        runId: "r1",
+        role: "reviewer",
+        taskId: "t1",
+      },
+      type: "pi-implement:reviewer",
+      prompt: "review",
+      cwd: "/task-worktree",
+      sandboxMode: "read-only",
+      tools: readOnlyTools,
+      ctx: makeCtx() as never,
+    });
+    await runtime.runPublicAgent({
+      type: "Explore",
+      prompt: "inspect",
+      cwd: "/task-worktree",
+      tools: readOnlyTools,
+      ctx: makeCtx() as never,
+    });
+
+    const calls = createSession.mock.calls as any[][];
+    const reviewerOptions = calls[0]?.[0];
+    const exploreOptions = calls[1]?.[0];
+    expect(reviewerOptions.customTools).toEqual([
+      expect.objectContaining({ name: "explore" }),
+    ]);
+    expect(reviewer.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+      "explore",
+    ]);
+    expect(exploreOptions.customTools).toBeUndefined();
+    expect(explore.setActiveToolsByName).toHaveBeenCalledWith(readOnlyTools);
+  });
+
+  it("creates nested Explore metadata with inherited cwd, owner, model, thinking, sandbox, and read-only tools", async () => {
     const pi = makePi(["read", "bash", "Agent", "edit", "write", "explore"]);
     const child = makeSession("nested result");
     const createSession = vi.fn(async () => ({ session: child }));
@@ -107,9 +189,15 @@ describe("runtime-injected explore tool", () => {
         thinking: { General: undefined, Explore: "low", Review: undefined },
       },
     });
+    const parentOwner = {
+      kind: "pi-implement" as const,
+      runId: "r1",
+      role: "implementer" as const,
+      taskId: "t1",
+    };
     const parent = runtime.queue({
-      owner: { kind: "internal", name: "pi-implement" },
-      type: "general-purpose",
+      owner: parentOwner,
+      type: "pi-implement:implementer",
       description: "implement",
       cwd: "/task-worktree",
       sandboxMode: "workspace-write",
@@ -168,7 +256,12 @@ describe("runtime-injected explore tool", () => {
         model: "configured/explore",
         thinking: "low",
         sandboxMode: "workspace-write",
-        owner: { kind: "nested", parentId: parent.id, tool: "explore" },
+        owner: {
+          kind: "nested",
+          parentId: parent.id,
+          tool: "explore",
+          parentOwner,
+        },
       }),
     );
   });

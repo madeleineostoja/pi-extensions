@@ -34,19 +34,9 @@ import {
 } from "./source-checkbox.js";
 import type { ExecutionManifest } from "./execution-plan.js";
 import type { CommandResult, GitClient } from "./git.js";
-import type { SubagentClient, SubagentResult } from "./subagents.js";
-import type {
-  EffectiveRoles,
-  EffectiveScoutConfig,
-  EffectiveTaskReviewConfig,
-} from "./config.js";
+import type { SubagentClient } from "./subagents.js";
+import type { EffectiveRoles, EffectiveTaskReviewConfig } from "./config.js";
 import { resolveEffectiveTaskReview } from "./config.js";
-import {
-  buildScoutPrompt,
-  buildScoutUnavailableNote,
-  decideScout,
-  formatScoutContext,
-} from "./scout.js";
 import type {
   RunState,
   ParallelTaskState,
@@ -85,11 +75,7 @@ import {
 } from "./state.js";
 import type { RunMode } from "./state.js";
 import { readGraphJson, writeGraphJson } from "./graph.js";
-import type {
-  ImplementGraph,
-  ScoutDirective,
-  TaskReviewDirective,
-} from "./graph.js";
+import type { ImplementGraph, TaskReviewDirective } from "./graph.js";
 import {
   createSchedulerRun,
   computeReadyTasks,
@@ -145,7 +131,6 @@ export type OrchestratorDeps = {
   shouldStop(): boolean;
   signal?: AbortSignal;
   verifyCommand?: string;
-  scout?: EffectiveScoutConfig;
   effectiveTaskReview?: EffectiveTaskReviewConfig;
 };
 
@@ -425,7 +410,6 @@ async function runParallelImplementation(
         runBaseSha,
         wasNeedsRework,
         taskNode.review,
-        taskNode.scout,
       );
       runningWorkers.set(taskId, promise);
     }
@@ -597,7 +581,6 @@ async function launchTaskWorker(
   runBaseSha: string,
   wasNeedsRework: boolean,
   plannerDirective?: TaskReviewDirective,
-  scoutDirective?: ScoutDirective,
 ): Promise<WorkerResult> {
   const task = sched.tasks.get(taskId)!;
   const baseSha = await deps.git.head();
@@ -659,7 +642,6 @@ async function launchTaskWorker(
       schedulerTask: task,
       runBaseSha,
       plannerDirective,
-      scoutDirective,
       wasNeedsRework,
       initialFeedback:
         wasNeedsRework && task.lastReason
@@ -3375,7 +3357,6 @@ function updateParallelState(
       landedCommitSha: task.landedCommitSha,
       activeAgentIds: task.activeAgentIds,
       activeAgentRefs: task.activeAgentRefs,
-      scout: taskMeta?.scout,
       review: taskMeta?.review,
     });
     for (const id of task.activeAgentIds) {
@@ -3518,7 +3499,6 @@ function buildTaskJsonSnapshot(
 ): TaskJson {
   return {
     ...taskToJson(task),
-    scout: existing?.scout,
     review: existing?.review,
   };
 }
@@ -3591,7 +3571,6 @@ function persistReviewDecisionArtifact(
   plannerDirective: TaskReviewDirective | undefined,
   stagedSummary: StagedFileSummary,
   validation: ValidationEvidence,
-  scoutFailed: boolean,
 ): void {
   const content = `# Review Decision (Attempt ${attempt})
 
@@ -3610,9 +3589,6 @@ ${stagedSummary.nameStatusLines.map((l) => `    ${l}`).join("\n")}
 
 ## Validation Evidence
 \`\`\`json\n${JSON.stringify(validation, null, 2)}\n\`\`\`
-
-## Context
-- Scout failed: ${scoutFailed}
 `;
   persistTaskArtifact(
     paths,
@@ -3657,7 +3633,6 @@ async function runTaskWorker(args: {
   schedulerTask?: SchedulerTask;
   runBaseSha?: string;
   plannerDirective?: TaskReviewDirective;
-  scoutDirective?: ScoutDirective;
   wasNeedsRework?: boolean;
   initialFeedback?: RetryFeedback;
   attemptOrdinalBase?: number;
@@ -3675,7 +3650,6 @@ async function runTaskWorker(args: {
     schedulerTask,
     runBaseSha,
     plannerDirective,
-    scoutDirective,
     wasNeedsRework,
     initialFeedback,
     attemptOrdinalBase,
@@ -3687,11 +3661,6 @@ async function runTaskWorker(args: {
   let systemFailures = 0;
   let anchoredReviewChangeRequests = 0;
   let priorReviewRequiredChanges: string[] | undefined;
-  const existingTaskJson = deps.paths
-    ? readTaskJson(deps.paths, taskId)
-    : undefined;
-  let scoutMeta: TaskJson["scout"] | undefined = existingTaskJson?.scout;
-
   for (;;) {
     throwIfStopped(deps);
     const taskHeadBefore = worktreePath
@@ -3711,212 +3680,16 @@ async function runTaskWorker(args: {
     );
     const effectiveWorktreePath = worktreePath ?? (await deps.git.root());
 
-    // ── Scout phase ──
-    let scoutContext: string | undefined;
-    let scoutFailed = false;
     const totalAttempt = (attemptOrdinalBase ?? 0) + attempt;
     const isRetry =
       totalAttempt > 1 ||
       initialFeedback !== undefined ||
       (wasNeedsRework ?? false);
-    if (deps.scout && !deps.shouldStop() && !deps.signal?.aborted) {
-      const decision = decideScout({
-        config: deps.scout,
-        directive: scoutDirective,
-        isRetry,
-        attemptOrdinal: totalAttempt,
-        feedback: feedback ?? initialFeedback,
-        taskText: task.text,
-        compiledContract,
-      });
-
-      if (!decision.run) {
-        scoutMeta = {
-          calls: scoutMeta?.calls ?? 0,
-          lastStatus: "skipped",
-          lastReason: decision.reason,
-        };
-      }
-
-      if (decision.run) {
-        const scoutPrompt = buildScoutPrompt({
-          worktreePath: effectiveWorktreePath,
-          compiledContract,
-          planArtifacts,
-          directive: scoutDirective,
-          isRetry,
-          feedback: feedback ?? initialFeedback,
-        });
-
-        if (deps.paths) {
-          persistTaskArtifact(
-            deps.paths,
-            taskId,
-            `scout-prompt-attempt-${totalAttempt}.md`,
-            scoutPrompt,
-          );
-        }
-
-        let scoutId: string | undefined;
-        try {
-          scoutId = await deps.subagents.spawn({
-            type: deps.scout.type,
-            prompt: scoutPrompt,
-            description: `scout task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
-            model: deps.scout.model,
-            role: "scout",
-            taskId,
-            cwd: effectiveWorktreePath,
-            readOnly: true,
-            sandboxMode: "read-only",
-          });
-        } catch (spawnErr) {
-          const note = buildScoutUnavailableNote(
-            spawnErr instanceof Error ? spawnErr.message : String(spawnErr),
-          );
-          scoutContext = note;
-          scoutFailed = true;
-          scoutMeta = {
-            calls: (scoutMeta?.calls ?? 0) + 1,
-            lastStatus: "failed",
-            lastReason:
-              spawnErr instanceof Error ? spawnErr.message : String(spawnErr),
-          };
-          if (deps.paths) {
-            persistTaskArtifact(
-              deps.paths,
-              taskId,
-              `scout-attempt-${totalAttempt}.md`,
-              note,
-            );
-          }
-        }
-
-        if (scoutId) {
-          const scoutRef: AgentDisplayRef = {
-            id: scoutId,
-            role: "scout",
-            label: `Task ${task.index}/${plan.tasks.length} scout \u00b7 ${shortTask(task.text)}`,
-            startedAt: new Date().toISOString(),
-            taskId,
-            taskIndex: task.index,
-            taskTotal: plan.tasks.length,
-            taskTitle: shortTask(task.text),
-          };
-          setSchedulerActiveAgent(schedulerTask, scoutRef);
-          deps.updateState((prev) => addActiveAgentPatch(prev, scoutRef));
-
-          let scoutResult: SubagentResult;
-          try {
-            const waitPromise = deps.subagents.waitFor(scoutId, deps.signal);
-            const timeoutMs = deps.scout.timeoutMs;
-            const raced =
-              timeoutMs && timeoutMs > 0
-                ? Promise.race([
-                    waitPromise,
-                    new Promise<SubagentResult>((resolve) => {
-                      setTimeout(
-                        () =>
-                          resolve({
-                            status: "failed",
-                            error: `Scout timed out after ${timeoutMs}ms`,
-                          }),
-                        timeoutMs,
-                      );
-                    }),
-                  ])
-                : waitPromise;
-            scoutResult = await raced.finally(() => {
-              clearSchedulerActiveAgent(schedulerTask, scoutId);
-              deps.updateState((prev) => removeActiveAgentPatch(prev, scoutId));
-            });
-          } catch (waitErr) {
-            clearSchedulerActiveAgent(schedulerTask, scoutId);
-            deps.updateState((prev) => removeActiveAgentPatch(prev, scoutId));
-            if (waitErr instanceof StoppedError) {
-              throw waitErr;
-            }
-            scoutResult = {
-              status: "failed",
-              error:
-                waitErr instanceof Error ? waitErr.message : String(waitErr),
-            };
-          }
-
-          if (
-            scoutResult.status === "completed" &&
-            scoutResult.result.trim().length > 0
-          ) {
-            scoutContext = formatScoutContext(
-              scoutResult.result,
-              deps.scout.maxResultChars,
-            );
-            scoutMeta = {
-              calls: (scoutMeta?.calls ?? 0) + 1,
-              lastStatus: "completed",
-            };
-            if (deps.paths) {
-              persistTaskArtifact(
-                deps.paths,
-                taskId,
-                `scout-attempt-${totalAttempt}.md`,
-                scoutResult.result,
-              );
-            }
-          } else if (scoutResult.status === "stopped") {
-            throwIfStopped(deps);
-            scoutContext = buildScoutUnavailableNote("stopped");
-            scoutFailed = true;
-            scoutMeta = {
-              calls: (scoutMeta?.calls ?? 0) + 1,
-              lastStatus: "stopped",
-            };
-            if (deps.paths) {
-              persistTaskArtifact(
-                deps.paths,
-                taskId,
-                `scout-attempt-${totalAttempt}.md`,
-                scoutContext,
-              );
-            }
-          } else {
-            const reason =
-              scoutResult.status === "failed"
-                ? scoutResult.error
-                : "empty result";
-            scoutContext = buildScoutUnavailableNote(reason);
-            scoutFailed = true;
-            scoutMeta = {
-              calls: (scoutMeta?.calls ?? 0) + 1,
-              lastStatus: "failed",
-              lastReason: reason,
-            };
-            if (deps.paths) {
-              persistTaskArtifact(
-                deps.paths,
-                taskId,
-                `scout-attempt-${totalAttempt}.md`,
-                scoutContext,
-              );
-            }
-          }
-        }
-      }
-
-      if (deps.paths && scoutMeta && scoutMeta.lastStatus !== "skipped") {
-        const scoutNote =
-          scoutMeta.lastStatus === "completed"
-            ? `\u00b7 Task ${task.index}/${plan.tasks.length} scout completed`
-            : `\u00b7 Task ${task.index}/${plan.tasks.length} scout unavailable${scoutMeta.lastReason ? `: ${scoutMeta.lastReason}` : ""}`;
-        deps.updateState((prev) => checkpointPatch(prev, scoutNote));
-      }
-    }
 
     const implementerPrompt = buildImplementerPrompt({
       compiledContract,
       worktreePath: effectiveWorktreePath,
       feedback: feedback ? formatFeedback(feedback) : undefined,
-      scoutContext,
       priorSummary,
     });
     deps.updateState({
@@ -3968,7 +3741,6 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [implementerId],
-        scout: scoutMeta,
         review: currentTaskReviewMetadata(deps.paths, taskId),
       });
       appendEvent(deps.paths, { type: "task_started", taskId });
@@ -4000,7 +3772,6 @@ async function runTaskWorker(args: {
           branchName,
           activeSubagentIds: [],
           lastReason: implementation.error,
-          scout: scoutMeta,
           review: currentTaskReviewMetadata(deps.paths, taskId),
         });
       }
@@ -4036,7 +3807,6 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [],
-        scout: scoutMeta,
         review: currentTaskReviewMetadata(deps.paths, taskId),
       });
     }
@@ -4144,7 +3914,6 @@ async function runTaskWorker(args: {
         plannerDirective,
         isRetry,
         implementerOutcome: "changed",
-        scoutFailed,
         stagedSummary,
         validation: validationEvidence,
         forceReview: alreadySatisfiedDiscrepancy,
@@ -4172,7 +3941,6 @@ async function runTaskWorker(args: {
               plannerDirective,
               stagedSummary,
               { status: "failed", reason: validation.reason },
-              scoutFailed,
             );
             persistTaskArtifact(
               deps.paths,
@@ -4221,7 +3989,6 @@ async function runTaskWorker(args: {
           plannerDirective,
           isRetry,
           implementerOutcome: "changed",
-          scoutFailed,
           stagedSummary,
           validation: validationEvidence,
           forceReview: alreadySatisfiedDiscrepancy,
@@ -4239,7 +4006,6 @@ async function runTaskWorker(args: {
           plannerDirective,
           stagedSummary,
           validationEvidence,
-          scoutFailed,
         );
         if (reviewDecision.action === "skip") {
           persistReviewSkippedArtifact(
@@ -4396,7 +4162,6 @@ async function runTaskWorker(args: {
           worktreePath,
           branchName,
           activeSubagentIds: [reviewerId],
-          scout: scoutMeta,
           review: currentTaskReviewMetadata(deps.paths, taskId),
         });
       }
@@ -4417,7 +4182,6 @@ async function runTaskWorker(args: {
           branchName,
           activeSubagentIds: [],
           lastReason: review.status !== "completed" ? review.error : undefined,
-          scout: scoutMeta,
           review: currentTaskReviewMetadata(deps.paths, taskId),
         });
       }
@@ -4607,7 +4371,6 @@ async function runTaskWorker(args: {
           worktreePath,
           branchName,
           activeSubagentIds: [],
-          scout: scoutMeta,
           review: taskReviewMeta,
         });
       }
@@ -4636,7 +4399,6 @@ async function runTaskWorker(args: {
         worktreePath,
         branchName,
         activeSubagentIds: [],
-        scout: scoutMeta,
         review: taskReviewMeta,
       });
     }
@@ -4690,7 +4452,6 @@ async function runTaskWorker(args: {
             branchName,
             activeSubagentIds: [],
             lastReason: feedback.message,
-            scout: scoutMeta,
             review: currentTaskReviewMetadata(deps.paths, taskId),
           });
           appendEvent(deps.paths, {
@@ -4727,7 +4488,6 @@ async function runTaskWorker(args: {
           taskCommitSha,
           activeSubagentIds: [],
           commitMessage: approvedMessage,
-          scout: scoutMeta,
           review: taskReviewMeta,
         });
         appendEvent(deps.paths, {
@@ -4777,7 +4537,6 @@ async function runTaskWorker(args: {
           integrationAttempts: 0,
           landedCommitSha: head,
           activeSubagentIds: [],
-          scout: scoutMeta,
           review: taskReviewMeta,
         });
       }
@@ -4819,7 +4578,6 @@ async function runTaskWorker(args: {
         integrationAttempts: systemFailures,
         activeSubagentIds: [],
         lastReason: feedback.message,
-        scout: scoutMeta,
         review: currentTaskReviewMetadata(deps.paths, taskId),
       });
       appendEvent(deps.paths, {
