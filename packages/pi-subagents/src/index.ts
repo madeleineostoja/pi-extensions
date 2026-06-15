@@ -31,7 +31,9 @@ export type {
   ExtensionBindingStatus,
   PublicAgentMode,
   QueueSubagentInput,
+  RunManagedAgentInput,
   RunPublicAgentInput,
+  RuntimeOwner,
   RuntimeSnapshot,
   RuntimeTimestamps,
   SandboxMode,
@@ -61,8 +63,123 @@ function toolResult(snapshot: RuntimeSnapshot) {
   };
 }
 
+type SubagentRpcPayload = {
+  requestId?: string;
+  type?: unknown;
+  prompt?: unknown;
+  agentId?: unknown;
+  options?: {
+    description?: unknown;
+    isBackground?: unknown;
+    model?: unknown;
+    cwd?: unknown;
+    sandboxMode?: unknown;
+  };
+};
+
+function rpcReplyChannel(method: string, requestId: string): string {
+  return `subagents:rpc:${method}:reply:${requestId}`;
+}
+
 export default function (pi: ExtensionAPI): void {
   const runtime = getSubagentRuntime(pi);
+  let currentCtx: Parameters<Parameters<ExtensionAPI["on"]>[1]>[1] | undefined;
+
+  pi.on("session_start", (_event, ctx) => {
+    currentCtx = ctx;
+  });
+
+  pi.events.on("subagents:rpc:ping", (payload) => {
+    const requestId = (payload as SubagentRpcPayload).requestId;
+    if (!requestId) {
+      return;
+    }
+    pi.events.emit(rpcReplyChannel("ping", requestId), {
+      success: true,
+      data: { version: 2 },
+    });
+  });
+
+  pi.events.on("subagents:rpc:spawn", (payload) => {
+    const request = payload as SubagentRpcPayload;
+    if (!request.requestId) {
+      return;
+    }
+    const requestId = request.requestId;
+    void (async () => {
+      if (!currentCtx) {
+        throw new Error("pi-subagents session context is not ready.");
+      }
+      if (typeof request.type !== "string") {
+        throw new Error("subagent type must be a string.");
+      }
+      if (typeof request.prompt !== "string") {
+        throw new Error("subagent prompt must be a string.");
+      }
+      const options = request.options ?? {};
+      const snapshot = await runtime.runManagedAgent({
+        owner: { kind: "internal", name: "pi-implement" },
+        type: request.type,
+        prompt: request.prompt,
+        description:
+          typeof options.description === "string"
+            ? options.description
+            : request.prompt.slice(0, 120),
+        cwd: typeof options.cwd === "string" ? options.cwd : currentCtx.cwd,
+        ...(typeof options.model === "string" ? { model: options.model } : {}),
+        ...(typeof options.sandboxMode === "string"
+          ? { sandboxMode: options.sandboxMode }
+          : {}),
+        mode: "background",
+        ctx: currentCtx,
+      });
+      pi.events.emit(rpcReplyChannel("spawn", requestId), {
+        success: true,
+        data: { id: snapshot.id },
+      });
+      void runtime.wait(snapshot.id).then((finalSnapshot) => {
+        if (finalSnapshot.status === "completed") {
+          pi.events.emit("subagents:completed", {
+            id: finalSnapshot.id,
+            status: finalSnapshot.status,
+            result: finalSnapshot.result,
+          });
+          return;
+        }
+        pi.events.emit("subagents:failed", {
+          id: finalSnapshot.id,
+          status: finalSnapshot.status,
+          error: finalSnapshot.error,
+        });
+      });
+    })().catch((error: unknown) => {
+      pi.events.emit(rpcReplyChannel("spawn", requestId), {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  });
+
+  pi.events.on("subagents:rpc:stop", (payload) => {
+    const request = payload as SubagentRpcPayload;
+    if (!request.requestId) {
+      return;
+    }
+    try {
+      if (typeof request.agentId !== "string") {
+        throw new Error("subagent id must be a string.");
+      }
+      runtime.stop(request.agentId);
+      pi.events.emit(rpcReplyChannel("stop", request.requestId), {
+        success: true,
+      });
+    } catch (error) {
+      pi.events.emit(rpcReplyChannel("stop", request.requestId), {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
 
   pi.registerTool({
     name: "Agent",

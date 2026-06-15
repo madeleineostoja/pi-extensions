@@ -30,10 +30,38 @@ function makePi(
 ) {
   const tools: ToolDef[] = [];
   const messages: Message[] = [];
+  const handlers = new Map<string, Array<(payload: unknown) => void>>();
+  const emitted: Array<{ event: string; payload: unknown }> = [];
+  const events = {
+    emit: (event: string, payload: unknown) => {
+      emitted.push({ event, payload });
+      for (const handler of handlers.get(event) ?? []) {
+        handler(payload);
+      }
+    },
+    on: (event: string, handler: (payload: unknown) => void) => {
+      const eventHandlers = handlers.get(event) ?? [];
+      eventHandlers.push(handler);
+      handlers.set(event, eventHandlers);
+      return () => {
+        handlers.set(
+          event,
+          (handlers.get(event) ?? []).filter(
+            (candidate) => candidate !== handler,
+          ),
+        );
+      };
+    },
+  };
   return {
     tools,
     messages,
+    emitted,
     pi: {
+      events,
+      on: vi.fn((event: string, handler: (payload: unknown) => void) => {
+        events.on(event, handler);
+      }),
       registerTool: (tool: ToolDef) => tools.push(tool),
       sendMessage: (message: Message) => messages.push(message),
       getActiveTools: () => activeTools,
@@ -108,6 +136,7 @@ describe("public subagent tools", () => {
 
     registerExtension(pi as never);
 
+    expect(pi.on).toHaveBeenCalledWith("session_start", expect.any(Function));
     expect(tools.map((tool) => tool.name)).toEqual([
       "Agent",
       "get_subagent_result",
@@ -129,6 +158,62 @@ describe("public subagent tools", () => {
       "medium",
       "high",
       "xhigh",
+    ]);
+  });
+
+  it("handles pi-implement RPC spawns through managed internal sessions", async () => {
+    const { pi, emitted } = makePi(["read", "bash", "Agent", "edit"]);
+    const { session } = makeSession("implemented");
+    const createSession = vi.fn(async () => ({ session }));
+    new SubagentRuntime(pi as never, { createSession });
+    registerExtension(pi as never);
+    const sessionStart = (pi.on as any).mock.calls.find(
+      ([event]: [string]) => event === "session_start",
+    )?.[1];
+    sessionStart?.({ type: "session_start", reason: "startup" }, makeCtx());
+
+    pi.events.emit("subagents:rpc:spawn", {
+      requestId: "request-1",
+      type: "general-purpose",
+      prompt: "implement",
+      options: {
+        description: "implement task",
+        isBackground: true,
+        cwd: "/task-worktree",
+        model: "p/m",
+        sandboxMode: "workspace-write",
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(emitted).toContainEqual({
+        event: "subagents:rpc:spawn:reply:request-1",
+        payload: { success: true, data: { id: "subagent-1" } },
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(emitted).toContainEqual({
+        event: "subagents:completed",
+        payload: {
+          id: "subagent-1",
+          status: "completed",
+          result: "implemented",
+        },
+      }),
+    );
+    expect(createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/task-worktree",
+        model: { provider: "p", id: "m" },
+        sandboxMode: "workspace-write",
+        customTools: [expect.objectContaining({ name: "explore" })],
+      }),
+    );
+    expect(session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "edit",
+      "explore",
     ]);
   });
 
@@ -167,7 +252,11 @@ describe("public subagent tools", () => {
     expect(session.bindExtensions).toHaveBeenCalledWith(
       expect.not.objectContaining({ uiContext: expect.anything() }),
     );
-    expect(session.setActiveToolsByName).toHaveBeenCalledWith(["read", "bash"]);
+    expect(session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "explore",
+    ]);
     expect(session.prompt).toHaveBeenCalledWith("do work", {
       source: "extension",
     });
