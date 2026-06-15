@@ -1,6 +1,6 @@
 # pi-implement
 
-Autonomously implement a `/plan` markdown file, working through its unchecked tasks one at a time and making a commit per task.
+Autonomously implement a markdown plan file, working through its unchecked tasks one at a time and making a commit per task. Any plan with a `## Tasks` checklist works — it does not require output from a specific `/plan` skill or a particular plan template.
 
 Each task is handled by an implementer subagent and then judged by a reviewer subagent. Only approved work is committed, and after every task lands a final reviewer checks the whole feature against the plan. Independent tasks can run concurrently in isolated git worktrees.
 
@@ -12,7 +12,7 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 - **Serial or parallel execution** — auto-selects per plan whether tasks should run one at a time or through a dependency graph. Parallel tasks run in isolated worktrees and integrate back one at a time with verification at each step.
 - **Subagent isolation checks** — implementers and reviewers run from their assigned worktree; the orchestrator detects and blocks (or auto-heals) any out-of-bounds change to HEAD, the candidate diff, the main checkout, or plan artifacts.
 - **Built-in verification** — runs a configured verify command or auto-detected `test`/`typecheck`/`build` scripts, with an LLM integration review as a last resort. Precommit hooks are a hard gate and are never bypassed.
-- **Index-style plans** — top-level tasks can link out to supporting markdown files, which are inlined into the implementer's context.
+- **Plan corpus ingestion** — the entry plan and the markdown files it links to (plus `tasks/` siblings) are ingested into the planner's corpus and distilled into per-task contracts, rather than being inlined wholesale into the implementer's context.
 - **Durable, resumable state** — per-run state, artifacts, and worktrees are persisted under `<repo>/.pi/implement/`; runs are lockable across sessions, auto-cleaned on success, and inspectable/recoverable on failure.
 - **Live progress** — a TUI status footer and per-agent widget (tokens, tool uses, compactions) plus progress messages streamed into the session.
 
@@ -90,9 +90,26 @@ Plan checkbox updates are intentionally not part of any commit. Plan files may b
 
 ## Plan format and task scope
 
-Executable work comes from top-level checkbox tasks under `## Tasks`. `/implement` runs the next unchecked top-level task and updates that same checkbox when the task is approved. Only the `## Tasks` section is parsed for executable checklist state.
+The only hard structural requirement is a `## Tasks` section containing top-level checkbox tasks. `/implement` runs the next unchecked top-level task and updates that same checkbox when the task is approved; only the `## Tasks` section is parsed for executable checklist state. Any markdown plan with that section works — pi-implement does not require output from a specific `/plan` skill.
 
-For index-style plans, a task can reference supporting markdown files with indented `Plan:` linkage lines:
+### Plan corpus ingestion
+
+The entry plan file and its supporting material form the *plan corpus* that the execution planner reads. The corpus is built by following standard markdown links in the entry file:
+
+```markdown
+## Context
+
+See [auth storage design](./design/auth-storage.md) and [shared decisions](./design/shared-decisions.md).
+
+## Tasks
+
+- [ ] Implement auth storage
+- [ ] Wire up session refresh
+```
+
+Every `[label](target.md)` link (image links are ignored) is resolved relative to the entry file and its content pulled into the corpus. If a linked file lives in a directory named `tasks/`, every sibling `.md` file in that directory is ingested too, so a plan can point at one task file and pick up the rest of the set. The corpus is capped at 50 files and 200,000 characters. URLs, directories, non-markdown targets, and missing or empty files are recorded as validation errors that block the run before any implementation starts.
+
+Indented `Plan:` linkage lines under a task are also still supported as a legacy reference style:
 
 ```markdown
 ## Tasks
@@ -102,9 +119,9 @@ For index-style plans, a task can reference supporting markdown files with inden
   - Plan: <shared-decisions.md>
 ```
 
-Supported references contain exactly one `Plan:` target per line, written as either a backticked or angle-bracketed local markdown path. Multiple `Plan:` lines under one task are allowed. URLs, non-markdown targets, directories, missing files, empty files, malformed references, and multiple references on one line block execution before implementation.
+Each `Plan:` line carries exactly one backticked or angle-bracketed local markdown path; multiple lines per task are allowed, and the same URL/non-markdown/directory/missing/empty/malformed rules block execution.
 
-During the execution planning phase, the planner reads referenced supporting files as source material and produces compiled task contracts that exclude sibling deliverables. Implementer and reviewer prompts contain only the compiled task contract for the selected task; they do not receive whole referenced supporting files as selected-task scope. The overall reviewer receives the full plan corpus, including referenced material, to check for planner/compiler omissions.
+During execution planning, the planner reads the full corpus as source material and produces compiled task contracts that exclude sibling deliverables. Implementer and reviewer prompts contain only the compiled task contract for the selected task; they do not receive whole supporting files as selected-task scope. The overall reviewer receives the full plan corpus, including referenced material, to check for planner/compiler omissions.
 
 ## Source checkbox projection and roll-forward recovery
 
