@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { RuntimeSubagentClient, subagentResultText } from "./subagents.js";
 
-vi.mock("pi-sandbox/src/runtime/binary.js", () => ({
-  getNonoPath: vi.fn(() => "/usr/local/bin/nono"),
-}));
-
 function makeRuntime() {
   const snapshots = new Map<string, any>();
   const runtime = {
@@ -18,7 +14,6 @@ function makeRuntime() {
         cwd: input.cwd,
         model: input.model,
         thinking: input.thinking,
-        sandboxMode: input.sandboxMode,
         health: { toolUses: 2, tokensTotal: 42 },
       };
       snapshots.set(id, snapshot);
@@ -42,7 +37,7 @@ vi.mock("pi-subagents/runtime", () => ({
 }));
 
 describe("RuntimeSubagentClient", () => {
-  it("spawns pi-implement workers through the runtime with owner, cwd, thinking, and sandbox metadata", async () => {
+  it("spawns pi-implement workers through the runtime with owner, cwd, and thinking metadata", async () => {
     const runtime = makeRuntime();
     const pi = { __runtime: runtime };
     const ctx = { cwd: "/repo", modelRegistry: { find: vi.fn() } };
@@ -61,7 +56,6 @@ describe("RuntimeSubagentClient", () => {
       role: "implementer",
       taskId: "t001-task",
       cwd: "/repo/.pi/implement/worktrees/run-1/t001-task",
-      sandboxMode: "workspace-write",
     });
 
     expect(id).toBe("agent-1");
@@ -76,13 +70,12 @@ describe("RuntimeSubagentClient", () => {
         cwd: "/repo/.pi/implement/worktrees/run-1/t001-task",
         model: "p/m",
         thinking: "high",
-        sandboxMode: "workspace-write",
         mode: "background",
       }),
     );
   });
 
-  it("makes reviewer workers mechanically read-only without excluding injected explore", async () => {
+  it("keeps reviewer workers on read-oriented tools while allowing injected explore", async () => {
     const runtime = makeRuntime();
     const pi = { __runtime: runtime };
     const ctx = { cwd: "/repo", modelRegistry: { find: vi.fn() } };
@@ -102,8 +95,7 @@ describe("RuntimeSubagentClient", () => {
 
     expect(runtime.runManagedAgent).toHaveBeenCalledWith(
       expect.objectContaining({
-        sandboxMode: "read-only",
-        tools: ["read", "bash", "grep", "find", "ls"],
+        tools: ["read", "bash", "grep", "find", "ls", "explore"],
         excludeTools: expect.arrayContaining(["edit", "write", "Agent"]),
       }),
     );
@@ -169,7 +161,6 @@ describe("RuntimeSubagentClient", () => {
         cwd: "/repo",
         toolUses: 2,
         tokensTotal: 42,
-        sandboxMode: "workspace-write",
       }),
     ]);
   });

@@ -96,7 +96,6 @@ export function formatDetail(
     `Model: ${snapshot.model ?? "unknown"}`,
     `Thinking: ${snapshot.thinking ?? "unknown"}`,
     `CWD: ${snapshot.cwd}`,
-    `Sandbox: ${snapshot.sandboxMode ?? "inherit"}`,
     `Extension binding: ${snapshot.extensionBinding}`,
     `Elapsed: ${elapsedLabel(snapshot)}`,
     `Health: ${healthLabel(snapshot) || "unavailable"}`,

@@ -145,7 +145,6 @@ async function runExecutionPlanner(
       thinking: req.roles.planner.thinking,
       role: "planner",
       readOnly: true,
-      sandboxMode: "read-only",
       cwd: req.repoRoot,
     });
     const plannerRef: AgentDisplayRef = {
@@ -215,7 +214,6 @@ ${rawResult}`;
       thinking: req.roles.planner.thinking,
       role: "planner",
       readOnly: true,
-      sandboxMode: "read-only",
       cwd: req.repoRoot,
     });
     repairId = id;

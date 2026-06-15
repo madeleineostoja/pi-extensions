@@ -182,7 +182,6 @@ describe("public subagent tools", () => {
         isBackground: true,
         cwd: "/task-worktree",
         model: "p/m",
-        sandboxMode: "workspace-write",
       },
     });
 
@@ -206,7 +205,6 @@ describe("public subagent tools", () => {
       expect.objectContaining({
         cwd: "/task-worktree",
         model: { provider: "p", id: "m" },
-        sandboxMode: "workspace-write",
         customTools: [expect.objectContaining({ name: "explore" })],
       }),
     );
@@ -243,7 +241,6 @@ describe("public subagent tools", () => {
       }),
     );
     expect(createSession.mock.calls[0][0]).not.toHaveProperty("thinkingLevel");
-    expect(createSession.mock.calls[0][0]).not.toHaveProperty("sandboxMode");
     expect(calls.indexOf("bindExtensions")).toBeLessThan(
       calls.indexOf("prompt"),
     );

@@ -10,7 +10,7 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 - **Independent review gate** — a separate reviewer subagent judges correctness, quality, scope, and verification before anything is committed; changes-requested feedback is fed back to a bounded rework loop.
 - **Whole-feature overall review** — once all tasks land, a read-only reviewer assesses the combined diff against the original plan and can require follow-up work.
 - **Serial or parallel execution** — auto-selects per plan whether tasks should run one at a time or through a dependency graph. Parallel tasks run in isolated worktrees and integrate back one at a time with verification at each step.
-- **Sandboxed subagents** — implementers and reviewers are confined to their worktree; the orchestrator detects and blocks (or auto-heals) any out-of-bounds change to HEAD, the candidate diff, the main checkout, or plan artifacts.
+- **Subagent isolation checks** — implementers and reviewers run from their assigned worktree; the orchestrator detects and blocks (or auto-heals) any out-of-bounds change to HEAD, the candidate diff, the main checkout, or plan artifacts.
 - **Built-in verification** — runs a configured verify command or auto-detected `test`/`typecheck`/`build` scripts, with an LLM integration review as a last resort. Precommit hooks are a hard gate and are never bypassed.
 - **Index-style plans** — top-level tasks can link out to supporting markdown files, which are inlined into the implementer's context.
 - **Durable, resumable state** — per-run state, artifacts, and worktrees are persisted under `<repo>/.pi/implement/`; runs are lockable across sessions, auto-cleaned on success, and inspectable/recoverable on failure.
@@ -38,7 +38,7 @@ Zero or one unchecked task short-circuits to serial. Otherwise a progressive pla
 
 Passing `--serial` forces serial execution and skips the planner entirely.
 
-Parallel execution runs independent tasks concurrently up to `maxParallel` from config, with a hard maximum of `8`. Each autonomous worker runs from its assigned task worktree as its current working directory; pi-implement owns those worktrees and the sandbox boundaries around them.
+Parallel execution runs independent tasks concurrently up to `maxParallel` from config, with a hard maximum of `8`. Each autonomous worker runs from its assigned task worktree as its current working directory; pi-implement owns those worktrees and validates the boundaries around them.
 
 ## Execution planning and compiled task contracts
 
@@ -78,7 +78,7 @@ Implementer and reviewer prompts are self-contained contracts that instruct suba
 - Implementers may not change HEAD, dirty the main checkout outside their task worktree, or modify plan artifacts — any of these blocks the run.
 - Reviewers are read-only; benign reviewer mutations to the candidate diff are auto-healed back to the reviewed state, and unhealable changes block the run.
 - The overall reviewer must leave HEAD, the staged state, the worktree, and plan artifacts unchanged.
-- Internally owned workers run through `pi-subagents` with pi-implement-selected sandbox modes: implementation and self-heal roles use task-worktree write access, while review and planning roles are read-only.
+- Internally owned workers run through `pi-subagents`, inherit the host extension environment, and use pi-implement-selected tool sets: implementation and self-heal roles use the host's active tools, while review and planning roles use read-oriented tools.
 
 Plan checkbox updates are intentionally not part of any commit. Plan files may be gitignored or live outside the repository, as long as `/implement` is run from inside the target repository.
 

@@ -37,7 +37,6 @@ export type {
   RuntimeOwner,
   RuntimeSnapshot,
   RuntimeTimestamps,
-  SandboxMode,
   SubagentRuntimeStatus,
 } from "./runtime.js";
 
@@ -74,7 +73,6 @@ type SubagentRpcPayload = {
     isBackground?: unknown;
     model?: unknown;
     cwd?: unknown;
-    sandboxMode?: unknown;
   };
 };
 
@@ -129,9 +127,6 @@ export default function (pi: ExtensionAPI): void {
             : request.prompt.slice(0, 120),
         cwd: typeof options.cwd === "string" ? options.cwd : currentCtx.cwd,
         ...(typeof options.model === "string" ? { model: options.model } : {}),
-        ...(typeof options.sandboxMode === "string"
-          ? { sandboxMode: options.sandboxMode }
-          : {}),
         mode: "background",
         ctx: currentCtx,
       });

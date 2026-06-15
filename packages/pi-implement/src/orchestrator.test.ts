@@ -577,7 +577,7 @@ describe("runImplementation", () => {
     expect(states.at(-1)).toMatchObject({ phase: "done" });
   });
 
-  it("serial task implementer spawn uses the task cwd with workspace-write sandbox", async () => {
+  it("serial task implementer spawn uses the task cwd and role", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
     writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
@@ -609,7 +609,6 @@ describe("runImplementation", () => {
     );
     expect(implementerSpawn).toBeDefined();
     expect(implementerSpawn?.cwd).toBe(git.rootValue);
-    expect(implementerSpawn?.sandboxMode).toBe("workspace-write");
     expect(implementerSpawn?.role).toBe("implementer");
   });
 
@@ -1164,7 +1163,6 @@ describe("runImplementation", () => {
     );
     expect(implementerSpawn).toBeDefined();
     expect(implementerSpawn?.cwd).toBe(git.addedWorktrees[0]?.path);
-    expect(implementerSpawn?.sandboxMode).toBe("workspace-write");
     expect(implementerSpawn?.role).toBe("implementer");
   });
 
@@ -4107,7 +4105,6 @@ describe("runImplementation", () => {
     );
     expect(reviewSpawn).toBeDefined();
     expect(reviewSpawn?.cwd).toBe(git.rootValue);
-    expect(reviewSpawn?.sandboxMode).toBe("read-only");
     expect(reviewSpawn?.readOnly).toBe(true);
     expect(reviewSpawn!.prompt).toContain("Outcome Discrepancy");
     expect(git.commits).toHaveLength(1);

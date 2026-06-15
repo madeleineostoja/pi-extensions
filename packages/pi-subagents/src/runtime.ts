@@ -31,13 +31,6 @@ export type SubagentRuntimeStatus =
 
 export type ExtensionBindingStatus = "bound" | "unbound";
 
-export type SandboxMode =
-  | "inherit"
-  | "none"
-  | "read-only"
-  | "workspace-write"
-  | string;
-
 export type RuntimeTimestamps = {
   queuedAt: string;
   startedAt?: string;
@@ -88,7 +81,6 @@ export type RuntimeSnapshot = {
   model?: string;
   thinking?: ThinkingLevel;
   extensionBinding: ExtensionBindingStatus;
-  sandboxMode?: SandboxMode;
   timestamps: RuntimeTimestamps;
   health?: RuntimeHealth;
   result?: unknown;
@@ -103,7 +95,6 @@ export type QueueSubagentInput = {
   model?: string;
   thinking?: ThinkingLevel;
   extensionBinding?: ExtensionBindingStatus;
-  sandboxMode?: SandboxMode;
 };
 
 export type PublicAgentMode = "foreground" | "background";
@@ -125,7 +116,6 @@ export type RunManagedAgentInput = {
   mode?: PublicAgentMode;
   ctx: ExtensionContext;
   signal?: AbortSignal;
-  sandboxMode?: SandboxMode;
   owner?: RuntimeOwner;
   tools?: string[];
   excludeTools?: string[];
@@ -164,9 +154,7 @@ type PublicAgentSession = Pick<
   getAllTools?: () => Array<{ name: string }>;
 };
 
-type CreateSessionOptions = Parameters<typeof createAgentSession>[0] & {
-  sandboxMode?: SandboxMode;
-};
+type CreateSessionOptions = Parameters<typeof createAgentSession>[0];
 type CreateSessionResult = { session: PublicAgentSession };
 type CreateSession = (
   options?: CreateSessionOptions,
@@ -185,11 +173,6 @@ const publicToolNames = new Set([
   "steer_subagent",
 ]);
 const readOnlyToolNames = ["read", "bash", "grep", "find", "ls"];
-const constrainedSandboxModes = new Set<SandboxMode>([
-  "inherit",
-  "read-only",
-  "workspace-write",
-]);
 const EXPLORE_TOOL_TIMEOUT_MS = 120_000;
 const EXPLORE_TOOL_MAX_RESULT_CHARS = 50_000;
 const exploreEligibleTypes = new Set([
@@ -223,9 +206,6 @@ function snapshot(record: RuntimeRecord): RuntimeSnapshot {
     ...(record.model === undefined ? {} : { model: record.model }),
     ...(record.thinking === undefined ? {} : { thinking: record.thinking }),
     extensionBinding: record.extensionBinding,
-    ...(record.sandboxMode === undefined
-      ? {}
-      : { sandboxMode: record.sandboxMode }),
     timestamps: {
       queuedAt: record.queuedAt,
       ...(record.startedAt === undefined
@@ -451,35 +431,6 @@ function findModel(
   return model;
 }
 
-function sandboxRequiresRestrictedBash(
-  sandboxMode: SandboxMode | undefined,
-): boolean {
-  return sandboxMode !== undefined && constrainedSandboxModes.has(sandboxMode);
-}
-
-function createRestrictedNestedBashTool(
-  sandboxMode: SandboxMode,
-): ToolDefinition {
-  return {
-    name: "bash",
-    label: "bash",
-    description:
-      "Bash is unavailable in this nested Explore child because the parent session has sandbox/read-only constraints that cannot be safely relaxed. Use read, grep, find, and ls instead.",
-    parameters: Type.Object({
-      command: Type.String(),
-      timeout: Type.Optional(Type.Number()),
-    }),
-    async execute() {
-      const text = `bash unavailable in nested explore: parent sandbox mode '${sandboxMode}' is enforced. Use read, grep, find, and ls instead.`;
-      return {
-        content: [{ type: "text", text }],
-        details: { sandboxMode, blocked: true },
-        isError: true,
-      };
-    },
-  };
-}
-
 function buildExplorePrompt(params: ExploreToolParams): string {
   return [
     "You are a nested read-only Explore child. Answer the parent agent's bounded codebase exploration question.",
@@ -614,9 +565,6 @@ export class SubagentRuntime {
       ...(model === undefined ? {} : { model }),
       ...(thinking === undefined ? {} : { thinking }),
       extensionBinding: input.extensionBinding ?? "unbound",
-      ...(input.sandboxMode === undefined
-        ? {}
-        : { sandboxMode: input.sandboxMode }),
       queuedAt: timestamp,
       updatedAt: timestamp,
       steeringQueue: [],
@@ -649,7 +597,6 @@ export class SubagentRuntime {
       model: input.model,
       thinking: input.thinking,
       extensionBinding: "unbound",
-      sandboxMode: input.sandboxMode,
     });
     const record = this.#requireRecord(queued.id);
     this.start(record.id);
@@ -733,7 +680,6 @@ export class SubagentRuntime {
         mode: "background",
         ctx,
         signal: timeout.signal,
-        sandboxMode: parent.sandboxMode,
         owner:
           typeof parent.owner === "object" &&
           parent.owner.kind === "pi-implement"
@@ -886,9 +832,6 @@ export class SubagentRuntime {
         ...(record.thinking === undefined
           ? {}
           : { thinkingLevel: record.thinking }),
-        ...(record.sandboxMode === undefined
-          ? {}
-          : { sandboxMode: record.sandboxMode }),
         ...(nested
           ? {
               tools: input.tools ?? readOnlyToolNames,
@@ -898,7 +841,6 @@ export class SubagentRuntime {
                 "edit",
                 "write",
               ],
-              customTools: this.#nestedCustomToolsFor(record),
             }
           : {
               ...(input.tools === undefined ? {} : { tools: input.tools }),
@@ -965,17 +907,6 @@ export class SubagentRuntime {
       return undefined;
     }
     return [this.createExploreTool(snapshot(record))];
-  }
-
-  #nestedCustomToolsFor(record: RuntimeRecord): ToolDefinition[] | undefined {
-    const { sandboxMode } = record;
-    if (
-      sandboxMode === undefined ||
-      !sandboxRequiresRestrictedBash(sandboxMode)
-    ) {
-      return undefined;
-    }
-    return [createRestrictedNestedBashTool(sandboxMode)];
   }
 
   async #disposeSession(session: PublicAgentSession): Promise<void> {

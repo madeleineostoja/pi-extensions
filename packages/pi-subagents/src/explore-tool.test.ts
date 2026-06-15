@@ -83,7 +83,6 @@ describe("runtime-injected explore tool", () => {
       type: "pi-implement:implementer",
       prompt: "implement",
       cwd: "/task-worktree",
-      sandboxMode: "workspace-write",
       ctx: makeCtx() as never,
     });
     await runtime.runManagedAgent({
@@ -96,7 +95,6 @@ describe("runtime-injected explore tool", () => {
       type: "pi-implement:reviewer",
       prompt: "review",
       cwd: "/task-worktree",
-      sandboxMode: "read-only",
       ctx: makeCtx() as never,
     });
     await runtime.runPublicAgent({
@@ -132,7 +130,7 @@ describe("runtime-injected explore tool", () => {
     const sessions = [reviewer, explore];
     const createSession = vi.fn(async () => ({ session: sessions.shift()! }));
     const runtime = new SubagentRuntime(makePi() as never, { createSession });
-    const readOnlyTools = ["read", "bash", "grep", "find", "ls"];
+    const readOnlyTools = ["read", "bash", "grep", "find", "ls", "explore"];
 
     await runtime.runManagedAgent({
       owner: {
@@ -144,7 +142,6 @@ describe("runtime-injected explore tool", () => {
       type: "pi-implement:reviewer",
       prompt: "review",
       cwd: "/task-worktree",
-      sandboxMode: "read-only",
       tools: readOnlyTools,
       ctx: makeCtx() as never,
     });
@@ -174,7 +171,7 @@ describe("runtime-injected explore tool", () => {
     expect(explore.setActiveToolsByName).toHaveBeenCalledWith(readOnlyTools);
   });
 
-  it("creates nested Explore metadata with inherited cwd, owner, model, thinking, sandbox, and read-only tools", async () => {
+  it("creates nested Explore metadata with inherited cwd, owner, model, thinking, and read-only tools", async () => {
     const pi = makePi(["read", "bash", "Agent", "edit", "write", "explore"]);
     const child = makeSession("nested result");
     const createSession = vi.fn(async () => ({ session: child }));
@@ -200,7 +197,6 @@ describe("runtime-injected explore tool", () => {
       type: "pi-implement:implementer",
       description: "implement",
       cwd: "/task-worktree",
-      sandboxMode: "workspace-write",
     });
     const result = await runtime.runExploreTool(
       parent,
@@ -214,7 +210,6 @@ describe("runtime-injected explore tool", () => {
         cwd: "/task-worktree",
         model: { provider: "configured", id: "explore" },
         thinkingLevel: "low",
-        sandboxMode: "workspace-write",
         tools: ["read", "bash", "grep", "find", "ls"],
         excludeTools: [
           "explore",
@@ -224,7 +219,6 @@ describe("runtime-injected explore tool", () => {
           "edit",
           "write",
         ],
-        customTools: [expect.objectContaining({ name: "bash" })],
       }),
     );
     expect(child.setActiveToolsByName).toHaveBeenCalledWith([
@@ -234,19 +228,6 @@ describe("runtime-injected explore tool", () => {
       "find",
       "ls",
     ]);
-    const firstCreateSessionCall = createSession.mock.calls[0] as any[];
-    const restrictedBash = firstCreateSessionCall[0].customTools[0];
-    await expect(
-      restrictedBash.execute("call-1", { command: "touch file" }),
-    ).resolves.toMatchObject({
-      isError: true,
-      details: { sandboxMode: "workspace-write", blocked: true },
-      content: [
-        expect.objectContaining({
-          text: expect.stringContaining("parent sandbox mode"),
-        }),
-      ],
-    });
     expect(runtime.snapshots()).toEqual([parent]);
     expect(runtime.snapshots({ includeNested: true })).toContainEqual(
       expect.objectContaining({
@@ -255,7 +236,6 @@ describe("runtime-injected explore tool", () => {
         cwd: "/task-worktree",
         model: "configured/explore",
         thinking: "low",
-        sandboxMode: "workspace-write",
         owner: {
           kind: "nested",
           parentId: parent.id,

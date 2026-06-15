@@ -66,7 +66,7 @@ Steering fails for unknown, queued, completed, failed, or stopped agents.
 
 Foreground agents are for bounded work where the caller needs the answer before continuing. Background agents are for longer independent work; keep the returned `id`, optionally steer them, then join them with `get_subagent_result`.
 
-Use `/agents` to inspect current-session subagents and stop running work. Runtime records are session-scoped and include status, owner, type, description, cwd, model/thinking overrides, sandbox mode, timestamps, health, and final result or error.
+Use `/agents` to inspect current-session subagents and stop running work. Runtime records are session-scoped and include status, owner, type, description, cwd, model/thinking overrides, timestamps, health, and final result or error.
 
 ## Configuration
 
@@ -99,7 +99,7 @@ If no model is configured or passed to `Agent`, the subagent session uses the cu
 
 Other bundled extensions can use the same runtime directly. `pi-implement` uses internal managed agents for implementer, reviewer, planner, and self-heal roles while keeping its own role model/thinking configuration in `~/.pi/agent/extensions/pi-implement/config.json`.
 
-Managed agents may opt into different sandbox modes and tool sets. `pi-implement` owns the task-worktree boundaries for its autonomous workers; public `pi-subagents` v1 does not create separate worktrees or provide a scheduler.
+Managed agents may opt into different tool sets. `pi-implement` owns the task-worktree boundaries for its autonomous workers; public `pi-subagents` v1 does not create separate worktrees or provide a scheduler.
 
 ## v1 limitations
 

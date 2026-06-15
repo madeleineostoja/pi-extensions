@@ -1153,7 +1153,6 @@ async function tryIntegrationSelfHeal(
     role: "selfHeal",
     taskId,
     cwd: task.worktreePath,
-    sandboxMode: "workspace-write",
   });
   const ref: AgentDisplayRef = {
     id,
@@ -1396,7 +1395,6 @@ async function trySchedulerSelfHeal(
       thinking: deps.roles.selfHeal.thinking,
       role: "selfHeal",
       cwd: await deps.git.root(),
-      sandboxMode: "workspace-write",
     });
     const ref: AgentDisplayRef = {
       id,
@@ -2271,7 +2269,6 @@ Or:
     taskId,
     cwd: await deps.git.root(),
     readOnly: true,
-    sandboxMode: "read-only",
   });
   const ref: AgentDisplayRef = {
     id,
@@ -2445,7 +2442,6 @@ async function runOverallReviewOnce(
     role: "reviewer",
     cwd: await deps.git.root(),
     readOnly: true,
-    sandboxMode: "read-only",
   });
   const ref: AgentDisplayRef = {
     id,
@@ -2609,7 +2605,6 @@ async function runOverallReworkAttempt(
     thinking: deps.roles.implementer.thinking,
     role: "implementer",
     cwd: await deps.git.root(),
-    sandboxMode: "workspace-write",
   });
   const ref: AgentDisplayRef = {
     id,
@@ -3714,7 +3709,6 @@ async function runTaskWorker(args: {
       role: "implementer",
       taskId,
       cwd: effectiveWorktreePath,
-      sandboxMode: "workspace-write",
     });
     const implementerRef: AgentDisplayRef = {
       id: implementerId,
@@ -4135,7 +4129,6 @@ async function runTaskWorker(args: {
         taskId,
         cwd: effectiveWorktreePath,
         readOnly: true,
-        sandboxMode: "read-only",
       });
       const reviewerRef: AgentDisplayRef = {
         id: reviewerId,

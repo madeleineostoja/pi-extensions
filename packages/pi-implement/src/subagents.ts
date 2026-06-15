@@ -3,12 +3,7 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { getSubagentRuntime } from "pi-subagents/runtime";
-import type {
-  RuntimeSnapshot,
-  SandboxMode,
-  ThinkingLevel,
-} from "pi-subagents/runtime";
-import { getNonoPath } from "pi-sandbox/src/runtime/binary.js";
+import type { RuntimeSnapshot, ThinkingLevel } from "pi-subagents/runtime";
 
 export type SubagentClient = {
   probe(timeoutMs?: number): Promise<ProbeResult>;
@@ -35,7 +30,6 @@ export type SpawnArgs = {
   cwd?: string;
   role?: PiImplementWorkerRole;
   taskId?: string;
-  sandboxMode?: SandboxMode;
   readOnly?: boolean;
 };
 
@@ -49,7 +43,6 @@ export type AgentSnapshot = {
   cwd?: string;
   model?: string;
   thinking?: ThinkingLevel;
-  sandboxMode?: SandboxMode;
 };
 
 export type SubagentResult =
@@ -57,7 +50,7 @@ export type SubagentResult =
   | { status: "failed"; error: string }
   | { status: "stopped"; error: string };
 
-const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"];
+const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls", "explore"];
 const MUTATING_TOOLS = [
   "edit",
   "write",
@@ -65,11 +58,6 @@ const MUTATING_TOOLS = [
   "get_subagent_result",
   "steer_subagent",
 ];
-const SANDBOXED_MODES = new Set<SandboxMode>([
-  "inherit",
-  "read-only",
-  "workspace-write",
-]);
 
 export class RuntimeSubagentClient implements SubagentClient {
   private readonly runtime;
@@ -90,8 +78,6 @@ export class RuntimeSubagentClient implements SubagentClient {
   async spawn(args: SpawnArgs): Promise<string> {
     const cwd = args.cwd ?? this.ctx.cwd;
     const role = args.role ?? "implementer";
-    const sandboxMode = args.sandboxMode ?? defaultSandboxForRole(role);
-    assertSandboxAvailable(sandboxMode);
     const snapshot = await this.runtime.runManagedAgent({
       owner: {
         kind: "pi-implement",
@@ -105,7 +91,6 @@ export class RuntimeSubagentClient implements SubagentClient {
       cwd,
       model: args.model,
       thinking: args.thinking,
-      sandboxMode,
       mode: "background",
       ctx: this.ctx,
       ...(args.readOnly || role === "reviewer" || role === "planner"
@@ -199,24 +184,6 @@ function registerPiImplementDefinitions(
   }
 }
 
-function defaultSandboxForRole(role: PiImplementWorkerRole): SandboxMode {
-  return role === "implementer" || role === "selfHeal"
-    ? "workspace-write"
-    : "read-only";
-}
-
-function assertSandboxAvailable(sandboxMode: SandboxMode | undefined): void {
-  if (
-    sandboxMode &&
-    SANDBOXED_MODES.has(sandboxMode) &&
-    getNonoPath() === null
-  ) {
-    throw new Error(
-      `pi-implement requires pi-sandbox subprocess confinement for sandbox mode '${sandboxMode}', but nono is unavailable. Install nono before running autonomous workers.`,
-    );
-  }
-}
-
 function toAgentSnapshot(snapshot: RuntimeSnapshot): AgentSnapshot {
   return {
     id: snapshot.id,
@@ -227,7 +194,6 @@ function toAgentSnapshot(snapshot: RuntimeSnapshot): AgentSnapshot {
     cwd: snapshot.cwd,
     model: snapshot.model,
     thinking: snapshot.thinking,
-    sandboxMode: snapshot.sandboxMode,
   };
 }
 

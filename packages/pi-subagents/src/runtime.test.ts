@@ -60,7 +60,6 @@ describe("SubagentRuntime", () => {
       model: "provider/model",
       thinking: "high",
       extensionBinding: "bound",
-      sandboxMode: "workspace-write",
     });
 
     expect(queued).toMatchObject({
@@ -73,7 +72,6 @@ describe("SubagentRuntime", () => {
       model: "provider/model",
       thinking: "high",
       extensionBinding: "bound",
-      sandboxMode: "workspace-write",
     });
     expect(queued.timestamps.queuedAt).toEqual(expect.any(String));
 

@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@pi-extensions/lib": "0.1.0",
-    "pi-sandbox": "*",
     "pi-subagents": "*"
   },
   "pi": {
