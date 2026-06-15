@@ -89,7 +89,6 @@ describe("SubagentRuntime", () => {
     expect(runtime.fail(failed.id, new Error("boom"))).toMatchObject({
       status: "failed",
       error: "boom",
-      thinking: "medium",
       extensionBinding: "unbound",
     });
     expect(runtime.stop(stopped.id, "cancelled")).toMatchObject({
@@ -107,7 +106,7 @@ describe("SubagentRuntime", () => {
           Explore: "provider/explore",
           Review: undefined,
         },
-        thinking: { General: "medium", Explore: "low", Review: "medium" },
+        thinking: { General: undefined, Explore: "low", Review: undefined },
       },
     });
 

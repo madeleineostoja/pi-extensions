@@ -21,7 +21,7 @@ export type PublicSubagentsConfig = {
 
 export type ResolvedPublicSubagentsConfig = {
   models: Record<PublicBuiltinType, string | undefined>;
-  thinking: Record<PublicBuiltinType, ThinkingLevel>;
+  thinking: Record<PublicBuiltinType, ThinkingLevel | undefined>;
 };
 
 export type ParsedPublicSubagentsConfig = {
@@ -29,7 +29,6 @@ export type ParsedPublicSubagentsConfig = {
   warnings: string[];
 };
 
-const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
 const publicTypes = new Set<string>(PUBLIC_BUILTIN_TYPES);
 const thinkingLevels = new Set<string>(THINKING_LEVELS);
 
@@ -148,9 +147,9 @@ export function resolvePublicConfig(
       Review: config.models?.Review,
     },
     thinking: {
-      General: config.thinking?.General ?? DEFAULT_THINKING_LEVEL,
-      Explore: config.thinking?.Explore ?? DEFAULT_THINKING_LEVEL,
-      Review: config.thinking?.Review ?? DEFAULT_THINKING_LEVEL,
+      General: config.thinking?.General,
+      Explore: config.thinking?.Explore,
+      Review: config.thinking?.Review,
     },
   };
 }

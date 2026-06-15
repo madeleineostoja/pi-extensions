@@ -31,7 +31,7 @@ describe("public pi-subagents config", () => {
     });
   });
 
-  it("warns on invalid entries and exposes resolved defaults", () => {
+  it("warns on invalid entries and leaves missing values unresolved", () => {
     const parsed = parsePublicConfig(
       JSON.stringify({
         models: { General: "", Unknown: "p/unknown" },
@@ -51,7 +51,7 @@ describe("public pi-subagents config", () => {
     ]);
     expect(resolvePublicConfig(parsed.config)).toEqual({
       models: { General: undefined, Explore: undefined, Review: undefined },
-      thinking: { General: "medium", Explore: "medium", Review: "medium" },
+      thinking: { General: "medium", Explore: undefined, Review: undefined },
     });
   });
 
@@ -72,7 +72,7 @@ describe("public pi-subagents config", () => {
         loadPublicConfig({ path, warn: (message) => warnings.push(message) }),
       ).toEqual({
         models: { General: undefined, Explore: undefined, Review: "p/review" },
-        thinking: { General: "medium", Explore: "medium", Review: "low" },
+        thinking: { General: undefined, Explore: undefined, Review: "low" },
       });
       expect(warnings).toEqual([]);
     } finally {

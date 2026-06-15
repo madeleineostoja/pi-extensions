@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getSubagentRuntime } from "./runtime.js";
+import { Type } from "typebox";
+import { getSubagentRuntime, type RuntimeSnapshot } from "./runtime.js";
 
 export {
   AgentDefinitionRegistry,
@@ -28,13 +29,113 @@ export type {
 export { getSubagentRuntime, SubagentRuntime } from "./runtime.js";
 export type {
   ExtensionBindingStatus,
+  PublicAgentMode,
   QueueSubagentInput,
+  RunPublicAgentInput,
   RuntimeSnapshot,
   RuntimeTimestamps,
   SandboxMode,
   SubagentRuntimeStatus,
 } from "./runtime.js";
 
+const PublicAgentType = Type.Union([
+  Type.Literal("General"),
+  Type.Literal("Explore"),
+  Type.Literal("Review"),
+]);
+
+const Thinking = Type.Union([
+  Type.Literal("off"),
+  Type.Literal("minimal"),
+  Type.Literal("low"),
+  Type.Literal("medium"),
+  Type.Literal("high"),
+  Type.Literal("xhigh"),
+]);
+
+function toolResult(snapshot: RuntimeSnapshot) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(snapshot) }],
+    details: snapshot,
+    isError: snapshot.status === "failed" || snapshot.status === "stopped",
+  };
+}
+
 export default function (pi: ExtensionAPI): void {
-  getSubagentRuntime(pi);
+  const runtime = getSubagentRuntime(pi);
+
+  pi.registerTool({
+    name: "Agent",
+    label: "Agent",
+    description:
+      "Run a General, Explore, or Review subagent. Defaults to foreground and returns the result; for background, use get_subagent_result with wait:true to join instead of polling.",
+    parameters: Type.Object({
+      subagent_type: PublicAgentType,
+      prompt: Type.String({ description: "Task prompt for the subagent." }),
+      description: Type.Optional(
+        Type.String({ description: "Short human-readable task summary." }),
+      ),
+      mode: Type.Optional(
+        Type.Union([Type.Literal("foreground"), Type.Literal("background")], {
+          description:
+            "Default foreground. Use background for long-running work.",
+        }),
+      ),
+      model: Type.Optional(
+        Type.String({ description: "Optional provider/model override." }),
+      ),
+      thinking: Type.Optional(Thinking),
+      cwd: Type.Optional(
+        Type.String({ description: "Optional working directory override." }),
+      ),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const snapshot = await runtime.runPublicAgent({
+        type: params.subagent_type,
+        prompt: params.prompt,
+        description: params.description,
+        cwd: params.cwd ?? ctx.cwd,
+        model: params.model,
+        thinking: params.thinking,
+        mode: params.mode ?? "foreground",
+        ctx,
+        signal,
+      });
+      return toolResult(snapshot);
+    },
+  });
+
+  pi.registerTool({
+    name: "get_subagent_result",
+    label: "get_subagent_result",
+    description:
+      "Check a background subagent. Use wait:false for immediate status or wait:true to join; do not poll when you need the final result.",
+    parameters: Type.Object({
+      id: Type.String({ description: "Background subagent id." }),
+      wait: Type.Boolean({
+        description:
+          "false returns current status immediately; true waits for completion.",
+        default: false,
+      }),
+    }),
+    async execute(_toolCallId, params) {
+      const snapshot = await runtime.result(params.id, params.wait);
+      return toolResult(snapshot);
+    },
+  });
+
+  pi.registerTool({
+    name: "steer_subagent",
+    label: "steer_subagent",
+    description:
+      "Send guidance to a running background subagent. Fails for unknown or completed agents; use get_subagent_result wait:true to join.",
+    parameters: Type.Object({
+      id: Type.String({ description: "Background subagent id." }),
+      message: Type.String({ description: "Steering message to send." }),
+    }),
+    async execute(_toolCallId, params) {
+      const snapshot = await runtime.steer(params.id, params.message);
+      return toolResult(snapshot);
+    },
+  });
 }
