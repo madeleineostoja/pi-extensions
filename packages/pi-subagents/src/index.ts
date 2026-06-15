@@ -110,10 +110,12 @@ export type PublicAgentParams = Static<typeof PublicAgentParameters>;
 export default function (pi: ExtensionAPI): void {
   const runtime = getSubagentRuntime(pi);
   const roster = new SubagentRosterController(runtime);
+
   pi.on("session_shutdown", (event: { reason?: string } = {}) => {
     roster.dispose();
     runtime.handleSessionShutdown(event.reason);
   });
+
   pi.on("session_start", (event: { reason?: string } = {}) => {
     roster.dispose();
     runtime.beginSession(event.reason);
