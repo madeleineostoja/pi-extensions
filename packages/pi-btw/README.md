@@ -29,4 +29,4 @@ Side questions are ephemeral: they do not enter the main conversation transcript
 
 ## Distinction from subagents
 
-`/btw` is intentionally lightweight: it uses a direct model completion, has no tools, and does not spawn a background Pi session. For full tool-capable background work, use `@tintinweb/pi-subagents`.
+`/btw` is intentionally lightweight: it uses a direct model completion, has no tools, and does not spawn a background Pi session. For full tool-capable background work, use the bundled `pi-subagents` extension's `Agent` tooling.

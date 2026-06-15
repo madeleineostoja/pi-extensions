@@ -34,7 +34,9 @@
   "scripts": {
     "lint": "oxlint",
     "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "check": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run --testTimeout 15000"
   },
   "devDependencies": {

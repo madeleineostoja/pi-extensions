@@ -451,7 +451,9 @@ function parseTaggedJsonObject(
 function parseTaggedJsonObjects(
   text: string,
   tag: string,
-): { ok: true; values: Record<string, unknown>[] } | { ok: false; reason: string } {
+):
+  | { ok: true; values: Record<string, unknown>[] }
+  | { ok: false; reason: string } {
   const candidates = taggedContents(text, tag);
   if (candidates.length === 0) {
     return { ok: false, reason: `Response did not include <${tag}> output.` };

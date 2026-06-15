@@ -38,7 +38,7 @@ Zero or one unchecked task short-circuits to serial. Otherwise a progressive pla
 
 Passing `--serial` forces serial execution and skips the planner entirely.
 
-Parallel execution runs independent tasks concurrently up to `maxParallel` from config, with a hard maximum of `8`.
+Parallel execution runs independent tasks concurrently up to `maxParallel` from config, with a hard maximum of `8`. Each autonomous worker runs from its assigned task worktree as its current working directory; pi-implement owns those worktrees and the sandbox boundaries around them.
 
 ## Execution planning and compiled task contracts
 
@@ -67,24 +67,26 @@ If the overall reviewer requests changes, pi-implement can autonomously run a bo
 
 ## Parallel execution and integration
 
-In parallel mode, the planner produces a dependency graph and a scheduler runs ready tasks concurrently, up to the effective concurrency limit. Each task gets its own branch and worktree.
+In parallel mode, the planner produces a dependency graph and a scheduler runs ready tasks concurrently, up to the effective concurrency limit. Each task gets its own branch and worktree, and the worker's `cwd` is that task worktree so file reads, commands, and edits target the isolated checkout.
 
-Integration is serialized and plan-ordered: approved task commits are cherry-picked onto the main checkout one at a time, validated, and committed. If validation fails or integration mutates plan artifacts/HEAD/the staged diff unexpectedly, the integration is rolled back and the task is sent for bounded rework (or blocked once its integration-attempt ceiling is reached). A final validation pass runs before the overall review.
+Integration is serialized and plan-ordered: approved task commits are cherry-picked onto the main checkout one at a time, validated, and committed. Parallel orchestration intentionally narrows broad reviewer/main-HEAD guards while a worker is isolated: the main checkout can advance as other tasks land, but each worker is still fenced to its task worktree and the candidate commit it is responsible for. If validation fails or integration mutates plan artifacts/the staged diff unexpectedly, the integration is rolled back and the task is sent for bounded rework (or blocked once its integration-attempt ceiling is reached). A final validation pass runs before the overall review.
 
 ## Safety boundaries
 
 Implementer and reviewer prompts are self-contained contracts that instruct subagents not to touch git state or plan files. The orchestrator enforces this regardless of subagent behavior by snapshotting and re-checking around every subagent call:
 
-- Implementers may not change HEAD, dirty the main checkout outside their worktree, or modify plan artifacts — any of these blocks the run.
+- Implementers may not change HEAD, dirty the main checkout outside their task worktree, or modify plan artifacts — any of these blocks the run.
 - Reviewers are read-only; benign reviewer mutations to the candidate diff are auto-healed back to the reviewed state, and unhealable changes block the run.
 - The overall reviewer must leave HEAD, the staged state, the worktree, and plan artifacts unchanged.
+- Internally owned workers run through `pi-subagents` with pi-implement-selected sandbox modes: implementation and self-heal roles use task-worktree write access, while review and planning roles are read-only.
 
 Plan checkbox updates are intentionally not part of any commit. Plan files may be gitignored or live outside the repository, as long as `/implement` is run from inside the target repository.
 
-## Requirements
+## Runtime integration and requirements
 
 - The current directory must be inside a git repo with a clean worktree, ignoring the source plan artifact and any validated supporting plan artifacts.
-- `@tintinweb/pi-subagents` must be installed; pi-implement drives its implementer, reviewer, and planner roles through that extension's cross-extension RPC/event interfaces. If it is missing or unresponsive, `/implement` refuses to start.
+- `pi-implement` uses the bundled first-party `pi-subagents` runtime directly. Installing the root `pi-extensions` bundle registers `pi-subagents` before `pi-implement`, so implementer, reviewer, planner, and self-heal workers run in-process without external installation, RPC setup, or Scout configuration.
+- Worker status is surfaced through `pi-implement` progress messages, `/implement status`, `/implement inspect`, `/implement view`, and the shared `/agents` dashboard. Internally owned workers are intentionally quiet in the main transcript except for pi-implement's orchestration updates.
 
 ## Plan format and task scope
 
@@ -104,11 +106,18 @@ Supported references contain exactly one `Plan:` target per line, written as eit
 
 During the execution planning phase, the planner reads referenced supporting files as source material and produces compiled task contracts that exclude sibling deliverables. Implementer and reviewer prompts contain only the compiled task contract for the selected task; they do not receive whole referenced supporting files as selected-task scope. The overall reviewer receives the full plan corpus, including referenced material, to check for planner/compiler omissions.
 
-## Source checkbox projection
+## Source checkbox projection and roll-forward recovery
 
 Each compiled task contract may include a `sourceCheckbox` reference that maps the task back to a specific checkbox line in the source plan file. The orchestrator uses this reference to update the human-readable source plan after a task is completed. If the recorded line no longer matches the recorded text (modulo checkbox marker state), the update is skipped to avoid corrupting the source file.
 
 Plan checkbox updates are intentionally not part of any commit. Plan files may be gitignored or live outside the repository, as long as `/implement` is run from inside the target repository.
+
+pi-implement prefers recoverable roll-forward behavior when orchestration metadata is stale or imperfect:
+
+- If planner output is missing, malformed, ungrounded in the plan corpus, or otherwise unusable, it repairs or falls back to a legacy checkbox-derived execution manifest instead of blocking before work can start.
+- On resume, grounded task reconciliation treats durable task state as authoritative when source checkboxes lag behind already landed or satisfied work.
+- Source checkbox projection is best-effort and skipped when the recorded source line no longer safely matches.
+- Tagged worker result parsing is tolerant of extra prose and minor formatting around the required JSON result block, while still blocking on genuinely missing or invalid results.
 
 ## Config
 
@@ -122,15 +131,23 @@ Global config lives at:
 {
   "implementer": {
     "model": "provider/model-id",
-    "type": "general-purpose"
+    "type": "general-purpose",
+    "thinking": "medium"
   },
   "reviewer": {
     "model": "provider/model-id",
-    "type": "general-purpose"
+    "type": "general-purpose",
+    "thinking": "high"
   },
   "planner": {
     "model": "provider/model-id",
-    "type": "Explore"
+    "type": "Explore",
+    "thinking": "low"
+  },
+  "selfHeal": {
+    "model": "provider/model-id",
+    "type": "general-purpose",
+    "thinking": "medium"
   },
   "maxParallel": 3,
   "verifyCommand": "npm test",
@@ -142,9 +159,9 @@ Global config lives at:
 }
 ```
 
-If a role model is omitted, pi-implement does not pass a model override, so `pi-subagents` uses the role's subagent type default model (and then the current session model if that type has no default). If a role type is omitted, `general-purpose` is used for implementer and reviewer, and `Explore` is used for the planner. The runtime prompts are self-contained enough to work with `general-purpose`, but reviewer safety is only instruction-enforced in that mode; configure `reviewer.type` to a dedicated read-only review agent for stronger isolation.
+pi-implement owns its role model, type, and thinking configuration separately from public `pi-subagents` defaults. If a role model is omitted, pi-implement does not pass a model override, so `pi-subagents` uses the role's subagent type default model (and then the current session model if that type has no default). If a role thinking value is omitted, the subagent session uses the current session default. If a role type is omitted, `general-purpose` is used for implementer, reviewer, and self-heal roles, and `Explore` is used for the planner. The runtime prompts are self-contained enough to work with `general-purpose`, but reviewer safety is only instruction-enforced in that mode; configure `reviewer.type` to a dedicated read-only review agent for stronger isolation.
 
-Implementer and reviewer workers can use injected read-only exploration on demand for broad map-building or targeted context checks. Exploration is not configured separately in pi-implement and does not expand task scope.
+Implementer and reviewer workers can use injected read-only `explore` on demand for broad map-building or targeted context checks. This replaces the old Scout workflow: exploration is not configured separately in pi-implement, does not require Scout, and does not expand task scope.
 
 `maxParallel` defaults to `3` and is clamped to a hard maximum of `8`. Invalid values are ignored with a warning.
 
