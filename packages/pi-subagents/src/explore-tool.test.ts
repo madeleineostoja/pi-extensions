@@ -178,12 +178,11 @@ describe("runtime-injected explore tool", () => {
     const runtime = new SubagentRuntime(pi as never, {
       createSession,
       publicConfig: {
-        models: {
-          General: undefined,
-          Explore: "configured/explore",
-          Review: undefined,
+        agents: {
+          General: {},
+          Explore: { model: "configured/explore", thinking: "low" },
+          Review: {},
         },
-        thinking: { General: undefined, Explore: "low", Review: undefined },
       },
     });
     const parentOwner = {

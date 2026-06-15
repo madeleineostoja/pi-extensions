@@ -122,12 +122,11 @@ describe("SubagentRuntime", () => {
     const { pi } = fakePi();
     const runtime = new SubagentRuntime(pi as never, {
       publicConfig: {
-        models: {
-          General: undefined,
-          Explore: "provider/explore",
-          Review: undefined,
+        agents: {
+          General: {},
+          Explore: { model: "provider/explore", thinking: "low" },
+          Review: {},
         },
-        thinking: { General: undefined, Explore: "low", Review: undefined },
       },
     });
 

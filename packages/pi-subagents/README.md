@@ -78,20 +78,24 @@ User-facing public-agent defaults live at:
 
 ```json
 {
-  "models": {
-    "General": "provider/model-id",
-    "Explore": "provider/model-id",
-    "Review": "provider/model-id"
-  },
-  "thinking": {
-    "General": "medium",
-    "Explore": "low",
-    "Review": "high"
+  "agents": {
+    "General": {
+      "model": "provider/model-id",
+      "thinking": "medium"
+    },
+    "Explore": {
+      "model": "provider/model-id",
+      "thinking": "low"
+    },
+    "Review": {
+      "model": "provider/model-id",
+      "thinking": "high"
+    }
   }
 }
 ```
 
-Both maps are optional and keyed by `General`, `Explore`, and `Review`. Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Invalid keys or values are ignored with a best-effort warning.
+`agents` is optional and keyed by `General`, `Explore`, and `Review`. Each agent can configure `model` and/or `thinking`. Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Invalid keys or values are ignored with a best-effort warning.
 
 If no model is configured or passed to `Agent`, the subagent session uses the current Pi session's model defaults.
 

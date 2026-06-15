@@ -384,8 +384,7 @@ describe("public subagent tools", () => {
     const runtime = new SubagentRuntime(pi as never, {
       createSession,
       publicConfig: {
-        models: { General: undefined, Explore: undefined, Review: undefined },
-        thinking: { General: undefined, Explore: undefined, Review: undefined },
+        agents: { General: {}, Explore: {}, Review: {} },
       },
     });
 
@@ -431,12 +430,11 @@ describe("public subagent tools", () => {
     const runtime = new SubagentRuntime(pi as never, {
       createSession,
       publicConfig: {
-        models: {
-          General: undefined,
-          Explore: "configured/explore",
-          Review: undefined,
+        agents: {
+          General: {},
+          Explore: { model: "configured/explore", thinking: "low" },
+          Review: {},
         },
-        thinking: { General: undefined, Explore: "low", Review: undefined },
       },
     });
 

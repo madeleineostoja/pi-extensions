@@ -14,14 +14,17 @@ export const THINKING_LEVELS = [
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
+export type PublicAgentConfig = {
+  model?: string;
+  thinking?: ThinkingLevel;
+};
+
 export type PublicSubagentsConfig = {
-  models?: Partial<Record<PublicBuiltinType, string>>;
-  thinking?: Partial<Record<PublicBuiltinType, ThinkingLevel>>;
+  agents?: Partial<Record<PublicBuiltinType, PublicAgentConfig>>;
 };
 
 export type ResolvedPublicSubagentsConfig = {
-  models: Record<PublicBuiltinType, string | undefined>;
-  thinking: Record<PublicBuiltinType, ThinkingLevel | undefined>;
+  agents: Record<PublicBuiltinType, PublicAgentConfig>;
 };
 
 export type ParsedPublicSubagentsConfig = {
@@ -47,64 +50,69 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseModels(
+function parseAgentConfig(
+  key: PublicBuiltinType,
   value: unknown,
   warnings: string[],
-): PublicSubagentsConfig["models"] {
-  if (value === undefined) {
-    return undefined;
-  }
+): PublicAgentConfig | undefined {
   if (!isRecord(value)) {
-    warnings.push(
-      "models must be an object keyed by General, Explore, or Review",
-    );
+    warnings.push(`${key} config must be an object`);
     return undefined;
   }
 
-  const models: Partial<Record<PublicBuiltinType, string>> = {};
-  for (const [key, model] of Object.entries(value)) {
-    if (!publicTypes.has(key)) {
-      warnings.push(`Ignoring model for unknown public subagent ${key}`);
-      continue;
+  const config: PublicAgentConfig = {};
+  if (value.model !== undefined) {
+    if (typeof value.model === "string" && value.model.trim() !== "") {
+      config.model = value.model.trim();
+    } else {
+      warnings.push(`${key}.model must be a non-empty string`);
     }
-    if (typeof model !== "string" || model.trim() === "") {
-      warnings.push(`Ignoring invalid model for ${key}`);
-      continue;
-    }
-    models[key as PublicBuiltinType] = model;
   }
-  return models;
+  if (value.thinking !== undefined) {
+    if (
+      typeof value.thinking === "string" &&
+      thinkingLevels.has(value.thinking)
+    ) {
+      config.thinking = value.thinking as ThinkingLevel;
+    } else {
+      warnings.push(
+        `${key}.thinking must be one of off, minimal, low, medium, high, xhigh`,
+      );
+    }
+  }
+  return config;
 }
 
-function parseThinking(
+function parseAgents(
   value: unknown,
   warnings: string[],
-): PublicSubagentsConfig["thinking"] {
+): PublicSubagentsConfig["agents"] {
   if (value === undefined) {
     return undefined;
   }
   if (!isRecord(value)) {
     warnings.push(
-      "thinking must be an object keyed by General, Explore, or Review",
+      "agents must be an object keyed by General, Explore, or Review",
     );
     return undefined;
   }
 
-  const thinking: Partial<Record<PublicBuiltinType, ThinkingLevel>> = {};
-  for (const [key, level] of Object.entries(value)) {
+  const agents: Partial<Record<PublicBuiltinType, PublicAgentConfig>> = {};
+  for (const [key, agentConfig] of Object.entries(value)) {
     if (!publicTypes.has(key)) {
-      warnings.push(
-        `Ignoring thinking level for unknown public subagent ${key}`,
-      );
+      warnings.push(`Ignoring config for unknown public subagent ${key}`);
       continue;
     }
-    if (typeof level !== "string" || !thinkingLevels.has(level)) {
-      warnings.push(`Ignoring invalid thinking level for ${key}`);
-      continue;
+    const parsed = parseAgentConfig(
+      key as PublicBuiltinType,
+      agentConfig,
+      warnings,
+    );
+    if (parsed) {
+      agents[key as PublicBuiltinType] = parsed;
     }
-    thinking[key as PublicBuiltinType] = level as ThinkingLevel;
   }
-  return thinking;
+  return agents;
 }
 
 export function parsePublicConfig(source: string): ParsedPublicSubagentsConfig {
@@ -130,8 +138,7 @@ export function parsePublicConfig(source: string): ParsedPublicSubagentsConfig {
 
   return {
     config: {
-      models: parseModels(data.models, warnings),
-      thinking: parseThinking(data.thinking, warnings),
+      agents: parseAgents(data.agents, warnings),
     },
     warnings,
   };
@@ -141,15 +148,10 @@ export function resolvePublicConfig(
   config: PublicSubagentsConfig,
 ): ResolvedPublicSubagentsConfig {
   return {
-    models: {
-      General: config.models?.General,
-      Explore: config.models?.Explore,
-      Review: config.models?.Review,
-    },
-    thinking: {
-      General: config.thinking?.General,
-      Explore: config.thinking?.Explore,
-      Review: config.thinking?.Review,
+    agents: {
+      General: config.agents?.General ?? {},
+      Explore: config.agents?.Explore ?? {},
+      Review: config.agents?.Review ?? {},
     },
   };
 }

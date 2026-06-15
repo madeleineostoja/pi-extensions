@@ -539,20 +539,11 @@ export class SubagentRuntime {
   queue(input: QueueSubagentInput): RuntimeSnapshot {
     const id = `subagent-${this.#nextId++}`;
     const timestamp = now();
-    const model =
-      input.model ??
-      (publicTypes.has(input.type)
-        ? this.publicConfig.models[
-            input.type as keyof ResolvedPublicSubagentsConfig["models"]
-          ]
-        : undefined);
-    const thinking =
-      input.thinking ??
-      (publicTypes.has(input.type)
-        ? this.publicConfig.thinking[
-            input.type as keyof ResolvedPublicSubagentsConfig["thinking"]
-          ]
-        : undefined);
+    const publicAgentConfig = publicTypes.has(input.type)
+      ? this.publicConfig.agents[input.type as PublicBuiltinType]
+      : undefined;
+    const model = input.model ?? publicAgentConfig?.model;
+    const thinking = input.thinking ?? publicAgentConfig?.thinking;
 
     const record: RuntimeRecord = {
       id,
@@ -669,14 +660,15 @@ export class SubagentRuntime {
 
     try {
       const model =
-        this.publicConfig.models.Explore ?? resolveModelRef(ctx, undefined).ref;
+        this.publicConfig.agents.Explore.model ??
+        resolveModelRef(ctx, undefined).ref;
       const started = await this.runPublicAgent({
         type: "Explore",
         prompt: buildExplorePrompt(params),
         description: `explore: ${params.question.trim().slice(0, 100)}`,
         cwd: parent.cwd,
         ...(model === undefined ? {} : { model }),
-        thinking: this.publicConfig.thinking.Explore,
+        thinking: this.publicConfig.agents.Explore.thinking,
         mode: "background",
         ctx,
         signal: timeout.signal,

@@ -16,42 +16,57 @@ describe("public pi-subagents config", () => {
     );
   });
 
-  it("parses optional models and thinking for public builtin types", () => {
+  it("parses optional model and thinking for public builtin agent types", () => {
     const parsed = parsePublicConfig(
       JSON.stringify({
-        models: { General: "p/general", Explore: "p/explore" },
-        thinking: { General: "off", Explore: "high", Review: "xhigh" },
+        agents: {
+          General: { model: "p/general", thinking: "off" },
+          Explore: { model: "p/explore", thinking: "high" },
+          Review: { thinking: "xhigh" },
+        },
       }),
     );
 
     expect(parsed.warnings).toEqual([]);
     expect(parsed.config).toEqual({
-      models: { General: "p/general", Explore: "p/explore" },
-      thinking: { General: "off", Explore: "high", Review: "xhigh" },
+      agents: {
+        General: { model: "p/general", thinking: "off" },
+        Explore: { model: "p/explore", thinking: "high" },
+        Review: { thinking: "xhigh" },
+      },
     });
   });
 
   it("warns on invalid entries and leaves missing values unresolved", () => {
     const parsed = parsePublicConfig(
       JSON.stringify({
-        models: { General: "", Unknown: "p/unknown" },
-        thinking: { General: "medium", Explore: "maximum", Unknown: "low" },
+        agents: {
+          General: { model: "", thinking: "medium" },
+          Explore: { thinking: "maximum" },
+          Review: "p/review",
+          Unknown: { model: "p/unknown", thinking: "low" },
+        },
       }),
     );
 
     expect(parsed.config).toEqual({
-      models: {},
-      thinking: { General: "medium" },
+      agents: {
+        General: { thinking: "medium" },
+        Explore: {},
+      },
     });
     expect(parsed.warnings).toEqual([
-      "Ignoring invalid model for General",
-      "Ignoring model for unknown public subagent Unknown",
-      "Ignoring invalid thinking level for Explore",
-      "Ignoring thinking level for unknown public subagent Unknown",
+      "General.model must be a non-empty string",
+      "Explore.thinking must be one of off, minimal, low, medium, high, xhigh",
+      "Review config must be an object",
+      "Ignoring config for unknown public subagent Unknown",
     ]);
     expect(resolvePublicConfig(parsed.config)).toEqual({
-      models: { General: undefined, Explore: undefined, Review: undefined },
-      thinking: { General: "medium", Explore: undefined, Review: undefined },
+      agents: {
+        General: { thinking: "medium" },
+        Explore: {},
+        Review: {},
+      },
     });
   });
 
@@ -61,8 +76,7 @@ describe("public pi-subagents config", () => {
     writeFileSync(
       path,
       JSON.stringify({
-        models: { Review: "p/review" },
-        thinking: { Review: "low" },
+        agents: { Review: { model: "p/review", thinking: "low" } },
       }),
     );
     const warnings: string[] = [];
@@ -71,8 +85,11 @@ describe("public pi-subagents config", () => {
       expect(
         loadPublicConfig({ path, warn: (message) => warnings.push(message) }),
       ).toEqual({
-        models: { General: undefined, Explore: undefined, Review: "p/review" },
-        thinking: { General: undefined, Explore: undefined, Review: "low" },
+        agents: {
+          General: {},
+          Explore: {},
+          Review: { model: "p/review", thinking: "low" },
+        },
       });
       expect(warnings).toEqual([]);
     } finally {
