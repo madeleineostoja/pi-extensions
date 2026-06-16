@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  buildDeterministicSourceMaterialRefs,
   buildTaskAnchorSourceMaterialRef,
   generateMinimalExecutionManifest,
   parseExecutionPlan,
@@ -15,6 +16,7 @@ import {
   type ExecutionTask,
   type SourceMaterialRef,
 } from "./execution-plan.js";
+import { buildPlanBundleManifest } from "./manifest.js";
 import { parsePlanFile } from "./plan.js";
 
 function makeContract(
@@ -95,6 +97,59 @@ describe("buildTaskAnchorSourceMaterialRef", () => {
       "- [ ] First task",
       "  Details for first task.",
       "  - nested first task item",
+    ]);
+  });
+});
+
+describe("buildDeterministicSourceMaterialRefs", () => {
+  it("adds explicit task-block markdown links as full-file task-link refs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-task-link-"));
+    const planPath = join(dir, "plan.md");
+    const taskPath = join(dir, "task.md");
+    const subplanPath = join(dir, "subplan.md");
+    writeFileSync(
+      planPath,
+      [
+        "# Plan",
+        "",
+        "## Tasks",
+        "",
+        "- [ ] First task",
+        "  - Plan: `subplan.md`",
+        "  Use [task material](task.md#details).",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    writeFileSync(taskPath, "# Task Material\n", "utf-8");
+    writeFileSync(subplanPath, "# Subplan\n", "utf-8");
+
+    const plan = parsePlanFile(planPath);
+    const bundle = buildPlanBundleManifest(planPath, plan);
+
+    expect(
+      buildDeterministicSourceMaterialRefs(plan.tasks[0]!, planPath, bundle),
+    ).toEqual([
+      {
+        origin: "task-anchor",
+        path: planPath,
+        mode: { kind: "line-range", startLine: 5, endLine: 8 },
+        reason: "Selected task checkbox line and task block.",
+      },
+      {
+        origin: "task-link",
+        path: subplanPath,
+        mode: { kind: "full-file" },
+        reason:
+          "Explicit local Markdown material linked from the selected task block.",
+      },
+      {
+        origin: "task-link",
+        path: taskPath,
+        mode: { kind: "full-file" },
+        reason:
+          "Explicit local Markdown material linked from the selected task block.",
+      },
     ]);
   });
 });

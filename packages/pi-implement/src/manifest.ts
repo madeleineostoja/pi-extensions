@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import {
   basename,
   dirname,
@@ -12,10 +13,13 @@ import type { ParsedPlan, PlanTask } from "./plan.js";
 
 export const MAX_PLAN_MATERIAL_CHARS = 100_000;
 
+export type ReferencedMaterialOrigin = "plan-link" | "task-link";
+
 export type ReferencedMaterial = {
   absolutePath: string;
   displayLabel: string;
   content: string;
+  origin: ReferencedMaterialOrigin;
 };
 
 export type TaskManifestEntry = {
@@ -34,6 +38,7 @@ export type PlanBundleManifest = {
 
 const PLAN_REF_LINE_RE =
   /^[ \t]*(?:[-*][ \t]+)?Plan:\s*(?:`([^`]+)`|<([^>]+)>)\s*$/;
+const INLINE_MARKDOWN_LINK_RE = /(?<!!)\[[^\]\n]*\]\(([^()\s]+)\)/g;
 
 export function isPlanLinkageLine(line: string): boolean {
   return /^[ \t]*(?:[-*][ \t]+)?Plan:/.test(line);
@@ -76,28 +81,76 @@ function looksLikeUrl(value: string): boolean {
   }
 }
 
+function looksLikeScheme(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(value);
+}
+
+function stripFragment(target: string): string {
+  return target.split("#", 1)[0] ?? "";
+}
+
+function nearestGitRoot(sourceDir: string): string | undefined {
+  let current = resolve(sourceDir);
+
+  for (;;) {
+    try {
+      const root = execFileSync(
+        "git",
+        ["-C", current, "rev-parse", "--show-toplevel"],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+      ).trim();
+      if (root) {
+        return resolve(root);
+      }
+    } catch {}
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+function isInsideRoot(root: string, absolutePath: string): boolean {
+  const rel = relative(root, absolutePath);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 function validatePlanTarget(
   sourceDir: string,
   target: string,
+  allowedRoot: string,
 ): { absolutePath: string; content: string } | string {
   if (looksLikeUrl(target)) {
     return `URL Plan: targets are not supported: ${target}`;
   }
 
-  const absolutePath = isAbsolute(target)
-    ? resolve(target)
-    : resolve(join(sourceDir, target));
+  const targetPath = stripFragment(target).trim();
+  if (!targetPath) {
+    return `missing or unreadable Plan: target: ${target}`;
+  }
 
+  const absolutePath = isAbsolute(targetPath)
+    ? resolve(targetPath)
+    : resolve(join(sourceDir, targetPath));
+
+  let realAbsolutePath: string;
   try {
     const stat = statSync(absolutePath);
     if (stat.isDirectory()) {
       return `Plan: target is a directory: ${target}`;
     }
+    realAbsolutePath = realpathSync(absolutePath);
   } catch {
     return `missing or unreadable Plan: target: ${target}`;
   }
 
-  if (!target.toLowerCase().endsWith(".md")) {
+  if (!isInsideRoot(realpathSync(allowedRoot), realAbsolutePath)) {
+    return `Plan: target escapes allowed root: ${target}`;
+  }
+
+  if (!targetPath.toLowerCase().endsWith(".md")) {
     return `non-markdown Plan: target: ${target}`;
   }
 
@@ -113,6 +166,72 @@ function validatePlanTarget(
   }
 
   return { absolutePath, content };
+}
+
+function discoverInlineMarkdownLinks(lines: string[]): string[] {
+  const targets: string[] = [];
+  let fenced: { marker: "`" | "~"; length: number } | undefined;
+
+  for (const line of lines) {
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      const markerText = fence[1] ?? "";
+      const marker = markerText[0] as "`" | "~";
+      if (fenced) {
+        if (fenced.marker === marker && markerText.length >= fenced.length) {
+          fenced = undefined;
+        }
+      } else {
+        fenced = { marker, length: markerText.length };
+      }
+      continue;
+    }
+
+    if (fenced) {
+      continue;
+    }
+
+    const searchable = stripInlineCodeSpans(line);
+    let match: RegExpExecArray | null;
+    while ((match = INLINE_MARKDOWN_LINK_RE.exec(searchable)) !== null) {
+      const target = (match[1] ?? "").trim();
+      if (!target || looksLikeScheme(target) || target.startsWith("#")) {
+        continue;
+      }
+      const targetPath = stripFragment(target).trim();
+      if (!targetPath || !targetPath.toLowerCase().endsWith(".md")) {
+        continue;
+      }
+      targets.push(target);
+    }
+  }
+
+  return targets;
+}
+
+function stripInlineCodeSpans(line: string): string {
+  let result = "";
+  for (let i = 0; i < line.length; ) {
+    if (line[i] !== "`") {
+      result += line[i];
+      i++;
+      continue;
+    }
+
+    let tickCount = 1;
+    while (line[i + tickCount] === "`") {
+      tickCount++;
+    }
+    const closing = line.indexOf("`".repeat(tickCount), i + tickCount);
+    if (closing === -1) {
+      result += " ".repeat(tickCount);
+      i += tickCount;
+      continue;
+    }
+    result += " ".repeat(closing + tickCount - i);
+    i = closing + tickCount;
+  }
+  return result;
 }
 
 export function formatReferencedMaterial(
@@ -216,6 +335,7 @@ export function buildPlanBundleManifest(
   plan: ParsedPlan,
 ): PlanBundleManifest {
   const sourceDir = dirname(sourcePlanPath);
+  const allowedRoot = nearestGitRoot(sourceDir) ?? sourceDir;
   const manifest: PlanBundleManifest = {
     sourcePlanPath: resolve(sourcePlanPath),
     tasks: [],
@@ -232,28 +352,38 @@ export function buildPlanBundleManifest(
     };
 
     let hasLinkage = false;
+    const referencedPaths = new Set<string>();
+    const addMaterialRef = (
+      target: string,
+      origin: ReferencedMaterialOrigin,
+    ) => {
+      const validation = validatePlanTarget(sourceDir, target, allowedRoot);
+      if (typeof validation === "string") {
+        manifest.validationErrors.push(`Task ${task.index}: ${validation}`);
+        return;
+      }
+      if (referencedPaths.has(validation.absolutePath)) {
+        return;
+      }
+      referencedPaths.add(validation.absolutePath);
+
+      entry.referencedMaterials.push({
+        absolutePath: validation.absolutePath,
+        displayLabel: basename(validation.absolutePath),
+        content: validation.content,
+        origin,
+      });
+
+      if (!manifest.allArtifactPaths.includes(validation.absolutePath)) {
+        manifest.allArtifactPaths.push(validation.absolutePath);
+      }
+    };
 
     for (const line of task.blockLines) {
       const ref = extractPlanReference(line);
       if (ref) {
         hasLinkage = true;
-
-        const validation = validatePlanTarget(sourceDir, ref.target);
-        if (typeof validation === "string") {
-          manifest.validationErrors.push(`Task ${task.index}: ${validation}`);
-          continue;
-        }
-
-        entry.referencedMaterials.push({
-          absolutePath: validation.absolutePath,
-          displayLabel: basename(validation.absolutePath),
-          content: validation.content,
-        });
-
-        if (!manifest.allArtifactPaths.includes(validation.absolutePath)) {
-          manifest.allArtifactPaths.push(validation.absolutePath);
-        }
-
+        addMaterialRef(ref.target, "plan-link");
         continue;
       }
 
@@ -266,6 +396,10 @@ export function buildPlanBundleManifest(
       }
 
       // Natural-language Plan: notes are ignored
+    }
+
+    for (const target of discoverInlineMarkdownLinks(task.blockLines)) {
+      addMaterialRef(target, "task-link");
     }
 
     if (hasLinkage) {

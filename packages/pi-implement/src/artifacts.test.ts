@@ -99,7 +99,7 @@ describe("resolvePlanArtifacts", () => {
     expect(artifacts).toContain(absPath);
   });
 
-  it("handles artifacts outside the immediate plan dir", () => {
+  it("rejects artifacts outside the allowed root", () => {
     const dir = makeTmpDir();
     const planPath = join(dir, "plans", "index.md");
     const outsidePath = join(dir, "sibling.md");
@@ -111,8 +111,9 @@ describe("resolvePlanArtifacts", () => {
     );
     writeFileSync(outsidePath, "# Sibling\n", "utf-8");
     const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
-    const artifacts = resolvePlanArtifacts(planPath, plan);
-    expect(artifacts).toContain(outsidePath);
+    expect(() => resolvePlanArtifacts(planPath, plan)).toThrow(
+      "escapes allowed root",
+    );
   });
 
   it("throws for multiple references on one line", () => {

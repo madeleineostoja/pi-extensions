@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   buildPlanBundleManifest,
   checkPlanMaterialSize,
@@ -155,6 +155,7 @@ describe("buildPlanBundleManifest", () => {
       absolutePath: subPath,
       displayLabel: "sub.md",
       content: "# Subplan\n",
+      origin: "plan-link",
     });
   });
 
@@ -174,6 +175,99 @@ describe("buildPlanBundleManifest", () => {
     const manifest = buildPlanBundleManifest(planPath, plan);
     expect(manifest.validationErrors).toHaveLength(0);
     expect(manifest.tasks[0].referencedMaterials).toHaveLength(2);
+  });
+
+  it("discovers inline local markdown links from task blocks", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plan.md");
+    const linkedPath = join(dir, "requirements.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  Use [requirements](requirements.md).\n",
+      "utf-8",
+    );
+    writeFileSync(linkedPath, "# Requirements\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    expect(manifest.validationErrors).toHaveLength(0);
+    expect(manifest.tasks[0].referencedMaterials).toHaveLength(1);
+    expect(manifest.tasks[0].referencedMaterials[0]).toMatchObject({
+      absolutePath: linkedPath,
+      displayLabel: "requirements.md",
+      content: "# Requirements\n",
+      origin: "task-link",
+    });
+    expect(manifest.allArtifactPaths).toContain(linkedPath);
+  });
+
+  it("strips fragments and deduplicates repeated task-block links by resolved path", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plan.md");
+    const linkedPath = join(dir, "requirements.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  Use [requirements](requirements.md#api).\n  Review [the same file](./requirements.md#cli).\n",
+      "utf-8",
+    );
+    writeFileSync(linkedPath, "# Requirements\n\nFull file.\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    expect(manifest.validationErrors).toHaveLength(0);
+    expect(manifest.tasks[0].referencedMaterials).toHaveLength(1);
+    expect(manifest.tasks[0].referencedMaterials[0]).toMatchObject({
+      absolutePath: linkedPath,
+      content: "# Requirements\n\nFull file.\n",
+    });
+  });
+
+  it("ignores unsupported markdown-like links in task blocks", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plan.md");
+    const ignoredMdPath = join(dir, "ignored.md");
+    writeFileSync(
+      planPath,
+      [
+        "# Plan",
+        "",
+        "## Tasks",
+        "",
+        "- [ ] Task",
+        "  ![image](image.md)",
+        "  [url](https://example.com/requirements.md)",
+        "  [mailto](mailto:test@example.com)",
+        "  [reference][requirements]",
+        "  [text](notes.txt)",
+        "  `[inline](ignored.md)`",
+        "  ```",
+        "  [fenced](ignored.md)",
+        "  ```",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    writeFileSync(join(dir, "notes.txt"), "notes", "utf-8");
+    writeFileSync(ignoredMdPath, "# Ignored\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    expect(manifest.validationErrors).toHaveLength(0);
+    expect(manifest.tasks[0].referencedMaterials).toHaveLength(0);
+  });
+
+  it("reports unsafe task-block markdown link path escapes", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plans", "plan.md");
+    const outsidePath = join(dir, "outside.md");
+    mkdirSync(dirname(planPath), { recursive: true });
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  Use [outside](../outside.md).\n",
+      "utf-8",
+    );
+    writeFileSync(outsidePath, "# Outside\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    expect(manifest.validationErrors.length).toBeGreaterThan(0);
+    expect(manifest.validationErrors[0]).toContain("escapes allowed root");
   });
 
   it("blocks multiple references on one line", () => {
@@ -382,8 +476,18 @@ describe("formatReferencedMaterial", () => {
 
   it("includes raw content with display label headings", () => {
     const materials = [
-      { absolutePath: "/a.md", displayLabel: "a.md", content: "# A\n" },
-      { absolutePath: "/b.md", displayLabel: "b.md", content: "# B\n" },
+      {
+        absolutePath: "/a.md",
+        displayLabel: "a.md",
+        content: "# A\n",
+        origin: "plan-link" as const,
+      },
+      {
+        absolutePath: "/b.md",
+        displayLabel: "b.md",
+        content: "# B\n",
+        origin: "task-link" as const,
+      },
     ];
     const formatted = formatReferencedMaterial(materials);
     expect(formatted).toContain("### a.md");
@@ -395,7 +499,14 @@ describe("formatReferencedMaterial", () => {
   it("throws when content exceeds maxChars", () => {
     expect(() =>
       formatReferencedMaterial(
-        [{ absolutePath: "/a.md", displayLabel: "a.md", content: "x" }],
+        [
+          {
+            absolutePath: "/a.md",
+            displayLabel: "a.md",
+            content: "x",
+            origin: "plan-link" as const,
+          },
+        ],
         1,
       ),
     ).toThrow("Plan material exceeds maximum size");

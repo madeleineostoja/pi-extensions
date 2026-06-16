@@ -15,7 +15,7 @@ import type { AgentDisplayRef, RunState, StatePatch } from "./status.js";
 import { validateGraph, writeGraphJson } from "./graph.js";
 import type { ImplementGraph } from "./graph.js";
 import {
-  buildTaskAnchorSourceMaterialRef,
+  buildDeterministicSourceMaterialRefs,
   parseExecutionPlan,
   generateMinimalExecutionManifest,
   validateExecutionManifest,
@@ -368,7 +368,7 @@ function fallbackPlannerManifest(
   reason: string,
 ): ExecutionManifest {
   return {
-    ...generateMinimalExecutionManifest(unchecked, req.plan.path),
+    ...generateMinimalExecutionManifest(unchecked, req.plan.path, req.manifest),
     sourcePlanHash: req.planHash,
     sourcePlanPath: req.plan.path,
     sourceCorpusHash: req.corpus?.corpusHash,
@@ -403,7 +403,11 @@ function normalizePlannerManifest(
       conflictHints: task.conflictHints ?? [],
       sourceRefs: normalizeSourceRefs(task, req),
       sourceMaterialRefs: mappedPlanTask
-        ? [buildTaskAnchorSourceMaterialRef(mappedPlanTask, req.plan.path)]
+        ? buildDeterministicSourceMaterialRefs(
+            mappedPlanTask,
+            req.plan.path,
+            req.manifest,
+          )
         : task.sourceMaterialRefs,
       sourceReferences: task.sourceReferences ?? [],
       compiledContract: task.compiledContract,

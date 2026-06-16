@@ -7,6 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import type { PlanBundleManifest, ReferencedMaterial } from "./manifest.js";
 import { computeTaskFingerprint } from "./manifest.js";
 import type { PlanTask } from "./plan.js";
 
@@ -110,6 +111,37 @@ export function buildTaskAnchorSourceMaterialRef(
     },
     reason: "Selected task checkbox line and task block.",
   };
+}
+
+export function buildDeterministicSourceMaterialRefs(
+  task: PlanTask,
+  planPath: string,
+  manifest?: PlanBundleManifest,
+): SourceMaterialRef[] {
+  return [
+    buildTaskAnchorSourceMaterialRef(task, planPath),
+    ...taskLinkMaterialsForTask(task, manifest).map((material) => ({
+      origin: "task-link" as const,
+      path: material.absolutePath,
+      mode: { kind: "full-file" as const },
+      reason:
+        "Explicit local Markdown material linked from the selected task block.",
+    })),
+  ];
+}
+
+function taskLinkMaterialsForTask(
+  task: PlanTask,
+  manifest: PlanBundleManifest | undefined,
+): ReferencedMaterial[] {
+  return (
+    manifest?.tasks
+      .find((entry) => entry.planIndex === task.index)
+      ?.referencedMaterials.filter(
+        (material) =>
+          material.origin === "plan-link" || material.origin === "task-link",
+      ) ?? []
+  );
 }
 
 export function renderTaskAnchorMaterial(
@@ -812,6 +844,7 @@ export function readExecutionManifest(
 export function generateMinimalExecutionManifest(
   tasks: PlanTask[],
   planPath: string,
+  planBundle?: PlanBundleManifest,
 ): ExecutionManifest {
   return {
     version: 1,
@@ -826,7 +859,11 @@ export function generateMinimalExecutionManifest(
       affectedAreas: [],
       conflictHints: [],
       sourceRefs: [{ path: planPath, quote: task.text }],
-      sourceMaterialRefs: [buildTaskAnchorSourceMaterialRef(task, planPath)],
+      sourceMaterialRefs: buildDeterministicSourceMaterialRefs(
+        task,
+        planPath,
+        planBundle,
+      ),
       sourceReferences: [],
       sourceCheckbox: {
         path: planPath,
