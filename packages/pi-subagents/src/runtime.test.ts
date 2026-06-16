@@ -111,7 +111,7 @@ describe("SubagentRuntime", () => {
     );
   });
 
-  it("scopes snapshots to the active session", () => {
+  it("scopes snapshots, inspections, and subscriptions to the active session", () => {
     const { pi } = fakePi();
     const runtime = new SubagentRuntime(pi as never);
     const previous = runtime.queue({
@@ -128,10 +128,26 @@ describe("SubagentRuntime", () => {
       description: "current session",
       cwd: "/workspace",
     });
+    const previousListener = vi.fn();
+    const currentListener = vi.fn();
 
     expect(runtime.snapshots()).toEqual([current]);
     expect(runtime.snapshot(previous.id)).toBeUndefined();
     expect(runtime.snapshot(current.id)).toEqual(current);
+    expect(runtime.inspect(previous.id)).toBeUndefined();
+    expect(runtime.inspect(current.id)).toEqual({
+      snapshot: current,
+      messages: [],
+    });
+    runtime.subscribe(previous.id, previousListener)();
+    const unsubscribeCurrent = runtime.subscribe(current.id, currentListener);
+    runtime.start(current.id);
+
+    expect(previousListener).not.toHaveBeenCalled();
+    expect(currentListener).not.toHaveBeenCalled();
+    unsubscribeCurrent();
+    runtime.stop(current.id);
+    expect(currentListener).not.toHaveBeenCalled();
   });
 
   it("models queued, running, and completed snapshots with metadata", async () => {
@@ -256,6 +272,53 @@ describe("SubagentRuntime", () => {
     promptDone.resolve();
   });
 
+  it("inspects live session messages and notifies subscribers from session events until unsubscribed", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession("fallback answer");
+    session.prompt = vi.fn(() => promptDone.promise);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      description: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    const listener = vi.fn();
+    const unsubscribe = runtime.subscribe(started.id, listener);
+    session.messages.push({
+      role: "assistant",
+      timestamp: 1_700_000_000_000,
+      content: [{ type: "text", text: "live update" }],
+    } as AgentSession["messages"][number]);
+    const publishSessionEvent = (
+      session.subscribe as unknown as {
+        mock: { calls: Array<[(event: unknown) => void]> };
+      }
+    ).mock.calls[0]?.[0];
+
+    publishSessionEvent?.({ toolCall: { name: "bash" } });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(runtime.inspect(started.id)).toMatchObject({
+      snapshot: {
+        health: { activeTool: "bash", lastAssistantText: "live update" },
+      },
+      messages: session.messages,
+    });
+
+    unsubscribe();
+    publishSessionEvent?.({ toolCall: { name: "read" } });
+    expect(listener).toHaveBeenCalledTimes(1);
+    runtime.stop(started.id);
+    promptDone.resolve();
+  });
+
   it("models failed and stopped terminal states", () => {
     const { pi } = fakePi();
     const runtime = new SubagentRuntime(pi as never);
@@ -311,11 +374,13 @@ describe("SubagentRuntime", () => {
     );
   });
 
-  it("retirement removes current records, aborts live sessions, and resolves waiters", async () => {
+  it("retirement removes current records, aborts live sessions, notifies subscribers, and resolves waiters", async () => {
     const { pi } = fakePi();
     const promptDone = deferred<void>();
     const session = makeSession("late result");
+    const unsubscribeSession = vi.fn();
     session.prompt = vi.fn(() => promptDone.promise);
+    session.subscribe = vi.fn(() => unsubscribeSession);
     const runtime = new SubagentRuntime(pi as never, {
       createSession: vi.fn(async () => ({ session })),
     });
@@ -329,10 +394,17 @@ describe("SubagentRuntime", () => {
     });
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
     const waiter = runtime.wait(started.id);
+    const listener = vi.fn(() => {
+      expect(runtime.inspect(started.id)).toBeUndefined();
+    });
+    const unsubscribe = runtime.subscribe(started.id, listener);
 
     const retired = runtime.handleSessionShutdown("resume");
+    unsubscribe();
 
     expect(retired).toHaveLength(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(unsubscribeSession).toHaveBeenCalledTimes(1);
     expect(session.abort).toHaveBeenCalledTimes(1);
     expect(runtime.snapshot(started.id)).toBeUndefined();
     expect(runtime.snapshots()).toEqual([]);

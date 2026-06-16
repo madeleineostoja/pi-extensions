@@ -97,6 +97,13 @@ export type RuntimeSnapshot = {
   error?: string;
 };
 
+export type RuntimeInspection = {
+  snapshot: RuntimeSnapshot;
+  messages: readonly unknown[];
+};
+
+export type RuntimeSubscriptionListener = () => void;
+
 export type QueueSubagentInput = {
   owner: RuntimeOwner;
   type: string;
@@ -146,6 +153,7 @@ type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
     steeringQueue: string[];
     health?: RuntimeHealth;
     unsubscribeSession?: () => void;
+    inspectListeners: Set<RuntimeSubscriptionListener>;
   };
 
 type CreateSessionOptions = Parameters<typeof createAgentSession>[0];
@@ -392,7 +400,7 @@ function refreshHealth(record: RuntimeRecord): void {
     turns: assistantMessages.length,
     toolUses: toolUses || toolResults.length || undefined,
     tokensTotal: tokensTotal || undefined,
-    activeTool,
+    activeTool: activeTool ?? record.health?.activeTool,
     lastActivity: latestTimestamp(record.health?.lastActivity, lastActivity),
     lastAssistantText:
       lastAssistantText ?? textPreview(session.getLastAssistantText()),
@@ -626,7 +634,6 @@ export class SubagentRuntime {
     );
     const retired: RuntimeSnapshot[] = [];
     for (const record of currentRecords) {
-      record.retired = true;
       record.unsubscribeSession?.();
       record.unsubscribeSession = undefined;
       if (!isTerminal(record.status)) {
@@ -637,8 +644,19 @@ export class SubagentRuntime {
         record.completedAt = timestamp;
         record.updatedAt = timestamp;
         refreshHealth(record);
-        retired.push(this.#finish(record));
+        record.retired = true;
+        retired.push(
+          this.#finish(record, {
+            allowRetiredNotification: true,
+            clearInspectListeners: true,
+          }),
+        );
       } else {
+        record.retired = true;
+        this.#notifyInspectListeners(record, {
+          allowRetired: true,
+          clear: true,
+        });
         this.#waiters.delete(record.id);
       }
       this.#records.delete(record.id);
@@ -669,6 +687,7 @@ export class SubagentRuntime {
       queuedAt: timestamp,
       updatedAt: timestamp,
       steeringQueue: [],
+      inspectListeners: new Set(),
     };
     this.#records.set(id, record);
     return projectSnapshot(record);
@@ -934,6 +953,29 @@ export class SubagentRuntime {
     return projectSnapshot(record);
   }
 
+  inspect(id: string): RuntimeInspection | undefined {
+    const record = this.#records.get(id);
+    if (!record || !this.#isCurrentRecord(record)) {
+      return undefined;
+    }
+    refreshHealth(record);
+    return {
+      snapshot: projectSnapshot(record),
+      messages: [...(record.session?.messages ?? [])],
+    };
+  }
+
+  subscribe(id: string, listener: RuntimeSubscriptionListener): () => void {
+    const record = this.#records.get(id);
+    if (!record || !this.#isCurrentRecord(record)) {
+      return () => {};
+    }
+    record.inspectListeners.add(listener);
+    return () => {
+      record.inspectListeners.delete(listener);
+    };
+  }
+
   snapshots(options: { includeNested?: boolean } = {}): RuntimeSnapshot[] {
     return [...this.#records.values()]
       .filter((record) => this.#isCurrentRecord(record))
@@ -1031,6 +1073,7 @@ export class SubagentRuntime {
           lastActivity: now(),
         };
         record.updatedAt = now();
+        this.#notifyInspectListeners(record);
       });
       await session.bindExtensions({
         mode: "print",
@@ -1163,8 +1206,34 @@ export class SubagentRuntime {
     }
   }
 
-  #finish(record: RuntimeRecord): RuntimeSnapshot {
+  #notifyInspectListeners(
+    record: RuntimeRecord,
+    options: { allowRetired?: boolean; clear?: boolean } = {},
+  ): void {
+    if (!options.allowRetired && !this.#isCurrentRecord(record)) {
+      return;
+    }
+    const listeners = [...record.inspectListeners];
+    if (options.clear) {
+      record.inspectListeners.clear();
+    }
+    for (const listener of listeners) {
+      listener();
+    }
+  }
+
+  #finish(
+    record: RuntimeRecord,
+    options: {
+      allowRetiredNotification?: boolean;
+      clearInspectListeners?: boolean;
+    } = {},
+  ): RuntimeSnapshot {
     const finalSnapshot = projectSnapshot(record);
+    this.#notifyInspectListeners(record, {
+      allowRetired: options.allowRetiredNotification,
+      clear: options.clearInspectListeners,
+    });
     const waiters = this.#waiters.get(record.id) ?? [];
     this.#waiters.delete(record.id);
     for (const waiter of waiters) {

@@ -45,8 +45,10 @@ export type {
   QueueSubagentInput,
   RunManagedAgentInput,
   RunPublicAgentInput,
+  RuntimeInspection,
   RuntimeOwner,
   RuntimeSnapshot,
+  RuntimeSubscriptionListener,
   RuntimeTimestamps,
   SubagentRuntimeStatus,
 } from "./runtime.js";
