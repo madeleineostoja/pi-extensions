@@ -1,3 +1,4 @@
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { getSubagentRuntime, SubagentRuntime } from "./runtime.js";
 
@@ -27,22 +28,31 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function asAgentSession<T>(session: T): T & AgentSession {
+  return session as T & AgentSession;
+}
+
 function makeSession(result = "done") {
   const extensionRunner = {
     hasHandlers: vi.fn(() => false),
     emit: vi.fn(async () => undefined),
   } as never;
-  return {
+  return asAgentSession({
     bindExtensions: vi.fn(async () => undefined),
-    prompt: vi.fn(async () => undefined as unknown),
+    prompt: vi.fn(async (): Promise<void> => undefined),
     steer: vi.fn(async () => undefined),
     abort: vi.fn(async () => undefined),
     dispose: vi.fn(),
     getLastAssistantText: vi.fn(() => result),
     setActiveToolsByName: vi.fn(),
+    state: {},
+    messages: [] as AgentSession["messages"],
+    sessionId: "session-id",
+    sessionFile: undefined,
+    subscribe: vi.fn(() => vi.fn()),
+    getAllTools: vi.fn(() => []),
     extensionRunner,
-    messages: [] as unknown[],
-  };
+  });
 }
 
 function makeCtx() {
@@ -170,9 +180,9 @@ describe("SubagentRuntime", () => {
     const { pi } = fakePi();
     const promptDone = deferred<void>();
     const session = makeSession("fallback answer");
-    session.prompt = vi.fn(() => promptDone.promise as Promise<unknown>);
+    session.prompt = vi.fn(() => promptDone.promise);
     const runtime = new SubagentRuntime(pi as never, {
-      createSession: vi.fn(async () => ({ session: session as never })),
+      createSession: vi.fn(async () => ({ session })),
     });
     const started = await runtime.runManagedAgent({
       type: "General",
@@ -219,9 +229,22 @@ describe("SubagentRuntime", () => {
     session.messages = [
       {
         role: "assistant",
-        content: "Updated answer",
-        usage: { totalTokens: 12 },
-      },
+        content: [{ type: "text", text: "Updated answer" }],
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 12,
+          cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 0,
+          },
+        },
+      } as AgentSession["messages"][number],
     ];
     expect(runtime.snapshots()[0]?.health).toMatchObject({
       turns: 1,
@@ -292,9 +315,9 @@ describe("SubagentRuntime", () => {
     const { pi } = fakePi();
     const promptDone = deferred<void>();
     const session = makeSession("late result");
-    session.prompt = vi.fn(() => promptDone.promise as Promise<unknown>);
+    session.prompt = vi.fn(() => promptDone.promise);
     const runtime = new SubagentRuntime(pi as never, {
-      createSession: vi.fn(async () => ({ session: session as never })),
+      createSession: vi.fn(async () => ({ session })),
     });
     const started = await runtime.runManagedAgent({
       type: "General",
@@ -361,9 +384,9 @@ describe("SubagentRuntime", () => {
     const { pi } = fakePi();
     const promptDone = deferred<void>();
     const session = makeSession("late result");
-    session.prompt = vi.fn(() => promptDone.promise as Promise<unknown>);
+    session.prompt = vi.fn(() => promptDone.promise);
     const runtime = new SubagentRuntime(pi as never, {
-      createSession: vi.fn(async () => ({ session: session as never })),
+      createSession: vi.fn(async () => ({ session })),
     });
     const run = runtime.runManagedAgent({
       type: "General",

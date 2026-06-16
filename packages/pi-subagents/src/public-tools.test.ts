@@ -1,3 +1,4 @@
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getAgentDirMock = vi.hoisted(() => vi.fn(() => "/agent-dir"));
@@ -117,6 +118,10 @@ function makeCtx(overrides: Partial<any> = {}) {
   };
 }
 
+function asAgentSession<T>(session: T): T & AgentSession {
+  return session as T & AgentSession;
+}
+
 function makeSession(result = "done") {
   const calls: string[] = [];
   const extensionRunner = {
@@ -126,7 +131,7 @@ function makeSession(result = "done") {
   return {
     calls,
     extensionRunner,
-    session: {
+    session: asAgentSession({
       bindExtensions: vi.fn(async () => {
         calls.push("bindExtensions");
       }),
@@ -142,8 +147,14 @@ function makeSession(result = "done") {
       setActiveToolsByName: vi.fn((tools: string[]) => {
         calls.push(`setActiveTools:${tools.join(",")}`);
       }),
+      state: {},
+      messages: [],
+      sessionId: "session-id",
+      sessionFile: undefined,
+      subscribe: vi.fn(() => vi.fn()),
+      getAllTools: vi.fn(() => []),
       extensionRunner: extensionRunner as any,
-    },
+    }),
   };
 }
 

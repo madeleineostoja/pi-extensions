@@ -1,3 +1,4 @@
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { SubagentRuntime } from "./runtime.js";
 
@@ -22,12 +23,16 @@ function makeCtx(overrides: Partial<any> = {}) {
   };
 }
 
+function asAgentSession<T>(session: T): T & AgentSession {
+  return session as T & AgentSession;
+}
+
 function makeSession(result = "done") {
   const extensionRunner = {
     hasHandlers: vi.fn(() => false),
     emit: vi.fn(async () => undefined),
   };
-  return {
+  return asAgentSession({
     bindExtensions: vi.fn(async () => undefined),
     prompt: vi.fn(async () => undefined),
     steer: vi.fn(async () => undefined),
@@ -35,8 +40,14 @@ function makeSession(result = "done") {
     dispose: vi.fn(),
     getLastAssistantText: vi.fn(() => result),
     setActiveToolsByName: vi.fn(),
+    state: {},
+    messages: [],
+    sessionId: "session-id",
+    sessionFile: undefined,
+    subscribe: vi.fn(() => vi.fn()),
+    getAllTools: vi.fn(() => []),
     extensionRunner: extensionRunner as any,
-  };
+  });
 }
 
 describe("runtime-injected explore tool", () => {

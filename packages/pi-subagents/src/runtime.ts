@@ -141,34 +141,15 @@ type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
   RuntimeTimestamps & {
     runtimeSessionId: number;
     retired?: boolean;
-    session?: PublicAgentSession;
+    session?: AgentSession;
     canSteer?: boolean;
     steeringQueue: string[];
     health?: RuntimeHealth;
     unsubscribeSession?: () => void;
   };
 
-type PublicAgentSession = Pick<
-  AgentSession,
-  | "bindExtensions"
-  | "prompt"
-  | "steer"
-  | "abort"
-  | "dispose"
-  | "getLastAssistantText"
-  | "setActiveToolsByName"
-  | "extensionRunner"
-> & {
-  readonly state?: { readonly errorMessage?: string };
-  readonly messages?: unknown[];
-  readonly sessionId?: string;
-  readonly sessionFile?: string;
-  subscribe?: (listener: (event: unknown) => void) => () => void;
-  getAllTools?: () => Array<{ name: string }>;
-};
-
 type CreateSessionOptions = Parameters<typeof createAgentSession>[0];
-type CreateSessionResult = { session: PublicAgentSession };
+type CreateSessionResult = { session: AgentSession };
 type CreateSession = (
   options?: CreateSessionOptions,
 ) => Promise<CreateSessionResult>;
@@ -336,7 +317,7 @@ function refreshHealth(record: RuntimeRecord): void {
     }
     return;
   }
-  const messages = Array.isArray(session.messages) ? session.messages : [];
+  const messages = session.messages;
   const assistantMessages = messages.filter(
     (message) => isObject(message) && message.role === "assistant",
   );
@@ -378,10 +359,7 @@ function refreshHealth(record: RuntimeRecord): void {
       activeTool = message.toolName;
     }
   }
-  const sessionId =
-    typeof session.sessionId === "string" ? session.sessionId : undefined;
-  const sessionFile =
-    typeof session.sessionFile === "string" ? session.sessionFile : undefined;
+  const { sessionId, sessionFile } = session;
   record.health = {
     ...record.health,
     turns: assistantMessages.length,
@@ -390,7 +368,7 @@ function refreshHealth(record: RuntimeRecord): void {
     activeTool,
     lastActivity,
     lastAssistantText:
-      lastAssistantText ?? textPreview(session.getLastAssistantText?.()),
+      lastAssistantText ?? textPreview(session.getLastAssistantText()),
     resultPreview:
       record.result === undefined
         ? record.health?.resultPreview
@@ -978,14 +956,15 @@ export class SubagentRuntime {
         return projectSnapshot(record);
       }
       record.session = session;
-      record.unsubscribeSession = session.subscribe?.((event) => {
-        const candidate = isObject(event) ? event : undefined;
+      record.unsubscribeSession = session.subscribe((event) => {
+        const candidate = isObject(event as unknown)
+          ? (event as Record<string, unknown>)
+          : undefined;
+        const toolCall = candidate?.toolCall;
         const toolName =
-          candidate &&
-          isObject(candidate.toolCall) &&
-          typeof candidate.toolCall.name === "string"
-            ? candidate.toolCall.name
-            : candidate && typeof candidate.toolName === "string"
+          isObject(toolCall) && typeof toolCall.name === "string"
+            ? toolCall.name
+            : typeof candidate?.toolName === "string"
               ? candidate.toolName
               : undefined;
         record.health = {
@@ -1009,9 +988,8 @@ export class SubagentRuntime {
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         return projectSnapshot(record);
       }
-      const state = "state" in session ? session.state : undefined;
-      if (state?.errorMessage) {
-        return this.fail(record.id, state.errorMessage);
+      if (session.state.errorMessage) {
+        return this.fail(record.id, session.state.errorMessage);
       }
       const result = session.getLastAssistantText() ?? "";
       return this.complete(record.id, result);
@@ -1035,7 +1013,7 @@ export class SubagentRuntime {
     return [this.createExploreTool(projectSnapshot(record))];
   }
 
-  async #disposeSession(session: PublicAgentSession): Promise<void> {
+  async #disposeSession(session: AgentSession): Promise<void> {
     for (const record of this.#records.values()) {
       if (record.session === session) {
         record.unsubscribeSession?.();
@@ -1054,7 +1032,7 @@ export class SubagentRuntime {
 
   #inheritActiveTools(
     record: RuntimeRecord,
-    session: PublicAgentSession,
+    session: AgentSession,
     explicitTools?: string[],
   ): void {
     const getActiveTools = this.pi.getActiveTools?.bind(this.pi);
@@ -1154,9 +1132,7 @@ function getRuntimeManager(): RuntimeManager {
 
 function isRuntimeManager(value: unknown): value is RuntimeManager {
   return (
-    isObject(value) &&
-    "runtimes" in value &&
-    value.runtimes instanceof WeakMap
+    isObject(value) && "runtimes" in value && value.runtimes instanceof WeakMap
   );
 }
 
