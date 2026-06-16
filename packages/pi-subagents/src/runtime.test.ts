@@ -41,6 +41,7 @@ function makeSession(result = "done") {
     getLastAssistantText: vi.fn(() => result),
     setActiveToolsByName: vi.fn(),
     extensionRunner,
+    messages: [] as unknown[],
   };
 }
 
@@ -163,6 +164,73 @@ describe("SubagentRuntime", () => {
     expect(completed.timestamps.completedAt).toEqual(expect.any(String));
     expect(runtime.snapshot(queued.id)).toEqual(completed);
     expect(runtime.snapshots()).toEqual([completed]);
+  });
+
+  it("refreshes health for public snapshot accessors", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession("fallback answer");
+    session.prompt = vi.fn(() => promptDone.promise as Promise<unknown>);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session: session as never })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      description: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+
+    Object.assign(session, {
+      sessionId: "session-1",
+      sessionFile: "/tmp/session.jsonl",
+      messages: [
+        {
+          role: "assistant",
+          timestamp: 1_700_000_000_000,
+          usage: { input: 2, output: 3, cacheRead: 5 },
+          content: [
+            { type: "text", text: "Working on it" },
+            { type: "toolCall", name: "read" },
+            { type: "text", value: "ignored malformed part" },
+          ],
+        },
+        { role: "toolResult", toolName: "read", timestamp: 1_700_000_001_000 },
+      ],
+    });
+
+    const health = runtime.snapshot(started.id)?.health;
+    expect(health).toMatchObject({
+      turns: 1,
+      toolUses: 1,
+      tokensTotal: 10,
+      activeTool: "read",
+      lastActivity: "2023-11-14T22:13:21.000Z",
+      lastAssistantText: "Working on it",
+      transcript: {
+        sessionId: "session-1",
+        sessionFile: "/tmp/session.jsonl",
+      },
+    });
+
+    session.messages = [
+      {
+        role: "assistant",
+        content: "Updated answer",
+        usage: { totalTokens: 12 },
+      },
+    ];
+    expect(runtime.snapshots()[0]?.health).toMatchObject({
+      turns: 1,
+      tokensTotal: 12,
+      lastAssistantText: "Updated answer",
+    });
+
+    runtime.stop(started.id);
+    promptDone.resolve();
   });
 
   it("models failed and stopped terminal states", () => {

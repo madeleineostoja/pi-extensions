@@ -229,8 +229,7 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function snapshot(record: RuntimeRecord): RuntimeSnapshot {
-  updateRecordHealth(record);
+function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
   return {
     id: record.id,
     status: record.status,
@@ -326,7 +325,7 @@ function messageText(message: unknown): string | undefined {
     .join("\n");
 }
 
-function updateRecordHealth(record: RuntimeRecord): void {
+function refreshHealth(record: RuntimeRecord): void {
   const session = record.session;
   if (!session) {
     if (record.result !== undefined) {
@@ -632,6 +631,7 @@ export class SubagentRuntime {
         record.error = reason;
         record.completedAt = timestamp;
         record.updatedAt = timestamp;
+        refreshHealth(record);
         retired.push(this.#finish(record));
       } else {
         this.#waiters.delete(record.id);
@@ -666,7 +666,7 @@ export class SubagentRuntime {
       steeringQueue: [],
     };
     this.#records.set(id, record);
-    return snapshot(record);
+    return projectSnapshot(record);
   }
 
   async runPublicAgent(input: RunPublicAgentInput): Promise<RuntimeSnapshot> {
@@ -699,7 +699,7 @@ export class SubagentRuntime {
     const running = this.#runRecord(record, input);
     if (input.mode === "background") {
       void running;
-      return snapshot(record);
+      return projectSnapshot(record);
     }
     return running;
   }
@@ -805,7 +805,7 @@ export class SubagentRuntime {
     record.status = "running";
     record.startedAt = timestamp;
     record.updatedAt = timestamp;
-    return snapshot(record);
+    return projectSnapshot(record);
   }
 
   complete(id: string, result: unknown): RuntimeSnapshot {
@@ -816,6 +816,7 @@ export class SubagentRuntime {
     record.result = result;
     record.completedAt = timestamp;
     record.updatedAt = timestamp;
+    refreshHealth(record);
     return this.#finish(record);
   }
 
@@ -827,6 +828,7 @@ export class SubagentRuntime {
     record.error = errorText(error);
     record.completedAt = timestamp;
     record.updatedAt = timestamp;
+    refreshHealth(record);
     return this.#finish(record);
   }
 
@@ -839,6 +841,7 @@ export class SubagentRuntime {
     record.error = error;
     record.completedAt = timestamp;
     record.updatedAt = timestamp;
+    refreshHealth(record);
     return this.#finish(record);
   }
 
@@ -860,20 +863,24 @@ export class SubagentRuntime {
       await record.session.steer(trimmed);
     }
     record.updatedAt = now();
-    return snapshot(record);
+    refreshHealth(record);
+    return projectSnapshot(record);
   }
 
   async result(id: string, wait: boolean): Promise<RuntimeSnapshot> {
     if (wait) {
       return this.wait(id);
     }
-    return snapshot(this.#requireRecord(id));
+    const record = this.#requireRecord(id);
+    refreshHealth(record);
+    return projectSnapshot(record);
   }
 
   wait(id: string): Promise<RuntimeSnapshot> {
     const record = this.#requireRecord(id);
     if (isTerminal(record.status)) {
-      return Promise.resolve(snapshot(record));
+      refreshHealth(record);
+      return Promise.resolve(projectSnapshot(record));
     }
     return new Promise((resolve) => {
       const waiters = this.#waiters.get(id) ?? [];
@@ -884,20 +891,21 @@ export class SubagentRuntime {
 
   snapshot(id: string): RuntimeSnapshot | undefined {
     const record = this.#records.get(id);
-    return record && this.#isCurrentRecord(record)
-      ? snapshot(record)
-      : undefined;
-  }
-
-  getRecord(id: string): RuntimeSnapshot | undefined {
-    return this.snapshot(id);
+    if (!record || !this.#isCurrentRecord(record)) {
+      return undefined;
+    }
+    refreshHealth(record);
+    return projectSnapshot(record);
   }
 
   snapshots(options: { includeNested?: boolean } = {}): RuntimeSnapshot[] {
     return [...this.#records.values()]
       .filter((record) => this.#isCurrentRecord(record))
       .filter((record) => options.includeNested || !isNestedOwner(record.owner))
-      .map((record) => snapshot(record));
+      .map((record) => {
+        refreshHealth(record);
+        return projectSnapshot(record);
+      });
   }
 
   async #runRecord(
@@ -967,7 +975,7 @@ export class SubagentRuntime {
       const { session } = await this.#createSession(createSessionOptions);
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         await this.#disposeSession(session);
-        return snapshot(record);
+        return projectSnapshot(record);
       }
       record.session = session;
       record.unsubscribeSession = session.subscribe?.((event) => {
@@ -999,7 +1007,7 @@ export class SubagentRuntime {
       await this.#flushSteering(record);
       await prompt;
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
-        return snapshot(record);
+        return projectSnapshot(record);
       }
       const state = "state" in session ? session.state : undefined;
       if (state?.errorMessage) {
@@ -1009,7 +1017,7 @@ export class SubagentRuntime {
       return this.complete(record.id, result);
     } catch (error) {
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
-        return snapshot(record);
+        return projectSnapshot(record);
       }
       return this.fail(record.id, error);
     } finally {
@@ -1024,7 +1032,7 @@ export class SubagentRuntime {
     if (!isExploreEligible(record.type)) {
       return undefined;
     }
-    return [this.createExploreTool(snapshot(record))];
+    return [this.createExploreTool(projectSnapshot(record))];
   }
 
   async #disposeSession(session: PublicAgentSession): Promise<void> {
@@ -1032,7 +1040,7 @@ export class SubagentRuntime {
       if (record.session === session) {
         record.unsubscribeSession?.();
         record.unsubscribeSession = undefined;
-        updateRecordHealth(record);
+        refreshHealth(record);
       }
     }
     if (session.extensionRunner.hasHandlers("session_shutdown")) {
@@ -1120,7 +1128,7 @@ export class SubagentRuntime {
   }
 
   #finish(record: RuntimeRecord): RuntimeSnapshot {
-    const finalSnapshot = snapshot(record);
+    const finalSnapshot = projectSnapshot(record);
     const waiters = this.#waiters.get(record.id) ?? [];
     this.#waiters.delete(record.id);
     for (const waiter of waiters) {
