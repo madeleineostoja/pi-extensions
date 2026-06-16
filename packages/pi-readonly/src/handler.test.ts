@@ -614,7 +614,7 @@ function makeRegistrationPi(params: {
       }
     },
     registerShortcut(name: string, opts: { handler: ShortcutHandler }) {
-      if (name === "alt+r") {
+      if (name === "ctrl+r") {
         params.shortcutHandlers?.push(opts.handler);
       }
     },
@@ -660,7 +660,7 @@ function captureCommandAndShortcutHandlers() {
     throw new Error("readonly command handler was not registered");
   }
   if (!shortcutHandler) {
-    throw new Error("alt+r shortcut handler was not registered");
+    throw new Error("ctrl+r shortcut handler was not registered");
   }
   return { commandHandler, shortcutHandler };
 }
@@ -679,7 +679,7 @@ function captureDuplicateReadonlyHandlers() {
 
   const shortcutHandler = shortcutHandlers.at(-1);
   if (!shortcutHandler) {
-    throw new Error("alt+r shortcut handler was not registered");
+    throw new Error("ctrl+r shortcut handler was not registered");
   }
   expect(toolCallHandlers).toHaveLength(2);
   return { shortcutHandler, toolCallHandlers };
@@ -791,7 +791,7 @@ describe("/readonly command notifications", () => {
   });
 });
 
-describe("alt+r shortcut notifications", () => {
+describe("ctrl+r shortcut notifications", () => {
   it("shortcut toggles readonly and does not emit a notification", async () => {
     const { shortcutHandler } = captureCommandAndShortcutHandlers();
     const ctx = makeNotifyCapturingCtx();

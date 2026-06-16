@@ -108,7 +108,7 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.registerShortcut("alt+r", {
+  pi.registerShortcut("ctrl+r", {
     description: "Toggle readonly mode",
     handler: async (ctx) => {
       setMode(!readonlyMode, ctx);

@@ -31,7 +31,7 @@ Readonly: proposed edit — apply?
 
 Current state is always visible in the footer (`readonly` or `editing`).
 
-**Keyboard shortcut** — `Alt+R` toggles readonly mode.
+**Keyboard shortcut** — `Ctrl+R` toggles readonly mode.
 
 **Footer** — while readonly mode is active, `readonly` appears in the status bar. It shows `editing` when readonly mode is off.
 
@@ -50,7 +50,7 @@ These are deliberate non-features.
 
 ## Keybinding conflicts
 
-If `Alt+R` collides with your terminal or another extension, remap it in `~/.pi/agent/keybindings.json`.
+If `Ctrl+R` collides with your terminal or another extension, remap it in `~/.pi/agent/keybindings.json`.
 
 ## License
 

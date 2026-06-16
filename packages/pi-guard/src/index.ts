@@ -78,7 +78,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerMessageRenderer(MESSAGE_TYPE, renderStatusMessage);
 
-  pi.registerShortcut("alt+g", {
+  pi.registerShortcut("ctrl+g", {
     description: "Toggle guard mode",
     handler: async (ctx) => {
       applyMode(!guardEnabled);

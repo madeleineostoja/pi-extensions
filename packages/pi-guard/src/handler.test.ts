@@ -359,7 +359,7 @@ function captureCommandAndShortcutHandlers() {
   const pi = {
     on: () => {},
     registerShortcut(name: string, opts: { handler: ShortcutHandler }) {
-      if (name === "alt+g") {
+      if (name === "ctrl+g") {
         shortcutHandler = opts.handler;
       }
     },
@@ -398,7 +398,7 @@ function captureCommandAndShortcutHandlers() {
     throw new Error("guard command handler was not registered");
   }
   if (!shortcutHandler) {
-    throw new Error("alt+g shortcut handler was not registered");
+    throw new Error("ctrl+g shortcut handler was not registered");
   }
   return { commandHandler, shortcutHandler };
 }
@@ -494,7 +494,7 @@ describe("/guard command notifications", () => {
   });
 });
 
-describe("alt+g shortcut", () => {
+describe("ctrl+g shortcut", () => {
   it("shortcut toggles guard and updates footer", async () => {
     const { shortcutHandler } = captureCommandAndShortcutHandlers();
     const ctx = makeInteractiveCtx();
