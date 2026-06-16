@@ -1,8 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { showAgentsDashboard } from "./agents-dashboard.js";
 import { PUBLIC_AGENT_PROFILES } from "./agent-profiles.js";
-import { getSubagentRuntime, type RuntimeSnapshot } from "./runtime.js";
+import { getSubagentRuntime } from "./runtime.js";
+import { SubagentRosterController } from "./roster.js";
+import {
+  renderAgentCall,
+  renderAgentResult,
+  toolResult,
+} from "./tool-rendering.js";
 
 export {
   GENERAL_DESC,
@@ -74,20 +80,37 @@ const Thinking = Type.Union([
   Type.Literal("xhigh"),
 ]);
 
-function toolResult(snapshot: RuntimeSnapshot) {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(snapshot) }],
-    details: snapshot,
-    isError: snapshot.status === "failed" || snapshot.status === "stopped",
-  };
-}
+const PublicAgentParameters = Type.Object({
+  subagent_type: PublicAgentType,
+  prompt: Type.String({ description: "Task prompt for the subagent." }),
+  description: Type.Optional(
+    Type.String({ description: "Short human-readable task summary." }),
+  ),
+  mode: Type.Optional(
+    Type.Union([Type.Literal("foreground"), Type.Literal("background")], {
+      description: "Default foreground. Use background for long-running work.",
+    }),
+  ),
+  model: Type.Optional(
+    Type.String({ description: "Optional provider/model override." }),
+  ),
+  thinking: Type.Optional(Thinking),
+  cwd: Type.Optional(
+    Type.String({ description: "Optional working directory override." }),
+  ),
+});
+
+export type PublicAgentParams = Static<typeof PublicAgentParameters>;
 
 export default function (pi: ExtensionAPI): void {
   const runtime = getSubagentRuntime(pi);
+  const roster = new SubagentRosterController(runtime);
   pi.on("session_shutdown", (event: { reason?: string } = {}) => {
+    roster.dispose();
     runtime.handleSessionShutdown(event.reason);
   });
   pi.on("session_start", (event: { reason?: string } = {}) => {
+    roster.dispose();
     runtime.beginSession(event.reason);
   });
 
@@ -101,40 +124,27 @@ export default function (pi: ExtensionAPI): void {
     label: "Agent",
     description:
       "Run a General, Explore, or Review subagent. Defaults to foreground and returns the result; for background, use get_subagent_result with wait:true to join instead of polling.",
-    parameters: Type.Object({
-      subagent_type: PublicAgentType,
-      prompt: Type.String({ description: "Task prompt for the subagent." }),
-      description: Type.Optional(
-        Type.String({ description: "Short human-readable task summary." }),
-      ),
-      mode: Type.Optional(
-        Type.Union([Type.Literal("foreground"), Type.Literal("background")], {
-          description:
-            "Default foreground. Use background for long-running work.",
-        }),
-      ),
-      model: Type.Optional(
-        Type.String({ description: "Optional provider/model override." }),
-      ),
-      thinking: Type.Optional(Thinking),
-      cwd: Type.Optional(
-        Type.String({ description: "Optional working directory override." }),
-      ),
-    }),
+    parameters: PublicAgentParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const snapshot = await runtime.runPublicAgent({
+      const mode = params.mode ?? "foreground";
+      const running = runtime.runPublicAgent({
         type: params.subagent_type,
         prompt: params.prompt,
         description: params.description,
         cwd: params.cwd ?? ctx.cwd,
         model: params.model,
         thinking: params.thinking,
-        mode: params.mode ?? "foreground",
+        mode,
         ctx,
         signal,
       });
-      return toolResult(snapshot);
+      roster.track(ctx);
+      const snapshot = await running;
+      roster.track(ctx);
+      return toolResult(snapshot, mode);
     },
+    renderCall: renderAgentCall,
+    renderResult: renderAgentResult,
   });
 
   pi.registerTool({
@@ -154,6 +164,7 @@ export default function (pi: ExtensionAPI): void {
       const snapshot = await runtime.result(params.id, params.wait);
       return toolResult(snapshot);
     },
+    renderResult: renderAgentResult,
   });
 
   pi.registerTool({
@@ -169,5 +180,6 @@ export default function (pi: ExtensionAPI): void {
       const snapshot = await runtime.steer(params.id, params.message);
       return toolResult(snapshot);
     },
+    renderResult: renderAgentResult,
   });
 }

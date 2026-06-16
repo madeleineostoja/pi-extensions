@@ -30,7 +30,7 @@ import {
   PUBLIC_AGENT_PROFILES,
   REVIEW_PROMPT,
 } from "./agent-profiles.js";
-import { SubagentRuntime } from "./runtime.js";
+import { getSubagentRuntime, SubagentRuntime } from "./runtime.js";
 import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 
 vi.mocked(DefaultResourceLoader).prototype.reload = reloadMock;
@@ -39,7 +39,9 @@ type ToolDef = {
   name: string;
   description: string;
   parameters: unknown;
-  execute: (...args: any[]) => Promise<unknown>;
+  execute: (...args: any[]) => Promise<any>;
+  renderCall?: (...args: any[]) => unknown;
+  renderResult?: (...args: any[]) => unknown;
 };
 
 type Message = {
@@ -122,6 +124,12 @@ function asAgentSession<T>(session: T): T & AgentSession {
   return session as T & AgentSession;
 }
 
+function textContent(result: {
+  content: Array<{ type: string; text?: string }>;
+}) {
+  return result.content.find((part) => part.type === "text")?.text;
+}
+
 function makeSession(result = "done") {
   const calls: string[] = [];
   const extensionRunner = {
@@ -197,6 +205,8 @@ describe("public subagent tools", () => {
       "steer_subagent",
     ]);
     expect(tools[0].description).toContain("foreground");
+    expect(tools[0].renderCall).toEqual(expect.any(Function));
+    expect(tools[0].renderResult).toEqual(expect.any(Function));
     expect(tools[1].description).toContain("wait:true");
     expect(tools[1].description).toContain("do not poll");
     expect(tools[2].description).toContain("wait:true");
@@ -222,6 +232,213 @@ describe("public subagent tools", () => {
     expect(JSON.stringify(tools[0].parameters)).toContain(
       PUBLIC_AGENT_PROFILES.Review.description,
     );
+  });
+
+  it("returns complete foreground content and actionable background content", async () => {
+    const { pi, tools } = makePi(["read"]);
+    registerExtension(pi as never);
+    const agent = tools.find((tool) => tool.name === "Agent");
+    expect(agent).toBeDefined();
+
+    const promptDone = deferred<void>();
+    const runtime = SubagentRuntime.prototype;
+    const runPublicAgent = vi
+      .spyOn(runtime, "runPublicAgent")
+      .mockImplementation(async function (this: SubagentRuntime, input) {
+        const queued = this.queue({
+          owner: "public-tool",
+          type: input.type,
+          description: input.description ?? input.prompt,
+          cwd: input.cwd,
+        });
+        this.start(queued.id);
+        if (input.mode === "background") {
+          void promptDone.promise.then(() => this.complete(queued.id, "later"));
+          return this.snapshot(queued.id)!;
+        }
+        return this.complete(queued.id, "done");
+      });
+    try {
+      const foreground = await agent!.execute(
+        "call-1",
+        { subagent_type: "General", prompt: "do it" },
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(textContent(foreground)).toBe("done");
+      expect(foreground.isError).toBe(false);
+      expect(foreground.details).toMatchObject({
+        type: "General",
+        status: "completed",
+        result: "done",
+      });
+
+      const background = await agent!.execute(
+        "call-2",
+        {
+          subagent_type: "Explore",
+          prompt: "inspect",
+          mode: "background",
+        },
+        undefined,
+        undefined,
+        makeCtx(),
+      );
+      expect(textContent(background)).toContain("Subagent subagent-");
+      expect(textContent(background)).toContain("get_subagent_result");
+      expect(textContent(background)).toContain("wait:true");
+      expect(background.isError).toBe(false);
+      expect(background.details).toMatchObject({
+        type: "Explore",
+        status: "running",
+      });
+    } finally {
+      runPublicAgent.mockRestore();
+      promptDone.resolve();
+    }
+  });
+
+  it("returns full completed status results and error flags from public status tools", async () => {
+    const { pi, tools } = makePi(["read"]);
+    registerExtension(pi as never);
+    const getResult = tools.find((tool) => tool.name === "get_subagent_result");
+    const steer = tools.find((tool) => tool.name === "steer_subagent");
+    expect(getResult).toBeDefined();
+    expect(steer).toBeDefined();
+
+    const runtime = getSubagentRuntime(pi as never);
+    const completed = runtime.queue({
+      owner: "test",
+      type: "General",
+      description: "finished",
+      cwd: "/workspace",
+    });
+    runtime.start(completed.id);
+    runtime.complete(
+      completed.id,
+      "complete final deliverable with retrieval-only content avoided",
+    );
+
+    const completedResult = await getResult!.execute(
+      "call-1",
+      { id: completed.id, wait: true },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(textContent(completedResult)).toBe(
+      "complete final deliverable with retrieval-only content avoided",
+    );
+    expect(completedResult.isError).toBe(false);
+    expect(completedResult.details).toMatchObject({
+      id: completed.id,
+      status: "completed",
+      result: "complete final deliverable with retrieval-only content avoided",
+    });
+
+    const failed = runtime.queue({
+      owner: "test",
+      type: "Explore",
+      description: "failed",
+      cwd: "/workspace",
+    });
+    runtime.start(failed.id);
+    runtime.fail(failed.id, "provider unavailable");
+
+    const failedResult = await getResult!.execute(
+      "call-2",
+      { id: failed.id, wait: false },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(textContent(failedResult)).toContain("failed: provider unavailable");
+    expect(failedResult.isError).toBe(true);
+
+    const stopped = runtime.queue({
+      owner: "test",
+      type: "Review",
+      description: "stopped",
+      cwd: "/workspace",
+    });
+    runtime.start(stopped.id);
+    runtime.stop(stopped.id, "Stopped by test.");
+
+    const stoppedResult = await getResult!.execute(
+      "call-3",
+      { id: stopped.id, wait: false },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(textContent(stoppedResult)).toContain("stopped: Stopped by test.");
+    expect(stoppedResult.isError).toBe(true);
+
+    const running = runtime.queue({
+      owner: "test",
+      type: "General",
+      description: "running",
+      cwd: "/workspace",
+    });
+    runtime.start(running.id);
+    const steerResult = await steer!.execute(
+      "call-4",
+      { id: running.id, message: "continue" },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(steerResult.isError).toBe(false);
+
+    const failedForSteer = runtime.queue({
+      owner: "test",
+      type: "General",
+      description: "failed steer result",
+      cwd: "/workspace",
+    });
+    runtime.start(failedForSteer.id);
+    const failedSteerSnapshot = runtime.fail(
+      failedForSteer.id,
+      "steer failure",
+    );
+    const steerSpy = vi
+      .spyOn(runtime, "steer")
+      .mockResolvedValueOnce(failedSteerSnapshot);
+    const failedSteerResult = await steer!.execute(
+      "call-5",
+      { id: failedForSteer.id, message: "continue" },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(failedSteerResult.isError).toBe(true);
+    expect(textContent(failedSteerResult)).toContain("failed: steer failure");
+
+    const stoppedForSteer = runtime.queue({
+      owner: "test",
+      type: "Review",
+      description: "stopped steer result",
+      cwd: "/workspace",
+    });
+    runtime.start(stoppedForSteer.id);
+    const stoppedSteerSnapshot = runtime.stop(
+      stoppedForSteer.id,
+      "Steer stopped.",
+    );
+    steerSpy.mockResolvedValueOnce(stoppedSteerSnapshot);
+    const stoppedSteerResult = await steer!.execute(
+      "call-6",
+      { id: stoppedForSteer.id, message: "continue" },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(stoppedSteerResult.isError).toBe(true);
+    expect(textContent(stoppedSteerResult)).toContain(
+      "stopped: Steer stopped.",
+    );
+    steerSpy.mockRestore();
   });
 
   it("runs pi-implement managed background sessions and waits for completion", async () => {
