@@ -21,62 +21,53 @@ export type ParsedPlan = {
 };
 
 const CHECKBOX_RE = /^([ \t]*)[-*][ \t]+\[([ xX])\][ \t]+(.+)$/;
+const HEADING_RE = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/;
+
+type CheckboxCandidate = {
+  lineIndex: number;
+  indent: string;
+  checked: boolean;
+  text: string;
+  originalLine: string;
+};
+
+type CheckboxSection = {
+  heading: string;
+  startIndex: number;
+  endIndex: number;
+  candidates: CheckboxCandidate[];
+};
 
 export function parsePlan(path: string, content: string): ParsedPlan {
   const lines = content.split(/\r?\n/);
-  const tasksHeading = lines.findIndex((line) =>
-    /^##[ \t]+Tasks[ \t]*$/.test(line),
+  const sections = checkboxSections(lines);
+  const candidateSections = sections.filter(
+    (section) => section.candidates.length > 0,
   );
-  if (tasksHeading === -1) {
-    throw new Error("Plan does not contain a ## Tasks section.");
-  }
-  let end = lines.length;
-  for (let i = tasksHeading + 1; i < lines.length; i++) {
-    if (/^##[ \t]+/.test(lines[i])) {
-      end = i;
-      break;
-    }
+
+  if (candidateSections.length === 0) {
+    throw new Error(
+      "No checkbox task section found. Add a single Markdown section containing supported task checkboxes like '- [ ] Task' or '* [ ] Task'.",
+    );
   }
 
-  const candidates: Array<{
-    lineIndex: number;
-    indent: string;
-    checked: boolean;
-    text: string;
-    originalLine: string;
-  }> = [];
-  for (let i = tasksHeading + 1; i < end; i++) {
-    const match = CHECKBOX_RE.exec(lines[i]);
-    if (!match) {
-      continue;
-    }
-    candidates.push({
-      lineIndex: i,
-      indent: match[1] ?? "",
-      checked: (match[2] ?? " ").toLowerCase() === "x",
-      text: match[3] ?? "",
-      originalLine: lines[i],
-    });
-  }
-  if (candidates.length === 0) {
-    return {
-      path,
-      content,
-      lines,
-      tasksStartLine: tasksHeading + 1,
-      tasksEndLine: end + 1,
-      tasks: [],
-    };
+  if (candidateSections.length > 1) {
+    throw new Error(
+      `Multiple checkbox task sections found. Keep executable task checkboxes in exactly one section, or remove checkboxes from the others. Candidates:\n${candidateSections
+        .map((section) => `- ${formatSectionRange(section)}`)
+        .join("\n")}`,
+    );
   }
 
+  const section = candidateSections[0];
   const minIndent = Math.min(
-    ...candidates.map((candidate) => candidate.indent.length),
+    ...section.candidates.map((candidate) => candidate.indent.length),
   );
-  const executable = candidates.filter(
+  const executable = section.candidates.filter(
     (candidate) => candidate.indent.length === minIndent,
   );
   const tasks = executable.map((candidate, i): PlanTask => {
-    const next = executable[i + 1]?.lineIndex ?? end;
+    const next = executable[i + 1]?.lineIndex ?? section.endIndex;
     const blockLines = lines.slice(candidate.lineIndex + 1, next);
     return {
       index: i + 1,
@@ -93,10 +84,57 @@ export function parsePlan(path: string, content: string): ParsedPlan {
     path,
     content,
     lines,
-    tasksStartLine: tasksHeading + 1,
-    tasksEndLine: end + 1,
+    tasksStartLine: section.startIndex + 1,
+    tasksEndLine: section.endIndex + 1,
     tasks,
   };
+}
+
+function checkboxSections(lines: string[]): CheckboxSection[] {
+  const sections: CheckboxSection[] = [
+    {
+      heading: "(headingless)",
+      startIndex: 0,
+      endIndex: lines.length,
+      candidates: [],
+    },
+  ];
+
+  for (let i = 0; i < lines.length; i++) {
+    const heading = HEADING_RE.exec(lines[i]);
+    if (heading) {
+      const previous = sections[sections.length - 1];
+      previous.endIndex = i;
+      sections.push({
+        heading: heading[2] ?? "(untitled heading)",
+        startIndex: i,
+        endIndex: lines.length,
+        candidates: [],
+      });
+      continue;
+    }
+
+    const match = CHECKBOX_RE.exec(lines[i]);
+    if (!match) {
+      continue;
+    }
+    const section = sections[sections.length - 1];
+    section.candidates.push({
+      lineIndex: i,
+      indent: match[1] ?? "",
+      checked: (match[2] ?? " ").toLowerCase() === "x",
+      text: match[3] ?? "",
+      originalLine: lines[i],
+    });
+  }
+
+  return sections;
+}
+
+function formatSectionRange(section: CheckboxSection): string {
+  const startLine = section.startIndex + 1;
+  const endLine = Math.max(startLine, section.endIndex);
+  return `${section.heading} (lines ${startLine}-${endLine})`;
 }
 
 export function parsePlanFile(path: string): ParsedPlan {
