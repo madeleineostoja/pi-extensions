@@ -56,10 +56,17 @@ export type ResolvedSourceMaterialRef = SourceMaterialRef & {
   renderedCharCount: number;
 };
 
+export type SourceMaterialRepairInfo = {
+  attempted: boolean;
+  reason?: string;
+  failureReason?: string;
+};
+
 export type RenderedSourceMaterialPacket = {
   section: string;
   resolvedRefs: ResolvedSourceMaterialRef[];
   warnings: string[];
+  repair?: SourceMaterialRepairInfo;
 };
 
 const SOURCE_MATERIAL_ORIGINS = new Set<SourceMaterialOrigin>([
@@ -187,6 +194,7 @@ export type SourceMaterialRenderOptions = {
     absolutePath: string;
     fileContent: string;
   }) => string | undefined;
+  warnings?: string[];
 };
 
 export function renderSourceMaterialPacket(
@@ -201,7 +209,7 @@ export function renderSourceMaterialPacket(
     "The following validated raw material is included to satisfy the selected compiled task contract. It supplies exact details, constraints, examples, schemas, prompts, fixtures, or design context, but it must not expand scope to sibling tasks or unrelated work.",
   ];
   const resolvedRefs: ResolvedSourceMaterialRef[] = [];
-  const warnings: string[] = [];
+  const warnings = options.warnings ?? [];
   const seen = new Set<string>();
 
   for (const ref of refs) {

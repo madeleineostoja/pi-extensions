@@ -208,7 +208,7 @@ function validateFrozenMaterialCurrent(
   }
 }
 
-function resolvePhase1MaterialRefPath(
+export function resolvePhase1MaterialRefPath(
   ref: SourceMaterialRef,
   inventory: Phase1MaterialInventory,
 ): { ok: true; absolutePath: string } | { ok: false; reason: string } {

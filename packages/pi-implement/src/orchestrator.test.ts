@@ -1091,6 +1091,21 @@ describe("runImplementation", () => {
     git.rootValue = dir;
     const subagents = new FakeSubagents();
     subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-selected-task",
+          sourceMaterialRefs: [
+            {
+              origin: "planner",
+              path: relative(dir, supportPath),
+              mode: { kind: "line-range", startLine: 3, endLine: 4 },
+              reason: "Valid repo-relative corpus excerpt.",
+            },
+          ],
+          reason: "Dropped ref outside the ingested corpus.",
+        }),
+      },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
       { status: "completed", result: GOOD_OVERALL_REVIEW },
@@ -1171,10 +1186,476 @@ describe("runImplementation", () => {
     expect(prompt).toContain("safe line two\nsafe line three");
     expect(prompt).not.toContain("safe line four");
     expect(prompt).not.toContain("Do not render me.");
+    expect(prompt).toContain("Source material repair note");
+    expect(prompt).not.toContain("path is not in the ingested plan corpus");
+  });
+
+  it("repairs invalid planner line ranges through one subagent response", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const referencePath = join(dir, "reference.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Selected task\n";
+    const referenceContent = "line one\nline two\nline three\nline four\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(referencePath, referenceContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-selected-task",
+          sourceMaterialRefs: [
+            {
+              origin: "planner",
+              path: referencePath,
+              mode: { kind: "line-range", startLine: 2, endLine: 3 },
+              reason: "Corrected range.",
+            },
+          ],
+          reason: "Fixed invalid line range.",
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [
+        { path: planPath, hash: sha256(planContent) },
+        { path: referencePath, hash: sha256(referenceContent) },
+      ],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(
+            `${sha256(planContent)}${sha256(referenceContent)}`,
+          ),
+          files: [
+            { path: planPath, hash: sha256(planContent) },
+            { path: referencePath, hash: sha256(referenceContent) },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: referencePath,
+        mode: { kind: "line-range", startLine: 50, endLine: 51 },
+        reason: "Invalid range.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const prompt = readFileSync(
+      join(paths.tasksDir, "t001-selected-task", "prompt.md"),
+      "utf-8",
+    );
+    expect(prompt).toContain(
+      `Source: ${referencePath} (lines 2-3; origin: planner)`,
+    );
+    expect(prompt).toContain("line two\nline three");
+    expect(prompt).toContain("Source material repair note");
+    expect(prompt).not.toContain(
+      "Low-confidence source material warning for review",
+    );
+
+    const packet = JSON.parse(
+      readFileSync(
+        join(paths.tasksDir, "t001-selected-task", "task-packet.json"),
+        "utf-8",
+      ),
+    ) as {
+      resolvedMaterialRefs: unknown[];
+      sourceMaterialRepair?: { reason?: string; failureReason?: string };
+    };
+    expect(packet.sourceMaterialRepair?.reason).toBe(
+      "Fixed invalid line range.",
+    );
+    expect(packet.sourceMaterialRepair?.failureReason).toBeUndefined();
+  });
+
+  it("falls back to anchored packet when repair output remains invalid and exact material is not required", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const referencePath = join(dir, "reference.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Selected task\n";
+    const referenceContent = "line one\nline two\nline three\nline four\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(referencePath, referenceContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-selected-task",
+          sourceMaterialRefs: [
+            {
+              origin: "planner",
+              path: referencePath,
+              mode: { kind: "line-range", startLine: 100, endLine: 101 },
+              reason: "Still invalid range.",
+            },
+          ],
+          reason: "Failed to correct range.",
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [
+        { path: planPath, hash: sha256(planContent) },
+        { path: referencePath, hash: sha256(referenceContent) },
+      ],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(
+            `${sha256(planContent)}${sha256(referenceContent)}`,
+          ),
+          files: [
+            { path: planPath, hash: sha256(planContent) },
+            { path: referencePath, hash: sha256(referenceContent) },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: referencePath,
+        mode: { kind: "line-range", startLine: 50, endLine: 51 },
+        reason: "Invalid range.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const prompt = readFileSync(
+      join(paths.tasksDir, "t001-selected-task", "prompt.md"),
+      "utf-8",
+    );
+    expect(prompt).toContain("### Selected Task Source Anchor");
+    expect(prompt).toContain("Source material repair note");
     expect(prompt).toContain(
       "Low-confidence source material warning for review",
     );
-    expect(prompt).toContain("path is not in the ingested plan corpus");
+    expect(prompt).toContain("starts after end of file");
+    expect(prompt).not.toContain(
+      `Source: ${referencePath} (lines 2-3; origin: planner)`,
+    );
+
+    const packet = JSON.parse(
+      readFileSync(
+        join(paths.tasksDir, "t001-selected-task", "task-packet.json"),
+        "utf-8",
+      ),
+    ) as {
+      resolvedMaterialRefs: unknown[];
+      sourceMaterialRepair?: { reason?: string; failureReason?: string };
+    };
+    expect(packet.sourceMaterialRepair?.reason).toBe(
+      "Failed to correct range.",
+    );
+  });
+
+  it("preserves deterministic refs when repair output omits task-anchor material", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const referencePath = join(dir, "reference.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Selected task\n";
+    const referenceContent = "line one\nline two\nline three\nline four\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(referencePath, referenceContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-selected-task",
+          sourceMaterialRefs: [
+            {
+              origin: "task-anchor",
+              path: planPath,
+              mode: { kind: "line-range", startLine: 1, endLine: 1 },
+              reason: "Trying to replace anchor.",
+            },
+            {
+              origin: "planner",
+              path: referencePath,
+              mode: { kind: "line-range", startLine: 2, endLine: 3 },
+              reason: "Corrected planner ref.",
+            },
+          ],
+          reason: "Replaced anchor and added planner ref.",
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [
+        { path: planPath, hash: sha256(planContent) },
+        { path: referencePath, hash: sha256(referenceContent) },
+      ],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(
+            `${sha256(planContent)}${sha256(referenceContent)}`,
+          ),
+          files: [
+            { path: planPath, hash: sha256(planContent) },
+            { path: referencePath, hash: sha256(referenceContent) },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: referencePath,
+        mode: { kind: "line-range", startLine: 50, endLine: 51 },
+        reason: "Invalid range.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const packet = JSON.parse(
+      readFileSync(
+        join(paths.tasksDir, "t001-selected-task", "task-packet.json"),
+        "utf-8",
+      ),
+    ) as {
+      resolvedMaterialRefs: Array<{
+        origin: string;
+        absolutePath: string;
+        displayLabel: string;
+      }>;
+    };
+    const anchor = packet.resolvedMaterialRefs.find(
+      (ref) => ref.origin === "task-anchor",
+    );
+    expect(anchor).toBeDefined();
+    expect(anchor?.absolutePath).toBe(planPath);
+    expect(anchor?.displayLabel).toBe("Selected Task Source Anchor");
+    expect(
+      packet.resolvedMaterialRefs.some(
+        (ref) => ref.origin === "planner" && ref.absolutePath === referencePath,
+      ),
+    ).toBe(true);
+  });
+
+  it("blocks when repaired planner refs remain oversized", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const referencePath = join(dir, "reference.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Selected task\n";
+    const referenceContent = "x".repeat(101_000);
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(referencePath, referenceContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-selected-task",
+          sourceMaterialRefs: [
+            {
+              origin: "planner",
+              path: referencePath,
+              mode: { kind: "full-file" },
+              reason: "Still oversized full-file ref.",
+            },
+          ],
+          reason: "Could not narrow the ref.",
+        }),
+      },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [
+        { path: planPath, hash: sha256(planContent) },
+        { path: referencePath, hash: sha256(referenceContent) },
+      ],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(
+            `${sha256(planContent)}${sha256(referenceContent)}`,
+          ),
+          files: [
+            { path: planPath, hash: sha256(planContent) },
+            { path: referencePath, hash: sha256(referenceContent) },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: referencePath,
+        mode: { kind: "full-file" },
+        reason: "Oversized full-file ref.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("Rendered source material exceeds maximum size");
+    expect(subagents.spawns).toHaveLength(1);
   });
 
   it("blocks exact-material tasks when planner material is not in the recorded corpus", async () => {
@@ -1188,6 +1669,23 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     git.rootValue = dir;
     const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-copy-exact-fixture",
+          sourceMaterialRefs: [
+            {
+              origin: "planner",
+              path: "outside.md",
+              mode: { kind: "full-file" },
+              reason: "Existing file outside the ingested corpus.",
+            },
+          ],
+          reason: "Could not locate alternative corpus file.",
+        }),
+      },
+    ];
     const paths = makePaths(dir);
     writeRunJson(paths, {
       ...makeRunJson(dir, planPath),
@@ -1248,6 +1746,180 @@ describe("runImplementation", () => {
         shouldStop: () => false,
       }),
     ).rejects.toThrow("requires exact source material");
+    expect(subagents.spawns).toHaveLength(1);
+  });
+
+  it("blocks exact-material tasks when repaired planner refs are only too broad", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const referencePath = join(dir, "reference.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Copy exact fixture\n";
+    const referenceContent = "x".repeat(30_000);
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(referencePath, referenceContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-copy-exact-fixture",
+          sourceMaterialRefs: [
+            {
+              origin: "planner",
+              path: referencePath,
+              mode: { kind: "full-file" },
+              reason: "Still too broad.",
+            },
+          ],
+          reason: "Could not narrow to a line range.",
+        }),
+      },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [
+        { path: planPath, hash: sha256(planContent) },
+        { path: referencePath, hash: sha256(referenceContent) },
+      ],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(
+            `${sha256(planContent)}${sha256(referenceContent)}`,
+          ),
+          files: [
+            { path: planPath, hash: sha256(planContent) },
+            { path: referencePath, hash: sha256(referenceContent) },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.compiledContract = {
+      ...task.compiledContract,
+      objective: "Copy exact fixture",
+      acceptanceCriteria: ["Fixture is copied from the source-of-truth."],
+    };
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: referencePath,
+        mode: { kind: "full-file" },
+        reason: "Broad full-file ref.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("exact/verbatim source material");
+    expect(subagents.spawns).toHaveLength(1);
+  });
+
+  it("blocks planner material path escapes before worker spawn", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const outsidePath = join(dirname(dir), "outside-material.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Do task\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(outsidePath, "outside detail\n", "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [
+        { path: planPath, hash: sha256(planContent) },
+        { path: outsidePath, hash: sha256("outside detail\n") },
+      ],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(
+            `${sha256(planContent)}${sha256("outside detail\n")}`,
+          ),
+          files: [
+            { path: planPath, hash: sha256(planContent) },
+            { path: outsidePath, hash: sha256("outside detail\n") },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    executionManifest.tasks[0]!.sourceMaterialRefs = [
+      {
+        origin: "planner",
+        path: outsidePath,
+        mode: { kind: "full-file" },
+        reason: "Escaping planner ref.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("outside allowed roots");
     expect(subagents.spawns).toHaveLength(0);
   });
 
@@ -1539,6 +2211,21 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-selected-task",
+          sourceMaterialRefs: [
+            {
+              origin: "planner",
+              path: referencePath,
+              mode: { kind: "line-range", startLine: 3, endLine: 4 },
+              reason: "Planner-selected exact excerpt.",
+            },
+          ],
+          reason: "Dropped duplicate and missing refs.",
+        }),
+      },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
     ];
@@ -1635,7 +2322,8 @@ describe("runImplementation", () => {
     );
     expect(prompt).toContain("line two\nline three exact detail");
     expect(prompt).not.toContain("line four");
-    expect(prompt).toContain(
+    expect(prompt).toContain("Source material repair note");
+    expect(prompt).not.toContain(
       "Low-confidence source material warning for review",
     );
     expect(prompt).toContain(
