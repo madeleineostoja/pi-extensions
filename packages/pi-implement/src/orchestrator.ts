@@ -24,12 +24,19 @@ import {
 import { markTaskDone, markTaskUndone, parsePlanFile } from "./plan.js";
 import type { PlanTask } from "./plan.js";
 import {
+  isNeedsMaterialResponse,
+  parseNeedsMaterialResponse,
+  resolveNeedsMaterialRequests,
+  type NeedsMaterialRequest,
+} from "./needs-material.js";
+import {
   generateMinimalExecutionManifest,
   readExecutionManifest,
   renderCompiledContract,
   renderSourceMaterialPacket,
   type CompiledContract,
   type RenderedSourceMaterialPacket,
+  type SourceMaterialOrigin,
   type SourceMaterialRef,
 } from "./execution-plan.js";
 import {
@@ -100,12 +107,14 @@ import {
   type PlanBundleManifest,
 } from "./manifest.js";
 import {
+  addMaterialFilesToStore,
   formatStoreBundleMaterial,
   formatStoreCorpusMaterial,
   type MaterialStore,
 } from "./material-store.js";
 import {
   buildPhase1MaterialInventory,
+  buildMaterialStoreFromInventory,
   renderPhase1TaskMaterial,
   resolvePhase1MaterialRefPath,
   MAX_TASK_RENDERED_MATERIAL_CHARS,
@@ -128,6 +137,8 @@ const execFileAsync = promisify(execFile);
 
 async function buildTaskSourceMaterialPacket(
   args: TaskSourceMaterialPacketArgs,
+  needsMaterialRetryState?: { attempted: boolean },
+  options?: { forceRepair?: boolean },
 ): Promise<RenderedSourceMaterialPacket> {
   const deterministicPacket = renderDeterministicSourceMaterial(args);
   const plannerCorpus = buildPlannerSourceMaterialCorpus(args);
@@ -146,7 +157,8 @@ async function buildTaskSourceMaterialPacket(
     args.compiledContract,
   );
 
-  if (initialIssues.length === 0) {
+  const shouldForceRepair = options?.forceRepair && canAttemptRepair(args);
+  if (initialIssues.length === 0 && !shouldForceRepair) {
     if (!packet) {
       throw new BlockedError(
         "No selected task source anchor could be rendered.",
@@ -165,67 +177,164 @@ async function buildTaskSourceMaterialPacket(
     );
   }
 
-  if (canAttemptRepair(args)) {
-    const repair = await repairPlannerSourceMaterialRefs(
+  if (!canAttemptRepair(args)) {
+    return resolveInvalidAfterRepair(
       args,
-      plannerCorpus,
-      initialIssues,
-      args.plannerRefs,
-    );
-    const repairedPlanner = renderPlannerSourceMaterial(
-      args,
-      plannerCorpus,
-      repair.refs,
-    );
-    packet = mergeSourceMaterialPackets(
       deterministicPacket,
-      repairedPlanner.packet,
+      initialPlanner,
+      initialIssues,
+      false,
     );
-    const postRepairIssues = collectSourceMaterialIssues(
-      packet,
-      repairedPlanner,
-      args.compiledContract,
-    );
+  }
 
-    if (postRepairIssues.length > 0) {
-      return resolveInvalidAfterRepair(
-        args,
-        deterministicPacket,
-        repairedPlanner,
-        postRepairIssues,
-        true,
-        repair.reason,
-        repair.failureReason,
-      );
-    }
+  const repairIssues: SourceMaterialIssue[] =
+    initialIssues.length > 0
+      ? initialIssues
+      : [
+          {
+            kind: "warning",
+            message:
+              "Re-run source-material selection now that requested material has been added.",
+          },
+        ];
+  const repair = await repairPlannerSourceMaterialRefs(
+    args,
+    plannerCorpus,
+    repairIssues,
+    args.plannerRefs,
+  );
 
-    if (!packet) {
+  if (repair.kind === "needs_material") {
+    if (needsMaterialRetryState?.attempted) {
       throw new BlockedError(
-        "No selected task source anchor could be rendered.",
+        "Planner requested additional material after one retry; bounded needs-material retry exhausted.",
       );
     }
-    const repairReason = repair.failureReason
-      ? `Planner source material repair attempted but failed: ${repair.failureReason}`
-      : `Planner source material repaired: ${repair.reason ?? "replaced invalid planner refs after validation failures"}.`;
+
+    const resolution = await resolveAndApplyNeedsMaterial(
+      args,
+      repair.requests,
+    );
+    if (resolution.errors.length > 0) {
+      throw new BlockedError(
+        `Needs-material request rejected: ${resolution.errors.join("; ")}`,
+      );
+    }
+
+    const augmentedArgs: TaskSourceMaterialPacketArgs = {
+      ...args,
+      materialStore: resolution.store,
+      materialInventory: resolution.inventory,
+      corpusFiles: [...(args.corpusFiles ?? []), ...resolution.corpusFiles],
+    };
+
+    return buildTaskSourceMaterialPacket(
+      augmentedArgs,
+      { attempted: true },
+      { forceRepair: true },
+    );
+  }
+
+  const repairedPlanner = renderPlannerSourceMaterial(
+    args,
+    plannerCorpus,
+    repair.refs,
+  );
+  packet = mergeSourceMaterialPackets(
+    deterministicPacket,
+    repairedPlanner.packet,
+  );
+  const postRepairIssues = collectSourceMaterialIssues(
+    packet,
+    repairedPlanner,
+    args.compiledContract,
+  );
+
+  if (postRepairIssues.length > 0) {
+    return resolveInvalidAfterRepair(
+      args,
+      deterministicPacket,
+      repairedPlanner,
+      postRepairIssues,
+      true,
+      repair.reason,
+      repair.failureReason,
+    );
+  }
+
+  if (!packet) {
+    throw new BlockedError("No selected task source anchor could be rendered.");
+  }
+  const defaultRepairReason = options?.forceRepair
+    ? "re-selected source material after adding requested material"
+    : "replaced invalid planner refs after validation failures";
+  const repairReason = repair.failureReason
+    ? `Planner source material repair attempted but failed: ${repair.failureReason}`
+    : `Planner source material repaired: ${repair.reason ?? defaultRepairReason}.`;
+  return {
+    ...packet,
+    section: `${packet.section}\n\nSource material repair note: ${repairReason}`,
+    warnings: [...packet.warnings, repairReason],
+    repair: {
+      attempted: true,
+      reason: repair.reason,
+      failureReason: repair.failureReason,
+    },
+  };
+}
+
+type NeedsMaterialResolution = {
+  store: MaterialStore;
+  inventory: Phase1MaterialInventory;
+  corpusFiles: Array<{ path: string; hash: string }>;
+  errors: string[];
+};
+
+async function resolveAndApplyNeedsMaterial(
+  args: TaskSourceMaterialPacketArgs,
+  requests: NeedsMaterialRequest[],
+): Promise<NeedsMaterialResolution> {
+  const baseStore =
+    args.materialStore ??
+    buildMaterialStoreFromInventory(args.materialInventory);
+  const resolution = resolveNeedsMaterialRequests(requests, baseStore);
+
+  if (resolution.files.length === 0) {
+    const errors =
+      resolution.errors.length > 0
+        ? resolution.errors
+        : ["No material files were accepted."];
     return {
-      ...packet,
-      section: `${packet.section}\n\nSource material repair note: ${repairReason}`,
-      warnings: [...packet.warnings, repairReason],
-      repair: {
-        attempted: true,
-        reason: repair.reason,
-        failureReason: repair.failureReason,
-      },
+      store: baseStore,
+      inventory: args.materialInventory,
+      corpusFiles: [],
+      errors,
     };
   }
 
-  return resolveInvalidAfterRepair(
-    args,
-    deterministicPacket,
-    initialPlanner,
-    initialIssues,
-    false,
+  const augmentedStore = addMaterialFilesToStore(
+    baseStore,
+    resolution.files.map((file) => ({
+      absolutePath: file.absolutePath,
+      content: file.content,
+      origins: ["needs-material" as const],
+      taskOrigins: [
+        { taskIndex: args.task.index, origin: "needs-material" as const },
+      ],
+    })),
   );
+
+  const inventory = buildPhase1MaterialInventory({ store: augmentedStore });
+
+  return {
+    store: augmentedStore,
+    inventory,
+    corpusFiles: resolution.files.map((file) => ({
+      path: file.absolutePath,
+      hash: file.hash,
+    })),
+    errors: [],
+  };
 }
 
 function renderDeterministicSourceMaterial(
@@ -256,8 +365,10 @@ function renderPlannerSourceMaterial(
   const warnings: string[] = [];
   const packet = renderSourceMaterialPacket(
     (refs ?? [])
-      .filter((ref) => ref.origin === "planner")
-      .map((ref) => ({ ...ref, origin: "planner" as const })),
+      .filter(
+        (ref) => ref.origin === "planner" || ref.origin === "needs-material",
+      )
+      .map((ref) => ({ ...ref, origin: ref.origin })),
     {
       resolvePath: (ref) => {
         const allowed = resolvePhase1MaterialRefPath(
@@ -307,7 +418,7 @@ function collectSourceMaterialIssues(
   }
   for (const ref of packet?.resolvedRefs ?? []) {
     if (
-      ref.origin === "planner" &&
+      (ref.origin === "planner" || ref.origin === "needs-material") &&
       ref.mode.kind === "full-file" &&
       ref.renderedCharCount > MAX_BROAD_PLANNER_FULL_FILE_CHARS
     ) {
@@ -432,11 +543,19 @@ function resolveInvalidAfterRepair(
   };
 }
 
-type PlannerRepairResult = {
-  refs: SourceMaterialRef[];
-  reason?: string;
-  failureReason?: string;
-};
+type PlannerRepairResult =
+  | {
+      kind: "refs";
+      refs: SourceMaterialRef[];
+      reason?: string;
+      failureReason?: string;
+    }
+  | {
+      kind: "needs_material";
+      requests: NeedsMaterialRequest[];
+      reason?: string;
+      failureReason?: string;
+    };
 
 async function repairPlannerSourceMaterialRefs(
   args: TaskSourceMaterialPacketArgs,
@@ -469,6 +588,7 @@ async function repairPlannerSourceMaterialRefs(
     args.updateState!((prev) => removeActiveAgentPatch(prev, id));
     if (result.status !== "completed") {
       return {
+        kind: "refs",
         refs: currentRefs ?? [],
         failureReason: `Repair subagent finished with status ${result.status}: ${result.error}`,
       };
@@ -476,20 +596,30 @@ async function repairPlannerSourceMaterialRefs(
     const parsed = parseSourceMaterialRepairResponse(result.result);
     if (!parsed.ok) {
       return {
+        kind: "refs",
         refs: currentRefs ?? [],
         failureReason: `Repair response parse failed: ${parsed.reason}`,
       };
     }
+    if (isNeedsMaterialResponse(parsed.value)) {
+      return {
+        kind: "needs_material",
+        requests: parsed.value.requests,
+        reason: "Planner requested additional material.",
+      };
+    }
     if (parsed.value.taskId !== resolvedTaskId(args)) {
       return {
+        kind: "refs",
         refs: currentRefs ?? [],
         failureReason: `Repair response taskId mismatch: expected ${resolvedTaskId(args)}, got ${parsed.value.taskId}`,
       };
     }
     return {
+      kind: "refs",
       refs: parsed.value.sourceMaterialRefs.map((ref) => ({
         ...ref,
-        origin: "planner" as const,
+        origin: ref.origin === "needs-material" ? "needs-material" : "planner",
       })),
       reason: parsed.value.reason,
     };
@@ -499,6 +629,7 @@ async function repairPlannerSourceMaterialRefs(
       args.updateState!((prev) => removeActiveAgentPatch(prev, id));
     }
     return {
+      kind: "refs",
       refs: currentRefs ?? [],
       failureReason: `Repair subagent threw: ${err instanceof Error ? err.message : String(err)}`,
     };
@@ -527,9 +658,11 @@ ${issues.map((issue) => `- ${issue.message}`).join("\n")}
 
 Your job is to return a corrected set of sourceMaterialRefs for this task only. Preserve only the exact/raw material the implementer needs from the plan corpus. Replace invalid line ranges, narrow overly broad or oversized full-file refs into precise line ranges, and include any material required by verbatim/exact/source-of-truth language in the contract. Do not ask for a regenerated execution manifest or change the task contract. Do not include deterministic selected-task anchors or task-link refs; those are merged separately and cannot be removed.
 
+If the required material is a safe local Markdown file that is missing from the plan corpus, you may instead request it by returning a needs_material response. The orchestrator will resolve the path, add the file to the material store, and rerun this repair step once. Only request local Markdown files; URLs and non-Markdown files will be rejected.
+
 Respond with strict JSON only, beginning with { and ending with }. Do not include markdown fences or analysis outside the JSON.
 
-Schema:
+Schema for corrected refs:
 {
   "taskId": "${resolvedTaskId(args)}",
   "sourceMaterialRefs": [
@@ -537,6 +670,14 @@ Schema:
     { "origin": "planner", "path": "relative-or-absolute-path.md", "mode": { "kind": "line-range", "startLine": 10, "endLine": 20 }, "reason": "why this exact range is required" }
   ],
   "reason": "why the corrections were made"
+}
+
+Schema for requesting additional material:
+{
+  "kind": "needs_material",
+  "requests": [
+    { "pathHint": "relative-or-absolute-path.md", "relativeTo": "plan" | "repo" | "path", "reason": "why this file is required" }
+  ]
 }`;
 }
 
@@ -546,15 +687,24 @@ type SourceMaterialRepairResponse = {
   reason: string;
 };
 
-function parseSourceMaterialRepairResponse(
-  text: string,
-):
-  | { ok: true; value: SourceMaterialRepairResponse }
+function parseSourceMaterialRepairResponse(text: string):
+  | {
+      ok: true;
+      value:
+        | SourceMaterialRepairResponse
+        | import("./needs-material.js").NeedsMaterialResponse;
+    }
   | { ok: false; reason: string } {
   const candidate = extractJsonObject(text);
   if (!candidate.ok) {
     return candidate;
   }
+
+  const needsMaterial = parseNeedsMaterialResponse(text);
+  if (needsMaterial.ok) {
+    return { ok: true, value: needsMaterial.value };
+  }
+
   let parsed: unknown;
   try {
     parsed = JSON.parse(candidate.text);
@@ -615,6 +765,8 @@ function parseRepairSourceMaterialRef(
     };
   }
   const obj = value;
+  const origin: SourceMaterialOrigin =
+    obj.origin === "needs-material" ? "needs-material" : "planner";
   if (typeof obj.path !== "string" || obj.path.trim().length === 0) {
     return {
       ok: false,
@@ -638,7 +790,7 @@ function parseRepairSourceMaterialRef(
     return {
       ok: true,
       value: {
-        origin: "planner",
+        origin,
         path: obj.path.trim(),
         mode: { kind: "full-file" },
         reason: obj.reason.trim(),
@@ -667,7 +819,7 @@ function parseRepairSourceMaterialRef(
   return {
     ok: true,
     value: {
-      origin: "planner",
+      origin,
       path: obj.path.trim(),
       mode: {
         kind: "line-range",
@@ -778,6 +930,7 @@ type TaskSourceMaterialPacketArgs = {
   repoRoot?: string;
   corpusFiles?: Array<{ path: string; hash: string }>;
   materialInventory: Phase1MaterialInventory;
+  materialStore?: MaterialStore;
   compiledContract: CompiledContract;
   plannerRefs?: SourceMaterialRef[];
   subagents?: SubagentClient;
@@ -4403,6 +4556,7 @@ async function runTaskWorker(args: {
       repoRoot: await deps.git.root(),
       corpusFiles: recordedCorpusFiles,
       materialInventory: deps.materialInventory,
+      materialStore: deps.materialStore,
       compiledContract: compiledContractEntry.compiledContract,
       plannerRefs: compiledContractEntry.sourceMaterialRefs,
       subagents: deps.subagents,

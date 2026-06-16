@@ -1562,6 +1562,710 @@ describe("runImplementation", () => {
     ).toBe(true);
   });
 
+  it("adds a requested safe local Markdown file through needs_material and reruns repair once", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const extraPath = join(dir, "extra.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Selected task\n";
+    const extraContent = "# Extra\n\n" + "x".repeat(25_000);
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(extraPath, extraContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          kind: "needs_material",
+          requests: [
+            {
+              pathHint: "extra.md",
+              relativeTo: "plan",
+              reason: "Contains required context.",
+            },
+          ],
+        }),
+      },
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-selected-task",
+          sourceMaterialRefs: [
+            {
+              origin: "needs-material",
+              path: extraPath,
+              mode: { kind: "line-range", startLine: 1, endLine: 2 },
+              reason: "Required context.",
+            },
+          ],
+          reason: "Narrowed requested material.",
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [{ path: planPath, hash: sha256(planContent) }],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(planContent),
+          files: [{ path: planPath, hash: sha256(planContent) }],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: extraPath,
+        mode: { kind: "full-file" },
+        reason: "Missing from corpus.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const prompt = readFileSync(
+      join(paths.tasksDir, "t001-selected-task", "prompt.md"),
+      "utf-8",
+    );
+    expect(prompt).toContain(
+      `Source: ${extraPath} (lines 1-2; origin: needs-material)`,
+    );
+    expect(prompt).toContain("# Extra");
+
+    const packet = JSON.parse(
+      readFileSync(
+        join(paths.tasksDir, "t001-selected-task", "task-packet.json"),
+        "utf-8",
+      ),
+    ) as {
+      resolvedMaterialRefs: Array<{
+        origin: string;
+        absolutePath: string;
+        displayLabel: string;
+      }>;
+    };
+    const extraRef = packet.resolvedMaterialRefs.find(
+      (ref) =>
+        ref.origin === "needs-material" && ref.absolutePath === extraPath,
+    );
+    expect(extraRef).toBeDefined();
+  });
+
+  it("blocks when needs_material requests are invalid", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Selected task\n";
+    writeFileSync(planPath, planContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          kind: "needs_material",
+          requests: [
+            {
+              pathHint: "https://example.com/file.md",
+              reason: "External reference.",
+            },
+          ],
+        }),
+      },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [{ path: planPath, hash: sha256(planContent) }],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(planContent),
+          files: [{ path: planPath, hash: sha256(planContent) }],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: "https://example.com/file.md",
+        mode: { kind: "full-file" },
+        reason: "External reference.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+    expect(subagents.spawns).toHaveLength(1);
+  });
+
+  it("blocks when a second needs_material response exhausts the retry bound", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const extraPath = join(dir, "extra.md");
+    const missingPath = join(dir, "missing.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Selected task\n";
+    const extraContent = "# Extra\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(extraPath, extraContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          kind: "needs_material",
+          requests: [{ pathHint: "extra.md", reason: "Need this first." }],
+        }),
+      },
+      {
+        status: "completed",
+        result: JSON.stringify({
+          kind: "needs_material",
+          requests: [{ pathHint: "missing.md", reason: "Need this second." }],
+        }),
+      },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [{ path: planPath, hash: sha256(planContent) }],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(planContent),
+          files: [{ path: planPath, hash: sha256(planContent) }],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: missingPath,
+        mode: { kind: "full-file" },
+        reason: "Missing from corpus.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(/bounded needs-material retry exhausted/);
+    expect(subagents.spawns).toHaveLength(2);
+  });
+
+  it("preserves deterministic refs when needs_material repair resolves", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const extraPath = join(dir, "extra.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Selected task\n";
+    const extraContent = "# Extra\n\n" + "x".repeat(25_000);
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(extraPath, extraContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          kind: "needs_material",
+          requests: [{ pathHint: "extra.md", reason: "Need context." }],
+        }),
+      },
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-selected-task",
+          sourceMaterialRefs: [
+            {
+              origin: "needs-material",
+              path: extraPath,
+              mode: { kind: "line-range", startLine: 1, endLine: 2 },
+              reason: "Required context.",
+            },
+          ],
+          reason: "Narrowed requested material.",
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [{ path: planPath, hash: sha256(planContent) }],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(planContent),
+          files: [{ path: planPath, hash: sha256(planContent) }],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: extraPath,
+        mode: { kind: "full-file" },
+        reason: "Missing from corpus.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const packet = JSON.parse(
+      readFileSync(
+        join(paths.tasksDir, "t001-selected-task", "task-packet.json"),
+        "utf-8",
+      ),
+    ) as {
+      resolvedMaterialRefs: Array<{ origin: string; absolutePath: string }>;
+    };
+    expect(
+      packet.resolvedMaterialRefs.some(
+        (ref) => ref.origin === "task-anchor" && ref.absolutePath === planPath,
+      ),
+    ).toBe(true);
+    expect(
+      packet.resolvedMaterialRefs.some(
+        (ref) =>
+          ref.origin === "needs-material" && ref.absolutePath === extraPath,
+      ),
+    ).toBe(true);
+  });
+
+  it("reruns repair once after needs_material even when original planner refs become valid", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const extraPath = join(dir, "extra.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Selected task\n";
+    const extraContent = "# Extra\n\nRequired context line.\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(extraPath, extraContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          kind: "needs_material",
+          requests: [
+            {
+              pathHint: "extra.md",
+              relativeTo: "plan",
+              reason: "Contains required context.",
+            },
+          ],
+        }),
+      },
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-selected-task",
+          sourceMaterialRefs: [
+            {
+              origin: "needs-material",
+              path: extraPath,
+              mode: { kind: "line-range", startLine: 1, endLine: 2 },
+              reason: "Required context excerpt.",
+            },
+          ],
+          reason: "Narrowed requested material.",
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [{ path: planPath, hash: sha256(planContent) }],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(planContent),
+          files: [{ path: planPath, hash: sha256(planContent) }],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: extraPath,
+        mode: { kind: "full-file" },
+        reason: "Missing from corpus but small enough to validate.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const prompt = readFileSync(
+      join(paths.tasksDir, "t001-selected-task", "prompt.md"),
+      "utf-8",
+    );
+    expect(prompt).toContain(
+      `Source: ${extraPath} (lines 1-2; origin: needs-material)`,
+    );
+    expect(prompt).toContain("# Extra");
+    expect(prompt).not.toContain(
+      `Source: ${extraPath} (full-file; origin: planner)`,
+    );
+
+    const packet = JSON.parse(
+      readFileSync(
+        join(paths.tasksDir, "t001-selected-task", "task-packet.json"),
+        "utf-8",
+      ),
+    ) as {
+      resolvedMaterialRefs: Array<{
+        origin: string;
+        absolutePath: string;
+        displayLabel: string;
+      }>;
+    };
+    const extraRef = packet.resolvedMaterialRefs.find(
+      (ref) =>
+        ref.origin === "needs-material" && ref.absolutePath === extraPath,
+    );
+    expect(extraRef).toBeDefined();
+  });
+
+  it("blocks no-op needs_material requests for files already in the material store", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Selected task\n";
+    writeFileSync(planPath, planContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          kind: "needs_material",
+          requests: [
+            {
+              pathHint: "plan.md",
+              relativeTo: "plan",
+              reason: "Already the entry plan.",
+            },
+          ],
+        }),
+      },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [{ path: planPath, hash: sha256(planContent) }],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(planContent),
+          files: [{ path: planPath, hash: sha256(planContent) }],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: join(dir, "missing.md"),
+        mode: { kind: "full-file" },
+        reason: "Triggers repair so the planner can request material.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+    expect(subagents.spawns).toHaveLength(1);
+  });
+
+  it("blocks empty needs_material request arrays", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Selected task\n";
+    writeFileSync(planPath, planContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          kind: "needs_material",
+          requests: [],
+        }),
+      },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [{ path: planPath, hash: sha256(planContent) }],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(planContent),
+          files: [{ path: planPath, hash: sha256(planContent) }],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: join(dir, "missing.md"),
+        mode: { kind: "full-file" },
+        reason: "Triggers repair so the planner can request material.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(BlockedError);
+    expect(subagents.spawns).toHaveLength(1);
+  });
+
   it("blocks when repaired planner refs remain oversized", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");

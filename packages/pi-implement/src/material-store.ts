@@ -25,7 +25,8 @@ export type MaterialOrigin =
   | "plan-link"
   | "task-link"
   | "corpus-link"
-  | "sibling-task";
+  | "sibling-task"
+  | "needs-material";
 
 export type MaterialTaskOrigin = {
   taskIndex: number;
@@ -448,6 +449,59 @@ export function countMaterialChars(store: MaterialStore): number {
   return store.files.reduce((sum, file) => sum + file.content.length, 0);
 }
 
+export function addMaterialFilesToStore(
+  store: MaterialStore,
+  additions: Array<{
+    absolutePath: string;
+    content: string;
+    origins?: MaterialOrigin[];
+    taskOrigins?: MaterialTaskOrigin[];
+  }>,
+): MaterialStore {
+  const filesByPath = new Map<string, MaterialFileBuilder>();
+  for (const file of store.files) {
+    filesByPath.set(file.absolutePath, {
+      absolutePath: file.absolutePath,
+      content: file.content,
+      origins: [...file.origins],
+      taskOrigins: [...file.taskOrigins],
+    });
+  }
+
+  for (const addition of additions) {
+    const existing = filesByPath.get(addition.absolutePath);
+    if (existing) {
+      for (const origin of addition.origins ?? []) {
+        if (!existing.origins.includes(origin)) {
+          existing.origins.push(origin);
+        }
+      }
+      for (const taskOrigin of addition.taskOrigins ?? []) {
+        const hasTaskOrigin = existing.taskOrigins.some(
+          (to) =>
+            to.taskIndex === taskOrigin.taskIndex &&
+            to.origin === taskOrigin.origin,
+        );
+        if (!hasTaskOrigin) {
+          existing.taskOrigins.push(taskOrigin);
+        }
+      }
+      continue;
+    }
+
+    filesByPath.set(addition.absolutePath, {
+      absolutePath: addition.absolutePath,
+      content: addition.content,
+      origins: addition.origins ?? [],
+      taskOrigins: addition.taskOrigins ?? [],
+    });
+  }
+
+  const files = finalizeMaterialFiles(filesByPath, store.planDir);
+  const storeHash = computeStoreHash(store.entryPath, files);
+  return { ...store, files, storeHash };
+}
+
 function computeStoreHash(entryPath: string, files: MaterialFile[]): string {
   const hash = createHash("sha256");
   const entry = files.find((file) => file.absolutePath === entryPath);
@@ -788,7 +842,7 @@ function materialAllowedRoots(
   return dedupe(roots.map((root) => resolve(root)));
 }
 
-function isWithinAnyAllowedRoot(path: string, roots: string[]): boolean {
+export function isWithinAnyAllowedRoot(path: string, roots: string[]): boolean {
   const realPath = canonicalPathForRootCheck(path);
   return roots.some((root) => isInsideRoot(root, realPath));
 }
@@ -817,11 +871,11 @@ function realpathIfPossible(path: string): string {
   }
 }
 
-function hashContent(content: string): string {
+export function hashContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-function looksLikeUrl(value: string): boolean {
+export function looksLikeUrl(value: string): boolean {
   try {
     const url = new URL(value);
     return url.protocol === "http:" || url.protocol === "https:";
@@ -830,11 +884,11 @@ function looksLikeUrl(value: string): boolean {
   }
 }
 
-function looksLikeScheme(value: string): boolean {
+export function looksLikeScheme(value: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(value);
 }
 
-function stripFragment(target: string): string {
+export function stripFragment(target: string): string {
   return target.split("#", 1)[0] ?? "";
 }
 

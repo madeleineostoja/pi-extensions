@@ -39,8 +39,8 @@ export type Phase1MaterialInventory = {
 };
 
 export type BuildPhase1MaterialInventoryArgs = {
-  plan: ParsedPlan;
-  planPath: string;
+  plan?: ParsedPlan;
+  planPath?: string;
   manifest?: PlanBundleManifest;
   corpus?: PlanCorpus;
   repoRoot?: string;
@@ -59,8 +59,8 @@ export function buildPhase1MaterialInventory(
   const store =
     args.store ??
     buildMaterialStore({
-      plan: args.plan,
-      planPath: args.planPath,
+      plan: args.plan!,
+      planPath: args.planPath!,
       repoRoot: args.repoRoot,
     });
 
