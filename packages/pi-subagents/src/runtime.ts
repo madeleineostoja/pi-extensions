@@ -189,7 +189,8 @@ const readOnlyToolNames = normalizeActiveToolNames(
   { allowExplore: false },
 );
 const defaultSystemPromptMode: PromptMode = "append";
-const EXPLORE_TOOL_TIMEOUT_MS = 120_000;
+const EXPLORE_TOOL_INACTIVITY_MS = 120_000;
+const EXPLORE_TOOL_INACTIVITY_POLL_MS = 10_000;
 const EXPLORE_TOOL_MAX_RESULT_CHARS = 50_000;
 const exploreEligibleTypes = new Set([
   "General",
@@ -204,6 +205,29 @@ const exploreEligibleTypes = new Set([
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function timestampMs(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+function latestTimestamp(
+  current: string | undefined,
+  candidate: string | undefined,
+): string | undefined {
+  const currentMs = timestampMs(current);
+  const candidateMs = timestampMs(candidate);
+  if (candidateMs === undefined) {
+    return current;
+  }
+  if (currentMs === undefined || candidateMs > currentMs) {
+    return candidate;
+  }
+  return current;
 }
 
 function errorText(error: unknown): string {
@@ -334,7 +358,10 @@ function refreshHealth(record: RuntimeRecord): void {
       continue;
     }
     if (typeof message.timestamp === "number") {
-      lastActivity = new Date(message.timestamp).toISOString();
+      lastActivity = latestTimestamp(
+        lastActivity,
+        new Date(message.timestamp).toISOString(),
+      );
     }
     if (message.role === "assistant") {
       const usage = usageTokens(message.usage);
@@ -366,7 +393,7 @@ function refreshHealth(record: RuntimeRecord): void {
     toolUses: toolUses || toolResults.length || undefined,
     tokensTotal: tokensTotal || undefined,
     activeTool,
-    lastActivity,
+    lastActivity: latestTimestamp(record.health?.lastActivity, lastActivity),
     lastAssistantText:
       lastAssistantText ?? textPreview(session.getLastAssistantText()),
     resultPreview:
@@ -734,7 +761,7 @@ export class SubagentRuntime {
 
     const timeout = new AbortController();
     const relay = () => timeout.abort();
-    const timer = setTimeout(() => timeout.abort(), EXPLORE_TOOL_TIMEOUT_MS);
+    let inactivityTimer: ReturnType<typeof setInterval> | undefined;
     if (signal?.aborted) {
       timeout.abort();
     } else {
@@ -766,10 +793,41 @@ export class SubagentRuntime {
               }
             : { kind: "nested", parentId: parent.id, tool: "explore" },
       });
+      let lastObservedActivityMs: number | undefined;
+      const updateActivityBaseline = (snapshot: RuntimeSnapshot) => {
+        const activityMs = timestampMs(snapshot.health?.lastActivity);
+        if (activityMs !== undefined) {
+          lastObservedActivityMs = Math.max(
+            lastObservedActivityMs ?? activityMs,
+            activityMs,
+          );
+          return;
+        }
+        if (lastObservedActivityMs === undefined) {
+          lastObservedActivityMs =
+            timestampMs(snapshot.timestamps.startedAt) ??
+            timestampMs(snapshot.timestamps.queuedAt);
+        }
+      };
+      updateActivityBaseline(started);
+      inactivityTimer = setInterval(() => {
+        if (timeout.signal.aborted) {
+          return;
+        }
+        updateActivityBaseline(this.snapshot(started.id) ?? started);
+        if (
+          lastObservedActivityMs !== undefined &&
+          Date.now() - lastObservedActivityMs > EXPLORE_TOOL_INACTIVITY_MS
+        ) {
+          timeout.abort();
+        }
+      }, EXPLORE_TOOL_INACTIVITY_POLL_MS);
       const finalSnapshot = await this.wait(started.id);
       return exploreToolResult(finalSnapshot);
     } finally {
-      clearTimeout(timer);
+      if (inactivityTimer !== undefined) {
+        clearInterval(inactivityTimer);
+      }
       signal?.removeEventListener("abort", relay);
     }
   }
