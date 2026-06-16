@@ -558,7 +558,7 @@ describe("selectStrategy - execution planner", () => {
     expect(result.reason).toContain("conservative serial fallback");
   });
 
-  it("falls back when planner source refs are not grounded in the plan corpus", async () => {
+  it("falls back when planner source refs fail provenance validation", async () => {
     const manifest = makeManifest({
       tasks: [
         makeTask({
@@ -586,10 +586,10 @@ describe("selectStrategy - execution planner", () => {
       updateState: () => ({}),
     });
     expect(result.mode).toBe("serial");
-    expect(result.reason).toContain("grounding failed");
+    expect(result.reason).toContain("provenance validation failed");
   });
 
-  it("does not ground source refs against arbitrary existing files", async () => {
+  it("does not validate source refs against arbitrary existing files", async () => {
     const outsidePath = join(tmpRunDir, "outside.md");
     writeFileSync(outsidePath, "Task A\n", "utf-8");
     const manifest = makeManifest({
@@ -617,7 +617,7 @@ describe("selectStrategy - execution planner", () => {
       updateState: () => ({}),
     });
     expect(result.mode).toBe("serial");
-    expect(result.reason).toContain("grounding failed");
+    expect(result.reason).toContain("provenance validation failed");
   });
 
   it("falls back when manifest task coverage does not mirror parser output", async () => {

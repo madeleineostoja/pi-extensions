@@ -273,12 +273,12 @@ function processExecutionPlannerResult(
         `Planner output invalid: ${parsed.reason}`,
       );
 
-  const groundingValidation = validateManifestGrounding(manifest, req);
-  if (!groundingValidation.ok) {
+  const provenanceValidation = validateTaskProvenance(manifest, req);
+  if (!provenanceValidation.ok) {
     manifest = fallbackPlannerManifest(
       unchecked,
       req,
-      `Execution manifest grounding failed: ${groundingValidation.reason}`,
+      `Execution manifest provenance validation failed: ${provenanceValidation.reason}`,
     );
   }
 
@@ -306,11 +306,11 @@ function processExecutionPlannerResult(
     }
   }
 
-  const fallbackGroundingValidation = validateManifestGrounding(manifest, req);
-  if (!fallbackGroundingValidation.ok) {
+  const fallbackProvenanceValidation = validateTaskProvenance(manifest, req);
+  if (!fallbackProvenanceValidation.ok) {
     return {
       mode: "blocked",
-      reason: `Execution manifest grounding failed: ${fallbackGroundingValidation.reason}.`,
+      reason: `Execution manifest provenance validation failed: ${fallbackProvenanceValidation.reason}.`,
     };
   }
 
@@ -575,7 +575,7 @@ function normalizeTaskText(value: string | undefined): string | undefined {
   return normalized && normalized.length >= 3 ? normalized : undefined;
 }
 
-function validateManifestGrounding(
+function validateTaskProvenance(
   manifest: ExecutionManifest,
   req: StrategyRequest,
 ): { ok: true } | { ok: false; reason: string } {
@@ -588,7 +588,7 @@ function validateManifestGrounding(
       };
     }
 
-    let grounded = false;
+    let provenanced = false;
     const failures: string[] = [];
     for (const ref of refs) {
       const content = readSourceRefContent(ref.path, req);
@@ -597,16 +597,16 @@ function validateManifestGrounding(
         continue;
       }
       if (!ref.quote || content.includes(ref.quote)) {
-        grounded = true;
+        provenanced = true;
         break;
       }
       failures.push(`${ref.path}: quote not found`);
     }
 
-    if (!grounded) {
+    if (!provenanced) {
       return {
         ok: false,
-        reason: `task "${task.id}" sourceRefs are not grounded (${failures.join("; ")})`,
+        reason: `task "${task.id}" sourceRefs failed provenance validation (${failures.join("; ")})`,
       };
     }
   }
@@ -817,7 +817,7 @@ Return an execution manifest matching this schema:
       "reasons": ["why this task is scoped this way"],
       "evidencePaths": [],
       "review": { "mode": "skip" | "suggest" | "require", "reason": "optional" },
-      "sourceRefs": [{ "path": "${req.plan.path}", "quote": "short exact source quote grounding this task" }],
+      "sourceRefs": [{ "path": "${req.plan.path}", "quote": "short exact source quote establishing provenance for this task" }],
       "sourceMaterialRefs": [
         { "origin": "planner", "path": "absolute-or-relative-source-path.md", "mode": { "kind": "full-file" }, "reason": "why this material is required" },
         { "origin": "planner", "path": "absolute-or-relative-source-path.md", "mode": { "kind": "line-range", "startLine": 10, "endLine": 20 }, "reason": "why this exact range is required" }
@@ -847,12 +847,12 @@ Each task may include \`sourceMaterialRefs\` for the exact/raw source material t
 
 ## Source References
 
-Each task must include \`sourceRefs\` when possible. A source ref grounds the planner-owned task in the plan corpus and is used for provenance/audit only; it does not imply that the referenced content is inlined into task packets.
+Each task must include \`sourceRefs\` when possible. A source ref establishes provenance for the planner-owned task in the plan corpus and is used for provenance/audit only; it does not imply that the referenced content is inlined into task packets.
 
 - \`path\` — use the exact corpus file path when known.
 - \`quote\` — include a short exact quote/snippet from that file that supports the task.
 - Prefer the checkbox line, linked task heading, or task-file text that identifies the executable work.
-- Source refs are grounding/provenance evidence only; do not copy Markdown link syntax into the task title unless it is part of the human title.
+- Source refs are provenance evidence only; do not copy Markdown link syntax into the task title unless it is part of the human title.
 
 ## Evidence Paths
 
