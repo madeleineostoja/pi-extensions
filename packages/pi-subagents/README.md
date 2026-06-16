@@ -14,7 +14,7 @@ Three built-in public agent types are available:
 | `Explore` | Codebase discovery: locating symbols, tracing usage, mapping unfamiliar areas, and answering "where/how is this wired?" questions. |
 | `Review`  | Independent second-pass review of diffs, plans, or proposed changes.                                                               |
 
-Public subagents inherit the parent session's extension environment. They bind the configured Pi extensions in their own session and inherit the parent's active tool set, except that `Agent`, `get_subagent_result`, and `steer_subagent` are withheld from public `General` agents to avoid accidental agent fan-out. `Explore` is read-oriented by prompt convention and is best used for discovery rather than edits; `Review` is intended to stay read-only by instruction.
+Subagents inherit the parent session's extension environment. They bind the configured Pi extensions in their own session and inherit the parent's active tool set, except that `Agent`, `get_subagent_result`, and `steer_subagent` are withheld from all subagents to avoid accidental agent fan-out. `Explore` is read-oriented by prompt convention and is best used for discovery rather than edits; `Review` is intended to stay read-only by instruction.
 
 ## Tools
 

@@ -261,6 +261,107 @@ describe("public subagent tools", () => {
     ]);
   });
 
+  it("withholds public agent tools from inherited active tools for all subagent types", async () => {
+    const publicAgentTools = [
+      "Agent",
+      "get_subagent_result",
+      "steer_subagent",
+    ];
+    const { pi } = makePi(["read", "bash", ...publicAgentTools, "edit", "explore"]);
+    const general = makeSession("general");
+    const explore = makeSession("explore");
+    const review = makeSession("review");
+    const internal = makeSession("internal");
+    const sessions = [general, explore, review, internal];
+    const createSession = vi.fn(async () => ({
+      session: sessions.shift()!.session,
+    }));
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+
+    await runtime.runPublicAgent({
+      type: "General",
+      prompt: "general",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+    });
+    await runtime.runPublicAgent({
+      type: "Explore",
+      prompt: "explore",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+    });
+    await runtime.runPublicAgent({
+      type: "Review",
+      prompt: "review",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+    });
+    await runtime.runManagedAgent({
+      owner: { kind: "internal", name: "pi-implement" },
+      type: "custom-internal",
+      prompt: "internal",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+    });
+
+    for (const { session } of [general, explore, review, internal]) {
+      const activeTools = vi.mocked(session.setActiveToolsByName).mock
+        .calls[0][0];
+      expect(activeTools).not.toEqual(expect.arrayContaining(publicAgentTools));
+    }
+    expect(general.session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "edit",
+      "explore",
+    ]);
+    expect(explore.session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+    ]);
+    expect(review.session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+      "explore",
+    ]);
+    expect(internal.session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "edit",
+    ]);
+  });
+
+  it("sanitizes explicit runtime tool allowlists before activation", async () => {
+    const { pi } = makePi(["read"]);
+    const { session } = makeSession("explicit");
+    const createSession = vi.fn(async (_options: any) => ({ session }));
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+
+    await runtime.runManagedAgent({
+      owner: { kind: "internal", name: "pi-implement" },
+      type: "general-purpose",
+      prompt: "explicit tools",
+      cwd: "/workspace",
+      tools: ["read", "explore", "Agent", "get_subagent_result", "bash"],
+      ctx: makeCtx() as never,
+    });
+
+    expect(createSession.mock.calls[0][0]).toMatchObject({
+      tools: ["read", "explore", "bash"],
+    });
+    expect(session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "explore",
+      "bash",
+    ]);
+  });
+
   it("runs foreground agents to completion after binding inherited extensions", async () => {
     const { pi } = makePi(["read", "bash", "Agent", "steer_subagent"]);
     const { session, calls } = makeSession("final answer");

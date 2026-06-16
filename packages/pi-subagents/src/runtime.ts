@@ -184,7 +184,23 @@ const publicToolNames = new Set([
   "get_subagent_result",
   "steer_subagent",
 ]);
-const readOnlyToolNames = ["read", "bash", "grep", "find", "ls"];
+export function withoutPublicAgentTools(names: string[]): string[] {
+  return names.filter((name) => !publicToolNames.has(name));
+}
+
+function normalizeActiveToolNames(
+  names: string[],
+  options: { allowExplore: boolean },
+): string[] {
+  return withoutPublicAgentTools(names).filter(
+    (name) => options.allowExplore || name !== "explore",
+  );
+}
+
+const readOnlyToolNames = normalizeActiveToolNames(
+  ["read", "bash", "grep", "find", "ls"],
+  { allowExplore: false },
+);
 const defaultSystemPromptMode: PromptMode = "append";
 const EXPLORE_TOOL_TIMEOUT_MS = 120_000;
 const EXPLORE_TOOL_MAX_RESULT_CHARS = 50_000;
@@ -871,6 +887,15 @@ export class SubagentRuntime {
         ? await createPromptResourceLoader(record.cwd, promptInput)
         : undefined;
       const profileTools = publicAgentProfile(record.type)?.tools;
+      const allowExplore = isExploreEligible(record.type) && !nested;
+      const explicitTools =
+        input.tools === undefined
+          ? undefined
+          : normalizeActiveToolNames(input.tools, { allowExplore });
+      const profileAllowlist =
+        profileTools === undefined
+          ? undefined
+          : normalizeActiveToolNames(profileTools, { allowExplore });
       const createSessionOptions = {
         cwd: record.cwd,
         model,
@@ -885,7 +910,7 @@ export class SubagentRuntime {
             }),
         ...(nested
           ? {
-              tools: input.tools ?? [...readOnlyToolNames],
+              tools: explicitTools ?? [...readOnlyToolNames],
               excludeTools: input.excludeTools ?? [
                 "explore",
                 ...publicToolNames,
@@ -894,11 +919,11 @@ export class SubagentRuntime {
               ],
             }
           : {
-              ...(input.tools === undefined
-                ? profileTools === undefined
+              ...(explicitTools === undefined
+                ? profileAllowlist === undefined
                   ? {}
-                  : { tools: [...profileTools] }
-                : { tools: input.tools }),
+                  : { tools: [...profileAllowlist] }
+                : { tools: explicitTools }),
               ...(input.excludeTools === undefined
                 ? {}
                 : { excludeTools: input.excludeTools }),
@@ -988,16 +1013,19 @@ export class SubagentRuntime {
     explicitTools?: string[],
   ): void {
     const getActiveTools = this.pi.getActiveTools?.bind(this.pi);
+    const allowExplore = isExploreEligible(record.type) && !isNestedOwner(record.owner);
     if (explicitTools) {
-      const activeTools = isExploreEligible(record.type)
-        ? [...explicitTools, "explore"]
-        : explicitTools;
-      session.setActiveToolsByName([...new Set(activeTools)]);
+      const activeTools = allowExplore ? [...explicitTools, "explore"] : explicitTools;
+      session.setActiveToolsByName(
+        normalizeActiveToolNames([...new Set(activeTools)], { allowExplore }),
+      );
       return;
     }
     const profileTools = publicAgentProfile(record.type)?.tools;
     if (profileTools !== undefined && !isNestedOwner(record.owner)) {
-      session.setActiveToolsByName([...profileTools]);
+      session.setActiveToolsByName(
+        normalizeActiveToolNames([...new Set(profileTools)], { allowExplore }),
+      );
       return;
     }
     if (!getActiveTools && !isNestedOwner(record.owner)) {
@@ -1006,15 +1034,12 @@ export class SubagentRuntime {
     let activeTools = getActiveTools?.() ?? [];
     if (isNestedOwner(record.owner)) {
       activeTools = readOnlyToolNames;
-    } else {
-      if (record.type === "General" || !isPublicBuiltinType(record.type)) {
-        activeTools = activeTools.filter((name) => !publicToolNames.has(name));
-      }
-      if (isExploreEligible(record.type)) {
-        activeTools = [...activeTools, "explore"];
-      }
+    } else if (allowExplore) {
+      activeTools = [...activeTools, "explore"];
     }
-    session.setActiveToolsByName([...new Set(activeTools)]);
+    session.setActiveToolsByName(
+      normalizeActiveToolNames([...new Set(activeTools)], { allowExplore }),
+    );
   }
 
   async #flushSteering(record: RuntimeRecord): Promise<void> {

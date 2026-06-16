@@ -124,13 +124,22 @@ describe("runtime-injected explore tool", () => {
     expect(calls[5]?.[0].customTools).toBeUndefined();
   });
 
-  it("activates injected explore for pi-implement read-only reviewer workers with explicit tools", async () => {
+  it("normalizes explicit explore activation to eligible non-Explore agents", async () => {
     const reviewer = makeSession("reviewer");
     const explore = makeSession("explore");
     const sessions = [reviewer, explore];
     const createSession = vi.fn(async () => ({ session: sessions.shift()! }));
     const runtime = new SubagentRuntime(makePi() as never, { createSession });
-    const readOnlyTools = ["read", "bash", "grep", "find", "ls", "explore"];
+    const readOnlyTools = [
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+      "explore",
+      "Agent",
+      "steer_subagent",
+    ];
 
     await runtime.runManagedAgent({
       owner: {
@@ -159,6 +168,14 @@ describe("runtime-injected explore tool", () => {
     expect(reviewerOptions.customTools).toEqual([
       expect.objectContaining({ name: "explore" }),
     ]);
+    expect(reviewerOptions.tools).toEqual([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+      "explore",
+    ]);
     expect(reviewer.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
@@ -168,11 +185,33 @@ describe("runtime-injected explore tool", () => {
       "explore",
     ]);
     expect(exploreOptions.customTools).toBeUndefined();
-    expect(explore.setActiveToolsByName).toHaveBeenCalledWith(readOnlyTools);
+    expect(exploreOptions.tools).toEqual([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+    ]);
+    expect(explore.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+    ]);
   });
 
   it("creates nested Explore metadata with inherited cwd, owner, model, thinking, and read-only tools", async () => {
-    const pi = makePi(["read", "bash", "Agent", "edit", "write", "explore"]);
+    const pi = makePi([
+      "read",
+      "bash",
+      "Agent",
+      "get_subagent_result",
+      "steer_subagent",
+      "edit",
+      "write",
+      "explore",
+    ]);
     const child = makeSession("nested result");
     const createSession = vi.fn(async () => ({ session: child }));
     const runtime = new SubagentRuntime(pi as never, {
