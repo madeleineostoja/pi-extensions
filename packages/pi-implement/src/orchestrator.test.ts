@@ -2554,6 +2554,138 @@ describe("runImplementation", () => {
     expect(subagents.spawns).toHaveLength(1);
   });
 
+  it("repairs exact-material tasks when the planner manifest has no non-anchor sourceMaterialRefs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const referencePath = join(dir, "reference.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Copy exact fixture\n";
+    const referenceContent = "fixture line one\nfixture line two\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(referencePath, referenceContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: JSON.stringify({
+          taskId: "t001-copy-exact-fixture",
+          sourceMaterialRefs: [
+            {
+              origin: "planner",
+              path: referencePath,
+              mode: { kind: "line-range", startLine: 1, endLine: 2 },
+              reason: "Exact fixture excerpt.",
+            },
+          ],
+          reason: "Added required exact material ref.",
+        }),
+      },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [
+        { path: planPath, hash: sha256(planContent) },
+        { path: referencePath, hash: sha256(referenceContent) },
+      ],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(
+            `${sha256(planContent)}${sha256(referenceContent)}`,
+          ),
+          files: [
+            { path: planPath, hash: sha256(planContent) },
+            { path: referencePath, hash: sha256(referenceContent) },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.compiledContract = {
+      ...task.compiledContract,
+      objective: "Copy exact fixture",
+      acceptanceCriteria: ["Fixture is copied verbatim."],
+    };
+    task.sourceMaterialRefs = [];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const repairSpawn = subagents.spawns.find((s) =>
+      s.description.includes("repair source material refs"),
+    );
+    expect(repairSpawn).toBeDefined();
+
+    const prompt = readFileSync(
+      join(paths.tasksDir, "t001-copy-exact-fixture", "prompt.md"),
+      "utf-8",
+    );
+    expect(prompt).toContain(
+      `Source: ${referencePath} (lines 1-2; origin: planner)`,
+    );
+    expect(prompt).toContain("fixture line one\nfixture line two");
+    expect(prompt).toContain("Source material repair note");
+    expect(prompt).not.toContain(
+      "Low-confidence source material warning for review",
+    );
+
+    const packet = JSON.parse(
+      readFileSync(
+        join(paths.tasksDir, "t001-copy-exact-fixture", "task-packet.json"),
+        "utf-8",
+      ),
+    ) as {
+      resolvedMaterialRefs: Array<{
+        origin: string;
+        absolutePath: string;
+      }>;
+      sourceMaterialRepair?: { reason?: string };
+    };
+    expect(
+      packet.resolvedMaterialRefs.some(
+        (ref) => ref.origin === "planner" && ref.absolutePath === referencePath,
+      ),
+    ).toBe(true);
+    expect(packet.sourceMaterialRepair?.reason).toBe(
+      "Added required exact material ref.",
+    );
+  });
+
   it("blocks planner material path escapes before worker spawn", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");

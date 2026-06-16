@@ -246,7 +246,7 @@ describe("selectStrategy - auto mode deterministic preconditions", () => {
     ]);
   });
 
-  it("blocks exact-material contracts with no usable material beyond the task anchor", async () => {
+  it("does not block exact-material contracts at strategy time so packet repair can run", async () => {
     const plan = makePlan(["Task A"]);
     const subagents = makeSubagents(
       JSON.stringify(
@@ -284,8 +284,11 @@ describe("selectStrategy - auto mode deterministic preconditions", () => {
       updateState: () => ({}),
     });
 
-    expect(result.mode).toBe("blocked");
-    expect(result.reason).toContain("requires exact source material");
+    expect(result.mode).not.toBe("blocked");
+    const persisted = JSON.parse(
+      readFileSync(join(tmpRunDir, "execution-manifest.json"), "utf-8"),
+    ) as ExecutionManifest;
+    expect(persisted.tasks[0]?.compiledContract.objective).toContain("exact");
   });
 });
 

@@ -29,7 +29,6 @@ import {
   generateMinimalExecutionManifest,
   validateExecutionManifest,
   writeExecutionManifest,
-  type CompiledContract,
   type ExecutionManifest,
   type ExecutionTask,
   type SourceMaterialRef,
@@ -216,23 +215,6 @@ async function runExecutionPlanner(
   );
 }
 
-function validateExactMaterialRequirements(
-  manifest: ExecutionManifest,
-): { ok: true } | { ok: false; reason: string } {
-  for (const task of manifest.tasks) {
-    if (
-      requiresExactMaterial(task.compiledContract) &&
-      !hasUsableMaterialBeyondTaskAnchor(task)
-    ) {
-      return {
-        ok: false,
-        reason: `Execution task "${task.id}" requires exact source material, but no usable rendered material beyond the selected task anchor was resolved.`,
-      };
-    }
-  }
-  return { ok: true };
-}
-
 function isMalformedPlannerJsonReason(reason: string): boolean {
   return (
     reason.includes("valid JSON") ||
@@ -308,14 +290,6 @@ function processExecutionPlannerResult(
       req,
       `Execution manifest provenance validation failed: ${provenanceValidation.reason}`,
     );
-  }
-
-  const exactMaterialValidation = validateExactMaterialRequirements(manifest);
-  if (!exactMaterialValidation.ok) {
-    return {
-      mode: "blocked",
-      reason: exactMaterialValidation.reason,
-    };
   }
 
   let structuralValidation = validateExecutionManifest(manifest);
@@ -450,32 +424,6 @@ function normalizeSourceMaterialRefs(
       origin: "planner" as const,
     })),
   ];
-}
-
-function contractText(contract: CompiledContract): string {
-  return [
-    contract.objective,
-    ...contract.inScope,
-    ...contract.acceptanceCriteria,
-    contract.supportingDesignContext,
-    contract.implementationNotes,
-    ...contract.outOfScope,
-    contract.verificationGuidance,
-  ]
-    .filter((part): part is string => typeof part === "string")
-    .join("\n");
-}
-
-function requiresExactMaterial(contract: CompiledContract): boolean {
-  return /\b(verbatim|exact|fixture|migration|sql|source-of-truth)\b|copy from|copied from|schema below|prompt string|system prompt/i.test(
-    contractText(contract),
-  );
-}
-
-function hasUsableMaterialBeyondTaskAnchor(task: ExecutionTask): boolean {
-  return (task.sourceMaterialRefs ?? []).some(
-    (ref) => ref.origin !== "task-anchor",
-  );
 }
 
 function normalizePlannerManifest(
