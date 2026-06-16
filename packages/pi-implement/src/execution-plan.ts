@@ -178,6 +178,10 @@ export type SourceMaterialPathResolution =
 
 export type SourceMaterialRenderOptions = {
   resolvePath?: (ref: SourceMaterialRef) => SourceMaterialPathResolution;
+  readFileContent?: (args: {
+    ref: SourceMaterialRef;
+    absolutePath: string;
+  }) => string;
   validateFileContent?: (args: {
     ref: SourceMaterialRef;
     absolutePath: string;
@@ -300,7 +304,9 @@ function validateSourceMaterialRef(
 
   let fileContent: string;
   try {
-    fileContent = readFileSync(absolutePath, "utf-8");
+    fileContent = options.readFileContent
+      ? options.readFileContent({ ref, absolutePath })
+      : readFileSync(absolutePath, "utf-8");
   } catch (err) {
     return {
       ok: false,

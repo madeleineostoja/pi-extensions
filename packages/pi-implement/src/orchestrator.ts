@@ -100,6 +100,11 @@ import {
   validatePlanMaterialSizes,
   type PlanBundleManifest,
 } from "./manifest.js";
+import {
+  buildPhase1MaterialInventory,
+  renderPhase1TaskMaterial,
+  type Phase1MaterialInventory,
+} from "./material-inventory.js";
 
 // One initial full review plus up to two anchored re-reviews.
 // If the second anchored re-review still returns unresolved required changes, block.
@@ -117,27 +122,28 @@ const execFileAsync = promisify(execFile);
 function buildTaskSourceMaterialPacket(
   args: TaskSourceMaterialPacketArgs,
 ): RenderedSourceMaterialPacket {
-  const deterministicRefs =
+  const generatedDeterministicRefs =
     generateMinimalExecutionManifest([args.task], args.planPath, args.manifest)
       .tasks[0]?.sourceMaterialRefs ?? [];
+  const explicitDeterministicRefs = (args.plannerRefs ?? []).filter(
+    (ref) => ref.origin === "task-anchor" || ref.origin === "task-link",
+  );
+  const phase1Packet = renderPhase1TaskMaterial({
+    inventory: args.materialInventory,
+    refs: [...generatedDeterministicRefs, ...explicitDeterministicRefs],
+  });
   const plannerCorpus = buildPlannerSourceMaterialCorpus(args);
-  const packet = renderSourceMaterialPacket(
-    [
-      ...deterministicRefs,
-      ...(args.plannerRefs ?? []).map((ref) => ({
+  const plannerPacket = renderSourceMaterialPacket(
+    (args.plannerRefs ?? [])
+      .filter((ref) => ref.origin === "planner")
+      .map((ref) => ({
         ...ref,
         origin: "planner" as const,
       })),
-    ],
     {
       resolvePath: (ref) =>
-        ref.origin === "planner"
-          ? resolvePlannerSourceMaterialPath(ref, plannerCorpus)
-          : { ok: true, absolutePath: resolve(ref.path) },
-      validateFileContent: ({ ref, absolutePath, fileContent }) => {
-        if (ref.origin !== "planner") {
-          return undefined;
-        }
+        resolvePlannerSourceMaterialPath(ref, plannerCorpus),
+      validateFileContent: ({ absolutePath, fileContent }) => {
         const corpusEntry = plannerCorpus.byAbsolutePath.get(absolutePath);
         if (!corpusEntry) {
           return "path is not in the ingested plan corpus";
@@ -149,6 +155,7 @@ function buildTaskSourceMaterialPacket(
       },
     },
   );
+  const packet = mergeSourceMaterialPackets(phase1Packet, plannerPacket);
 
   if (
     requiresExactMaterial(args.compiledContract) &&
@@ -164,6 +171,23 @@ function buildTaskSourceMaterialPacket(
   }
 
   return packet;
+}
+
+function mergeSourceMaterialPackets(
+  phase1Packet: RenderedSourceMaterialPacket | undefined,
+  plannerPacket: RenderedSourceMaterialPacket | undefined,
+): RenderedSourceMaterialPacket | undefined {
+  if (!phase1Packet) {
+    return plannerPacket;
+  }
+  if (!plannerPacket) {
+    return phase1Packet;
+  }
+  return {
+    section: `${phase1Packet.section}\n\n${plannerPacket.section}`,
+    resolvedRefs: [...phase1Packet.resolvedRefs, ...plannerPacket.resolvedRefs],
+    warnings: [...phase1Packet.warnings, ...plannerPacket.warnings],
+  };
 }
 
 function packetHasMaterialBeyondTaskAnchor(
@@ -275,6 +299,7 @@ type TaskSourceMaterialPacketArgs = {
   manifest?: PlanBundleManifest;
   repoRoot?: string;
   corpusFiles?: Array<{ path: string; hash: string }>;
+  materialInventory: Phase1MaterialInventory;
   compiledContract: CompiledContract;
   plannerRefs?: SourceMaterialRef[];
 };
@@ -286,6 +311,7 @@ export type OrchestratorDeps = {
   planArtifacts?: string[];
   manifest?: PlanBundleManifest;
   executionManifest?: ExecutionManifest;
+  materialInventory?: Phase1MaterialInventory;
   corpusMaterial?: string;
   roles: EffectiveRoles;
   mode?: RunMode;
@@ -320,6 +346,16 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
     }
   }
   let plan = parsePlanFile(deps.planPath);
+  const repoRoot = await deps.git.root();
+  const materialInventory =
+    deps.materialInventory ??
+    buildPhase1MaterialInventory({
+      plan,
+      planPath: deps.planPath,
+      manifest: deps.manifest,
+      repoRoot,
+    });
+  deps = { ...deps, materialInventory };
   const planArtifacts = deps.planArtifacts ?? [deps.planPath];
   if (!(await deps.git.isCleanExcept(planArtifacts))) {
     throw new BlockedError("dirty worktree");
@@ -3850,12 +3886,16 @@ async function runTaskWorker(args: {
       initialFeedback !== undefined ||
       (wasNeedsRework ?? false);
 
+    if (!deps.materialInventory) {
+      throw new BlockedError("no Phase 1 material inventory available");
+    }
     const sourceMaterialPacket = buildTaskSourceMaterialPacket({
       task,
       planPath: deps.planPath,
       manifest: deps.manifest,
       repoRoot: await deps.git.root(),
       corpusFiles: recordedCorpusFiles,
+      materialInventory: deps.materialInventory,
       compiledContract: compiledContractEntry.compiledContract,
       plannerRefs: compiledContractEntry.sourceMaterialRefs,
     });

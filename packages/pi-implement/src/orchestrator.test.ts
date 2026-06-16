@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   runImplementation,
@@ -35,6 +35,7 @@ import {
   type PlanBundleManifest,
 } from "./manifest.js";
 import { parsePlanFile } from "./plan.js";
+import { buildPhase1MaterialInventory } from "./material-inventory.js";
 
 class FakeGit implements GitClient {
   commits: string[] = [];
@@ -323,6 +324,15 @@ function makeExecutionManifest(
         outOfScope: ["Other tasks"],
       },
     })),
+  };
+}
+
+function testRoles() {
+  return {
+    implementer: { model: "p/m", type: "general-purpose" as const },
+    reviewer: { model: "p/m", type: "general-purpose" as const },
+    planner: { model: "p/m", type: "Explore" as const },
+    selfHeal: { model: "p/m", type: "general-purpose" as const },
   };
 }
 
@@ -1239,6 +1249,264 @@ describe("runImplementation", () => {
       }),
     ).rejects.toThrow("requires exact source material");
     expect(subagents.spawns).toHaveLength(0);
+  });
+
+  it("blocks missing deterministic material before worker spawn", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const supportPath = join(dir, "support.md");
+    const planContent =
+      "# Plan\n\n## Tasks\n\n- [ ] Use support\n  Plan: `support.md`\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(supportPath, "support detail\n", "utf-8");
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const materialInventory = buildPhase1MaterialInventory({
+      plan,
+      planPath,
+      manifest,
+      repoRoot: dir,
+    });
+    rmSync(supportPath);
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        materialInventory,
+        executionManifest: makeExecutionManifest(plan, manifest),
+        roles: testRoles(),
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("missing");
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
+  it("blocks deterministic material path escapes before worker spawn", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const outsidePath = join(dirname(dir), "outside-material.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do task\n", "utf-8");
+    writeFileSync(outsidePath, "outside detail\n", "utf-8");
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    executionManifest.tasks[0]!.sourceMaterialRefs = [
+      {
+        origin: "task-link",
+        path: relative(dir, outsidePath),
+        mode: { kind: "full-file" },
+        reason: "Escaping material.",
+      },
+    ];
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        materialInventory: buildPhase1MaterialInventory({
+          plan,
+          planPath,
+          manifest,
+          repoRoot: dir,
+        }),
+        executionManifest,
+        roles: testRoles(),
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("outside allowed roots");
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
+  it("blocks invalid deterministic line ranges before worker spawn", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do task\n", "utf-8");
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    executionManifest.tasks[0]!.sourceMaterialRefs = [
+      {
+        origin: "task-anchor",
+        path: planPath,
+        mode: { kind: "line-range", startLine: 50, endLine: 51 },
+        reason: "Invalid range.",
+      },
+    ];
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        materialInventory: buildPhase1MaterialInventory({
+          plan,
+          planPath,
+          manifest,
+          repoRoot: dir,
+        }),
+        executionManifest,
+        roles: testRoles(),
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("starts after end of file");
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
+  it("blocks deterministic material changed after inventory creation before worker spawn", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Do task\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const materialInventory = buildPhase1MaterialInventory({
+      plan,
+      planPath,
+      manifest,
+      repoRoot: dir,
+    });
+    writeFileSync(planPath, `${planContent}mutated\n`, "utf-8");
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        materialInventory,
+        executionManifest: makeExecutionManifest(plan, manifest),
+        roles: testRoles(),
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("hash");
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
+  it("blocks oversized deterministic rendered material without truncating", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const supportPath = join(dir, "support.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Use support\n",
+      "utf-8",
+    );
+    writeFileSync(supportPath, "x".repeat(101_000), "utf-8");
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    executionManifest.tasks[0]!.sourceMaterialRefs = [
+      {
+        origin: "task-link",
+        path: supportPath,
+        mode: { kind: "full-file" },
+        reason: "Large explicit material.",
+      },
+    ];
+    const materialInventory = buildPhase1MaterialInventory({
+      plan,
+      planPath,
+      manifest,
+      repoRoot: dir,
+    });
+    materialInventory.materials.push({
+      absolutePath: supportPath,
+      displayLabel: "support.md",
+      content: readFileSync(supportPath, "utf-8"),
+      hash: sha256(readFileSync(supportPath, "utf-8")),
+    });
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        materialInventory,
+        executionManifest,
+        roles: testRoles(),
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow(
+      /Rendered source material exceeds maximum size.*support.md/s,
+    );
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
+  it("renders deterministic material from the frozen inventory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const planContent =
+      "# Plan\n\n## Tasks\n\n- [ ] Do frozen thing\n  frozen detail\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const materialInventory = buildPhase1MaterialInventory({
+      plan,
+      planPath,
+      manifest,
+      repoRoot: dir,
+    });
+    const frozen = materialInventory.materials.find(
+      (material) => material.absolutePath === resolve(planPath),
+    );
+    if (!frozen) {
+      throw new Error("missing frozen plan material");
+    }
+    frozen.content = frozen.content.replace(
+      "frozen detail",
+      "inventory detail",
+    );
+    writeFileSync(planPath, frozen.content, "utf-8");
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      materialInventory,
+      executionManifest: makeExecutionManifest(plan, manifest),
+      roles: testRoles(),
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(subagents.spawns[0]?.prompt).toContain("inventory detail");
+    expect(subagents.spawns[0]?.prompt).not.toContain("frozen detail");
   });
 
   it("persists implementer packet prompt and source material artifacts", async () => {

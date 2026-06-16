@@ -42,6 +42,7 @@ import {
   validatePlanMaterialSizes,
 } from "./manifest.js";
 import { ingestPlanCorpus, formatCorpusMaterial } from "./corpus.js";
+import { buildPhase1MaterialInventory } from "./material-inventory.js";
 import { diffProgress } from "./progress.js";
 import {
   getStatePaths,
@@ -472,6 +473,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       let manifest: ReturnType<typeof buildPlanBundleManifest>;
       let corpus: ReturnType<typeof ingestPlanCorpus>;
       let corpusFileRecords: Array<{ path: string; hash: string }>;
+      let materialInventory: ReturnType<typeof buildPhase1MaterialInventory>;
       try {
         git = new ExecGitClient(ctx.cwd);
         repoRoot = await git.mainRoot();
@@ -510,6 +512,13 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           path: f.absolutePath,
           hash: f.hash,
         }));
+        materialInventory = buildPhase1MaterialInventory({
+          plan,
+          planPath,
+          manifest,
+          corpus,
+          repoRoot,
+        });
 
         planArtifacts = manifest.allArtifactPaths;
         for (const corpusPath of corpus.files.map((f) => f.absolutePath)) {
@@ -743,6 +752,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           planPath,
           planArtifacts,
           manifest,
+          materialInventory,
           corpusMaterial: formatCorpusMaterial(corpus),
           roles: effective.roles,
           mode: strategy.mode,
