@@ -1,8 +1,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { showAgentsDashboard } from "./agents-dashboard.js";
+import { PUBLIC_AGENT_PROFILES } from "./agent-profiles.js";
 import { getSubagentRuntime, type RuntimeSnapshot } from "./runtime.js";
 
+export {
+  GENERAL_DESC,
+  GENERAL_PROMPT,
+  EXPLORE_DESC,
+  EXPLORE_PROMPT,
+  PUBLIC_AGENT_PROFILES,
+  REVIEW_DESC,
+  REVIEW_PROMPT,
+} from "./agent-profiles.js";
+export type { AgentProfile, PromptMode } from "./agent-profiles.js";
 export {
   AgentDefinitionRegistry,
   createAgentDefinitionRegistry,
@@ -41,9 +52,15 @@ export type {
 } from "./runtime.js";
 
 const PublicAgentType = Type.Union([
-  Type.Literal("General"),
-  Type.Literal("Explore"),
-  Type.Literal("Review"),
+  Type.Literal("General", {
+    description: PUBLIC_AGENT_PROFILES.General.description,
+  }),
+  Type.Literal("Explore", {
+    description: PUBLIC_AGENT_PROFILES.Explore.description,
+  }),
+  Type.Literal("Review", {
+    description: PUBLIC_AGENT_PROFILES.Review.description,
+  }),
 ]);
 
 const Thinking = Type.Union([

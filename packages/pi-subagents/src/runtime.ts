@@ -5,7 +5,11 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { createAgentSession } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
@@ -20,7 +24,13 @@ import {
   type ResolvedPublicSubagentsConfig,
   type ThinkingLevel,
 } from "./config.js";
+import {
+  PUBLIC_AGENT_PROFILES,
+  type AgentProfile,
+  type PromptMode,
+} from "./agent-profiles.js";
 export type { ThinkingLevel } from "./config.js";
+export type { PromptMode } from "./agent-profiles.js";
 
 export type SubagentRuntimeStatus =
   | "queued"
@@ -119,6 +129,8 @@ export type RunManagedAgentInput = {
   owner?: RuntimeOwner;
   tools?: string[];
   excludeTools?: string[];
+  systemPrompt?: string;
+  systemPromptMode?: PromptMode;
 };
 
 export type RunPublicAgentInput = Omit<RunManagedAgentInput, "type"> & {
@@ -173,6 +185,7 @@ const publicToolNames = new Set([
   "steer_subagent",
 ]);
 const readOnlyToolNames = ["read", "bash", "grep", "find", "ls"];
+const defaultSystemPromptMode: PromptMode = "append";
 const EXPLORE_TOOL_TIMEOUT_MS = 120_000;
 const EXPLORE_TOOL_MAX_RESULT_CHARS = 50_000;
 const exploreEligibleTypes = new Set([
@@ -371,6 +384,10 @@ function isPublicBuiltinType(type: string): type is PublicBuiltinType {
   return publicTypes.has(type);
 }
 
+function publicAgentProfile(type: string): AgentProfile | undefined {
+  return isPublicBuiltinType(type) ? PUBLIC_AGENT_PROFILES[type] : undefined;
+}
+
 function isNestedOwner(
   owner: RuntimeOwner,
 ): owner is Extract<RuntimeOwner, { kind: "nested" }> {
@@ -393,6 +410,37 @@ function splitModelRef(modelRef: string): {
     provider: modelRef.slice(0, slash),
     modelId: modelRef.slice(slash + 1),
   };
+}
+
+function resolveSystemPromptInput(
+  input: RunManagedAgentInput,
+): { prompt: string; mode: PromptMode } | undefined {
+  const profile = publicAgentProfile(input.type);
+  const prompt = input.systemPrompt ?? profile?.systemPrompt;
+  if (prompt === undefined) {
+    return undefined;
+  }
+  return {
+    prompt,
+    mode:
+      input.systemPromptMode ?? profile?.promptMode ?? defaultSystemPromptMode,
+  };
+}
+
+async function createPromptResourceLoader(
+  cwd: string,
+  promptInput: { prompt: string; mode: PromptMode },
+): Promise<{ agentDir: string; resourceLoader: DefaultResourceLoader }> {
+  const agentDir = getAgentDir();
+  const resourceLoader = new DefaultResourceLoader({
+    cwd,
+    agentDir,
+    ...(promptInput.mode === "replace"
+      ? { systemPrompt: promptInput.prompt }
+      : { appendSystemPrompt: [promptInput.prompt] }),
+  });
+  await resourceLoader.reload();
+  return { agentDir, resourceLoader };
 }
 
 function resolveModelRef(
@@ -818,15 +866,26 @@ export class SubagentRuntime {
     try {
       const { model } = resolveModelRef(input.ctx, record.model);
       const nested = isNestedOwner(record.owner);
-      const { session } = await this.#createSession({
+      const promptInput = resolveSystemPromptInput(input);
+      const resources = promptInput
+        ? await createPromptResourceLoader(record.cwd, promptInput)
+        : undefined;
+      const profileTools = publicAgentProfile(record.type)?.tools;
+      const createSessionOptions = {
         cwd: record.cwd,
         model,
         ...(record.thinking === undefined
           ? {}
           : { thinkingLevel: record.thinking }),
+        ...(resources === undefined
+          ? {}
+          : {
+              agentDir: resources.agentDir,
+              resourceLoader: resources.resourceLoader,
+            }),
         ...(nested
           ? {
-              tools: input.tools ?? readOnlyToolNames,
+              tools: input.tools ?? [...readOnlyToolNames],
               excludeTools: input.excludeTools ?? [
                 "explore",
                 ...publicToolNames,
@@ -835,13 +894,18 @@ export class SubagentRuntime {
               ],
             }
           : {
-              ...(input.tools === undefined ? {} : { tools: input.tools }),
+              ...(input.tools === undefined
+                ? profileTools === undefined
+                  ? {}
+                  : { tools: [...profileTools] }
+                : { tools: input.tools }),
               ...(input.excludeTools === undefined
                 ? {}
                 : { excludeTools: input.excludeTools }),
               customTools: this.#customToolsFor(record),
             }),
-      });
+      };
+      const { session } = await this.#createSession(createSessionOptions);
       if (isTerminal(record.status)) {
         await this.#disposeSession(session);
         return snapshot(record);
@@ -929,6 +993,11 @@ export class SubagentRuntime {
         ? [...explicitTools, "explore"]
         : explicitTools;
       session.setActiveToolsByName([...new Set(activeTools)]);
+      return;
+    }
+    const profileTools = publicAgentProfile(record.type)?.tools;
+    if (profileTools !== undefined && !isNestedOwner(record.owner)) {
+      session.setActiveToolsByName([...profileTools]);
       return;
     }
     if (!getActiveTools && !isNestedOwner(record.owner)) {

@@ -1,3 +1,5 @@
+import { PUBLIC_AGENT_PROFILES } from "./agent-profiles.js";
+
 export type AgentDefinitionVisibility = "public" | "internal";
 
 export type AgentDefinition = {
@@ -5,7 +7,6 @@ export type AgentDefinition = {
   title: string;
   description: string;
   visibility: AgentDefinitionVisibility;
-  prompt?: string;
   builtin?: boolean;
 };
 
@@ -21,7 +22,6 @@ const equivalentDefinitions = (
   left.title === right.title &&
   left.description === right.description &&
   left.visibility === right.visibility &&
-  left.prompt === right.prompt &&
   left.builtin === right.builtin;
 
 export class AgentDefinitionRegistry {
@@ -67,31 +67,14 @@ export const PUBLIC_BUILTIN_TYPES = ["General", "Explore", "Review"] as const;
 
 export type PublicBuiltinType = (typeof PUBLIC_BUILTIN_TYPES)[number];
 
-export const PUBLIC_BUILTIN_DEFINITIONS: AgentDefinition[] = [
-  {
-    type: "General",
-    title: "General",
-    description:
-      "General-purpose subagent for well-scoped implementation or research tasks.",
+export const PUBLIC_BUILTIN_DEFINITIONS: AgentDefinition[] =
+  PUBLIC_BUILTIN_TYPES.map((type) => ({
+    type,
+    title: type,
+    description: PUBLIC_AGENT_PROFILES[type].description,
     visibility: "public",
     builtin: true,
-  },
-  {
-    type: "Explore",
-    title: "Explore",
-    description:
-      "Exploration subagent for codebase discovery and usage tracing.",
-    visibility: "public",
-    builtin: true,
-  },
-  {
-    type: "Review",
-    title: "Review",
-    description: "Review subagent for independent second-pass code review.",
-    visibility: "public",
-    builtin: true,
-  },
-];
+  }));
 
 export function createAgentDefinitionRegistry(): AgentDefinitionRegistry {
   const registry = new AgentDefinitionRegistry();

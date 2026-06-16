@@ -1,6 +1,38 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const getAgentDirMock = vi.hoisted(() => vi.fn(() => "/agent-dir"));
+const reloadMock = vi.hoisted(() =>
+  vi.fn(async function (this: any) {
+    this.reloaded = true;
+  }),
+);
+const resourceLoaderConstructions = vi.hoisted(() => [] as any[]);
+
+vi.mock("@earendil-works/pi-coding-agent", async () => {
+  const actual = await vi.importActual<
+    typeof import("@earendil-works/pi-coding-agent")
+  >("@earendil-works/pi-coding-agent");
+  return {
+    ...actual,
+    getAgentDir: getAgentDirMock,
+    DefaultResourceLoader: vi.fn(function (this: any, options: any) {
+      this.options = options;
+      resourceLoaderConstructions.push({ loader: this, options });
+    }),
+  };
+});
+
 import registerExtension from "./index.js";
+import {
+  EXPLORE_PROMPT,
+  GENERAL_PROMPT,
+  PUBLIC_AGENT_PROFILES,
+  REVIEW_PROMPT,
+} from "./agent-profiles.js";
 import { SubagentRuntime } from "./runtime.js";
+import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
+
+vi.mocked(DefaultResourceLoader).prototype.reload = reloadMock;
 
 type ToolDef = {
   name: string;
@@ -132,6 +164,12 @@ function collectConstStrings(value: unknown): string[] {
 }
 
 describe("public subagent tools", () => {
+  beforeEach(() => {
+    getAgentDirMock.mockReturnValue("/agent-dir");
+    reloadMock.mockClear();
+    resourceLoaderConstructions.length = 0;
+  });
+
   it("registers the public tools with the exact public agent choices", () => {
     const { pi, tools } = makePi();
 
@@ -160,6 +198,15 @@ describe("public subagent tools", () => {
       "high",
       "xhigh",
     ]);
+    expect(JSON.stringify(tools[0].parameters)).toContain(
+      PUBLIC_AGENT_PROFILES.General.description,
+    );
+    expect(JSON.stringify(tools[0].parameters)).toContain(
+      PUBLIC_AGENT_PROFILES.Explore.description,
+    );
+    expect(JSON.stringify(tools[0].parameters)).toContain(
+      PUBLIC_AGENT_PROFILES.Review.description,
+    );
   });
 
   it("runs pi-implement managed background sessions and waits for completion", async () => {
@@ -199,6 +246,12 @@ describe("public subagent tools", () => {
         model: { provider: "p", id: "m" },
         customTools: [expect.objectContaining({ name: "explore" })],
       }),
+    );
+    expect(createSession).toHaveBeenCalledWith(
+      expect.not.objectContaining({ resourceLoader: expect.anything() }),
+    );
+    expect(createSession).toHaveBeenCalledWith(
+      expect.not.objectContaining({ agentDir: expect.anything() }),
     );
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
@@ -250,6 +303,112 @@ describe("public subagent tools", () => {
     expect(session.prompt).toHaveBeenCalledWith("do work", {
       source: "extension",
     });
+    expect(resourceLoaderConstructions).toHaveLength(1);
+    expect(resourceLoaderConstructions[0].options).toEqual({
+      cwd: "/workspace",
+      agentDir: "/agent-dir",
+      appendSystemPrompt: [GENERAL_PROMPT],
+    });
+    expect(reloadMock).toHaveBeenCalledBefore(createSession);
+    expect(createSession.mock.calls[0][0]).toMatchObject({
+      agentDir: "/agent-dir",
+      resourceLoader: resourceLoaderConstructions[0].loader,
+    });
+  });
+
+  it("uses replace-mode prompt loading and pinned tools for Explore", async () => {
+    const { pi } = makePi(["read", "bash", "edit", "write", "Agent"]);
+    const { session } = makeSession("explore result");
+    const createSession = vi.fn(async (_options: any) => ({ session }));
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+
+    await runtime.runPublicAgent({
+      type: "Explore",
+      prompt: "map it",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+    });
+
+    expect(resourceLoaderConstructions).toHaveLength(1);
+    expect(resourceLoaderConstructions[0].options).toEqual({
+      cwd: "/workspace",
+      agentDir: "/agent-dir",
+      systemPrompt: EXPLORE_PROMPT,
+    });
+    expect(reloadMock).toHaveBeenCalledBefore(createSession);
+    expect(createSession.mock.calls[0][0]).toMatchObject({
+      agentDir: "/agent-dir",
+      resourceLoader: resourceLoaderConstructions[0].loader,
+      tools: ["read", "bash", "grep", "find", "ls"],
+    });
+    expect(session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+    ]);
+  });
+
+  it("uses append-mode prompt loading and pinned tools for Review", async () => {
+    const { pi } = makePi(["read", "bash", "edit", "write", "Agent"]);
+    const { session } = makeSession("review result");
+    const createSession = vi.fn(async (_options: any) => ({ session }));
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+
+    await runtime.runPublicAgent({
+      type: "Review",
+      prompt: "review it",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+    });
+
+    expect(resourceLoaderConstructions).toHaveLength(1);
+    expect(resourceLoaderConstructions[0].options).toEqual({
+      cwd: "/workspace",
+      agentDir: "/agent-dir",
+      appendSystemPrompt: [REVIEW_PROMPT],
+    });
+    expect(createSession.mock.calls[0][0]).toMatchObject({
+      agentDir: "/agent-dir",
+      resourceLoader: resourceLoaderConstructions[0].loader,
+      tools: ["read", "bash", "grep", "find", "ls", "explore"],
+    });
+    expect(session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+      "explore",
+    ]);
+  });
+
+  it("loads explicit internal system prompts without otherwise changing tool behavior", async () => {
+    const { pi } = makePi(["read", "bash", "edit", "Agent"]);
+    const { session } = makeSession("internal result");
+    const createSession = vi.fn(async (_options: any) => ({ session }));
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+
+    await runtime.runManagedAgent({
+      type: "custom-internal",
+      prompt: "do work",
+      systemPrompt: "Internal instructions",
+      systemPromptMode: "replace",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+    });
+
+    expect(resourceLoaderConstructions[0].options).toEqual({
+      cwd: "/workspace",
+      agentDir: "/agent-dir",
+      systemPrompt: "Internal instructions",
+    });
+    expect(session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "edit",
+    ]);
   });
 
   it("starts background agents immediately and emits no completion notification", async () => {
