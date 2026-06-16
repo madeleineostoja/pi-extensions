@@ -71,6 +71,10 @@ function looksLikeAttemptedPlanReference(line: string): boolean {
   return /^[ \t]*(?:[-*][ \t]+)?Plan:\s*[`<>]/.test(line);
 }
 
+function isEmptyPlanReferenceLine(line: string): boolean {
+  return /^[ \t]*(?:[-*][ \t]+)?Plan:\s*$/.test(line);
+}
+
 export function extractPlanReference(
   line: string,
 ): { target: string } | undefined {
@@ -254,6 +258,13 @@ export function buildMaterialStore(
         continue;
       }
 
+      if (isEmptyPlanReferenceLine(line)) {
+        addError(
+          `Task ${task.index}: empty Plan: target; add a Markdown file path in backticks or angle brackets`,
+        );
+        continue;
+      }
+
       if (looksLikeAttemptedPlanReference(line)) {
         addError(
           `Task ${task.index}: unsupported or malformed Plan: line: ${line.trim()}`,
@@ -363,11 +374,21 @@ export function resolveMaterialRefPath(
         ...(store.repoRoot ? [resolve(store.repoRoot, path)] : []),
       ];
 
+  const storePaths = new Set(store.files.map((file) => file.absolutePath));
+  const allowedCandidates: string[] = [];
+
   for (const candidate of dedupe(candidates)) {
     if (!isWithinAnyAllowedRoot(candidate, store.allowedRoots)) {
       continue;
     }
-    return { ok: true, absolutePath: candidate };
+    if (storePaths.has(candidate)) {
+      return { ok: true, absolutePath: candidate };
+    }
+    allowedCandidates.push(candidate);
+  }
+
+  if (allowedCandidates.length > 0) {
+    return { ok: true, absolutePath: allowedCandidates[0]! };
   }
 
   return {

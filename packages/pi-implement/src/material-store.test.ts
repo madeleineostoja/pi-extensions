@@ -252,6 +252,46 @@ describe("buildMaterialStore", () => {
     expect(store.files.map((f) => f.absolutePath)).toContain(materialPath);
     expect(store.validationErrors).toHaveLength(0);
   });
+
+  it("resolves repo-root-relative planner refs when plan is in a subdirectory", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plans", "plan.md");
+    const materialPath = join(dir, "docs", "context.md");
+    mkdirSync(dirname(planPath), { recursive: true });
+    mkdirSync(dirname(materialPath), { recursive: true });
+    writeFileSync(
+      planPath,
+      "# Plan\n\nSee [context](../docs/context.md).\n\n## Tasks\n\n- [ ] Task\n",
+      "utf-8",
+    );
+    writeFileSync(materialPath, "# Context\n", "utf-8");
+
+    const plan = parsePlan(planPath, readFile(planPath, "utf-8"));
+    const store = buildMaterialStore({ plan, planPath, repoRoot: dir });
+
+    const resolution = resolveMaterialRefPath("docs/context.md", store);
+    expect(resolution.ok).toBe(true);
+    if (!resolution.ok) {
+      return;
+    }
+    expect(resolution.absolutePath).toBe(materialPath);
+  });
+
+  it("blocks bare empty Plan: targets", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan:\n",
+      "utf-8",
+    );
+
+    const plan = parsePlan(planPath, readFile(planPath, "utf-8"));
+    const store = buildMaterialStore({ plan, planPath });
+
+    expect(store.validationErrors.length).toBeGreaterThan(0);
+    expect(store.validationErrors[0]).toContain("empty Plan: target");
+  });
 });
 
 describe("MaterialStore compatibility adapters", () => {

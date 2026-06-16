@@ -467,6 +467,20 @@ describe("buildPlanBundleManifest", () => {
     expect(manifest.validationErrors.length).toBeGreaterThan(0);
     expect(manifest.validationErrors[0]).toContain("malformed");
   });
+
+  it("blocks bare empty Plan: targets", () => {
+    const dir = makeTmpDir();
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] Task\n  - Plan:\n",
+      "utf-8",
+    );
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    expect(manifest.validationErrors.length).toBeGreaterThan(0);
+    expect(manifest.validationErrors[0]).toContain("empty Plan: target");
+  });
 });
 
 describe("formatReferencedMaterial", () => {
