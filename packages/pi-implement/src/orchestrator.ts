@@ -386,6 +386,13 @@ function renderPlannerSourceMaterial(
         }
         return { ok: true, absolutePath: allowed.absolutePath };
       },
+      readFileContent: ({ absolutePath }) => {
+        const corpusEntry = corpus.byAbsolutePath.get(absolutePath);
+        if (corpusEntry?.content !== undefined) {
+          return corpusEntry.content;
+        }
+        return readFileSync(absolutePath, "utf-8");
+      },
       validateFileContent: ({ absolutePath, fileContent }) => {
         const corpusEntry = corpus.byAbsolutePath.get(absolutePath);
         if (!corpusEntry) {
@@ -883,6 +890,7 @@ function requiresExactMaterial(contract: CompiledContract): boolean {
 type PlannerSourceMaterialCorpusEntry = {
   absolutePath: string;
   hash: string;
+  content?: string;
 };
 
 type PlannerSourceMaterialCorpus = {
@@ -895,15 +903,25 @@ function buildPlannerSourceMaterialCorpus(
   args: TaskSourceMaterialPacketArgs,
 ): PlannerSourceMaterialCorpus {
   const byAbsolutePath = new Map<string, PlannerSourceMaterialCorpusEntry>();
-  const addEntry = (path: string, hash: string) => {
+  const addEntry = (path: string, hash: string, content?: string) => {
     const absolutePath = resolve(path);
-    byAbsolutePath.set(absolutePath, { absolutePath, hash });
+    const existing = byAbsolutePath.get(absolutePath);
+    if (existing?.content !== undefined && content === undefined) {
+      return;
+    }
+    byAbsolutePath.set(absolutePath, { absolutePath, hash, content });
   };
 
-  addEntry(args.planPath, hashText(readFileSync(args.planPath, "utf-8")));
+  for (const material of args.materialInventory.materials) {
+    addEntry(material.absolutePath, material.hash, material.content);
+  }
   for (const task of args.manifest?.tasks ?? []) {
     for (const material of task.referencedMaterials) {
-      addEntry(material.absolutePath, hashText(material.content));
+      addEntry(
+        material.absolutePath,
+        hashText(material.content),
+        material.content,
+      );
     }
   }
   for (const file of args.corpusFiles ?? []) {

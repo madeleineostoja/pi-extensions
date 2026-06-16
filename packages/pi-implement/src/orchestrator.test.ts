@@ -1190,6 +1190,101 @@ describe("runImplementation", () => {
     expect(prompt).not.toContain("path is not in the ingested plan corpus");
   });
 
+  it("renders same-plan planner line ranges after earlier checkboxes are marked done", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const planContent = [
+      "# Plan",
+      "",
+      "Shared exact context for later task.",
+      "",
+      "## Tasks",
+      "",
+      "- [ ] First task",
+      "- [ ] Second task",
+      "",
+    ].join("\n");
+    writeFileSync(planPath, planContent, "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [{ path: planPath, hash: sha256(planContent) }],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(planContent),
+          files: [{ path: planPath, hash: sha256(planContent) }],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const materialInventory = buildPhase1MaterialInventory({
+      plan,
+      planPath,
+      repoRoot: dir,
+    });
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const secondTask = executionManifest.tasks[1];
+    if (!secondTask) {
+      throw new Error("missing second test task");
+    }
+    secondTask.sourceMaterialRefs = [
+      ...(secondTask.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: planPath,
+        mode: { kind: "line-range", startLine: 3, endLine: 3 },
+        reason: "Same-plan exact context required after task one lands.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      executionManifest,
+      materialInventory,
+      paths,
+      roles: testRoles(),
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const secondPrompt = readFileSync(
+      join(paths.tasksDir, "t002-second-task", "prompt.md"),
+      "utf-8",
+    );
+    expect(secondPrompt).toContain(
+      `Source: ${planPath} (lines 3-3; origin: planner)`,
+    );
+    expect(secondPrompt).toContain("Shared exact context for later task.");
+    expect(secondPrompt).not.toContain("file hash does not match");
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] First task");
+  });
+
   it("repairs invalid planner line ranges through one subagent response", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
