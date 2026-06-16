@@ -175,6 +175,10 @@ describe("public subagent tools", () => {
 
     registerExtension(pi as never);
 
+    expect(pi.on).toHaveBeenCalledWith(
+      "session_shutdown",
+      expect.any(Function),
+    );
     expect(pi.on).toHaveBeenCalledWith("session_start", expect.any(Function));
     expect(tools.map((tool) => tool.name)).toEqual([
       "Agent",
@@ -262,12 +266,14 @@ describe("public subagent tools", () => {
   });
 
   it("withholds public agent tools from inherited active tools for all subagent types", async () => {
-    const publicAgentTools = [
-      "Agent",
-      "get_subagent_result",
-      "steer_subagent",
-    ];
-    const { pi } = makePi(["read", "bash", ...publicAgentTools, "edit", "explore"]);
+    const publicAgentTools = ["Agent", "get_subagent_result", "steer_subagent"];
+    const { pi } = makePi([
+      "read",
+      "bash",
+      ...publicAgentTools,
+      "edit",
+      "explore",
+    ]);
     const general = makeSession("general");
     const explore = makeSession("explore");
     const review = makeSession("review");

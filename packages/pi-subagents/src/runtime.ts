@@ -140,6 +140,7 @@ export type RunPublicAgentInput = Omit<RunManagedAgentInput, "type"> & {
 type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
   RuntimeTimestamps & {
     runtimeSessionId: number;
+    retired?: boolean;
     session?: PublicAgentSession;
     canSteer?: boolean;
     steeringQueue: string[];
@@ -178,12 +179,17 @@ type Waiter = {
 
 const runtimes = new WeakMap<ExtensionAPI, SubagentRuntime>();
 const runtimeManagerKey = Symbol.for("pi-subagents:manager");
+type RuntimeManager = {
+  runtimes: WeakMap<ExtensionAPI, SubagentRuntime>;
+};
 const publicTypes = new Set<string>(PUBLIC_BUILTIN_TYPES);
 const publicToolNames = new Set([
   "Agent",
   "get_subagent_result",
   "steer_subagent",
 ]);
+const sessionStartReasons = new Set(["startup", "new", "resume", "fork"]);
+const replacementShutdownReasons = new Set(["new", "resume", "fork"]);
 export function withoutPublicAgentTools(names: string[]): string[] {
   return names.filter((name) => !publicToolNames.has(name));
 }
@@ -576,7 +582,7 @@ export class SubagentRuntime {
     } = {},
   ) {
     runtimes.set(pi, this);
-    (globalThis as Record<symbol, unknown>)[runtimeManagerKey] = this;
+    getRuntimeManager().runtimes.set(pi, this);
     this.definitions = createAgentDefinitionRegistry();
     this.#createSession = options.createSession ?? createAgentSession;
     this.publicConfig =
@@ -596,8 +602,43 @@ export class SubagentRuntime {
       });
   }
 
-  beginSession(): void {
+  beginSession(reason = "startup"): void {
+    if (!sessionStartReasons.has(reason)) {
+      return;
+    }
     this.#currentSessionId += 1;
+  }
+
+  handleSessionShutdown(reason?: string): RuntimeSnapshot[] {
+    if (!replacementShutdownReasons.has(reason ?? "")) {
+      return [];
+    }
+    return this.retireCurrentSession(`Session replaced (${reason}).`);
+  }
+
+  retireCurrentSession(reason = "Session replaced."): RuntimeSnapshot[] {
+    const currentRecords = [...this.#records.values()].filter(
+      (record) => record.runtimeSessionId === this.#currentSessionId,
+    );
+    const retired: RuntimeSnapshot[] = [];
+    for (const record of currentRecords) {
+      record.retired = true;
+      record.unsubscribeSession?.();
+      record.unsubscribeSession = undefined;
+      if (!isTerminal(record.status)) {
+        record.session?.abort().catch(() => {});
+        const timestamp = now();
+        record.status = "stopped";
+        record.error = reason;
+        record.completedAt = timestamp;
+        record.updatedAt = timestamp;
+        retired.push(this.#finish(record));
+      } else {
+        this.#waiters.delete(record.id);
+      }
+      this.#records.delete(record.id);
+    }
+    return retired;
   }
 
   queue(input: QueueSubagentInput): RuntimeSnapshot {
@@ -802,10 +843,7 @@ export class SubagentRuntime {
   }
 
   async steer(id: string, message: string): Promise<RuntimeSnapshot> {
-    const record = this.#records.get(id);
-    if (!record) {
-      throw new Error(`Unknown subagent ${id}`);
-    }
+    const record = this.#requireRecord(id);
     if (isTerminal(record.status)) {
       throw new Error(`Cannot steer subagent ${id}; it is ${record.status}`);
     }
@@ -829,11 +867,7 @@ export class SubagentRuntime {
     if (wait) {
       return this.wait(id);
     }
-    const current = this.snapshot(id);
-    if (!current) {
-      throw new Error(`Unknown subagent ${id}`);
-    }
-    return current;
+    return snapshot(this.#requireRecord(id));
   }
 
   wait(id: string): Promise<RuntimeSnapshot> {
@@ -850,7 +884,7 @@ export class SubagentRuntime {
 
   snapshot(id: string): RuntimeSnapshot | undefined {
     const record = this.#records.get(id);
-    return record?.runtimeSessionId === this.#currentSessionId
+    return record && this.#isCurrentRecord(record)
       ? snapshot(record)
       : undefined;
   }
@@ -861,7 +895,7 @@ export class SubagentRuntime {
 
   snapshots(options: { includeNested?: boolean } = {}): RuntimeSnapshot[] {
     return [...this.#records.values()]
-      .filter((record) => record.runtimeSessionId === this.#currentSessionId)
+      .filter((record) => this.#isCurrentRecord(record))
       .filter((record) => options.includeNested || !isNestedOwner(record.owner))
       .map((record) => snapshot(record));
   }
@@ -871,7 +905,7 @@ export class SubagentRuntime {
     input: RunManagedAgentInput,
   ): Promise<RuntimeSnapshot> {
     const abort = () => {
-      if (!isTerminal(record.status)) {
+      if (this.#isCurrentRecord(record) && !isTerminal(record.status)) {
         this.stop(record.id, "Stopped by user.");
       }
     };
@@ -931,7 +965,7 @@ export class SubagentRuntime {
             }),
       };
       const { session } = await this.#createSession(createSessionOptions);
-      if (isTerminal(record.status)) {
+      if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         await this.#disposeSession(session);
         return snapshot(record);
       }
@@ -964,6 +998,9 @@ export class SubagentRuntime {
       record.canSteer = true;
       await this.#flushSteering(record);
       await prompt;
+      if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
+        return snapshot(record);
+      }
       const state = "state" in session ? session.state : undefined;
       if (state?.errorMessage) {
         return this.fail(record.id, state.errorMessage);
@@ -971,7 +1008,7 @@ export class SubagentRuntime {
       const result = session.getLastAssistantText() ?? "";
       return this.complete(record.id, result);
     } catch (error) {
-      if (isTerminal(record.status)) {
+      if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         return snapshot(record);
       }
       return this.fail(record.id, error);
@@ -1013,9 +1050,12 @@ export class SubagentRuntime {
     explicitTools?: string[],
   ): void {
     const getActiveTools = this.pi.getActiveTools?.bind(this.pi);
-    const allowExplore = isExploreEligible(record.type) && !isNestedOwner(record.owner);
+    const allowExplore =
+      isExploreEligible(record.type) && !isNestedOwner(record.owner);
     if (explicitTools) {
-      const activeTools = allowExplore ? [...explicitTools, "explore"] : explicitTools;
+      const activeTools = allowExplore
+        ? [...explicitTools, "explore"]
+        : explicitTools;
       session.setActiveToolsByName(
         normalizeActiveToolNames([...new Set(activeTools)], { allowExplore }),
       );
@@ -1047,7 +1087,11 @@ export class SubagentRuntime {
     if (!session) {
       return;
     }
-    while (record.steeringQueue.length > 0 && !isTerminal(record.status)) {
+    while (
+      record.steeringQueue.length > 0 &&
+      this.#isCurrentRecord(record) &&
+      !isTerminal(record.status)
+    ) {
       const message = record.steeringQueue.shift();
       if (message !== undefined) {
         await session.steer(message);
@@ -1057,10 +1101,16 @@ export class SubagentRuntime {
 
   #requireRecord(id: string): RuntimeRecord {
     const record = this.#records.get(id);
-    if (!record) {
+    if (!record || !this.#isCurrentRecord(record)) {
       throw new Error(`Unknown subagent ${id}`);
     }
     return record;
+  }
+
+  #isCurrentRecord(record: RuntimeRecord): boolean {
+    return (
+      !record.retired && record.runtimeSessionId === this.#currentSessionId
+    );
   }
 
   #ensureNotTerminal(record: RuntimeRecord): void {
@@ -1080,10 +1130,42 @@ export class SubagentRuntime {
   }
 }
 
+function getRuntimeManager(): RuntimeManager {
+  const globalScope = globalThis as Record<symbol, unknown>;
+  const existing = globalScope[runtimeManagerKey];
+  if (isRuntimeManager(existing)) {
+    return existing;
+  }
+  const manager: RuntimeManager = { runtimes: new WeakMap() };
+  if (isRuntimeInstance(existing)) {
+    manager.runtimes.set(existing.pi, existing);
+  }
+  globalScope[runtimeManagerKey] = manager;
+  return manager;
+}
+
+function isRuntimeManager(value: unknown): value is RuntimeManager {
+  return (
+    isObject(value) &&
+    "runtimes" in value &&
+    value.runtimes instanceof WeakMap
+  );
+}
+
+function isRuntimeInstance(value: unknown): value is SubagentRuntime {
+  return isObject(value) && "pi" in value;
+}
+
 export function getSubagentRuntime(pi: ExtensionAPI): SubagentRuntime {
   const existing = runtimes.get(pi);
   if (existing) {
     return existing;
+  }
+  const runtimeManager = getRuntimeManager();
+  const managed = runtimeManager.runtimes.get(pi);
+  if (managed) {
+    runtimes.set(pi, managed);
+    return managed;
   }
   const runtime = new SubagentRuntime(pi);
   runtimes.set(pi, runtime);

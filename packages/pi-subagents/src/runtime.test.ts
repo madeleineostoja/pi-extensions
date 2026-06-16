@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getSubagentRuntime, SubagentRuntime } from "./runtime.js";
 
 type Message = {
@@ -17,12 +17,86 @@ function fakePi() {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function makeSession(result = "done") {
+  const extensionRunner = {
+    hasHandlers: vi.fn(() => false),
+    emit: vi.fn(async () => undefined),
+  } as never;
+  return {
+    bindExtensions: vi.fn(async () => undefined),
+    prompt: vi.fn(async () => undefined as unknown),
+    steer: vi.fn(async () => undefined),
+    abort: vi.fn(async () => undefined),
+    dispose: vi.fn(),
+    getLastAssistantText: vi.fn(() => result),
+    setActiveToolsByName: vi.fn(),
+    extensionRunner,
+  };
+}
+
+function makeCtx() {
+  return {
+    cwd: "/workspace",
+    model: { provider: "ctx", id: "default" },
+    modelRegistry: {
+      find: vi.fn((provider: string, modelId: string) => ({
+        provider,
+        id: modelId,
+      })),
+    },
+  };
+}
+
 describe("SubagentRuntime", () => {
   it("returns a singleton runtime per pi instance", () => {
     const { pi } = fakePi();
 
     expect(getSubagentRuntime(pi as never)).toBe(
       getSubagentRuntime(pi as never),
+    );
+  });
+
+  it("reuses the existing runtime across module reloads", async () => {
+    const { pi } = fakePi();
+    const runtime = getSubagentRuntime(pi as never);
+    const queued = runtime.queue({
+      owner: "owner",
+      type: "General",
+      description: "survives reload",
+      cwd: "/workspace",
+    });
+
+    runtime.handleSessionShutdown("reload");
+    runtime.beginSession("reload");
+    vi.resetModules();
+    const reloaded = await import("./runtime.js");
+    const afterReload = reloaded.getSubagentRuntime(pi as never);
+    const queuedAfterReload = afterReload.queue({
+      owner: "owner",
+      type: "General",
+      description: "survives next reload",
+      cwd: "/workspace",
+    });
+    vi.resetModules();
+    const reloadedAgain = await import("./runtime.js");
+    const afterSecondReload = reloadedAgain.getSubagentRuntime(pi as never);
+
+    expect(afterReload).toBe(runtime);
+    expect(afterReload.snapshot(queued.id)).toEqual(queued);
+    expect(afterSecondReload).toBe(runtime);
+    expect(afterSecondReload.snapshot(queued.id)).toEqual(queued);
+    expect(afterSecondReload.snapshot(queuedAfterReload.id)).toEqual(
+      queuedAfterReload,
     );
   });
 
@@ -116,6 +190,135 @@ describe("SubagentRuntime", () => {
       status: "stopped",
       error: "cancelled",
     });
+  });
+
+  it("rejects access to previous-session records", async () => {
+    const { pi } = fakePi();
+    const runtime = new SubagentRuntime(pi as never);
+    const previous = runtime.queue({
+      owner: "owner",
+      type: "General",
+      description: "previous",
+      cwd: "/workspace",
+    });
+
+    runtime.beginSession("new");
+
+    expect(runtime.snapshot(previous.id)).toBeUndefined();
+    expect(runtime.snapshots()).toEqual([]);
+    expect(() => runtime.stop(previous.id)).toThrow(
+      `Unknown subagent ${previous.id}`,
+    );
+    expect(() => runtime.wait(previous.id)).toThrow(
+      `Unknown subagent ${previous.id}`,
+    );
+    await expect(runtime.result(previous.id, false)).rejects.toThrow(
+      `Unknown subagent ${previous.id}`,
+    );
+    await expect(runtime.steer(previous.id, "hello")).rejects.toThrow(
+      `Unknown subagent ${previous.id}`,
+    );
+  });
+
+  it("retirement removes current records, aborts live sessions, and resolves waiters", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession("late result");
+    session.prompt = vi.fn(() => promptDone.promise as Promise<unknown>);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session: session as never })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      description: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    const waiter = runtime.wait(started.id);
+
+    const retired = runtime.handleSessionShutdown("resume");
+
+    expect(retired).toHaveLength(1);
+    expect(session.abort).toHaveBeenCalledTimes(1);
+    expect(runtime.snapshot(started.id)).toBeUndefined();
+    expect(runtime.snapshots()).toEqual([]);
+    await expect(waiter).resolves.toMatchObject({
+      id: started.id,
+      status: "stopped",
+      error: "Session replaced (resume).",
+    });
+    expect(() => runtime.wait(started.id)).toThrow(
+      `Unknown subagent ${started.id}`,
+    );
+
+    runtime.beginSession("resume");
+    expect(runtime.snapshots()).toEqual([]);
+    await expect(runtime.result(started.id, false)).rejects.toThrow(
+      `Unknown subagent ${started.id}`,
+    );
+  });
+
+  it("retires records for new and fork shutdowns but not reload", () => {
+    const { pi } = fakePi();
+    const runtime = new SubagentRuntime(pi as never);
+    const keep = runtime.queue({
+      owner: "owner",
+      type: "General",
+      description: "keep on reload",
+      cwd: "/workspace",
+    });
+
+    expect(runtime.handleSessionShutdown("reload")).toEqual([]);
+    runtime.beginSession("reload");
+    expect(runtime.snapshot(keep.id)).toEqual(keep);
+
+    expect(runtime.handleSessionShutdown("new")).toHaveLength(1);
+    expect(runtime.snapshot(keep.id)).toBeUndefined();
+    runtime.beginSession("new");
+    const forked = runtime.queue({
+      owner: "owner",
+      type: "General",
+      description: "fork replacement",
+      cwd: "/workspace",
+    });
+    expect(runtime.handleSessionShutdown("fork")).toHaveLength(1);
+    runtime.beginSession("fork");
+    expect(runtime.snapshot(forked.id)).toBeUndefined();
+  });
+
+  it("ignores late prompt rejection after retirement without resurrecting or refailing", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession("late result");
+    session.prompt = vi.fn(() => promptDone.promise as Promise<unknown>);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session: session as never })),
+    });
+    const run = runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      description: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "foreground",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    const started = runtime.snapshots()[0];
+    const waiter = runtime.wait(started.id);
+
+    runtime.handleSessionShutdown("resume");
+    const stopped = await waiter;
+    promptDone.reject(new Error("late child failure"));
+
+    await expect(run).resolves.toEqual(stopped);
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+    expect(runtime.snapshot(started.id)).toBeUndefined();
+    await expect(runtime.result(started.id, false)).rejects.toThrow(
+      `Unknown subagent ${started.id}`,
+    );
   });
 
   it("uses public config defaults for model and thinking metadata", () => {

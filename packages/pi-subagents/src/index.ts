@@ -82,8 +82,11 @@ function toolResult(snapshot: RuntimeSnapshot) {
 
 export default function (pi: ExtensionAPI): void {
   const runtime = getSubagentRuntime(pi);
-  pi.on("session_start", () => {
-    runtime.beginSession();
+  pi.on("session_shutdown", (event: { reason?: string } = {}) => {
+    runtime.handleSessionShutdown(event.reason);
+  });
+  pi.on("session_start", (event: { reason?: string } = {}) => {
+    runtime.beginSession(event.reason);
   });
 
   pi.registerCommand("agents", {
