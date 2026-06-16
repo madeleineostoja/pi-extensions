@@ -4058,6 +4058,7 @@ async function runTaskWorker(args: {
           priorRequiredChanges: priorReviewRequiredChanges,
           baseSha: worktreePath ? baseSha : undefined,
           alreadySatisfiedDiscrepancy,
+          sourceMaterial: sourceMaterialPacket?.section,
         });
       }
 
@@ -4114,6 +4115,7 @@ async function runTaskWorker(args: {
         accumulatedDiff,
         outOfScopeTasks,
         priorRequiredChanges: priorReviewRequiredChanges,
+        sourceMaterial: sourceMaterialPacket?.section,
       });
     } else {
       const message =

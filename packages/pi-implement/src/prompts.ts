@@ -66,6 +66,13 @@ function buildSiblingTasksSection(outOfScopeTasks?: string[]): string {
   return `\n## Out-of-Scope Sibling Tasks\n\nThe following tasks are not selected. Use them only to identify scope creep in the candidate diff.\n\n${outOfScopeTasks.join("\n")}\n`;
 }
 
+function formatSourceMaterialSection(sourceMaterial?: string): string {
+  const material = sourceMaterial?.trim()
+    ? sourceMaterial.trim()
+    : "No referenced source material was resolved for this task.";
+  return `## Referenced Source Material\n\n${material}`;
+}
+
 export function buildImplementerPrompt(args: {
   compiledContract: string;
   worktreePath: string;
@@ -99,17 +106,12 @@ Make the necessary code, documentation, and test changes for the selected task. 
 If useful, call the injected \`explore\` tool for broad map-building or targeted context checks before direct reads/searches. Treat exploration as guidance only: verify relevant findings yourself and do not expand scope based on exploration results.
 
 If blocked, leave the repository in a safe state and explain the blocker in the result block.`;
-  const sourceMaterial = args.sourceMaterial?.trim()
-    ? args.sourceMaterial.trim()
-    : "No referenced source material was resolved for this task.";
   return `${intro}${retry}
 ## Compiled Task Contract
 
 ${args.compiledContract}
 
-## Referenced Source Material
-
-${sourceMaterial}
+${formatSourceMaterialSection(args.sourceMaterial)}
 
 End with exactly one <pi-implement-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
 
@@ -157,6 +159,7 @@ export function buildReviewerPrompt(args: {
   priorRequiredChanges?: string[];
   baseSha?: string;
   alreadySatisfiedDiscrepancy?: boolean;
+  sourceMaterial?: string;
 }): string {
   const siblingSection = buildSiblingTasksSection(args.outOfScopeTasks);
   const discrepancySection = args.alreadySatisfiedDiscrepancy
@@ -207,6 +210,10 @@ You are a read-only reviewer and may be unable to install dependencies, run writ
 
 ${reviewModeSection}
 ${discrepancySection}
+## Task Packet Fidelity
+
+Use the compiled task contract and referenced source material below to verify scope and exact-source fidelity. The referenced material is the same selected-task packet material given to the implementer, including the raw selected-task anchor and explicit task-linked files when resolved.
+
 ## Scope Review Rules
 
 - Small prerequisite changes needed for the selected task may be approved.
@@ -216,6 +223,8 @@ ${discrepancySection}
 ## Compiled Task Contract
 
 ${args.compiledContract}
+
+${formatSourceMaterialSection(args.sourceMaterial)}
 
 ## Implementer Summary
 
@@ -254,6 +263,7 @@ export function buildAlreadySatisfiedReviewerPrompt(args: {
   accumulatedDiff?: string;
   outOfScopeTasks?: string[];
   priorRequiredChanges?: string[];
+  sourceMaterial?: string;
 }): string {
   const siblingSection = buildSiblingTasksSection(args.outOfScopeTasks);
   const diffSection =
@@ -271,7 +281,7 @@ Run non-interactively. No human will see your intermediate messages or answer qu
 
 There is no staged candidate diff for this task. The implementer claims the selected task is already satisfied by the current repository state. Your job is to verify that claim.
 
-The selected task's required scope is defined in the compiled task contract. Approve when the compiled contract is satisfied now. Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task.
+The selected task's required scope is defined in the compiled task contract and referenced source material. Approve when the compiled contract is satisfied now. Use the referenced material to verify exact-source fidelity, including the raw selected-task anchor and explicit task-linked files when resolved. Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task.
 
 Inspect the current repository state in the assigned worktree:
 
@@ -286,6 +296,8 @@ ${reviewModeSection}${siblingSection}
 ## Compiled Task Contract
 
 ${args.compiledContract}
+
+${formatSourceMaterialSection(args.sourceMaterial)}
 
 ## Implementer Summary
 

@@ -279,14 +279,37 @@ describe("buildReviewerPrompt", () => {
     );
   });
 
-  it("does not include referenced plan material in the reviewer prompt", () => {
+  it("includes referenced source material in the reviewer prompt", () => {
+    const sourceMaterial = `### Selected Task Source Anchor
+
+Source: /tmp/plan.md (lines 5-7; origin: task-anchor)
+Reason: Selected task checkbox line and task block.
+
+~~~text
+- [ ] Selected task
+  Keep this detail verbatim.
+~~~
+
+### auth.md
+
+Source: /tmp/auth.md (full file; origin: task-link)
+Reason: Explicit local Markdown material linked from the selected task block.
+
+~~~text
+Raw auth requirement.
+~~~`;
     const prompt = buildReviewerPrompt({
       compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       outOfScopeTasks: ["- [ ] Sibling task A"],
+      sourceMaterial,
     });
 
+    expect(prompt).toContain("## Referenced Source Material");
+    expect(prompt).toContain(sourceMaterial);
+    expect(prompt).toContain("### Selected Task Source Anchor");
+    expect(prompt).toContain("### auth.md");
     expect(prompt).not.toContain("## Referenced Plan Material");
     expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(prompt).toContain("- [ ] Sibling task A");
@@ -526,15 +549,38 @@ describe("buildAlreadySatisfiedReviewerPrompt", () => {
     expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
   });
 
-  it("does not include referenced plan material in the already-satisfied reviewer prompt", () => {
+  it("includes referenced source material in the already-satisfied reviewer prompt", () => {
+    const sourceMaterial = `### Selected Task Source Anchor
+
+Source: /tmp/plan.md (lines 5-7; origin: task-anchor)
+Reason: Selected task checkbox line and task block.
+
+~~~text
+- [ ] Selected task
+  Keep this detail verbatim.
+~~~
+
+### auth.md
+
+Source: /tmp/auth.md (full file; origin: task-link)
+Reason: Explicit local Markdown material linked from the selected task block.
+
+~~~text
+Raw auth requirement.
+~~~`;
     const prompt = buildAlreadySatisfiedReviewerPrompt({
       compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
       implementer: IMPLEMENTER_RESULT,
       headSha: "abc1234",
       outOfScopeTasks: ["- [ ] Sibling task A"],
+      sourceMaterial,
     });
 
+    expect(prompt).toContain("## Referenced Source Material");
+    expect(prompt).toContain(sourceMaterial);
+    expect(prompt).toContain("### Selected Task Source Anchor");
+    expect(prompt).toContain("### auth.md");
     expect(prompt).not.toContain("## Referenced Plan Material");
     expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(prompt).toContain("- [ ] Sibling task A");

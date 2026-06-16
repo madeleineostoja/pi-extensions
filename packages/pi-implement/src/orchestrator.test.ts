@@ -772,8 +772,10 @@ describe("runImplementation", () => {
     expect(implPrompt).not.toContain("## Out-of-Scope Sibling Tasks");
     expect(implPrompt).not.toContain("Task two");
 
-    // Reviewer prompt uses compiled contract, not raw referenced material
+    // Reviewer prompt uses selected packet material, not plan-material wording
     expect(reviewerPrompt).toContain("## Compiled Task Contract");
+    expect(reviewerPrompt).toContain("## Referenced Source Material");
+    expect(reviewerPrompt).toContain("# Subplan");
     expect(reviewerPrompt).not.toContain("## Referenced Plan Material");
     expect(reviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(reviewerPrompt).toContain("- Task two");
@@ -913,10 +915,14 @@ describe("runImplementation", () => {
       "Use referenced material only to satisfy the compiled contract",
     );
 
-    // Task 1 reviewer must NOT see sibling deliverables from shared.md
+    // Task 1 reviewer sees the same selected referenced material as the implementer
     expect(task1ReviewerPrompt).toContain("## Compiled Task Contract");
+    expect(task1ReviewerPrompt).toContain("## Referenced Source Material");
     expect(task1ReviewerPrompt).not.toContain("## Referenced Plan Material");
-    expect(task1ReviewerPrompt).not.toContain("Must migrate injected explore");
+    expect(task1ReviewerPrompt).toContain("Must migrate injected explore");
+    expect(task1ReviewerPrompt).toContain(
+      "Use the compiled task contract and referenced source material below to verify scope and exact-source fidelity",
+    );
     expect(task1ReviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(task1ReviewerPrompt).toContain("- Migrate injected explore");
 
@@ -4013,6 +4019,9 @@ describe("runImplementation", () => {
     const reviewerPrompt = subagents.spawns[1]?.prompt ?? "";
     expect(reviewerPrompt).toContain("There is no staged candidate diff");
     expect(reviewerPrompt).toContain("Current HEAD:");
+    expect(reviewerPrompt).toContain("## Referenced Source Material");
+    expect(reviewerPrompt).toContain("### Selected Task Source Anchor");
+    expect(reviewerPrompt).toContain("- [ ] Do it");
 
     const taskJson = readTaskJson(paths, "t001-do-it");
     expect(taskJson?.status).toBe("satisfied");
@@ -9383,7 +9392,7 @@ describe("runImplementation", () => {
     expect(started?.artifactPath).toContain("rework-prompt-1.md");
   });
 
-  it("uses compiled contracts when execution manifest is present; implementer prompt omits raw referenced material and sibling deliverables", async () => {
+  it("uses compiled contracts and selected referenced material when execution manifest is present", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-imp-"));
     const planPath = join(dir, "plan.md");
     const subPath = join(dir, "sub.md");
@@ -9501,12 +9510,14 @@ describe("runImplementation", () => {
     // Sibling deliverable is listed as out-of-scope in the compiled contract
     expect(implPrompt).toContain("Task two deliverable: do other thing.");
 
-    // Reviewer prompt should use compiled contract and include sibling scope
+    // Reviewer prompt should use the same selected packet material and include sibling scope
     expect(reviewerPrompt).toContain("## Compiled Task Contract");
     expect(reviewerPrompt).toContain("Task one criterion: do it.");
+    expect(reviewerPrompt).toContain("## Referenced Source Material");
+    expect(reviewerPrompt).toContain("# Subplan");
+    expect(reviewerPrompt).toContain("Acceptance for task two");
     expect(reviewerPrompt).toContain("## Out-of-Scope Sibling Tasks");
     expect(reviewerPrompt).toContain("- Task two");
     expect(reviewerPrompt).not.toContain("## Referenced Plan Material");
-    expect(reviewerPrompt).not.toContain("# Subplan");
   });
 });
