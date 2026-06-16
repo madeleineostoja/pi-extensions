@@ -162,45 +162,37 @@ describe("public subagent tools", () => {
     ]);
   });
 
-  it("handles pi-implement RPC spawns through managed internal sessions", async () => {
-    const { pi, emitted } = makePi(["read", "bash", "Agent", "edit"]);
+  it("runs pi-implement managed background sessions and waits for completion", async () => {
+    const { pi } = makePi(["read", "bash", "Agent", "edit"]);
+    const promptDone = deferred<void>();
     const { session } = makeSession("implemented");
+    session.prompt = vi.fn(() => promptDone.promise);
     const createSession = vi.fn(async () => ({ session }));
-    new SubagentRuntime(pi as never, { createSession });
-    registerExtension(pi as never);
-    const sessionStart = (pi.on as any).mock.calls.find(
-      ([event]: [string]) => event === "session_start",
-    )?.[1];
-    sessionStart?.({ type: "session_start", reason: "startup" }, makeCtx());
+    const runtime = new SubagentRuntime(pi as never, { createSession });
 
-    pi.events.emit("subagents:rpc:spawn", {
-      requestId: "request-1",
+    const started = await runtime.runManagedAgent({
+      owner: { kind: "internal", name: "pi-implement" },
       type: "general-purpose",
       prompt: "implement",
-      options: {
-        description: "implement task",
-        isBackground: true,
-        cwd: "/task-worktree",
-        model: "p/m",
-      },
+      description: "implement task",
+      cwd: "/task-worktree",
+      model: "p/m",
+      mode: "background",
+      ctx: makeCtx() as never,
     });
 
-    await vi.waitFor(() =>
-      expect(emitted).toContainEqual({
-        event: "subagents:rpc:spawn:reply:request-1",
-        payload: { success: true, data: { id: "subagent-1" } },
-      }),
-    );
-    await vi.waitFor(() =>
-      expect(emitted).toContainEqual({
-        event: "subagents:completed",
-        payload: {
-          id: "subagent-1",
-          status: "completed",
-          result: "implemented",
-        },
-      }),
-    );
+    expect(started).toMatchObject({
+      id: "subagent-1",
+      status: "running",
+      owner: { kind: "internal", name: "pi-implement" },
+    });
+    const joined = runtime.wait(started.id);
+    promptDone.resolve();
+    await expect(joined).resolves.toMatchObject({
+      id: started.id,
+      status: "completed",
+      result: "implemented",
+    });
     expect(createSession).toHaveBeenCalledWith(
       expect.objectContaining({
         cwd: "/task-worktree",
