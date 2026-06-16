@@ -5,7 +5,11 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { createAgentSession } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
@@ -20,7 +24,13 @@ import {
   type ResolvedPublicSubagentsConfig,
   type ThinkingLevel,
 } from "./config.js";
+import {
+  PUBLIC_AGENT_PROFILES,
+  type AgentProfile,
+  type PromptMode,
+} from "./agent-profiles.js";
 export type { ThinkingLevel } from "./config.js";
+export type { PromptMode } from "./agent-profiles.js";
 
 export type SubagentRuntimeStatus =
   | "queued"
@@ -87,6 +97,13 @@ export type RuntimeSnapshot = {
   error?: string;
 };
 
+export type RuntimeInspection = {
+  snapshot: RuntimeSnapshot;
+  messages: readonly unknown[];
+};
+
+export type RuntimeSubscriptionListener = () => void;
+
 export type QueueSubagentInput = {
   owner: RuntimeOwner;
   type: string;
@@ -119,6 +136,8 @@ export type RunManagedAgentInput = {
   owner?: RuntimeOwner;
   tools?: string[];
   excludeTools?: string[];
+  systemPrompt?: string;
+  systemPromptMode?: PromptMode;
 };
 
 export type RunPublicAgentInput = Omit<RunManagedAgentInput, "type"> & {
@@ -128,34 +147,17 @@ export type RunPublicAgentInput = Omit<RunManagedAgentInput, "type"> & {
 type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
   RuntimeTimestamps & {
     runtimeSessionId: number;
-    session?: PublicAgentSession;
+    retired?: boolean;
+    session?: AgentSession;
     canSteer?: boolean;
     steeringQueue: string[];
     health?: RuntimeHealth;
     unsubscribeSession?: () => void;
+    inspectListeners: Set<RuntimeSubscriptionListener>;
   };
 
-type PublicAgentSession = Pick<
-  AgentSession,
-  | "bindExtensions"
-  | "prompt"
-  | "steer"
-  | "abort"
-  | "dispose"
-  | "getLastAssistantText"
-  | "setActiveToolsByName"
-  | "extensionRunner"
-> & {
-  readonly state?: { readonly errorMessage?: string };
-  readonly messages?: unknown[];
-  readonly sessionId?: string;
-  readonly sessionFile?: string;
-  subscribe?: (listener: (event: unknown) => void) => () => void;
-  getAllTools?: () => Array<{ name: string }>;
-};
-
 type CreateSessionOptions = Parameters<typeof createAgentSession>[0];
-type CreateSessionResult = { session: PublicAgentSession };
+type CreateSessionResult = { session: AgentSession };
 type CreateSession = (
   options?: CreateSessionOptions,
 ) => Promise<CreateSessionResult>;
@@ -166,14 +168,37 @@ type Waiter = {
 
 const runtimes = new WeakMap<ExtensionAPI, SubagentRuntime>();
 const runtimeManagerKey = Symbol.for("pi-subagents:manager");
+type RuntimeManager = {
+  runtimes: WeakMap<ExtensionAPI, SubagentRuntime>;
+};
 const publicTypes = new Set<string>(PUBLIC_BUILTIN_TYPES);
 const publicToolNames = new Set([
   "Agent",
   "get_subagent_result",
   "steer_subagent",
 ]);
-const readOnlyToolNames = ["read", "bash", "grep", "find", "ls"];
-const EXPLORE_TOOL_TIMEOUT_MS = 120_000;
+const sessionStartReasons = new Set(["startup", "new", "resume", "fork"]);
+const replacementShutdownReasons = new Set(["new", "resume", "fork"]);
+export function withoutPublicAgentTools(names: string[]): string[] {
+  return names.filter((name) => !publicToolNames.has(name));
+}
+
+function normalizeActiveToolNames(
+  names: string[],
+  options: { allowExplore: boolean },
+): string[] {
+  return withoutPublicAgentTools(names).filter(
+    (name) => options.allowExplore || name !== "explore",
+  );
+}
+
+const readOnlyToolNames = normalizeActiveToolNames(
+  ["read", "bash", "grep", "find", "ls"],
+  { allowExplore: false },
+);
+const defaultSystemPromptMode: PromptMode = "append";
+const EXPLORE_TOOL_INACTIVITY_MS = 120_000;
+const EXPLORE_TOOL_INACTIVITY_POLL_MS = 10_000;
 const EXPLORE_TOOL_MAX_RESULT_CHARS = 50_000;
 const exploreEligibleTypes = new Set([
   "General",
@@ -190,12 +215,34 @@ function now(): string {
   return new Date().toISOString();
 }
 
+function timestampMs(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+function latestTimestamp(
+  current: string | undefined,
+  candidate: string | undefined,
+): string | undefined {
+  const currentMs = timestampMs(current);
+  const candidateMs = timestampMs(candidate);
+  if (candidateMs === undefined) {
+    return current;
+  }
+  if (currentMs === undefined || candidateMs > currentMs) {
+    return candidate;
+  }
+  return current;
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function snapshot(record: RuntimeRecord): RuntimeSnapshot {
-  updateRecordHealth(record);
+function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
   return {
     id: record.id,
     status: record.status,
@@ -291,7 +338,7 @@ function messageText(message: unknown): string | undefined {
     .join("\n");
 }
 
-function updateRecordHealth(record: RuntimeRecord): void {
+function refreshHealth(record: RuntimeRecord): void {
   const session = record.session;
   if (!session) {
     if (record.result !== undefined) {
@@ -302,7 +349,7 @@ function updateRecordHealth(record: RuntimeRecord): void {
     }
     return;
   }
-  const messages = Array.isArray(session.messages) ? session.messages : [];
+  const messages = session.messages;
   const assistantMessages = messages.filter(
     (message) => isObject(message) && message.role === "assistant",
   );
@@ -319,7 +366,10 @@ function updateRecordHealth(record: RuntimeRecord): void {
       continue;
     }
     if (typeof message.timestamp === "number") {
-      lastActivity = new Date(message.timestamp).toISOString();
+      lastActivity = latestTimestamp(
+        lastActivity,
+        new Date(message.timestamp).toISOString(),
+      );
     }
     if (message.role === "assistant") {
       const usage = usageTokens(message.usage);
@@ -344,19 +394,16 @@ function updateRecordHealth(record: RuntimeRecord): void {
       activeTool = message.toolName;
     }
   }
-  const sessionId =
-    typeof session.sessionId === "string" ? session.sessionId : undefined;
-  const sessionFile =
-    typeof session.sessionFile === "string" ? session.sessionFile : undefined;
+  const { sessionId, sessionFile } = session;
   record.health = {
     ...record.health,
     turns: assistantMessages.length,
     toolUses: toolUses || toolResults.length || undefined,
     tokensTotal: tokensTotal || undefined,
-    activeTool,
-    lastActivity,
+    activeTool: activeTool ?? record.health?.activeTool,
+    lastActivity: latestTimestamp(record.health?.lastActivity, lastActivity),
     lastAssistantText:
-      lastAssistantText ?? textPreview(session.getLastAssistantText?.()),
+      lastAssistantText ?? textPreview(session.getLastAssistantText()),
     resultPreview:
       record.result === undefined
         ? record.health?.resultPreview
@@ -369,6 +416,10 @@ function updateRecordHealth(record: RuntimeRecord): void {
 
 function isPublicBuiltinType(type: string): type is PublicBuiltinType {
   return publicTypes.has(type);
+}
+
+function publicAgentProfile(type: string): AgentProfile | undefined {
+  return isPublicBuiltinType(type) ? PUBLIC_AGENT_PROFILES[type] : undefined;
 }
 
 function isNestedOwner(
@@ -393,6 +444,37 @@ function splitModelRef(modelRef: string): {
     provider: modelRef.slice(0, slash),
     modelId: modelRef.slice(slash + 1),
   };
+}
+
+function resolveSystemPromptInput(
+  input: RunManagedAgentInput,
+): { prompt: string; mode: PromptMode } | undefined {
+  const profile = publicAgentProfile(input.type);
+  const prompt = input.systemPrompt ?? profile?.systemPrompt;
+  if (prompt === undefined) {
+    return undefined;
+  }
+  return {
+    prompt,
+    mode:
+      input.systemPromptMode ?? profile?.promptMode ?? defaultSystemPromptMode,
+  };
+}
+
+async function createPromptResourceLoader(
+  cwd: string,
+  promptInput: { prompt: string; mode: PromptMode },
+): Promise<{ agentDir: string; resourceLoader: DefaultResourceLoader }> {
+  const agentDir = getAgentDir();
+  const resourceLoader = new DefaultResourceLoader({
+    cwd,
+    agentDir,
+    ...(promptInput.mode === "replace"
+      ? { systemPrompt: promptInput.prompt }
+      : { appendSystemPrompt: [promptInput.prompt] }),
+  });
+  await resourceLoader.reload();
+  return { agentDir, resourceLoader };
 }
 
 function resolveModelRef(
@@ -512,7 +594,7 @@ export class SubagentRuntime {
     } = {},
   ) {
     runtimes.set(pi, this);
-    (globalThis as Record<symbol, unknown>)[runtimeManagerKey] = this;
+    getRuntimeManager().runtimes.set(pi, this);
     this.definitions = createAgentDefinitionRegistry();
     this.#createSession = options.createSession ?? createAgentSession;
     this.publicConfig =
@@ -532,8 +614,54 @@ export class SubagentRuntime {
       });
   }
 
-  beginSession(): void {
+  beginSession(reason = "startup"): void {
+    if (!sessionStartReasons.has(reason)) {
+      return;
+    }
     this.#currentSessionId += 1;
+  }
+
+  handleSessionShutdown(reason?: string): RuntimeSnapshot[] {
+    if (!replacementShutdownReasons.has(reason ?? "")) {
+      return [];
+    }
+    return this.retireCurrentSession(`Session replaced (${reason}).`);
+  }
+
+  retireCurrentSession(reason = "Session replaced."): RuntimeSnapshot[] {
+    const currentRecords = [...this.#records.values()].filter(
+      (record) => record.runtimeSessionId === this.#currentSessionId,
+    );
+    const retired: RuntimeSnapshot[] = [];
+    for (const record of currentRecords) {
+      record.unsubscribeSession?.();
+      record.unsubscribeSession = undefined;
+      if (!isTerminal(record.status)) {
+        record.session?.abort().catch(() => {});
+        const timestamp = now();
+        record.status = "stopped";
+        record.error = reason;
+        record.completedAt = timestamp;
+        record.updatedAt = timestamp;
+        refreshHealth(record);
+        record.retired = true;
+        retired.push(
+          this.#finish(record, {
+            allowRetiredNotification: true,
+            clearInspectListeners: true,
+          }),
+        );
+      } else {
+        record.retired = true;
+        this.#notifyInspectListeners(record, {
+          allowRetired: true,
+          clear: true,
+        });
+        this.#waiters.delete(record.id);
+      }
+      this.#records.delete(record.id);
+    }
+    return retired;
   }
 
   queue(input: QueueSubagentInput): RuntimeSnapshot {
@@ -559,9 +687,10 @@ export class SubagentRuntime {
       queuedAt: timestamp,
       updatedAt: timestamp,
       steeringQueue: [],
+      inspectListeners: new Set(),
     };
     this.#records.set(id, record);
-    return snapshot(record);
+    return projectSnapshot(record);
   }
 
   async runPublicAgent(input: RunPublicAgentInput): Promise<RuntimeSnapshot> {
@@ -594,7 +723,7 @@ export class SubagentRuntime {
     const running = this.#runRecord(record, input);
     if (input.mode === "background") {
       void running;
-      return snapshot(record);
+      return projectSnapshot(record);
     }
     return running;
   }
@@ -651,7 +780,7 @@ export class SubagentRuntime {
 
     const timeout = new AbortController();
     const relay = () => timeout.abort();
-    const timer = setTimeout(() => timeout.abort(), EXPLORE_TOOL_TIMEOUT_MS);
+    let inactivityTimer: ReturnType<typeof setInterval> | undefined;
     if (signal?.aborted) {
       timeout.abort();
     } else {
@@ -683,10 +812,41 @@ export class SubagentRuntime {
               }
             : { kind: "nested", parentId: parent.id, tool: "explore" },
       });
+      let lastObservedActivityMs: number | undefined;
+      const updateActivityBaseline = (snapshot: RuntimeSnapshot) => {
+        const activityMs = timestampMs(snapshot.health?.lastActivity);
+        if (activityMs !== undefined) {
+          lastObservedActivityMs = Math.max(
+            lastObservedActivityMs ?? activityMs,
+            activityMs,
+          );
+          return;
+        }
+        if (lastObservedActivityMs === undefined) {
+          lastObservedActivityMs =
+            timestampMs(snapshot.timestamps.startedAt) ??
+            timestampMs(snapshot.timestamps.queuedAt);
+        }
+      };
+      updateActivityBaseline(started);
+      inactivityTimer = setInterval(() => {
+        if (timeout.signal.aborted) {
+          return;
+        }
+        updateActivityBaseline(this.snapshot(started.id) ?? started);
+        if (
+          lastObservedActivityMs !== undefined &&
+          Date.now() - lastObservedActivityMs > EXPLORE_TOOL_INACTIVITY_MS
+        ) {
+          timeout.abort();
+        }
+      }, EXPLORE_TOOL_INACTIVITY_POLL_MS);
       const finalSnapshot = await this.wait(started.id);
       return exploreToolResult(finalSnapshot);
     } finally {
-      clearTimeout(timer);
+      if (inactivityTimer !== undefined) {
+        clearInterval(inactivityTimer);
+      }
       signal?.removeEventListener("abort", relay);
     }
   }
@@ -700,7 +860,7 @@ export class SubagentRuntime {
     record.status = "running";
     record.startedAt = timestamp;
     record.updatedAt = timestamp;
-    return snapshot(record);
+    return projectSnapshot(record);
   }
 
   complete(id: string, result: unknown): RuntimeSnapshot {
@@ -711,6 +871,7 @@ export class SubagentRuntime {
     record.result = result;
     record.completedAt = timestamp;
     record.updatedAt = timestamp;
+    refreshHealth(record);
     return this.#finish(record);
   }
 
@@ -722,6 +883,7 @@ export class SubagentRuntime {
     record.error = errorText(error);
     record.completedAt = timestamp;
     record.updatedAt = timestamp;
+    refreshHealth(record);
     return this.#finish(record);
   }
 
@@ -734,14 +896,12 @@ export class SubagentRuntime {
     record.error = error;
     record.completedAt = timestamp;
     record.updatedAt = timestamp;
+    refreshHealth(record);
     return this.#finish(record);
   }
 
   async steer(id: string, message: string): Promise<RuntimeSnapshot> {
-    const record = this.#records.get(id);
-    if (!record) {
-      throw new Error(`Unknown subagent ${id}`);
-    }
+    const record = this.#requireRecord(id);
     if (isTerminal(record.status)) {
       throw new Error(`Cannot steer subagent ${id}; it is ${record.status}`);
     }
@@ -758,24 +918,24 @@ export class SubagentRuntime {
       await record.session.steer(trimmed);
     }
     record.updatedAt = now();
-    return snapshot(record);
+    refreshHealth(record);
+    return projectSnapshot(record);
   }
 
   async result(id: string, wait: boolean): Promise<RuntimeSnapshot> {
     if (wait) {
       return this.wait(id);
     }
-    const current = this.snapshot(id);
-    if (!current) {
-      throw new Error(`Unknown subagent ${id}`);
-    }
-    return current;
+    const record = this.#requireRecord(id);
+    refreshHealth(record);
+    return projectSnapshot(record);
   }
 
   wait(id: string): Promise<RuntimeSnapshot> {
     const record = this.#requireRecord(id);
     if (isTerminal(record.status)) {
-      return Promise.resolve(snapshot(record));
+      refreshHealth(record);
+      return Promise.resolve(projectSnapshot(record));
     }
     return new Promise((resolve) => {
       const waiters = this.#waiters.get(id) ?? [];
@@ -786,20 +946,44 @@ export class SubagentRuntime {
 
   snapshot(id: string): RuntimeSnapshot | undefined {
     const record = this.#records.get(id);
-    return record?.runtimeSessionId === this.#currentSessionId
-      ? snapshot(record)
-      : undefined;
+    if (!record || !this.#isCurrentRecord(record)) {
+      return undefined;
+    }
+    refreshHealth(record);
+    return projectSnapshot(record);
   }
 
-  getRecord(id: string): RuntimeSnapshot | undefined {
-    return this.snapshot(id);
+  inspect(id: string): RuntimeInspection | undefined {
+    const record = this.#records.get(id);
+    if (!record || !this.#isCurrentRecord(record)) {
+      return undefined;
+    }
+    refreshHealth(record);
+    return {
+      snapshot: projectSnapshot(record),
+      messages: [...(record.session?.messages ?? [])],
+    };
+  }
+
+  subscribe(id: string, listener: RuntimeSubscriptionListener): () => void {
+    const record = this.#records.get(id);
+    if (!record || !this.#isCurrentRecord(record)) {
+      return () => {};
+    }
+    record.inspectListeners.add(listener);
+    return () => {
+      record.inspectListeners.delete(listener);
+    };
   }
 
   snapshots(options: { includeNested?: boolean } = {}): RuntimeSnapshot[] {
     return [...this.#records.values()]
-      .filter((record) => record.runtimeSessionId === this.#currentSessionId)
+      .filter((record) => this.#isCurrentRecord(record))
       .filter((record) => options.includeNested || !isNestedOwner(record.owner))
-      .map((record) => snapshot(record));
+      .map((record) => {
+        refreshHealth(record);
+        return projectSnapshot(record);
+      });
   }
 
   async #runRecord(
@@ -807,7 +991,7 @@ export class SubagentRuntime {
     input: RunManagedAgentInput,
   ): Promise<RuntimeSnapshot> {
     const abort = () => {
-      if (!isTerminal(record.status)) {
+      if (this.#isCurrentRecord(record) && !isTerminal(record.status)) {
         this.stop(record.id, "Stopped by user.");
       }
     };
@@ -818,15 +1002,35 @@ export class SubagentRuntime {
     try {
       const { model } = resolveModelRef(input.ctx, record.model);
       const nested = isNestedOwner(record.owner);
-      const { session } = await this.#createSession({
+      const promptInput = resolveSystemPromptInput(input);
+      const resources = promptInput
+        ? await createPromptResourceLoader(record.cwd, promptInput)
+        : undefined;
+      const profileTools = publicAgentProfile(record.type)?.tools;
+      const allowExplore = isExploreEligible(record.type) && !nested;
+      const explicitTools =
+        input.tools === undefined
+          ? undefined
+          : normalizeActiveToolNames(input.tools, { allowExplore });
+      const profileAllowlist =
+        profileTools === undefined
+          ? undefined
+          : normalizeActiveToolNames(profileTools, { allowExplore });
+      const createSessionOptions = {
         cwd: record.cwd,
         model,
         ...(record.thinking === undefined
           ? {}
           : { thinkingLevel: record.thinking }),
+        ...(resources === undefined
+          ? {}
+          : {
+              agentDir: resources.agentDir,
+              resourceLoader: resources.resourceLoader,
+            }),
         ...(nested
           ? {
-              tools: input.tools ?? readOnlyToolNames,
+              tools: explicitTools ?? [...readOnlyToolNames],
               excludeTools: input.excludeTools ?? [
                 "explore",
                 ...publicToolNames,
@@ -835,26 +1039,32 @@ export class SubagentRuntime {
               ],
             }
           : {
-              ...(input.tools === undefined ? {} : { tools: input.tools }),
+              ...(explicitTools === undefined
+                ? profileAllowlist === undefined
+                  ? {}
+                  : { tools: [...profileAllowlist] }
+                : { tools: explicitTools }),
               ...(input.excludeTools === undefined
                 ? {}
                 : { excludeTools: input.excludeTools }),
               customTools: this.#customToolsFor(record),
             }),
-      });
-      if (isTerminal(record.status)) {
+      };
+      const { session } = await this.#createSession(createSessionOptions);
+      if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         await this.#disposeSession(session);
-        return snapshot(record);
+        return projectSnapshot(record);
       }
       record.session = session;
-      record.unsubscribeSession = session.subscribe?.((event) => {
-        const candidate = isObject(event) ? event : undefined;
+      record.unsubscribeSession = session.subscribe((event) => {
+        const candidate = isObject(event as unknown)
+          ? (event as Record<string, unknown>)
+          : undefined;
+        const toolCall = candidate?.toolCall;
         const toolName =
-          candidate &&
-          isObject(candidate.toolCall) &&
-          typeof candidate.toolCall.name === "string"
-            ? candidate.toolCall.name
-            : candidate && typeof candidate.toolName === "string"
+          isObject(toolCall) && typeof toolCall.name === "string"
+            ? toolCall.name
+            : typeof candidate?.toolName === "string"
               ? candidate.toolName
               : undefined;
         record.health = {
@@ -863,6 +1073,7 @@ export class SubagentRuntime {
           lastActivity: now(),
         };
         record.updatedAt = now();
+        this.#notifyInspectListeners(record);
       });
       await session.bindExtensions({
         mode: "print",
@@ -875,15 +1086,17 @@ export class SubagentRuntime {
       record.canSteer = true;
       await this.#flushSteering(record);
       await prompt;
-      const state = "state" in session ? session.state : undefined;
-      if (state?.errorMessage) {
-        return this.fail(record.id, state.errorMessage);
+      if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
+        return projectSnapshot(record);
+      }
+      if (session.state.errorMessage) {
+        return this.fail(record.id, session.state.errorMessage);
       }
       const result = session.getLastAssistantText() ?? "";
       return this.complete(record.id, result);
     } catch (error) {
-      if (isTerminal(record.status)) {
-        return snapshot(record);
+      if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
+        return projectSnapshot(record);
       }
       return this.fail(record.id, error);
     } finally {
@@ -898,15 +1111,15 @@ export class SubagentRuntime {
     if (!isExploreEligible(record.type)) {
       return undefined;
     }
-    return [this.createExploreTool(snapshot(record))];
+    return [this.createExploreTool(projectSnapshot(record))];
   }
 
-  async #disposeSession(session: PublicAgentSession): Promise<void> {
+  async #disposeSession(session: AgentSession): Promise<void> {
     for (const record of this.#records.values()) {
       if (record.session === session) {
         record.unsubscribeSession?.();
         record.unsubscribeSession = undefined;
-        updateRecordHealth(record);
+        refreshHealth(record);
       }
     }
     if (session.extensionRunner.hasHandlers("session_shutdown")) {
@@ -920,15 +1133,26 @@ export class SubagentRuntime {
 
   #inheritActiveTools(
     record: RuntimeRecord,
-    session: PublicAgentSession,
+    session: AgentSession,
     explicitTools?: string[],
   ): void {
     const getActiveTools = this.pi.getActiveTools?.bind(this.pi);
+    const allowExplore =
+      isExploreEligible(record.type) && !isNestedOwner(record.owner);
     if (explicitTools) {
-      const activeTools = isExploreEligible(record.type)
+      const activeTools = allowExplore
         ? [...explicitTools, "explore"]
         : explicitTools;
-      session.setActiveToolsByName([...new Set(activeTools)]);
+      session.setActiveToolsByName(
+        normalizeActiveToolNames([...new Set(activeTools)], { allowExplore }),
+      );
+      return;
+    }
+    const profileTools = publicAgentProfile(record.type)?.tools;
+    if (profileTools !== undefined && !isNestedOwner(record.owner)) {
+      session.setActiveToolsByName(
+        normalizeActiveToolNames([...new Set(profileTools)], { allowExplore }),
+      );
       return;
     }
     if (!getActiveTools && !isNestedOwner(record.owner)) {
@@ -937,15 +1161,12 @@ export class SubagentRuntime {
     let activeTools = getActiveTools?.() ?? [];
     if (isNestedOwner(record.owner)) {
       activeTools = readOnlyToolNames;
-    } else {
-      if (record.type === "General" || !isPublicBuiltinType(record.type)) {
-        activeTools = activeTools.filter((name) => !publicToolNames.has(name));
-      }
-      if (isExploreEligible(record.type)) {
-        activeTools = [...activeTools, "explore"];
-      }
+    } else if (allowExplore) {
+      activeTools = [...activeTools, "explore"];
     }
-    session.setActiveToolsByName([...new Set(activeTools)]);
+    session.setActiveToolsByName(
+      normalizeActiveToolNames([...new Set(activeTools)], { allowExplore }),
+    );
   }
 
   async #flushSteering(record: RuntimeRecord): Promise<void> {
@@ -953,7 +1174,11 @@ export class SubagentRuntime {
     if (!session) {
       return;
     }
-    while (record.steeringQueue.length > 0 && !isTerminal(record.status)) {
+    while (
+      record.steeringQueue.length > 0 &&
+      this.#isCurrentRecord(record) &&
+      !isTerminal(record.status)
+    ) {
       const message = record.steeringQueue.shift();
       if (message !== undefined) {
         await session.steer(message);
@@ -963,10 +1188,16 @@ export class SubagentRuntime {
 
   #requireRecord(id: string): RuntimeRecord {
     const record = this.#records.get(id);
-    if (!record) {
+    if (!record || !this.#isCurrentRecord(record)) {
       throw new Error(`Unknown subagent ${id}`);
     }
     return record;
+  }
+
+  #isCurrentRecord(record: RuntimeRecord): boolean {
+    return (
+      !record.retired && record.runtimeSessionId === this.#currentSessionId
+    );
   }
 
   #ensureNotTerminal(record: RuntimeRecord): void {
@@ -975,8 +1206,34 @@ export class SubagentRuntime {
     }
   }
 
-  #finish(record: RuntimeRecord): RuntimeSnapshot {
-    const finalSnapshot = snapshot(record);
+  #notifyInspectListeners(
+    record: RuntimeRecord,
+    options: { allowRetired?: boolean; clear?: boolean } = {},
+  ): void {
+    if (!options.allowRetired && !this.#isCurrentRecord(record)) {
+      return;
+    }
+    const listeners = [...record.inspectListeners];
+    if (options.clear) {
+      record.inspectListeners.clear();
+    }
+    for (const listener of listeners) {
+      listener();
+    }
+  }
+
+  #finish(
+    record: RuntimeRecord,
+    options: {
+      allowRetiredNotification?: boolean;
+      clearInspectListeners?: boolean;
+    } = {},
+  ): RuntimeSnapshot {
+    const finalSnapshot = projectSnapshot(record);
+    this.#notifyInspectListeners(record, {
+      allowRetired: options.allowRetiredNotification,
+      clear: options.clearInspectListeners,
+    });
     const waiters = this.#waiters.get(record.id) ?? [];
     this.#waiters.delete(record.id);
     for (const waiter of waiters) {
@@ -986,10 +1243,40 @@ export class SubagentRuntime {
   }
 }
 
+function getRuntimeManager(): RuntimeManager {
+  const globalScope = globalThis as Record<symbol, unknown>;
+  const existing = globalScope[runtimeManagerKey];
+  if (isRuntimeManager(existing)) {
+    return existing;
+  }
+  const manager: RuntimeManager = { runtimes: new WeakMap() };
+  if (isRuntimeInstance(existing)) {
+    manager.runtimes.set(existing.pi, existing);
+  }
+  globalScope[runtimeManagerKey] = manager;
+  return manager;
+}
+
+function isRuntimeManager(value: unknown): value is RuntimeManager {
+  return (
+    isObject(value) && "runtimes" in value && value.runtimes instanceof WeakMap
+  );
+}
+
+function isRuntimeInstance(value: unknown): value is SubagentRuntime {
+  return isObject(value) && "pi" in value;
+}
+
 export function getSubagentRuntime(pi: ExtensionAPI): SubagentRuntime {
   const existing = runtimes.get(pi);
   if (existing) {
     return existing;
+  }
+  const runtimeManager = getRuntimeManager();
+  const managed = runtimeManager.runtimes.get(pi);
+  if (managed) {
+    runtimes.set(pi, managed);
+    return managed;
   }
   const runtime = new SubagentRuntime(pi);
   runtimes.set(pi, runtime);

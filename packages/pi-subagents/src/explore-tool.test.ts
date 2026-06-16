@@ -1,3 +1,4 @@
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { SubagentRuntime } from "./runtime.js";
 
@@ -22,12 +23,16 @@ function makeCtx(overrides: Partial<any> = {}) {
   };
 }
 
+function asAgentSession<T>(session: T): T & AgentSession {
+  return session as T & AgentSession;
+}
+
 function makeSession(result = "done") {
   const extensionRunner = {
     hasHandlers: vi.fn(() => false),
     emit: vi.fn(async () => undefined),
   };
-  return {
+  return asAgentSession({
     bindExtensions: vi.fn(async () => undefined),
     prompt: vi.fn(async () => undefined),
     steer: vi.fn(async () => undefined),
@@ -35,8 +40,30 @@ function makeSession(result = "done") {
     dispose: vi.fn(),
     getLastAssistantText: vi.fn(() => result),
     setActiveToolsByName: vi.fn(),
+    state: {},
+    messages: [] as any[],
+    sessionId: "session-id",
+    sessionFile: undefined,
+    subscribe: vi.fn(() => vi.fn()),
+    getAllTools: vi.fn(() => []),
     extensionRunner: extensionRunner as any,
-  };
+  });
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushPromises() {
+  for (let i = 0; i < 5; i += 1) {
+    await Promise.resolve();
+  }
 }
 
 describe("runtime-injected explore tool", () => {
@@ -124,13 +151,22 @@ describe("runtime-injected explore tool", () => {
     expect(calls[5]?.[0].customTools).toBeUndefined();
   });
 
-  it("activates injected explore for pi-implement read-only reviewer workers with explicit tools", async () => {
+  it("normalizes explicit explore activation to eligible non-Explore agents", async () => {
     const reviewer = makeSession("reviewer");
     const explore = makeSession("explore");
     const sessions = [reviewer, explore];
     const createSession = vi.fn(async () => ({ session: sessions.shift()! }));
     const runtime = new SubagentRuntime(makePi() as never, { createSession });
-    const readOnlyTools = ["read", "bash", "grep", "find", "ls", "explore"];
+    const readOnlyTools = [
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+      "explore",
+      "Agent",
+      "steer_subagent",
+    ];
 
     await runtime.runManagedAgent({
       owner: {
@@ -159,6 +195,14 @@ describe("runtime-injected explore tool", () => {
     expect(reviewerOptions.customTools).toEqual([
       expect.objectContaining({ name: "explore" }),
     ]);
+    expect(reviewerOptions.tools).toEqual([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+      "explore",
+    ]);
     expect(reviewer.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
@@ -168,11 +212,33 @@ describe("runtime-injected explore tool", () => {
       "explore",
     ]);
     expect(exploreOptions.customTools).toBeUndefined();
-    expect(explore.setActiveToolsByName).toHaveBeenCalledWith(readOnlyTools);
+    expect(exploreOptions.tools).toEqual([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+    ]);
+    expect(explore.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+    ]);
   });
 
   it("creates nested Explore metadata with inherited cwd, owner, model, thinking, and read-only tools", async () => {
-    const pi = makePi(["read", "bash", "Agent", "edit", "write", "explore"]);
+    const pi = makePi([
+      "read",
+      "bash",
+      "Agent",
+      "get_subagent_result",
+      "steer_subagent",
+      "edit",
+      "write",
+      "explore",
+    ]);
     const child = makeSession("nested result");
     const createSession = vi.fn(async () => ({ session: child }));
     const runtime = new SubagentRuntime(pi as never, {
@@ -309,6 +375,228 @@ describe("runtime-injected explore tool", () => {
     expect((await resultPromise).content[0]).toMatchObject({
       text: expect.stringContaining("explore stopped or timed out"),
     });
+  });
+
+  it("aborts nested Explore after sustained inactivity", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    try {
+      const promptStarted = deferred();
+      const child = makeSession("never");
+      child.prompt = vi.fn(async () => {
+        child.messages.push({
+          role: "assistant",
+          timestamp: Date.now(),
+          content: [{ type: "text", text: "starting" }],
+        });
+        promptStarted.resolve();
+        await new Promise<void>((resolve) => {
+          child.abort.mockImplementation(async () => {
+            resolve();
+            return undefined;
+          });
+        });
+      });
+      const runtime = new SubagentRuntime(makePi() as never, {
+        createSession: vi.fn(async () => ({ session: child })),
+      });
+      const parent = runtime.queue({
+        owner: "public-tool",
+        type: "General",
+        description: "general",
+        cwd: "/workspace",
+      });
+
+      const resultPromise = runtime.runExploreTool(
+        parent,
+        { question: "inspect" },
+        makeCtx() as never,
+      );
+      await promptStarted.promise;
+
+      await vi.advanceTimersByTimeAsync(130_000);
+
+      await expect(resultPromise).resolves.toMatchObject({
+        content: [
+          expect.objectContaining({
+            text: expect.stringContaining("explore stopped or timed out"),
+          }),
+        ],
+      });
+      expect(child.abort).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts nested Explore with no first activity after the baseline window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    try {
+      const promptStarted = deferred();
+      const child = makeSession("never");
+      child.prompt = vi.fn(async () => {
+        promptStarted.resolve();
+        await new Promise<void>((resolve) => {
+          child.abort.mockImplementation(async () => {
+            resolve();
+            return undefined;
+          });
+        });
+      });
+      const runtime = new SubagentRuntime(makePi() as never, {
+        createSession: vi.fn(async () => ({ session: child })),
+      });
+      const parent = runtime.queue({
+        owner: "public-tool",
+        type: "General",
+        description: "general",
+        cwd: "/workspace",
+      });
+
+      const resultPromise = runtime.runExploreTool(
+        parent,
+        { question: "inspect" },
+        makeCtx() as never,
+      );
+      await promptStarted.promise;
+
+      await vi.advanceTimersByTimeAsync(130_000);
+
+      await expect(resultPromise).resolves.toMatchObject({
+        content: [
+          expect.objectContaining({
+            text: expect.stringContaining("explore stopped or timed out"),
+          }),
+        ],
+      });
+      expect(child.abort).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps active nested Explore running beyond the inactivity threshold", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    try {
+      const promptDone = deferred();
+      const promptStarted = deferred();
+      const child = makeSession("active result");
+      child.prompt = vi.fn(async () => {
+        promptStarted.resolve();
+        await promptDone.promise;
+      });
+      const runtime = new SubagentRuntime(makePi() as never, {
+        createSession: vi.fn(async () => ({ session: child })),
+      });
+      const parent = runtime.queue({
+        owner: "public-tool",
+        type: "General",
+        description: "general",
+        cwd: "/workspace",
+      });
+      let settled = false;
+
+      const resultPromise = runtime
+        .runExploreTool(parent, { question: "inspect" }, makeCtx() as never)
+        .finally(() => {
+          settled = true;
+        });
+      await promptStarted.promise;
+
+      await vi.advanceTimersByTimeAsync(90_000);
+      child.messages.push({
+        role: "assistant",
+        timestamp: Date.now(),
+        content: [{ type: "text", text: "progress 1" }],
+      });
+      await vi.advanceTimersByTimeAsync(90_000);
+      child.messages.push({
+        role: "assistant",
+        timestamp: Date.now(),
+        content: [{ type: "text", text: "progress 2" }],
+      });
+      await vi.advanceTimersByTimeAsync(90_000);
+      await flushPromises();
+
+      expect(child.abort).not.toHaveBeenCalled();
+      expect(settled).toBe(false);
+
+      promptDone.resolve();
+      await expect(resultPromise).resolves.toMatchObject({
+        content: [expect.objectContaining({ text: "active result" })],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps subscription activity newer than stale message timestamps", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    try {
+      const promptDone = deferred();
+      const promptStarted = deferred();
+      const child = makeSession("active result");
+      child.prompt = vi.fn(async () => {
+        child.messages.push({
+          role: "assistant",
+          timestamp: Date.now(),
+          content: [{ type: "text", text: "starting" }],
+        });
+        promptStarted.resolve();
+        await promptDone.promise;
+      });
+      const runtime = new SubagentRuntime(makePi() as never, {
+        createSession: vi.fn(async () => ({ session: child })),
+      });
+      const parent = runtime.queue({
+        owner: "public-tool",
+        type: "General",
+        description: "general",
+        cwd: "/workspace",
+      });
+      let settled = false;
+
+      const resultPromise = runtime
+        .runExploreTool(parent, { question: "inspect" }, makeCtx() as never)
+        .finally(() => {
+          settled = true;
+        });
+      await promptStarted.promise;
+      const publishSessionEvent = (
+        child.subscribe as unknown as {
+          mock: { calls: Array<[(event: unknown) => void]> };
+        }
+      ).mock.calls[0]?.[0];
+      if (publishSessionEvent === undefined) {
+        throw new Error("session subscription was not registered");
+      }
+
+      await vi.advanceTimersByTimeAsync(90_000);
+      publishSessionEvent({ toolName: "read" });
+      await vi.advanceTimersByTimeAsync(50_000);
+      await flushPromises();
+
+      expect(child.abort).not.toHaveBeenCalled();
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(40_000);
+      publishSessionEvent({ toolName: "bash" });
+      await vi.advanceTimersByTimeAsync(90_000);
+      await flushPromises();
+
+      expect(child.abort).not.toHaveBeenCalled();
+      expect(settled).toBe(false);
+
+      promptDone.resolve();
+      await expect(resultPromise).resolves.toMatchObject({
+        content: [expect.objectContaining({ text: "active result" })],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("prevents recursion from Explore and nested parents", async () => {
