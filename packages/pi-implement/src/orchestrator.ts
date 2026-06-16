@@ -100,6 +100,11 @@ import {
   type PlanBundleManifest,
 } from "./manifest.js";
 import {
+  formatStoreBundleMaterial,
+  formatStoreCorpusMaterial,
+  type MaterialStore,
+} from "./material-store.js";
+import {
   buildPhase1MaterialInventory,
   renderPhase1TaskMaterial,
   resolvePhase1MaterialRefPath,
@@ -789,6 +794,7 @@ export type OrchestratorDeps = {
   manifest?: PlanBundleManifest;
   executionManifest?: ExecutionManifest;
   materialInventory?: Phase1MaterialInventory;
+  materialStore?: MaterialStore;
   corpusMaterial?: string;
   roles: EffectiveRoles;
   mode?: RunMode;
@@ -3059,8 +3065,17 @@ async function runOverallReviewOnce(
   const headSha = await deps.git.head();
 
   let bundleMaterial: string | undefined;
-  if (deps.manifest) {
+  if (deps.materialStore) {
+    bundleMaterial = formatStoreBundleMaterial(deps.materialStore);
+  } else if (deps.manifest) {
     bundleMaterial = formatBundleMaterial(deps.manifest);
+  }
+
+  let corpusMaterial: string | undefined;
+  if (deps.materialStore) {
+    corpusMaterial = formatStoreCorpusMaterial(deps.materialStore);
+  } else if (deps.corpusMaterial) {
+    corpusMaterial = deps.corpusMaterial;
   }
 
   if (baseSha === headSha) {
@@ -3100,7 +3115,7 @@ async function runOverallReviewOnce(
     runId: deps.runId,
     landedTasks,
     bundleMaterial,
-    corpusMaterial: deps.corpusMaterial,
+    corpusMaterial,
     executionManifest: deps.executionManifest,
   });
 
@@ -3238,8 +3253,17 @@ async function runOverallReworkAttempt(
   }
 
   let bundleMaterial: string | undefined;
-  if (deps.manifest) {
+  if (deps.materialStore) {
+    bundleMaterial = formatStoreBundleMaterial(deps.materialStore);
+  } else if (deps.manifest) {
     bundleMaterial = formatBundleMaterial(deps.manifest);
+  }
+
+  let corpusMaterial: string | undefined;
+  if (deps.materialStore) {
+    corpusMaterial = formatStoreCorpusMaterial(deps.materialStore);
+  } else if (deps.corpusMaterial) {
+    corpusMaterial = deps.corpusMaterial;
   }
 
   const prompt = buildOverallReworkPrompt({
@@ -3251,7 +3275,7 @@ async function runOverallReworkAttempt(
     runId: deps.runId,
     landedTasks,
     bundleMaterial,
-    corpusMaterial: deps.corpusMaterial,
+    corpusMaterial,
     requiredChanges: review.requiredChanges,
     recommendationMarkdown: review.recommendationMarkdown,
     priorAttemptFailures,
@@ -3650,9 +3674,14 @@ function buildOverallReviewArtifactContent(
     deps.executionManifest,
   );
 
-  const corpusSection = deps.corpusMaterial
-    ? `\n## Plan Corpus\n\n${deps.corpusMaterial}\n`
-    : "";
+  const corpusSection =
+    deps.materialStore || deps.corpusMaterial
+      ? `\n## Plan Corpus\n\n${
+          deps.materialStore
+            ? formatStoreCorpusMaterial(deps.materialStore)
+            : deps.corpusMaterial
+        }\n`
+      : "";
 
   return `# Overall Review: Changes Requested
 

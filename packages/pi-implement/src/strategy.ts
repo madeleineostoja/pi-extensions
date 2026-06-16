@@ -3,9 +3,18 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ParsedPlan, PlanTask } from "./plan.js";
 import type { PlanBundleManifest } from "./manifest.js";
-import { formatBundleMaterial, PlanMaterialSizeError } from "./manifest.js";
+import {
+  formatBundleMaterial,
+  manifestFromStore,
+  PlanMaterialSizeError,
+} from "./manifest.js";
 import type { PlanCorpus } from "./corpus.js";
-import { formatCorpusMaterial } from "./corpus.js";
+import { formatCorpusMaterial, ingestPlanCorpusFromStore } from "./corpus.js";
+import {
+  formatStoreBundleMaterial,
+  formatStoreCorpusMaterial,
+  type MaterialStore,
+} from "./material-store.js";
 import type { ImplementConfig } from "./config.js";
 import { resolveMaxParallel } from "./config.js";
 import type { SubagentClient } from "./subagents.js";
@@ -59,6 +68,7 @@ export type StrategyRequest = {
   signal?: AbortSignal;
   manifest?: PlanBundleManifest;
   corpus?: PlanCorpus;
+  materialStore?: MaterialStore;
   forceSerial?: boolean;
   updateState(state: StatePatch): void;
 };
@@ -78,6 +88,24 @@ export async function selectStrategy(
   }
 
   return runExecutionPlanner(req, unchecked, maxConcurrency);
+}
+
+function getManifest(req: StrategyRequest): PlanBundleManifest | undefined {
+  return (
+    req.manifest ??
+    (req.materialStore
+      ? manifestFromStore(req.materialStore, req.plan)
+      : undefined)
+  );
+}
+
+function getCorpus(req: StrategyRequest): PlanCorpus | undefined {
+  return (
+    req.corpus ??
+    (req.materialStore
+      ? ingestPlanCorpusFromStore(req.materialStore)
+      : undefined)
+  );
 }
 
 function addStrategyAgentPatch(
@@ -395,10 +423,14 @@ function fallbackPlannerManifest(
   reason: string,
 ): ExecutionManifest {
   return {
-    ...generateMinimalExecutionManifest(unchecked, req.plan.path, req.manifest),
+    ...generateMinimalExecutionManifest(
+      unchecked,
+      req.plan.path,
+      getManifest(req),
+    ),
     sourcePlanHash: req.planHash,
     sourcePlanPath: req.plan.path,
-    sourceCorpusHash: req.corpus?.corpusHash,
+    sourceCorpusHash: getCorpus(req)?.corpusHash,
     plannerReason: `${reason}; using conservative serial fallback.`,
     plannerConfidence: "low",
     maxConcurrency: 1,
@@ -475,7 +507,7 @@ function normalizePlannerManifest(
             task,
             mappedPlanTask,
             req.plan.path,
-            req.manifest,
+            getManifest(req),
           )
         : task.sourceMaterialRefs,
       sourceReferences: task.sourceReferences ?? [],
@@ -517,7 +549,7 @@ function normalizePlannerManifest(
 
   const repaired: ExecutionManifest = {
     ...manifest,
-    sourceCorpusHash: manifest.sourceCorpusHash ?? req.corpus?.corpusHash,
+    sourceCorpusHash: manifest.sourceCorpusHash ?? getCorpus(req)?.corpusHash,
     tasks,
   };
   if (invalidDependencyReasons.length > 0) {
@@ -627,10 +659,10 @@ function readSourceRefContent(
 
   const materialByPath = new Map<string, string>();
   materialByPath.set(resolve(req.plan.path), req.planContent);
-  for (const file of req.corpus?.files ?? []) {
+  for (const file of getCorpus(req)?.files ?? []) {
     materialByPath.set(resolve(file.absolutePath), file.content);
   }
-  for (const task of req.manifest?.tasks ?? []) {
+  for (const task of getManifest(req)?.tasks ?? []) {
     for (const material of task.referencedMaterials) {
       materialByPath.set(resolve(material.absolutePath), material.content);
     }
@@ -718,22 +750,39 @@ async function buildExecutionPlannerPrompt(
 
   const gitStatus = await getFilteredGitStatus(
     req.repoRoot,
-    req.manifest?.allArtifactPaths ?? [req.plan.path],
+    getManifest(req)?.allArtifactPaths ?? [req.plan.path],
   );
 
   let bundleSection = "";
-  if (req.manifest) {
-    const bundle = formatBundleMaterial(req.manifest);
+  const materialStore = req.materialStore;
+  if (materialStore) {
+    const bundle = formatStoreBundleMaterial(materialStore);
     if (bundle) {
       bundleSection = `\n\n## Referenced Plan Material\n\n${bundle}`;
+    }
+  } else {
+    const manifestForPrompt = getManifest(req);
+    if (manifestForPrompt) {
+      const bundle = formatBundleMaterial(manifestForPrompt);
+      if (bundle) {
+        bundleSection = `\n\n## Referenced Plan Material\n\n${bundle}`;
+      }
     }
   }
 
   let corpusSection = "";
-  if (req.corpus) {
-    const corpus = formatCorpusMaterial(req.corpus);
+  if (materialStore) {
+    const corpus = formatStoreCorpusMaterial(materialStore);
     if (corpus) {
       corpusSection = `\n\n## Plan Corpus\n\n${corpus}`;
+    }
+  } else {
+    const corpusForPrompt = getCorpus(req);
+    if (corpusForPrompt) {
+      const corpus = formatCorpusMaterial(corpusForPrompt);
+      if (corpus) {
+        corpusSection = `\n\n## Plan Corpus\n\n${corpus}`;
+      }
     }
   }
 
@@ -799,7 +848,7 @@ Return an execution manifest matching this schema:
   "version": 1,
   "sourcePlanHash": "${req.planHash}",
   "sourcePlanPath": "${req.plan.path}",
-  "sourceCorpusHash": "${req.corpus?.corpusHash ?? req.planHash}",
+  "sourceCorpusHash": "${getCorpus(req)?.corpusHash ?? req.planHash}",
   "plannerReason": "...",
   "plannerConfidence": "high" | "medium" | "low",
   "maxConcurrency": <optional positive integer>,

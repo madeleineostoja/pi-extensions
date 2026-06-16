@@ -39,9 +39,11 @@ import { selectStrategy } from "./strategy.js";
 import { nextUncheckedTask, parsePlanFile } from "./plan.js";
 import {
   buildPlanBundleManifest,
+  manifestFromStore,
   validatePlanMaterialSizes,
 } from "./manifest.js";
-import { ingestPlanCorpus, formatCorpusMaterial } from "./corpus.js";
+import { ingestPlanCorpus, ingestPlanCorpusFromStore } from "./corpus.js";
+import { buildMaterialStore, type MaterialStore } from "./material-store.js";
 import { buildPhase1MaterialInventory } from "./material-inventory.js";
 import { diffProgress } from "./progress.js";
 import {
@@ -474,6 +476,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       let corpus: ReturnType<typeof ingestPlanCorpus>;
       let corpusFileRecords: Array<{ path: string; hash: string }>;
       let materialInventory: ReturnType<typeof buildPhase1MaterialInventory>;
+      let materialStore: MaterialStore | undefined;
       try {
         git = new ExecGitClient(ctx.cwd);
         repoRoot = await git.mainRoot();
@@ -482,7 +485,12 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         baseSha = await git.head();
         planContent = readFileSync(planPath, "utf-8");
         plan = parsePlanFile(planPath);
-        manifest = buildPlanBundleManifest(planPath, plan);
+        materialStore = buildMaterialStore({
+          plan,
+          planPath,
+          repoRoot,
+        });
+        manifest = manifestFromStore(materialStore, plan);
         if (manifest.validationErrors.length > 0) {
           ctx.ui.notify(
             `pi-implement blocked: plan bundle validation failed:\n${manifest.validationErrors.join("\n")}`,
@@ -499,7 +507,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           return;
         }
 
-        corpus = ingestPlanCorpus(planPath);
+        corpus = ingestPlanCorpusFromStore(materialStore);
         if (corpus.validationErrors.length > 0) {
           ctx.ui.notify(
             `pi-implement blocked: corpus validation failed:\n${corpus.validationErrors.join("\n")}`,
@@ -515,17 +523,15 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         materialInventory = buildPhase1MaterialInventory({
           plan,
           planPath,
-          manifest,
-          corpus,
-          repoRoot,
+          store: materialStore,
         });
 
-        planArtifacts = manifest.allArtifactPaths;
-        for (const corpusPath of corpus.files.map((f) => f.absolutePath)) {
-          if (!planArtifacts.includes(corpusPath)) {
-            planArtifacts.push(corpusPath);
-          }
-        }
+        planArtifacts = [
+          planPath,
+          ...materialStore.files
+            .filter((file) => file.absolutePath !== planPath)
+            .map((file) => file.absolutePath),
+        ];
         planHash = createHash("sha256").update(planContent).digest("hex");
         if (!(await git.isCleanExcept(planArtifacts))) {
           ctx.ui.notify("pi-implement blocked: dirty worktree", "warning");
@@ -715,9 +721,8 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           runId,
           signal: abortController.signal,
           updateState,
-          manifest,
+          materialStore,
           forceSerial,
-          corpus,
         });
         if (strategy.mode === "blocked") {
           throw new BlockedError(strategy.reason);
@@ -753,7 +758,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           planArtifacts,
           manifest,
           materialInventory,
-          corpusMaterial: formatCorpusMaterial(corpus),
+          materialStore,
           roles: effective.roles,
           mode: strategy.mode,
           maxConcurrency: strategy.maxConcurrency,
