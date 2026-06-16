@@ -1180,6 +1180,123 @@ describe("selectStrategy - planner prompt content", () => {
       "prefer the least restrictive graph supported by concrete dependencies",
     );
   });
+
+  it("describes sourceMaterialRefs as exact/raw packet material", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain("## Source Material References");
+    expect(prompt).toContain("exact/raw source material");
+    expect(prompt).toContain(
+      "rendered into the implementer and reviewer task packets",
+    );
+    expect(prompt).toContain(
+      "what raw content should be inlined in the packet",
+    );
+  });
+
+  it("documents full-file versus line-range sourceMaterialRefs guidance", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain('"sourceMaterialRefs":');
+    expect(prompt).toContain('"origin": "planner"');
+    expect(prompt).toContain('"mode": { "kind": "full-file" }');
+    expect(prompt).toContain(
+      '"mode": { "kind": "line-range", "startLine": 10, "endLine": 20 }',
+    );
+    expect(prompt).toContain(
+      "Use `full-file` refs for small task/detail files",
+    );
+    expect(prompt).toContain(
+      "Use `line-range` refs for relevant bounded context inside large files",
+    );
+  });
+
+  it("distinguishes sourceRefs and evidencePaths as provenance only", async () => {
+    const subagents = makeSubagents(
+      JSON.stringify({
+        mode: "serial",
+        reason: "clear sequence",
+        confidence: "high",
+      }),
+    );
+    const plan = makePlan(["Task A", "Task B"]);
+    await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+
+    const spawnMock = subagents.spawn as unknown as {
+      mock: { calls: Array<Array<{ prompt: string }>> };
+    };
+    const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).toContain("## Source References");
+    expect(prompt).toContain("used for provenance/audit only");
+    expect(prompt).toContain(
+      "does not imply that the referenced content is inlined",
+    );
+    expect(prompt).toContain("## Evidence Paths");
+    expect(prompt).toContain(
+      "evidencePaths` are also provenance/audit fields only",
+    );
+    expect(prompt).toContain("do not cause content to be inlined");
+  });
 });
 
 describe("selectStrategy - concurrency clamping", () => {

@@ -838,21 +838,25 @@ Return an execution manifest matching this schema:
 
 ## Source Material References
 
-Each task may include \`sourceMaterialRefs\` for exact raw materials the implementer and reviewer must see in the task packet. These are packet material, unlike \`sourceRefs\`.
+Each task may include \`sourceMaterialRefs\` for the exact/raw source material that must be rendered into the implementer and reviewer task packets. These refs answer "what raw content should be inlined in the packet"; they are not merely provenance. The orchestrator will union planner-selected refs with deterministic selected-task anchors and explicit task-link refs, validate them, and skip invalid planner refs before rendering.
 
-- Include only semantically required full files or line ranges from the plan corpus.
-- Use line ranges when only a bounded schema, prompt string, fixture, migration, SQL block, or exact source-of-truth excerpt is required.
+- Include only semantically required files or ranges from the plan corpus.
+- Use \`full-file\` refs for small task/detail files, short fixtures, or source-of-truth supporting documents where the full content matters to the implementer or reviewer.
+- Use \`line-range\` refs for relevant bounded context inside large files or single-file plans, such as a specific schema, prompt string, fixture excerpt, migration, SQL block, configuration stanza, or exact source-of-truth passage.
 - Do not include sibling-task material or broad corpus dumps.
-- The orchestrator will union these planner-selected refs with deterministic selected-task anchors and explicit task-link refs, validate them, and skip invalid planner refs before rendering.
 
 ## Source References
 
-Each task must include \`sourceRefs\` when possible. A source ref grounds the planner-owned task in the plan corpus without making Markdown syntax canonical:
+Each task must include \`sourceRefs\` when possible. A source ref grounds the planner-owned task in the plan corpus and is used for provenance/audit only; it does not imply that the referenced content is inlined into task packets.
 
 - \`path\` — use the exact corpus file path when known.
 - \`quote\` — include a short exact quote/snippet from that file that supports the task.
 - Prefer the checkbox line, linked task heading, or task-file text that identifies the executable work.
-- Source refs are grounding evidence only; do not copy Markdown link syntax into the task title unless it is part of the human title.
+- Source refs are grounding/provenance evidence only; do not copy Markdown link syntax into the task title unless it is part of the human title.
+
+## Evidence Paths
+
+\`evidencePaths\` are also provenance/audit fields only. They record paths that justify the task scope, dependency choice, or risk assessment; they do not cause content to be inlined into implementer or reviewer packets.
 
 ## Source Checkbox References
 
