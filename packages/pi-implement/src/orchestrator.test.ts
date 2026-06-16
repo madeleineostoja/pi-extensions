@@ -29,7 +29,11 @@ import type { RunJson, StatePaths } from "./state.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SpawnArgs, SubagentClient, SubagentResult } from "./subagents.js";
 import type { RunState } from "./status.js";
-import { buildPlanBundleManifest, computeTaskFingerprint } from "./manifest.js";
+import {
+  buildPlanBundleManifest,
+  computeTaskFingerprint,
+  type PlanBundleManifest,
+} from "./manifest.js";
 import { parsePlanFile } from "./plan.js";
 
 class FakeGit implements GitClient {
@@ -282,6 +286,7 @@ function sha256(text: string): string {
 
 function makeExecutionManifest(
   plan: ReturnType<typeof parsePlanFile>,
+  planBundle?: PlanBundleManifest,
 ): ExecutionManifest {
   return {
     version: 1,
@@ -296,6 +301,16 @@ function makeExecutionManifest(
       affectedAreas: [],
       conflictHints: [],
       sourceReferences: [],
+      sourceMaterialRefs: planBundle
+        ? planBundle.tasks
+            .find((entry) => entry.planIndex === task.index)
+            ?.referencedMaterials.map((material) => ({
+              origin: "task-link" as const,
+              path: material.absolutePath,
+              mode: { kind: "full-file" as const },
+              reason: "test referenced material",
+            }))
+        : undefined,
       sourceCheckbox: {
         path: plan.path,
         lineNumber: task.lineNumber,
@@ -749,8 +764,10 @@ describe("runImplementation", () => {
     const reviewerPrompt = subagents.spawns[1]?.prompt ?? "";
     const overallReviewPrompt = subagents.spawns[4]?.prompt ?? "";
 
-    // Implementer prompt uses compiled contract, not raw referenced material
+    // Implementer prompt uses selected packet material, not sibling tasks
     expect(implPrompt).toContain("## Compiled Task Contract");
+    expect(implPrompt).toContain("## Referenced Source Material");
+    expect(implPrompt).toContain("# Subplan");
     expect(implPrompt).not.toContain("## Referenced Plan Material");
     expect(implPrompt).not.toContain("## Out-of-Scope Sibling Tasks");
     expect(implPrompt).not.toContain("Task two");
@@ -863,7 +880,7 @@ describe("runImplementation", () => {
 
     const plan = parsePlanFile(planPath);
     const manifest = buildPlanBundleManifest(planPath, plan);
-    const executionManifest = makeExecutionManifest(plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
 
     await runImplementation({
       git,
@@ -888,9 +905,13 @@ describe("runImplementation", () => {
 
     // Task 1 implementer must NOT see sibling deliverables from shared.md
     expect(task1ImplPrompt).toContain("## Compiled Task Contract");
+    expect(task1ImplPrompt).toContain("## Referenced Source Material");
     expect(task1ImplPrompt).not.toContain("## Referenced Plan Material");
-    expect(task1ImplPrompt).not.toContain("Must migrate injected explore");
-    expect(task1ImplPrompt).not.toContain("Migrate injected explore");
+    expect(task1ImplPrompt).toContain("Must migrate injected explore");
+    expect(task1ImplPrompt).toContain("migrate injected explore");
+    expect(task1ImplPrompt).toContain(
+      "Use referenced material only to satisfy the compiled contract",
+    );
 
     // Task 1 reviewer must NOT see sibling deliverables from shared.md
     expect(task1ReviewerPrompt).toContain("## Compiled Task Contract");
@@ -1023,7 +1044,7 @@ describe("runImplementation", () => {
     expect(git.deletedBranches).toHaveLength(0);
   });
 
-  it("persists fallback implementer prompt with the selected task anchor block", async () => {
+  it("persists implementer packet prompt and source material artifacts", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
     writeFileSync(
@@ -1074,9 +1095,10 @@ describe("runImplementation", () => {
       "utf-8",
     );
 
-    expect(prompt).toContain("## Selected Task Source Anchor");
+    expect(prompt).toContain("## Referenced Source Material");
+    expect(prompt).toContain("### Selected Task Source Anchor");
     expect(prompt).toContain(
-      `Source: ${planPath} lines 5-7 (origin: task-anchor)`,
+      `Source: ${planPath} (lines 5-7; origin: task-anchor)`,
     );
     expect(prompt).toContain(
       [
@@ -1088,6 +1110,48 @@ describe("runImplementation", () => {
     expect(prompt).not.toContain("- [ ] Sibling task");
     expect(prompt).not.toContain("Do not include this sibling detail.");
     expect(prompt).toContain("## Compiled Task Contract");
+
+    const sourceMaterial = readFileSync(
+      join(paths.tasksDir, "t001-selected-task", "source-material.md"),
+      "utf-8",
+    );
+    expect(sourceMaterial).toContain("## Referenced Source Material");
+    expect(sourceMaterial).toContain("Preserve this detail exactly.");
+
+    const packet = JSON.parse(
+      readFileSync(
+        join(paths.tasksDir, "t001-selected-task", "task-packet.json"),
+        "utf-8",
+      ),
+    ) as {
+      resolvedMaterialRefs: Array<{
+        absolutePath: string;
+        displayLabel: string;
+        mode: unknown;
+        origin: string;
+        reason: string;
+        fileHash: string;
+        renderedContentHash: string;
+        renderedCharCount: number;
+      }>;
+    };
+    expect(packet.resolvedMaterialRefs).toHaveLength(1);
+    expect(packet.resolvedMaterialRefs[0]).toMatchObject({
+      absolutePath: planPath,
+      displayLabel: "Selected Task Source Anchor",
+      mode: { kind: "line-range", startLine: 5, endLine: 7 },
+      origin: "task-anchor",
+      reason: "Selected task checkbox line and task block.",
+      fileHash: sha256(readFileSync(planPath, "utf-8")),
+      renderedContentHash: sha256(
+        [
+          "- [ ] Selected task",
+          "  Preserve this detail exactly.",
+          "  - Preserve this nested point.",
+        ].join("\n"),
+      ),
+      renderedCharCount: 83,
+    });
   });
 
   it("commits in the task worktree and leaves main HEAD unchanged", async () => {
@@ -9365,6 +9429,15 @@ describe("runImplementation", () => {
           affectedAreas: [],
           conflictHints: [],
           sourceReferences: ["sub.md"],
+          sourceMaterialRefs: [
+            {
+              origin: "task-link",
+              path: subPath,
+              mode: { kind: "full-file" },
+              reason:
+                "Explicit local Markdown material linked from the selected task block.",
+            },
+          ],
           review: { mode: "require" },
           compiledContract: {
             objective: "Implement task one",
@@ -9418,12 +9491,13 @@ describe("runImplementation", () => {
     const implPrompt = subagents.spawns[0]?.prompt ?? "";
     const reviewerPrompt = subagents.spawns[1]?.prompt ?? "";
 
-    // Implementer prompt should use compiled contract, not raw referenced material
+    // Implementer prompt should use compiled contract and selected referenced material
     expect(implPrompt).toContain("## Compiled Task Contract");
     expect(implPrompt).toContain("Task one criterion: do it.");
+    expect(implPrompt).toContain("## Referenced Source Material");
+    expect(implPrompt).toContain("# Subplan");
+    expect(implPrompt).toContain("Acceptance for task two");
     expect(implPrompt).not.toContain("## Referenced Plan Material");
-    expect(implPrompt).not.toContain("# Subplan");
-    expect(implPrompt).not.toContain("Acceptance for task two");
     // Sibling deliverable is listed as out-of-scope in the compiled contract
     expect(implPrompt).toContain("Task two deliverable: do other thing.");
 

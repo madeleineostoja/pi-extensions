@@ -27,7 +27,7 @@ import {
   generateMinimalExecutionManifest,
   readExecutionManifest,
   renderCompiledContract,
-  renderTaskAnchorMaterial,
+  renderSourceMaterialPacket,
 } from "./execution-plan.js";
 import {
   tryMarkSourceCheckboxDone,
@@ -174,6 +174,7 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
     executionManifest = generateMinimalExecutionManifest(
       plan.tasks,
       deps.planPath,
+      deps.manifest,
     );
   }
   deps = { ...deps, executionManifest, planArtifacts };
@@ -3682,10 +3683,15 @@ async function runTaskWorker(args: {
       initialFeedback !== undefined ||
       (wasNeedsRework ?? false);
 
+    const sourceMaterialPacket = renderSourceMaterialPacket(
+      compiledContractEntry.sourceMaterialRefs ??
+        generateMinimalExecutionManifest([task], deps.planPath, deps.manifest)
+          .tasks[0]?.sourceMaterialRefs,
+    );
     const implementerPrompt = buildImplementerPrompt({
       compiledContract,
       worktreePath: effectiveWorktreePath,
-      taskAnchorMaterial: renderTaskAnchorMaterial(task, deps.planPath),
+      sourceMaterial: sourceMaterialPacket?.section,
       feedback: feedback ? formatFeedback(feedback) : undefined,
       priorSummary,
     });
@@ -3700,6 +3706,20 @@ async function runTaskWorker(args: {
 
     if (deps.paths) {
       persistTaskArtifact(deps.paths, taskId, "prompt.md", implementerPrompt);
+      if (sourceMaterialPacket) {
+        persistTaskArtifact(
+          deps.paths,
+          taskId,
+          "source-material.md",
+          `## Referenced Source Material\n\n${sourceMaterialPacket.section}\n`,
+        );
+        persistTaskArtifact(
+          deps.paths,
+          taskId,
+          "task-packet.json",
+          `${JSON.stringify({ resolvedMaterialRefs: sourceMaterialPacket.resolvedRefs }, null, 2)}\n`,
+        );
+      }
     }
 
     const implementerId = await deps.subagents.spawn({

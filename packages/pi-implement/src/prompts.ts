@@ -69,14 +69,14 @@ function buildSiblingTasksSection(outOfScopeTasks?: string[]): string {
 export function buildImplementerPrompt(args: {
   compiledContract: string;
   worktreePath: string;
-  taskAnchorMaterial?: string;
+  sourceMaterial?: string;
   feedback?: string;
   priorSummary?: string;
 }): string {
   const retry = args.feedback
     ? `\n## Retry Context\n\nPrevious attempt summary:\n${args.priorSummary ?? "(none)"}\n\nFeedback to address:\n${args.feedback}\n`
     : "";
-  const intro = `You are the pi-implement implementer for exactly one task. This prompt is the complete task contract and must work even if your subagent definition is generic.
+  const intro = `You are the pi-implement implementer for exactly one task. This prompt is the complete task packet and must work even if your subagent definition is generic.
 
 Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification, never ask how to proceed, and never wait for input. Make reasonable decisions yourself and finish with the result block.
 
@@ -86,9 +86,9 @@ You have been assigned a dedicated Git worktree for this task. Read and write on
 
 Do not read or write files outside the assigned worktree. Any shell command that touches project files must run from or explicitly target the assigned worktree path above.
 
-The compiled task contract below is the complete, authoritative implementation scope for this task. Sibling task contracts are intentionally omitted — they are not truncation and not your concern. They do not expand your scope.
+The compiled task contract plus referenced source material below is the complete task packet for this task. Sibling task contracts are intentionally omitted — they are not truncation and not your concern. They do not expand your scope.
 
-**Required implementation scope:** Only the items listed in the compiled task contract. Do not implement sibling tasks or unrelated cleanup, even when broader context mentions them.
+**Required implementation scope:** Only the items listed in the compiled task contract. Referenced source material supplies exact details, constraints, examples, schemas, prompts, fixtures, or design context needed to satisfy that contract. Use referenced material only to satisfy the compiled contract. Do not implement sibling tasks or unrelated cleanup, even when broader context mentions them.
 
 If you notice you are implementing an unselected sibling task, stop and narrow the change to only what is necessary for the selected task. If the selected task is impossible without some prerequisite work from a sibling task, do only the minimal prerequisite and explain it in your summary and verification. Do not complete the sibling task's own deliverable.
 
@@ -99,14 +99,17 @@ Make the necessary code, documentation, and test changes for the selected task. 
 If useful, call the injected \`explore\` tool for broad map-building or targeted context checks before direct reads/searches. Treat exploration as guidance only: verify relevant findings yourself and do not expand scope based on exploration results.
 
 If blocked, leave the repository in a safe state and explain the blocker in the result block.`;
-  const anchorMaterial = args.taskAnchorMaterial
-    ? `
-${args.taskAnchorMaterial}`
-    : "";
-  return `${intro}${retry}${anchorMaterial}
+  const sourceMaterial = args.sourceMaterial?.trim()
+    ? args.sourceMaterial.trim()
+    : "No referenced source material was resolved for this task.";
+  return `${intro}${retry}
 ## Compiled Task Contract
 
 ${args.compiledContract}
+
+## Referenced Source Material
+
+${sourceMaterial}
 
 End with exactly one <pi-implement-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
 

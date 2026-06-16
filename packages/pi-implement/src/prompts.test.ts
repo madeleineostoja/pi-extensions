@@ -55,7 +55,7 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
-  it("states the required implementation scope is only the compiled contract", () => {
+  it("states the required implementation scope is controlled by the compiled contract", () => {
     const prompt = buildImplementerPrompt({
       compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
@@ -69,7 +69,7 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
-  it("does not invite the implementer to read the full plan as a general scope expansion", () => {
+  it("describes the complete task packet as contract plus referenced material", () => {
     const prompt = buildImplementerPrompt({
       compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
@@ -80,7 +80,10 @@ describe("buildImplementerPrompt", () => {
     );
     expect(prompt).not.toContain("read the full plan file");
     expect(prompt).toContain(
-      "The compiled task contract below is the complete, authoritative implementation scope for this task",
+      "The compiled task contract plus referenced source material below is the complete task packet for this task",
+    );
+    expect(prompt).toContain(
+      "Referenced source material supplies exact details, constraints, examples, schemas, prompts, fixtures, or design context",
     );
   });
 
@@ -109,14 +112,17 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
-  it("does not include referenced plan material in the implementer prompt", () => {
+  it("renders a referenced source material section without plan-material wording", () => {
     const prompt = buildImplementerPrompt({
       compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
+      sourceMaterial: "### auth.md\n\nRaw auth requirement.",
     });
 
+    expect(prompt).toContain("## Referenced Source Material");
+    expect(prompt).toContain("### auth.md");
+    expect(prompt).toContain("Raw auth requirement.");
     expect(prompt).not.toContain("## Referenced Plan Material");
-    expect(prompt).not.toContain("Raw auth requirement.");
     expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
     expect(prompt).not.toContain("Sibling task A");
   });
@@ -137,10 +143,11 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
-  it("includes selected task anchor material without dropping the compiled contract", () => {
-    const anchorMaterial = `## Selected Task Source Anchor
+  it("includes selected task source material without dropping the compiled contract", () => {
+    const sourceMaterial = `### Selected Task Source Anchor
 
-Source: /tmp/plan.md lines 5-7 (origin: task-anchor)
+Source: /tmp/plan.md (lines 5-7; origin: task-anchor)
+Reason: Selected task checkbox line and task block.
 
 ~~~text
 - [ ] Selected task
@@ -152,10 +159,10 @@ Source: /tmp/plan.md lines 5-7 (origin: task-anchor)
     const prompt = buildImplementerPrompt({
       compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
-      taskAnchorMaterial: anchorMaterial,
+      sourceMaterial,
     });
 
-    expect(prompt).toContain(anchorMaterial.trim());
+    expect(prompt).toContain(sourceMaterial.trim());
     expect(prompt).toContain("- [ ] Selected task");
     expect(prompt).toContain("  Keep this detail verbatim.");
     expect(prompt).toContain(COMPILED_CONTRACT.trim());

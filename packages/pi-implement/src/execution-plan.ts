@@ -1,4 +1,5 @@
 import { detectCycle, extractJsonObject, type CycleNode } from "./graph.js";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -6,7 +7,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { PlanBundleManifest, ReferencedMaterial } from "./manifest.js";
 import { computeTaskFingerprint } from "./manifest.js";
 import type { PlanTask } from "./plan.js";
@@ -45,6 +46,19 @@ export type SourceMaterialRef = {
   path: string;
   mode: SourceMaterialMode;
   reason: string;
+};
+
+export type ResolvedSourceMaterialRef = SourceMaterialRef & {
+  absolutePath: string;
+  displayLabel: string;
+  fileHash: string;
+  renderedContentHash: string;
+  renderedCharCount: number;
+};
+
+export type RenderedSourceMaterialPacket = {
+  section: string;
+  resolvedRefs: ResolvedSourceMaterialRef[];
 };
 
 const SOURCE_MATERIAL_ORIGINS = new Set<SourceMaterialOrigin>([
@@ -148,15 +162,105 @@ export function renderTaskAnchorMaterial(
   task: PlanTask,
   planPath: string,
 ): string {
-  const ref = buildTaskAnchorSourceMaterialRef(task, planPath);
   const content = [task.originalLine, ...task.blockLines].join("\n");
-  const fence = markdownFenceFor(content);
-  const range =
-    ref.mode.kind === "line-range"
-      ? `${ref.mode.startLine}-${ref.mode.endLine}`
-      : "full-file";
+  return renderSourceMaterialEntry({
+    ref: buildTaskAnchorSourceMaterialRef(task, planPath),
+    absolutePath: planPath,
+    displayLabel: "Selected Task Source Anchor",
+    renderedContent: content,
+  });
+}
 
-  return `## Selected Task Source Anchor\n\nThe following source excerpt is deterministic anchor material for the selected task. It preserves the raw checkbox line and task block from the source plan for recovery, but it does not expand the implementation scope beyond the compiled task contract.\n\nSource: ${ref.path} lines ${range} (origin: ${ref.origin})\n\n${fence}text\n${content}\n${fence}\n`;
+export function renderSourceMaterialPacket(
+  refs: SourceMaterialRef[] | undefined,
+): RenderedSourceMaterialPacket | undefined {
+  if (!refs || refs.length === 0) {
+    return undefined;
+  }
+
+  const renderedEntries: string[] = [
+    "The following validated raw material is included to satisfy the selected compiled task contract. It supplies exact details, constraints, examples, schemas, prompts, fixtures, or design context, but it must not expand scope to sibling tasks or unrelated work.",
+  ];
+  const resolvedRefs: ResolvedSourceMaterialRef[] = [];
+
+  for (const ref of refs) {
+    const absolutePath = resolveSourceMaterialPath(ref.path);
+    const fileContent = readFileSync(absolutePath, "utf-8");
+    const renderedContent = renderSourceMaterialContent(fileContent, ref.mode);
+    const displayLabel = sourceMaterialDisplayLabel(ref, absolutePath);
+
+    renderedEntries.push(
+      renderSourceMaterialEntry({
+        ref,
+        absolutePath,
+        displayLabel,
+        renderedContent,
+      }),
+    );
+    resolvedRefs.push({
+      ...ref,
+      absolutePath,
+      displayLabel,
+      fileHash: hashText(fileContent),
+      renderedContentHash: hashText(renderedContent),
+      renderedCharCount: renderedContent.length,
+    });
+  }
+
+  return { section: renderedEntries.join("\n\n"), resolvedRefs };
+}
+
+function renderSourceMaterialEntry(args: {
+  ref: SourceMaterialRef;
+  absolutePath: string;
+  displayLabel: string;
+  renderedContent: string;
+}): string {
+  const { ref, absolutePath, displayLabel, renderedContent } = args;
+  const fence = markdownFenceFor(renderedContent);
+  const mode = formatSourceMaterialMode(ref.mode);
+
+  return `### ${displayLabel}\n\nSource: ${absolutePath} (${mode}; origin: ${ref.origin})\nReason: ${ref.reason}\n\n${fence}text\n${renderedContent}\n${fence}`;
+}
+
+function resolveSourceMaterialPath(path: string): string {
+  return isAbsolute(path) ? path : join(process.cwd(), path);
+}
+
+function renderSourceMaterialContent(
+  fileContent: string,
+  mode: SourceMaterialMode,
+): string {
+  if (mode.kind === "full-file") {
+    return fileContent;
+  }
+
+  return fileContent
+    .split(/\r?\n/)
+    .slice(mode.startLine - 1, mode.endLine)
+    .join("\n");
+}
+
+function sourceMaterialDisplayLabel(
+  ref: SourceMaterialRef,
+  absolutePath: string,
+): string {
+  if (ref.origin === "task-anchor") {
+    return "Selected Task Source Anchor";
+  }
+  return ref.mode.kind === "line-range"
+    ? `${absolutePath} lines ${ref.mode.startLine}-${ref.mode.endLine}`
+    : absolutePath;
+}
+
+function formatSourceMaterialMode(mode: SourceMaterialMode): string {
+  return mode.kind === "line-range"
+    ? `lines ${mode.startLine}-${mode.endLine}`
+    : "full-file";
+}
+
+function hashText(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
 }
 
 function markdownFenceFor(content: string): string {
