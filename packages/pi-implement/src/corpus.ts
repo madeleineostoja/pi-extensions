@@ -20,7 +20,7 @@ export type PlanCorpus = {
   validationErrors: string[];
 };
 
-const MARKDOWN_LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
+const MARKDOWN_LINK_RE = /(?<!!)\[([^\]\n]*)\]\(([^)\n]+)\)/g;
 
 function looksLikeUrl(value: string): boolean {
   try {
@@ -29,6 +29,93 @@ function looksLikeUrl(value: string): boolean {
   } catch {
     return /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
   }
+}
+
+function looksLikeScheme(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(value);
+}
+
+function stripFragment(target: string): string {
+  return target.split("#", 1)[0] ?? "";
+}
+
+function stripInlineCodeSpans(line: string): string {
+  let result = "";
+  for (let i = 0; i < line.length; ) {
+    if (line[i] !== "`") {
+      result += line[i];
+      i++;
+      continue;
+    }
+
+    let tickCount = 1;
+    while (line[i + tickCount] === "`") {
+      tickCount++;
+    }
+    const closing = line.indexOf("`".repeat(tickCount), i + tickCount);
+    if (closing === -1) {
+      result += " ".repeat(tickCount);
+      i += tickCount;
+      continue;
+    }
+    result += " ".repeat(closing + tickCount - i);
+    i = closing + tickCount;
+  }
+  return result;
+}
+
+function isPlaceholderMarkdownExample(label: string, target: string): boolean {
+  const targetPath = stripFragment(target).trim().toLowerCase();
+  const targetName = basename(targetPath);
+  return (
+    /^example(?:[-_][\w-]+)?$/i.test(label.trim()) &&
+    /^(?:placeholder|example)(?:[-_][\w-]+)?\.md$/i.test(targetName)
+  );
+}
+
+function discoverInlineMarkdownLinks(content: string): string[] {
+  const targets: string[] = [];
+  let fenced: { marker: "`" | "~"; length: number } | undefined;
+
+  for (const line of content.split("\n")) {
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      const markerText = fence[1] ?? "";
+      const marker = markerText[0] as "`" | "~";
+      if (fenced) {
+        if (fenced.marker === marker && markerText.length >= fenced.length) {
+          fenced = undefined;
+        }
+      } else {
+        fenced = { marker, length: markerText.length };
+      }
+      continue;
+    }
+
+    if (fenced) {
+      continue;
+    }
+
+    const searchable = stripInlineCodeSpans(line);
+    let match: RegExpExecArray | null;
+    while ((match = MARKDOWN_LINK_RE.exec(searchable)) !== null) {
+      const label = match[1] ?? "";
+      const target = (match[2] ?? "").trim();
+      if (!target || looksLikeScheme(target) || target.startsWith("#")) {
+        continue;
+      }
+      const targetPath = stripFragment(target).trim();
+      if (!targetPath || !targetPath.toLowerCase().endsWith(".md")) {
+        continue;
+      }
+      if (isPlaceholderMarkdownExample(label, target)) {
+        continue;
+      }
+      targets.push(target);
+    }
+  }
+
+  return targets;
 }
 
 function hashContent(content: string): string {
@@ -43,9 +130,18 @@ function validateCorpusTarget(
     return `URL corpus link target: ${target}`;
   }
 
-  const absolutePath = isAbsolute(target)
-    ? resolve(target)
-    : resolve(join(sourceDir, target));
+  const targetPath = stripFragment(target).trim();
+  if (!targetPath) {
+    return `missing or unreadable corpus link target: ${target}`;
+  }
+
+  if (!targetPath.toLowerCase().endsWith(".md")) {
+    return `non-markdown corpus link target: ${target}`;
+  }
+
+  const absolutePath = isAbsolute(targetPath)
+    ? resolve(targetPath)
+    : resolve(join(sourceDir, targetPath));
 
   try {
     const stat = statSync(absolutePath);
@@ -54,10 +150,6 @@ function validateCorpusTarget(
     }
   } catch {
     return `missing or unreadable corpus link target: ${target}`;
-  }
-
-  if (!target.toLowerCase().endsWith(".md")) {
-    return `non-markdown corpus link target: ${target}`;
   }
 
   let content: string;
@@ -118,21 +210,7 @@ export function ingestPlanCorpus(entryPath: string): PlanCorpus {
     });
   };
 
-  const links: string[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = MARKDOWN_LINK_RE.exec(entryContent)) !== null) {
-    const start = match.index;
-    if (start > 0 && entryContent[start - 1] === "!") {
-      continue;
-    }
-    const target = (match[2] ?? "").trim();
-    if (!target) {
-      continue;
-    }
-    links.push(target);
-  }
-
-  for (const target of links) {
+  for (const target of discoverInlineMarkdownLinks(entryContent)) {
     const validation = validateCorpusTarget(sourceDir, target);
     if (typeof validation === "string") {
       validationErrors.push(validation);

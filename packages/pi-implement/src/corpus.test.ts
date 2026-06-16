@@ -72,20 +72,97 @@ describe("ingestPlanCorpus", () => {
     expect(corpus.validationErrors).toHaveLength(0);
   });
 
-  it("reports a validation error for URL links", () => {
+  it("ignores non-markdown inline links", () => {
     const dir = makeTmpDir();
     const entryPath = join(dir, "plan.md");
     writeFileSync(
       entryPath,
-      "# Plan\n\nSee [docs](https://example.com/doc.md).\n\n- [ ] Do it\n",
+      [
+        "# Plan",
+        "",
+        "See [docs](https://example.com/doc.md).",
+        "Email [support](mailto:support@example.com).",
+        "Look at ![diagram](missing.md).",
+        "Read [notes](notes.txt).",
+        "Jump to [section](#details).",
+        "",
+        "- [ ] Do it",
+      ].join("\n"),
       "utf-8",
     );
 
     const corpus = ingestPlanCorpus(entryPath);
 
-    expect(corpus.validationErrors).toHaveLength(1);
-    expect(corpus.validationErrors[0]).toContain("URL");
-    expect(corpus.validationErrors[0]).toContain("https://example.com/doc.md");
+    expect(corpus.files).toHaveLength(1);
+    expect(corpus.validationErrors).toHaveLength(0);
+  });
+
+  it("ignores placeholder markdown examples without dropping real prose links", () => {
+    const dir = makeTmpDir();
+    const entryPath = join(dir, "plan.md");
+    const syntaxPath = join(dir, "syntax.md");
+    const realPath = join(dir, "real.md");
+    writeFileSync(
+      entryPath,
+      [
+        "# Plan",
+        "",
+        "Document placeholder syntax like [example](placeholder.md) in prose.",
+        "See the syntax guide in [syntax](syntax.md).",
+        "See [real material](real.md).",
+        "",
+        "- [ ] Do it",
+      ].join("\n"),
+      "utf-8",
+    );
+    writeFileSync(syntaxPath, "# Syntax\n", "utf-8");
+    writeFileSync(realPath, "# Real\n", "utf-8");
+
+    const corpus = ingestPlanCorpus(entryPath);
+
+    expect(corpus.files.map((f) => f.absolutePath)).toEqual([
+      entryPath,
+      syntaxPath,
+      realPath,
+    ]);
+    expect(corpus.validationErrors).toHaveLength(0);
+  });
+
+  it("ignores markdown links inside code contexts", () => {
+    const dir = makeTmpDir();
+    const entryPath = join(dir, "plan.md");
+    const realPath = join(dir, "real.md");
+    writeFileSync(
+      entryPath,
+      [
+        "# Plan",
+        "",
+        "Inline code `[example](inline.md)` should not be discovered.",
+        "Inline code with syntax text `[syntax](inline-syntax.md)` should not be discovered.",
+        "",
+        "```md",
+        "See [example](fenced.md).",
+        "```",
+        "",
+        "~~~md",
+        "See [syntax](tilde-fenced.md).",
+        "~~~",
+        "",
+        "See [real material](real.md).",
+        "",
+        "- [ ] Do it",
+      ].join("\n"),
+      "utf-8",
+    );
+    writeFileSync(realPath, "# Real\n", "utf-8");
+
+    const corpus = ingestPlanCorpus(entryPath);
+
+    expect(corpus.files.map((f) => f.absolutePath)).toEqual([
+      entryPath,
+      realPath,
+    ]);
+    expect(corpus.validationErrors).toHaveLength(0);
   });
 
   it("reports a validation error for missing files", () => {
@@ -106,11 +183,11 @@ describe("ingestPlanCorpus", () => {
   it("reports a validation error for directory targets", () => {
     const dir = makeTmpDir();
     const entryPath = join(dir, "plan.md");
-    const subDir = join(dir, "tasks");
+    const subDir = join(dir, "tasks.md");
     mkdirSync(subDir, { recursive: true });
     writeFileSync(
       entryPath,
-      "# Plan\n\nSee [dir](tasks).\n\n- [ ] Do it\n",
+      "# Plan\n\nSee [dir](tasks.md).\n\n- [ ] Do it\n",
       "utf-8",
     );
 
@@ -118,23 +195,6 @@ describe("ingestPlanCorpus", () => {
 
     expect(corpus.validationErrors).toHaveLength(1);
     expect(corpus.validationErrors[0]).toContain("directory");
-  });
-
-  it("reports a validation error for non-markdown files", () => {
-    const dir = makeTmpDir();
-    const entryPath = join(dir, "plan.md");
-    const subPath = join(dir, "sub.txt");
-    writeFileSync(
-      entryPath,
-      "# Plan\n\nSee [sub](sub.txt).\n\n- [ ] Do it\n",
-      "utf-8",
-    );
-    writeFileSync(subPath, "not markdown", "utf-8");
-
-    const corpus = ingestPlanCorpus(entryPath);
-
-    expect(corpus.validationErrors).toHaveLength(1);
-    expect(corpus.validationErrors[0]).toContain("non-markdown");
   });
 
   it("reports a validation error for empty files", () => {
