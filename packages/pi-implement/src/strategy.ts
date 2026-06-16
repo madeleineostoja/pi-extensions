@@ -20,8 +20,10 @@ import {
   generateMinimalExecutionManifest,
   validateExecutionManifest,
   writeExecutionManifest,
+  type CompiledContract,
   type ExecutionManifest,
   type ExecutionTask,
+  type SourceMaterialRef,
 } from "./execution-plan.js";
 
 const execFileAsync = promisify(execFile);
@@ -186,6 +188,23 @@ async function runExecutionPlanner(
   );
 }
 
+function validateExactMaterialRequirements(
+  manifest: ExecutionManifest,
+): { ok: true } | { ok: false; reason: string } {
+  for (const task of manifest.tasks) {
+    if (
+      requiresExactMaterial(task.compiledContract) &&
+      !hasUsableMaterialBeyondTaskAnchor(task)
+    ) {
+      return {
+        ok: false,
+        reason: `Execution task "${task.id}" requires exact source material, but no usable rendered material beyond the selected task anchor was resolved.`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 function isMalformedPlannerJsonReason(reason: string): boolean {
   return (
     reason.includes("valid JSON") ||
@@ -261,6 +280,14 @@ function processExecutionPlannerResult(
       req,
       `Execution manifest grounding failed: ${groundingValidation.reason}`,
     );
+  }
+
+  const exactMaterialValidation = validateExactMaterialRequirements(manifest);
+  if (!exactMaterialValidation.ok) {
+    return {
+      mode: "blocked",
+      reason: exactMaterialValidation.reason,
+    };
   }
 
   let structuralValidation = validateExecutionManifest(manifest);
@@ -378,6 +405,47 @@ function fallbackPlannerManifest(
   };
 }
 
+function normalizeSourceMaterialRefs(
+  task: ExecutionTask,
+  planTask: PlanTask,
+  planPath: string,
+  manifest: PlanBundleManifest | undefined,
+): SourceMaterialRef[] {
+  return [
+    ...buildDeterministicSourceMaterialRefs(planTask, planPath, manifest),
+    ...(task.sourceMaterialRefs ?? []).map((ref) => ({
+      ...ref,
+      origin: "planner" as const,
+    })),
+  ];
+}
+
+function contractText(contract: CompiledContract): string {
+  return [
+    contract.objective,
+    ...contract.inScope,
+    ...contract.acceptanceCriteria,
+    contract.supportingDesignContext,
+    contract.implementationNotes,
+    ...contract.outOfScope,
+    contract.verificationGuidance,
+  ]
+    .filter((part): part is string => typeof part === "string")
+    .join("\n");
+}
+
+function requiresExactMaterial(contract: CompiledContract): boolean {
+  return /\b(verbatim|exact|fixture|migration|sql|source-of-truth)\b|copy from|copied from|schema below|prompt string|system prompt/i.test(
+    contractText(contract),
+  );
+}
+
+function hasUsableMaterialBeyondTaskAnchor(task: ExecutionTask): boolean {
+  return (task.sourceMaterialRefs ?? []).some(
+    (ref) => ref.origin !== "task-anchor",
+  );
+}
+
 function normalizePlannerManifest(
   manifest: ExecutionManifest,
   unchecked: PlanTask[],
@@ -403,7 +471,8 @@ function normalizePlannerManifest(
       conflictHints: task.conflictHints ?? [],
       sourceRefs: normalizeSourceRefs(task, req),
       sourceMaterialRefs: mappedPlanTask
-        ? buildDeterministicSourceMaterialRefs(
+        ? normalizeSourceMaterialRefs(
+            task,
             mappedPlanTask,
             req.plan.path,
             req.manifest,
@@ -749,6 +818,10 @@ Return an execution manifest matching this schema:
       "evidencePaths": [],
       "review": { "mode": "skip" | "suggest" | "require", "reason": "optional" },
       "sourceRefs": [{ "path": "${req.plan.path}", "quote": "short exact source quote grounding this task" }],
+      "sourceMaterialRefs": [
+        { "origin": "planner", "path": "absolute-or-relative-source-path.md", "mode": { "kind": "full-file" }, "reason": "why this material is required" },
+        { "origin": "planner", "path": "absolute-or-relative-source-path.md", "mode": { "kind": "line-range", "startLine": 10, "endLine": 20 }, "reason": "why this exact range is required" }
+      ],
       "sourceCheckbox": { "path": "plan.md", "lineNumber": 5, "lineText": "- [ ] Task title" },
       "compiledContract": {
         "objective": "One-line description of what this task must accomplish",
@@ -762,6 +835,15 @@ Return an execution manifest matching this schema:
     }
   ]
 }
+
+## Source Material References
+
+Each task may include \`sourceMaterialRefs\` for exact raw materials the implementer and reviewer must see in the task packet. These are packet material, unlike \`sourceRefs\`.
+
+- Include only semantically required full files or line ranges from the plan corpus.
+- Use line ranges when only a bounded schema, prompt string, fixture, migration, SQL block, or exact source-of-truth excerpt is required.
+- Do not include sibling-task material or broad corpus dumps.
+- The orchestrator will union these planner-selected refs with deterministic selected-task anchors and explicit task-link refs, validate them, and skip invalid planner refs before rendering.
 
 ## Source References
 

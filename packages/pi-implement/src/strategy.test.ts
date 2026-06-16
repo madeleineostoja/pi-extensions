@@ -191,6 +191,102 @@ describe("selectStrategy - auto mode deterministic preconditions", () => {
       readFileSync(join(tmpRunDir, "execution-manifest.json"), "utf-8"),
     ).toContain('"title": "Task B"');
   });
+
+  it("unions deterministic refs with planner-selected source material refs", async () => {
+    const dir = join(tmpRunDir, "plan-dir");
+    mkdirSync(dir, { recursive: true });
+    const planPath = join(dir, "plan.md");
+    const materialPath = join(dir, "material.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Task A\n", "utf-8");
+    writeFileSync(materialPath, "# Material\n", "utf-8");
+    const plan = parsePlan(planPath, readFileSync(planPath, "utf-8"));
+    const plannerRef = {
+      origin: "planner" as const,
+      path: materialPath,
+      mode: { kind: "full-file" as const },
+      reason: "Needed exact fixture.",
+    };
+    const subagents = makeSubagents(
+      JSON.stringify(
+        makeManifest({
+          maxConcurrency: 1,
+          tasks: [
+            makeTask({
+              id: "t1",
+              planIndex: 1,
+              title: "Task A",
+              sourceMaterialRefs: [plannerRef],
+            }),
+          ],
+        }),
+      ),
+    );
+
+    const result = await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: dir,
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+
+    expect(result.mode).toBe("serial");
+    const persisted = JSON.parse(
+      readFileSync(join(tmpRunDir, "execution-manifest.json"), "utf-8"),
+    ) as ExecutionManifest;
+    expect(persisted.tasks[0].sourceMaterialRefs).toEqual([
+      expect.objectContaining({ origin: "task-anchor", path: planPath }),
+      plannerRef,
+    ]);
+  });
+
+  it("blocks exact-material contracts with no usable material beyond the task anchor", async () => {
+    const plan = makePlan(["Task A"]);
+    const subagents = makeSubagents(
+      JSON.stringify(
+        makeManifest({
+          maxConcurrency: 1,
+          tasks: [
+            makeTask({
+              id: "t1",
+              planIndex: 1,
+              title: "Task A",
+              compiledContract: {
+                objective: "Copy the prompt string exactly",
+                inScope: ["copy prompt string"],
+                acceptanceCriteria: ["prompt string is exact"],
+                outOfScope: ["other task work"],
+              },
+              sourceMaterialRefs: [],
+            }),
+          ],
+        }),
+      ),
+    );
+
+    const result = await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents,
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+
+    expect(result.mode).toBe("blocked");
+    expect(result.reason).toContain("requires exact source material");
+  });
 });
 
 describe("selectStrategy - auto mode planner", () => {

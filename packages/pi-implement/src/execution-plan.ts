@@ -7,7 +7,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { PlanBundleManifest, ReferencedMaterial } from "./manifest.js";
 import { computeTaskFingerprint } from "./manifest.js";
 import type { PlanTask } from "./plan.js";
@@ -59,6 +59,7 @@ export type ResolvedSourceMaterialRef = SourceMaterialRef & {
 export type RenderedSourceMaterialPacket = {
   section: string;
   resolvedRefs: ResolvedSourceMaterialRef[];
+  warnings: string[];
 };
 
 const SOURCE_MATERIAL_ORIGINS = new Set<SourceMaterialOrigin>([
@@ -171,8 +172,22 @@ export function renderTaskAnchorMaterial(
   });
 }
 
+export type SourceMaterialPathResolution =
+  | { ok: true; absolutePath: string }
+  | { ok: false; reason: string };
+
+export type SourceMaterialRenderOptions = {
+  resolvePath?: (ref: SourceMaterialRef) => SourceMaterialPathResolution;
+  validateFileContent?: (args: {
+    ref: SourceMaterialRef;
+    absolutePath: string;
+    fileContent: string;
+  }) => string | undefined;
+};
+
 export function renderSourceMaterialPacket(
   refs: SourceMaterialRef[] | undefined,
+  options: SourceMaterialRenderOptions = {},
 ): RenderedSourceMaterialPacket | undefined {
   if (!refs || refs.length === 0) {
     return undefined;
@@ -182,11 +197,26 @@ export function renderSourceMaterialPacket(
     "The following validated raw material is included to satisfy the selected compiled task contract. It supplies exact details, constraints, examples, schemas, prompts, fixtures, or design context, but it must not expand scope to sibling tasks or unrelated work.",
   ];
   const resolvedRefs: ResolvedSourceMaterialRef[] = [];
+  const warnings: string[] = [];
+  const seen = new Set<string>();
 
   for (const ref of refs) {
-    const absolutePath = resolveSourceMaterialPath(ref.path);
-    const fileContent = readFileSync(absolutePath, "utf-8");
-    const renderedContent = renderSourceMaterialContent(fileContent, ref.mode);
+    const validation = validateSourceMaterialRef(ref, options);
+    if (!validation.ok) {
+      if (isDeterministicMaterialRef(ref)) {
+        throw new Error(validation.reason);
+      }
+      warnings.push(validation.reason);
+      continue;
+    }
+
+    const { absolutePath, fileContent, renderedContent } = validation;
+    const dedupeKey = sourceMaterialDedupeKey(absolutePath, ref.mode);
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+
     const displayLabel = sourceMaterialDisplayLabel(ref, absolutePath);
 
     renderedEntries.push(
@@ -207,7 +237,19 @@ export function renderSourceMaterialPacket(
     });
   }
 
-  return { section: renderedEntries.join("\n\n"), resolvedRefs };
+  if (warnings.length > 0) {
+    renderedEntries.splice(
+      1,
+      0,
+      `Low-confidence source material warning for review: ${warnings.join("; ")}`,
+    );
+  }
+
+  if (resolvedRefs.length === 0) {
+    return undefined;
+  }
+
+  return { section: renderedEntries.join("\n\n"), resolvedRefs, warnings };
 }
 
 function renderSourceMaterialEntry(args: {
@@ -223,22 +265,120 @@ function renderSourceMaterialEntry(args: {
   return `### ${displayLabel}\n\nSource: ${absolutePath} (${mode}; origin: ${ref.origin})\nReason: ${ref.reason}\n\n${fence}text\n${renderedContent}\n${fence}`;
 }
 
-function resolveSourceMaterialPath(path: string): string {
-  return isAbsolute(path) ? path : join(process.cwd(), path);
+type SourceMaterialValidationResult =
+  | {
+      ok: true;
+      absolutePath: string;
+      fileContent: string;
+      renderedContent: string;
+    }
+  | { ok: false; reason: string };
+
+function validateSourceMaterialRef(
+  ref: SourceMaterialRef,
+  options: SourceMaterialRenderOptions,
+): SourceMaterialValidationResult {
+  let absolutePath: string;
+  try {
+    const resolution = options.resolvePath?.(ref) ?? {
+      ok: true as const,
+      absolutePath: canonicalSourceMaterialPath(ref.path),
+    };
+    if (!resolution.ok) {
+      return {
+        ok: false,
+        reason: `Invalid source material ref skipped (${ref.origin} ${ref.path}): ${resolution.reason}`,
+      };
+    }
+    absolutePath = resolution.absolutePath;
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Invalid source material ref skipped (${ref.origin} ${ref.path}): ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  let fileContent: string;
+  try {
+    fileContent = readFileSync(absolutePath, "utf-8");
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Invalid source material ref skipped (${ref.origin} ${absolutePath}): ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const contentValidationReason = options.validateFileContent?.({
+    ref,
+    absolutePath,
+    fileContent,
+  });
+  if (contentValidationReason) {
+    return {
+      ok: false,
+      reason: `Invalid source material ref skipped (${ref.origin} ${absolutePath}): ${contentValidationReason}`,
+    };
+  }
+
+  const rendered = renderSourceMaterialContent(fileContent, ref.mode);
+  if (!rendered.ok) {
+    return {
+      ok: false,
+      reason: `Invalid source material ref skipped (${ref.origin} ${absolutePath}): ${rendered.reason}`,
+    };
+  }
+
+  return {
+    ok: true,
+    absolutePath,
+    fileContent,
+    renderedContent: rendered.value,
+  };
+}
+
+function canonicalSourceMaterialPath(path: string): string {
+  return resolve(isAbsolute(path) ? path : join(process.cwd(), path));
+}
+
+function isDeterministicMaterialRef(ref: SourceMaterialRef): boolean {
+  return ref.origin === "task-anchor" || ref.origin === "task-link";
+}
+
+function sourceMaterialDedupeKey(
+  absolutePath: string,
+  mode: SourceMaterialMode,
+): string {
+  return mode.kind === "full-file"
+    ? `${absolutePath}\0full-file`
+    : `${absolutePath}\0line-range\0${mode.startLine}\0${mode.endLine}`;
 }
 
 function renderSourceMaterialContent(
   fileContent: string,
   mode: SourceMaterialMode,
-): string {
+): { ok: true; value: string } | { ok: false; reason: string } {
   if (mode.kind === "full-file") {
-    return fileContent;
+    return { ok: true, value: fileContent };
   }
 
-  return fileContent
-    .split(/\r?\n/)
-    .slice(mode.startLine - 1, mode.endLine)
-    .join("\n");
+  const lines = fileContent.split(/\r?\n/);
+  if (mode.startLine > lines.length) {
+    return {
+      ok: false,
+      reason: `line range ${mode.startLine}-${mode.endLine} starts after end of file`,
+    };
+  }
+  if (mode.endLine > lines.length) {
+    return {
+      ok: false,
+      reason: `line range ${mode.startLine}-${mode.endLine} extends past end of file`,
+    };
+  }
+
+  return {
+    ok: true,
+    value: lines.slice(mode.startLine - 1, mode.endLine).join("\n"),
+  };
 }
 
 function sourceMaterialDisplayLabel(
@@ -438,9 +578,6 @@ function parseExecutionTask(
     obj.sourceMaterialRefs,
     id,
   );
-  if (sourceMaterialRefsResult !== undefined && !sourceMaterialRefsResult.ok) {
-    return { ok: false, reason: sourceMaterialRefsResult.reason };
-  }
 
   const planIndex =
     typeof obj.planIndex === "number" &&
@@ -520,7 +657,12 @@ function parseExecutionTask(
       sourceReferences,
       compiledContract: contractResult.value,
       validationCommands,
-      reasons,
+      reasons: sourceMaterialRefsResult?.warnings.length
+        ? [
+            ...(reasons ?? []),
+            `Low-confidence source material warning for review: ${sourceMaterialRefsResult.warnings.join("; ")}`,
+          ]
+        : reasons,
       evidencePaths,
       sourceCheckbox: sourceCheckboxResult?.value,
     },
@@ -575,28 +717,28 @@ function parseSourceRefs(
 function parseSourceMaterialRefs(
   value: unknown,
   taskId: string,
-):
-  | { ok: true; value: SourceMaterialRef[] }
-  | { ok: false; reason: string }
-  | undefined {
+): { value: SourceMaterialRef[]; warnings: string[] } | undefined {
   if (value === undefined) {
     return undefined;
   }
   if (!Array.isArray(value)) {
     return {
-      ok: false,
-      reason: `Execution task "${taskId}" sourceMaterialRefs must be an array.`,
+      value: [],
+      warnings: [
+        `Execution task "${taskId}" sourceMaterialRefs must be an array.`,
+      ],
     };
   }
 
   const refs: SourceMaterialRef[] = [];
+  const warnings: string[] = [];
   for (let i = 0; i < value.length; i++) {
     const item = value[i];
     if (typeof item !== "object" || item === null || Array.isArray(item)) {
-      return {
-        ok: false,
-        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] must be an object.`,
-      };
+      warnings.push(
+        `Execution task "${taskId}" sourceMaterialRefs[${i}] must be an object.`,
+      );
+      continue;
     }
 
     const obj = item as Record<string, unknown>;
@@ -604,56 +746,70 @@ function parseSourceMaterialRefs(
       typeof obj.origin !== "string" ||
       !SOURCE_MATERIAL_ORIGINS.has(obj.origin as SourceMaterialOrigin)
     ) {
-      return {
-        ok: false,
-        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] origin must be one of: ${Array.from(SOURCE_MATERIAL_ORIGINS).join(", ")}.`,
-      };
+      warnings.push(
+        `Execution task "${taskId}" sourceMaterialRefs[${i}] origin must be one of: ${Array.from(SOURCE_MATERIAL_ORIGINS).join(", ")}.`,
+      );
+      continue;
     }
     if (typeof obj.path !== "string" || obj.path.trim().length === 0) {
-      return {
-        ok: false,
-        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] path must be a non-empty string.`,
-      };
+      warnings.push(
+        `Execution task "${taskId}" sourceMaterialRefs[${i}] path must be a non-empty string.`,
+      );
+      continue;
     }
     if (typeof obj.reason !== "string" || obj.reason.trim().length === 0) {
-      return {
-        ok: false,
-        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] reason must be a non-empty string.`,
-      };
+      warnings.push(
+        `Execution task "${taskId}" sourceMaterialRefs[${i}] reason must be a non-empty string.`,
+      );
+      continue;
     }
     if (
       typeof obj.mode !== "object" ||
       obj.mode === null ||
       Array.isArray(obj.mode)
     ) {
-      return {
-        ok: false,
-        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] mode must be an object with kind "full-file" or "line-range".`,
-      };
+      warnings.push(
+        `Execution task "${taskId}" sourceMaterialRefs[${i}] mode must be an object with kind "full-file" or "line-range".`,
+      );
+      continue;
     }
 
     const mode = obj.mode as Record<string, unknown>;
     if (mode.kind === "full-file") {
-      refs.push(obj as SourceMaterialRef);
+      refs.push({
+        origin: obj.origin as SourceMaterialOrigin,
+        path: obj.path.trim(),
+        mode: { kind: "full-file" },
+        reason: obj.reason.trim(),
+      });
       continue;
     }
 
     if (mode.kind !== "line-range") {
-      return {
-        ok: false,
-        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] mode.kind must be "full-file" or "line-range", got: ${String(mode.kind)}.`,
-      };
+      warnings.push(
+        `Execution task "${taskId}" sourceMaterialRefs[${i}] mode.kind must be "full-file" or "line-range", got: ${String(mode.kind)}.`,
+      );
+      continue;
     }
     if (!isValidLineSpan(mode.startLine, mode.endLine)) {
-      return {
-        ok: false,
-        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] with mode.kind "line-range" must include positive integer startLine and endLine with endLine greater than or equal to startLine.`,
-      };
+      warnings.push(
+        `Execution task "${taskId}" sourceMaterialRefs[${i}] with mode.kind "line-range" must include positive integer startLine and endLine with endLine greater than or equal to startLine.`,
+      );
+      continue;
     }
-    refs.push(obj as SourceMaterialRef);
+    refs.push({
+      origin: obj.origin as SourceMaterialOrigin,
+      path: obj.path.trim(),
+      mode: {
+        kind: "line-range",
+        startLine: mode.startLine as number,
+        endLine: mode.endLine as number,
+      },
+      reason: obj.reason.trim(),
+    });
   }
 
-  return { ok: true, value: refs };
+  return { value: refs, warnings };
 }
 
 function isValidLineSpan(start: unknown, end: unknown): boolean {

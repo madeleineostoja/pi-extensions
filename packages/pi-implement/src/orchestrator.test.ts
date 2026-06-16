@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   runImplementation,
@@ -1050,25 +1050,224 @@ describe("runImplementation", () => {
     expect(git.deletedBranches).toHaveLength(0);
   });
 
+  it("validates planner-selected material against the recorded plan corpus", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const supportPath = join(dir, "support.md");
+    const outsidePath = join(dir, "outside.md");
+    const planContent = [
+      "# Plan",
+      "",
+      "See [support](support.md).",
+      "",
+      "## Tasks",
+      "",
+      "- [ ] Selected task",
+      "",
+    ].join("\n");
+    const supportContent = [
+      "# Support",
+      "",
+      "safe line two",
+      "safe line three",
+      "safe line four",
+      "",
+    ].join("\n");
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(supportPath, supportContent, "utf-8");
+    writeFileSync(outsidePath, "# Outside\n\nDo not render me.\n", "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [
+        { path: planPath, hash: sha256(planContent) },
+        { path: supportPath, hash: sha256(supportContent) },
+      ],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(`${sha256(planContent)}${sha256(supportContent)}`),
+          files: [
+            { path: planPath, hash: sha256(planContent) },
+            { path: supportPath, hash: sha256(supportContent) },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      {
+        origin: "planner",
+        path: relative(dir, supportPath),
+        mode: { kind: "line-range", startLine: 3, endLine: 4 },
+        reason: "Valid repo-relative corpus excerpt.",
+      },
+      {
+        origin: "planner",
+        path: "outside.md",
+        mode: { kind: "full-file" },
+        reason: "Existing file outside the ingested corpus.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      manifest,
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const prompt = readFileSync(
+      join(paths.tasksDir, "t001-selected-task", "prompt.md"),
+      "utf-8",
+    );
+    expect(prompt).toContain(
+      `Source: ${supportPath} (lines 3-4; origin: planner)`,
+    );
+    expect(prompt).toContain("safe line two\nsafe line three");
+    expect(prompt).not.toContain("safe line four");
+    expect(prompt).not.toContain("Do not render me.");
+    expect(prompt).toContain(
+      "Low-confidence source material warning for review",
+    );
+    expect(prompt).toContain("path is not in the ingested plan corpus");
+  });
+
+  it("blocks exact-material tasks when planner material is not in the recorded corpus", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    const outsidePath = join(dir, "outside.md");
+    const planContent = "# Plan\n\n## Tasks\n\n- [ ] Copy exact fixture\n";
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(outsidePath, "fixture body\n", "utf-8");
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    const subagents = new FakeSubagents();
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [{ path: planPath, hash: sha256(planContent) }],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(sha256(planContent)),
+          files: [{ path: planPath, hash: sha256(planContent) }],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.compiledContract = {
+      ...task.compiledContract,
+      objective: "Copy exact fixture",
+      acceptanceCriteria: ["Fixture is copied from the source-of-truth."],
+    };
+    task.sourceMaterialRefs = [
+      {
+        origin: "planner",
+        path: "outside.md",
+        mode: { kind: "full-file" },
+        reason: "Existing file outside the ingested corpus.",
+      },
+    ];
+    writeExecutionManifest(paths.runDir, executionManifest);
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        manifest,
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("requires exact source material");
+    expect(subagents.spawns).toHaveLength(0);
+  });
+
   it("persists implementer packet prompt and source material artifacts", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
-    writeFileSync(
-      planPath,
-      [
-        "# Plan",
-        "",
-        "## Tasks",
-        "",
-        "- [ ] Selected task",
-        "  Preserve this detail exactly.",
-        "  - Preserve this nested point.",
-        "- [ ] Sibling task",
-        "  Do not include this sibling detail.",
-        "",
-      ].join("\n"),
-      "utf-8",
-    );
+    const referencePath = join(dir, "reference.md");
+    const planContent = [
+      "# Plan",
+      "",
+      "## Tasks",
+      "",
+      "- [ ] Selected task",
+      "  Preserve this detail exactly.",
+      "  - Preserve this nested point.",
+      "- [ ] Sibling task",
+      "  Do not include this sibling detail.",
+      "",
+    ].join("\n");
+    const referenceContent = [
+      "# Reference",
+      "",
+      "line two",
+      "line three exact detail",
+      "line four",
+      "line five",
+      "",
+    ].join("\n");
+    writeFileSync(planPath, planContent, "utf-8");
+    writeFileSync(referencePath, referenceContent, "utf-8");
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     subagents.results = [
@@ -1076,12 +1275,69 @@ describe("runImplementation", () => {
       { status: "completed", result: GOOD_REVIEW },
     ];
     const paths = makePaths(dir);
+    writeRunJson(paths, {
+      ...makeRunJson(dir, planPath),
+      corpusFiles: [
+        { path: planPath, hash: sha256(planContent) },
+        { path: referencePath, hash: sha256(referenceContent) },
+      ],
+    });
+    mkdirSync(paths.runDir, { recursive: true });
+    writeFileSync(paths.planSnapshot, planContent, "utf-8");
+    writeFileSync(
+      paths.corpusJson,
+      JSON.stringify(
+        {
+          entryPath: planPath,
+          corpusHash: sha256(
+            `${sha256(planContent)}${sha256(referenceContent)}`,
+          ),
+          files: [
+            { path: planPath, hash: sha256(planContent) },
+            { path: referencePath, hash: sha256(referenceContent) },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    const plan = parsePlanFile(planPath);
+    const manifest = buildPlanBundleManifest(planPath, plan);
+    const executionManifest = makeExecutionManifest(plan, manifest);
+    const task = executionManifest.tasks[0];
+    if (!task) {
+      throw new Error("missing test task");
+    }
+    task.sourceMaterialRefs = [
+      ...(task.sourceMaterialRefs ?? []),
+      {
+        origin: "planner",
+        path: referencePath,
+        mode: { kind: "line-range", startLine: 3, endLine: 4 },
+        reason: "Planner-selected exact excerpt.",
+      },
+      {
+        origin: "planner",
+        path: referencePath,
+        mode: { kind: "line-range", startLine: 3, endLine: 4 },
+        reason: "Duplicate planner-selected exact excerpt.",
+      },
+      {
+        origin: "planner",
+        path: join(dir, "missing.md"),
+        mode: { kind: "full-file" },
+        reason: "Malformed planner selection.",
+      },
+    ];
 
     await expect(
       runImplementation({
         git,
         subagents,
         planPath,
+        manifest,
+        executionManifest,
         mode: "parallel",
         runId: "r1",
         paths,
@@ -1105,6 +1361,14 @@ describe("runImplementation", () => {
     expect(prompt).toContain("### Selected Task Source Anchor");
     expect(prompt).toContain(
       `Source: ${planPath} (lines 5-7; origin: task-anchor)`,
+    );
+    expect(prompt).toContain(
+      `Source: ${referencePath} (lines 3-4; origin: planner)`,
+    );
+    expect(prompt).toContain("line two\nline three exact detail");
+    expect(prompt).not.toContain("line four");
+    expect(prompt).toContain(
+      "Low-confidence source material warning for review",
     );
     expect(prompt).toContain(
       [
@@ -1141,7 +1405,7 @@ describe("runImplementation", () => {
         renderedCharCount: number;
       }>;
     };
-    expect(packet.resolvedMaterialRefs).toHaveLength(1);
+    expect(packet.resolvedMaterialRefs).toHaveLength(2);
     expect(packet.resolvedMaterialRefs[0]).toMatchObject({
       absolutePath: planPath,
       displayLabel: "Selected Task Source Anchor",
@@ -1157,6 +1421,16 @@ describe("runImplementation", () => {
         ].join("\n"),
       ),
       renderedCharCount: 83,
+    });
+    expect(packet.resolvedMaterialRefs[1]).toMatchObject({
+      absolutePath: referencePath,
+      displayLabel: `${referencePath} lines 3-4`,
+      mode: { kind: "line-range", startLine: 3, endLine: 4 },
+      origin: "planner",
+      reason: "Planner-selected exact excerpt.",
+      renderedContentHash: sha256(
+        ["line two", "line three exact detail"].join("\n"),
+      ),
     });
   });
 

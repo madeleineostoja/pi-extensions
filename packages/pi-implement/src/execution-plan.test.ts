@@ -562,7 +562,7 @@ describe("parseExecutionPlan", () => {
     );
   });
 
-  it("rejects sourceMaterialRefs with invalid origin", () => {
+  it("downgrades sourceMaterialRefs with invalid origin", () => {
     const result = parseExecutionPlan(
       JSON.stringify({
         version: 1,
@@ -581,13 +581,16 @@ describe("parseExecutionPlan", () => {
         ],
       }),
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("sourceMaterialRefs[0] origin");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].sourceMaterialRefs).toEqual([]);
+      expect(result.value.tasks[0].reasons?.[0]).toContain(
+        "sourceMaterialRefs[0] origin",
+      );
     }
   });
 
-  it("rejects sourceMaterialRefs without a reason", () => {
+  it("downgrades sourceMaterialRefs without a reason", () => {
     const result = parseExecutionPlan(
       JSON.stringify({
         version: 1,
@@ -605,13 +608,16 @@ describe("parseExecutionPlan", () => {
         ],
       }),
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("sourceMaterialRefs[0] reason");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].sourceMaterialRefs).toEqual([]);
+      expect(result.value.tasks[0].reasons?.[0]).toContain(
+        "sourceMaterialRefs[0] reason",
+      );
     }
   });
 
-  it("rejects line-range sourceMaterialRefs without a valid range", () => {
+  it("downgrades line-range sourceMaterialRefs without a valid range", () => {
     const result = parseExecutionPlan(
       JSON.stringify({
         version: 1,
@@ -630,14 +636,17 @@ describe("parseExecutionPlan", () => {
         ],
       }),
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("line-range");
-      expect(result.reason).toContain("startLine and endLine");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].sourceMaterialRefs).toEqual([]);
+      expect(result.value.tasks[0].reasons?.[0]).toContain("line-range");
+      expect(result.value.tasks[0].reasons?.[0]).toContain(
+        "startLine and endLine",
+      );
     }
   });
 
-  it("rejects sourceMaterialRefs with invalid mode shapes", () => {
+  it("downgrades sourceMaterialRefs with invalid mode shapes", () => {
     const stringModeResult = parseExecutionPlan(
       JSON.stringify({
         version: 1,
@@ -656,9 +665,12 @@ describe("parseExecutionPlan", () => {
         ],
       }),
     );
-    expect(stringModeResult.ok).toBe(false);
-    if (!stringModeResult.ok) {
-      expect(stringModeResult.reason).toContain("sourceMaterialRefs[0] mode");
+    expect(stringModeResult.ok).toBe(true);
+    if (stringModeResult.ok) {
+      expect(stringModeResult.value.tasks[0].sourceMaterialRefs).toEqual([]);
+      expect(stringModeResult.value.tasks[0].reasons?.[0]).toContain(
+        "sourceMaterialRefs[0] mode",
+      );
     }
 
     const unknownKindResult = parseExecutionPlan(
@@ -679,9 +691,10 @@ describe("parseExecutionPlan", () => {
         ],
       }),
     );
-    expect(unknownKindResult.ok).toBe(false);
-    if (!unknownKindResult.ok) {
-      expect(unknownKindResult.reason).toContain(
+    expect(unknownKindResult.ok).toBe(true);
+    if (unknownKindResult.ok) {
+      expect(unknownKindResult.value.tasks[0].sourceMaterialRefs).toEqual([]);
+      expect(unknownKindResult.value.tasks[0].reasons?.[0]).toContain(
         "sourceMaterialRefs[0] mode.kind",
       );
     }

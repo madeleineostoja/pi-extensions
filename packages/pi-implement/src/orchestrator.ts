@@ -9,7 +9,7 @@ import {
   writeFileSync,
   renameSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
   buildAlreadySatisfiedReviewerPrompt,
@@ -28,6 +28,10 @@ import {
   readExecutionManifest,
   renderCompiledContract,
   renderSourceMaterialPacket,
+  type CompiledContract,
+  type RenderedSourceMaterialPacket,
+  type SourceMaterialPathResolution,
+  type SourceMaterialRef,
 } from "./execution-plan.js";
 import {
   tryMarkSourceCheckboxDone,
@@ -110,9 +114,169 @@ const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
+function buildTaskSourceMaterialPacket(
+  args: TaskSourceMaterialPacketArgs,
+): RenderedSourceMaterialPacket {
+  const deterministicRefs =
+    generateMinimalExecutionManifest([args.task], args.planPath, args.manifest)
+      .tasks[0]?.sourceMaterialRefs ?? [];
+  const plannerCorpus = buildPlannerSourceMaterialCorpus(args);
+  const packet = renderSourceMaterialPacket(
+    [
+      ...deterministicRefs,
+      ...(args.plannerRefs ?? []).map((ref) => ({
+        ...ref,
+        origin: "planner" as const,
+      })),
+    ],
+    {
+      resolvePath: (ref) =>
+        ref.origin === "planner"
+          ? resolvePlannerSourceMaterialPath(ref, plannerCorpus)
+          : { ok: true, absolutePath: resolve(ref.path) },
+      validateFileContent: ({ ref, absolutePath, fileContent }) => {
+        if (ref.origin !== "planner") {
+          return undefined;
+        }
+        const corpusEntry = plannerCorpus.byAbsolutePath.get(absolutePath);
+        if (!corpusEntry) {
+          return "path is not in the ingested plan corpus";
+        }
+        if (hashText(fileContent) !== corpusEntry.hash) {
+          return "file hash does not match the ingested plan corpus";
+        }
+        return undefined;
+      },
+    },
+  );
+
+  if (
+    requiresExactMaterial(args.compiledContract) &&
+    !packetHasMaterialBeyondTaskAnchor(packet)
+  ) {
+    throw new BlockedError(
+      "Task contract requires exact source material, but no usable rendered material beyond the selected task anchor was resolved.",
+    );
+  }
+
+  if (!packet) {
+    throw new BlockedError("No selected task source anchor could be rendered.");
+  }
+
+  return packet;
+}
+
+function packetHasMaterialBeyondTaskAnchor(
+  packet: RenderedSourceMaterialPacket | undefined,
+): boolean {
+  return (
+    packet?.resolvedRefs.some((ref) => ref.origin !== "task-anchor") ?? false
+  );
+}
+
+function contractText(contract: CompiledContract): string {
+  return [
+    contract.objective,
+    ...contract.inScope,
+    ...contract.acceptanceCriteria,
+    contract.supportingDesignContext,
+    contract.implementationNotes,
+    ...contract.outOfScope,
+    contract.verificationGuidance,
+  ]
+    .filter((part): part is string => typeof part === "string")
+    .join("\n");
+}
+
+function requiresExactMaterial(contract: CompiledContract): boolean {
+  return /\b(verbatim|exact|fixture|migration|sql|source-of-truth)\b|copy from|copied from|schema below|prompt string|system prompt/i.test(
+    contractText(contract),
+  );
+}
+
+type PlannerSourceMaterialCorpusEntry = {
+  absolutePath: string;
+  hash: string;
+};
+
+type PlannerSourceMaterialCorpus = {
+  byAbsolutePath: Map<string, PlannerSourceMaterialCorpusEntry>;
+  planDir: string;
+  repoRoot?: string;
+};
+
+function buildPlannerSourceMaterialCorpus(
+  args: TaskSourceMaterialPacketArgs,
+): PlannerSourceMaterialCorpus {
+  const byAbsolutePath = new Map<string, PlannerSourceMaterialCorpusEntry>();
+  const addEntry = (path: string, hash: string) => {
+    const absolutePath = resolve(path);
+    byAbsolutePath.set(absolutePath, { absolutePath, hash });
+  };
+
+  addEntry(args.planPath, hashText(readFileSync(args.planPath, "utf-8")));
+  for (const task of args.manifest?.tasks ?? []) {
+    for (const material of task.referencedMaterials) {
+      addEntry(material.absolutePath, hashText(material.content));
+    }
+  }
+  for (const file of args.corpusFiles ?? []) {
+    addEntry(file.path, file.hash);
+  }
+
+  return {
+    byAbsolutePath,
+    planDir: dirname(resolve(args.planPath)),
+    repoRoot: args.repoRoot ? resolve(args.repoRoot) : undefined,
+  };
+}
+
+function resolvePlannerSourceMaterialPath(
+  ref: SourceMaterialRef,
+  corpus: PlannerSourceMaterialCorpus,
+): SourceMaterialPathResolution {
+  const candidates = candidatePlannerSourceMaterialPaths(ref.path, corpus);
+  for (const candidate of candidates) {
+    if (corpus.byAbsolutePath.has(candidate)) {
+      return { ok: true, absolutePath: candidate };
+    }
+  }
+
+  return {
+    ok: false,
+    reason: "path is not in the ingested plan corpus",
+  };
+}
+
+function candidatePlannerSourceMaterialPaths(
+  path: string,
+  corpus: PlannerSourceMaterialCorpus,
+): string[] {
+  const candidates = new Set<string>();
+  if (isAbsolute(path)) {
+    candidates.add(resolve(path));
+  } else {
+    candidates.add(resolve(corpus.planDir, path));
+    if (corpus.repoRoot) {
+      candidates.add(resolve(corpus.repoRoot, path));
+    }
+  }
+  return Array.from(candidates);
+}
+
 type RetryFeedback = {
   source: "reviewer" | "system" | "commit-hook" | "integration";
   message: string;
+};
+
+type TaskSourceMaterialPacketArgs = {
+  task: PlanTask;
+  planPath: string;
+  manifest?: PlanBundleManifest;
+  repoRoot?: string;
+  corpusFiles?: Array<{ path: string; hash: string }>;
+  compiledContract: CompiledContract;
+  plannerRefs?: SourceMaterialRef[];
 };
 
 export type OrchestratorDeps = {
@@ -3676,6 +3840,9 @@ async function runTaskWorker(args: {
       compiledContractEntry.compiledContract,
     );
     const effectiveWorktreePath = worktreePath ?? (await deps.git.root());
+    const recordedCorpusFiles = deps.paths
+      ? readRecordedCorpusFileRecords(deps.paths).files
+      : [];
 
     const totalAttempt = (attemptOrdinalBase ?? 0) + attempt;
     const isRetry =
@@ -3683,11 +3850,15 @@ async function runTaskWorker(args: {
       initialFeedback !== undefined ||
       (wasNeedsRework ?? false);
 
-    const sourceMaterialPacket = renderSourceMaterialPacket(
-      compiledContractEntry.sourceMaterialRefs ??
-        generateMinimalExecutionManifest([task], deps.planPath, deps.manifest)
-          .tasks[0]?.sourceMaterialRefs,
-    );
+    const sourceMaterialPacket = buildTaskSourceMaterialPacket({
+      task,
+      planPath: deps.planPath,
+      manifest: deps.manifest,
+      repoRoot: await deps.git.root(),
+      corpusFiles: recordedCorpusFiles,
+      compiledContract: compiledContractEntry.compiledContract,
+      plannerRefs: compiledContractEntry.sourceMaterialRefs,
+    });
     const implementerPrompt = buildImplementerPrompt({
       compiledContract,
       worktreePath: effectiveWorktreePath,
