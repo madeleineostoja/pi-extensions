@@ -15,6 +15,7 @@ import type { AgentDisplayRef, RunState, StatePatch } from "./status.js";
 import { validateGraph, writeGraphJson } from "./graph.js";
 import type { ImplementGraph } from "./graph.js";
 import {
+  buildTaskAnchorSourceMaterialRef,
   parseExecutionPlan,
   generateMinimalExecutionManifest,
   validateExecutionManifest,
@@ -401,6 +402,9 @@ function normalizePlannerManifest(
       affectedAreas: task.affectedAreas ?? [],
       conflictHints: task.conflictHints ?? [],
       sourceRefs: normalizeSourceRefs(task, req),
+      sourceMaterialRefs: mappedPlanTask
+        ? [buildTaskAnchorSourceMaterialRef(mappedPlanTask, req.plan.path)]
+        : task.sourceMaterialRefs,
       sourceReferences: task.sourceReferences ?? [],
       compiledContract: task.compiledContract,
     };

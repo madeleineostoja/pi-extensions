@@ -1,8 +1,10 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  buildTaskAnchorSourceMaterialRef,
+  generateMinimalExecutionManifest,
   parseExecutionPlan,
   validateExecutionManifest,
   renderCompiledContract,
@@ -13,6 +15,7 @@ import {
   type ExecutionTask,
   type SourceMaterialRef,
 } from "./execution-plan.js";
+import { parsePlanFile } from "./plan.js";
 
 function makeContract(
   overrides: Partial<CompiledContract> = {},
@@ -57,6 +60,68 @@ function makeManifest(
     ...meta,
   };
 }
+
+describe("buildTaskAnchorSourceMaterialRef", () => {
+  it("covers the selected checkbox line and task block only", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-task-anchor-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      [
+        "# Plan",
+        "",
+        "## Tasks",
+        "",
+        "- [ ] First task",
+        "  Details for first task.",
+        "  - nested first task item",
+        "- [ ] Second task",
+        "  Details for second task.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const plan = parsePlanFile(planPath);
+    const ref = buildTaskAnchorSourceMaterialRef(plan.tasks[0]!, planPath);
+
+    expect(ref).toEqual({
+      origin: "task-anchor",
+      path: planPath,
+      mode: { kind: "line-range", startLine: 5, endLine: 7 },
+      reason: "Selected task checkbox line and task block.",
+    });
+    expect(readFileSync(planPath, "utf-8").split(/\r?\n/).slice(4, 7)).toEqual([
+      "- [ ] First task",
+      "  Details for first task.",
+      "  - nested first task item",
+    ]);
+  });
+});
+
+describe("generateMinimalExecutionManifest", () => {
+  it("adds task-anchor source material refs to fallback manifest tasks", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-minimal-anchor-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First task\n  Details for first task.\n- [ ] Second task\n",
+      "utf-8",
+    );
+    const plan = parsePlanFile(planPath);
+
+    const manifest = generateMinimalExecutionManifest(plan.tasks, planPath);
+
+    expect(manifest.tasks[0]?.sourceMaterialRefs).toEqual([
+      {
+        origin: "task-anchor",
+        path: planPath,
+        mode: { kind: "line-range", startLine: 5, endLine: 6 },
+        reason: "Selected task checkbox line and task block.",
+      },
+    ]);
+  });
+});
 
 describe("parseExecutionPlan", () => {
   it("parses a valid minimal plan (one task, no deps)", () => {

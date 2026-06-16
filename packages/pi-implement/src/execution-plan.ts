@@ -96,6 +96,45 @@ export type ExecutionManifest = {
   tasks: ExecutionTask[];
 };
 
+export function buildTaskAnchorSourceMaterialRef(
+  task: PlanTask,
+  planPath: string,
+): SourceMaterialRef {
+  return {
+    origin: "task-anchor",
+    path: planPath,
+    mode: {
+      kind: "line-range",
+      startLine: task.lineNumber,
+      endLine: task.lineNumber + task.blockLines.length,
+    },
+    reason: "Selected task checkbox line and task block.",
+  };
+}
+
+export function renderTaskAnchorMaterial(
+  task: PlanTask,
+  planPath: string,
+): string {
+  const ref = buildTaskAnchorSourceMaterialRef(task, planPath);
+  const content = [task.originalLine, ...task.blockLines].join("\n");
+  const fence = markdownFenceFor(content);
+  const range =
+    ref.mode.kind === "line-range"
+      ? `${ref.mode.startLine}-${ref.mode.endLine}`
+      : "full-file";
+
+  return `## Selected Task Source Anchor\n\nThe following source excerpt is deterministic anchor material for the selected task. It preserves the raw checkbox line and task block from the source plan for recovery, but it does not expand the implementation scope beyond the compiled task contract.\n\nSource: ${ref.path} lines ${range} (origin: ${ref.origin})\n\n${fence}text\n${content}\n${fence}\n`;
+}
+
+function markdownFenceFor(content: string): string {
+  let fence = "~~~";
+  while (content.includes(fence)) {
+    fence += "~";
+  }
+  return fence;
+}
+
 export type ExecutionValidationResult =
   | { ok: true }
   | { ok: false; reason: string };
@@ -787,6 +826,7 @@ export function generateMinimalExecutionManifest(
       affectedAreas: [],
       conflictHints: [],
       sourceRefs: [{ path: planPath, quote: task.text }],
+      sourceMaterialRefs: [buildTaskAnchorSourceMaterialRef(task, planPath)],
       sourceReferences: [],
       sourceCheckbox: {
         path: planPath,

@@ -1023,6 +1023,73 @@ describe("runImplementation", () => {
     expect(git.deletedBranches).toHaveLength(0);
   });
 
+  it("persists fallback implementer prompt with the selected task anchor block", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      [
+        "# Plan",
+        "",
+        "## Tasks",
+        "",
+        "- [ ] Selected task",
+        "  Preserve this detail exactly.",
+        "  - Preserve this nested point.",
+        "- [ ] Sibling task",
+        "  Do not include this sibling detail.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+    ];
+    const paths = makePaths(dir);
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("parallel task approved");
+
+    const prompt = readFileSync(
+      join(paths.tasksDir, "t001-selected-task", "prompt.md"),
+      "utf-8",
+    );
+
+    expect(prompt).toContain("## Selected Task Source Anchor");
+    expect(prompt).toContain(
+      `Source: ${planPath} lines 5-7 (origin: task-anchor)`,
+    );
+    expect(prompt).toContain(
+      [
+        "- [ ] Selected task",
+        "  Preserve this detail exactly.",
+        "  - Preserve this nested point.",
+      ].join("\n"),
+    );
+    expect(prompt).not.toContain("- [ ] Sibling task");
+    expect(prompt).not.toContain("Do not include this sibling detail.");
+    expect(prompt).toContain("## Compiled Task Contract");
+  });
+
   it("commits in the task worktree and leaves main HEAD unchanged", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");

@@ -69,6 +69,7 @@ function buildSiblingTasksSection(outOfScopeTasks?: string[]): string {
 export function buildImplementerPrompt(args: {
   compiledContract: string;
   worktreePath: string;
+  taskAnchorMaterial?: string;
   feedback?: string;
   priorSummary?: string;
 }): string {
@@ -98,7 +99,11 @@ Make the necessary code, documentation, and test changes for the selected task. 
 If useful, call the injected \`explore\` tool for broad map-building or targeted context checks before direct reads/searches. Treat exploration as guidance only: verify relevant findings yourself and do not expand scope based on exploration results.
 
 If blocked, leave the repository in a safe state and explain the blocker in the result block.`;
-  return `${intro}${retry}
+  const anchorMaterial = args.taskAnchorMaterial
+    ? `
+${args.taskAnchorMaterial}`
+    : "";
+  return `${intro}${retry}${anchorMaterial}
 ## Compiled Task Contract
 
 ${args.compiledContract}

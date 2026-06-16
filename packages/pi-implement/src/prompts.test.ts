@@ -137,6 +137,30 @@ describe("buildImplementerPrompt", () => {
     );
   });
 
+  it("includes selected task anchor material without dropping the compiled contract", () => {
+    const anchorMaterial = `## Selected Task Source Anchor
+
+Source: /tmp/plan.md lines 5-7 (origin: task-anchor)
+
+~~~text
+- [ ] Selected task
+  Keep this detail verbatim.
+  - Keep this nested item.
+~~~
+`;
+
+    const prompt = buildImplementerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      taskAnchorMaterial: anchorMaterial,
+    });
+
+    expect(prompt).toContain(anchorMaterial.trim());
+    expect(prompt).toContain("- [ ] Selected task");
+    expect(prompt).toContain("  Keep this detail verbatim.");
+    expect(prompt).toContain(COMPILED_CONTRACT.trim());
+  });
+
   it("includes retry context when reviewer feedback is supplied", () => {
     const prompt = buildImplementerPrompt({
       compiledContract: COMPILED_CONTRACT,

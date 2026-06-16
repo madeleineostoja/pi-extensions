@@ -27,6 +27,7 @@ import {
   generateMinimalExecutionManifest,
   readExecutionManifest,
   renderCompiledContract,
+  renderTaskAnchorMaterial,
 } from "./execution-plan.js";
 import {
   tryMarkSourceCheckboxDone,
@@ -3684,6 +3685,7 @@ async function runTaskWorker(args: {
     const implementerPrompt = buildImplementerPrompt({
       compiledContract,
       worktreePath: effectiveWorktreePath,
+      taskAnchorMaterial: renderTaskAnchorMaterial(task, deps.planPath),
       feedback: feedback ? formatFeedback(feedback) : undefined,
       priorSummary,
     });
