@@ -28,6 +28,32 @@ export type SourceRef = {
   quote?: string;
 };
 
+export type SourceMaterialOrigin =
+  | "task-anchor"
+  | "task-link"
+  | "planner"
+  | "needs-material"
+  | "fallback";
+
+export type SourceMaterialMode =
+  | { kind: "full-file" }
+  | { kind: "line-range"; startLine: number; endLine: number };
+
+export type SourceMaterialRef = {
+  origin: SourceMaterialOrigin;
+  path: string;
+  mode: SourceMaterialMode;
+  reason: string;
+};
+
+const SOURCE_MATERIAL_ORIGINS = new Set<SourceMaterialOrigin>([
+  "task-anchor",
+  "task-link",
+  "planner",
+  "needs-material",
+  "fallback",
+]);
+
 export type CompiledContract = {
   objective: string;
   inScope: string[];
@@ -50,6 +76,7 @@ export type ExecutionTask = {
   affectedAreas: string[];
   conflictHints: string[];
   sourceRefs?: SourceRef[];
+  sourceMaterialRefs?: SourceMaterialRef[];
   sourceReferences: string[];
   compiledContract: CompiledContract;
   validationCommands?: string[];
@@ -232,6 +259,14 @@ function parseExecutionTask(
     return { ok: false, reason: sourceRefsResult.reason };
   }
 
+  const sourceMaterialRefsResult = parseSourceMaterialRefs(
+    obj.sourceMaterialRefs,
+    id,
+  );
+  if (sourceMaterialRefsResult !== undefined && !sourceMaterialRefsResult.ok) {
+    return { ok: false, reason: sourceMaterialRefsResult.reason };
+  }
+
   const planIndex =
     typeof obj.planIndex === "number" &&
     Number.isInteger(obj.planIndex) &&
@@ -306,6 +341,7 @@ function parseExecutionTask(
       affectedAreas,
       conflictHints,
       sourceRefs: sourceRefsResult.value,
+      sourceMaterialRefs: sourceMaterialRefsResult?.value,
       sourceReferences,
       compiledContract: contractResult.value,
       validationCommands,
@@ -359,6 +395,101 @@ function parseSourceRefs(
     refs.push(ref);
   }
   return { ok: true, value: refs };
+}
+
+function parseSourceMaterialRefs(
+  value: unknown,
+  taskId: string,
+):
+  | { ok: true; value: SourceMaterialRef[] }
+  | { ok: false; reason: string }
+  | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      reason: `Execution task "${taskId}" sourceMaterialRefs must be an array.`,
+    };
+  }
+
+  const refs: SourceMaterialRef[] = [];
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return {
+        ok: false,
+        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] must be an object.`,
+      };
+    }
+
+    const obj = item as Record<string, unknown>;
+    if (
+      typeof obj.origin !== "string" ||
+      !SOURCE_MATERIAL_ORIGINS.has(obj.origin as SourceMaterialOrigin)
+    ) {
+      return {
+        ok: false,
+        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] origin must be one of: ${Array.from(SOURCE_MATERIAL_ORIGINS).join(", ")}.`,
+      };
+    }
+    if (typeof obj.path !== "string" || obj.path.trim().length === 0) {
+      return {
+        ok: false,
+        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] path must be a non-empty string.`,
+      };
+    }
+    if (typeof obj.reason !== "string" || obj.reason.trim().length === 0) {
+      return {
+        ok: false,
+        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] reason must be a non-empty string.`,
+      };
+    }
+    if (
+      typeof obj.mode !== "object" ||
+      obj.mode === null ||
+      Array.isArray(obj.mode)
+    ) {
+      return {
+        ok: false,
+        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] mode must be an object with kind "full-file" or "line-range".`,
+      };
+    }
+
+    const mode = obj.mode as Record<string, unknown>;
+    if (mode.kind === "full-file") {
+      refs.push(obj as SourceMaterialRef);
+      continue;
+    }
+
+    if (mode.kind !== "line-range") {
+      return {
+        ok: false,
+        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] mode.kind must be "full-file" or "line-range", got: ${String(mode.kind)}.`,
+      };
+    }
+    if (!isValidLineSpan(mode.startLine, mode.endLine)) {
+      return {
+        ok: false,
+        reason: `Execution task "${taskId}" sourceMaterialRefs[${i}] with mode.kind "line-range" must include positive integer startLine and endLine with endLine greater than or equal to startLine.`,
+      };
+    }
+    refs.push(obj as SourceMaterialRef);
+  }
+
+  return { ok: true, value: refs };
+}
+
+function isValidLineSpan(start: unknown, end: unknown): boolean {
+  return (
+    typeof start === "number" &&
+    Number.isInteger(start) &&
+    start >= 1 &&
+    typeof end === "number" &&
+    Number.isInteger(end) &&
+    end >= start
+  );
 }
 
 function parseSourceCheckbox(

@@ -1,11 +1,17 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   parseExecutionPlan,
   validateExecutionManifest,
   renderCompiledContract,
+  readExecutionManifest,
+  writeExecutionManifest,
   type CompiledContract,
   type ExecutionManifest,
   type ExecutionTask,
+  type SourceMaterialRef,
 } from "./execution-plan.js";
 
 function makeContract(
@@ -354,6 +360,241 @@ describe("parseExecutionPlan", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toContain("sourceReferences");
+    }
+  });
+
+  it("parses valid full-file sourceMaterialRefs without changing sourceRefs", () => {
+    const sourceRefs = [{ path: "plan.md", quote: "Do the thing" }];
+    const sourceMaterialRefs = [
+      {
+        origin: "task-anchor",
+        path: "plan.md",
+        mode: { kind: "full-file" },
+        reason: "Task anchor material",
+      },
+    ] satisfies SourceMaterialRef[];
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [makeTask({ id: "t1", sourceRefs, sourceMaterialRefs })],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].sourceMaterialRefs).toEqual(
+        sourceMaterialRefs,
+      );
+      expect(result.value.tasks[0].sourceRefs).toEqual(sourceRefs);
+    }
+  });
+
+  it("parses valid line-range sourceMaterialRefs", () => {
+    const sourceMaterialRefs = [
+      {
+        origin: "task-link",
+        path: "requirements.md",
+        mode: { kind: "line-range", startLine: 3, endLine: 8 },
+        reason: "Linked requirement excerpt",
+      },
+      {
+        origin: "planner",
+        path: "src/feature.ts",
+        mode: { kind: "line-range", startLine: 10, endLine: 12 },
+        reason: "Planner-selected code excerpt",
+      },
+    ] satisfies SourceMaterialRef[];
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [makeTask({ id: "t1", sourceMaterialRefs })],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].sourceMaterialRefs).toEqual(
+        sourceMaterialRefs,
+      );
+    }
+  });
+
+  it("preserves sourceMaterialRefs across execution manifest serialization", () => {
+    const sourceMaterialRefs = [
+      {
+        origin: "needs-material",
+        path: "plan.md",
+        mode: { kind: "full-file" },
+        reason: "Requested full context",
+      },
+      {
+        origin: "fallback",
+        path: "notes.md",
+        mode: { kind: "line-range", startLine: 2, endLine: 4 },
+        reason: "Fallback excerpt",
+      },
+    ] satisfies SourceMaterialRef[];
+    const manifest = makeManifest([makeTask({ id: "t1", sourceMaterialRefs })]);
+    const runDir = mkdtempSync(join(tmpdir(), "pi-execution-plan-test-"));
+
+    writeExecutionManifest(runDir, manifest);
+
+    expect(readExecutionManifest(runDir)?.tasks[0].sourceMaterialRefs).toEqual(
+      sourceMaterialRefs,
+    );
+  });
+
+  it("rejects sourceMaterialRefs with invalid origin", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            sourceMaterialRefs: [
+              {
+                origin: "plan",
+                path: "plan.md",
+                mode: { kind: "full-file" },
+                reason: "Old origin shape",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("sourceMaterialRefs[0] origin");
+    }
+  });
+
+  it("rejects sourceMaterialRefs without a reason", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            sourceMaterialRefs: [
+              {
+                origin: "task-anchor",
+                path: "plan.md",
+                mode: { kind: "full-file" },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("sourceMaterialRefs[0] reason");
+    }
+  });
+
+  it("rejects line-range sourceMaterialRefs without a valid range", () => {
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            sourceMaterialRefs: [
+              {
+                origin: "task-link",
+                path: "requirements.md",
+                mode: { kind: "line-range", startLine: 8, endLine: 3 },
+                reason: "Invalid excerpt",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("line-range");
+      expect(result.reason).toContain("startLine and endLine");
+    }
+  });
+
+  it("rejects sourceMaterialRefs with invalid mode shapes", () => {
+    const stringModeResult = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            sourceMaterialRefs: [
+              {
+                origin: "task-anchor",
+                path: "plan.md",
+                mode: "full-file",
+                reason: "Old mode shape",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(stringModeResult.ok).toBe(false);
+    if (!stringModeResult.ok) {
+      expect(stringModeResult.reason).toContain("sourceMaterialRefs[0] mode");
+    }
+
+    const unknownKindResult = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t2" }),
+            sourceMaterialRefs: [
+              {
+                origin: "task-anchor",
+                path: "plan.md",
+                mode: { kind: "snippet" },
+                reason: "Unknown mode kind",
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(unknownKindResult.ok).toBe(false);
+    if (!unknownKindResult.ok) {
+      expect(unknownKindResult.reason).toContain(
+        "sourceMaterialRefs[0] mode.kind",
+      );
+    }
+  });
+
+  it("keeps legacy sourceReferences provenance fallback unchanged", () => {
+    const sourceMaterialRefs = [
+      {
+        origin: "fallback",
+        path: "packet.md",
+        mode: { kind: "full-file" },
+        reason: "Fallback packet material",
+      },
+    ] satisfies SourceMaterialRef[];
+    const result = parseExecutionPlan(
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            sourceReferences: ["legacy.md"],
+            sourceRefs: undefined,
+            sourceMaterialRefs,
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].sourceRefs).toEqual([{ path: "legacy.md" }]);
+      expect(result.value.tasks[0].sourceMaterialRefs).toEqual(
+        sourceMaterialRefs,
+      );
     }
   });
 
