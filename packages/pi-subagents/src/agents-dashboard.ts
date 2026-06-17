@@ -464,7 +464,7 @@ function elapsedLabel(snapshot: RuntimeSnapshot): string {
   }
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
-  return `${minutes}m${remainder.toString().padStart(2, "0")}s`;
+  return `${minutes}m ${remainder.toString().padStart(2, "0")}s`;
 }
 
 function usageLabel(snapshot: RuntimeSnapshot): string {

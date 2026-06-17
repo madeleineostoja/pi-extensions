@@ -46,7 +46,7 @@ export function renderAgentResult(
     snapshot.error ?? snapshot.result ?? snapshot.health?.resultPreview,
   );
   if (preview) {
-    lines.push(preview);
+    lines.push(theme.fg("dim", preview));
   }
   return new Text(lines.join("\n"), 0, 0);
 }

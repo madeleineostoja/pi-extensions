@@ -94,7 +94,7 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
     status: snapshot.status,
     tool: snapshot.health?.activeTool ?? "-",
     turns: String(snapshot.health?.turns ?? "-"),
-    tokens: String(snapshot.health?.tokensTotal ?? "-"),
+    tokens: tokenLabel(snapshot.health?.tokensTotal),
     elapsed: elapsedLabel(snapshot),
   }));
   if (rows.length === 0) {
@@ -181,7 +181,12 @@ class SubagentRosterWidget implements Component {
     if (rows.length === 0) {
       return [];
     }
-    const lines = [this.theme.bold("Subagents"), ...rows];
+    const [header, ...body] = rows;
+    const lines = [
+      this.theme.bold("Subagents"),
+      this.theme.fg("dim", header ?? ""),
+      ...body,
+    ];
     return lines.map((line) =>
       truncateToWidth(line, Math.max(1, width), "...", false),
     );
@@ -212,7 +217,20 @@ export function elapsedLabel(snapshot: RuntimeSnapshot): string {
   }
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
-  return `${minutes}m${remainder.toString().padStart(2, "0")}s`;
+  return `${minutes}m ${remainder.toString().padStart(2, "0")}s`;
+}
+
+function tokenLabel(value: number | undefined): string {
+  if (value === undefined) {
+    return "-";
+  }
+  if (value < 1000) {
+    return String(value);
+  }
+  return `${(value / 1000)
+    .toFixed(2)
+    .replace(/\.00$/, "")
+    .replace(/(\.\d)0$/, "$1")}k`;
 }
 
 function maxWidth(label: string, values: string[]): number {

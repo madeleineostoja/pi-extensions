@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { SubagentRosterController, formatRosterRows } from "./roster.js";
+import {
+  SubagentRosterController,
+  elapsedLabel,
+  formatRosterRows,
+} from "./roster.js";
 import type { RuntimeSnapshot, SubagentRuntime } from "./runtime.js";
 
 function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
@@ -53,6 +57,37 @@ describe("subagent roster", () => {
     expect(rows.join("\n")).toContain("do work");
   });
 
+  it("formats larger token counts compactly", () => {
+    const rows = formatRosterRows([
+      snapshot({ health: { activeTool: "read", turns: 2, tokensTotal: 1500 } }),
+      snapshot({
+        health: { activeTool: "bash", turns: 3, tokensTotal: 10000 },
+      }),
+      snapshot({
+        health: { activeTool: "edit", turns: 4, tokensTotal: 110000 },
+      }),
+    ]);
+
+    expect(rows.join("\n")).toContain("1.5k");
+    expect(rows.join("\n")).toContain("10k");
+    expect(rows.join("\n")).toContain("110k");
+  });
+
+  it("separates minutes and seconds in elapsed labels", () => {
+    expect(
+      elapsedLabel(
+        snapshot({
+          timestamps: {
+            queuedAt: "2026-01-01T00:00:00.000Z",
+            startedAt: "2026-01-01T00:00:00.000Z",
+            completedAt: "2026-01-01T00:01:05.000Z",
+            updatedAt: "2026-01-01T00:01:05.000Z",
+          },
+        }),
+      ),
+    ).toBe("1m 05s");
+  });
+
   it("adds, updates, and removes the widget during the active lifecycle", () => {
     vi.useFakeTimers();
     try {
@@ -69,7 +104,10 @@ describe("subagent roster", () => {
       );
       const factory = ctx.ui.setWidget.mock.calls[0][1];
       const tui = { requestRender: vi.fn(), terminal: { rows: 24 } };
-      const widget = factory(tui, { bold: (text: string) => text } as any);
+      const widget = factory(tui, {
+        bold: (text: string) => text,
+        fg: (_color: string, text: string) => text,
+      } as any);
 
       vi.advanceTimersByTime(350);
       expect(tui.requestRender).toHaveBeenCalled();
