@@ -18,6 +18,7 @@ function snapshot(
     description: "test agent",
     cwd: "/repo",
     extensionBinding: "bound",
+    rosterVisibility: "show",
     timestamps: {
       queuedAt: "2024-01-01T00:00:00.000Z",
       startedAt: "2024-01-01T00:00:01.000Z",

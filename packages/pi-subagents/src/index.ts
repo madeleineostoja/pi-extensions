@@ -49,6 +49,7 @@ export type {
   ExtensionBindingStatus,
   PublicAgentMode,
   QueueSubagentInput,
+  RosterVisibility,
   RunManagedAgentInput,
   RunPublicAgentInput,
   RuntimeInspection,

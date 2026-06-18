@@ -198,7 +198,11 @@ function activeSnapshots(runtime: SubagentRuntime): RuntimeSnapshot[] {
 }
 
 function activeSnapshotsFrom(snapshots: RuntimeSnapshot[]): RuntimeSnapshot[] {
-  return snapshots.filter((snapshot) => !terminalStatuses.has(snapshot.status));
+  return snapshots.filter(
+    (snapshot) =>
+      !terminalStatuses.has(snapshot.status) &&
+      snapshot.rosterVisibility !== "hide",
+  );
 }
 
 export function elapsedLabel(snapshot: RuntimeSnapshot): string {

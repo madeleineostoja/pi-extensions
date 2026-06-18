@@ -40,6 +40,7 @@ export type SubagentRuntimeStatus =
   | "stopped";
 
 export type ExtensionBindingStatus = "bound" | "unbound";
+export type RosterVisibility = "show" | "hide";
 
 export type RuntimeTimestamps = {
   queuedAt: string;
@@ -91,6 +92,7 @@ export type RuntimeSnapshot = {
   model?: string;
   thinking?: ThinkingLevel;
   extensionBinding: ExtensionBindingStatus;
+  rosterVisibility: RosterVisibility;
   timestamps: RuntimeTimestamps;
   health?: RuntimeHealth;
   result?: unknown;
@@ -112,6 +114,7 @@ export type QueueSubagentInput = {
   model?: string;
   thinking?: ThinkingLevel;
   extensionBinding?: ExtensionBindingStatus;
+  rosterVisibility?: RosterVisibility;
 };
 
 export type PublicAgentMode = "foreground" | "background";
@@ -138,6 +141,7 @@ export type RunManagedAgentInput = {
   excludeTools?: string[];
   systemPrompt?: string;
   systemPromptMode?: PromptMode;
+  rosterVisibility?: RosterVisibility;
 };
 
 export type RunPublicAgentInput = Omit<RunManagedAgentInput, "type"> & {
@@ -253,6 +257,7 @@ function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
     ...(record.model === undefined ? {} : { model: record.model }),
     ...(record.thinking === undefined ? {} : { thinking: record.thinking }),
     extensionBinding: record.extensionBinding,
+    rosterVisibility: record.rosterVisibility,
     timestamps: {
       queuedAt: record.queuedAt,
       ...(record.startedAt === undefined
@@ -684,6 +689,7 @@ export class SubagentRuntime {
       ...(model === undefined ? {} : { model }),
       ...(thinking === undefined ? {} : { thinking }),
       extensionBinding: input.extensionBinding ?? "unbound",
+      rosterVisibility: input.rosterVisibility ?? "show",
       queuedAt: timestamp,
       updatedAt: timestamp,
       steeringQueue: [],
@@ -717,6 +723,7 @@ export class SubagentRuntime {
       model: input.model,
       thinking: input.thinking,
       extensionBinding: "unbound",
+      rosterVisibility: input.rosterVisibility,
     });
     const record = this.#requireRecord(queued.id);
     this.start(record.id);

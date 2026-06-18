@@ -15,6 +15,7 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
     description: "do work",
     cwd: "/workspace",
     extensionBinding: "bound",
+    rosterVisibility: "show",
     timestamps: {
       queuedAt: "2026-01-01T00:00:00.000Z",
       startedAt: "2026-01-01T00:00:01.000Z",
@@ -55,6 +56,20 @@ describe("subagent roster", () => {
     expect(rows.join("\n")).toContain("2");
     expect(rows.join("\n")).toContain("123");
     expect(rows.join("\n")).toContain("do work");
+  });
+
+  it("omits agents hidden from the generic roster", () => {
+    const rows = formatRosterRows([
+      snapshot({ id: "visible", description: "visible work" }),
+      snapshot({
+        id: "hidden",
+        description: "hidden work",
+        rosterVisibility: "hide",
+      }),
+    ]);
+
+    expect(rows.join("\n")).toContain("visible work");
+    expect(rows.join("\n")).not.toContain("hidden work");
   });
 
   it("formats larger token counts compactly", () => {

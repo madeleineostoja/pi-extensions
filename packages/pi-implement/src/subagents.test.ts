@@ -71,6 +71,7 @@ describe("RuntimeSubagentClient", () => {
         model: "p/m",
         thinking: "high",
         mode: "background",
+        rosterVisibility: "hide",
       }),
     );
   });

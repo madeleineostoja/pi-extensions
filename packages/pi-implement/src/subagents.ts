@@ -93,6 +93,7 @@ export class RuntimeSubagentClient implements SubagentClient {
       thinking: args.thinking,
       mode: "background",
       ctx: this.ctx,
+      rosterVisibility: "hide",
       ...(args.readOnly || role === "reviewer" || role === "planner"
         ? { tools: READ_ONLY_TOOLS, excludeTools: MUTATING_TOOLS }
         : {}),
