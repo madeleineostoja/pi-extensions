@@ -59,7 +59,7 @@ Current state is always visible in the footer (`guard` or `guard off`).
 - **No secrets scanning.** Protected-file policies are out of scope.
 - **Non-interactive sessions run without guard.** In print mode, RPC mode, and other non-interactive contexts there is no UI to present the approval modal. Guard is automatically disabled at session start and a one-time status message is added to the response log.
 - **Git-aware recoverability.** Deleting clean tracked files is allowed because Git can restore them. Deleting untracked files or dirty tracked files prompts.
-- **Disposable temp cleanup.** Narrow destructive operations on specific children of known temp roots (`os.tmpdir()`, `$TMPDIR`, `$TMP`, `$TEMP`, `$TEMPDIR`, `/tmp`, `/var/tmp`, `/private/tmp`) are allowed, including obvious `mktemp` cleanup. Deleting temp roots themselves, globbing under temp roots, or touching paths inside the current worktree still prompts.
+- **Disposable temp cleanup.** Narrow destructive operations on cwd-local `tmp` plus specific children of known temp roots (`os.tmpdir()`, `$TMPDIR`, `$TMP`, `$TEMP`, `$TEMPDIR`, `/tmp`, `/var/tmp`, `/private/tmp`) are allowed, including obvious `mktemp` cleanup. Deleting system temp roots themselves, globbing under temp roots, or touching non-`tmp` paths inside the current worktree still prompts.
 - **Best-effort parsing.** Commands with shell variables, globs, command substitution, pipelines, and compound statements (`&&`, `||`, `;`) are handled conservatively: some forms may prompt even when safe, and some complex forms may not be detected.
 - **Git commands with `-C` are supported** but dirty-worktree checks apply to the target directory.
 

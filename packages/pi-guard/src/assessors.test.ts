@@ -214,6 +214,15 @@ describe("assessBashCommand — file removal", () => {
     }
   });
 
+  it("allows deleting cwd-local tmp", () => {
+    mkdirSync(join(repo, "tmp"));
+    writeFileSync(join(repo, "tmp", "artifact.txt"), "hello");
+    expect(assessBashCommand("rm -rf ./tmp", repo, new Set())).toBeUndefined();
+    expect(
+      assessBashCommand("rm -f tmp/artifact.txt", repo, new Set()),
+    ).toBeUndefined();
+  });
+
   it("allows deleting a child of TMPDIR", () => {
     const previous = process.env.TMPDIR;
     const d = mkdtempSync(join(tmpdir(), "pi-guard-env-"));
@@ -570,6 +579,14 @@ describe("assessBashCommand — shell overwrite / truncate", () => {
     } finally {
       rmSync(d, { recursive: true, force: true });
     }
+  });
+
+  it("allows overwriting files in cwd-local tmp", () => {
+    mkdirSync(join(repo, "tmp"));
+    writeFileSync(join(repo, "tmp", "existing.txt"), "hello");
+    expect(
+      assessBashCommand("echo x > ./tmp/existing.txt", repo, new Set()),
+    ).toBeUndefined();
   });
 
   it("prompts for dd of= on existing untracked file", () => {

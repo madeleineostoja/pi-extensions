@@ -6,6 +6,7 @@ export { extractShellWords } from "@pi-extensions/lib";
 
 const TEMP_ENV_VARS = new Set(["TMPDIR", "TMP", "TEMP", "TEMPDIR"]);
 const COMMON_TEMP_ROOTS = ["/tmp", "/var/tmp", "/private/tmp"];
+const CWD_LOCAL_TEMP_ROOTS = ["tmp"];
 
 export function toAbsolutePath(inputPath: string, cwd: string): string {
   return normalize(resolve(cwd, inputPath));
@@ -90,6 +91,18 @@ export function isDisposableTempTarget(
   }
 
   const abs = toAbsolutePath(expanded, cwd);
+  const tempRoots = getTempRoots();
+  if (tempRoots.some((root) => root === abs)) {
+    return false;
+  }
+
+  const localTempRoots = CWD_LOCAL_TEMP_ROOTS.map((root) =>
+    toAbsolutePath(root, cwd),
+  );
+  if (localTempRoots.some((root) => isPathInsideOrEqual(root, abs))) {
+    return true;
+  }
+
   const normalizedProtectedRoots = protectedRoots.map((root) =>
     normalize(resolve(root)),
   );
@@ -97,9 +110,5 @@ export function isDisposableTempTarget(
     return false;
   }
 
-  const tempRoots = getTempRoots();
-  if (tempRoots.some((root) => root === abs)) {
-    return false;
-  }
   return tempRoots.some((root) => isPathInside(root, abs));
 }

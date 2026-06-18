@@ -87,6 +87,13 @@ describe("isDisposableTempTarget", () => {
     );
   });
 
+  it("allows cwd-local tmp root and children", () => {
+    const cwd = join(tmpdir(), "pi-guard-repo");
+    expect(isDisposableTempTarget("tmp", cwd)).toBe(true);
+    expect(isDisposableTempTarget("tmp/file.txt", cwd)).toBe(true);
+    expect(isDisposableTempTarget("./tmp/nested", cwd)).toBe(true);
+  });
+
   it("rejects paths inside protected roots", () => {
     const cwd = join(tmpdir(), "pi-guard-repo");
     expect(isDisposableTempTarget(join(cwd, "file.txt"), cwd)).toBe(false);
