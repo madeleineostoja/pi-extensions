@@ -174,6 +174,7 @@ const runtimes = new WeakMap<ExtensionAPI, SubagentRuntime>();
 const runtimeManagerKey = Symbol.for("pi-subagents:manager");
 type RuntimeManager = {
   runtimes: WeakMap<ExtensionAPI, SubagentRuntime>;
+  runtimeList: Set<SubagentRuntime>;
 };
 const publicTypes = new Set<string>(PUBLIC_BUILTIN_TYPES);
 const publicToolNames = new Set([
@@ -599,7 +600,9 @@ export class SubagentRuntime {
     } = {},
   ) {
     runtimes.set(pi, this);
-    getRuntimeManager().runtimes.set(pi, this);
+    const runtimeManager = getRuntimeManager();
+    runtimeManager.runtimes.set(pi, this);
+    runtimeManager.runtimeList.add(this);
     this.definitions = createAgentDefinitionRegistry();
     this.#createSession = options.createSession ?? createAgentSession;
     this.publicConfig =
@@ -1256,33 +1259,51 @@ function getRuntimeManager(): RuntimeManager {
   if (isRuntimeManager(existing)) {
     return existing;
   }
-  const manager: RuntimeManager = { runtimes: new WeakMap() };
+  const manager: RuntimeManager = {
+    runtimes: new WeakMap(),
+    runtimeList: new Set(),
+  };
   if (isRuntimeInstance(existing)) {
     manager.runtimes.set(existing.pi, existing);
+    manager.runtimeList.add(existing);
   }
   globalScope[runtimeManagerKey] = manager;
   return manager;
 }
 
 function isRuntimeManager(value: unknown): value is RuntimeManager {
-  return (
-    isObject(value) && "runtimes" in value && value.runtimes instanceof WeakMap
-  );
+  if (
+    !isObject(value) ||
+    !("runtimes" in value) ||
+    !(value.runtimes instanceof WeakMap)
+  ) {
+    return false;
+  }
+  if (!("runtimeList" in value) || !(value.runtimeList instanceof Set)) {
+    (value as RuntimeManager).runtimeList = new Set();
+  }
+  return true;
 }
 
 function isRuntimeInstance(value: unknown): value is SubagentRuntime {
   return isObject(value) && "pi" in value;
 }
 
+export function getSubagentRuntimes(): SubagentRuntime[] {
+  return [...getRuntimeManager().runtimeList];
+}
+
 export function getSubagentRuntime(pi: ExtensionAPI): SubagentRuntime {
+  const runtimeManager = getRuntimeManager();
   const existing = runtimes.get(pi);
   if (existing) {
+    runtimeManager.runtimeList.add(existing);
     return existing;
   }
-  const runtimeManager = getRuntimeManager();
   const managed = runtimeManager.runtimes.get(pi);
   if (managed) {
     runtimes.set(pi, managed);
+    runtimeManager.runtimeList.add(managed);
     return managed;
   }
   const runtime = new SubagentRuntime(pi);

@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { showAgentsDashboard } from "./agents-dashboard.js";
 import { PUBLIC_AGENT_PROFILES } from "./agent-profiles.js";
-import { getSubagentRuntime } from "./runtime.js";
+import { getSubagentRuntime, getSubagentRuntimes } from "./runtime.js";
 import { SubagentRosterController } from "./roster.js";
 import {
   renderAgentCall,
@@ -44,7 +44,11 @@ export type {
   ResolvedPublicSubagentsConfig,
   ThinkingLevel,
 } from "./config.js";
-export { getSubagentRuntime, SubagentRuntime } from "./runtime.js";
+export {
+  getSubagentRuntime,
+  getSubagentRuntimes,
+  SubagentRuntime,
+} from "./runtime.js";
 export type {
   ExtensionBindingStatus,
   PublicAgentMode,
@@ -117,7 +121,8 @@ export default function (pi: ExtensionAPI): void {
 
   pi.registerCommand("agents", {
     description: "Inspect and stop current-session subagents",
-    handler: async (_args, ctx) => showAgentsDashboard(runtime, ctx),
+    handler: async (_args, ctx) =>
+      showAgentsDashboard(getSubagentRuntimes(), ctx),
   });
 
   pi.registerTool({

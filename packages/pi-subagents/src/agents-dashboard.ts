@@ -23,33 +23,62 @@ const terminalStatuses = new Set<SubagentRuntimeStatus>([
   "stopped",
 ]);
 
+type DashboardEntry = {
+  runtime: SubagentRuntime;
+  snapshot: RuntimeSnapshot;
+};
+
 export async function showAgentsDashboard(
-  runtime: SubagentRuntime,
+  runtimeOrRuntimes: SubagentRuntime | readonly SubagentRuntime[],
   ctx: ExtensionCommandContext,
 ): Promise<void> {
-  const snapshots = runtime.snapshots({ includeNested: true });
-  const topLevel = snapshots.filter((snapshot) => !nestedOwner(snapshot.owner));
-  if (topLevel.length === 0) {
+  const entries = dashboardEntries(runtimeOrRuntimes);
+  if (entries.length === 0) {
     ctx.ui.notify("No current-session agents.", "info");
     return;
   }
 
-  const rows = formatListRows(topLevel);
+  const rows = formatListRows(entries.map((entry) => entry.snapshot));
   const selected = await ctx.ui.select("Current-session agents", rows);
   if (!selected) {
-    ctx.ui.notify(formatList(topLevel), "info");
+    ctx.ui.notify(formatList(entries), "info");
     return;
   }
   const index = rows.indexOf(selected);
-  const snapshot = topLevel[index];
-  if (!snapshot) {
+  const entry = entries[index];
+  if (!entry) {
     return;
   }
-  await showAgentDetail(runtime, ctx, snapshot.id);
+  await showAgentDetail(entry.runtime, ctx, entry.snapshot.id);
 }
 
-function formatList(snapshots: RuntimeSnapshot[]): string {
-  return ["Current-session agents", ...formatListRows(snapshots)].join("\n");
+function dashboardEntries(
+  runtimeOrRuntimes: SubagentRuntime | readonly SubagentRuntime[],
+): DashboardEntry[] {
+  const runtimes = Array.isArray(runtimeOrRuntimes)
+    ? runtimeOrRuntimes
+    : [runtimeOrRuntimes];
+  const seen = new Set<SubagentRuntime>();
+  const entries: DashboardEntry[] = [];
+  for (const runtime of runtimes) {
+    if (seen.has(runtime)) {
+      continue;
+    }
+    seen.add(runtime);
+    for (const snapshot of runtime.snapshots({ includeNested: true })) {
+      if (!nestedOwner(snapshot.owner)) {
+        entries.push({ runtime, snapshot });
+      }
+    }
+  }
+  return entries;
+}
+
+function formatList(entries: DashboardEntry[]): string {
+  return [
+    "Current-session agents",
+    ...formatListRows(entries.map((entry) => entry.snapshot)),
+  ].join("\n");
 }
 
 async function showAgentDetail(

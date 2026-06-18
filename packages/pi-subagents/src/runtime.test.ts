@@ -1,6 +1,10 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import { getSubagentRuntime, SubagentRuntime } from "./runtime.js";
+import {
+  getSubagentRuntime,
+  getSubagentRuntimes,
+  SubagentRuntime,
+} from "./runtime.js";
 
 type Message = {
   customType?: string;
@@ -69,12 +73,12 @@ function makeCtx() {
 }
 
 describe("SubagentRuntime", () => {
-  it("returns a singleton runtime per pi instance", () => {
+  it("returns a singleton runtime per pi instance and tracks known runtimes", () => {
     const { pi } = fakePi();
+    const runtime = getSubagentRuntime(pi as never);
 
-    expect(getSubagentRuntime(pi as never)).toBe(
-      getSubagentRuntime(pi as never),
-    );
+    expect(runtime).toBe(getSubagentRuntime(pi as never));
+    expect(getSubagentRuntimes()).toContain(runtime);
   });
 
   it("reuses the existing runtime across module reloads", async () => {

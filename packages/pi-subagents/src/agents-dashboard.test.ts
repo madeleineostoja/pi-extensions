@@ -200,6 +200,41 @@ describe("/agents dashboard", () => {
     expect(rows[1]).not.toContain("Review/reviewer");
   });
 
+  it("lists agents from multiple runtimes without merging duplicate ids", async () => {
+    const publicAgent = snapshot({
+      id: "subagent-1",
+      type: "General",
+      description: "public agent",
+      status: "completed",
+    });
+    const implementAgent = snapshot({
+      id: "subagent-1",
+      type: "pi-implement:implementer",
+      owner: { kind: "pi-implement", runId: "run", role: "implementer" },
+      description: "implement task",
+      status: "completed",
+    });
+    const publicRuntime = makeRuntime([publicAgent]);
+    const implementRuntime = makeRuntime([implementAgent]);
+    const { ctx, notifications, selectCalls } = makeCtx();
+
+    ctx.ui.select = vi.fn(async (title: string, options: string[]) => {
+      selectCalls.push({ title, options });
+      return options[1];
+    });
+
+    await showAgentsDashboard([publicRuntime, implementRuntime], ctx as never);
+
+    expect(selectCalls[0]?.options).toHaveLength(2);
+    expect(selectCalls[0]?.options[0]).toContain("public agent");
+    expect(selectCalls[0]?.options[1]).toContain("implement task");
+    expect(notifications[0]?.message).toContain(
+      "Type/role: pi-implement:implementer/implementer",
+    );
+    expect(implementRuntime.inspect).toHaveBeenCalledWith("subagent-1");
+    expect(publicRuntime.inspect).not.toHaveBeenCalled();
+  });
+
   it("hides nested explore children from the top-level list and shows them in static parent detail", async () => {
     const parent = snapshot({
       id: "parent",
