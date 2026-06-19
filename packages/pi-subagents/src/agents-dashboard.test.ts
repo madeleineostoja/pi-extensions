@@ -49,6 +49,9 @@ function makeCtx(selects: string[] = [], options: { tui?: boolean } = {}) {
   const notifications: Array<{ message: string; type?: string }> = [];
   const selectCalls: Array<{ title: string; options: string[] }> = [];
   const requestRender = vi.fn();
+  const terminalInputHandlers: Array<
+    (data: string) => { consume?: boolean; data?: string } | undefined
+  > = [];
   let component: Component | undefined;
   let done: ((result?: unknown) => void) | undefined;
   const custom = vi.fn(
@@ -84,6 +87,21 @@ function makeCtx(selects: string[] = [], options: { tui?: boolean } = {}) {
           return selects.shift();
         }),
         custom,
+        onTerminalInput: vi.fn(
+          (
+            handler: (
+              data: string,
+            ) => { consume?: boolean; data?: string } | undefined,
+          ) => {
+            terminalInputHandlers.push(handler);
+            return () => {
+              const index = terminalInputHandlers.indexOf(handler);
+              if (index >= 0) {
+                terminalInputHandlers.splice(index, 1);
+              }
+            };
+          },
+        ),
       },
     },
     notifications,
@@ -92,6 +110,18 @@ function makeCtx(selects: string[] = [], options: { tui?: boolean } = {}) {
     requestRender,
     get component() {
       return component;
+    },
+    get terminalInputListenerCount() {
+      return terminalInputHandlers.length;
+    },
+    sendTerminalInput(data: string) {
+      for (const handler of terminalInputHandlers.slice()) {
+        const result = handler(data);
+        if (result?.consume) {
+          return true;
+        }
+      }
+      return false;
     },
     closeCustom() {
       component?.handleInput?.("\u001b");
@@ -303,9 +333,9 @@ describe("/agents dashboard", () => {
     await vi.waitFor(() => expect(ui.custom).toHaveBeenCalled());
 
     expect(runtime.listenerCount("subagent-1")).toBe(1);
-    expect(ui.component?.render(80).join("\n")).toContain(
-      "Rolling assistant text:\n  first",
-    );
+    expect(ui.terminalInputListenerCount).toBe(1);
+    expect(ui.component?.render(80).join("\n")).toContain("[Assistant]");
+    expect(ui.component?.render(80).join("\n")).toContain("first");
 
     running.health = {
       ...running.health,
@@ -322,9 +352,10 @@ describe("/agents dashboard", () => {
     expect(rendered).toContain("Turns/tokens: 2/30");
     expect(rendered).toContain("second");
 
-    ui.closeCustom();
+    expect(ui.sendTerminalInput("\u001b")).toBe(true);
     await dashboard;
     expect(runtime.listenerCount("subagent-1")).toBe(0);
+    expect(ui.terminalInputListenerCount).toBe(0);
   });
 
   it("requires confirmation before stopping from the live inspector", async () => {
@@ -341,7 +372,7 @@ describe("/agents dashboard", () => {
     ui.component?.handleInput?.("s");
     expect(runtime.stop).not.toHaveBeenCalled();
     expect(ui.component?.render(80).join("\n")).toContain(
-      "Press s again to stop this agent.",
+      "Press s or x again to stop this agent.",
     );
 
     ui.component?.handleInput?.("s");

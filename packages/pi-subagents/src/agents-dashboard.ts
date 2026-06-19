@@ -3,12 +3,13 @@ import type {
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
+import { matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import {
-  Key,
-  matchesKey,
-  truncateToWidth,
-  wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
+  isModalCloseInput,
+  nextModalScrollOffset,
+  registerModalCloseInput,
+  renderModalView,
+} from "@pi-extensions/lib";
 import type {
   RuntimeInspection,
   RuntimeOwner,
@@ -107,19 +108,32 @@ async function showLiveInspector(
   ctx: ExtensionCommandContext,
   id: string,
 ): Promise<void> {
+  let cleanupTerminalInput: (() => void) | undefined;
   await ctx.ui.custom<void>(
     (tui, theme, _kb, done) => {
       let unsubscribe: (() => void) | undefined;
+      const finish = () => {
+        cleanupTerminalInput?.();
+        cleanupTerminalInput = undefined;
+        unsubscribe?.();
+        unsubscribe = undefined;
+        done();
+      };
       const overlay = new AgentInspectorOverlay(
         runtime,
         id,
         tui,
         theme,
-        done,
+        finish,
         () => {
+          cleanupTerminalInput?.();
+          cleanupTerminalInput = undefined;
           unsubscribe?.();
           unsubscribe = undefined;
         },
+      );
+      cleanupTerminalInput = registerModalCloseInput(ctx.ui, () =>
+        overlay.close(),
       );
       unsubscribe = runtime.subscribe(id, () => {
         tui.requestRender();
@@ -253,6 +267,8 @@ export function formatDetail(
 class AgentInspectorOverlay implements Component {
   private scrollOffset = 0;
   private lastWidth = 80;
+  private lastMaxScroll = 0;
+  private lastViewportRows = 1;
   private stopArmed = false;
   private disposed = false;
 
@@ -275,23 +291,30 @@ class AgentInspectorOverlay implements Component {
     this.disposeOnce();
   }
 
+  close(): void {
+    this.disposeOnce();
+    this.done();
+  }
+
   handleInput(data: string): void {
-    if (matchesKey(data, Key.escape)) {
-      this.disposeOnce();
-      this.done();
+    if (isModalCloseInput(data) || matchesKey(data, "q")) {
+      this.close();
       return;
     }
-    if (matchesKey(data, Key.up)) {
-      this.scrollOffset += 1;
+
+    const nextScroll = nextModalScrollOffset(
+      data,
+      this.scrollOffset,
+      this.lastMaxScroll,
+      this.lastViewportRows,
+    );
+    if (nextScroll !== undefined) {
+      this.scrollOffset = nextScroll;
       this.invalidate();
       return;
     }
-    if (matchesKey(data, Key.down)) {
-      this.scrollOffset = Math.max(0, this.scrollOffset - 1);
-      this.invalidate();
-      return;
-    }
-    if (matchesKey(data, "s")) {
+
+    if (matchesKey(data, "s") || matchesKey(data, "x")) {
       const inspection = this.runtime.inspect(this.id);
       if (!inspection || terminalStatuses.has(inspection.snapshot.status)) {
         this.stopArmed = false;
@@ -306,6 +329,12 @@ class AgentInspectorOverlay implements Component {
       this.runtime.stop(this.id);
       this.stopArmed = false;
       this.invalidate();
+      return;
+    }
+
+    if (this.stopArmed) {
+      this.stopArmed = false;
+      this.invalidate();
     }
   }
 
@@ -313,115 +342,120 @@ class AgentInspectorOverlay implements Component {
     this.lastWidth = width;
     const inspection = this.runtime.inspect(this.id);
     if (!inspection) {
-      return [
-        this.theme.bold(`/agents ${this.id}`),
-        this.theme.fg(
-          "warning",
-          "Agent is no longer available in this session.",
-        ),
-        this.theme.fg("muted", "esc: close"),
-      ];
+      const rendered = renderModalView({
+        theme: this.theme,
+        width,
+        maxRows: this.maxRows,
+        title: `/agents ${this.id}`,
+        status: { label: "unavailable", kind: "warning" },
+        contentLines: [
+          this.theme.fg(
+            "warning",
+            "Agent is no longer available in this session.",
+          ),
+        ],
+        scrollOffset: 0,
+        footerControls: "esc/q: close",
+      });
+      return rendered.lines;
     }
 
-    const contentLines = this.contentLines(inspection, width);
-    const maxContentRows = this.maxContentRows();
-    const maxScroll = Math.max(0, contentLines.length - maxContentRows);
-    this.scrollOffset = Math.min(this.scrollOffset, maxScroll);
-    const start = Math.max(0, maxScroll - this.scrollOffset);
-    const visible = contentLines.slice(start, start + maxContentRows);
-    return [
-      this.title(inspection.snapshot, width),
-      ...visible,
-      this.footer(inspection.snapshot),
-    ];
-  }
-
-  private title(snapshot: RuntimeSnapshot, width: number): string {
-    const title = `/agents ${snapshot.id} ${snapshot.status} ${snapshot.type}${roleLabel(snapshot.owner)}`;
-    return this.theme.bold(
-      truncateToWidth(title, Math.max(1, width), "...", false),
+    const contentLines = this.contentLines(
+      inspection,
+      this.contentWidth(width),
     );
+    const rendered = renderModalView({
+      theme: this.theme,
+      width,
+      maxRows: this.maxRows,
+      title: `/agents ${inspection.snapshot.id}`,
+      status: {
+        label: `${inspection.snapshot.status} · ${inspection.snapshot.type}${roleLabel(inspection.snapshot.owner)}`,
+        kind: statusKind(inspection.snapshot.status),
+      },
+      subtitle: inspection.snapshot.description,
+      contentLines,
+      scrollOffset: this.scrollOffset,
+      footerControls: this.footer(inspection.snapshot),
+    });
+    this.scrollOffset = rendered.scrollOffset;
+    this.lastMaxScroll = rendered.maxScroll;
+    this.lastViewportRows = rendered.viewportRows;
+    return rendered.lines;
   }
 
   private footer(snapshot: RuntimeSnapshot): string {
-    const actions = terminalStatuses.has(snapshot.status)
-      ? "esc: close | ↑/↓: scroll"
-      : this.stopArmed
-        ? "s: confirm stop | esc: close | ↑/↓: scroll"
-        : "s: stop | esc: close | ↑/↓: scroll";
-    return this.theme.fg("muted", actions);
+    const scroll = "↑↓/kj scroll · Pg/Home/End";
+    if (terminalStatuses.has(snapshot.status)) {
+      return `esc/q: close · ${scroll}`;
+    }
+    if (this.stopArmed) {
+      return `s/x again: STOP · esc/q: close · ${scroll}`;
+    }
+    return `s/x: stop · esc/q: close · ${scroll}`;
   }
 
   private contentLines(inspection: RuntimeInspection, width: number): string[] {
     const { snapshot } = inspection;
     const lines = [
-      `Status: ${snapshot.status}`,
-      `Elapsed: ${elapsedLabel(snapshot)}`,
-      `Turns/tokens: ${usageLabel(snapshot)}`,
-      `Active tool: ${snapshot.health?.activeTool ?? "none"}`,
-      `Last activity: ${snapshot.health?.lastActivity ?? "unknown"}`,
+      this.theme.fg("dim", "[Status]"),
+      `Elapsed: ${elapsedLabel(snapshot)} · Turns/tokens: ${usageLabel(snapshot)} · Active tool: ${snapshot.health?.activeTool ?? "none"}`,
       `Owner: ${ownerLabel(snapshot.owner)}`,
-      `Description: ${snapshot.description}`,
+      `Last activity: ${snapshot.health?.lastActivity ?? "unknown"}`,
       transcriptLabel(snapshot),
     ];
     if (this.stopArmed && !terminalStatuses.has(snapshot.status)) {
-      lines.push(this.theme.fg("warning", "Press s again to stop this agent."));
-    }
-    const assistant = previewText(snapshot.health?.lastAssistantText, 1000);
-    if (assistant) {
-      lines.push("", "Rolling assistant text:");
       lines.push(
-        ...wrapTextWithAnsi(assistant, Math.max(1, width - 2)).map(
-          (line) => `  ${line}`,
-        ),
+        "",
+        this.theme.fg("error", "Press s or x again to stop this agent."),
       );
+    }
+    const assistant = previewText(snapshot.health?.lastAssistantText, 2000);
+    if (assistant) {
+      lines.push("", this.theme.bold("[Assistant]"));
+      lines.push(...this.wrap(assistant, width));
     }
     const result = previewText(
       snapshot.health?.resultPreview ?? snapshot.result,
-      1000,
+      2000,
     );
     if (result) {
-      lines.push("", "Result preview:");
-      lines.push(
-        ...wrapTextWithAnsi(result, Math.max(1, width - 2)).map(
-          (line) => `  ${line}`,
-        ),
-      );
+      lines.push("", this.theme.fg("success", "[Result]"));
+      lines.push(...this.wrap(result, width));
     }
     if (snapshot.error) {
-      lines.push("", "Error:");
-      lines.push(
-        ...wrapTextWithAnsi(snapshot.error, Math.max(1, width - 2)).map(
-          (line) => this.theme.fg("error", `  ${line}`),
-        ),
-      );
+      lines.push("", this.theme.fg("error", "[Error]"));
+      lines.push(...this.wrap(snapshot.error, width, "error"));
     }
-    const tail = formatMessageTail(inspection.messages, 8);
-    if (tail.length > 0) {
-      lines.push("", "Message tail:");
-      lines.push(
-        ...tail.flatMap((line) =>
-          wrapTextWithAnsi(line, Math.max(1, width - 4)).map(
-            (wrapped) => `  ${wrapped}`,
-          ),
-        ),
-      );
+    const transcript = formatTranscriptTail(inspection.messages, width, 12);
+    if (transcript.length > 0) {
+      lines.push("", this.theme.fg("dim", "───"), ...transcript);
     }
     return lines;
   }
 
-  private maxContentRows(): number {
-    return Math.max(1, this.maxRows - 2);
+  private wrap(
+    text: string,
+    width: number,
+    color?: "dim" | "muted" | "error",
+  ): string[] {
+    return wrapTextWithAnsi(text, Math.max(1, width)).map((line) =>
+      color ? this.theme.fg(color, line) : line,
+    );
+  }
+
+  private contentWidth(width: number): number {
+    return Math.max(1, width - 4);
   }
 
   private clampScrollOffset(): void {
     const inspection = this.runtime.inspect(this.id);
     const length = inspection
-      ? this.contentLines(inspection, this.lastWidth).length
+      ? this.contentLines(inspection, this.contentWidth(this.lastWidth)).length
       : 1;
     this.scrollOffset = Math.min(
       this.scrollOffset,
-      Math.max(0, length - this.maxContentRows()),
+      Math.max(0, length - this.lastViewportRows),
     );
   }
 
@@ -528,6 +562,40 @@ function formatMessageTail(
   });
 }
 
+function formatTranscriptTail(
+  messages: readonly unknown[],
+  width: number,
+  count: number,
+): string[] {
+  return messages.slice(-count).flatMap((message) => {
+    const role = messageRole(message);
+    const label = roleLabelForTranscript(role);
+    const text = previewText(messageText(message) ?? message, 1200);
+    if (!text) {
+      return [];
+    }
+    return [
+      label,
+      ...wrapTextWithAnsi(text, Math.max(1, width)).map((line) =>
+        role === "toolResult" ? `  ${line}` : line,
+      ),
+    ];
+  });
+}
+
+function roleLabelForTranscript(role: string): string {
+  if (role === "assistant") {
+    return "[Assistant]";
+  }
+  if (role === "user") {
+    return "[User]";
+  }
+  if (role === "toolResult") {
+    return "[Result]";
+  }
+  return `[${role}]`;
+}
+
 function messageRole(message: unknown): string {
   return isObject(message) && typeof message.role === "string"
     ? message.role
@@ -583,6 +651,19 @@ function previewText(value: unknown, max = 600): string | undefined {
     return undefined;
   }
   return compact.length > max ? `${compact.slice(0, max - 1)}…` : compact;
+}
+
+function statusKind(status: SubagentRuntimeStatus) {
+  if (status === "running" || status === "queued") {
+    return "running" as const;
+  }
+  if (status === "completed") {
+    return "completed" as const;
+  }
+  if (status === "failed") {
+    return "failed" as const;
+  }
+  return "stopped" as const;
 }
 
 function maxWidth(label: string, values: string[]): number {
