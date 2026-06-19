@@ -10,3 +10,20 @@ export {
 } from "./tokens.js";
 export { normalizePath, extractFilePath } from "./paths.js";
 export { extractShellWords } from "./shell.js";
+export {
+  isModalCloseInput,
+  modalStatusColor,
+  modalStatusIcon,
+  nextModalScrollOffset,
+  registerModalCloseInput,
+  renderModalView,
+} from "./modal-view.js";
+export type {
+  ModalStatus,
+  ModalStatusKind,
+  ModalTheme,
+  ModalViewOptions,
+  ModalViewRenderResult,
+  TerminalInputHandlerResult,
+  TerminalInputUI,
+} from "./modal-view.js";

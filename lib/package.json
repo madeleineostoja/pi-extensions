@@ -11,6 +11,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.75.5"
+    "@earendil-works/pi-coding-agent": "^0.75.5",
+    "@earendil-works/pi-tui": "^0.78.1"
   }
 }
