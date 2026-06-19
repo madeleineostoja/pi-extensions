@@ -218,6 +218,8 @@ class FakeSubagents implements SubagentClient {
 
 const GOOD_IMPL =
   '<pi-implement-result>{"summary":"done","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"feat: do thing"}</pi-implement-result>';
+const GOOD_ALREADY_SATISFIED_IMPL =
+  '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"tests","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
 const GOOD_REVIEW =
   '<pi-review-result>{"verdict":"approved"}</pi-review-result>';
 const GOOD_INTEGRATION_REVIEW =
@@ -10143,6 +10145,82 @@ describe("runImplementation", () => {
       child.rootValue = worktreePath;
       git.worktreeChild = child;
     }
+
+    it("parallel already_satisfied task completes without a worktree commit", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const validationScript = join(dir, "validate-plan-unchecked.sh");
+      writeFileSync(
+        validationScript,
+        `#!/bin/sh\nif grep -q '\\[x\\] Do thing' "${planPath}"; then exit 1; fi\nexit 0\n`,
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+      const git = new FakeGit();
+      setupWorktreeGit(git, dir, "");
+      git.worktreeChild!.hasStagedChanges = async () => false;
+      git.worktreeChild!.stagedNameStatus = async () => "";
+      git.worktreeChild!.diffText = "";
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_ALREADY_SATISFIED_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: `sh ${validationScript}`,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      expect(subagents.spawns.map((spawn) => spawn.role)).toEqual([
+        "implementer",
+        "reviewer",
+      ]);
+      expect(git.worktreeChild!.commits).toEqual([]);
+      expect(readTaskJson(paths, "task-1")?.status).toBe("satisfied");
+      expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
+    });
 
     it("directive reaches worker in parallel mode", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));

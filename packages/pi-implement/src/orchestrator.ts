@@ -1178,9 +1178,12 @@ type WorkerResult = {
   taskId: string;
   outcome:
     | { kind: "approved"; taskCommitSha: string; commitMessage: string }
+    | { kind: "satisfied" }
     | { kind: "failed"; reason: string }
     | { kind: "stopped" };
 };
+
+type TaskWorkerResult = "changed" | "satisfied" | false;
 
 async function runParallelImplementation(
   deps: OrchestratorDeps,
@@ -1324,6 +1327,23 @@ async function runParallelImplementation(
             commitSha: result.outcome.taskCommitSha,
           });
         }
+      } else if (result.outcome.kind === "satisfied") {
+        task.status = "satisfied";
+        task.activeAgentIds = [];
+        task.activeAgentRefs = [];
+        sched.landedOrder.push(result.taskId);
+        if (deps.paths) {
+          const existing = readTaskJson(deps.paths, result.taskId);
+          writeTaskJson(deps.paths, result.taskId, {
+            ...buildTaskJsonSnapshot(existing, task),
+            status: "satisfied",
+            activeSubagentIds: [],
+          });
+          appendEvent(deps.paths, {
+            type: "task_satisfied",
+            taskId: result.taskId,
+          });
+        }
       } else if (result.outcome.kind === "failed") {
         task.status = "failed";
         task.lastReason = result.outcome.reason;
@@ -1397,10 +1417,14 @@ async function runParallelImplementation(
       throw new BlockedError(finalValidation.reason);
     }
     await runOverallReviewLoop(deps, initialPlan, planArtifacts, graph.baseSha);
+    markCompletedParallelSourceCheckboxes(deps, sched, plan);
   }
 
   const landedCount = [...sched.tasks.values()].filter(
     (t) => t.status === "landed",
+  ).length;
+  const satisfiedCount = [...sched.tasks.values()].filter(
+    (t) => t.status === "satisfied",
   ).length;
   const hasFailure = anyTaskFailedBlockedStopped(sched);
   const failureReason = hasFailure
@@ -1417,6 +1441,7 @@ async function runParallelImplementation(
         ? "done"
         : (sched.phase as RunState["phase"]),
     landedCount,
+    satisfiedCount,
     activeSubagentId: undefined,
     activeSubagentIds: [],
     activeAgentRefs: [],
@@ -1510,7 +1535,11 @@ async function launchTaskWorker(
       return { taskId, outcome: { kind: "stopped" } };
     }
 
-    if (success && worktreePath) {
+    if (success === "satisfied") {
+      return { taskId, outcome: { kind: "satisfied" } };
+    }
+
+    if (success === "changed" && worktreePath) {
       const taskCommitSha = await taskGit.head();
       const taskJson = deps.paths
         ? readTaskJson(deps.paths, taskId)
@@ -1824,8 +1853,6 @@ async function landApprovedTask(
         "Commit succeeded but main checkout is dirty",
       );
     }
-
-    markSourceCheckboxDone(deps, taskId, planTask);
 
     task.status = "landed";
     task.landedCommitSha = landedHead;
@@ -2480,11 +2507,11 @@ export async function checkSchedulerSelfHealProgress(
     if (task.status !== "failed" || !isSetupFailureReason(task.lastReason)) {
       continue;
     }
-    const depsLanded = task.dependsOn.every((depId) => {
+    const depsComplete = task.dependsOn.every((depId) => {
       const dep = sched.tasks.get(depId);
-      return dep?.status === "landed";
+      return dep?.status === "landed" || dep?.status === "satisfied";
     });
-    if (!depsLanded) {
+    if (!depsComplete) {
       continue;
     }
     if (preBlocker.aheadOfBase) {
@@ -2829,14 +2856,16 @@ function getLandedTasks(
   paths: StatePaths,
 ): Array<{ id: string; title: string; commitSha?: string }> {
   const events = readEvents(paths);
-  const landedEvents = events.filter((e) => e.type === "task_landed");
+  const completionEvents = events.filter(
+    (e) => e.type === "task_landed" || e.type === "task_satisfied",
+  );
   const seen = new Set<string>();
   const landedTasks: Array<{
     id: string;
     title: string;
     commitSha?: string;
   }> = [];
-  for (const ev of landedEvents) {
+  for (const ev of completionEvents) {
     if (seen.has(ev.taskId)) {
       continue;
     }
@@ -3255,27 +3284,7 @@ async function runOverallReviewOnce(
 
   const diff = await deps.git.diffRange(baseSha, headSha);
 
-  const landedTasks: Array<{ id: string; title: string; commitSha?: string }> =
-    [];
-  if (deps.paths) {
-    const events = readEvents(deps.paths);
-    const landedEvents = events.filter((e) => e.type === "task_landed");
-    const seen = new Set<string>();
-    for (const ev of landedEvents) {
-      if (seen.has(ev.taskId)) {
-        continue;
-      }
-      seen.add(ev.taskId);
-      const taskJson = readTaskJson(deps.paths, ev.taskId);
-      if (taskJson) {
-        landedTasks.push({
-          id: taskJson.id,
-          title: taskJson.title,
-          commitSha: taskJson.landedCommitSha,
-        });
-      }
-    }
-  }
+  const landedTasks = deps.paths ? getLandedTasks(deps.paths) : [];
 
   const prompt = buildOverallReviewerPrompt({
     planContent,
@@ -3401,27 +3410,7 @@ async function runOverallReworkAttempt(
   const headSha = await deps.git.head();
   const diff = await deps.git.diffRange(runBaseSha, headSha);
 
-  const landedTasks: Array<{ id: string; title: string; commitSha?: string }> =
-    [];
-  if (deps.paths) {
-    const events = readEvents(deps.paths);
-    const landedEvents = events.filter((e) => e.type === "task_landed");
-    const seen = new Set<string>();
-    for (const ev of landedEvents) {
-      if (seen.has(ev.taskId)) {
-        continue;
-      }
-      seen.add(ev.taskId);
-      const taskJson = readTaskJson(deps.paths, ev.taskId);
-      if (taskJson) {
-        landedTasks.push({
-          id: taskJson.id,
-          title: taskJson.title,
-          commitSha: taskJson.landedCommitSha,
-        });
-      }
-    }
-  }
+  const landedTasks = deps.paths ? getLandedTasks(deps.paths) : [];
 
   let bundleMaterial: string | undefined;
   if (deps.materialStore) {
@@ -4017,7 +4006,7 @@ export function stalledSchedulerReason(
   );
 
   for (const task of allTasks) {
-    if (task.status === "landed") {
+    if (task.status === "landed" || task.status === "satisfied") {
       continue;
     }
 
@@ -4035,7 +4024,9 @@ export function stalledSchedulerReason(
     if (task.status === "approved") {
       const unlandedDeps = task.dependsOn
         .map((depId) => sched.tasks.get(depId))
-        .filter((dep) => dep && dep.status !== "landed")
+        .filter(
+          (dep) => dep && dep.status !== "landed" && dep.status !== "satisfied",
+        )
         .map((dep) => `${dep!.id}:${dep!.status}`);
       if (unlandedDeps.length > 0) {
         lines.push(
@@ -4215,10 +4206,14 @@ function updateParallelState(
   const tasks: ParallelTaskState[] = [];
   const activeAgentIds: string[] = [];
   let landedCount = 0;
+  let satisfiedCount = 0;
 
   for (const task of sched.tasks.values()) {
     if (task.status === "landed") {
       landedCount++;
+    }
+    if (task.status === "satisfied") {
+      satisfiedCount++;
     }
     const taskMeta = deps.paths ? readTaskJson(deps.paths, task.id) : undefined;
     tasks.push({
@@ -4248,6 +4243,7 @@ function updateParallelState(
     activeSubagentIds: activeAgentIds,
     activeAgentRefs,
     landedCount,
+    satisfiedCount,
     totalCount: sched.tasks.size,
   });
 }
@@ -4510,7 +4506,7 @@ async function runTaskWorker(args: {
   wasNeedsRework?: boolean;
   initialFeedback?: RetryFeedback;
   attemptOrdinalBase?: number;
-}): Promise<boolean> {
+}): Promise<TaskWorkerResult> {
   const {
     deps,
     plan,
@@ -4985,16 +4981,16 @@ async function runTaskWorker(args: {
         worktreeFingerprintBefore =
           await taskGit.worktreeFingerprintExcept(planArtifacts);
       }
-    } else if (parsed.result.outcome === "already_satisfied" && !worktreePath) {
+    } else if (parsed.result.outcome === "already_satisfied") {
       await taskGit.reset();
       reviewHeadBefore = await taskGit.head();
 
       let accumulatedDiff: string | undefined;
       if (runBaseSha) {
         try {
-          const diff = await deps.git.diffRange(
+          const diff = await taskGit.diffRange(
             runBaseSha,
-            await deps.git.head(),
+            await taskGit.head(),
           );
           accumulatedDiff =
             diff.length <= MAX_ACCUMULATED_DIFF_CHARS ? diff : undefined;
@@ -5106,12 +5102,24 @@ async function runTaskWorker(args: {
         });
       }
       if (review.status === "stopped") {
-        await taskGit.reset();
+        await resetTaskForRetry(
+          taskGit,
+          worktreePath,
+          reviewHeadBefore,
+          planArtifacts,
+        );
         throw new StoppedError();
       }
       await throwIfStoppedAndReset(deps, taskGit);
       if (review.status === "failed") {
-        await taskGit.reset();
+        await resetTaskForRetry(
+          taskGit,
+          worktreePath,
+          systemFailures + 1 >= MAX_SYSTEM_FAILURES
+            ? reviewHeadBefore
+            : baseSha,
+          planArtifacts,
+        );
         feedback = recordSystemFailure(
           task.index,
           systemFailures,
@@ -5162,7 +5170,14 @@ async function runTaskWorker(args: {
       }
       const verdict = parseReviewerVerdict(review.result);
       if (verdict.verdict === "error") {
-        await taskGit.reset();
+        await resetTaskForRetry(
+          taskGit,
+          worktreePath,
+          systemFailures + 1 >= MAX_SYSTEM_FAILURES
+            ? reviewHeadBefore
+            : baseSha,
+          planArtifacts,
+        );
         feedback = recordSystemFailure(
           task.index,
           systemFailures,
@@ -5196,11 +5211,12 @@ async function runTaskWorker(args: {
       );
       if (verdict.verdict === "changes_requested") {
         if (!isAnchoredReview) {
-          if (worktreePath) {
-            await taskGit.resetHard(baseSha);
-          } else {
-            await taskGit.reset();
-          }
+          await resetTaskForRetry(
+            taskGit,
+            worktreePath,
+            baseSha,
+            planArtifacts,
+          );
           priorReviewRequiredChanges = verdict.requiredChanges;
           feedback = reviewerFeedback(verdict.requiredChanges);
           attempt++;
@@ -5225,11 +5241,12 @@ async function runTaskWorker(args: {
               `anchored review change request limit reached for task ${task.index}:\n${message}`,
             );
           }
-          if (worktreePath) {
-            await taskGit.resetHard(baseSha);
-          } else {
-            await taskGit.reset();
-          }
+          await resetTaskForRetry(
+            taskGit,
+            worktreePath,
+            baseSha,
+            planArtifacts,
+          );
           priorReviewRequiredChanges = unresolved;
           feedback = reviewerFeedback(unresolved);
           attempt++;
@@ -5302,7 +5319,51 @@ async function runTaskWorker(args: {
           `\u2713 Task ${task.index}/${plan.tasks.length} satisfied`,
         ),
       }));
-      return true;
+      return "satisfied";
+    }
+
+    if (
+      !hasStaged &&
+      parsed.result.outcome === "already_satisfied" &&
+      worktreePath
+    ) {
+      throwIfStopped(deps);
+      if (!(await taskGit.isCleanExcept(planArtifacts))) {
+        throw new BlockedError(
+          "satisfied approval succeeded but task worktree is dirty",
+        );
+      }
+      try {
+        throwIfStopped(deps);
+      } catch (err) {
+        if (err instanceof StoppedError) {
+          await taskGit.reset();
+        }
+        throw err;
+      }
+      if (deps.paths) {
+        writeTaskJson(deps.paths, taskId, {
+          id: taskId,
+          planIndex: task.index - 1,
+          title: task.text,
+          status: "satisfied",
+          dependsOn: [],
+          attempts: attempt,
+          integrationAttempts: 0,
+          baseSha,
+          worktreePath,
+          branchName,
+          activeSubagentIds: [],
+          review: taskReviewMeta,
+        });
+      }
+      deps.updateState((prev) =>
+        checkpointPatch(
+          prev,
+          `✓ Task ${task.index}/${plan.tasks.length} satisfied`,
+        ),
+      );
+      return "satisfied";
     }
 
     // Approved (changed/legacy)
@@ -5416,7 +5477,7 @@ async function runTaskWorker(args: {
           commitSha: taskCommitSha,
         });
       }
-      return true;
+      return "changed";
     }
 
     // Non-worktree serial mode
@@ -5467,7 +5528,7 @@ async function runTaskWorker(args: {
           `\u2713 Task ${task.index}/${plan.tasks.length} landed @ ${head.slice(0, 7)}`,
         ),
       }));
-      return true;
+      return "changed";
     }
     const headAfterFailedCommit = await deps.git.head();
     if (headAfterFailedCommit !== reviewHeadBefore) {
@@ -5508,6 +5569,25 @@ async function runTaskWorker(args: {
     }
   }
   return false;
+}
+
+function markCompletedParallelSourceCheckboxes(
+  deps: OrchestratorDeps,
+  sched: SchedulerRun,
+  plan: ReturnType<typeof parsePlanFile>,
+): void {
+  for (const task of [...sched.tasks.values()].sort(
+    (a, b) => a.planIndex - b.planIndex,
+  )) {
+    if (task.status !== "landed" && task.status !== "satisfied") {
+      continue;
+    }
+    const planTask = plan.tasks.find((t) => t.index === task.planIndex);
+    if (!planTask) {
+      continue;
+    }
+    markSourceCheckboxDone(deps, task.id, planTask);
+  }
 }
 
 async function healReviewerMutations(args: {
@@ -5824,6 +5904,20 @@ async function throwIfStoppedAndReset(
     }
     throw err;
   }
+}
+
+async function resetTaskForRetry(
+  taskGit: GitClient,
+  worktreePath: string | undefined,
+  resetSha: string,
+  planArtifacts: string[],
+): Promise<void> {
+  if (worktreePath) {
+    await taskGit.resetHard(resetSha);
+    await taskGit.restoreWorktreeFromIndexExcept(planArtifacts);
+    return;
+  }
+  await taskGit.reset();
 }
 
 function shortTask(text: string): string {

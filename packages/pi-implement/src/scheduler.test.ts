@@ -55,6 +55,14 @@ describe("scheduler readiness", () => {
     expect(canStartTask(run, "b")).toBe(true);
   });
 
+  it("pending task with satisfied dependencies becomes ready", () => {
+    const graph = makeGraph([makeNode("a", 1), makeNode("b", 2, ["a"])]);
+    const run = createSchedulerRun(graph, 2);
+    run.tasks.get("a")!.status = "satisfied";
+    expect(computeReadyTasks(run)).toEqual(["b"]);
+    expect(canStartTask(run, "b")).toBe(true);
+  });
+
   it("pending task with unlanded dependency remains blocked", () => {
     const graph = makeGraph([makeNode("a", 1), makeNode("b", 2, ["a"])]);
     const run = createSchedulerRun(graph, 2);
@@ -181,6 +189,14 @@ describe("terminal detection", () => {
     const graph = makeGraph([makeNode("a", 1)]);
     const run = createSchedulerRun(graph, 3);
     run.tasks.get("a")!.status = "landed";
+    expect(anyTaskFailedBlockedStopped(run)).toBe(false);
+  });
+
+  it("satisfied tasks are terminal clean completions", () => {
+    const graph = makeGraph([makeNode("a", 1)]);
+    const run = createSchedulerRun(graph, 3);
+    run.tasks.get("a")!.status = "satisfied";
+    expect(allTasksTerminal(run)).toBe(true);
     expect(anyTaskFailedBlockedStopped(run)).toBe(false);
   });
 });

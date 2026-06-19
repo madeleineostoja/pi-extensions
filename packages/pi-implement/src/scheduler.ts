@@ -9,6 +9,7 @@ export type SchedulerTaskStatus =
   | "approved"
   | "integrating"
   | "landed"
+  | "satisfied"
   | "blocked"
   | "needs_rework"
   | "integration_failed"
@@ -86,11 +87,10 @@ export function computeReadyTasks(run: SchedulerRun): string[] {
     ) {
       continue;
     }
-    const allDepsLanded = task.dependsOn.every((depId) => {
-      const dep = run.tasks.get(depId);
-      return dep?.status === "landed";
-    });
-    if (allDepsLanded) {
+    const allDepsComplete = task.dependsOn.every((depId) =>
+      isDependencyComplete(run.tasks.get(depId)?.status),
+    );
+    if (allDepsComplete) {
       ready.push(task.id);
     }
   }
@@ -152,10 +152,9 @@ export function canStartTask(run: SchedulerRun, taskId: string): boolean {
     return false;
   }
 
-  return task.dependsOn.every((depId) => {
-    const dep = run.tasks.get(depId);
-    return dep?.status === "landed";
-  });
+  return task.dependsOn.every((depId) =>
+    isDependencyComplete(run.tasks.get(depId)?.status),
+  );
 }
 
 export function startTask(run: SchedulerRun, taskId: string): void {
@@ -168,10 +167,16 @@ export function startTask(run: SchedulerRun, taskId: string): void {
   task.activeAgentRefs = [];
 }
 
-function depsLanded(run: SchedulerRun, task: SchedulerTask): boolean {
-  return task.dependsOn.every(
-    (depId) => run.tasks.get(depId)?.status === "landed",
+function depsComplete(run: SchedulerRun, task: SchedulerTask): boolean {
+  return task.dependsOn.every((depId) =>
+    isDependencyComplete(run.tasks.get(depId)?.status),
   );
+}
+
+function isDependencyComplete(
+  status: SchedulerTaskStatus | undefined,
+): boolean {
+  return status === "landed" || status === "satisfied";
 }
 
 export function nextTaskToLand(run: SchedulerRun): string | undefined {
@@ -186,7 +191,7 @@ export function nextTaskToLand(run: SchedulerRun): string | undefined {
     .filter((task) => task.status === "approved")
     .sort((a, b) => a.planIndex - b.planIndex);
   for (const task of candidates) {
-    if (depsLanded(run, task)) {
+    if (depsComplete(run, task)) {
       return task.id;
     }
   }
@@ -232,6 +237,7 @@ export function anyTaskFailedBlockedStopped(run: SchedulerRun): boolean {
 function isTerminalStatus(status: SchedulerTaskStatus): boolean {
   return (
     status === "landed" ||
+    status === "satisfied" ||
     status === "failed" ||
     status === "blocked" ||
     status === "stopped" ||
@@ -251,10 +257,9 @@ export function getBlockedReason(
   ) {
     return undefined;
   }
-  const unlandedDeps = task.dependsOn.filter((depId) => {
-    const dep = run.tasks.get(depId);
-    return dep?.status !== "landed";
-  });
+  const unlandedDeps = task.dependsOn.filter(
+    (depId) => !isDependencyComplete(run.tasks.get(depId)?.status),
+  );
   if (unlandedDeps.length > 0) {
     return `waiting for ${unlandedDeps.join(", ")}`;
   }
