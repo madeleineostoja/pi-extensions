@@ -7,6 +7,7 @@ import {
   getSessionKey,
 } from "./state.js";
 import { buildPrompt } from "./prompt.js";
+import { registerModalCloseInput } from "@pi-extensions/lib";
 import { BtwOverlay } from "./overlay.js";
 
 export default function (pi: ExtensionAPI) {
@@ -39,13 +40,19 @@ export default function (pi: ExtensionAPI) {
       const sessionKey = getSessionKey(ctx.sessionManager);
       const priorExchanges = [...getHistory(sessionKey)];
 
+      let cleanupTerminalInput: (() => void) | undefined;
       await ctx.ui.custom<void>(
         (tui, theme, _kb, done) => {
           const abortController = new AbortController();
+          const finish = () => {
+            cleanupTerminalInput?.();
+            cleanupTerminalInput = undefined;
+            done();
+          };
           const overlay = new BtwOverlay(
             tui,
             theme,
-            done,
+            finish,
             {
               question,
               history: priorExchanges,
@@ -57,6 +64,9 @@ export default function (pi: ExtensionAPI) {
             abortController,
           );
 
+          cleanupTerminalInput = registerModalCloseInput(ctx.ui, () =>
+            overlay.close(),
+          );
           overlay.onClearHistory = () => clearHistory(sessionKey);
 
           const run = async () => {

@@ -730,11 +730,15 @@ describe("overlay lifecycle", () => {
     expect(initial.some((l) => l.includes("final answer"))).toBe(true);
     expect(initial.some((l) => l.includes("q0"))).toBe(false);
 
-    component.handleInput!("\x1B[A");
+    for (let i = 0; i < 20; i++) {
+      component.handleInput!("\x1B[A");
+    }
     const scrolledUp = component.render(80);
     expect(scrolledUp.some((l) => l.includes("q0"))).toBe(true);
 
-    component.handleInput!("\x1B[B");
+    for (let i = 0; i < 20; i++) {
+      component.handleInput!("\x1B[B");
+    }
     const scrolledDown = component.render(80);
     expect(scrolledDown.some((l) => l.includes("final answer"))).toBe(true);
 

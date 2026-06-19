@@ -63,10 +63,10 @@ describe("BtwOverlay", () => {
 
     const lines = overlay.render(80);
 
-    expect(lines[0]).toContain("/btw");
-    expect(lines[0]).toContain("what is this?");
+    expect(lines.some((line) => line.includes("/btw"))).toBe(true);
+    expect(lines.some((line) => line.includes("what is this?"))).toBe(true);
     expect(lines.some((line) => line.includes("Thinking..."))).toBe(true);
-    expect(lines.some((line) => line.includes("esc: dismiss"))).toBe(true);
+    expect(lines.some((line) => line.includes("esc/q: abort"))).toBe(true);
     expect(lines.length).toBeLessThanOrEqual(24);
   });
 
@@ -275,12 +275,16 @@ describe("BtwOverlay", () => {
     expect(initial.some((line) => line.includes("final answer"))).toBe(true);
     expect(initial.some((line) => line.includes("q0"))).toBe(false);
 
-    overlay.handleInput("\x1B[A");
+    for (let i = 0; i < 20; i++) {
+      overlay.handleInput("\x1B[A");
+    }
     const scrolledUp = overlay.render(80);
     expect(scrolledUp.some((line) => line.includes("q0"))).toBe(true);
     expect(scrolledUp).not.toEqual(initial);
 
-    overlay.handleInput("\x1B[B");
+    for (let i = 0; i < 20; i++) {
+      overlay.handleInput("\x1B[B");
+    }
     const scrolledDown = overlay.render(80);
     expect(scrolledDown.some((line) => line.includes("final answer"))).toBe(
       true,
@@ -306,9 +310,11 @@ describe("BtwOverlay", () => {
       overlay.handleInput("\x1B[A");
     }
 
-    expect(overlay.state.scrollOffset).toBe(1);
+    expect(overlay.state.scrollOffset).toBe(8);
 
-    overlay.handleInput("\x1B[B");
+    for (let i = 0; i < 10; i++) {
+      overlay.handleInput("\x1B[B");
+    }
 
     expect(overlay.state.scrollOffset).toBe(0);
   });
@@ -326,7 +332,7 @@ describe("BtwOverlay", () => {
     const lines = overlay.render(80);
 
     expect(lines.length).toBeLessThanOrEqual(10);
-    expect(lines[lines.length - 1]).toContain("esc: dismiss");
+    expect(lines.some((line) => line.includes("esc/q: abort"))).toBe(true);
   });
 
   it("default maxRows respects 60% of terminal rows", () => {

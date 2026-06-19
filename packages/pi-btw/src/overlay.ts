@@ -1,11 +1,11 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
+import { matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import {
-  Key,
-  matchesKey,
-  truncateToWidth,
-  wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
+  isModalCloseInput,
+  nextModalScrollOffset,
+  renderModalView,
+} from "@pi-extensions/lib";
 import type { BtwExchange } from "./state.js";
 
 export type BtwOverlayState = {
@@ -21,6 +21,7 @@ export class BtwOverlay implements Component {
   onClearHistory?: () => void;
 
   private lastWidth = 80;
+  private closed = false;
 
   constructor(
     private tui: TUI,
@@ -42,12 +43,30 @@ export class BtwOverlay implements Component {
     this.tui.requestRender();
   }
 
+  close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    if (this.state.status === "pending") {
+      this.abortController.abort();
+    }
+    this.done();
+  }
+
+  dispose(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    if (this.state.status === "pending") {
+      this.abortController.abort();
+    }
+  }
+
   handleInput(data: string): void {
-    if (matchesKey(data, Key.escape)) {
-      if (this.state.status === "pending") {
-        this.abortController.abort();
-      }
-      this.done();
+    if (isModalCloseInput(data) || matchesKey(data, "q")) {
+      this.close();
       return;
     }
     if (matchesKey(data, "x")) {
@@ -56,12 +75,19 @@ export class BtwOverlay implements Component {
       this.tui.requestRender();
       return;
     }
-    if (matchesKey(data, Key.up)) {
-      this.setState({ scrollOffset: this.state.scrollOffset + 1 });
-      return;
-    }
-    if (matchesKey(data, Key.down)) {
-      this.setState({ scrollOffset: Math.max(0, this.state.scrollOffset - 1) });
+
+    const contentLines = this.getContentLines(
+      this.contentWidth(this.lastWidth),
+    );
+    const maxScroll = Math.max(0, contentLines.length - this.getContentRows());
+    const nextScroll = nextModalScrollOffset(
+      data,
+      this.state.scrollOffset,
+      maxScroll,
+      this.getContentRows(),
+    );
+    if (nextScroll !== undefined) {
+      this.setState({ scrollOffset: nextScroll });
       return;
     }
   }
@@ -69,76 +95,86 @@ export class BtwOverlay implements Component {
   render(width: number): string[] {
     this.lastWidth = width;
     this.clampScrollOffset();
-    const maxContentRows = this.getMaxContentRows();
-    const title = `${this.theme.fg("accent", "/btw")} ${this.theme.bold(
-      truncateToWidth(
-        this.state.question,
-        Math.max(0, width - 8),
-        "...",
-        false,
-      ),
-    )}`;
-    const footer = this.theme.fg(
-      "muted",
-      "esc: dismiss | x: clear history | ↑/↓: scroll",
-    );
+    const contentLines = this.getContentLines(this.contentWidth(width));
+    const rendered = renderModalView({
+      theme: this.theme,
+      width,
+      maxRows: this.maxRows,
+      title: "/btw",
+      status: this.status(),
+      subtitle: this.state.question,
+      contentLines,
+      scrollOffset: this.state.scrollOffset,
+      footerControls: this.footerControls(),
+    });
+    this.state.scrollOffset = rendered.scrollOffset;
+    return rendered.lines;
+  }
 
-    const contentLines = this.getContentLines(width);
-    const maxScroll = Math.max(0, contentLines.length - maxContentRows);
-    const start = Math.max(0, maxScroll - this.state.scrollOffset);
-    const visible = contentLines.slice(start, start + maxContentRows);
+  private status() {
+    if (this.state.status === "pending") {
+      return { label: "thinking", kind: "pending" as const };
+    }
+    if (this.state.status === "answer") {
+      return { label: "answer", kind: "completed" as const };
+    }
+    return { label: "error", kind: "failed" as const };
+  }
 
-    return [title, ...visible, footer];
+  private footerControls(): string {
+    const close =
+      this.state.status === "pending" ? "esc/q: abort" : "esc/q: close";
+    return `${close} · x: clear history · ↑↓/kj scroll · Pg/Home/End`;
   }
 
   private clampScrollOffset(): void {
     const maxScroll = Math.max(
       0,
-      this.getContentLines(this.lastWidth).length - this.getMaxContentRows(),
+      this.getContentLines(this.contentWidth(this.lastWidth)).length -
+        this.getContentRows(),
     );
     this.state.scrollOffset = Math.min(this.state.scrollOffset, maxScroll);
   }
 
-  private getMaxContentRows(): number {
-    return Math.max(1, this.maxRows - 2);
+  private getContentRows(): number {
+    return Math.max(1, this.maxRows - 7);
+  }
+
+  private contentWidth(width: number): number {
+    return Math.max(1, width - 4);
   }
 
   private getContentLines(width: number): string[] {
     const contentLines: string[] = [];
 
     for (const ex of this.state.history) {
-      const q = truncateToWidth(
-        ex.question,
-        Math.max(0, width - 4),
-        "...",
-        false,
-      );
-      const a = truncateToWidth(
-        ex.answer,
-        Math.max(0, width - 8),
-        "...",
-        false,
-      );
-      contentLines.push(this.theme.fg("dim", `Q: ${q}`));
-      contentLines.push(this.theme.fg("muted", `  -> ${a}`));
+      contentLines.push(...this.wrap(`Q: ${ex.question}`, width, "dim"));
+      contentLines.push(...this.wrap(`  → ${ex.answer}`, width, "muted"));
     }
 
+    contentLines.push(this.theme.fg("accent", "[Question]"));
+    contentLines.push(...this.wrap(this.state.question, width));
+
     if (this.state.status === "pending") {
-      contentLines.push(this.theme.fg("accent", "Thinking..."));
+      contentLines.push("", this.theme.fg("accent", "Thinking..."));
     } else if (this.state.status === "answer") {
-      contentLines.push(
-        ...wrapTextWithAnsi(this.state.answerText, Math.max(1, width - 2)).map(
-          (line) => ` ${line}`,
-        ),
-      );
+      contentLines.push("", this.theme.bold("[Answer]"));
+      contentLines.push(...this.wrap(this.state.answerText, width));
     } else {
-      contentLines.push(
-        ...wrapTextWithAnsi(this.state.errorText, Math.max(1, width - 2)).map(
-          (line) => this.theme.fg("error", ` ${line}`),
-        ),
-      );
+      contentLines.push("", this.theme.fg("error", "[Error]"));
+      contentLines.push(...this.wrap(this.state.errorText, width, "error"));
     }
 
     return contentLines;
+  }
+
+  private wrap(
+    text: string,
+    width: number,
+    color?: "dim" | "muted" | "error",
+  ): string[] {
+    return wrapTextWithAnsi(text.trim(), Math.max(1, width)).map((line) =>
+      color ? this.theme.fg(color, line) : line,
+    );
   }
 }
