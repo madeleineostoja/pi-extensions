@@ -43,6 +43,14 @@ describe("git helpers", () => {
     expect(await client.stagedDiff()).toContain("export const added = true;");
   });
 
+  it("detects rebase directory state as an active operation", async () => {
+    const cwd = repo();
+    mkdirSync(join(cwd, ".git", "rebase-merge"));
+    const client = new ExecGitClient(cwd);
+
+    expect(await client.activeOperation()).toBe("rebase");
+  });
+
   it("stages repo-relative paths from a nested client cwd", async () => {
     const cwd = repo();
     mkdirSync(join(cwd, "src"), { recursive: true });

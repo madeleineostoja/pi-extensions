@@ -1593,16 +1593,23 @@ async function landApprovedTask(
     return markIntegrationFailure(deps, task, taskId, "Plan task not found");
   }
 
-  if (!(await deps.git.isCleanExcept(planArtifacts))) {
+  const integrationStartHead = await deps.git.head();
+  const cleanBeforeIntegration = await ensureCleanMainCheckoutBeforeIntegration(
+    deps,
+    taskId,
+    planArtifacts,
+    integrationStartHead,
+  );
+  if (!cleanBeforeIntegration.ok) {
     return markIntegrationFailure(
       deps,
       task,
       taskId,
-      "Main checkout dirty before integration",
+      cleanBeforeIntegration.reason,
     );
   }
 
-  const preIntegrationHead = await deps.git.head();
+  const preIntegrationHead = integrationStartHead;
   const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
 
   const failForRework = async (source: string, reason: string) => {
@@ -1914,6 +1921,74 @@ function markIntegrationFailure(
     });
   }
   return "integration_failed";
+}
+
+async function ensureCleanMainCheckoutBeforeIntegration(
+  deps: OrchestratorDeps,
+  taskId: string,
+  planArtifacts: string[],
+  expectedHead: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (await deps.git.isCleanExcept(planArtifacts)) {
+    return { ok: true };
+  }
+
+  const statusBefore = await deps.git.status();
+  if (deps.paths) {
+    persistTaskArtifact(
+      deps.paths,
+      taskId,
+      "pre-integration-dirty-status.txt",
+      statusBefore,
+    );
+  }
+
+  if ((await deps.git.head()) !== expectedHead) {
+    return {
+      ok: false,
+      reason: `Main checkout dirty before integration and HEAD changed. Status:\n${statusBefore}`,
+    };
+  }
+
+  const operation = await deps.git.activeOperation();
+  if (operation) {
+    return {
+      ok: false,
+      reason: `Main checkout has active ${operation} operation before integration. Status:\n${statusBefore}`,
+    };
+  }
+
+  const { staged, unstaged, untracked } = await collectChangedPaths(deps);
+  const dirtyPaths = [...staged, ...unstaged, ...untracked];
+  const dirtyPlanArtifact = dirtyPaths.find((path) =>
+    isPlanArtifactPath(path, planArtifacts, deps.planPath),
+  );
+  if (dirtyPlanArtifact) {
+    return {
+      ok: false,
+      reason: `Main checkout dirty before integration includes a plan artifact: ${dirtyPlanArtifact}. Status:\n${statusBefore}`,
+    };
+  }
+
+  await deps.git.reset();
+  await deps.git.restoreWorktreeFromIndexExcept(planArtifacts);
+
+  if (await deps.git.isCleanExcept(planArtifacts)) {
+    if (deps.paths) {
+      persistTaskArtifact(
+        deps.paths,
+        taskId,
+        "pre-integration-cleanup.md",
+        `# Pre-integration cleanup\n\nRemoved non-plan checkout residue before integration.\n\n## Status before\n\n\`\`\`\n${statusBefore}\n\`\`\`\n`,
+      );
+    }
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    reason: `Main checkout dirty before integration after cleanup. Status before:\n${statusBefore}\n\nStatus after:\n${await deps.git.status()}`,
+  };
 }
 
 async function rollbackIntegration(
@@ -2413,7 +2488,7 @@ export async function captureSchedulerSelfHealBaseline(
       const onDisk = readTaskJson(deps.paths, task.id);
       taskJsonStates.set(task.id, onDisk);
     }
-    if (task.status === "failed" && isSetupFailureReason(task.lastReason)) {
+    if (isSetupBlockedTask(task)) {
       const branchName = `pi-implement/${runId}/${task.id}`;
       const worktreePath = deps.paths
         ? join(deps.paths.worktreesDir, task.id)
@@ -2527,13 +2602,28 @@ export async function checkSchedulerSelfHealProgress(
     return { hasProgress: false, revivedTaskIds };
   }
 
+  // Observable progress: retryable setup-blocked task became clean.
+  if (!baseline.wasClean && currentClean) {
+    for (const task of sched.tasks.values()) {
+      if (
+        isMainCheckoutDirtySetupFailure(task.lastReason) &&
+        task.dependsOn.every((depId) => {
+          const dep = sched.tasks.get(depId);
+          return dep?.status === "landed" || dep?.status === "satisfied";
+        })
+      ) {
+        revivedTaskIds.push(task.id);
+      }
+    }
+  }
+
   // Observable progress: stale branch/worktree removed for a setup-blocked task
   for (const [taskId, preBlocker] of baseline.setupBlockers) {
     const task = sched.tasks.get(taskId);
     if (!task) {
       continue;
     }
-    if (task.status !== "failed" || !isSetupFailureReason(task.lastReason)) {
+    if (!isSetupBlockedTask(task)) {
       continue;
     }
     const depsComplete = task.dependsOn.every((depId) => {
@@ -2577,7 +2667,7 @@ export async function checkSchedulerSelfHealProgress(
   }
 
   if (revivedTaskIds.length > 0) {
-    return { hasProgress: true, revivedTaskIds };
+    return { hasProgress: true, revivedTaskIds: [...new Set(revivedTaskIds)] };
   }
 
   // Observable progress: interrupted/dirty scheduler state was cleared
@@ -2715,6 +2805,17 @@ function normalizeStatusPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
+function isSetupBlockedTask(task: SchedulerTask): boolean {
+  return (
+    (task.status === "failed" || task.status === "integration_failed") &&
+    isSetupFailureReason(task.lastReason)
+  );
+}
+
+function isMainCheckoutDirtySetupFailure(reason: string | undefined): boolean {
+  return /Main checkout dirty before integration/i.test(reason ?? "");
+}
+
 function isSetupFailureReason(reason: string | undefined): boolean {
   if (!reason) {
     return false;
@@ -2724,6 +2825,7 @@ function isSetupFailureReason(reason: string | undefined): boolean {
     /branch .* already exists/i,
     /worktree .* already exists/i,
     /interrupted git operation/i,
+    /Main checkout dirty before integration/i,
   ];
   return setupPatterns.some((p) => p.test(reason));
 }
@@ -2737,15 +2839,21 @@ function reviveTaskForSchedulerRetry(
   if (!task) {
     return;
   }
-  task.status = "needs_rework";
+  const retryIntegration =
+    task.status === "integration_failed" &&
+    task.taskCommitSha !== undefined &&
+    isMainCheckoutDirtySetupFailure(task.lastReason);
+  task.status = retryIntegration ? "approved" : "needs_rework";
   task.activeAgentIds = [];
   task.activeAgentRefs = [];
-  task.lastReason = "self-heal repaired setup blocker; retrying";
+  task.lastReason = retryIntegration
+    ? "self-heal cleaned main checkout; retrying integration"
+    : "self-heal repaired setup blocker; retrying";
   if (deps.paths) {
     const existing = readTaskJson(deps.paths, taskId);
     writeTaskJson(deps.paths, taskId, {
       ...buildTaskJsonSnapshot(existing, task),
-      status: "needs_rework",
+      status: task.status,
       activeSubagentIds: [],
       lastReason: task.lastReason,
     });

@@ -26,6 +26,7 @@ export type GitClient = {
   root(): Promise<string>;
   mainRoot(): Promise<string>;
   checkoutIdentity(): Promise<string>;
+  activeOperation(): Promise<string | undefined>;
   head(): Promise<string>;
   status(): Promise<string>;
   isClean(): Promise<boolean>;
@@ -86,6 +87,32 @@ export class ExecGitClient implements GitClient {
       await this.run(["rev-parse", "--path-format=absolute", "--git-dir"])
     ).stdout.trim();
     return realpathSync(gitDir);
+  }
+
+  async activeOperation(): Promise<string | undefined> {
+    for (const [ref, label] of [
+      ["CHERRY_PICK_HEAD", "cherry-pick"],
+      ["MERGE_HEAD", "merge"],
+      ["REVERT_HEAD", "revert"],
+      ["REBASE_HEAD", "rebase"],
+    ] as const) {
+      const result = await this.run(["rev-parse", "-q", "--verify", ref], true);
+      if (result.exitCode === 0) {
+        return label;
+      }
+    }
+    for (const path of ["rebase-merge", "rebase-apply"]) {
+      const gitPath = (
+        await this.run(["rev-parse", "--git-path", path])
+      ).stdout.trim();
+      const resolvedPath = isAbsolute(gitPath)
+        ? gitPath
+        : join(this.cwd, gitPath);
+      if (existsSync(resolvedPath)) {
+        return "rebase";
+      }
+    }
+    return undefined;
   }
 
   async head(): Promise<string> {

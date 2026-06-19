@@ -57,8 +57,12 @@ class FakeGit implements GitClient {
   async mainRoot() {
     return this.rootValue;
   }
+  activeOperationValue: string | undefined;
   async checkoutIdentity() {
     return `${this.rootValue}/.git`;
+  }
+  async activeOperation() {
+    return this.activeOperationValue;
   }
   async head() {
     return this.headValue;
@@ -129,7 +133,10 @@ class FakeGit implements GitClient {
       stderr: "",
     };
   }
-  async reset() {}
+  resetCount = 0;
+  async reset() {
+    this.resetCount++;
+  }
   async resetHard(commitSha: string) {
     this.headValue = commitSha;
   }
@@ -6565,6 +6572,220 @@ describe("runImplementation", () => {
   });
 
   describe("integration self-heal", () => {
+    it("cleans non-plan main checkout residue before integration", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      git.statusText = " M generated.ts";
+      let cleanChecks = 0;
+      git.isCleanExcept = async () => {
+        cleanChecks++;
+        return cleanChecks === 1 || git.statusText.trim() === "";
+      };
+      git.restoreWorktreeFromIndexExcept = async () => {
+        git.restoredFromIndex++;
+        git.statusText = "";
+      };
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      expect(git.resetCount).toBeGreaterThan(0);
+      expect(git.restoredFromIndex).toBeGreaterThan(0);
+      expect(git.commits).toHaveLength(1);
+      expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
+    });
+
+    it("blocks dirty main checkout cleanup during an active git operation", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      git.statusText = "UU file.ts";
+      let cleanChecks = 0;
+      git.isCleanExcept = async () => {
+        cleanChecks++;
+        return cleanChecks === 1 || git.statusText.trim() === "";
+      };
+      git.activeOperationValue = "cherry-pick";
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          verifyCommand: "echo ok",
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+            selfHeal: { model: "p/m", type: "general-purpose" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow("active cherry-pick operation");
+    });
+
+    it("blocks dirty main checkout cleanup for plan artifacts", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      git.statusText = " M plan.md\n M generated.ts";
+      let cleanChecks = 0;
+      git.isCleanExcept = async () => {
+        cleanChecks++;
+        return cleanChecks === 1 || git.statusText.trim() === "";
+      };
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          planArtifacts: [planPath],
+          verifyCommand: "echo ok",
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+            selfHeal: { model: "p/m", type: "general-purpose" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow("includes a plan artifact");
+    });
+
     it("repairs validation failure and lands the task", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
@@ -9847,6 +10068,106 @@ describe("runImplementation", () => {
 
     expect(readFileSync(planPath, "utf-8")).toContain("- [x] First");
     expect(readFileSync(planPath, "utf-8")).toContain("- [x] Second");
+  });
+
+  it("scheduler self-heal can revive dirty-checkout integration failures after cleanup", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] First\n", "utf-8");
+    const paths = makePaths(dir);
+    writeRunJson(paths, {
+      version: 1,
+      runId: "r1",
+      mode: "parallel",
+      strategyReason: "parallel",
+      repoRoot: dir,
+      planPath,
+      planHash: "hash",
+      baseSha: "h1",
+      currentPhase: "scheduling",
+      maxConcurrency: 1,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    const graph = {
+      version: 1 as const,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "first",
+          planIndex: 1,
+          title: "First",
+          taskHash: "hash",
+          dependsOn: [],
+          mode: "parallel" as const,
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high" as const,
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    };
+    writeGraphJson(paths.runDir, graph);
+
+    const git = new FakeGit();
+    git.rootValue = dir;
+    git.statusText = " M residue.ts";
+    const subagents = new FakeSubagents();
+    const sched = createSchedulerRun(graph, 1);
+    const task = sched.tasks.get("first")!;
+    task.status = "integration_failed";
+    task.taskCommitSha = "task-sha";
+    task.lastReason = "Main checkout dirty before integration";
+
+    const deps = {
+      git,
+      subagents,
+      planPath,
+      paths,
+      runId: "r1",
+      mode: "parallel" as const,
+      roles: {
+        implementer: {
+          model: "p/m" as const,
+          type: "general-purpose" as const,
+        },
+        reviewer: { model: "p/m" as const, type: "general-purpose" as const },
+        planner: { model: "p/m" as const, type: "Explore" as const },
+        selfHeal: { model: "p/m" as const, type: "general-purpose" as const },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    };
+
+    const baseline = await captureSchedulerSelfHealBaseline(deps, sched, [
+      planPath,
+    ]);
+    git.statusText = "";
+
+    const progress = await checkSchedulerSelfHealProgress(
+      deps,
+      sched,
+      [planPath],
+      baseline,
+      {
+        repaired: true,
+        retryScheduler: true,
+        summary: "Cleaned main checkout residue for first.",
+        commands: ["git restore residue.ts"],
+        filesChanged: [],
+        remainingBlocker: null,
+      },
+    );
+
+    expect(progress).toEqual({
+      hasProgress: true,
+      revivedTaskIds: ["first"],
+    });
   });
 
   it("self-heal does not count removed worktree as progress when branch is ahead of base", async () => {
