@@ -72,7 +72,11 @@ class FakeGit implements GitClient {
   async isCleanExcept() {
     return this.statusText.trim() === "";
   }
+  stagedPaths: string[][] = [];
   async stageAllExcept() {}
+  async stagePaths(paths: string[]) {
+    this.stagedPaths.push(paths);
+  }
   async hasStagedChanges() {
     return true;
   }
@@ -7308,6 +7312,117 @@ describe("runImplementation", () => {
 
       const updatedPlan = readFileSync(planPath, "utf-8");
       expect(updatedPlan).toContain("- [ ] Do thing");
+    });
+
+    it("stages declared unstaged self-heal repair files and lands task", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+
+      const validateScript = join(dir, "validate.sh");
+      writeFileSync(
+        validateScript,
+        `#!/bin/sh\nif [ -f "${join(dir, ".validation-pass")}" ]; then\n  exit 0\nelse\n  echo "validation failed"\n  exit 1\nfi\n`,
+        "utf-8",
+      );
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const subagents = new FakeSubagents();
+
+      let spawnCount = 0;
+      const originalSpawn = subagents.spawn.bind(subagents);
+      subagents.spawn = async (args) => {
+        spawnCount++;
+        return originalSpawn(args);
+      };
+      const originalWaitFor = subagents.waitFor.bind(subagents);
+      subagents.waitFor = async (id, signal) => {
+        const result = await originalWaitFor(id, signal);
+        if (spawnCount === 3 && result.status === "completed") {
+          writeFileSync(join(dir, ".validation-pass"), "ok", "utf-8");
+          git.statusText = " M app/test.ts";
+          git.stagedNameStatus = async () => "M\tfile.ts\nM\tapp/test.ts";
+        }
+        return result;
+      };
+      const originalStagePaths = git.stagePaths.bind(git);
+      git.stagePaths = async (pathsToStage: string[]) => {
+        await originalStagePaths(pathsToStage);
+        git.statusText = "M  app/test.ts\nM  file.ts";
+      };
+      const originalCommit = git.commit.bind(git);
+      git.commit = async (message: string) => {
+        const result = await originalCommit(message);
+        git.statusText = "";
+        return result;
+      };
+
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: makeSelfHealResult({
+            repaired: true,
+            retryIntegration: true,
+            retryMode: "retry_validation",
+            summary: "updated test expectation",
+            filesChanged: ["app/test.ts"],
+          }),
+        },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: `sh ${validateScript}`,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      expect(git.stagedPaths).toContainEqual(["app/test.ts"]);
+      expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
+      expect(git.commits).toHaveLength(1);
     });
 
     it("allows newly staged integration-repair files and lands task", async () => {

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -40,6 +41,20 @@ describe("git helpers", () => {
 
     expect(await client.stagedNameStatus()).toContain("A\tnew.ts");
     expect(await client.stagedDiff()).toContain("export const added = true;");
+  });
+
+  it("stages repo-relative paths from a nested client cwd", async () => {
+    const cwd = repo();
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(
+      join(cwd, "src", "nested.ts"),
+      "export const nested = true;\n",
+    );
+    const client = new ExecGitClient(join(cwd, "src"));
+
+    await client.stagePaths(["src/nested.ts"]);
+
+    expect(await client.stagedNameStatus()).toBe("A\tsrc/nested.ts\n");
   });
 
   it("excludes plan artifacts without force-adding ignored files", async () => {

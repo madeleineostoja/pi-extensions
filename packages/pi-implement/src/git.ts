@@ -31,6 +31,7 @@ export type GitClient = {
   isClean(): Promise<boolean>;
   isCleanExcept(paths: string[]): Promise<boolean>;
   stageAllExcept(paths: string[]): Promise<void>;
+  stagePaths(paths: string[]): Promise<void>;
   hasStagedChanges(): Promise<boolean>;
   stagedDiffStat(): Promise<string>;
   stagedNameStatus(): Promise<string>;
@@ -114,6 +115,15 @@ export class ExecGitClient implements GitClient {
     const specs = candidates
       .filter((path) => !excluded.has(path))
       .map((path) => `:(top,literal)${path}`);
+    if (specs.length) {
+      await this.run(["add", "-A", "--", ...specs]);
+    }
+  }
+
+  async stagePaths(paths: string[]): Promise<void> {
+    const specs = (await this.repoRelativePaths(paths)).map(
+      (path) => `:(top,literal)${path}`,
+    );
     if (specs.length) {
       await this.run(["add", "-A", "--", ...specs]);
     }
@@ -348,11 +358,13 @@ export class ExecGitClient implements GitClient {
     const seen = new Set<string>();
     const result: string[] = [];
     for (const path of paths) {
-      const rel = relativeInside(root, path) ?? relativeInside(realRoot, path);
+      const rel = isAbsolute(path)
+        ? (relativeInside(root, path) ?? relativeInside(realRoot, path))
+        : path;
       if (!rel) {
         continue;
       }
-      const gitPath = rel.replaceAll("\\", "/");
+      const gitPath = rel.replaceAll("\\", "/").replace(/^\.\//, "");
       if (seen.has(gitPath)) {
         continue;
       }

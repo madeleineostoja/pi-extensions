@@ -383,6 +383,7 @@ You may:
 - Inspect run artifacts, git status, branches, worktrees, package manager state, and validation logs.
 - Repair integration/runtime state, install dependencies using the inferred package manager, resolve conflicts, stage integration-resolution changes, and rerun validation.
 - Leave staged integration-resolution changes in the main checkout when needed.
+- If you modify repair files but cannot stage them, list every modified path in filesChanged so the orchestrator can stage exactly those declared repair files.
 
 You must NOT:
 - Implement future plan tasks.

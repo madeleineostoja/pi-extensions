@@ -1699,6 +1699,11 @@ async function landApprovedTask(
       // Always verify safety after a self-heal attempt, regardless of whether
       // the repair agent returned a retryable result.
       if (task.selfHealAttempts > 0) {
+        await stageDeclaredSelfHealFiles(
+          deps,
+          healResult?.result,
+          planArtifacts,
+        );
         const safety = await checkSelfHealSafety(
           deps,
           preIntegrationHead,
@@ -1763,6 +1768,11 @@ async function landApprovedTask(
       // Always verify safety after a self-heal attempt, regardless of whether
       // the repair agent returned a retryable result.
       if (task.selfHealAttempts > 0) {
+        await stageDeclaredSelfHealFiles(
+          deps,
+          healResult?.result,
+          planArtifacts,
+        );
         const safety = await checkSelfHealSafety(
           deps,
           preIntegrationHead,
@@ -2092,6 +2102,25 @@ async function tryIntegrationSelfHeal(
   }
 
   return parsed;
+}
+
+async function stageDeclaredSelfHealFiles(
+  deps: OrchestratorDeps,
+  healResult: IntegrationSelfHealResult | undefined,
+  planArtifacts: string[],
+): Promise<void> {
+  if (
+    !healResult?.retryIntegration ||
+    healResult.retryMode === "retry_cherry_pick"
+  ) {
+    return;
+  }
+  const files = (healResult.filesChanged ?? []).filter(
+    (path) => !isPlanArtifactPath(path, planArtifacts, deps.planPath),
+  );
+  if (files.length > 0) {
+    await deps.git.stagePaths(files);
+  }
 }
 
 async function checkSelfHealSafety(
