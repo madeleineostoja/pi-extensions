@@ -467,6 +467,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       let git: ExecGitClient;
       let repoRoot: string;
       let checkoutRoot: string;
+      let checkoutIdentity: string;
       let baseSha: string;
       let planContent: string;
       let plan: ReturnType<typeof parsePlanFile>;
@@ -481,6 +482,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         git = new ExecGitClient(ctx.cwd);
         repoRoot = await git.mainRoot();
         checkoutRoot = await git.root();
+        checkoutIdentity = await git.checkoutIdentity();
         await git.ensureInfoExclude("/.pi/implement/");
         baseSha = await git.head();
         planContent = readFileSync(planPath, "utf-8");
@@ -553,7 +555,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       let now = "";
       for (let attempt = 0; attempt < 10; attempt++) {
         runId = makeRunIdWithSuffix(makeRunId(), new Set(listRunIds(repoRoot)));
-        paths = getStatePaths(repoRoot, runId, checkoutRoot);
+        paths = getStatePaths(repoRoot, runId, checkoutIdentity);
         now = new Date().toISOString();
         const runJson = {
           version: 1 as const,

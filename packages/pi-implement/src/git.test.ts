@@ -213,6 +213,30 @@ describe("git helpers", () => {
     await client.deleteTaskBranch(branchName);
   });
 
+  it("uses the git admin dir as a per-checkout identity", async () => {
+    const cwd = repo();
+    const client = new ExecGitClient(cwd);
+    const baseSha = await client.head();
+    const worktreePath = realpathSync(
+      mkdtempSync(join(tmpdir(), "pi-implement-wt-identity-")),
+    );
+    const branchName = "pi-implement/r1/t001-identity";
+
+    await client.createTaskBranch(branchName, baseSha);
+    await client.addWorktree(worktreePath, branchName);
+
+    const mainIdentity = await client.checkoutIdentity();
+    const wtIdentity = await client
+      .forWorktree(worktreePath)
+      .checkoutIdentity();
+
+    expect(mainIdentity).not.toBe(wtIdentity);
+    expect(wtIdentity).toContain(join(".git", "worktrees"));
+
+    await client.removeWorktree(worktreePath);
+    await client.deleteTaskBranch(branchName);
+  });
+
   it("stages and commits in a worktree without changing main HEAD", async () => {
     const cwd = repo();
     const client = new ExecGitClient(cwd);

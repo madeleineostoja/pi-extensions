@@ -25,6 +25,7 @@ export type CommandResult = {
 export type GitClient = {
   root(): Promise<string>;
   mainRoot(): Promise<string>;
+  checkoutIdentity(): Promise<string>;
   head(): Promise<string>;
   status(): Promise<string>;
   isClean(): Promise<boolean>;
@@ -77,6 +78,13 @@ export class ExecGitClient implements GitClient {
       ])
     ).stdout.trim();
     return dirname(commonDir);
+  }
+
+  async checkoutIdentity(): Promise<string> {
+    const gitDir = (
+      await this.run(["rev-parse", "--path-format=absolute", "--git-dir"])
+    ).stdout.trim();
+    return realpathSync(gitDir);
   }
 
   async head(): Promise<string> {
