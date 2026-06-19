@@ -231,10 +231,17 @@ function tokenLabel(value: number | undefined): string {
   if (value < 1000) {
     return String(value);
   }
-  return `${(value / 1000)
+  if (value < 1_000_000) {
+    return compactTokenLabel(value / 1000, "k");
+  }
+  return compactTokenLabel(value / 1_000_000, "M");
+}
+
+function compactTokenLabel(value: number, suffix: string): string {
+  return `${value
     .toFixed(2)
     .replace(/\.00$/, "")
-    .replace(/(\.\d)0$/, "$1")}k`;
+    .replace(/(\.\d)0$/, "$1")}${suffix}`;
 }
 
 function maxWidth(label: string, values: string[]): number {

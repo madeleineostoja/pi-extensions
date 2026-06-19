@@ -81,11 +81,16 @@ describe("subagent roster", () => {
       snapshot({
         health: { activeTool: "edit", turns: 4, tokensTotal: 110000 },
       }),
+      snapshot({
+        health: { activeTool: "Agent", turns: 5, tokensTotal: 1420280 },
+      }),
     ]);
 
     expect(rows.join("\n")).toContain("1.5k");
     expect(rows.join("\n")).toContain("10k");
     expect(rows.join("\n")).toContain("110k");
+    expect(rows.join("\n")).toContain("1.42M");
+    expect(rows.join("\n")).not.toContain("1420.28k");
   });
 
   it("separates minutes and seconds in elapsed labels", () => {
