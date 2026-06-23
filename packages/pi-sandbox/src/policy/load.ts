@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { createRequire } from "node:module";
+import * as nodeModule from "node:module";
+import { fileURLToPath } from "node:url";
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -152,15 +153,176 @@ function deepMerge(
   return result;
 }
 
-function resolveHostDocsDir(): string | null {
+const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
+const PI_DOCUMENTATION_SURFACES = [
+  "docs",
+  "examples",
+  "README.md",
+  "CHANGELOG.md",
+  "containerization.md",
+] as const;
+
+type FindPackageJSON = (specifier: string, base: string) => string | undefined;
+
+type HostDocumentationResolverOptions = {
+  findPackageJSON?: FindPackageJSON | null;
+  importMetaResolve?: (specifier: string) => string;
+  argv1?: string;
+};
+
+function canonicalPath(filePath: string): string {
+  const resolved = path.resolve(filePath);
   try {
-    const require = createRequire(import.meta.url);
-    const pkgJsonPath =
-      require.resolve("@earendil-works/pi-coding-agent/package.json");
-    const docsDir = path.join(path.dirname(pkgJsonPath), "docs");
-    return fs.existsSync(docsDir) ? docsDir : null;
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function pathFromMaybeFileUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.protocol === "file:" ? fileURLToPath(url) : null;
+  } catch {
+    return value;
+  }
+}
+
+function readPackageName(packageJsonPath: string): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as {
+      name?: unknown;
+    };
+    return typeof parsed.name === "string" ? parsed.name : null;
   } catch {
     return null;
+  }
+}
+
+function directoryForUpwardWalk(startPath: string): string {
+  const resolved = path.resolve(startPath);
+  try {
+    return fs.statSync(resolved).isDirectory()
+      ? resolved
+      : path.dirname(resolved);
+  } catch {
+    return path.dirname(resolved);
+  }
+}
+
+function findPiPackageRootUpward(startPath: string): string | null {
+  let current = directoryForUpwardWalk(startPath);
+
+  while (true) {
+    const packageJsonPath = path.join(current, "package.json");
+    if (readPackageName(packageJsonPath) === PI_PACKAGE_NAME) {
+      return current;
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+function getNodeFindPackageJSON(): FindPackageJSON | null {
+  try {
+    const maybeModule = nodeModule as typeof nodeModule & {
+      findPackageJSON?: FindPackageJSON;
+    };
+    return typeof maybeModule.findPackageJSON === "function"
+      ? maybeModule.findPackageJSON
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function addPiPackageRoot(
+  rootsByRealPath: Map<string, string>,
+  root: string,
+): void {
+  const packageJsonPath = path.join(root, "package.json");
+  if (readPackageName(packageJsonPath) !== PI_PACKAGE_NAME) {
+    return;
+  }
+
+  rootsByRealPath.set(canonicalPath(root), root);
+}
+
+export function resolveHostDocumentationPaths(
+  options: HostDocumentationResolverOptions = {},
+): string[] {
+  const rootsByRealPath = new Map<string, string>();
+
+  try {
+    const findPackageJSON =
+      options.findPackageJSON === undefined
+        ? getNodeFindPackageJSON()
+        : options.findPackageJSON;
+    const packageJsonPath = findPackageJSON?.(PI_PACKAGE_NAME, import.meta.url);
+    if (packageJsonPath) {
+      addPiPackageRoot(rootsByRealPath, path.dirname(packageJsonPath));
+    }
+  } catch {}
+
+  try {
+    const importMetaResolve =
+      options.importMetaResolve ??
+      ((specifier: string) => import.meta.resolve(specifier));
+    const resolved = importMetaResolve(PI_PACKAGE_NAME);
+    const entryPath = pathFromMaybeFileUrl(resolved);
+    if (entryPath) {
+      const root = findPiPackageRootUpward(entryPath);
+      if (root) {
+        addPiPackageRoot(rootsByRealPath, root);
+      }
+    }
+  } catch {}
+
+  try {
+    const argvPath = options.argv1 ?? process.argv[1];
+    if (argvPath) {
+      const entryPath = pathFromMaybeFileUrl(argvPath);
+      if (entryPath) {
+        const root = findPiPackageRootUpward(entryPath);
+        if (root) {
+          addPiPackageRoot(rootsByRealPath, root);
+        }
+      }
+    }
+  } catch {}
+
+  const documentationPaths: string[] = [];
+  const documentationRealPaths = new Set<string>();
+  for (const root of rootsByRealPath.values()) {
+    for (const surface of PI_DOCUMENTATION_SURFACES) {
+      const candidate = path.join(root, surface);
+      if (!fs.existsSync(candidate)) {
+        continue;
+      }
+
+      const realPath = canonicalPath(candidate);
+      if (!documentationRealPaths.has(realPath)) {
+        documentationRealPaths.add(realPath);
+        documentationPaths.push(realPath);
+      }
+    }
+  }
+
+  return documentationPaths;
+}
+
+function allowHostDocumentation(policy: Policy): void {
+  const allowedRealPaths = new Set(policy.fs.allowRead.map(canonicalPath));
+  for (const documentationPath of resolveHostDocumentationPaths()) {
+    const realPath = canonicalPath(documentationPath);
+    if (!allowedRealPaths.has(realPath)) {
+      allowedRealPaths.add(realPath);
+      policy.fs.allowRead.push(documentationPath);
+    }
   }
 }
 
@@ -238,10 +400,7 @@ export function createPolicyManager(): PolicyManager {
     allowDefaultTempDirs(policy, platform);
     allowNixStore(policy);
 
-    const hostDocsDir = resolveHostDocsDir();
-    if (hostDocsDir && !policy.fs.allowRead.includes(hostDocsDir)) {
-      policy.fs.allowRead.push(hostDocsDir);
-    }
+    allowHostDocumentation(policy);
 
     if (platform === "darwin" && ui) {
       for (const pattern of policy.fs.denyPatterns) {

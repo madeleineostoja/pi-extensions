@@ -6,6 +6,7 @@ import {
   createPolicyManager,
   expandPaths,
   expandPathsInPolicy,
+  resolveHostDocumentationPaths,
   type NotifyTarget,
 } from "../load.js";
 import { DEFAULT_POLICY, type Policy } from "../defaults.js";
@@ -22,6 +23,20 @@ function writeJson(filePath: string, data: unknown): void {
 function writeRaw(filePath: string, content: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content, "utf8");
+}
+
+function makePiPackageRoot(baseDir: string, name: string): string {
+  const root = path.join(baseDir, name);
+  writeJson(path.join(root, "package.json"), {
+    name: "@earendil-works/pi-coding-agent",
+    exports: { ".": "./dist/index.js" },
+  });
+  fs.mkdirSync(path.join(root, "dist"), { recursive: true });
+  writeRaw(path.join(root, "dist", "index.js"), "export {};\n");
+  fs.mkdirSync(path.join(root, "docs"), { recursive: true });
+  fs.mkdirSync(path.join(root, "examples"), { recursive: true });
+  writeRaw(path.join(root, "README.md"), "# Pi\n");
+  return root;
 }
 
 describe("expandPaths", () => {
@@ -114,6 +129,109 @@ describe("expandPathsInPolicy", () => {
     expect(result.audit.logFile).toBe(
       "/home/user/.pi/agent/logs/sandbox-audit.jsonl",
     );
+  });
+});
+
+describe("resolveHostDocumentationPaths", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("runs all discovery strategies and returns existing docs surfaces from each Pi root", () => {
+    const findRoot = makePiPackageRoot(tmpDir, "find-root");
+    const resolveRoot = makePiPackageRoot(tmpDir, "resolve-root");
+    const argvRoot = makePiPackageRoot(tmpDir, "argv-root");
+    writeRaw(path.join(findRoot, "CHANGELOG.md"), "# Changes\n");
+    writeRaw(path.join(resolveRoot, "containerization.md"), "# Containers\n");
+    fs.rmSync(path.join(argvRoot, "examples"), {
+      recursive: true,
+      force: true,
+    });
+
+    const paths = resolveHostDocumentationPaths({
+      findPackageJSON: () => path.join(findRoot, "package.json"),
+      importMetaResolve: () => path.join(resolveRoot, "dist", "index.js"),
+      argv1: path.join(argvRoot, "dist", "index.js"),
+    });
+
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        fs.realpathSync(path.join(findRoot, "docs")),
+        fs.realpathSync(path.join(findRoot, "examples")),
+        fs.realpathSync(path.join(findRoot, "README.md")),
+        fs.realpathSync(path.join(findRoot, "CHANGELOG.md")),
+        fs.realpathSync(path.join(resolveRoot, "docs")),
+        fs.realpathSync(path.join(resolveRoot, "examples")),
+        fs.realpathSync(path.join(resolveRoot, "README.md")),
+        fs.realpathSync(path.join(resolveRoot, "containerization.md")),
+        fs.realpathSync(path.join(argvRoot, "docs")),
+        fs.realpathSync(path.join(argvRoot, "README.md")),
+      ]),
+    );
+    expect(paths).not.toContain(findRoot);
+    expect(paths).not.toContain(resolveRoot);
+    expect(paths).not.toContain(argvRoot);
+  });
+
+  it("falls back without throwing when package.json is not exported", () => {
+    const resolveRoot = makePiPackageRoot(tmpDir, "resolve-root");
+
+    expect(() =>
+      resolveHostDocumentationPaths({
+        findPackageJSON: () => {
+          throw new Error("ERR_PACKAGE_PATH_NOT_EXPORTED");
+        },
+        importMetaResolve: () => path.join(resolveRoot, "dist", "index.js"),
+        argv1: path.join(tmpDir, "missing-cli.js"),
+      }),
+    ).not.toThrow();
+
+    expect(
+      resolveHostDocumentationPaths({
+        findPackageJSON: () => {
+          throw new Error("ERR_PACKAGE_PATH_NOT_EXPORTED");
+        },
+        importMetaResolve: () => path.join(resolveRoot, "dist", "index.js"),
+        argv1: path.join(tmpDir, "missing-cli.js"),
+      }),
+    ).toContain(fs.realpathSync(path.join(resolveRoot, "docs")));
+  });
+
+  it("returns an empty list when no Pi package root can be found", () => {
+    const paths = resolveHostDocumentationPaths({
+      findPackageJSON: null,
+      importMetaResolve: () => {
+        throw new Error("not resolvable");
+      },
+      argv1: path.join(tmpDir, "bin", "pi.js"),
+    });
+
+    expect(paths).toEqual([]);
+  });
+
+  it("canonicalizes and dedupes symlink and realpath variants", () => {
+    const realRoot = makePiPackageRoot(tmpDir, "real-root");
+    const symlinkRoot = path.join(tmpDir, "linked-root");
+    fs.symlinkSync(realRoot, symlinkRoot, "dir");
+
+    const paths = resolveHostDocumentationPaths({
+      findPackageJSON: () => path.join(symlinkRoot, "package.json"),
+      importMetaResolve: () => path.join(realRoot, "dist", "index.js"),
+      argv1: path.join(symlinkRoot, "dist", "index.js"),
+    });
+
+    expect(
+      paths.filter(
+        (entry) => entry === fs.realpathSync(path.join(realRoot, "docs")),
+      ),
+    ).toHaveLength(1);
+    expect(new Set(paths).size).toBe(paths.length);
   });
 });
 
@@ -369,6 +487,54 @@ describe("loadPolicy", () => {
       expect.stringContaining("config error"),
       "error",
     );
+  });
+
+  it("always allows existing Pi documentation surfaces", () => {
+    const { loadPolicy } = createPolicyManager();
+    const piRoot = makePiPackageRoot(tmpHome, "pi-root");
+    const docsRealPath = fs.realpathSync(path.join(piRoot, "docs"));
+    const examplesRealPath = fs.realpathSync(path.join(piRoot, "examples"));
+    const readmeRealPath = fs.realpathSync(path.join(piRoot, "README.md"));
+
+    const originalArgv1 = process.argv[1];
+    process.argv[1] = path.join(piRoot, "dist", "index.js");
+    try {
+      const policy = loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
+
+      expect(policy.fs.allowRead).toContain(docsRealPath);
+      expect(policy.fs.allowRead).toContain(examplesRealPath);
+      expect(policy.fs.allowRead).toContain(readmeRealPath);
+      expect(policy.fs.allowRead).not.toContain(piRoot);
+      expect(mockUi.notify).not.toHaveBeenCalled();
+    } finally {
+      process.argv[1] = originalArgv1;
+    }
+  });
+
+  it("dedupes Pi documentation entries against existing realpath-equivalent allowRead entries", () => {
+    const { loadPolicy } = createPolicyManager();
+    const piRoot = makePiPackageRoot(tmpHome, "pi-root");
+    const symlinkRoot = path.join(tmpHome, "pi-link");
+    fs.symlinkSync(piRoot, symlinkRoot, "dir");
+    const symlinkDocsPath = path.join(symlinkRoot, "docs");
+    const docsRealPath = fs.realpathSync(path.join(piRoot, "docs"));
+    writeJson(path.join(tmpCwd, ".pi", "sandbox.json"), {
+      fs: { allowRead: [symlinkDocsPath] },
+    });
+
+    const originalArgv1 = process.argv[1];
+    process.argv[1] = path.join(piRoot, "dist", "index.js");
+    try {
+      const policy = loadPolicy(tmpCwd, { home: tmpHome });
+      const effectiveDocsEntries = policy.fs.allowRead.filter(
+        (entry) =>
+          fs.existsSync(entry) && fs.realpathSync(entry) === docsRealPath,
+      );
+
+      expect(effectiveDocsEntries).toEqual([symlinkDocsPath]);
+    } finally {
+      process.argv[1] = originalArgv1;
+    }
   });
 
   it("emits warn when network.mode is 'always' and allow is empty", () => {
