@@ -10781,6 +10781,9 @@ describe("runImplementation", () => {
           lastDecision: "reviewed",
           reviewedCount: 1,
         });
+        expect(
+          readTaskJson(paths, "task-1")?.review?.skippedCount,
+        ).toBeUndefined();
         expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
       },
     );
@@ -11275,6 +11278,7 @@ describe("runImplementation", () => {
     const taskJson = readTaskJson(paths, "t001-do-it");
     expect(taskJson?.review?.lastDecision).toBe("reviewed");
     expect(taskJson?.review?.reviewedCount).toBe(1);
+    expect(taskJson?.review?.skippedCount).toBeUndefined();
   });
 
   it("persists overall rework prompt and result artifacts", async () => {

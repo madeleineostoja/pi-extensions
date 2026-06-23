@@ -4476,7 +4476,6 @@ function nextTaskReviewMetadata(
   const existingReview = currentTaskReviewMetadata(paths, taskId);
   return {
     lastDecision: "reviewed",
-    skippedCount: existingReview?.skippedCount,
     reviewedCount: (existingReview?.reviewedCount ?? 0) + 1,
   };
 }

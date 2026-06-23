@@ -65,10 +65,10 @@ export type TaskJson = {
   commitMessage?: string;
   selfHealAttempts?: number;
   review?: {
-    lastDecision: "reviewed" | "skipped" | "required";
+    lastDecision: "reviewed" | "required" | "skipped";
     lastReason?: string;
-    skippedCount?: number;
     reviewedCount?: number;
+    skippedCount?: number;
   };
 };
 

@@ -64,10 +64,10 @@ export type ParallelTaskState = {
   activeAgentIds?: string[];
   activeAgentRefs?: AgentDisplayRef[];
   review?: {
-    lastDecision: "reviewed" | "skipped" | "required";
+    lastDecision: "reviewed" | "required" | "skipped";
     lastReason?: string;
-    skippedCount?: number;
     reviewedCount?: number;
+    skippedCount?: number;
   };
 };
 

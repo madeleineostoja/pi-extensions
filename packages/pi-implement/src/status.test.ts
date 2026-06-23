@@ -59,6 +59,7 @@ describe("status formatting", () => {
           title: "Task 1",
           status: "landed",
           landedCommitSha: "aaa1111",
+          review: { lastDecision: "reviewed", reviewedCount: 1 },
         },
         {
           id: "t2",
@@ -73,16 +74,24 @@ describe("status formatting", () => {
           title: "Task 3",
           status: "satisfied",
         },
+        {
+          id: "t4",
+          planIndex: 4,
+          title: "Legacy task",
+          status: "landed",
+          review: { lastDecision: "skipped", skippedCount: 1 },
+        },
       ],
       landedCount: 1,
-      totalCount: 3,
+      totalCount: 4,
     });
 
     expect(status).toContain("pi-implement: scheduling");
     expect(status).toContain("Mode: parallel (auto)");
-    expect(status).toContain("t1 Task 1: landed @ aaa1111");
+    expect(status).toContain("t1 Task 1: landed @ aaa1111 · review: reviewed");
     expect(status).toContain("t2 Task 2: coding [/wt/t2]");
     expect(status).toContain("t3 Task 3: satisfied");
+    expect(status).toContain("t4 Legacy task: landed · review: skipped");
     expect(status).not.toContain("t3 Task 3: satisfied @");
     expect(
       formatFooterStatus({

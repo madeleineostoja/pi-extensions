@@ -309,6 +309,10 @@ describe("/implement command", () => {
       integrationAttempts: 0,
       worktreePath: join(paths.worktreesDir, "t001-test"),
       branchName: `pi-implement/${runId}/t001-test`,
+      review: {
+        lastDecision: "skipped",
+        skippedCount: 1,
+      },
     });
 
     const repoCtx: FakeContext = { ...ctx, cwd: repoRoot };
@@ -320,7 +324,7 @@ describe("/implement command", () => {
     expect(note).toBeDefined();
     expect(note!.message).toContain(paths.runDir);
     expect(note!.message).toContain(paths.worktreesDir);
-    expect(note!.message).toContain("t001-test [blocked] →");
+    expect(note!.message).toContain("t001-test [blocked (skipped)] →");
     expect(note!.level).toBe("info");
   });
 });
