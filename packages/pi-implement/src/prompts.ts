@@ -194,7 +194,7 @@ Start with a bounded triage pass over the actual candidate diff before deciding 
 
 The injected \`explore\` tool is optional during triage. Use it only when it is useful for broad map-building or targeted context checks; it is not required for obviously local diffs.
 
-Quick approval is appropriate only when structurally low-risk change types are evident from the actual diff and the implementer verification is adequate. Triage is not proof of correctness; it is only deciding whether correctness needs real review.
+Quick approval is appropriate only when structurally low-risk change types are evident from the actual diff and the implementer verification is adequate. Examples include docs-only edits, additive fixtures/snapshots, generated/repetitive boilerplate, simple exports/wiring, type-only propagation, straightforward tests, and obvious local mechanical edits. Triage is not proof of correctness; it is only deciding whether correctness needs real review.
 
 Continue into full review for semantic correctness, task-contract scope, safety, maintainability, weak or missing verification, ambiguous scope, risky areas, or any uncertainty. That includes business logic, user-visible behavior, auth/security/privacy/crypto/secrets, persistence/schema/migration/data integrity, concurrency/state/lifecycle behavior, public API/compatibility, dependencies/build/CI/deployment, broad refactors, deletions/renames whose impact needs reasoning, weak/missing verification, ambiguous scope, or any uncertainty. If unsure, perform the full review.
 

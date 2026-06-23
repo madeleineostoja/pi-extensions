@@ -374,6 +374,13 @@ Raw auth requirement.
     expect(prompt).toContain(
       "Quick approval is appropriate only when structurally low-risk change types are evident from the actual diff and the implementer verification is adequate",
     );
+    expect(prompt).toContain("docs-only edits");
+    expect(prompt).toContain("additive fixtures/snapshots");
+    expect(prompt).toContain("generated/repetitive boilerplate");
+    expect(prompt).toContain("simple exports/wiring");
+    expect(prompt).toContain("type-only propagation");
+    expect(prompt).toContain("straightforward tests");
+    expect(prompt).toContain("obvious local mechanical edits");
     expect(prompt).toContain(
       "Triage is not proof of correctness; it is only deciding whether correctness needs real review",
     );
