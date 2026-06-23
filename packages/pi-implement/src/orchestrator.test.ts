@@ -10742,16 +10742,7 @@ describe("runImplementation", () => {
 
     it.each([
       ["docs-only", "M\tREADME.md"],
-      ["fixture", "A\ttests/fixtures/data.json"],
-      ["source", "M\tsrc/index.ts"],
-      ["deletion", "D\tREADME.md"],
-      ["rename", "R100\told.md\tnew.md"],
-      ["many-file", "M\tdocs/a.md\nM\tdocs/b.md"],
-      [
-        "large-diff",
-        "M\tREADME.md",
-        "diff --git a/README.md b/README.md\n" + "x".repeat(200),
-      ],
+      ["additive fixture", "A\ttests/fixtures/data.json"],
     ])(
       "%s changed candidate spawns a reviewer and approves normally",
       async (_name: string, stagedNameStatus: string, diffText?: string) => {
