@@ -12,6 +12,13 @@ export {
 } from "./tokens.js";
 export { normalizePath, extractFilePath } from "./paths.js";
 export { extractShellWords } from "./shell.js";
+export { promptForPermission } from "./permission-prompt.js";
+export type {
+  PermissionPromptChoice,
+  PermissionPromptResult,
+  PermissionPromptUI,
+  PromptForPermissionOptions,
+} from "./permission-prompt.js";
 export {
   isModalCloseInput,
   modalStatusColor,
