@@ -47,7 +47,6 @@ import type { ExecutionManifest } from "./execution-plan.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SubagentClient } from "./subagents.js";
 import type { EffectiveRoles, EffectiveTaskReviewConfig } from "./config.js";
-import { resolveEffectiveTaskReview } from "./config.js";
 import type {
   RunState,
   ParallelTaskState,
@@ -68,12 +67,6 @@ import type {
   IntegrationSelfHealResult,
   SchedulerSelfHealResult,
 } from "./verdict.js";
-import type {
-  ValidationEvidence,
-  StagedFileSummary,
-  TaskReviewDecision,
-} from "./review-policy.js";
-import { decideTaskReview } from "./review-policy.js";
 import type { StatePaths, TaskJson } from "./state.js";
 import {
   writeTaskJson,
@@ -86,7 +79,7 @@ import {
 } from "./state.js";
 import type { RunMode } from "./state.js";
 import { extractJsonObject, readGraphJson, writeGraphJson } from "./graph.js";
-import type { ImplementGraph, TaskReviewDirective } from "./graph.js";
+import type { ImplementGraph } from "./graph.js";
 import {
   createSchedulerRun,
   computeReadyTasks,
@@ -1461,7 +1454,7 @@ async function launchTaskWorker(
   planArtifacts: string[],
   runBaseSha: string,
   wasNeedsRework: boolean,
-  plannerDirective?: TaskReviewDirective,
+  _plannerDirective?: unknown,
 ): Promise<WorkerResult> {
   const task = sched.tasks.get(taskId)!;
   const baseSha = await deps.git.head();
@@ -1522,7 +1515,6 @@ async function launchTaskWorker(
       planArtifacts,
       schedulerTask: task,
       runBaseSha,
-      plannerDirective,
       wasNeedsRework,
       initialFeedback:
         wasNeedsRework && task.lastReason
@@ -4481,18 +4473,8 @@ function currentTaskReviewMetadata(
 function nextTaskReviewMetadata(
   paths: StatePaths | undefined,
   taskId: string,
-  skipReview: boolean,
-  skipReason: string | undefined,
 ): TaskJson["review"] {
   const existingReview = currentTaskReviewMetadata(paths, taskId);
-  if (skipReview) {
-    return {
-      lastDecision: "skipped",
-      lastReason: skipReason,
-      skippedCount: (existingReview?.skippedCount ?? 0) + 1,
-      reviewedCount: existingReview?.reviewedCount,
-    };
-  }
   return {
     lastDecision: "reviewed",
     skippedCount: existingReview?.skippedCount,
@@ -4512,121 +4494,6 @@ function buildTaskJsonSnapshot(
 
 // ── Task worker (shared serial + parallel) ─────────────────────────────────
 
-async function getStagedFileSummary(
-  taskGit: GitClient,
-): Promise<StagedFileSummary> {
-  const nameStatus = await taskGit.stagedNameStatus();
-  const lines = nameStatus.split("\n").filter((l) => l.trim());
-  const diff = await taskGit.stagedDiff();
-  return {
-    fileCount: lines.length,
-    diffChars: diff.length,
-    nameStatusLines: lines,
-  };
-}
-
-async function runReviewSkipValidation(
-  deps: OrchestratorDeps,
-  taskGit: GitClient,
-  taskId: string,
-): Promise<
-  | { ok: true; commands: string[]; log: string }
-  | { ok: false; reason: string; log: string }
-> {
-  const commands = await resolveValidationCommands(deps);
-  if (commands.length === 0) {
-    return {
-      ok: true,
-      commands: [],
-      log: "No validation commands configured.",
-    };
-  }
-  const cwd = await taskGit.root();
-  const logs: string[] = [];
-  for (const command of commands) {
-    const result = await runValidationCommand(command, cwd);
-    const log = `${command.display}\n\nexitCode: ${result.exitCode}\n\nSTDOUT\n${result.stdout}\n\nSTDERR\n${result.stderr}\n`;
-    logs.push(log);
-    if (deps.paths) {
-      persistTaskArtifact(
-        deps.paths,
-        taskId,
-        `review-validation-${safeArtifactName(command.label)}-attempt.log`,
-        log,
-      );
-    }
-    if (result.exitCode !== 0) {
-      return {
-        ok: false,
-        reason: `${command.display} failed`,
-        log: logs.join("\n---\n"),
-      };
-    }
-  }
-  return {
-    ok: true,
-    commands: commands.map((c) => c.display),
-    log: logs.join("\n---\n"),
-  };
-}
-
-function persistReviewDecisionArtifact(
-  paths: StatePaths,
-  taskId: string,
-  attempt: number,
-  decision: TaskReviewDecision,
-  plannerDirective: TaskReviewDirective | undefined,
-  stagedSummary: StagedFileSummary,
-  validation: ValidationEvidence,
-): void {
-  const content = `# Review Decision (Attempt ${attempt})
-
-## Decision: ${decision.action}
-
-**Reason:** ${decision.reason}
-
-## Planner Directive
-${plannerDirective ? "```json\n" + JSON.stringify(plannerDirective, null, 2) + "\n```" : "None"}
-
-## Staged Changes
-- Files: ${stagedSummary.fileCount}
-- Diff chars: ${stagedSummary.diffChars}
-- Name-status:
-${stagedSummary.nameStatusLines.map((l) => `    ${l}`).join("\n")}
-
-## Validation Evidence
-\`\`\`json\n${JSON.stringify(validation, null, 2)}\n\`\`\`
-`;
-  persistTaskArtifact(
-    paths,
-    taskId,
-    `review-decision-attempt-${attempt}.md`,
-    content,
-  );
-}
-
-function persistReviewSkippedArtifact(
-  paths: StatePaths,
-  taskId: string,
-  attempt: number,
-  decision: Extract<TaskReviewDecision, { action: "skip" }>,
-): void {
-  const content = `# Review Skipped (Attempt ${attempt})
-
-## Verdict
-Review skipped: ${decision.reason}
-
-## Category
-${decision.category}
-`;
-  persistTaskArtifact(
-    paths,
-    taskId,
-    `review-skipped-attempt-${attempt}.md`,
-    content,
-  );
-}
-
 async function runTaskWorker(args: {
   deps: OrchestratorDeps;
   plan: ReturnType<typeof parsePlanFile>;
@@ -4639,7 +4506,6 @@ async function runTaskWorker(args: {
   planArtifacts: string[];
   schedulerTask?: SchedulerTask;
   runBaseSha?: string;
-  plannerDirective?: TaskReviewDirective;
   wasNeedsRework?: boolean;
   initialFeedback?: RetryFeedback;
   attemptOrdinalBase?: number;
@@ -4656,10 +4522,7 @@ async function runTaskWorker(args: {
     planArtifacts,
     schedulerTask,
     runBaseSha,
-    plannerDirective,
-    wasNeedsRework,
     initialFeedback,
-    attemptOrdinalBase,
   } = args;
 
   let feedback: RetryFeedback | undefined = initialFeedback;
@@ -4689,12 +4552,6 @@ async function runTaskWorker(args: {
     const recordedCorpusFiles = deps.paths
       ? readRecordedCorpusFileRecords(deps.paths).files
       : [];
-
-    const totalAttempt = (attemptOrdinalBase ?? 0) + attempt;
-    const isRetry =
-      totalAttempt > 1 ||
-      initialFeedback !== undefined ||
-      (wasNeedsRework ?? false);
 
     if (!deps.materialInventory) {
       throw new BlockedError("no Phase 1 material inventory available");
@@ -4941,8 +4798,6 @@ async function runTaskWorker(args: {
     let worktreeFingerprintBefore: string | undefined;
     let reviewHeadBefore: string;
     let reviewerPrompt: string | undefined;
-    let skipReview = false;
-    let skipReason: string | undefined;
 
     if (hasStaged) {
       fingerprintBefore = await taskGit.stagedFingerprint();
@@ -4956,147 +4811,23 @@ async function runTaskWorker(args: {
 
       reviewHeadBefore = await taskGit.head();
 
-      // ── Dynamic review decision ──
-      const stagedSummary = await getStagedFileSummary(taskGit);
-      const effectiveConfig =
-        deps.effectiveTaskReview ?? resolveEffectiveTaskReview({});
-      let validationEvidence: ValidationEvidence = { status: "not_required" };
-      let reviewDecision = decideTaskReview({
-        effectiveConfig,
-        plannerDirective,
-        isRetry,
-        implementerOutcome: "changed",
-        stagedSummary,
-        validation: validationEvidence,
-        forceReview: alreadySatisfiedDiscrepancy,
-        forceReviewReason:
-          "implementer reported already_satisfied but produced staged changes",
+      const outOfScopeTasks = deps.executionManifest
+        ? deps.executionManifest.tasks
+            .filter((mt) => mt.planIndex !== task.index)
+            .map((mt) => `- ${mt.title}`)
+        : plan.tasks
+            .filter((t) => t.index !== task.index)
+            .map((t) => t.originalLine);
+      reviewerPrompt = buildReviewerPrompt({
+        compiledContract,
+        worktreePath: effectiveWorktreePath,
+        implementer: parsed.result,
+        outOfScopeTasks,
+        priorRequiredChanges: priorReviewRequiredChanges,
+        baseSha: worktreePath ? baseSha : undefined,
+        alreadySatisfiedDiscrepancy,
+        sourceMaterial: sourceMaterialPacket?.section,
       });
-
-      if (reviewDecision.action === "needs_validation") {
-        const validation = await runReviewSkipValidation(deps, taskGit, taskId);
-        if (!validation.ok) {
-          await taskGit.reset();
-          feedback = recordSystemFailure(
-            task.index,
-            systemFailures,
-            "system",
-            `Validation failed: ${validation.reason}`,
-          );
-          systemFailures++;
-          if (deps.paths) {
-            persistReviewDecisionArtifact(
-              deps.paths,
-              taskId,
-              attempt,
-              reviewDecision,
-              plannerDirective,
-              stagedSummary,
-              { status: "failed", reason: validation.reason },
-            );
-            persistTaskArtifact(
-              deps.paths,
-              taskId,
-              `review-validation-failure-attempt-${attempt}.log`,
-              validation.log,
-            );
-          }
-          priorReviewRequiredChanges = undefined;
-          anchoredReviewChangeRequests = 0;
-          attempt++;
-          continue;
-        }
-
-        // Mutation detection after validation
-        const postValidationHead = await taskGit.head();
-        const postValidationStaged = await taskGit.stagedFingerprint();
-        const postValidationWorktree =
-          await taskGit.worktreeFingerprintExcept(planArtifacts);
-        const changedPlanArtifactAfterValidation = changedSnapshotPath(
-          planArtifacts,
-          planArtifactSnapshot,
-        );
-
-        if (postValidationHead !== reviewHeadBefore) {
-          throw new BlockedError("validation changed HEAD");
-        }
-        if (changedPlanArtifactAfterValidation) {
-          throw new BlockedError(
-            `validation changed a plan artifact: ${changedPlanArtifactAfterValidation}`,
-          );
-        }
-        if (postValidationStaged !== fingerprintBefore) {
-          throw new BlockedError("validation changed staged state");
-        }
-        if (postValidationWorktree !== worktreeFingerprintBefore) {
-          throw new BlockedError("validation changed worktree state");
-        }
-
-        validationEvidence = {
-          status: "passed",
-          commands: validation.commands,
-        };
-        reviewDecision = decideTaskReview({
-          effectiveConfig,
-          plannerDirective,
-          isRetry,
-          implementerOutcome: "changed",
-          stagedSummary,
-          validation: validationEvidence,
-          forceReview: alreadySatisfiedDiscrepancy,
-          forceReviewReason:
-            "implementer reported already_satisfied but produced staged changes",
-        });
-      }
-
-      if (deps.paths) {
-        persistReviewDecisionArtifact(
-          deps.paths,
-          taskId,
-          attempt,
-          reviewDecision,
-          plannerDirective,
-          stagedSummary,
-          validationEvidence,
-        );
-        if (reviewDecision.action === "skip") {
-          persistReviewSkippedArtifact(
-            deps.paths,
-            taskId,
-            attempt,
-            reviewDecision,
-          );
-        }
-      }
-
-      if (reviewDecision.action === "skip") {
-        skipReview = true;
-        skipReason = reviewDecision.reason;
-        deps.updateState((prev) =>
-          checkpointPatch(
-            prev,
-            `\u00b7 Task ${task.index}/${plan.tasks.length} review skipped: ${reviewDecision.reason}`,
-          ),
-        );
-      } else {
-        const outOfScopeTasks = deps.executionManifest
-          ? deps.executionManifest.tasks
-              .filter((mt) => mt.planIndex !== task.index)
-              .map((mt) => `- ${mt.title}`)
-          : plan.tasks
-              .filter((t) => t.index !== task.index)
-              .map((t) => t.originalLine);
-        reviewerPrompt = buildReviewerPrompt({
-          compiledContract,
-          worktreePath: effectiveWorktreePath,
-          implementer: parsed.result,
-          outOfScopeTasks,
-          priorRequiredChanges: priorReviewRequiredChanges,
-          baseSha: worktreePath ? baseSha : undefined,
-          alreadySatisfiedDiscrepancy,
-          sourceMaterial: sourceMaterialPacket?.section,
-        });
-      }
 
       if (worktreePath) {
         const wipCommit = await taskGit.commit("pi-implement: candidate");
@@ -5174,11 +4905,11 @@ async function runTaskWorker(args: {
     }
     deps.updateState({ phase: "reviewing", activeSubagentId: undefined });
 
-    if (!skipReview && deps.paths) {
+    if (deps.paths) {
       persistTaskArtifact(deps.paths, taskId, "review.md", reviewerPrompt!);
     }
 
-    if (!skipReview) {
+    {
       const reviewerId = await deps.subagents.spawn({
         type: deps.roles.reviewer.type,
         prompt: reviewerPrompt!,
@@ -5396,12 +5127,7 @@ async function runTaskWorker(args: {
     priorReviewRequiredChanges = undefined;
     anchoredReviewChangeRequests = 0;
 
-    const taskReviewMeta = nextTaskReviewMetadata(
-      deps.paths,
-      taskId,
-      skipReview,
-      skipReason,
-    );
+    const taskReviewMeta = nextTaskReviewMetadata(deps.paths, taskId);
 
     // Approved
     if (
