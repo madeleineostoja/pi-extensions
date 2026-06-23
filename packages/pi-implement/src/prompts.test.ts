@@ -218,7 +218,9 @@ describe("buildReviewerPrompt", () => {
       baseSha: "base123",
     });
 
-    expect(prompt).not.toContain("--cached");
+    expect(prompt).toContain(
+      "The candidate diff is committed on this task branch",
+    );
     expect(prompt).toContain("git diff base123..HEAD");
     expect(prompt).toContain("git show HEAD");
     expect(prompt).toContain("git show HEAD:path/to/file");
@@ -324,11 +326,73 @@ Raw auth requirement.
 
     expect(prompt).toContain("## Review Mode: Initial Material Review");
     expect(prompt).toContain(
-      "Perform one complete pass for material task-level blockers",
+      "If performing full review, perform one complete pass for material task-level blockers",
     );
     expect(prompt).toContain(
       "List every blocking issue that must be fixed before this task can be committed",
     );
+  });
+
+  it("tells initial staged-diff reviewers to triage cheaply over the actual diff", () => {
+    const prompt = buildReviewerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain(
+      "Start with a bounded triage pass over the actual candidate diff before deciding whether full review is needed",
+    );
+    expect(prompt).toContain("Use the read-only diff commands above");
+    expect(prompt).toContain("staged serial candidates use");
+    expect(prompt).toContain("git diff --cached HEAD");
+    expect(prompt).toContain("base/head committed worktree candidates use");
+    expect(prompt).toContain("git diff <base>..HEAD");
+  });
+
+  it("says explore is optional and only useful for map-building or targeted context checks", () => {
+    const prompt = buildReviewerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain("The injected `explore` tool is optional");
+    expect(prompt).toContain(
+      "Use it only when it is useful for broad map-building or targeted context checks",
+    );
+    expect(prompt).toContain("it is not required for obviously local diffs");
+  });
+
+  it("permits quick approval only for structurally low-risk diffs with adequate verification", () => {
+    const prompt = buildReviewerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain(
+      "Quick approval is appropriate only when structurally low-risk change types are evident from the actual diff and the implementer verification is adequate",
+    );
+    expect(prompt).toContain(
+      "Triage is not proof of correctness; it is only deciding whether correctness needs real review",
+    );
+  });
+
+  it("requires full review on uncertainty, risk, semantic judgment, ambiguous scope, or weak verification", () => {
+    const prompt = buildReviewerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain(
+      "Continue into full review for semantic correctness, task-contract scope, safety, maintainability, weak or missing verification, ambiguous scope, risky areas, or any uncertainty",
+    );
+    expect(prompt).toContain("If unsure, perform the full review");
+    expect(prompt).toContain("business logic");
+    expect(prompt).toContain("auth/security/privacy/crypto/secrets");
+    expect(prompt).toContain("deletions/renames whose impact needs reasoning");
   });
 
   it("allows meaningful material quality cleanup in initial review", () => {
@@ -430,6 +494,18 @@ Raw auth requirement.
     );
   });
 
+  it("does not include triage-first shortcuts in anchored re-review", () => {
+    const prompt = buildReviewerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+      priorRequiredChanges: ["Fix the off-by-one error"],
+    });
+
+    expect(prompt).not.toContain("bounded triage pass");
+    expect(prompt).not.toContain("Quick approval");
+  });
+
   it("does not include critical-issue escape wording in anchored re-review", () => {
     const prompt = buildReviewerPrompt({
       compiledContract: COMPILED_CONTRACT,
@@ -440,6 +516,23 @@ Raw auth requirement.
 
     expect(prompt).not.toContain("critical");
     expect(prompt).not.toContain("escape");
+  });
+
+  it("keeps the final review result schema unchanged without triage routing fields", () => {
+    const prompt = buildReviewerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      implementer: IMPLEMENTER_RESULT,
+    });
+
+    expect(prompt).toContain(
+      '<pi-review-result>\n{\n  "verdict": "approved"\n}\n</pi-review-result>',
+    );
+    expect(prompt).toContain(
+      '<pi-review-result>\n{\n  "verdict": "changes_requested",\n  "requiredChanges": [\n    "Concrete material issue that must be fixed before approval."\n  ]\n}\n</pi-review-result>',
+    );
+    expect(prompt).not.toContain("reviewDepth");
+    expect(prompt).not.toContain("triageReason");
   });
 });
 

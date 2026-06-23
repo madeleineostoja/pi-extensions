@@ -190,7 +190,15 @@ Assess only whether each prior required change is resolved. If requesting change
 ${args.priorRequiredChanges!.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
     : `## Review Mode: Initial Material Review
 
-Perform one complete pass for material task-level blockers. List every blocking issue that must be fixed before this task can be committed.
+Start with a bounded triage pass over the actual candidate diff before deciding whether full review is needed. Use the read-only diff commands above to inspect the real changes cheaply: staged serial candidates use \`git diff --cached HEAD\`, \`git diff --cached --stat HEAD\`, and \`git diff --cached --name-status HEAD\`; base/head committed worktree candidates use \`git diff <base>..HEAD\`, \`git diff <base>..HEAD --stat\`, \`git diff <base>..HEAD --name-status\`, and \`git show HEAD\`.
+
+The injected \`explore\` tool is optional during triage. Use it only when it is useful for broad map-building or targeted context checks; it is not required for obviously local diffs.
+
+Quick approval is appropriate only when structurally low-risk change types are evident from the actual diff and the implementer verification is adequate. Triage is not proof of correctness; it is only deciding whether correctness needs real review.
+
+Continue into full review for semantic correctness, task-contract scope, safety, maintainability, weak or missing verification, ambiguous scope, risky areas, or any uncertainty. That includes business logic, user-visible behavior, auth/security/privacy/crypto/secrets, persistence/schema/migration/data integrity, concurrency/state/lifecycle behavior, public API/compatibility, dependencies/build/CI/deployment, broad refactors, deletions/renames whose impact needs reasoning, weak/missing verification, ambiguous scope, or any uncertainty. If unsure, perform the full review.
+
+If performing full review, perform one complete pass for material task-level blockers. List every blocking issue that must be fixed before this task can be committed.
 
 You may request meaningful cleanup or code-quality fixes when they materially affect maintainability or are naturally coupled to larger required changes. Do not block solely for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or optional refactors. Non-blocking observations should not be included in \`requiredChanges\`; leave broader concerns for the final overall review.`;
 
