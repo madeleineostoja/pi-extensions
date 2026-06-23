@@ -18,15 +18,13 @@
  * authoritative for bash. This is documented rather than worked around.
  */
 
-import * as path from "node:path";
-
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import type { Policy } from "../policy/defaults.js";
 import type { ManifestContext } from "./caps.js";
 import type { AuditEntry } from "../audit/schema.js";
 import type { SessionState } from "../slash/commands.js";
 import { applySessionOverrides } from "../policy/effective.js";
-import { decideFsAccess } from "./decide.js";
+import { decideFsAccess, type Decision } from "./decide.js";
 
 export { type ToolCallEvent };
 
@@ -37,6 +35,10 @@ export type AccessMode = "read" | "write";
 export type ToolGateResult = {
   block: true;
   reason: string;
+  toolName: string;
+  rawPath: string;
+  modes: AccessMode[];
+  decision: Extract<Decision, { allow: false }>;
 };
 
 export type ToolGateOptions = {
@@ -113,10 +115,20 @@ export function createToolGate(opts: ToolGateOptions): ToolGate {
           kind: "fs",
           decision: "blocked",
           tool: event.toolName,
-          path: path.resolve(ctx.cwd, rawPath),
+          path: decision.resolvedPath,
           rule: decision.rule,
         });
-        return { block: true, reason: BLOCK_REASON };
+        const result: ToolGateResult = {
+          block: true,
+          reason: BLOCK_REASON,
+        } as ToolGateResult;
+        Object.defineProperties(result, {
+          toolName: { value: event.toolName },
+          rawPath: { value: rawPath },
+          modes: { value: modes },
+          decision: { value: decision },
+        });
+        return result;
       }
     }
 

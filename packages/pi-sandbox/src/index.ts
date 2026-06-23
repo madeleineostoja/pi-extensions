@@ -56,6 +56,8 @@ export type {
 export { sandboxExtension };
 export default sandboxExtension;
 
+import * as path from "node:path";
+
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -67,9 +69,10 @@ import type {
   UserBashEvent,
   UserBashEventResult,
 } from "@earendil-works/pi-coding-agent";
+import { promptForPermission } from "@pi-extensions/lib";
 import { createPolicyManager } from "./policy/load.js";
 import { createSlashCommands } from "./slash/commands.js";
-import { createToolGate } from "./enforcement/toolGate.js";
+import { createToolGate, type AccessMode } from "./enforcement/toolGate.js";
 import { initSubprocessSandbox } from "./enforcement/subprocess.js";
 import { getNonoPath, getBinaryStatus } from "./runtime/binary.js";
 import { subscribeStatus } from "./ui/status.js";
@@ -214,12 +217,88 @@ function sandboxExtension(pi: ExtensionAPI): void {
         onAudit,
       });
 
+      async function promptForFsGrant(
+        result: Awaited<ReturnType<typeof gate.handleToolCall>>,
+      ): Promise<boolean> {
+        if (
+          result === undefined ||
+          ctx.mode !== "tui" ||
+          (result.decision.rule !== "allowList:read" &&
+            result.decision.rule !== "allowList:write")
+        ) {
+          return false;
+        }
+
+        const grantPath = result.decision.resolvedPath;
+        const parentPath = path.dirname(grantPath);
+        const promptResult = await promptForPermission({
+          ui: ctx.ui,
+          title: `Sandbox blocked ${result.toolName} access`,
+          detail: `${result.toolName} requested ${grantPath}`,
+          choices: [
+            { value: "once", label: "Allow this path once" },
+            {
+              value: "session",
+              label: "Allow this path for this session",
+            },
+            {
+              value: "parent-session",
+              label: `Allow parent directory this session (${parentPath})`,
+            },
+            { value: "block", label: "Block" },
+          ],
+        });
+
+        const scope =
+          promptResult.kind === "selected" ? promptResult.value : "block";
+        const granted = scope !== "block";
+        onAudit({
+          kind: "fs",
+          decision: granted ? "allowed" : "blocked",
+          tool: result.toolName,
+          path: grantPath,
+          rule: result.decision.rule,
+          scope,
+          source: "prompt",
+        });
+
+        if (!granted) {
+          return false;
+        }
+
+        const grantTarget = scope === "parent-session" ? parentPath : grantPath;
+        if (scope !== "once") {
+          const session = cmds.getSessionState();
+          for (const mode of result.modes as AccessMode[]) {
+            const grants =
+              mode === "read"
+                ? session.sessionAllowedReadPaths
+                : session.sessionAllowedWritePaths;
+            grants.add(grantTarget);
+            onAudit({
+              kind: "policy-change",
+              decision: "granted",
+              scope,
+              source: "prompt",
+              path: grantTarget,
+              rule: `fs.allow${mode === "read" ? "Read" : "Write"}`,
+            });
+          }
+          cmds.notifySessionChange();
+        }
+
+        return true;
+      }
+
       pi.on(
         "tool_call",
         async (event: ToolCallEvent): Promise<ToolCallEventResult | void> => {
           const result = await gate.handleToolCall(event);
           if (result) {
-            return { block: true, reason: result.reason };
+            const allowedByPrompt = await promptForFsGrant(result);
+            if (!allowedByPrompt) {
+              return { block: true, reason: result.reason };
+            }
           }
           return undefined;
         },

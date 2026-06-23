@@ -201,6 +201,8 @@ describe("buildManifest — networkOff session override allows all network", () 
       networkOff: true,
       sandboxOff: false,
       sessionAllowedHosts: new Set(),
+      sessionAllowedReadPaths: new Set(),
+      sessionAllowedWritePaths: new Set(),
     };
     const effective = applySessionOverrides(basePolicy, session);
     const manifest = caps.buildManifest(effective, makeCtx({ mode: "rpc" }));

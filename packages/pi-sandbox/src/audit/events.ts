@@ -42,7 +42,12 @@ export function createAuditEmitter(): AuditEmitter {
       const policyChangedEvent: SandboxPolicyChangedEvent = {
         ts: entry.ts,
         source: entry.source,
-        scope: entry.scope,
+        scope:
+          entry.scope === "session" ||
+          entry.scope === "parent-session" ||
+          entry.scope === "persisted"
+            ? entry.scope
+            : undefined,
       };
       events.emit("sandbox:policy-changed", policyChangedEvent);
     }

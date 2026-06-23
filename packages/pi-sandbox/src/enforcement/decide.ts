@@ -8,11 +8,12 @@ import type { Policy } from "../policy/defaults.js";
 export type AccessMode = "read" | "write";
 
 export type Decision =
-  | { allow: true }
+  | { allow: true; resolvedPath: string }
   | {
       allow: false;
       rule: string;
       matchedPattern?: string;
+      resolvedPath: string;
     };
 
 async function resolveWithFallback(
@@ -30,6 +31,34 @@ async function resolveWithFallback(
       return abs;
     }
   }
+}
+
+function resolveWithFallbackSync(rawPath: string, cwd: string): string {
+  const abs = path.resolve(cwd, rawPath);
+  try {
+    return fs.realpathSync(abs);
+  } catch {
+    try {
+      const parentReal = fs.realpathSync(path.dirname(abs));
+      return path.join(parentReal, path.basename(abs));
+    } catch {
+      return abs;
+    }
+  }
+}
+
+export async function canonicalizeFsGrantPath(
+  rawPath: string,
+  cwd: string,
+): Promise<string> {
+  return resolveWithFallback(rawPath, cwd);
+}
+
+export function canonicalizeFsGrantPathSync(
+  rawPath: string,
+  cwd: string,
+): string {
+  return resolveWithFallbackSync(rawPath, cwd);
 }
 
 function resolveAllowListEntry(entry: string): string {
@@ -68,15 +97,20 @@ export async function decideFsAccess(
 
   for (const { pat, match } of denyMatchers) {
     if (match(resolved)) {
-      return { allow: false, rule: "denyPattern", matchedPattern: pat };
+      return {
+        allow: false,
+        rule: "denyPattern",
+        matchedPattern: pat,
+        resolvedPath: resolved,
+      };
     }
   }
 
   const allowList =
     mode === "write" ? policy.fs.allowWrite : policy.fs.allowRead;
   if (!isPathUnderAllowed(resolved, allowList)) {
-    return { allow: false, rule: `allowList:${mode}` };
+    return { allow: false, rule: `allowList:${mode}`, resolvedPath: resolved };
   }
 
-  return { allow: true };
+  return { allow: true, resolvedPath: resolved };
 }

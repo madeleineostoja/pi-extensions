@@ -21,7 +21,10 @@ import {
   type PolicyManager,
 } from "../policy/load.js";
 import type { EventsTarget } from "../audit/events.js";
-import { decideFsAccess } from "../enforcement/decide.js";
+import {
+  canonicalizeFsGrantPathSync,
+  decideFsAccess,
+} from "../enforcement/decide.js";
 import { applySessionOverrides } from "../policy/effective.js";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +39,8 @@ export { isValidNetworkAllowEntry as isValidHost };
 
 export type SessionState = {
   sessionAllowedHosts: Set<string>;
+  sessionAllowedReadPaths: Set<string>;
+  sessionAllowedWritePaths: Set<string>;
   networkOff: boolean;
   sandboxOff: boolean;
 };
@@ -144,8 +149,11 @@ export type SubcommandContext = {
 // Argument parsing
 // ---------------------------------------------------------------------------
 
+export type ResourceKind = "host" | "read" | "write";
+
 export type ParsedArgs = {
   subcommand: string;
+  resource: ResourceKind | "";
   hosts: string[];
   persist: false | "project" | "user";
   target: string;
@@ -155,6 +163,7 @@ export function parseArgs(rawArgs: string): ParsedArgs {
   const tokens = rawArgs.trim().split(/\s+/).filter(Boolean);
   const result: ParsedArgs = {
     subcommand: "",
+    resource: "",
     hosts: [],
     persist: false,
     target: "",
@@ -166,7 +175,15 @@ export function parseArgs(rawArgs: string): ParsedArgs {
 
   result.subcommand = tokens[0];
 
-  const rest = tokens.slice(1);
+  const resource = tokens[1];
+  const hasResource =
+    (result.subcommand === "allow" || result.subcommand === "revoke") &&
+    (resource === "host" || resource === "read" || resource === "write");
+  if (hasResource) {
+    result.resource = resource;
+  }
+
+  const rest = tokens.slice(hasResource ? 2 : 1);
   const positional: string[] = [];
 
   for (const tok of rest) {
@@ -221,22 +238,59 @@ export function getArgumentCompletions(
   const subcommand = tokens[0];
 
   if (subcommand === "allow") {
-    const blocked = getRecentBlockedHosts?.() ?? [];
-    const existing = new Set(tokens.slice(1));
-    return [...blocked]
-      .filter((h) => !existing.has(h))
-      .map((s) => ({ value: s, label: s }));
+    if (tokens.length === 1 || (tokens.length === 2 && !endsWithSpace)) {
+      const partial = tokens[1] ?? "";
+      return ["host", "read", "write"]
+        .filter((s) => s.startsWith(partial))
+        .map((s) => ({ value: s, label: s }));
+    }
+
+    if (tokens[1] === "host") {
+      const blocked = getRecentBlockedHosts?.() ?? [];
+      const existing = new Set(tokens.slice(2));
+      return [...blocked]
+        .filter((h) => !existing.has(h))
+        .map((s) => ({ value: s, label: s }));
+    }
+
+    return null;
   }
 
   if (subcommand === "revoke") {
-    const policy = policyManager.getPolicy();
-    const candidates = new Set<string>(policy.network.allow);
-    if (getSession) {
-      for (const h of getSession().sessionAllowedHosts) {
-        candidates.add(h);
-      }
+    if (tokens.length === 1 || (tokens.length === 2 && !endsWithSpace)) {
+      const partial = tokens[1] ?? "";
+      return ["host", "read", "write"]
+        .filter((s) => s.startsWith(partial))
+        .map((s) => ({ value: s, label: s }));
     }
-    const existing = new Set(tokens.slice(1));
+
+    const policy = policyManager.getPolicy();
+    const resource = tokens[1];
+    const candidates = new Set<string>();
+    if (resource === "host") {
+      for (const host of policy.network.allow) {
+        candidates.add(host);
+      }
+      if (getSession) {
+        for (const h of getSession().sessionAllowedHosts) {
+          candidates.add(h);
+        }
+      }
+    } else if (resource === "read" || resource === "write") {
+      if (getSession) {
+        const paths =
+          resource === "read"
+            ? getSession().sessionAllowedReadPaths
+            : getSession().sessionAllowedWritePaths;
+        for (const p of paths) {
+          candidates.add(p);
+        }
+      }
+    } else {
+      return null;
+    }
+
+    const existing = new Set(tokens.slice(2));
     return [...candidates]
       .filter((h) => !existing.has(h))
       .map((s) => ({ value: s, label: s }));
@@ -271,10 +325,20 @@ export type SlashCommandsInstance = {
     hosts: string[],
     persist: false | "project" | "user",
   ) => void;
+  handleAllowFs: (
+    ctx: SubcommandContext,
+    mode: "read" | "write",
+    target: string,
+  ) => void;
   handleRevoke: (
     ctx: SubcommandContext,
     host: string,
     persist: boolean,
+  ) => void;
+  handleRevokeFs: (
+    ctx: SubcommandContext,
+    mode: "read" | "write",
+    target: string,
   ) => void;
   handleNetworkOff: (ctx: SubcommandContext) => void;
   handleNetworkOn: (ctx: SubcommandContext) => void;
@@ -329,8 +393,29 @@ export function createSlashCommands(
     }
   }
 
+  function emitFsPolicyChange(
+    ctx: SubcommandContext,
+    decision: "granted" | "revoked",
+    mode: "read" | "write",
+    grantPath: string,
+  ): void {
+    recordAudit(
+      {
+        kind: "policy-change",
+        decision,
+        scope: "session",
+        source: "command",
+        path: grantPath,
+        rule: `fs.allow${mode === "read" ? "Read" : "Write"}`,
+      },
+      { events: ctx.events },
+    );
+  }
+
   const state: SessionState = {
     sessionAllowedHosts: new Set(),
+    sessionAllowedReadPaths: new Set(),
+    sessionAllowedWritePaths: new Set(),
     networkOff: false,
     sandboxOff: false,
   };
@@ -361,7 +446,10 @@ export function createSlashCommands(
       line = `sandbox: ON (network filtering disabled this session) | mode=${policy.network.mode}`;
     } else {
       const policy = ctx.policyManager.getPolicy();
-      const grantCount = state.sessionAllowedHosts.size;
+      const grantCount =
+        state.sessionAllowedHosts.size +
+        state.sessionAllowedReadPaths.size +
+        state.sessionAllowedWritePaths.size;
       line = `sandbox: ON | mode=${policy.network.mode} | session grants=${grantCount}`;
     }
     ctx.ui.notify(line);
@@ -378,9 +466,19 @@ export function createSlashCommands(
         state.networkOff ? "off (session override)" : policy.network.mode
       }`,
       `Allowed hosts:   ${policy.network.allow.join(", ") || "(none)"}`,
-      `Session grants:  ${
+      `Session hosts:   ${
         state.sessionAllowedHosts.size > 0
           ? [...state.sessionAllowedHosts].join(", ")
+          : "(none)"
+      }`,
+      `Session reads:   ${
+        state.sessionAllowedReadPaths.size > 0
+          ? [...state.sessionAllowedReadPaths].join(", ")
+          : "(none)"
+      }`,
+      `Session writes:  ${
+        state.sessionAllowedWritePaths.size > 0
+          ? [...state.sessionAllowedWritePaths].join(", ")
           : "(none)"
       }`,
       `FS allow read:   ${policy.fs.allowRead.join(", ") || "(none)"}`,
@@ -497,7 +595,7 @@ export function createSlashCommands(
   ): void {
     if (hosts.length === 0) {
       ctx.ui.notify(
-        "Usage: /sandbox allow [--persist[=user]] <host> [host…]",
+        "Usage: /sandbox allow host [--persist[=user]] <host> [host…]",
         "error",
       );
       return;
@@ -516,7 +614,7 @@ export function createSlashCommands(
       for (const host of hosts) {
         state.sessionAllowedHosts.add(host);
       }
-      ctx.ui.notify(`Session grant added: ${hosts.join(", ")}`);
+      ctx.ui.notify(`Session host grant added: ${hosts.join(", ")}`);
       emitPolicyChange(ctx, "granted", "session", hosts);
       notifySessionChange();
     } else {
@@ -536,9 +634,30 @@ export function createSlashCommands(
       }
 
       ctx.policyManager.reloadPolicy(ctx.cwd);
-      ctx.ui.notify(`Persisted grant to ${filePath}: ${hosts.join(", ")}`);
+      ctx.ui.notify(`Persisted host grant to ${filePath}: ${hosts.join(", ")}`);
       emitPolicyChange(ctx, "granted", "persisted", hosts);
     }
+  }
+
+  function handleAllowFs(
+    ctx: SubcommandContext,
+    mode: "read" | "write",
+    target: string,
+  ): void {
+    if (!target) {
+      ctx.ui.notify(`Usage: /sandbox allow ${mode} <path>`, "error");
+      return;
+    }
+
+    const grantPath = canonicalizeFsGrantPathSync(target, ctx.cwd);
+    const grants =
+      mode === "read"
+        ? state.sessionAllowedReadPaths
+        : state.sessionAllowedWritePaths;
+    grants.add(grantPath);
+    ctx.ui.notify(`Session ${mode} grant added: ${grantPath}`);
+    emitFsPolicyChange(ctx, "granted", mode, grantPath);
+    notifySessionChange();
   }
 
   function handleRevoke(
@@ -547,7 +666,7 @@ export function createSlashCommands(
     persist: boolean,
   ): void {
     if (!host) {
-      ctx.ui.notify("Usage: /sandbox revoke [--persist] <host>", "error");
+      ctx.ui.notify("Usage: /sandbox revoke host [--persist] <host>", "error");
       return;
     }
 
@@ -565,7 +684,7 @@ export function createSlashCommands(
         emitPolicyChange(ctx, "revoked", "persisted", host);
         notifySessionChange();
       } else if (removedSession) {
-        ctx.ui.notify(`Revoked ${host} from session grants.`);
+        ctx.ui.notify(`Revoked ${host} from session host grants.`);
         emitPolicyChange(ctx, "revoked", "session", host);
         notifySessionChange();
       } else {
@@ -575,7 +694,7 @@ export function createSlashCommands(
       }
     } else {
       if (removedSession) {
-        ctx.ui.notify(`Revoked ${host} from session grants.`);
+        ctx.ui.notify(`Revoked ${host} from session host grants.`);
         emitPolicyChange(ctx, "revoked", "session", host);
         notifySessionChange();
       } else {
@@ -587,12 +706,36 @@ export function createSlashCommands(
         if (projectHosts.includes(host) || userHosts.includes(host)) {
           ctx.ui.notify(
             `${host} is in persisted config but not in session grants. ` +
-              `Use /sandbox revoke --persist ${host} to remove from config.`,
+              `Use /sandbox revoke host --persist ${host} to remove from config.`,
           );
         } else {
           ctx.ui.notify(`${host} was not found in session grants.`);
         }
       }
+    }
+  }
+
+  function handleRevokeFs(
+    ctx: SubcommandContext,
+    mode: "read" | "write",
+    target: string,
+  ): void {
+    if (!target) {
+      ctx.ui.notify(`Usage: /sandbox revoke ${mode} <path>`, "error");
+      return;
+    }
+
+    const grantPath = canonicalizeFsGrantPathSync(target, ctx.cwd);
+    const grants =
+      mode === "read"
+        ? state.sessionAllowedReadPaths
+        : state.sessionAllowedWritePaths;
+    if (grants.delete(grantPath)) {
+      ctx.ui.notify(`Revoked ${grantPath} from session ${mode} grants.`);
+      emitFsPolicyChange(ctx, "revoked", mode, grantPath);
+      notifySessionChange();
+    } else {
+      ctx.ui.notify(`${grantPath} was not found in session ${mode} grants.`);
     }
   }
 
@@ -777,11 +920,43 @@ export function createSlashCommands(
         break;
 
       case "allow":
-        handleAllow(ctx, parsed.hosts, parsed.persist);
+        if (parsed.resource === "host") {
+          handleAllow(ctx, parsed.hosts, parsed.persist);
+        } else if (parsed.resource === "read" || parsed.resource === "write") {
+          if (parsed.persist !== false) {
+            ctx.ui.notify(
+              `--persist is only supported for /sandbox allow host`,
+              "error",
+            );
+            break;
+          }
+          handleAllowFs(ctx, parsed.resource, parsed.target);
+        } else {
+          ctx.ui.notify(
+            "Usage: /sandbox allow <host|read|write> <target>",
+            "error",
+          );
+        }
         break;
 
       case "revoke":
-        handleRevoke(ctx, parsed.target, parsed.persist !== false);
+        if (parsed.resource === "host") {
+          handleRevoke(ctx, parsed.target, parsed.persist !== false);
+        } else if (parsed.resource === "read" || parsed.resource === "write") {
+          if (parsed.persist !== false) {
+            ctx.ui.notify(
+              `--persist is only supported for /sandbox revoke host`,
+              "error",
+            );
+            break;
+          }
+          handleRevokeFs(ctx, parsed.resource, parsed.target);
+        } else {
+          ctx.ui.notify(
+            "Usage: /sandbox revoke <host|read|write> <target>",
+            "error",
+          );
+        }
         break;
 
       case "network":
@@ -849,7 +1024,9 @@ export function createSlashCommands(
     handleReload,
     handleWhy,
     handleAllow,
+    handleAllowFs,
     handleRevoke,
+    handleRevokeFs,
     handleNetworkOff,
     handleNetworkOn,
     handleOff,

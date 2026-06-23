@@ -82,23 +82,29 @@ Allowed hosts are exact names (`api.github.com`) or wildcard subdomains (`*.gith
 
 ## Day-to-day commands
 
-| Command                                | Effect                                           |
-| -------------------------------------- | ------------------------------------------------ |
-| `/sandbox`                             | Show the full policy summary                     |
-| `/sandbox status`                      | Show compact status                              |
-| `/sandbox why <path or host>`          | Explain an allow/block decision                  |
-| `/sandbox allow <host>`                | Allow a host for this session                    |
-| `/sandbox allow --persist <host>`      | Add a host to the project config                 |
-| `/sandbox allow --persist=user <host>` | Add a host to the user config                    |
-| `/sandbox revoke <host>`               | Remove a session host grant                      |
-| `/sandbox revoke --persist <host>`     | Remove a host from persisted config              |
-| `/sandbox network off`                 | Disable network filtering for this session       |
-| `/sandbox network on`                  | Re-enable network filtering from config          |
-| `/sandbox off`                         | Disable all sandbox enforcement for this session |
-| `/sandbox on`                          | Re-enable sandbox enforcement                    |
-| `/sandbox reload`                      | Re-read config files                             |
+| Command                                     | Effect                                           |
+| ------------------------------------------- | ------------------------------------------------ |
+| `/sandbox`                                  | Show the full policy summary                     |
+| `/sandbox status`                           | Show compact status                              |
+| `/sandbox why <path or host>`               | Explain an allow/block decision                  |
+| `/sandbox allow host <host>`                | Allow a host for this session                    |
+| `/sandbox allow host --persist <host>`      | Add a host to the project config                 |
+| `/sandbox allow host --persist=user <host>` | Add a host to the user config                    |
+| `/sandbox allow read <path>`                | Allow read access to a path for this session     |
+| `/sandbox allow write <path>`               | Allow write access to a path for this session    |
+| `/sandbox revoke host <host>`               | Remove a session host grant                      |
+| `/sandbox revoke host --persist <host>`     | Remove a host from persisted config              |
+| `/sandbox revoke read <path>`               | Remove a session read grant                      |
+| `/sandbox revoke write <path>`              | Remove a session write grant                     |
+| `/sandbox network off`                      | Disable network filtering for this session       |
+| `/sandbox network on`                       | Re-enable network filtering from config          |
+| `/sandbox off`                              | Disable all sandbox enforcement for this session |
+| `/sandbox on`                               | Re-enable sandbox enforcement                    |
+| `/sandbox reload`                           | Re-read config files                             |
 
-Session changes are temporary. Persisted changes are written to `.pi/sandbox.json` or `~/.pi/agent/extensions/pi-sandbox/config.json`.
+Session changes are temporary. Persisted host changes are written to `.pi/sandbox.json` or `~/.pi/agent/extensions/pi-sandbox/config.json`.
+
+In TUI sessions, in-process filesystem tools prompt on read/write allowlist misses. Deny-pattern matches never prompt. Prompt grants can allow the path once, allow the path for this session, or allow the parent directory for this session; session grants have the same effect as the matching `/sandbox allow read|write <path>` command.
 
 ## Configuration
 

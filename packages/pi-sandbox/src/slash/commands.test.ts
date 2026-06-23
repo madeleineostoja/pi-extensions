@@ -142,27 +142,40 @@ describe("parseArgs — subcommand parsing", () => {
     });
   });
 
-  it("parses allow hosts and persistence flags", () => {
-    expect(parseArgs("allow github.com")).toMatchObject({
+  it("parses allow resources and persistence flags", () => {
+    expect(parseArgs("allow host github.com")).toMatchObject({
       subcommand: "allow",
+      resource: "host",
       hosts: ["github.com"],
       persist: false,
     });
-    expect(parseArgs("allow a.com b.com c.com").hosts).toEqual([
+    expect(parseArgs("allow host a.com b.com c.com").hosts).toEqual([
       "a.com",
       "b.com",
       "c.com",
     ]);
-    expect(parseArgs("allow --persist github.com").persist).toBe("project");
-    expect(parseArgs("allow --persist=user github.com").persist).toBe("user");
+    expect(parseArgs("allow host --persist github.com").persist).toBe(
+      "project",
+    );
+    expect(parseArgs("allow host --persist=user github.com").persist).toBe(
+      "user",
+    );
+    expect(parseArgs("allow read /tmp/file")).toMatchObject({
+      subcommand: "allow",
+      resource: "read",
+      target: "/tmp/file",
+    });
   });
 
   it("parses revoke and network subcommands", () => {
-    expect(parseArgs("revoke github.com")).toMatchObject({
+    expect(parseArgs("revoke host github.com")).toMatchObject({
       subcommand: "revoke",
+      resource: "host",
       target: "github.com",
     });
-    expect(parseArgs("revoke --persist github.com").persist).toBe("project");
+    expect(parseArgs("revoke host --persist github.com").persist).toBe(
+      "project",
+    );
     expect(parseArgs("network off")).toMatchObject({
       subcommand: "network",
       target: "off",
@@ -344,7 +357,9 @@ describe("handleSummary", () => {
     expect(text).toMatch(/Sandbox Policy Summary/);
     expect(text).toMatch(/Network mode/);
     expect(text).toMatch(/Allowed hosts/);
-    expect(text).toMatch(/Session grants/);
+    expect(text).toMatch(/Session hosts/);
+    expect(text).toMatch(/Session reads/);
+    expect(text).toMatch(/Session writes/);
     expect(text).toMatch(/FS allow read/);
     expect(text).toMatch(/Deny patterns/);
     expect(text).toMatch(/Audit log/);
@@ -477,7 +492,7 @@ describe("getArgumentCompletions — tab completion", () => {
     const pm = makePolicyManager(makePolicy());
     const values = completionValues(
       getArgumentCompletions(
-        "allow ",
+        "allow host ",
         pm,
         undefined,
         pipeline.getRecentBlockedHosts,
@@ -488,9 +503,9 @@ describe("getArgumentCompletions — tab completion", () => {
 
   it("suggests revocable hosts and network modes", () => {
     const pm = makePolicyManager(makePolicy());
-    expect(completionValues(getArgumentCompletions("revoke ", pm))).toContain(
-      "github.com",
-    );
+    expect(
+      completionValues(getArgumentCompletions("revoke host ", pm)),
+    ).toContain("github.com");
     expect(completionValues(getArgumentCompletions("network ", pm))).toEqual(
       expect.arrayContaining(["on", "off"]),
     );
@@ -547,18 +562,18 @@ describe("dispatch — subcommand routing", () => {
     expect(cmds.getSessionState().networkOff).toBe(true);
   });
 
-  it("'allow github.com' → session grant", async () => {
+  it("'allow host github.com' → session grant", async () => {
     const ctx = makeCtx();
-    await cmds.dispatch("allow github.com", ctx);
+    await cmds.dispatch("allow host github.com", ctx);
     expect(cmds.getSessionState().sessionAllowedHosts.has("github.com")).toBe(
       true,
     );
   });
 
-  it("'allow 192.168.0.0/24' → error, no state change", async () => {
+  it("'allow host 192.168.0.0/24' → error, no state change", async () => {
     const { ui, messages } = makeUI();
     const ctx = makeCtx({ ui });
-    await cmds.dispatch("allow 192.168.0.0/24", ctx);
+    await cmds.dispatch("allow host 192.168.0.0/24", ctx);
     expect(messages[0].level).toBe("error");
     expect(cmds.getSessionState().sessionAllowedHosts.size).toBe(0);
   });

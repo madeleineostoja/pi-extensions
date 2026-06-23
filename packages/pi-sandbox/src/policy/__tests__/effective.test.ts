@@ -24,6 +24,8 @@ function makePolicy(overrides: Partial<Policy> = {}): Policy {
 function makeSession(overrides: Partial<SessionState> = {}): SessionState {
   return {
     sessionAllowedHosts: new Set(),
+    sessionAllowedReadPaths: new Set(),
+    sessionAllowedWritePaths: new Set(),
     networkOff: false,
     sandboxOff: false,
     ...overrides,
@@ -38,6 +40,7 @@ describe("applySessionOverrides — no-op", () => {
     expect(result.enabled).toBe(true);
     expect(result.network.mode).toBe("non-interactive-only");
     expect(result.network.allow).toEqual(["github.com", "api.github.com"]);
+    expect(result.fs).toBe(policy.fs);
   });
 });
 
@@ -79,6 +82,33 @@ describe("applySessionOverrides — networkOff", () => {
     const session = makeSession({ networkOff: true });
     const result = applySessionOverrides(policy, session);
     expect(result.network.allow).toEqual(["github.com", "api.github.com"]);
+  });
+});
+
+describe("applySessionOverrides — session FS grants", () => {
+  it("merges session read and write paths into fs allow lists", () => {
+    const policy = makePolicy();
+    const session = makeSession({
+      sessionAllowedReadPaths: new Set(["/extra/read"]),
+      sessionAllowedWritePaths: new Set(["/extra/write"]),
+    });
+    const result = applySessionOverrides(policy, session);
+    expect(result.fs.allowRead).toEqual(["/home/user", "/extra/read"]);
+    expect(result.fs.allowWrite).toEqual([
+      "/home/user/project",
+      "/extra/write",
+    ]);
+  });
+
+  it("deduplicates FS grants that appear in both configured and session allow lists", () => {
+    const policy = makePolicy();
+    const session = makeSession({
+      sessionAllowedReadPaths: new Set(["/home/user"]),
+      sessionAllowedWritePaths: new Set(["/home/user/project"]),
+    });
+    const result = applySessionOverrides(policy, session);
+    expect(result.fs.allowRead).toEqual(["/home/user"]);
+    expect(result.fs.allowWrite).toEqual(["/home/user/project"]);
   });
 });
 

@@ -7,14 +7,14 @@ export type AuditEntry = {
   toolCallId?: string;
   path?: string;
   host?: string;
-  scope?: "session" | "persisted";
-  source?: "config" | "command" | `ext:${string}`;
+  scope?: "once" | "session" | "parent-session" | "persisted" | "block";
+  source?: "config" | "command" | "prompt" | `ext:${string}`;
 };
 
 export type SandboxAuditEvent = AuditEntry & {};
 
 export type SandboxPolicyChangedEvent = {
   ts: number;
-  source?: "config" | "command" | `ext:${string}`;
-  scope?: "session" | "persisted";
+  source?: "config" | "command" | "prompt" | `ext:${string}`;
+  scope?: "session" | "parent-session" | "persisted";
 };

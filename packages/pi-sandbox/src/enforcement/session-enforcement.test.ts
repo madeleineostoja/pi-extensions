@@ -143,7 +143,7 @@ describe("session enforcement — /sandbox off", () => {
   });
 });
 
-describe("session enforcement — /sandbox allow <host>", () => {
+describe("session enforcement — /sandbox allow host <host>", () => {
   let tmpDir: string;
   let cmds: ReturnType<typeof createSlashCommands>;
 
@@ -156,9 +156,9 @@ describe("session enforcement — /sandbox allow <host>", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("manifest includes example.com after dispatch('allow example.com')", () => {
+  it("manifest includes example.com after dispatch('allow host example.com')", () => {
     const ctx = makeSubcommandCtx(tmpDir);
-    cmds.dispatch("allow example.com", ctx);
+    cmds.dispatch("allow host example.com", ctx);
 
     const policy = makePolicy();
     const session = cmds.getSessionState();
@@ -170,7 +170,7 @@ describe("session enforcement — /sandbox allow <host>", () => {
 
   it("manifest still contains configured hosts after session allow", () => {
     const ctx = makeSubcommandCtx(tmpDir);
-    cmds.dispatch("allow example.com", ctx);
+    cmds.dispatch("allow host example.com", ctx);
 
     const policy = makePolicy();
     const session = cmds.getSessionState();
@@ -207,7 +207,7 @@ describe("session enforcement — /sandbox network off", () => {
   });
 });
 
-describe("session enforcement — /sandbox revoke <host>", () => {
+describe("session enforcement — /sandbox revoke host <host>", () => {
   let tmpDir: string;
   let cmds: ReturnType<typeof createSlashCommands>;
 
@@ -222,7 +222,7 @@ describe("session enforcement — /sandbox revoke <host>", () => {
 
   it("manifest no longer contains example.com after revoke following session allow", () => {
     const ctx = makeSubcommandCtx(tmpDir);
-    cmds.dispatch("allow example.com", ctx);
+    cmds.dispatch("allow host example.com", ctx);
 
     let policy = makePolicy();
     let session = cmds.getSessionState();
@@ -230,7 +230,7 @@ describe("session enforcement — /sandbox revoke <host>", () => {
     let manifest = createCaps().buildManifest(effective, makeCtx(tmpDir));
     expect(manifest.network?.allow_domain).toContain("example.com");
 
-    cmds.dispatch("revoke example.com", ctx);
+    cmds.dispatch("revoke host example.com", ctx);
 
     policy = makePolicy();
     session = cmds.getSessionState();
@@ -301,26 +301,26 @@ describe("session enforcement — subscribers fire on mutation", () => {
     }
   });
 
-  it("subscribeSessionChange fires exactly once on dispatch('allow example.com') (session path)", () => {
+  it("subscribeSessionChange fires exactly once on dispatch('allow host example.com') (session path)", () => {
     const ctx = makeSubcommandCtx(tmpDir);
     const listener = vi.fn();
     const unsub = cmds.subscribeSessionChange(listener);
     try {
-      cmds.dispatch("allow example.com", ctx);
+      cmds.dispatch("allow host example.com", ctx);
       expect(listener).toHaveBeenCalledTimes(1);
     } finally {
       unsub();
     }
   });
 
-  it("subscribeSessionChange fires exactly once on dispatch('revoke example.com') after allow", () => {
+  it("subscribeSessionChange fires exactly once on dispatch('revoke host example.com') after allow", () => {
     const ctx = makeSubcommandCtx(tmpDir);
-    cmds.dispatch("allow example.com", ctx);
+    cmds.dispatch("allow host example.com", ctx);
 
     const listener = vi.fn();
     const unsub = cmds.subscribeSessionChange(listener);
     try {
-      cmds.dispatch("revoke example.com", ctx);
+      cmds.dispatch("revoke host example.com", ctx);
       expect(listener).toHaveBeenCalledTimes(1);
     } finally {
       unsub();
