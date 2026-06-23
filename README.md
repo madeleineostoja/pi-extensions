@@ -11,6 +11,7 @@ Personal extensions for the [Pi](https://github.com/earendil-works/pi) agent har
 | [pi-caffeinate](packages/pi-caffeinate)       | Hold an idle-sleep inhibitor for the session lifetime on macOS and Linux.                         |
 | [pi-usage](packages/pi-usage)                 | Show ChatGPT Codex and Opencode Go subscription usage in the footer and rewrite raw limit errors. |
 | [pi-context-prune](packages/pi-context-prune) | Compact stale or low-value tool results, with `context_recall` for on-demand retrieval.           |
+| [pi-defaults](packages/pi-defaults)           | Keep `settings.json` model/provider and thinking defaults stable across sessions.                 |
 | [pi-footer](packages/pi-footer)               | Replace the built-in footer with a compact status bar for cwd, git, model, cost, and context.     |
 | [pi-guard](packages/pi-guard)                 | Ask before running risky destructive shell commands.                                              |
 | [pi-implement](packages/pi-implement)         | Run `/implement` on a `/plan` checklist, reviewing and committing one task at a time.             |
