@@ -41,9 +41,9 @@
     "test": "vitest run --testTimeout 15000"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.78.1",
-    "@earendil-works/pi-coding-agent": "^0.78.1",
-    "@earendil-works/pi-tui": "^0.78.1",
+    "@earendil-works/pi-ai": "^0.80.1",
+    "@earendil-works/pi-coding-agent": "^0.80.1",
+    "@earendil-works/pi-tui": "^0.80.1",
     "@prettier/plugin-oxc": "^0.1.4",
     "@types/node": "^22.0.0",
     "@types/picomatch": "^4.0.0",

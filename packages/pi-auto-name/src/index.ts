@@ -1,4 +1,3 @@
-import { completeSimple } from "@earendil-works/pi-ai";
 import type { UserMessage } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
@@ -10,6 +9,7 @@ import {
   resolveConfiguredModel,
   writeConfig,
 } from "./config.js";
+import { completeText } from "@pi-extensions/lib";
 import { buildTitlePrompt, parseModelRef, sanitizeTitle } from "./utils.js";
 
 export default function (pi: ExtensionAPI) {
@@ -173,7 +173,7 @@ async function generateNameAsync(
       timestamp: Date.now(),
     };
 
-    const response = await completeSimple(
+    const result = await completeText(
       model,
       { systemPrompt, messages: [userMessage] },
       {
@@ -185,34 +185,35 @@ async function generateNameAsync(
       },
     );
 
-    if (response.stopReason === "aborted") {
-      return { outcome: "aborted" };
-    }
-    if (response.stopReason === "error") {
-      return {
-        outcome: "unknown-error",
-        message: response.errorMessage || "Provider returned an error",
-      };
+    if (!result.ok) {
+      if (result.reason === "aborted") {
+        return { outcome: "aborted" };
+      }
+      if (result.reason === "error") {
+        return {
+          outcome: "unknown-error",
+          message: result.message || "Provider returned an error",
+        };
+      }
+      if (localTitle) {
+        return { outcome: "success", title: localTitle };
+      }
+      if (result.reason === "length") {
+        return {
+          outcome: "invalid-output",
+          raw: result.text,
+          message: "Model hit token limit without producing text",
+        };
+      }
+      return { outcome: "invalid-output", raw: result.text };
     }
 
-    const text = response.content
-      .filter((c): c is { type: "text"; text: string } => c.type === "text")
-      .map((c) => c.text)
-      .join("\n");
-
-    const title = sanitizeTitle(text);
+    const title = sanitizeTitle(result.text);
     if (!title) {
       if (localTitle) {
         return { outcome: "success", title: localTitle };
       }
-      if (response.stopReason === "length") {
-        return {
-          outcome: "invalid-output",
-          raw: text,
-          message: "Model hit token limit without producing text",
-        };
-      }
-      return { outcome: "invalid-output", raw: text };
+      return { outcome: "invalid-output", raw: result.text };
     }
 
     return { outcome: "success", title };

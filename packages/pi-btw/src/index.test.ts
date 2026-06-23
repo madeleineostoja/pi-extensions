@@ -4,21 +4,21 @@ import type {
   ExtensionCommandContext,
   Theme,
 } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import registerExtension from "./index.js";
 import { clearHistory, getHistory, getSessionKey } from "./state.js";
 
-const completeSimpleMock = vi.hoisted(() => vi.fn());
+const completeTextMock = vi.hoisted(() => vi.fn());
 const convertToLlmMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@earendil-works/pi-ai", async () => {
-  const actual = await vi.importActual<typeof import("@earendil-works/pi-ai")>(
-    "@earendil-works/pi-ai",
-  );
+vi.mock("@pi-extensions/lib", async () => {
+  const actual =
+    await vi.importActual<typeof import("@pi-extensions/lib")>(
+      "@pi-extensions/lib",
+    );
   return {
     ...actual,
-    completeSimple: completeSimpleMock,
+    completeText: completeTextMock,
   };
 });
 
@@ -212,7 +212,7 @@ describe("empty input", () => {
     expect(notifications).toEqual([
       { message: "usage: /btw <question>", type: "warning" },
     ]);
-    expect(completeSimpleMock).not.toHaveBeenCalled();
+    expect(completeTextMock).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
     expect(sendUserMessage).not.toHaveBeenCalled();
     expect(appendEntry).not.toHaveBeenCalled();
@@ -230,7 +230,7 @@ describe("non-interactive context", () => {
     expect(notifications).toEqual([
       { message: "/btw requires an interactive session", type: "warning" },
     ]);
-    expect(completeSimpleMock).not.toHaveBeenCalled();
+    expect(completeTextMock).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
     expect(sendUserMessage).not.toHaveBeenCalled();
     expect(appendEntry).not.toHaveBeenCalled();
@@ -248,7 +248,7 @@ describe("missing model", () => {
     expect(notifications).toEqual([
       { message: "No active model. Set a model first.", type: "warning" },
     ]);
-    expect(completeSimpleMock).not.toHaveBeenCalled();
+    expect(completeTextMock).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
     expect(sendUserMessage).not.toHaveBeenCalled();
     expect(appendEntry).not.toHaveBeenCalled();
@@ -267,7 +267,7 @@ describe("credential failures", () => {
     expect(notifications).toEqual([
       { message: "Auth error: bad creds", type: "warning" },
     ]);
-    expect(completeSimpleMock).not.toHaveBeenCalled();
+    expect(completeTextMock).not.toHaveBeenCalled();
   });
 
   it("surfaces error when apiKey is missing", async () => {
@@ -281,7 +281,7 @@ describe("credential failures", () => {
     expect(notifications).toEqual([
       { message: "No API key for openrouter", type: "warning" },
     ]);
-    expect(completeSimpleMock).not.toHaveBeenCalled();
+    expect(completeTextMock).not.toHaveBeenCalled();
   });
 });
 
@@ -297,16 +297,17 @@ describe("model request shape", () => {
       branchEntries: [{ type: "message", message: fakeMessage }],
     });
 
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "answer" }],
-    } as unknown as AssistantMessage);
+    });
 
     const promise = commands["btw"]("explain this", ctx);
     await flushPromises();
 
-    expect(completeSimpleMock).toHaveBeenCalledTimes(1);
-    const [_model, context, _options] = completeSimpleMock.mock.calls[0] as [
+    expect(completeTextMock).toHaveBeenCalledTimes(1);
+    const [_model, context, _options] = completeTextMock.mock.calls[0] as [
       unknown,
       {
         systemPrompt?: string;
@@ -345,16 +346,17 @@ describe("model request shape", () => {
 
     const { ctx } = makeCtx({ custom: fakeCustom.custom, signal: ctxSignal });
 
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "answer" }],
-    } as unknown as AssistantMessage);
+    });
 
     const promise = commands["btw"]("question", ctx);
     await flushPromises();
 
-    expect(completeSimpleMock).toHaveBeenCalledTimes(1);
-    const _call = completeSimpleMock.mock.calls[0] as [
+    expect(completeTextMock).toHaveBeenCalledTimes(1);
+    const _call = completeTextMock.mock.calls[0] as [
       unknown,
       unknown,
       { signal?: AbortSignal },
@@ -378,10 +380,11 @@ describe("no transcript mutation", () => {
     const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "answer" }],
-    } as unknown as AssistantMessage);
+    });
 
     const promise = commands["btw"]("question", ctx);
     await flushPromises();
@@ -402,10 +405,11 @@ describe("follow-up history", () => {
     convertToLlmMock.mockReturnValue([]);
 
     const { ctx: ctx1 } = makeCtx({ custom: fakeCustom.custom });
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "first answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "first answer" }],
-    } as unknown as AssistantMessage);
+    });
 
     const p1 = commands["btw"]("first question", ctx1);
     await flushPromises();
@@ -413,18 +417,19 @@ describe("follow-up history", () => {
     await p1;
 
     const { ctx: ctx2 } = makeCtx({ custom: fakeCustom.custom });
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "second answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "second answer" }],
-    } as unknown as AssistantMessage);
+    });
 
     const p2 = commands["btw"]("second question", ctx2);
     await flushPromises();
     fakeCustom.done();
     await p2;
 
-    expect(completeSimpleMock).toHaveBeenCalledTimes(2);
-    const [_model, context] = completeSimpleMock.mock.calls[1] as [
+    expect(completeTextMock).toHaveBeenCalledTimes(2);
+    const [_model, context] = completeTextMock.mock.calls[1] as [
       unknown,
       { messages: unknown[] },
       unknown,
@@ -458,8 +463,8 @@ describe("overlay lifecycle", () => {
     const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
-    let resolveModel: (value: AssistantMessage) => void = () => {};
-    completeSimpleMock.mockImplementation(
+    let resolveModel: (value: unknown) => void = () => {};
+    completeTextMock.mockImplementation(
       () =>
         new Promise((resolve) => {
           resolveModel = resolve;
@@ -474,9 +479,10 @@ describe("overlay lifecycle", () => {
     expect(pendingLines.some((l) => l.includes("Thinking..."))).toBe(true);
 
     resolveModel({
+      ok: true,
+      text: "the answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "the answer" }],
-    } as unknown as AssistantMessage);
+    });
     await flushPromises();
     fakeCustom.done();
     await promise;
@@ -491,10 +497,11 @@ describe("overlay lifecycle", () => {
     const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "stored answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "stored answer" }],
-    } as unknown as AssistantMessage);
+    });
 
     const promise = commands["btw"]("question", ctx);
     await flushPromises();
@@ -519,11 +526,12 @@ describe("overlay lifecycle", () => {
     const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
-    completeSimpleMock.mockResolvedValue({
-      stopReason: "error",
-      errorMessage: "provider blew up",
-      content: [],
-    } as unknown as AssistantMessage);
+    completeTextMock.mockResolvedValue({
+      ok: false,
+      reason: "error",
+      message: "provider blew up",
+      text: "",
+    });
 
     const promise = commands["btw"]("question", ctx);
     await flushPromises();
@@ -541,10 +549,11 @@ describe("overlay lifecycle", () => {
     const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
-    completeSimpleMock.mockResolvedValue({
-      stopReason: "stop",
-      content: [],
-    } as unknown as AssistantMessage);
+    completeTextMock.mockResolvedValue({
+      ok: false,
+      reason: "empty",
+      text: "",
+    });
 
     const promise = commands["btw"]("question", ctx);
     await flushPromises();
@@ -564,7 +573,7 @@ describe("overlay lifecycle", () => {
     const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
-    completeSimpleMock.mockImplementation((_model, _context, options) => {
+    completeTextMock.mockImplementation((_model, _context, options) => {
       return new Promise((_resolve, reject) => {
         options.signal?.addEventListener("abort", () => {
           const err = new Error("Aborted");
@@ -580,8 +589,8 @@ describe("overlay lifecycle", () => {
     const component = fakeCustom.component!;
     component.handleInput!("\x1B");
 
-    expect(completeSimpleMock).toHaveBeenCalledTimes(1);
-    const options = completeSimpleMock.mock.calls[0][2] as {
+    expect(completeTextMock).toHaveBeenCalledTimes(1);
+    const options = completeTextMock.mock.calls[0][2] as {
       signal?: AbortSignal;
     };
     expect(options.signal?.aborted).toBe(true);
@@ -596,15 +605,13 @@ describe("overlay lifecycle", () => {
     expect(getHistory(key)).toHaveLength(0);
   });
 
-  it("shows aborted state when completeSimple throws AbortError", async () => {
+  it("shows aborted state when completion is aborted", async () => {
     const { commands } = makeFakePi();
     const fakeCustom = makeFakeCustom();
     const { ctx } = makeCtx({ custom: fakeCustom.custom });
     convertToLlmMock.mockReturnValue([]);
 
-    const abortError = new Error("Aborted");
-    abortError.name = "AbortError";
-    completeSimpleMock.mockRejectedValue(abortError);
+    completeTextMock.mockResolvedValue({ ok: false, reason: "aborted" });
 
     const promise = commands["btw"]("question", ctx);
     await flushPromises();
@@ -622,10 +629,11 @@ describe("overlay lifecycle", () => {
     convertToLlmMock.mockReturnValue([]);
 
     const { ctx: ctx1 } = makeCtx({ custom: fakeCustom.custom });
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "first answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "first answer" }],
-    } as unknown as AssistantMessage);
+    });
 
     const p1 = commands["btw"]("first question", ctx1);
     await flushPromises();
@@ -633,10 +641,11 @@ describe("overlay lifecycle", () => {
     await p1;
 
     const { ctx: ctx2 } = makeCtx({ custom: fakeCustom.custom });
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "second answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "second answer" }],
-    } as unknown as AssistantMessage);
+    });
 
     const p2 = commands["btw"]("second question", ctx2);
     await flushPromises();
@@ -657,10 +666,11 @@ describe("overlay lifecycle", () => {
     convertToLlmMock.mockReturnValue([]);
 
     const { ctx: ctx1 } = makeCtx({ custom: fakeCustom.custom });
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "first answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "first answer" }],
-    } as unknown as AssistantMessage);
+    });
 
     const p1 = commands["btw"]("first question", ctx1);
     await flushPromises();
@@ -668,10 +678,11 @@ describe("overlay lifecycle", () => {
     await p1;
 
     const { ctx: ctx2 } = makeCtx({ custom: fakeCustom.custom });
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "second answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "second answer" }],
-    } as unknown as AssistantMessage);
+    });
 
     const p2 = commands["btw"]("second question", ctx2);
     await flushPromises();
@@ -707,10 +718,11 @@ describe("overlay lifecycle", () => {
     }));
 
     const { ctx } = makeCtx({ custom: fakeCustom.custom });
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "final answer",
       stopReason: "stop",
-      content: [{ type: "text", text: "final answer" }],
-    } as unknown as AssistantMessage);
+    });
 
     // Pre-seed history so the overlay has overflowing content
     const key = getSessionKey({

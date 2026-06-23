@@ -11,15 +11,16 @@ import registerExtension from "./index.js";
 import { readConfig, writeConfig } from "./config.js";
 
 const getAgentDirMock = vi.hoisted(() => vi.fn());
-const completeSimpleMock = vi.hoisted(() => vi.fn());
+const completeTextMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@earendil-works/pi-ai", async () => {
-  const actual = await vi.importActual<typeof import("@earendil-works/pi-ai")>(
-    "@earendil-works/pi-ai",
-  );
+vi.mock("@pi-extensions/lib", async () => {
+  const actual =
+    await vi.importActual<typeof import("@pi-extensions/lib")>(
+      "@pi-extensions/lib",
+    );
   return {
     ...actual,
-    completeSimple: completeSimpleMock,
+    completeText: completeTextMock,
   };
 });
 
@@ -126,7 +127,7 @@ function getBeforeAgentStartHandler(
 }
 
 function titlePromptForCall(index: number) {
-  const request = completeSimpleMock.mock.calls[index][1] as {
+  const request = completeTextMock.mock.calls[index][1] as {
     messages: { content: { text: string }[] }[];
   };
   return request.messages[0].content[0].text;
@@ -202,7 +203,7 @@ describe("automatic session naming", () => {
     const { ctx } = makeExtensionCtx();
     const beforeAgentStart = getBeforeAgentStartHandler(handlers);
     let resolveComplete: (value: unknown) => void = () => {};
-    completeSimpleMock.mockReturnValue(
+    completeTextMock.mockReturnValue(
       new Promise((resolve) => {
         resolveComplete = resolve;
       }),
@@ -211,13 +212,14 @@ describe("automatic session naming", () => {
     await beforeAgentStart({ prompt: "Initial prompt" }, ctx);
     await beforeAgentStart({ prompt: "Second prompt" }, ctx);
 
-    expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+    expect(completeTextMock).toHaveBeenCalledTimes(1);
     expect(titlePromptForCall(0)).toContain("Initial prompt");
     expect(titlePromptForCall(0)).not.toContain("Second prompt");
 
     resolveComplete({
+      ok: true,
+      text: "Initial prompt fix",
       stopReason: "stop",
-      content: [{ type: "text", text: "Initial prompt fix" }],
     });
     await flushPromises();
 
@@ -230,16 +232,17 @@ describe("automatic session naming", () => {
       model: { provider: "deepseek", id: "deepseek-v4-flash", reasoning: true },
     });
     const beforeAgentStart = getBeforeAgentStartHandler(handlers);
-    completeSimpleMock.mockResolvedValue({
+    completeTextMock.mockResolvedValue({
+      ok: true,
+      text: "Token Limit Fix",
       stopReason: "stop",
-      content: [{ type: "text", text: "Token Limit Fix" }],
     });
 
     await beforeAgentStart({ prompt: "Fix token limit warning" }, ctx);
     await flushPromises();
 
-    expect(completeSimpleMock).toHaveBeenCalledTimes(1);
-    expect(completeSimpleMock.mock.calls[0][2]).toMatchObject({
+    expect(completeTextMock).toHaveBeenCalledTimes(1);
+    expect(completeTextMock.mock.calls[0][2]).toMatchObject({
       maxTokens: 1024,
       reasoning: "minimal",
     });
@@ -249,9 +252,10 @@ describe("automatic session naming", () => {
     const { handlers, setSessionName } = makeFakePi();
     const { ctx, notifications } = makeExtensionCtx();
     const beforeAgentStart = getBeforeAgentStartHandler(handlers);
-    completeSimpleMock.mockResolvedValue({
-      stopReason: "length",
-      content: [],
+    completeTextMock.mockResolvedValue({
+      ok: false,
+      reason: "length",
+      text: "",
     });
 
     await beforeAgentStart(
@@ -280,7 +284,7 @@ describe("automatic session naming", () => {
     );
     await flushPromises();
 
-    expect(completeSimpleMock).not.toHaveBeenCalled();
+    expect(completeTextMock).not.toHaveBeenCalled();
     expect(setSessionName).toHaveBeenCalledWith(
       "Implement local session naming fallback",
     );
@@ -291,15 +295,17 @@ describe("automatic session naming", () => {
     const { handlers } = makeFakePi();
     const { ctx } = makeExtensionCtx();
     const beforeAgentStart = getBeforeAgentStartHandler(handlers);
-    completeSimpleMock
+    completeTextMock
       .mockResolvedValueOnce({
-        stopReason: "error",
-        errorMessage: "temporary provider error",
-        content: [],
+        ok: false,
+        reason: "error",
+        message: "temporary provider error",
+        text: "",
       })
       .mockResolvedValueOnce({
+        ok: true,
+        text: "Auto Name Race",
         stopReason: "stop",
-        content: [{ type: "text", text: "Auto Name Race" }],
       });
 
     await beforeAgentStart({ prompt: "Help me debug this" }, ctx);
@@ -309,7 +315,7 @@ describe("automatic session naming", () => {
       ctx,
     );
 
-    expect(completeSimpleMock).toHaveBeenCalledTimes(2);
+    expect(completeTextMock).toHaveBeenCalledTimes(2);
     expect(titlePromptForCall(1)).toContain("Prompt 1:\nHelp me debug this");
     expect(titlePromptForCall(1)).toContain(
       "Prompt 2:\nThe auto-name extension uses the second prompt",

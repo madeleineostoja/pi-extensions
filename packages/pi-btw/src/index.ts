@@ -1,4 +1,3 @@
-import { completeSimple } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   addExchange,
@@ -7,7 +6,7 @@ import {
   getSessionKey,
 } from "./state.js";
 import { buildPrompt } from "./prompt.js";
-import { registerModalCloseInput } from "@pi-extensions/lib";
+import { completeText, registerModalCloseInput } from "@pi-extensions/lib";
 import { BtwOverlay } from "./overlay.js";
 
 export default function (pi: ExtensionAPI) {
@@ -76,47 +75,28 @@ export default function (pi: ExtensionAPI) {
                 priorExchanges,
                 question,
               );
-              const response = await completeSimple(ctx.model!, context, {
+              const result = await completeText(ctx.model!, context, {
                 apiKey: auth.apiKey,
                 headers: auth.headers,
                 signal: abortController.signal,
               });
 
-              if (response.stopReason === "aborted") {
-                overlay.setState({ status: "error", errorText: "Aborted" });
-                return;
-              }
-              if (response.stopReason === "error") {
+              if (!result.ok) {
                 overlay.setState({
                   status: "error",
                   errorText:
-                    response.errorMessage || "Provider returned an error",
+                    result.reason === "aborted"
+                      ? "Aborted"
+                      : result.reason === "empty" || result.reason === "length"
+                        ? "Model returned an empty response"
+                        : result.message || "Provider returned an error",
                 });
                 return;
               }
 
-              const text = response.content
-                .filter(
-                  (c): c is { type: "text"; text: string } => c.type === "text",
-                )
-                .map((c) => c.text)
-                .join("\n");
-
-              if (!text.trim()) {
-                overlay.setState({
-                  status: "error",
-                  errorText: "Model returned an empty response",
-                });
-                return;
-              }
-
-              addExchange(sessionKey, { question, answer: text });
-              overlay.setState({ status: "answer", answerText: text });
+              addExchange(sessionKey, { question, answer: result.text });
+              overlay.setState({ status: "answer", answerText: result.text });
             } catch (err) {
-              if (err instanceof Error && err.name === "AbortError") {
-                overlay.setState({ status: "error", errorText: "Aborted" });
-                return;
-              }
               overlay.setState({
                 status: "error",
                 errorText: err instanceof Error ? err.message : String(err),
