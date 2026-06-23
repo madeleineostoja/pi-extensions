@@ -374,14 +374,14 @@ describe("parseExecutionPlan", () => {
     }
   });
 
-  it("rejects task missing review", () => {
+  it("defaults task review when omitted", () => {
     const task = { ...makeTask({ id: "t1" }), review: undefined };
     const result = parseExecutionPlan(
       JSON.stringify({ version: 1, tasks: [task] }),
     );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("review");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.tasks[0].review).toEqual({ mode: "require" });
     }
   });
 

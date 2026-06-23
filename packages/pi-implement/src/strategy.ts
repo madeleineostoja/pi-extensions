@@ -229,7 +229,7 @@ async function tryRepairExecutionPlannerOutput(
 ): Promise<string> {
   const prompt = `The execution planner returned output that could not be parsed as the required JSON manifest.
 
-Repair the formatting only. Preserve the intended tasks, ids, titles, dependencies, contracts, review hints, and source references. Do not add implementation work. Return strict JSON only, beginning with { and ending with }.
+Repair the formatting only. Preserve the intended tasks, ids, titles, dependencies, contracts, and source references. Do not add implementation work. Return strict JSON only, beginning with { and ending with }.
 
 Original output:
 
@@ -813,7 +813,6 @@ Return an execution manifest matching this schema:
       "validationCommands": [],
       "reasons": ["why this task is scoped this way"],
       "evidencePaths": [],
-      "review": { "mode": "skip" | "suggest" | "require", "reason": "optional" },
       "sourceRefs": [{ "path": "${req.plan.path}", "quote": "short exact source quote establishing provenance for this task" }],
       "sourceMaterialRefs": [
         { "origin": "planner", "path": "absolute-or-relative-source-path.md", "mode": { "kind": "full-file" }, "reason": "why this material is required" },
@@ -869,16 +868,6 @@ Each task may include an optional "sourceCheckbox" field to enable the orchestra
 ## Exploration Guidance
 
 Do not add per-task exploration directives. Implementer and reviewer workers can call injected explore on demand for broad map-building or targeted context checks when useful, and must keep findings within the compiled task scope.
-
-## Task Review Directives
-
-Each task may include an optional advisory "review" field to guide the runtime task-review policy. These directives are advisory hints, not authoritative guarantees. The runtime may override them based on the actual staged diff, retry state, and validation evidence.
-
-- "require" — the runtime must run per-task review. Use for security/auth, persistence, public API, concurrency/state, migrations, dependency/config changes, broad/multi-area work, low planner confidence, or tasks likely to need subjective correctness review.
-- "suggest" — review is preferred; in v1 the runtime may only skip when the actual candidate is strictly docs-only. Use as the safe default when you see some risk but not enough to force "require".
-- "skip" — the planner believes the task is skip-eligible, not that skipping is guaranteed. Recommend "skip" only for obviously low-risk tasks such as small docs-only changes or additive fixture/snapshot tasks where an objective runtime check can establish safety.
-- Omit "review" entirely when you have no strong opinion; the runtime will default to reviewing.
-- Do not base review directives on imagined implementation details you cannot verify. Base them only on the plan text, task scope, and files you have observed.
 
 Do not wrap the JSON in a markdown code fence.`;
 }

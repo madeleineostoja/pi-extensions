@@ -545,13 +545,7 @@ function parseExecutionTask(
   }
 
   const reviewResult = parseTaskReviewDirective(obj.review);
-  if (reviewResult === undefined) {
-    return {
-      ok: false,
-      reason: `Execution task "${id}" review is required.`,
-    };
-  }
-  if (!reviewResult.ok) {
+  if (reviewResult !== undefined && !reviewResult.ok) {
     return { ok: false, reason: reviewResult.reason };
   }
 
@@ -663,7 +657,7 @@ function parseExecutionTask(
       status: obj.status as TaskStatus,
       dependsOn,
       mode: obj.mode as "serial" | "parallel" | undefined,
-      review: reviewResult.value,
+      review: reviewResult?.value ?? { mode: "require" },
       affectedAreas,
       conflictHints,
       sourceRefs: sourceRefsResult.value,

@@ -646,6 +646,40 @@ describe("selectStrategy - execution planner", () => {
     expect(result.reason).toContain("Planner built execution manifest");
   });
 
+  it("accepts planner output without per-task review directives", async () => {
+    const taskA = makeTask({ id: "t1", planIndex: 1, title: "Task A" });
+    const taskB = makeTask({ id: "t2", planIndex: 2, title: "Task B" });
+    const { review: _taskAReview, ...taskAWithoutReview } = taskA;
+    const { review: _taskBReview, ...taskBWithoutReview } = taskB;
+    const manifest = {
+      ...makeManifest({ tasks: [] }),
+      tasks: [taskAWithoutReview, taskBWithoutReview],
+    };
+    const plan = makePlan(["Task A", "Task B"]);
+    const result = await selectStrategy({
+      plan,
+      planContent: plan.content,
+      planHash: "hash",
+      repoRoot: "/repo",
+      baseSha: "abc",
+      config: {},
+      roles: makeRoles(),
+      subagents: makeSubagents(JSON.stringify(manifest)),
+      paths: makeStatePaths(),
+      runId: "r1",
+      updateState: () => ({}),
+    });
+
+    expect(result.mode).not.toBe("blocked");
+    const persisted = JSON.parse(
+      readFileSync(join(tmpRunDir, "execution-manifest.json"), "utf-8"),
+    ) as ExecutionManifest;
+    expect(persisted.tasks.map((task) => task.review)).toEqual([
+      { mode: "require" },
+      { mode: "require" },
+    ]);
+  });
+
   it("does not block when planIndex and title are swapped", async () => {
     const plan = makePlan(["Task A", "Task B"]);
     const manifest = makeManifest({
@@ -972,7 +1006,7 @@ describe("selectStrategy - planner prompt content", () => {
     expect(prompt).toContain("only a few targeted searches or reads per task");
   });
 
-  it("documents advisory task-review directives in the planner schema", async () => {
+  it("omits task-review directives from the planner schema", async () => {
     const subagents = makeSubagents(
       JSON.stringify({
         mode: "serial",
@@ -999,17 +1033,26 @@ describe("selectStrategy - planner prompt content", () => {
       mock: { calls: Array<Array<{ prompt: string }>> };
     };
     const prompt = spawnMock.mock.calls[0][0].prompt;
-    expect(prompt).toContain(
+    expect(prompt).not.toContain(
       '"review": { "mode": "skip" | "suggest" | "require"',
     );
-    expect(prompt).toContain('optional advisory "review" field');
-    expect(prompt).toContain("advisory hints, not authoritative guarantees");
-    expect(prompt).toContain(
+    expect(prompt).not.toContain("## Task Review Directives");
+    expect(prompt).not.toContain('optional advisory "review" field');
+    expect(prompt).not.toContain(
+      "advisory hints, not authoritative guarantees",
+    );
+    expect(prompt).not.toContain(
       "actual staged diff, retry state, and validation evidence",
     );
-    expect(prompt).toContain(
+    expect(prompt).not.toContain(
       "Do not base review directives on imagined implementation details",
     );
+    expect(prompt).not.toContain("review routing");
+    expect(prompt).toContain('"plannerConfidence": "high" | "medium" | "low"');
+    expect(prompt).toContain('"compiledContract"');
+    expect(prompt).toContain('"validationCommands"');
+    expect(prompt).toContain('"sourceRefs"');
+    expect(prompt).toContain('"sourceMaterialRefs"');
   });
 
   it("documents injected exploration guidance without per-task scout directives", async () => {
