@@ -11,6 +11,9 @@
     "pi-package",
     "pi-defaults"
   ],
+  "scripts": {
+    "test": "vitest run --testTimeout 15000"
+  },
   "dependencies": {
     "@pi-extensions/lib": "0.1.0"
   },
