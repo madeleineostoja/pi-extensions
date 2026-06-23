@@ -339,7 +339,6 @@ function processExecutionPlannerResult(
       confidence: "medium",
       reasons: task.reasons ?? [],
       evidencePaths: task.evidencePaths ?? [],
-      review: task.review,
     })),
   };
 
@@ -361,7 +360,6 @@ function processExecutionPlannerResult(
       confidence: "low",
       reasons: [...(task.reasons ?? []), graphValidationReason],
       evidencePaths: task.evidencePaths ?? [],
-      review: task.review,
     }));
     graphValidation = validateGraph(graph, uncheckedIndexes);
     if (!graphValidation.ok) {
@@ -446,7 +444,6 @@ function normalizePlannerManifest(
       ...task,
       planIndex: mappedPlanTask?.index ?? task.planIndex,
       taskHash: task.taskHash || `planner-owned:${task.id}`,
-      review: task.review ?? { mode: "require" },
       affectedAreas: task.affectedAreas ?? [],
       conflictHints: task.conflictHints ?? [],
       sourceRefs: normalizeSourceRefs(task, req),

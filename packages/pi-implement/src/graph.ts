@@ -9,11 +9,6 @@ import { dirname, join } from "node:path";
 
 export type GraphNodeMode = "serial" | "parallel";
 
-export type TaskReviewDirective = {
-  mode: "skip" | "suggest" | "require";
-  reason?: string;
-};
-
 export type ImplementGraphNode = {
   id: string;
   planIndex: number;
@@ -32,7 +27,6 @@ export type ImplementGraphNode = {
   confidence: "high" | "medium" | "low";
   reasons: string[];
   evidencePaths: string[];
-  review?: TaskReviewDirective;
 };
 
 export type ImplementGraph = {
@@ -321,10 +315,6 @@ function parseGraphNode(
   const validationCommands = parseStringArray(obj.validationCommands) ?? [];
   const reasons = parseStringArray(obj.reasons) ?? [];
   const evidencePaths = parseStringArray(obj.evidencePaths) ?? [];
-  const review = parseTaskReviewDirective(obj.review);
-  if (review !== undefined && !review.ok) {
-    return { ok: false, reason: review.reason };
-  }
   return {
     ok: true,
     value: {
@@ -340,44 +330,8 @@ function parseGraphNode(
       confidence: obj.confidence,
       reasons,
       evidencePaths,
-      review: review?.value,
     },
   };
-}
-
-function parseTaskReviewDirective(
-  value: unknown,
-):
-  | { ok: true; value: TaskReviewDirective }
-  | { ok: false; reason: string }
-  | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return { ok: false, reason: "Graph node review must be an object." };
-  }
-  const obj = value as Record<string, unknown>;
-  if (obj.mode !== "skip" && obj.mode !== "suggest" && obj.mode !== "require") {
-    return {
-      ok: false,
-      reason: `Graph node review mode must be "skip", "suggest", or "require", got: ${String(obj.mode)}.`,
-    };
-  }
-  const directive: TaskReviewDirective = { mode: obj.mode };
-  if (obj.reason !== undefined) {
-    if (typeof obj.reason !== "string") {
-      return {
-        ok: false,
-        reason: "Graph node review reason must be a string.",
-      };
-    }
-    const trimmed = obj.reason.trim();
-    if (trimmed.length > 0) {
-      directive.reason = trimmed;
-    }
-  }
-  return { ok: true, value: directive };
 }
 
 function parseStringArray(value: unknown): string[] | undefined {
@@ -489,7 +443,7 @@ export function writeGraphJson(runDir: string, graph: ImplementGraph): void {
   const graphPath = join(runDir, "graph.json");
   mkdirSync(dirname(graphPath), { recursive: true });
   const tmp = `${graphPath}.tmp.${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(graph, null, 2), "utf-8");
+  writeFileSync(tmp, JSON.stringify(stripGraphReview(graph), null, 2), "utf-8");
   renameSync(tmp, graphPath);
 }
 
@@ -499,8 +453,22 @@ export function readGraphJson(runDir: string): ImplementGraph | undefined {
     return undefined;
   }
   try {
-    return JSON.parse(readFileSync(graphPath, "utf-8")) as ImplementGraph;
+    return stripGraphReview(
+      JSON.parse(readFileSync(graphPath, "utf-8")) as ImplementGraph,
+    );
   } catch {
     return undefined;
   }
+}
+
+function stripGraphReview(graph: ImplementGraph): ImplementGraph {
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      const { review: _review, ...rest } = node as ImplementGraphNode & {
+        review?: unknown;
+      };
+      return rest;
+    }),
+  };
 }

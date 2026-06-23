@@ -91,7 +91,6 @@ function makeTask(
     taskHash,
     status: "todo",
     dependsOn: [],
-    review: { mode: "require" },
     affectedAreas: [],
     conflictHints: [],
     sourceReferences: [],
@@ -649,12 +648,7 @@ describe("selectStrategy - execution planner", () => {
   it("accepts planner output without per-task review directives", async () => {
     const taskA = makeTask({ id: "t1", planIndex: 1, title: "Task A" });
     const taskB = makeTask({ id: "t2", planIndex: 2, title: "Task B" });
-    const { review: _taskAReview, ...taskAWithoutReview } = taskA;
-    const { review: _taskBReview, ...taskBWithoutReview } = taskB;
-    const manifest = {
-      ...makeManifest({ tasks: [] }),
-      tasks: [taskAWithoutReview, taskBWithoutReview],
-    };
+    const manifest = makeManifest({ tasks: [taskA, taskB] });
     const plan = makePlan(["Task A", "Task B"]);
     const result = await selectStrategy({
       plan,
@@ -674,10 +668,9 @@ describe("selectStrategy - execution planner", () => {
     const persisted = JSON.parse(
       readFileSync(join(tmpRunDir, "execution-manifest.json"), "utf-8"),
     ) as ExecutionManifest;
-    expect(persisted.tasks.map((task) => task.review)).toEqual([
-      { mode: "require" },
-      { mode: "require" },
-    ]);
+    for (const task of persisted.tasks) {
+      expect(task).not.toHaveProperty("review");
+    }
   });
 
   it("does not block when planIndex and title are swapped", async () => {

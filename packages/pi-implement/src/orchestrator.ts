@@ -1260,7 +1260,6 @@ async function runParallelImplementation(
         planArtifacts,
         runBaseSha,
         wasNeedsRework,
-        taskNode.review,
       );
       runningWorkers.set(taskId, promise);
     }
@@ -1453,7 +1452,6 @@ async function launchTaskWorker(
   planArtifacts: string[],
   runBaseSha: string,
   wasNeedsRework: boolean,
-  _plannerDirective?: unknown,
 ): Promise<WorkerResult> {
   const task = sched.tasks.get(taskId)!;
   const baseSha = await deps.git.head();

@@ -14,11 +14,6 @@ import type { PlanTask } from "./plan.js";
 
 export type TaskStatus = "todo" | "done";
 
-export type TaskReviewDirective = {
-  mode: "skip" | "suggest" | "require";
-  reason?: string;
-};
-
 export type SourceCheckboxRef = {
   path: string;
   lineNumber: number;
@@ -95,7 +90,6 @@ export type ExecutionTask = {
   status: TaskStatus;
   dependsOn: string[];
   mode?: "serial" | "parallel";
-  review: TaskReviewDirective;
   affectedAreas: string[];
   conflictHints: string[];
   sourceRefs?: SourceRef[];
@@ -544,11 +538,6 @@ function parseExecutionTask(
     };
   }
 
-  const reviewResult = parseTaskReviewDirective(obj.review);
-  if (reviewResult !== undefined && !reviewResult.ok) {
-    return { ok: false, reason: reviewResult.reason };
-  }
-
   const affectedAreas = parseStringArray(obj.affectedAreas);
   if (affectedAreas === undefined) {
     return {
@@ -657,7 +646,6 @@ function parseExecutionTask(
       status: obj.status as TaskStatus,
       dependsOn,
       mode: obj.mode as "serial" | "parallel" | undefined,
-      review: reviewResult?.value ?? { mode: "require" },
       affectedAreas,
       conflictHints,
       sourceRefs: sourceRefsResult.value,
@@ -880,41 +868,6 @@ function parseSourceCheckbox(
   };
 }
 
-function parseTaskReviewDirective(
-  value: unknown,
-):
-  | { ok: true; value: TaskReviewDirective }
-  | { ok: false; reason: string }
-  | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return { ok: false, reason: "Execution task review must be an object." };
-  }
-  const obj = value as Record<string, unknown>;
-  if (obj.mode !== "skip" && obj.mode !== "suggest" && obj.mode !== "require") {
-    return {
-      ok: false,
-      reason: `Execution task review mode must be "skip", "suggest", or "require", got: ${String(obj.mode)}.`,
-    };
-  }
-  const directive: TaskReviewDirective = { mode: obj.mode };
-  if (obj.reason !== undefined) {
-    if (typeof obj.reason !== "string") {
-      return {
-        ok: false,
-        reason: "Execution task review reason must be a string.",
-      };
-    }
-    const trimmed = obj.reason.trim();
-    if (trimmed.length > 0) {
-      directive.reason = trimmed;
-    }
-  }
-  return { ok: true, value: directive };
-}
-
 function parseCompiledContract(
   value: unknown,
   taskId: string,
@@ -1123,7 +1076,6 @@ export function generateMinimalExecutionManifest(
       taskHash: computeTaskFingerprint(task),
       status: "todo",
       dependsOn: [],
-      review: { mode: "require" },
       affectedAreas: [],
       conflictHints: [],
       sourceRefs: [{ path: planPath, quote: task.text }],

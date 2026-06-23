@@ -314,7 +314,6 @@ function makeExecutionManifest(
       taskHash: computeTaskFingerprint(task),
       status: "todo" as const,
       dependsOn: [],
-      review: { mode: "require" as const },
       affectedAreas: [],
       conflictHints: [],
       sourceReferences: [],
@@ -3599,7 +3598,6 @@ describe("runImplementation", () => {
           taskHash: computeTaskFingerprint(plan.tasks[0]),
           status: "todo",
           dependsOn: [],
-          review: { mode: "skip" },
           affectedAreas: [],
           conflictHints: [],
           sourceReferences: [],
@@ -3663,7 +3661,6 @@ describe("runImplementation", () => {
           taskHash: computeTaskFingerprint(plan.tasks[0]),
           status: "todo",
           dependsOn: [],
-          review: { mode: "skip" },
           affectedAreas: [],
           conflictHints: [],
           sourceReferences: [],
@@ -3734,7 +3731,6 @@ describe("runImplementation", () => {
           taskHash: computeTaskFingerprint(plan.tasks[0]),
           status: "todo",
           dependsOn: [],
-          review: { mode: "skip" },
           affectedAreas: [],
           conflictHints: [],
           sourceReferences: [],
@@ -10587,7 +10583,6 @@ describe("runImplementation", () => {
 
     async function runChangedCandidateReviewScenario(args: {
       stagedNameStatus: string;
-      review?: { mode: "skip" | "require"; reason?: string };
       diffText?: string;
       reviewerResult?: string;
       expectedError?: string | RegExp;
@@ -10620,7 +10615,6 @@ describe("runImplementation", () => {
             confidence: "high",
             reasons: [],
             evidencePaths: [],
-            ...(args.review ? { review: args.review } : {}),
           },
         ],
       });
@@ -10765,7 +10759,6 @@ describe("runImplementation", () => {
           await runChangedCandidateReviewScenario({
             stagedNameStatus,
             diffText,
-            review: { mode: "skip", reason: "docs-only" },
           });
 
         expect(subagents.spawns.map((spawn) => spawn.role)).toEqual([
@@ -10791,7 +10784,6 @@ describe("runImplementation", () => {
     it("change requests from low-risk candidates retry through reviewer feedback", async () => {
       const { subagents, planPath } = await runChangedCandidateReviewScenario({
         stagedNameStatus: "M\tREADME.md",
-        review: { mode: "skip", reason: "docs-only" },
         reviewerResult:
           '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten docs"]}</pi-review-result>',
       });
@@ -11412,7 +11404,6 @@ describe("runImplementation", () => {
                 "Explicit local Markdown material linked from the selected task block.",
             },
           ],
-          review: { mode: "require" },
           compiledContract: {
             objective: "Implement task one",
             inScope: ["Task one work"],
@@ -11431,7 +11422,6 @@ describe("runImplementation", () => {
           affectedAreas: [],
           conflictHints: [],
           sourceReferences: [],
-          review: { mode: "require" },
           compiledContract: {
             objective: "Implement task two",
             inScope: ["Task two work"],

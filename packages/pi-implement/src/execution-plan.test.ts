@@ -42,7 +42,6 @@ function makeTask(
     taskHash: "abc12345",
     status: "todo",
     dependsOn: [],
-    review: { mode: "require" },
     affectedAreas: [],
     conflictHints: [],
     sourceReferences: [],
@@ -374,40 +373,21 @@ describe("parseExecutionPlan", () => {
     }
   });
 
-  it("defaults task review when omitted", () => {
-    const task = { ...makeTask({ id: "t1" }), review: undefined };
+  it("ignores legacy task review fields", () => {
     const result = parseExecutionPlan(
-      JSON.stringify({ version: 1, tasks: [task] }),
+      JSON.stringify({
+        version: 1,
+        tasks: [
+          {
+            ...makeTask({ id: "t1" }),
+            review: { mode: "skip", reason: "legacy" },
+          },
+        ],
+      }),
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.tasks[0].review).toEqual({ mode: "require" });
-    }
-  });
-
-  it("rejects task with invalid review mode", () => {
-    const result = parseExecutionPlan(
-      JSON.stringify({
-        version: 1,
-        tasks: [{ ...makeTask({ id: "t1" }), review: { mode: "maybe" } }],
-      }),
-    );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("review mode");
-    }
-  });
-
-  it("rejects task with non-object review", () => {
-    const result = parseExecutionPlan(
-      JSON.stringify({
-        version: 1,
-        tasks: [{ ...makeTask({ id: "t1" }), review: "skip" }],
-      }),
-    );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toContain("review must be an object");
+      expect(result.value.tasks[0]).not.toHaveProperty("review");
     }
   });
 
