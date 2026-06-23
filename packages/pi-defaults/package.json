@@ -1,0 +1,22 @@
+{
+  "name": "pi-defaults",
+  "description": "Pi extension that keeps persisted model and thinking defaults stable across sessions.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-defaults"
+  ],
+  "dependencies": {
+    "@pi-extensions/lib": "0.1.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
