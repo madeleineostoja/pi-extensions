@@ -534,6 +534,8 @@ export function buildOverallReviewerPrompt(args: {
 
 Assess whether the combined implementation satisfies the original plan, whether cross-task gaps or edge cases were missed, and whether the tasks fit together correctly.
 
+Per-task reviewers may have approved simple tasks after bounded triage; this overall pass remains responsible for whole-feature integration and missed original-plan requirements.
+
 Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, or run any command that changes files or git state. Use read-only commands only.
 
 ## Plan

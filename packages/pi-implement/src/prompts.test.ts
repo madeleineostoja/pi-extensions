@@ -743,6 +743,9 @@ describe("buildOverallReviewerPrompt", () => {
     expect(prompt).toContain("aaa1111");
     expect(prompt).toContain("diff --git a/file.ts b/file.ts");
     expect(prompt).toContain("<pi-overall-review-result>");
+    expect(prompt).toContain(
+      "Per-task reviewers may have approved simple tasks after bounded triage; this overall pass remains responsible for whole-feature integration and missed original-plan requirements.",
+    );
     expect(prompt).toContain("approved");
     expect(prompt).toContain("changes_requested");
   });
