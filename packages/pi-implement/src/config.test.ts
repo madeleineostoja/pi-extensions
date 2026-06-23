@@ -5,7 +5,6 @@ import {
   parseConfig,
   resolveEffectiveRoles,
   resolveMaxParallel,
-  resolveEffectiveTaskReview,
   reviewerDefaultTypeWarning,
 } from "./config.js";
 
@@ -223,81 +222,28 @@ describe("config", () => {
     expect(status).toContain("Planner thinking: medium");
     expect(status).toContain("Self-heal thinking: xhigh");
     expect(status).not.toContain("Scout");
-  });
-});
-
-describe("taskReview config", () => {
-  it("defaults to auto mode with conservative thresholds", () => {
-    const effective = resolveEffectiveTaskReview({});
-    expect(effective.mode).toBe("auto");
-    expect(effective.maxSkipDiffChars).toBe(2000);
-    expect(effective.maxSkipFiles).toBe(3);
+    expect(status).not.toContain("Task review");
+    expect(status).not.toContain("skip thresholds");
   });
 
-  it("parses valid taskReview settings", () => {
+  it("ignores removed taskReview config surface", () => {
     const parsed = parseConfig(
       JSON.stringify({
         taskReview: { mode: "always", maxSkipDiffChars: 500, maxSkipFiles: 1 },
       }),
     );
-    expect(parsed.config.taskReview).toEqual({
-      mode: "always",
-      maxSkipDiffChars: 500,
-      maxSkipFiles: 1,
-    });
+    expect(parsed.config).toEqual({});
     expect(parsed.warning).toBeUndefined();
   });
 
-  it("clamps maxSkipDiffChars to hard maximum", () => {
-    const parsed = parseConfig(
-      JSON.stringify({ taskReview: { maxSkipDiffChars: 50000 } }),
-    );
-    expect(parsed.config.taskReview?.maxSkipDiffChars).toBe(10000);
-  });
-
-  it("clamps maxSkipFiles to hard maximum", () => {
-    const parsed = parseConfig(
-      JSON.stringify({ taskReview: { maxSkipFiles: 50 } }),
-    );
-    expect(parsed.config.taskReview?.maxSkipFiles).toBe(10);
-  });
-
-  it("ignores invalid taskReview mode with warning", () => {
-    const parsed = parseConfig(
-      JSON.stringify({ taskReview: { mode: "sometimes" } }),
-    );
-    expect(parsed.config.taskReview).toEqual({});
-    expect(parsed.warning).toContain("taskReview.mode");
-  });
-
-  it("ignores non-object taskReview with warning", () => {
-    const parsed = parseConfig(JSON.stringify({ taskReview: "auto" }));
-    expect(parsed.config.taskReview).toBeUndefined();
-    expect(parsed.warning).toContain("taskReview must be an object");
-  });
-
-  it("ignores invalid maxSkipDiffChars with warning", () => {
-    const parsed = parseConfig(
-      JSON.stringify({ taskReview: { maxSkipDiffChars: 0 } }),
-    );
-    expect(parsed.config.taskReview).toEqual({});
-    expect(parsed.warning).toContain("maxSkipDiffChars");
-  });
-
-  it("ignores invalid maxSkipFiles with warning", () => {
-    const parsed = parseConfig(
-      JSON.stringify({ taskReview: { maxSkipFiles: -1 } }),
-    );
-    expect(parsed.config.taskReview).toEqual({});
-    expect(parsed.warning).toContain("maxSkipFiles");
-  });
-
-  it("includes task review mode and thresholds in status output", () => {
+  it("does not include task review mode or thresholds in status output", () => {
     const status = formatConfigStatus({
       path: "/x/config.json",
-      config: { taskReview: { mode: "always", maxSkipDiffChars: 500 } },
+      config: {},
     });
-    expect(status).toContain("Task review mode: always");
-    expect(status).toContain("Task review skip thresholds: 500 chars");
+    expect(status).not.toContain("Task review mode");
+    expect(status).not.toContain("Task review skip thresholds");
+    expect(status).not.toContain("maxSkipDiffChars");
+    expect(status).not.toContain("maxSkipFiles");
   });
 });

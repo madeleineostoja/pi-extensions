@@ -9,12 +9,6 @@ export type RoleConfig = {
   thinking?: ThinkingLevel;
 };
 
-export type TaskReviewConfig = {
-  mode?: "auto" | "always";
-  maxSkipDiffChars?: number;
-  maxSkipFiles?: number;
-};
-
 export type ImplementConfig = {
   implementer?: RoleConfig;
   reviewer?: RoleConfig;
@@ -22,7 +16,6 @@ export type ImplementConfig = {
   verifyCommand?: string;
   planner?: RoleConfig;
   selfHeal?: RoleConfig;
-  taskReview?: TaskReviewConfig;
 };
 
 export type ConfigReadResult = {
@@ -57,12 +50,6 @@ const THINKING_LEVELS = new Set<ThinkingLevel>([
 ]);
 const DEFAULT_MAX_PARALLEL = 3;
 const HARD_MAX_PARALLEL = 8;
-
-const DEFAULT_TASK_REVIEW_MODE = "auto";
-const DEFAULT_MAX_SKIP_DIFF_CHARS = 2000;
-const DEFAULT_MAX_SKIP_FILES = 3;
-const HARD_MAX_SKIP_DIFF_CHARS = 10000;
-const HARD_MAX_SKIP_FILES = 10;
 
 export function getConfigPath(agentDir: string): string {
   return join(agentDir, "extensions", "pi-implement", "config.json");
@@ -105,47 +92,6 @@ export function parseConfig(raw: string): {
         config.verifyCommand = object.verifyCommand.trim();
       } else {
         warningParts.push("verifyCommand must be a non-empty string");
-      }
-    }
-
-    if (object.taskReview !== undefined) {
-      const tr = object.taskReview;
-      if (typeof tr !== "object" || tr === null || Array.isArray(tr)) {
-        warningParts.push("taskReview must be an object");
-      } else {
-        const trObj = tr as Record<string, unknown>;
-        const taskReview: TaskReviewConfig = {};
-        if (trObj.mode !== undefined) {
-          if (trObj.mode === "auto" || trObj.mode === "always") {
-            taskReview.mode = trObj.mode;
-          } else {
-            warningParts.push('taskReview.mode must be "auto" or "always"');
-          }
-        }
-        if (trObj.maxSkipDiffChars !== undefined) {
-          const msd = trObj.maxSkipDiffChars;
-          if (typeof msd === "number" && Number.isInteger(msd) && msd > 0) {
-            taskReview.maxSkipDiffChars = Math.min(
-              msd,
-              HARD_MAX_SKIP_DIFF_CHARS,
-            );
-          } else {
-            warningParts.push(
-              "taskReview.maxSkipDiffChars must be a positive integer",
-            );
-          }
-        }
-        if (trObj.maxSkipFiles !== undefined) {
-          const msf = trObj.maxSkipFiles;
-          if (typeof msf === "number" && Number.isInteger(msf) && msf > 0) {
-            taskReview.maxSkipFiles = Math.min(msf, HARD_MAX_SKIP_FILES);
-          } else {
-            warningParts.push(
-              "taskReview.maxSkipFiles must be a positive integer",
-            );
-          }
-        }
-        config.taskReview = taskReview;
       }
     }
 
@@ -217,29 +163,6 @@ export function parseConfig(raw: string): {
 export function resolveMaxParallel(config: ImplementConfig): number {
   const fromConfig = config.maxParallel ?? DEFAULT_MAX_PARALLEL;
   return Math.min(fromConfig, HARD_MAX_PARALLEL);
-}
-
-export type EffectiveTaskReviewConfig = {
-  mode: "auto" | "always";
-  maxSkipDiffChars: number;
-  maxSkipFiles: number;
-};
-
-export function resolveEffectiveTaskReview(
-  config: ImplementConfig,
-): EffectiveTaskReviewConfig {
-  const taskReview = config.taskReview ?? {};
-  return {
-    mode: taskReview.mode ?? DEFAULT_TASK_REVIEW_MODE,
-    maxSkipDiffChars: Math.min(
-      taskReview.maxSkipDiffChars ?? DEFAULT_MAX_SKIP_DIFF_CHARS,
-      HARD_MAX_SKIP_DIFF_CHARS,
-    ),
-    maxSkipFiles: Math.min(
-      taskReview.maxSkipFiles ?? DEFAULT_MAX_SKIP_FILES,
-      HARD_MAX_SKIP_FILES,
-    ),
-  };
 }
 
 export function readConfig(agentDir: string): ConfigReadResult {
@@ -365,10 +288,5 @@ export function formatConfigStatus(
   if (result.config.verifyCommand) {
     lines.push(`Verify command: ${result.config.verifyCommand}`);
   }
-  const effectiveTaskReview = resolveEffectiveTaskReview(result.config);
-  lines.push(`Task review mode: ${effectiveTaskReview.mode}`);
-  lines.push(
-    `Task review skip thresholds: ${effectiveTaskReview.maxSkipDiffChars} chars, ${effectiveTaskReview.maxSkipFiles} files`,
-  );
   return lines.join("\n");
 }

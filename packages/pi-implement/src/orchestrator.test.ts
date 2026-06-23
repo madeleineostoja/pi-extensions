@@ -10651,11 +10651,6 @@ describe("runImplementation", () => {
         runId: "r1",
         paths,
         verifyCommand: "echo ok",
-        effectiveTaskReview: {
-          mode: "auto",
-          maxSkipDiffChars: 10,
-          maxSkipFiles: 1,
-        },
         roles: {
           implementer: { model: "p/m", type: "general-purpose" },
           reviewer: { model: "p/m", type: "general-purpose" },
@@ -11266,11 +11261,6 @@ describe("runImplementation", () => {
       planPath,
       mode: "serial",
       paths,
-      effectiveTaskReview: {
-        mode: "auto",
-        maxSkipDiffChars: 2000,
-        maxSkipFiles: 3,
-      },
       roles: {
         implementer: { model: "p/m", type: "general-purpose" },
         reviewer: { model: "p/m", type: "general-purpose" },

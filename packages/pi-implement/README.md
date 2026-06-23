@@ -150,12 +150,7 @@ Global config lives at:
     "thinking": "medium"
   },
   "maxParallel": 3,
-  "verifyCommand": "npm test",
-  "taskReview": {
-    "mode": "auto",
-    "maxSkipDiffChars": 2000,
-    "maxSkipFiles": 3
-  }
+  "verifyCommand": "npm test"
 }
 ```
 
@@ -165,7 +160,7 @@ Implementer and reviewer workers can use injected read-only `explore` on demand 
 
 `maxParallel` defaults to `3` and is clamped to a hard maximum of `8`. Invalid values are ignored with a warning.
 
-`taskReview` controls when per-task review can be skipped. Default `auto` preserves review as the safety net unless planner hints and runtime evidence (small docs-only or additive-fixture diffs with passing validation) make a task skip-eligible. Set `mode` to `"always"` to force review for every task. `maxSkipDiffChars` and `maxSkipFiles` cap the size of skip-eligible diffs.
+Per-task review is reviewer-led and triage-first. Reviewers may approve structurally low-risk actual diffs quickly; otherwise they continue into a full review. The final whole-feature overall review remains mandatory after all tasks land.
 
 `verifyCommand` is an optional non-empty shell command. In parallel mode it runs from the repository root during per-task integration and final validation. If omitted, pi-implement auto-detects `test`, `typecheck`, and `build` package scripts (respecting the repo's npm/pnpm/yarn lockfile); if none exist, it falls back to an LLM integration review.
 

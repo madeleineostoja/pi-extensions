@@ -13,7 +13,6 @@ import {
   formatConfigStatus,
   resolveMaxParallel,
   reviewerDefaultTypeWarning,
-  resolveEffectiveTaskReview,
 } from "./config.js";
 import { ExecGitClient } from "./git.js";
 import {
@@ -773,7 +772,6 @@ Stay idle until the run ends or the user asks you something directly. Do not res
             abortController.signal.aborted,
           signal: abortController.signal,
           verifyCommand: config.config.verifyCommand,
-          effectiveTaskReview: resolveEffectiveTaskReview(config.config),
         });
       })()
         .then(() => {
