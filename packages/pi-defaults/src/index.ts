@@ -125,9 +125,10 @@ function createDebouncedRestore<T>(
 
 async function restoreModelDefaults(snapshot: ModelDefaults) {
   const settings = SettingsManager.create(snapshot.cwd, getAgentDir());
+  const globalSettings = settings.getGlobalSettings();
   if (
-    settings.getDefaultProvider() === snapshot.provider &&
-    settings.getDefaultModel() === snapshot.modelId
+    globalSettings.defaultProvider === snapshot.provider &&
+    globalSettings.defaultModel === snapshot.modelId
   ) {
     return;
   }
@@ -138,7 +139,8 @@ async function restoreModelDefaults(snapshot: ModelDefaults) {
 
 async function restoreThinkingDefault(snapshot: ThinkingDefault) {
   const settings = SettingsManager.create(snapshot.cwd, getAgentDir());
-  if (settings.getDefaultThinkingLevel() === snapshot.level) {
+  const globalSettings = settings.getGlobalSettings();
+  if (globalSettings.defaultThinkingLevel === snapshot.level) {
     return;
   }
 

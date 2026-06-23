@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -76,6 +77,15 @@ function readSettings(agentDir: string) {
 
 function writeSettings(agentDir: string, settings: Settings) {
   writeFileSync(settingsPath(agentDir), JSON.stringify(settings, null, 2));
+}
+
+function projectSettingsPath(cwd: string) {
+  return join(cwd, ".pi", "settings.json");
+}
+
+function writeProjectSettings(cwd: string, settings: Settings) {
+  mkdirSync(join(cwd, ".pi"), { recursive: true });
+  writeFileSync(projectSettingsPath(cwd), JSON.stringify(settings, null, 2));
 }
 
 async function runPendingTimers() {
@@ -198,6 +208,58 @@ describe("pi-defaults", () => {
     await runPendingTimers();
 
     expect(readSettings(tmpDir)).toEqual({ defaultThinkingLevel: "high" });
+  });
+
+  it("restores global model defaults when project settings mask the clobbered global defaults", async () => {
+    writeSettings(tmpDir, {
+      defaultProvider: "global-provider",
+      defaultModel: "global-model",
+      theme: "dracula",
+    });
+    writeProjectSettings(cwd, {
+      defaultProvider: "project-provider",
+      defaultModel: "project-model",
+    });
+    const { handlers } = makeFakePi();
+    const ctx = makeExtensionCtx(cwd);
+
+    await getHandler(handlers, "session_start")({}, ctx);
+    writeSettings(tmpDir, {
+      defaultProvider: "openai",
+      defaultModel: "gpt-5-mini",
+      theme: "dracula",
+    });
+    await getHandler(handlers, "model_select")({}, ctx);
+    await runPendingTimers();
+
+    expect(readSettings(tmpDir)).toEqual({
+      defaultProvider: "project-provider",
+      defaultModel: "project-model",
+      theme: "dracula",
+    });
+  });
+
+  it("restores global thinking defaults when project settings mask the clobbered global default", async () => {
+    writeSettings(tmpDir, {
+      defaultThinkingLevel: "low",
+      theme: "dracula",
+    });
+    writeProjectSettings(cwd, { defaultThinkingLevel: "high" });
+    const { handlers } = makeFakePi();
+    const ctx = makeExtensionCtx(cwd);
+
+    await getHandler(handlers, "session_start")({}, ctx);
+    writeSettings(tmpDir, {
+      defaultThinkingLevel: "minimal",
+      theme: "dracula",
+    });
+    await getHandler(handlers, "thinking_level_select")({}, ctx);
+    await runPendingTimers();
+
+    expect(readSettings(tmpDir)).toEqual({
+      defaultThinkingLevel: "high",
+      theme: "dracula",
+    });
   });
 
   it("does not invent model defaults missing at session start", async () => {
