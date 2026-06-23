@@ -85,7 +85,7 @@ Plan checkbox updates are intentionally not part of any commit. Plan files may b
 ## Runtime integration and requirements
 
 - The current directory must be inside a git repo with a clean worktree, ignoring the source plan artifact and any validated supporting plan artifacts.
-- `pi-implement` uses the bundled first-party `pi-subagents` runtime directly. Installing the root `pi-extensions` bundle registers `pi-subagents` before `pi-implement`, so implementer, reviewer, planner, and self-heal workers run in-process without external installation, RPC setup, or Scout configuration.
+- `pi-implement` uses the bundled first-party `pi-subagents` runtime directly. Installing the root `pi-extensions` bundle registers `pi-subagents` before `pi-implement`, so implementer, reviewer, planner, and self-heal workers run in-process without external installation or RPC setup.
 - Worker status is surfaced through `pi-implement` progress messages, `/implement status`, `/implement inspect`, `/implement view`, and the shared `/agents` dashboard. Internally owned workers are intentionally quiet in the main transcript except for pi-implement's orchestration updates.
 
 ## Plan format and task scope
@@ -156,7 +156,7 @@ Global config lives at:
 
 pi-implement owns its role model, type, and thinking configuration separately from public `pi-subagents` defaults. If a role model is omitted, pi-implement does not pass a model override, so `pi-subagents` uses the role's subagent type default model (and then the current session model if that type has no default). If a role thinking value is omitted, the subagent session uses the current session default. If a role type is omitted, `general-purpose` is used for implementer, reviewer, and self-heal roles, and `Explore` is used for the planner. The runtime prompts are self-contained enough to work with `general-purpose`, but reviewer safety is only instruction-enforced in that mode; configure `reviewer.type` to a dedicated read-only review agent for stronger isolation.
 
-Implementer and reviewer workers can use injected read-only `explore` on demand for broad map-building or targeted context checks. This replaces the old Scout workflow: exploration is not configured separately in pi-implement, does not require Scout, and does not expand task scope.
+Implementer and reviewer workers can use injected read-only `explore` on demand for broad map-building or targeted context checks. Exploration is not configured separately in pi-implement and does not expand task scope.
 
 `maxParallel` defaults to `3` and is clamped to a hard maximum of `8`. Invalid values are ignored with a warning.
 
