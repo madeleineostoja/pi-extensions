@@ -4,7 +4,8 @@ import type {
   MessageRenderer,
   ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
-import { parseGuardArgs, formatBlockReason } from "./utils";
+import { promptForPermission } from "@pi-extensions/lib";
+import { parseGuardArgs } from "./utils";
 import { decideToolCall, resolveChoice } from "./handler";
 import { assessBashCommand } from "./assessors";
 import { extractPendingCreations, commitPendingCreations } from "./session";
@@ -175,36 +176,33 @@ export default function (pi: ExtensionAPI) {
       return undefined;
     }
 
-    let choice: string | undefined;
-    let message: string | undefined;
+    const permission = await promptForPermission({
+      ui: ctx.ui,
+      signal: ctx.signal,
+      title: action.title,
+      detail: action.description,
+      choices: [
+        { value: "Allow once", label: "Allow once" },
+        {
+          value: "Allow similar this session",
+          label: "Allow similar this session",
+        },
+        { value: "Allow all this session", label: "Allow all this session" },
+        {
+          value: "Block",
+          label: "Block",
+          input: {
+            title: "Reason to give the agent",
+            placeholder: "why are you blocking this?",
+          },
+        },
+      ],
+    });
 
-    try {
-      choice = await ctx.ui.select(
-        `${action.title}\n${action.description}`,
-        [
-          "Allow once",
-          "Allow similar this session",
-          "Allow all this session",
-          "Block",
-        ],
-        ctx.signal ? { signal: ctx.signal } : undefined,
-      );
-
-      if (choice === "Block") {
-        message =
-          (await ctx.ui.input(
-            "Reason to give the agent",
-            "why are you blocking this?",
-          )) ?? "";
-      }
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        return { block: true, reason: formatBlockReason("") };
-      }
-      throw err;
-    }
-
-    const result = resolveChoice({ choice, message });
+    const result = resolveChoice({
+      choice: permission.kind === "selected" ? permission.value : undefined,
+      message: permission.kind === "selected" ? permission.message : "",
+    });
 
     if (result.sideEffect === "allowKey") {
       sessionAllowKeys.add(action.allowKey);

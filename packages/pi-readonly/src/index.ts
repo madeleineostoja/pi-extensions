@@ -3,9 +3,9 @@ import type {
   ExtensionContext,
   MessageRenderer,
 } from "@earendil-works/pi-coding-agent";
+import { promptForPermission } from "@pi-extensions/lib";
 import {
   parseReadonlyArgs,
-  formatSteer,
   extractToolPath,
   formatModalTitle,
   formatSteerTitle,
@@ -178,30 +178,28 @@ export default function (pi: ExtensionAPI) {
 
     // decision === "prompt"
     const toolPath = extractToolPath(event.input);
-    let choice: string | undefined;
-    let message: string | undefined;
-    try {
-      choice = await ctx.ui.select(
-        formatModalTitle(event.toolName, toolPath),
-        ["Accept", "Accept for this session", "Steer"],
-        ctx.signal ? { signal: ctx.signal } : undefined,
-      );
+    const permission = await promptForPermission({
+      ui: ctx.ui,
+      signal: ctx.signal,
+      title: formatModalTitle(event.toolName, toolPath),
+      choices: [
+        { value: "Accept", label: "Accept" },
+        { value: "Accept for this session", label: "Accept for this session" },
+        {
+          value: "Steer",
+          label: "Steer",
+          input: {
+            title: formatSteerTitle(toolPath),
+            placeholder: "what should the agent do differently?",
+          },
+        },
+      ],
+    });
 
-      if (choice === "Steer") {
-        message =
-          (await ctx.ui.input(
-            formatSteerTitle(toolPath),
-            "what should the agent do differently?",
-          )) ?? "";
-      }
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        return { block: true, reason: formatSteer("") };
-      }
-      throw err;
-    }
-
-    const result = resolveChoice({ choice, message });
+    const result = resolveChoice({
+      choice: permission.kind === "selected" ? permission.value : undefined,
+      message: permission.kind === "selected" ? permission.message : "",
+    });
 
     if (result.sideEffect === "setEditing") {
       setMode(false, ctx);
