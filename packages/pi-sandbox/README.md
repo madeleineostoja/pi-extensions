@@ -22,7 +22,14 @@ Add project-specific policy in `.pi/sandbox.json`:
 ```json
 {
   "fs": {
-    "allowRead": ["<cwd>", "~/.cache", "~/.pi"],
+    "allowRead": [
+      "<cwd>",
+      "/usr",
+      "/etc",
+      "/opt",
+      "/Library/Developer",
+      "/private/etc"
+    ],
     "allowWrite": ["<cwd>"],
     "denyPatterns": ["<cwd>/**/.env", "<cwd>/**/.env.*", "~/.ssh/**"]
   },
@@ -122,8 +129,15 @@ Project config overrides user config. You only need to specify fields you want t
 {
   "enabled": true,
   "fs": {
-    "allowRead": ["<cwd>", "~/.cache", "~/.pi"],
-    "allowWrite": ["<cwd>", "~/.cache/pi"],
+    "allowRead": [
+      "<cwd>",
+      "/usr",
+      "/etc",
+      "/opt",
+      "/Library/Developer",
+      "/private/etc"
+    ],
+    "allowWrite": ["<cwd>", "~/.cache/pi", "~/.pi/agent/logs"],
     "denyPatterns": ["<cwd>/**/.env", "~/.ssh/**"]
   },
   "network": {

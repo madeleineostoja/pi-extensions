@@ -36,9 +36,6 @@ export const DEFAULT_POLICY: Policy = {
   fs: {
     allowRead: [
       "<cwd>",
-      "~/.cache",
-      "~/.config",
-      "~/.pi",
       "/usr",
       "/etc",
       "/opt",

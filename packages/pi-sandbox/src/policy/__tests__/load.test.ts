@@ -266,11 +266,50 @@ describe("loadPolicy", () => {
     const { loadPolicy } = createPolicyManager();
     const policy = loadPolicy(tmpCwd, { home: tmpHome });
 
+    expect(DEFAULT_POLICY.fs.allowRead).toEqual([
+      "<cwd>",
+      "/usr",
+      "/etc",
+      "/opt",
+      "/Library/Developer",
+      "/private/etc",
+    ]);
+    expect(DEFAULT_POLICY.fs.allowWrite).toEqual([
+      "<cwd>",
+      "~/.cache/pi",
+      "~/.pi/agent/logs",
+    ]);
+    expect(DEFAULT_POLICY.fs.denyPatterns).toEqual([
+      "<cwd>/**/.env",
+      "<cwd>/**/.env.*",
+      "~/.ssh/**",
+      "~/.aws/credentials",
+      "~/.aws/config",
+      "~/.gnupg/**",
+      "<cwd>/**/id_rsa",
+      "<cwd>/**/id_ed25519",
+      "<cwd>/**/*.pem",
+      "<cwd>/**/*.key",
+      "<cwd>/**/*.p12",
+      "~/.netrc",
+    ]);
+    expect(policy.fs.allowRead).toEqual(
+      expect.arrayContaining([
+        tmpCwd,
+        "/usr",
+        "/etc",
+        "/opt",
+        "/Library/Developer",
+        "/private/etc",
+        os.tmpdir(),
+      ]),
+    );
+    expect(policy.fs.allowRead).not.toContain(path.join(tmpHome, ".cache"));
+    expect(policy.fs.allowRead).not.toContain(path.join(tmpHome, ".config"));
+    expect(policy.fs.allowRead).not.toContain(path.join(tmpHome, ".pi"));
     expect(policy.network.mode).toBe("non-interactive-only");
     expect(policy.enabled).toBe(true);
     expect(policy.audit.log).toBe(true);
-    expect(policy.fs.denyPatterns.some((p) => p.endsWith("/.env"))).toBe(true);
-    expect(policy.fs.denyPatterns.some((p) => p.includes(".ssh"))).toBe(true);
     expect(policy.network.allow).toContain("github.com");
     expect(policy.network.allow).toContain("registry.npmjs.org");
   });
