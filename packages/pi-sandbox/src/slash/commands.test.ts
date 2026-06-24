@@ -472,14 +472,16 @@ describe("getArgumentCompletions — tab completion", () => {
     createSlashCommands(createAuditPipeline());
   });
 
-  it("suggests top-level commands and filters by prefix", () => {
+  it("suggests retained top-level commands and filters by prefix", () => {
     const pm = makePolicyManager(makePolicy());
-    expect(completionValues(getArgumentCompletions("", pm))).toEqual(
-      expect.arrayContaining(["status", "summary", "allow", "revoke"]),
-    );
-    const filtered = completionValues(getArgumentCompletions("st", pm));
-    expect(filtered).toContain("status");
-    expect(filtered).not.toContain("reload");
+    expect(completionValues(getArgumentCompletions("", pm))).toEqual([
+      "why",
+      "allow",
+      "revoke",
+    ]);
+    const filtered = completionValues(getArgumentCompletions("al", pm));
+    expect(filtered).toEqual(["allow"]);
+    expect(filtered).not.toContain("status");
   });
 
   it("suggests recently-blocked hosts for allow", () => {
@@ -501,13 +503,23 @@ describe("getArgumentCompletions — tab completion", () => {
     expect(values).toContain("blocked.example.com");
   });
 
-  it("suggests revocable hosts and network modes", () => {
+  it("suggests revocable hosts and filesystem grant resources", () => {
     const pm = makePolicyManager(makePolicy());
     expect(
       completionValues(getArgumentCompletions("revoke host ", pm)),
     ).toContain("github.com");
+    expect(completionValues(getArgumentCompletions("allow ", pm))).toEqual([
+      "host",
+      "read",
+      "write",
+    ]);
+    expect(completionValues(getArgumentCompletions("revoke ", pm))).toEqual([
+      "host",
+      "read",
+      "write",
+    ]);
     expect(completionValues(getArgumentCompletions("network ", pm))).toEqual(
-      expect.arrayContaining(["on", "off"]),
+      [],
     );
   });
 });
@@ -522,16 +534,20 @@ describe("dispatch — subcommand routing", () => {
     cmds = createSlashCommands(createAuditPipeline());
   });
 
-  it("empty args → opens menu", async () => {
+  it("empty args → opens sectioned menu", async () => {
     const { ui, messages, selectCalls } = makeUI({
-      selectReturns: ["Show policy summary"],
+      selectReturns: ["Inspect…", "Policy summary", undefined],
     });
     const ctx = makeCtx({ ui });
     await cmds.dispatch("", ctx);
     expect(selectCalls[0].title).toBe("Sandbox");
-    expect(selectCalls[0].options).toContain("Status");
-    expect(selectCalls[0].options).toContain("Show policy summary");
-    expect(selectCalls[0].options).toContain("Explain path/host");
+    expect(selectCalls[0].options).toEqual([
+      "Inspect…",
+      "Filesystem…",
+      "Network…",
+      "Session…",
+      "Reload",
+    ]);
     expect(messages[0].text).toMatch(/Sandbox Policy Summary/);
   });
 
@@ -859,7 +875,7 @@ describe("handleMenu", () => {
     vi.restoreAllMocks();
   });
 
-  it("cancelling the top-level select makes no state changes and no error", async () => {
+  it("cancelling the top-level select exits with no state changes", async () => {
     const { ui, messages, selectCalls } = makeUI({
       selectReturns: [undefined],
     });
@@ -867,249 +883,184 @@ describe("handleMenu", () => {
     await cmds.handleMenu(ctx);
     expect(selectCalls).toHaveLength(1);
     expect(selectCalls[0].title).toBe("Sandbox");
+    expect(selectCalls[0].options).toEqual([
+      "Inspect…",
+      "Filesystem…",
+      "Network…",
+      "Session…",
+      "Reload",
+    ]);
     expect(messages).toHaveLength(0);
   });
 
-  it("menu routes 'Status' to handleStatus", async () => {
-    const { ui, messages } = makeUI({
-      selectReturns: ["Status"],
+  it("submenu escape returns to the parent menu before top-level escape exits", async () => {
+    const { ui, messages, selectCalls } = makeUI({
+      selectReturns: ["Inspect…", undefined, undefined],
     });
     const ctx = makeCtx({ ui });
     await cmds.handleMenu(ctx);
-    expect(messages[0].text).toMatch(/sandbox:/i);
+    expect(selectCalls.map((call) => call.title)).toEqual([
+      "Sandbox",
+      "Sandbox › Inspect",
+      "Sandbox",
+    ]);
+    expect(messages).toHaveLength(0);
   });
 
-  it("menu routes 'Show policy summary' to handleSummary", async () => {
-    const { ui, messages } = makeUI({
-      selectReturns: ["Show policy summary"],
+  it("explicit Back returns from a submenu to the parent menu", async () => {
+    const { ui, selectCalls } = makeUI({
+      selectReturns: ["Network…", "Back", undefined],
     });
     const ctx = makeCtx({ ui });
     await cmds.handleMenu(ctx);
-    expect(messages[0].text).toMatch(/Sandbox Policy Summary/);
+    expect(selectCalls.map((call) => call.title)).toEqual([
+      "Sandbox",
+      "Sandbox › Network",
+      "Sandbox",
+    ]);
+    expect(selectCalls[1].options).toContain("Back");
   });
 
-  it("menu routes 'Explain path/host' via input", async () => {
-    const { ui, messages, inputCalls } = makeUI({
-      selectReturns: ["Explain path/host"],
+  it("Inspect menu routes Status, Policy summary, and Explain path/host", async () => {
+    const { ui, messages, selectCalls, inputCalls } = makeUI({
+      selectReturns: [
+        "Inspect…",
+        "Status",
+        "Inspect…",
+        "Policy summary",
+        "Inspect…",
+        "Explain path/host…",
+        "Explain",
+        undefined,
+      ],
       inputReturns: ["/tmp/test.txt"],
     });
     const ctx = makeCtx({ ui });
     await cmds.handleMenu(ctx);
-    expect(inputCalls).toHaveLength(1);
-    expect(inputCalls[0].title).toBe("Explain sandbox decision");
-    expect(messages[0].text).toMatch(/would be allowed/);
+    expect(selectCalls[1].options).toEqual([
+      "Status",
+      "Policy summary",
+      "Explain path/host…",
+      "Back",
+    ]);
+    expect(inputCalls).toEqual([
+      { title: "Explain sandbox decision", placeholder: "path or host" },
+    ]);
+    expect(messages.map((message) => message.text).join("\n")).toMatch(
+      /sandbox:|Sandbox Policy Summary|would be allowed/,
+    );
   });
 
-  it("cancelling 'Explain path/host' input makes no changes and no error", async () => {
-    const { ui, messages, inputCalls } = makeUI({
-      selectReturns: ["Explain path/host"],
-      inputReturns: [undefined],
+  it("Filesystem menu grants read, grants write, and revokes through leaf handlers", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-menu-fs-"));
+    try {
+      const readPath = path.join(tmpDir, "read.txt");
+      const writePath = path.join(tmpDir, "write.txt");
+      fs.writeFileSync(readPath, "");
+      fs.writeFileSync(writePath, "");
+      const { ui } = makeUI({
+        selectReturns: [
+          "Filesystem…",
+          "Allow read…",
+          "Allow",
+          "Filesystem…",
+          "Allow write…",
+          "Allow",
+          "Filesystem…",
+          "Revoke grant…",
+          `read ${path.resolve(readPath)}`,
+          undefined,
+        ],
+        inputReturns: [readPath, writePath],
+      });
+      const ctx = makeCtx({ ui, cwd: tmpDir });
+      await cmds.handleMenu(ctx);
+      const state = cmds.getSessionState();
+      expect(state.sessionAllowedReadPaths.has(readPath)).toBe(false);
+      expect([...state.sessionAllowedWritePaths]).toEqual([
+        fs.realpathSync(writePath),
+      ]);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("Filesystem revoke Back returns to the parent menu", async () => {
+    cmds.handleAllowFs(makeCtx(), "read", "/tmp/read.txt");
+    const { ui, selectCalls } = makeUI({
+      selectReturns: ["Filesystem…", "Revoke grant…", "Back", undefined],
     });
     const ctx = makeCtx({ ui });
     await cmds.handleMenu(ctx);
-    expect(inputCalls).toHaveLength(1);
-    expect(messages).toHaveLength(0);
+    expect(selectCalls.map((call) => call.title)).toEqual([
+      "Sandbox",
+      "Sandbox › Filesystem",
+      "Revoke filesystem grant",
+      "Sandbox",
+    ]);
+    expect(cmds.getSessionState().sessionAllowedReadPaths.size).toBe(1);
   });
 
-  it("empty 'Explain path/host' input makes no changes and no error", async () => {
-    const { ui, messages, inputCalls } = makeUI({
-      selectReturns: ["Explain path/host"],
-      inputReturns: ["   "],
-    });
-    const ctx = makeCtx({ ui });
-    await cmds.handleMenu(ctx);
-    expect(inputCalls).toHaveLength(1);
-    expect(messages).toHaveLength(0);
-  });
-
-  it("menu routes 'Allow host for this session' via input", async () => {
-    const { ui, inputCalls } = makeUI({
-      selectReturns: ["Allow host for this session"],
+  it("Network menu allows and revokes hosts through leaf handlers", async () => {
+    const { ui } = makeUI({
+      selectReturns: [
+        "Network…",
+        "Allow host…",
+        "Allow",
+        "Network…",
+        "Revoke host…",
+        "example.com",
+        undefined,
+      ],
       inputReturns: ["example.com"],
     });
     const ctx = makeCtx({ ui });
     await cmds.handleMenu(ctx);
-    expect(inputCalls).toHaveLength(1);
-    expect(inputCalls[0].title).toBe("Allow host for this session");
     expect(cmds.getSessionState().sessionAllowedHosts.has("example.com")).toBe(
-      true,
-    );
-  });
-
-  it("cancelling 'Allow host for this session' input makes no changes and no error", async () => {
-    const { ui, messages, inputCalls } = makeUI({
-      selectReturns: ["Allow host for this session"],
-      inputReturns: [undefined],
-    });
-    const ctx = makeCtx({ ui });
-    await cmds.handleMenu(ctx);
-    expect(inputCalls).toHaveLength(1);
-    expect(messages).toHaveLength(0);
-    expect(cmds.getSessionState().sessionAllowedHosts.size).toBe(0);
-  });
-
-  it("empty 'Allow host for this session' input makes no changes and no error", async () => {
-    const { ui, messages, inputCalls } = makeUI({
-      selectReturns: ["Allow host for this session"],
-      inputReturns: ["   "],
-    });
-    const ctx = makeCtx({ ui });
-    await cmds.handleMenu(ctx);
-    expect(inputCalls).toHaveLength(1);
-    expect(messages).toHaveLength(0);
-    expect(cmds.getSessionState().sessionAllowedHosts.size).toBe(0);
-  });
-
-  it("menu routes 'Revoke session host' via select when hosts exist", async () => {
-    cmds.handleAllow(makeCtx(), ["host-a.com", "host-b.com"], false);
-    const state = cmds.getSessionState();
-    expect(state.sessionAllowedHosts.size).toBe(2);
-
-    const { ui, selectCalls } = makeUI({
-      selectReturns: ["Revoke session host", "host-a.com"],
-    });
-    const ctx = makeCtx({ ui });
-    await cmds.handleMenu(ctx);
-    expect(selectCalls).toHaveLength(2);
-    expect(selectCalls[1].title).toBe("Revoke session host");
-    expect(selectCalls[1].options).toEqual(
-      expect.arrayContaining(["host-a.com", "host-b.com"]),
-    );
-    expect(cmds.getSessionState().sessionAllowedHosts.has("host-a.com")).toBe(
       false,
     );
-    expect(cmds.getSessionState().sessionAllowedHosts.has("host-b.com")).toBe(
-      true,
-    );
   });
 
-  it("'Revoke session host' notifies when no session hosts exist", async () => {
-    const { ui, messages } = makeUI({
-      selectReturns: ["Revoke session host"],
+  it("Network menu toggles filtering with permission prompt", async () => {
+    const { ui, selectCalls } = makeUI({
+      selectReturns: ["Network…", "Disable filtering", "Allow", undefined],
     });
     const ctx = makeCtx({ ui });
     await cmds.handleMenu(ctx);
-    expect(messages[0].text).toMatch(/no session grants to revoke/i);
-  });
-
-  it("cancelling 'Revoke session host' select makes no changes and no error", async () => {
-    cmds.handleAllow(makeCtx(), ["host-a.com"], false);
-    const { ui, messages } = makeUI({
-      selectReturns: ["Revoke session host", undefined],
-    });
-    const ctx = makeCtx({ ui });
-    await cmds.handleMenu(ctx);
-    expect(cmds.getSessionState().sessionAllowedHosts.has("host-a.com")).toBe(
-      true,
-    );
-    expect(messages).toHaveLength(0);
-  });
-
-  it("menu disables network filtering via confirm", async () => {
-    const { ui, confirmCalls } = makeUI({
-      selectReturns: ["Disable network filtering this session"],
-      confirmReturns: [true],
-    });
-    const ctx = makeCtx({ ui });
-    await cmds.handleMenu(ctx);
-    expect(confirmCalls).toHaveLength(1);
     expect(cmds.getSessionState().networkOff).toBe(true);
+    expect(selectCalls[2].title).toMatch(/Disable network filtering/);
+    expect(selectCalls[2].options).toEqual(["Allow", "Block"]);
   });
 
-  it("menu re-enables network filtering via confirm when already off", async () => {
-    const { ui: preUi } = makeUI();
-    cmds.handleNetworkOff(makeCtx({ ui: preUi }));
-    expect(cmds.getSessionState().networkOff).toBe(true);
-
-    const { ui, confirmCalls } = makeUI({
-      selectReturns: ["Re-enable network filtering"],
-      confirmReturns: [true],
+  it("Session menu toggles sandbox with permission prompt", async () => {
+    const { ui, selectCalls } = makeUI({
+      selectReturns: ["Session…", "Disable sandbox", "Allow", undefined],
     });
     const ctx = makeCtx({ ui });
     await cmds.handleMenu(ctx);
-    expect(confirmCalls).toHaveLength(1);
-    expect(cmds.getSessionState().networkOff).toBe(false);
-  });
-
-  it("declining network toggle confirm makes no changes and no error", async () => {
-    const { ui, messages, confirmCalls } = makeUI({
-      selectReturns: ["Disable network filtering this session"],
-      confirmReturns: [false],
-    });
-    const ctx = makeCtx({ ui });
-    await cmds.handleMenu(ctx);
-    expect(confirmCalls).toHaveLength(1);
-    expect(cmds.getSessionState().networkOff).toBe(false);
-    expect(messages).toHaveLength(0);
-  });
-
-  it("menu disables sandbox via confirm", async () => {
-    const { ui, confirmCalls } = makeUI({
-      selectReturns: ["Disable sandbox this session"],
-      confirmReturns: [true],
-    });
-    const ctx = makeCtx({ ui });
-    await cmds.handleMenu(ctx);
-    expect(confirmCalls).toHaveLength(1);
     expect(cmds.getSessionState().sandboxOff).toBe(true);
+    expect(selectCalls[2].title).toMatch(/Disable sandbox/);
+    expect(selectCalls[2].options).toEqual(["Allow", "Block"]);
   });
 
-  it("menu re-enables sandbox via confirm when already off", async () => {
-    const { ui: preUi } = makeUI();
-    cmds.handleOff(makeCtx({ ui: preUi }));
-    expect(cmds.getSessionState().sandboxOff).toBe(true);
-
-    const { ui, confirmCalls } = makeUI({
-      selectReturns: ["Re-enable sandbox"],
-      confirmReturns: [true],
+  it("Reload uses permission prompt", async () => {
+    const { ui, messages, selectCalls } = makeUI({
+      selectReturns: ["Reload", "Allow", undefined],
     });
     const ctx = makeCtx({ ui });
     await cmds.handleMenu(ctx);
-    expect(confirmCalls).toHaveLength(1);
-    expect(cmds.getSessionState().sandboxOff).toBe(false);
-  });
-
-  it("declining sandbox toggle confirm makes no changes and no error", async () => {
-    const { ui, messages, confirmCalls } = makeUI({
-      selectReturns: ["Disable sandbox this session"],
-      confirmReturns: [false],
-    });
-    const ctx = makeCtx({ ui });
-    await cmds.handleMenu(ctx);
-    expect(confirmCalls).toHaveLength(1);
-    expect(cmds.getSessionState().sandboxOff).toBe(false);
-    expect(messages).toHaveLength(0);
-  });
-
-  it("menu routes 'Reload config' via confirm", async () => {
-    const { ui, messages, confirmCalls } = makeUI({
-      selectReturns: ["Reload config"],
-      confirmReturns: [true],
-    });
-    const ctx = makeCtx({ ui });
-    await cmds.handleMenu(ctx);
-    expect(confirmCalls).toHaveLength(1);
+    expect(selectCalls[1].title).toMatch(/Reload config/);
+    expect(selectCalls[1].options).toEqual(["Allow", "Block"]);
     expect(messages[0].text).toMatch(/reloaded/i);
-  });
-
-  it("declining 'Reload config' confirm makes no changes and no error", async () => {
-    const { ui, messages, confirmCalls } = makeUI({
-      selectReturns: ["Reload config"],
-      confirmReturns: [false],
-    });
-    const ctx = makeCtx({ ui });
-    await cmds.handleMenu(ctx);
-    expect(confirmCalls).toHaveLength(1);
-    expect(messages).toHaveLength(0);
   });
 
   it("menu does not include persisted flows", async () => {
     const { ui, selectCalls } = makeUI({
-      selectReturns: [undefined],
+      selectReturns: ["Network…", undefined, undefined],
     });
     const ctx = makeCtx({ ui });
     await cmds.handleMenu(ctx);
-    const options = selectCalls[0].options;
+    const options = selectCalls.flatMap((call) => call.options);
     expect(options).not.toContain("Allow host persistently");
     expect(options).not.toContain("Revoke persisted host");
     expect(options).not.toContain(expect.stringMatching(/persist/i));

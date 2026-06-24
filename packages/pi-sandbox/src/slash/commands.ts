@@ -13,6 +13,7 @@ import type {
   ExtensionCommandContext,
   ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
+import { promptForPermission } from "@pi-extensions/lib";
 import type { AutocompleteItem } from "../types/pi-tui.js";
 import type { AuditPipeline } from "../audit/audit.js";
 import { isValidNetworkAllowEntry, matchHost } from "../policy/schema.js";
@@ -206,17 +207,7 @@ export function parseArgs(rawArgs: string): ParsedArgs {
 // Tab completion
 // ---------------------------------------------------------------------------
 
-const SUBCOMMANDS = [
-  "status",
-  "summary",
-  "reload",
-  "why",
-  "allow",
-  "revoke",
-  "network",
-  "on",
-  "off",
-];
+const SUBCOMMANDS = ["why", "allow", "revoke"];
 
 export function getArgumentCompletions(
   prefix: string,
@@ -296,16 +287,7 @@ export function getArgumentCompletions(
       .map((s) => ({ value: s, label: s }));
   }
 
-  if (subcommand === "network") {
-    if (tokens.length === 1 || (tokens.length === 2 && !endsWithSpace)) {
-      const partial = tokens[1] ?? "";
-      return ["on", "off"]
-        .filter((s) => s.startsWith(partial))
-        .map((s) => ({ value: s, label: s }));
-    }
-  }
-
-  return null;
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -771,122 +753,276 @@ export function createSlashCommands(
   }
 
   async function handleMenu(ctx: SubcommandContext): Promise<void> {
-    const s = getSessionState();
+    async function promptForTarget(
+      title: string,
+      placeholder: string,
+      actionLabel = "Allow",
+    ): Promise<string | undefined> {
+      const result = await promptForPermission({
+        ui: ctx.ui,
+        title,
+        choices: [
+          {
+            value: "continue",
+            label: actionLabel,
+            input: { title, placeholder },
+          },
+          { value: "block", label: "Cancel" },
+        ],
+      });
 
-    const networkLabel = s.networkOff
-      ? "Re-enable network filtering"
-      : "Disable network filtering this session";
+      if (result.kind !== "selected" || result.value !== "continue") {
+        return undefined;
+      }
 
-    const sandboxLabel = s.sandboxOff
-      ? "Re-enable sandbox"
-      : "Disable sandbox this session";
-
-    const choice = await ctx.ui.select("Sandbox", [
-      "Status",
-      "Show policy summary",
-      "Explain path/host",
-      "Allow host for this session",
-      "Revoke session host",
-      networkLabel,
-      sandboxLabel,
-      "Reload config",
-    ]);
-
-    if (choice === undefined) {
-      return;
+      const target = result.message?.trim() ?? "";
+      return target.length > 0 ? target : undefined;
     }
 
-    switch (choice) {
-      case "Status":
-        handleStatus(ctx);
-        break;
+    async function confirmAction(
+      title: string,
+      detail: string,
+    ): Promise<boolean> {
+      const result = await promptForPermission({
+        ui: ctx.ui,
+        title,
+        detail,
+        choices: [
+          { value: "allow", label: "Allow" },
+          { value: "block", label: "Block" },
+        ],
+      });
+      return result.kind === "selected" && result.value === "allow";
+    }
 
-      case "Show policy summary":
-        handleSummary(ctx);
-        break;
+    async function handleInspectMenu(): Promise<void> {
+      const choice = await ctx.ui.select("Sandbox › Inspect", [
+        "Status",
+        "Policy summary",
+        "Explain path/host…",
+        "Back",
+      ]);
 
-      case "Explain path/host": {
-        const target = await ctx.ui.input(
-          "Explain sandbox decision",
-          "path or host",
-        );
-        if (target === undefined || target.trim().length === 0) {
-          return;
-        }
-        await handleWhy(ctx, target.trim());
-        break;
+      if (choice === undefined || choice === "Back") {
+        return;
       }
 
-      case "Allow host for this session": {
-        const host = await ctx.ui.input(
-          "Allow host for this session",
-          "github.com",
-        );
-        if (host === undefined || host.trim().length === 0) {
+      switch (choice) {
+        case "Status":
+          handleStatus(ctx);
+          return;
+        case "Policy summary":
+          handleSummary(ctx);
+          return;
+        case "Explain path/host…": {
+          const target = await promptForTarget(
+            "Explain sandbox decision",
+            "path or host",
+            "Explain",
+          );
+          if (target !== undefined) {
+            await handleWhy(ctx, target);
+          }
           return;
         }
-        handleAllow(ctx, [host.trim()], false);
-        break;
+      }
+    }
+
+    async function handleFilesystemMenu(): Promise<void> {
+      const choice = await ctx.ui.select("Sandbox › Filesystem", [
+        "Allow read…",
+        "Allow write…",
+        "Revoke grant…",
+        "Back",
+      ]);
+
+      if (choice === undefined || choice === "Back") {
+        return;
       }
 
-      case "Revoke session host": {
-        const hosts = [...s.sessionAllowedHosts];
-        if (hosts.length === 0) {
-          ctx.ui.notify("There are no session grants to revoke.");
+      switch (choice) {
+        case "Allow read…": {
+          const target = await promptForTarget(
+            "Allow read access for this session",
+            "path",
+          );
+          if (target !== undefined) {
+            handleAllowFs(ctx, "read", target);
+          }
           return;
         }
-        const selected = await ctx.ui.select("Revoke session host", hosts);
-        if (selected === undefined) {
+        case "Allow write…": {
+          const target = await promptForTarget(
+            "Allow write access for this session",
+            "path",
+          );
+          if (target !== undefined) {
+            handleAllowFs(ctx, "write", target);
+          }
           return;
         }
-        handleRevoke(ctx, selected, false);
-        break;
+        case "Revoke grant…": {
+          const grants = [
+            ...[...state.sessionAllowedReadPaths].map((grantPath) => ({
+              label: `read ${grantPath}`,
+              mode: "read" as const,
+              path: grantPath,
+            })),
+            ...[...state.sessionAllowedWritePaths].map((grantPath) => ({
+              label: `write ${grantPath}`,
+              mode: "write" as const,
+              path: grantPath,
+            })),
+          ];
+          if (grants.length === 0) {
+            ctx.ui.notify("There are no filesystem session grants to revoke.");
+            return;
+          }
+          const selected = await ctx.ui.select("Revoke filesystem grant", [
+            ...grants.map((grant) => grant.label),
+            "Back",
+          ]);
+          if (selected === undefined || selected === "Back") {
+            return;
+          }
+          const grant = grants.find(
+            (candidate) => candidate.label === selected,
+          );
+          if (grant) {
+            handleRevokeFs(ctx, grant.mode, grant.path);
+          }
+          return;
+        }
+      }
+    }
+
+    async function handleNetworkMenu(): Promise<void> {
+      const networkLabel = state.networkOff
+        ? "Enable filtering"
+        : "Disable filtering";
+      const choice = await ctx.ui.select("Sandbox › Network", [
+        "Allow host…",
+        "Revoke host…",
+        networkLabel,
+        "Back",
+      ]);
+
+      if (choice === undefined || choice === "Back") {
+        return;
       }
 
-      case networkLabel: {
-        const action = s.networkOff ? "re-enable" : "disable";
-        const confirmed = await ctx.ui.confirm(
-          `${action === "disable" ? "Disable" : "Re-enable"} network filtering`,
-          `Are you sure you want to ${action} network filtering for this session?`,
-        );
-        if (!confirmed) {
+      switch (choice) {
+        case "Allow host…": {
+          const host = await promptForTarget(
+            "Allow host for this session",
+            "github.com",
+          );
+          if (host !== undefined) {
+            handleAllow(ctx, [host], false);
+          }
           return;
         }
-        if (s.networkOff) {
-          handleNetworkOn(ctx);
-        } else {
-          handleNetworkOff(ctx);
+        case "Revoke host…": {
+          const hosts = [...state.sessionAllowedHosts];
+          if (hosts.length === 0) {
+            ctx.ui.notify("There are no session host grants to revoke.");
+            return;
+          }
+          const selected = await ctx.ui.select("Revoke session host", [
+            ...hosts,
+            "Back",
+          ]);
+          if (selected === undefined || selected === "Back") {
+            return;
+          }
+          handleRevoke(ctx, selected, false);
+          return;
         }
-        break;
+        case networkLabel: {
+          const action = state.networkOff ? "re-enable" : "disable";
+          const confirmed = await confirmAction(
+            `${state.networkOff ? "Re-enable" : "Disable"} network filtering`,
+            `Are you sure you want to ${action} network filtering for this session?`,
+          );
+          if (!confirmed) {
+            return;
+          }
+          if (state.networkOff) {
+            handleNetworkOn(ctx);
+          } else {
+            handleNetworkOff(ctx);
+          }
+          return;
+        }
+      }
+    }
+
+    async function handleSessionMenu(): Promise<void> {
+      const sandboxLabel = state.sandboxOff
+        ? "Enable sandbox"
+        : "Disable sandbox";
+      const choice = await ctx.ui.select("Sandbox › Session", [
+        sandboxLabel,
+        "Back",
+      ]);
+
+      if (choice === undefined || choice === "Back") {
+        return;
       }
 
-      case sandboxLabel: {
-        const action = s.sandboxOff ? "re-enable" : "disable";
-        const confirmed = await ctx.ui.confirm(
-          `${action === "disable" ? "Disable" : "Re-enable"} sandbox`,
+      if (choice === sandboxLabel) {
+        const action = state.sandboxOff ? "re-enable" : "disable";
+        const confirmed = await confirmAction(
+          `${state.sandboxOff ? "Re-enable" : "Disable"} sandbox`,
           `Are you sure you want to ${action} the sandbox for this session?`,
         );
         if (!confirmed) {
           return;
         }
-        if (s.sandboxOff) {
+        if (state.sandboxOff) {
           handleOn(ctx);
         } else {
           handleOff(ctx);
         }
-        break;
+      }
+    }
+
+    while (true) {
+      const choice = await ctx.ui.select("Sandbox", [
+        "Inspect…",
+        "Filesystem…",
+        "Network…",
+        "Session…",
+        "Reload",
+      ]);
+
+      if (choice === undefined) {
+        return;
       }
 
-      case "Reload config": {
-        const confirmed = await ctx.ui.confirm(
-          "Reload config",
-          "Reloading may change the effective policy. Continue?",
-        );
-        if (!confirmed) {
-          return;
+      switch (choice) {
+        case "Inspect…":
+          await handleInspectMenu();
+          break;
+        case "Filesystem…":
+          await handleFilesystemMenu();
+          break;
+        case "Network…":
+          await handleNetworkMenu();
+          break;
+        case "Session…":
+          await handleSessionMenu();
+          break;
+        case "Reload": {
+          const confirmed = await confirmAction(
+            "Reload config",
+            "Reloading may change the effective policy. Continue?",
+          );
+          if (confirmed) {
+            handleReload(ctx);
+          }
+          break;
         }
-        handleReload(ctx);
-        break;
       }
     }
   }

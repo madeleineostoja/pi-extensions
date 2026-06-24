@@ -11,11 +11,13 @@ It uses two layers:
 
 ## Quick start
 
-If this package is installed through `pi install`, Pi loads the extension automatically. Start Pi in a project and check the current state:
+If this package is installed through `pi install`, Pi loads the extension automatically. Start Pi in a project and open the sandbox menu:
 
 ```text
-/sandbox status
+/sandbox
 ```
+
+Choose **Inspect… → Status** to check the current state.
 
 Add project-specific policy in `.pi/sandbox.json`:
 
@@ -89,25 +91,32 @@ Allowed hosts are exact names (`api.github.com`) or wildcard subdomains (`*.gith
 
 ## Day-to-day commands
 
-| Command                                     | Effect                                           |
-| ------------------------------------------- | ------------------------------------------------ |
-| `/sandbox`                                  | Show the full policy summary                     |
-| `/sandbox status`                           | Show compact status                              |
-| `/sandbox why <path or host>`               | Explain an allow/block decision                  |
-| `/sandbox allow host <host>`                | Allow a host for this session                    |
-| `/sandbox allow host --persist <host>`      | Add a host to the project config                 |
-| `/sandbox allow host --persist=user <host>` | Add a host to the user config                    |
-| `/sandbox allow read <path>`                | Allow read access to a path for this session     |
-| `/sandbox allow write <path>`               | Allow write access to a path for this session    |
-| `/sandbox revoke host <host>`               | Remove a session host grant                      |
-| `/sandbox revoke host --persist <host>`     | Remove a host from persisted config              |
-| `/sandbox revoke read <path>`               | Remove a session read grant                      |
-| `/sandbox revoke write <path>`              | Remove a session write grant                     |
-| `/sandbox network off`                      | Disable network filtering for this session       |
-| `/sandbox network on`                       | Re-enable network filtering from config          |
-| `/sandbox off`                              | Disable all sandbox enforcement for this session |
-| `/sandbox on`                               | Re-enable sandbox enforcement                    |
-| `/sandbox reload`                           | Re-read config files                             |
+Run `/sandbox` without arguments for the menu-first flow:
+
+- **Inspect…** shows compact status, the policy summary, or explains a path/host decision.
+- **Filesystem…** grants read/write access for this session or revokes a filesystem grant.
+- **Network…** grants/revokes session host access or toggles network filtering.
+- **Session…** disables or re-enables sandbox enforcement for the session.
+- **Reload** re-reads config files.
+
+Escape exits from the top-level menu. Escape or **Back** in a submenu returns to the top-level menu.
+
+Argument-bearing commands remain available when inline args or tab completion are quicker:
+
+| Command                                     | Effect                                        |
+| ------------------------------------------- | --------------------------------------------- |
+| `/sandbox why <path or host>`               | Explain an allow/block decision               |
+| `/sandbox allow host <host> [host…]`        | Allow host(s) for this session                |
+| `/sandbox allow host --persist <host>`      | Add host(s) to the project config             |
+| `/sandbox allow host --persist=user <host>` | Add host(s) to the user config                |
+| `/sandbox allow read <path>`                | Allow read access to a path for this session  |
+| `/sandbox allow write <path>`               | Allow write access to a path for this session |
+| `/sandbox revoke host <host>`               | Remove a session host grant                   |
+| `/sandbox revoke host --persist <host>`     | Remove a host from persisted config           |
+| `/sandbox revoke read <path>`               | Remove a session read grant                   |
+| `/sandbox revoke write <path>`              | Remove a session write grant                  |
+
+Host operations use the resource-qualified grammar: `/sandbox allow host <host>` and `/sandbox revoke host <host>`.
 
 Session changes are temporary. Persisted host changes are written to `.pi/sandbox.json` or `~/.pi/agent/extensions/pi-sandbox/config.json`.
 
