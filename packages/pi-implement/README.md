@@ -19,18 +19,14 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 ## Usage
 
 ```text
+/implement                          # open the interactive action menu
 /implement path/to/plan.md          # pick serial or parallel automatically
 /implement path/to/plan.md --serial # force serial execution
-/build path/to/plan.md              # alias for /implement
-/implement status
-/implement stop
-/implement inspect
-/implement cleanup
-/implement config
-/implement view
 ```
 
-Plan paths must not contain spaces. Use a symlink or rename if needed.
+The interactive menu includes status, stop, inspect, cleanup, config, and active-agent viewing actions.
+
+Plan paths passed directly must not contain spaces. Use the interactive menu, a symlink, or a rename if needed.
 
 ## Execution strategy
 
@@ -86,7 +82,7 @@ Plan checkbox updates are intentionally not part of any commit. Plan files may b
 
 - The current directory must be inside a git repo with a clean worktree, ignoring the source plan artifact and any validated supporting plan artifacts.
 - `pi-implement` uses the bundled first-party `pi-subagents` runtime directly. Installing the root `pi-extensions` bundle registers `pi-subagents` before `pi-implement`, so implementer, reviewer, planner, and self-heal workers run in-process without external installation or RPC setup.
-- Worker status is surfaced through `pi-implement` progress messages, `/implement status`, `/implement inspect`, `/implement view`, and the shared `/agents` dashboard. Internally owned workers are intentionally quiet in the main transcript except for pi-implement's orchestration updates.
+- Worker status is surfaced through `pi-implement` progress messages, the `/implement` action menu, and the shared `/agents` dashboard. Internally owned workers are intentionally quiet in the main transcript except for pi-implement's orchestration updates.
 
 ## Plan format and task scope
 
@@ -94,7 +90,7 @@ The only hard structural requirement is a `## Tasks` section containing top-leve
 
 ### Plan corpus ingestion
 
-The entry plan file and its supporting material form the *plan corpus* that the execution planner reads. The corpus is built by following standard markdown links in the entry file:
+The entry plan file and its supporting material form the _plan corpus_ that the execution planner reads. The corpus is built by following standard markdown links in the entry file:
 
 ```markdown
 ## Context
@@ -181,7 +177,7 @@ Per-task review is reviewer-led and triage-first. Reviewers may approve structur
 
 `verifyCommand` is an optional non-empty shell command. In parallel mode it runs from the repository root during per-task integration and final validation. If omitted, pi-implement auto-detects `test`, `typecheck`, and `build` package scripts (respecting the repo's npm/pnpm/yarn lockfile); if none exist, it falls back to an LLM integration review.
 
-Run `/implement config` to print the resolved configuration and configured role model overrides.
+Open `/implement` and choose **Show config** to print the resolved configuration and configured role model overrides.
 
 ## Verification
 
@@ -191,12 +187,12 @@ The implementer chooses task-appropriate checks and is instructed to err toward 
 
 In a TUI session, pi-implement shows a status footer summarizing the current phase and a widget listing active subagents with their runtime stats (tokens, tool uses, compaction counts). It also streams `pi-implement` progress messages into the session as tasks start, finish, get reviewed, and land. These are pi-implement's own authoritative updates — the host agent stays idle while a run is in flight.
 
-Run `/implement view` to inspect active pi-implement subagents. With one active agent it prints fallback instructions to open the agent via `/agents`; with multiple agents it prompts you to pick by pretty label.
+Open `/implement` and choose **View active agents** to inspect active pi-implement subagents. With one active agent it prints fallback instructions to open the agent via `/agents`; with multiple agents it prompts you to pick by pretty label.
 
 ## Recovery
 
-Use `/implement stop` to halt local orchestration and request that active subagents stop. If a run is blocked or stopped, run `/implement inspect` to locate the run directory and worktrees under `<repo>/.pi/implement/` and see each task's status, fix or revert as needed, return to a clean state (except for intended plan checkbox state), then rerun `/implement <plan.md>`.
+Open `/implement` and choose **Stop run** to halt local orchestration and request that active subagents stop. If a run is blocked or stopped, choose **Inspect artifacts** to locate the run directory and worktrees under `<repo>/.pi/implement/` and see each task's status, fix or revert as needed, return to a clean state (except for intended plan checkbox state), then rerun `/implement <plan.md>`.
 
-Use `/implement cleanup` to remove durable state and worktrees left behind by failed, blocked, or stopped runs. It refuses while a run is active or another session holds a live run lock, and prunes stale locks it can prove are dead. Successful runs are cleaned up automatically.
+Choose **Cleanup artifacts** to remove durable state and worktrees left behind by failed, blocked, or stopped runs. It refuses while a run is active or another session holds a live run lock, and prunes stale locks it can prove are dead. Successful runs are cleaned up automatically.
 
 pi-implement automatically registers `/.pi/implement/` in the repo-local `.git/info/exclude` on startup, so its runtime state never appears as an untracked file in `git status`.

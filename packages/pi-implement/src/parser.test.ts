@@ -10,37 +10,36 @@ describe("parseCommand", () => {
     });
   });
 
-  it("parses status subcommand", () => {
+  it("treats operational words as plan paths", () => {
     expect(parseCommand("status")).toEqual({
-      kind: "subcommand",
+      kind: "execution",
+      mode: { kind: "auto", planPath: "status", forceSerial: false },
+    });
+    expect(parseCommand("cleanup")).toEqual({
+      kind: "execution",
+      mode: { kind: "auto", planPath: "cleanup", forceSerial: false },
+    });
+  });
+
+  it("parses internal menu actions", () => {
+    expect(parseCommand(":status")).toEqual({
+      kind: "control",
       name: "status",
     });
-  });
-
-  it("parses stop subcommand", () => {
-    expect(parseCommand("stop")).toEqual({
-      kind: "subcommand",
+    expect(parseCommand(":stop")).toEqual({
+      kind: "control",
       name: "stop",
     });
-  });
-
-  it("parses cleanup subcommand", () => {
-    expect(parseCommand("cleanup")).toEqual({
-      kind: "subcommand",
+    expect(parseCommand(":cleanup")).toEqual({
+      kind: "control",
       name: "cleanup",
     });
-  });
-
-  it("parses config subcommand", () => {
-    expect(parseCommand("config")).toEqual({
-      kind: "subcommand",
+    expect(parseCommand(":config")).toEqual({
+      kind: "control",
       name: "config",
     });
-  });
-
-  it("parses view subcommand", () => {
-    expect(parseCommand("view")).toEqual({
-      kind: "subcommand",
+    expect(parseCommand(":view")).toEqual({
+      kind: "control",
       name: "view",
     });
   });
@@ -52,9 +51,9 @@ describe("parseCommand", () => {
     });
   });
 
-  it("parses inspect subcommand", () => {
-    expect(parseCommand("inspect")).toEqual({
-      kind: "subcommand",
+  it("parses internal inspect menu action", () => {
+    expect(parseCommand(":inspect")).toEqual({
+      kind: "control",
       name: "inspect",
     });
   });
@@ -92,12 +91,7 @@ describe("parseCommand", () => {
   });
 
   it("includes usage text in error", () => {
+    expect(usage()).toContain("/implement");
     expect(usage()).toContain("/implement <plan.md>");
-    expect(usage()).toContain("status");
-    expect(usage()).toContain("stop");
-    expect(usage()).toContain("cleanup");
-    expect(usage()).toContain("config");
-    expect(usage()).toContain("view");
-    expect(usage()).toContain("inspect");
   });
 });

@@ -52,6 +52,8 @@ type FakeContext = {
     statuses: Array<{ key: string; text: string | undefined }>;
     widgets: Array<{ key: string; lines: string[] | undefined }>;
     notify(message: string, level: string): void;
+    select(title: string, choices: string[]): Promise<string | undefined>;
+    input(title: string, placeholder?: string): Promise<string | undefined>;
     setStatus(key: string, text: string | undefined): void;
     setWidget(key: string, lines: string[] | undefined): void;
     theme: { fg(color: string, text: string): string };
@@ -71,9 +73,8 @@ function setup(events = createEventBus()) {
   };
   registerImplementCommand(pi as never);
   const handler = handlers.implement;
-  const buildHandler = handlers.build;
-  if (!handler || !buildHandler) {
-    throw new Error("handlers not registered");
+  if (!handler) {
+    throw new Error("handler not registered");
   }
   const ctx: FakeContext = {
     cwd: "/repo",
@@ -86,6 +87,12 @@ function setup(events = createEventBus()) {
       widgets: [],
       notify(message: string, level: string) {
         this.notifications.push({ message, level });
+      },
+      async select() {
+        return undefined;
+      },
+      async input() {
+        return undefined;
       },
       setStatus(key: string, text: string | undefined) {
         this.statuses.push({ key, text });
@@ -100,7 +107,7 @@ function setup(events = createEventBus()) {
       },
     },
   };
-  return { handler, buildHandler, ctx };
+  return { handler, ctx };
 }
 
 function createEventBus() {
@@ -126,25 +133,17 @@ function createEventBus() {
 }
 
 describe("/implement command", () => {
-  it("shows usage with no args", async () => {
+  it("shows usage with no args outside TUI", async () => {
     const { handler, ctx } = setup();
+    ctx.mode = "json";
     await handler("", ctx);
     expect(ctx.ui.notifications[0]?.message).toContain("Usage: /implement");
     expect(ctx.ui.notifications[0]?.level).toBe("warning");
   });
 
-  it("registers /build as an alias", async () => {
-    const { buildHandler, ctx } = setup();
-    await buildHandler("status", ctx);
-    expect(ctx.ui.notifications[0]).toEqual({
-      message: "pi-implement: idle",
-      level: "info",
-    });
-  });
-
-  it("reports idle status", async () => {
+  it("reports idle status from the menu action", async () => {
     const { handler, ctx } = setup();
-    await handler("status", ctx);
+    await handler(":status", ctx);
     expect(ctx.ui.notifications[0]).toEqual({
       message: "pi-implement: idle",
       level: "info",
@@ -167,7 +166,7 @@ describe("/implement command", () => {
 
   it("shows view fallback with no active agents", async () => {
     const { handler, ctx } = setup();
-    await handler("view", ctx);
+    await handler(":view", ctx);
     expect(ctx.ui.notifications[0]?.message).toContain(
       "pi-implement view: no active subagents",
     );
@@ -190,7 +189,7 @@ describe("/implement command", () => {
     execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: repo });
 
     const repoCtx: FakeContext = { ...ctx, cwd: repo };
-    await handler("inspect", repoCtx);
+    await handler(":inspect", repoCtx);
     expect(repoCtx.ui.notifications[0]).toEqual({
       message: "pi-implement inspect: no run found.",
       level: "info",
@@ -257,7 +256,7 @@ describe("/implement command", () => {
     execFileSync("git", ["commit", "-q", "-m", "init"], { cwd: repo });
 
     const repoCtx: FakeContext = { ...ctx, cwd: repo };
-    await handler("status", repoCtx);
+    await handler(":status", repoCtx);
 
     expect(canStartImplementRun("followup_required")).toBe(true);
     expect(canStartImplementRun("final_review")).toBe(false);
@@ -316,7 +315,7 @@ describe("/implement command", () => {
     });
 
     const repoCtx: FakeContext = { ...ctx, cwd: repoRoot };
-    await handler("inspect", repoCtx);
+    await handler(":inspect", repoCtx);
 
     const note = repoCtx.ui.notifications.find((n) =>
       n.message.startsWith("Run:"),

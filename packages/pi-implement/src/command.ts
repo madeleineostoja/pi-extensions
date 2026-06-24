@@ -33,7 +33,7 @@ import {
   formatRunStatus,
   formatWidgetLines,
 } from "./status.js";
-import { parseCommand } from "./parser.js";
+import { parseCommand, usage, type ParsedCommand } from "./parser.js";
 import { selectStrategy } from "./strategy.js";
 import { nextUncheckedTask, parsePlanFile } from "./plan.js";
 import {
@@ -179,14 +179,28 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
   const implementCommand = {
     description: "Implement a /plan markdown file one task at a time",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
-      const parsed = parseCommand(args.trim());
+      let parsed: ParsedCommand;
+      const input = args.trim();
+      if (!input) {
+        if (ctx.mode !== "tui") {
+          ctx.ui.notify(usage(), "warning");
+          return;
+        }
+        const selected = await promptImplementAction(ctx, active.state);
+        if (!selected) {
+          return;
+        }
+        parsed = selected;
+      } else {
+        parsed = parseCommand(input);
+      }
 
       if (parsed.kind === "error") {
         ctx.ui.notify(parsed.message, "warning");
         return;
       }
 
-      if (parsed.kind === "subcommand") {
+      if (parsed.kind === "control") {
         if (parsed.name === "status") {
           // If idle but we have a last stopped/failed/blocked state, show it
           const stateToShow =
@@ -199,7 +213,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             stateToShow.phase === "stopped"
           ) {
             ctx.ui.notify(
-              "Use `/implement cleanup` to remove preserved artifacts.",
+              "Open `/implement` and choose Cleanup artifacts to remove preserved artifacts.",
               "info",
             );
           }
@@ -357,7 +371,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         if (parsed.name === "cleanup") {
           if (isActiveImplementPhase(active.state.phase)) {
             ctx.ui.notify(
-              "pi-implement cleanup refused: a run is currently active. Use `/implement stop` first.",
+              "pi-implement cleanup refused: a run is currently active. Open `/implement` and choose Stop run first.",
               "warning",
             );
             return;
@@ -373,7 +387,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
               .map((lock) => lock.reason)
               .join("\n- ");
             ctx.ui.notify(
-              `pi-implement cleanup refused: active run lock(s) found:\n- ${activeLocks}\nUse /implement stop in the owning session first.`,
+              `pi-implement cleanup refused: active run lock(s) found:\n- ${activeLocks}\nOpen /implement and choose Stop run in the owning session first.`,
               "warning",
             );
             return;
@@ -895,10 +909,6 @@ Stay idle until the run ends or the user asks you something directly. Do not res
   };
 
   pi.registerCommand("implement", implementCommand);
-  pi.registerCommand("build", {
-    ...implementCommand,
-    description: "Alias for /implement",
-  });
 }
 
 class TrackingSubagentClient implements SubagentClient {
@@ -962,6 +972,63 @@ function throwIfCommandStopped(
 
 function describeStrategy(maxConcurrency: number): string {
   return `Auto mode selected; effective max concurrency ${maxConcurrency}.`;
+}
+
+async function promptImplementAction(
+  ctx: ExtensionCommandContext,
+  state: RunState,
+): Promise<ParsedCommand | undefined> {
+  const active = isActiveImplementPhase(state.phase);
+  const actions = active
+    ? [
+        "Stop run",
+        "View active agents",
+        "Show status",
+        "Inspect artifacts",
+        "Cancel",
+      ]
+    : [
+        "Implement a plan",
+        "Show status",
+        "Inspect artifacts",
+        "Cleanup artifacts",
+        "Show config",
+        "Cancel",
+      ];
+
+  const choice = await ctx.ui.select("pi-implement", actions);
+  if (!choice || choice === "Cancel") {
+    return undefined;
+  }
+  if (choice === "Implement a plan") {
+    const planPath = await ctx.ui.input("Plan path", "path/to/plan.md");
+    const trimmed = planPath?.trim();
+    return trimmed
+      ? {
+          kind: "execution",
+          mode: { kind: "auto", planPath: trimmed, forceSerial: false },
+        }
+      : undefined;
+  }
+  if (choice === "Stop run") {
+    return { kind: "control", name: "stop" };
+  }
+  if (choice === "View active agents") {
+    return { kind: "control", name: "view" };
+  }
+  if (choice === "Show status") {
+    return { kind: "control", name: "status" };
+  }
+  if (choice === "Inspect artifacts") {
+    return { kind: "control", name: "inspect" };
+  }
+  if (choice === "Cleanup artifacts") {
+    return { kind: "control", name: "cleanup" };
+  }
+  if (choice === "Show config") {
+    return { kind: "control", name: "config" };
+  }
+  return undefined;
 }
 
 function syncStatus(ctx: ExtensionCommandContext, state: RunState): void {
