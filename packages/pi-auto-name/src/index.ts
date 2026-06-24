@@ -4,11 +4,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import {
-  CONFIG_RELATIVE_PATH,
-  resolveConfiguredModel,
-  writeConfig,
-} from "./config.js";
+import { CONFIG_RELATIVE_PATH, resolveConfiguredModel } from "./config.js";
 import { completeText } from "@pi-extensions/lib";
 import { buildTitlePrompt, parseModelRef, sanitizeTitle } from "./utils.js";
 
@@ -31,44 +27,6 @@ export default function (pi: ExtensionAPI) {
     titlePromptsThisSession.length = 0;
     warnedThisSession = false;
     attemptedThisSession = false;
-  });
-
-  pi.registerCommand("auto-name", {
-    description: "Set the pi-auto-name model",
-    handler: async (args, ctx) => {
-      const modelRef = args.trim();
-      if (!modelRef) {
-        const current = resolveConfiguredModel(getAgentDir());
-        ctx.ui.notify(
-          current
-            ? `pi-auto-name model: ${current}`
-            : `usage: /auto-name provider/model-id`,
-          "info",
-        );
-        return;
-      }
-      if (/\s/.test(modelRef)) {
-        ctx.ui.notify("usage: /auto-name provider/model-id", "warning");
-        return;
-      }
-
-      const parsed = parseModelRef(modelRef);
-      if (!parsed) {
-        ctx.ui.notify(`Invalid model reference: ${modelRef}`, "warning");
-        return;
-      }
-
-      const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
-      if (!model) {
-        ctx.ui.notify(`Model not found: ${modelRef}`, "warning");
-        return;
-      }
-
-      writeConfig(getAgentDir(), { model: modelRef });
-      warnedThisSession = false;
-      attemptedThisSession = false;
-      ctx.ui.notify(`pi-auto-name model set: ${modelRef}`, "info");
-    },
   });
 
   pi.on("before_agent_start", async (event, ctx) => {

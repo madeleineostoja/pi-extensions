@@ -10,21 +10,15 @@ Automatic naming happens on the first non-empty agent prompt in an unnamed sessi
 
 No model is configured by default. Without a configured model, pi-auto-name falls back to a local title derived from the prompt.
 
-Set the model with the slash command:
-
-```text
-/auto-name openai/gpt-4.1-nano
-```
-
-Model refs use `provider/model-id` format and are persisted to the global user config at `<agent-dir>/extensions/pi-auto-name/config.json`. For best latency and cost, choose a cheap non-reasoning model when available.
-
-You can also edit the config file directly:
+Configure the model by editing the global user config at `<agent-dir>/extensions/pi-auto-name/config.json`:
 
 ```json
 {
   "model": "openai/gpt-4.1-nano"
 }
 ```
+
+Model refs use `provider/model-id` format. For best latency and cost, choose a cheap non-reasoning model when available.
 
 ## Behavior
 

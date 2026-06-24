@@ -4,11 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   ExtensionAPI,
-  ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import registerExtension from "./index.js";
-import { readConfig, writeConfig } from "./config.js";
+import { writeConfig } from "./config.js";
 
 const getAgentDirMock = vi.hoisted(() => vi.fn());
 const completeTextMock = vi.hoisted(() => vi.fn());
@@ -35,10 +34,6 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 });
 
 function makeFakePi() {
-  const commands: Record<
-    string,
-    (args: string, ctx: ExtensionCommandContext) => Promise<void>
-  > = {};
   const handlers = new Map<
     string,
     ((event: unknown, ctx: ExtensionContext) => unknown)[]
@@ -55,36 +50,12 @@ function makeFakePi() {
     ) => {
       handlers.set(event, [...(handlers.get(event) || []), handler]);
     },
-    registerCommand: (
-      name: string,
-      options: {
-        handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
-      },
-    ) => {
-      commands[name] = options.handler;
-    },
     getSessionName: () => sessionName,
     setSessionName,
   } as unknown as ExtensionAPI;
 
   registerExtension(pi);
-  return { commands, handlers, setSessionName };
-}
-
-function makeCommandCtx(options: { modelFound: boolean }) {
-  const notifications: { message: string; type?: "info" | "warning" }[] = [];
-  const ctx = {
-    ui: {
-      notify: (message: string, type?: "info" | "warning") => {
-        notifications.push({ message, type });
-      },
-    },
-    modelRegistry: {
-      find: () => (options.modelFound ? {} : undefined),
-    },
-  } as unknown as ExtensionCommandContext;
-
-  return { ctx, notifications };
+  return { handlers, setSessionName };
 }
 
 function makeExtensionCtx(options?: {
@@ -137,52 +108,6 @@ async function flushPromises() {
   await Promise.resolve();
   await Promise.resolve();
 }
-
-describe("auto-name command", () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "pi-auto-name-"));
-    getAgentDirMock.mockReturnValue(tmpDir);
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-    vi.clearAllMocks();
-  });
-
-  it("persists the configured model to global user config", async () => {
-    const { commands } = makeFakePi();
-    const { ctx, notifications } = makeCommandCtx({ modelFound: true });
-
-    await commands["auto-name"]("openrouter/openai/gpt-oss-20b", ctx);
-
-    expect(readConfig(tmpDir)).toEqual({
-      model: "openrouter/openai/gpt-oss-20b",
-    });
-    expect(notifications).toEqual([
-      {
-        message: "pi-auto-name model set: openrouter/openai/gpt-oss-20b",
-        type: "info",
-      },
-    ]);
-  });
-
-  it("does not persist an unknown model", async () => {
-    const { commands } = makeFakePi();
-    const { ctx, notifications } = makeCommandCtx({ modelFound: false });
-
-    await commands["auto-name"]("openrouter/openai/gpt-oss-20b", ctx);
-
-    expect(readConfig(tmpDir)).toEqual({});
-    expect(notifications).toEqual([
-      {
-        message: "Model not found: openrouter/openai/gpt-oss-20b",
-        type: "warning",
-      },
-    ]);
-  });
-});
 
 describe("automatic session naming", () => {
   let tmpDir: string;

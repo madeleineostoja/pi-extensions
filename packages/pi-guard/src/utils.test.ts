@@ -1,22 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseGuardArgs, formatBlockReason } from "./utils";
-
-describe("parseGuardArgs", () => {
-  it("parses toggle, explicit modes, and aliases", () => {
-    expect(parseGuardArgs("")).toEqual({ kind: "toggle" });
-    expect(parseGuardArgs("   ")).toEqual({ kind: "toggle" });
-    expect(parseGuardArgs("on")).toEqual({ kind: "set", value: true });
-    expect(parseGuardArgs("OFF")).toEqual({ kind: "set", value: false });
-    expect(parseGuardArgs("enable")).toEqual({ kind: "set", value: true });
-    expect(parseGuardArgs("disable")).toEqual({ kind: "set", value: false });
-  });
-
-  it("rejects unknown or multi-token arguments", () => {
-    expect(parseGuardArgs("garbage")).toEqual({ kind: "invalid" });
-    expect(parseGuardArgs("on off")).toEqual({ kind: "invalid" });
-    expect(parseGuardArgs("toString")).toEqual({ kind: "invalid" });
-  });
-});
+import { formatBlockReason } from "./utils";
 
 describe("formatBlockReason", () => {
   it("uses the generic blocked reason when no feedback is provided", () => {

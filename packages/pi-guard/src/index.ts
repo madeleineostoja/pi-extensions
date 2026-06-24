@@ -1,19 +1,14 @@
 import type {
   ExtensionAPI,
-  ExtensionContext,
   MessageRenderer,
   ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 import { promptForPermission } from "@pi-extensions/lib";
-import { parseGuardArgs } from "./utils";
 import { decideToolCall, resolveChoice } from "./handler";
 import { assessBashCommand } from "./assessors";
 import { extractPendingCreations, commitPendingCreations } from "./session";
 
-const FOOTER_KEY = "pi-guard.mode";
 const MESSAGE_TYPE = "pi-guard.status";
-const GUARD_ICON = "󰌾";
-const GUARD_OFF_ICON = "󰌿";
 
 type StatusDetails = {
   message: string;
@@ -59,33 +54,7 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  function syncFooter(ctx: ExtensionContext) {
-    if (ctx.mode !== "tui") {
-      return;
-    }
-    const theme = ctx.ui.theme;
-    if (guardEnabled) {
-      ctx.ui.setStatus(
-        FOOTER_KEY,
-        `${theme.fg("success", GUARD_ICON)} ${theme.fg("muted", "guard")}`,
-      );
-    } else {
-      ctx.ui.setStatus(
-        FOOTER_KEY,
-        `${theme.fg("warning", GUARD_OFF_ICON)} ${theme.fg("warning", "guard off")}`,
-      );
-    }
-  }
-
   pi.registerMessageRenderer(MESSAGE_TYPE, renderStatusMessage);
-
-  pi.registerShortcut("ctrl+g", {
-    description: "Toggle guard mode",
-    handler: async (ctx) => {
-      applyMode(!guardEnabled);
-      syncFooter(ctx);
-    },
-  });
 
   pi.on("session_start", async (event, ctx) => {
     const FRESH_START_REASONS = new Set<typeof event.reason>([
@@ -104,32 +73,6 @@ export default function (pi: ExtensionAPI) {
       applyMode(false);
       notifyNonInteractive();
     }
-    syncFooter(ctx);
-  });
-
-  pi.registerCommand("guard", {
-    description: "Toggle guard mode",
-    handler: async (args, ctx) => {
-      const action = parseGuardArgs(args);
-      if (action.kind === "invalid") {
-        ctx.ui.notify("unknown: /guard [on|off]", "warning");
-        return;
-      }
-      if (action.kind === "toggle") {
-        applyMode(!guardEnabled);
-      } else if (action.kind === "set") {
-        if (action.value === guardEnabled) {
-          ctx.ui.notify(
-            `guard mode: already ${guardEnabled ? "on" : "off"}`,
-            "info",
-          );
-          return;
-        }
-        applyMode(action.value);
-      }
-      syncFooter(ctx);
-      ctx.ui.notify(`guard mode: ${guardEnabled ? "on" : "off"}`, "info");
-    },
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -153,7 +96,6 @@ export default function (pi: ExtensionAPI) {
 
     if (decision === "auto-disable") {
       applyMode(false);
-      syncFooter(ctx);
       notifyNonInteractive();
       return undefined;
     }
@@ -208,7 +150,6 @@ export default function (pi: ExtensionAPI) {
       sessionAllowKeys.add(action.allowKey);
     } else if (result.sideEffect === "disableGuard") {
       applyMode(false);
-      syncFooter(ctx);
     }
 
     return result.block ? { block: true, reason: result.reason } : undefined;

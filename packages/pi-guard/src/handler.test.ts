@@ -115,8 +115,6 @@ describe("resolveChoice", () => {
 });
 
 type AnyHandler = (event: never, ctx: ExtensionContext) => Promise<unknown>;
-type CommandHandler = (args: string, ctx: ExtensionContext) => Promise<void>;
-type ShortcutHandler = (ctx: ExtensionContext) => Promise<void>;
 type CustomMessageInput = Parameters<ExtensionAPI["sendMessage"]>[0];
 
 function captureHandlers() {
@@ -335,175 +333,14 @@ function makeInteractiveCtx(): ExtensionContext & {
   };
 }
 
-const FOOTER_KEY = "pi-guard.mode";
-
 describe("session_start reason handling", () => {
-  it('reason "startup" enables guard and sets footer', async () => {
+  it('reason "startup" enables guard without footer status', async () => {
     const { sessionStartHandler } = captureHandlers();
     const ctx = makeInteractiveCtx();
 
     await sessionStartHandler(makeSessionStartEvent("startup") as never, ctx);
 
-    const lastStatus = ctx.statusCalls.at(-1);
-    expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("guard");
-    expect(ctx.themeCalls).toContainEqual({ color: "success", text: "󰌾" });
-    expect(ctx.themeCalls).toContainEqual({ color: "muted", text: "guard" });
-  });
-});
-
-function captureCommandAndShortcutHandlers() {
-  let commandHandler: CommandHandler | undefined;
-  let shortcutHandler: ShortcutHandler | undefined;
-
-  const pi = {
-    on: () => {},
-    registerShortcut(name: string, opts: { handler: ShortcutHandler }) {
-      if (name === "ctrl+g") {
-        shortcutHandler = opts.handler;
-      }
-    },
-    registerCommand(name: string, opts: { handler: CommandHandler }) {
-      if (name === "guard") {
-        commandHandler = opts.handler;
-      }
-    },
-    registerTool: () => {},
-    registerFlag: () => {},
-    getFlag: () => undefined,
-    registerMessageRenderer: () => {},
-    sendMessage: () => {},
-    sendUserMessage: () => {},
-    appendEntry: () => {},
-    setSessionName: () => {},
-    getSessionName: () => undefined,
-    setLabel: () => {},
-    getActiveTools: () => [],
-    getAllTools: () => [],
-    setActiveTools: () => {},
-    getCommands: () => [],
-    setModel: () => Promise.resolve(false),
-    getThinkingLevel: () => 0 as never,
-    setThinkingLevel: () => {},
-    exec: () =>
-      Promise.resolve({ code: 0, stdout: "", stderr: "", killed: false }),
-    registerProvider: () => {},
-    unregisterProvider: () => {},
-    events: {} as never,
-  } as unknown as ExtensionAPI;
-
-  registerExtension(pi);
-
-  if (!commandHandler) {
-    throw new Error("guard command handler was not registered");
-  }
-  if (!shortcutHandler) {
-    throw new Error("ctrl+g shortcut handler was not registered");
-  }
-  return { commandHandler, shortcutHandler };
-}
-
-function makeNotifyCapturingCtx(): ExtensionContext & {
-  notifyCalls: Array<{ message: string; level: string }>;
-} {
-  const notifyCalls: Array<{ message: string; level: string }> = [];
-  return {
-    mode: "tui",
-    signal: undefined,
-    ui: {
-      select: () => Promise.resolve("Allow once"),
-      input: () => Promise.resolve(undefined),
-      setStatus: () => {},
-      notify: (message: string, level?: "info" | "warning" | "error") => {
-        notifyCalls.push({ message, level: level ?? "info" });
-      },
-      confirm: () => Promise.resolve(false),
-      onTerminalInput: () => () => {},
-      setWorkingMessage: () => {},
-      setWorkingVisible: () => {},
-      setWorkingIndicator: () => {},
-      setHiddenThinkingLabel: () => {},
-      setWidget: () => {},
-      setFooter: () => {},
-      setHeader: () => {},
-      setTitle: () => {},
-      custom: () => Promise.resolve(undefined as never),
-      pasteToEditor: () => {},
-      setEditorText: () => {},
-      getEditorText: () => "",
-      editor: () => Promise.resolve(undefined),
-      addAutocompleteProvider: () => {},
-      setEditorComponent: () => {},
-      getEditorComponent: () => undefined,
-      get theme() {
-        return makeDummyTheme() as never;
-      },
-      getAllThemes: () => [],
-      getTheme: () => undefined,
-      setTheme: () => ({ success: true }),
-      getToolsExpanded: () => false,
-      setToolsExpanded: () => {},
-    },
-    cwd: "/",
-    sessionManager: {} as never,
-    modelRegistry: {} as never,
-    model: undefined,
-    isIdle: () => true,
-    abort: () => {},
-    hasPendingMessages: () => false,
-    shutdown: () => {},
-    getContextUsage: () => undefined,
-    compact: () => {},
-    getSystemPrompt: () => "",
-    notifyCalls,
-  } as unknown as ExtensionContext & {
-    notifyCalls: Array<{ message: string; level: string }>;
-  };
-}
-
-describe("/guard command notifications", () => {
-  it("/guard (toggle) emits a notification with the new state", async () => {
-    const { commandHandler } = captureCommandAndShortcutHandlers();
-    const ctx = makeNotifyCapturingCtx();
-
-    await commandHandler("", ctx);
-
-    expect(ctx.notifyCalls).toHaveLength(1);
-    expect(ctx.notifyCalls[0].message).toBe("guard mode: off");
-  });
-
-  it("/guard on after /guard off emits action notification", async () => {
-    const { commandHandler } = captureCommandAndShortcutHandlers();
-    const ctx = makeNotifyCapturingCtx();
-
-    await commandHandler("off", ctx);
-    await commandHandler("on", ctx);
-
-    expect(ctx.notifyCalls.at(-1)?.message).toBe("guard mode: on");
-  });
-
-  it("invalid arg notifies with usage", async () => {
-    const { commandHandler } = captureCommandAndShortcutHandlers();
-    const ctx = makeNotifyCapturingCtx();
-
-    await commandHandler("invalid", ctx);
-
-    expect(ctx.notifyCalls).toHaveLength(1);
-    expect(ctx.notifyCalls[0].message).toBe("unknown: /guard [on|off]");
-    expect(ctx.notifyCalls[0].level).toBe("warning");
-  });
-});
-
-describe("ctrl+g shortcut", () => {
-  it("shortcut toggles guard and updates footer", async () => {
-    const { shortcutHandler } = captureCommandAndShortcutHandlers();
-    const ctx = makeInteractiveCtx();
-
-    await shortcutHandler(ctx);
-
-    const lastStatus = ctx.statusCalls.at(-1);
-    expect(lastStatus?.key).toBe(FOOTER_KEY);
-    expect(lastStatus?.value).toContain("guard off");
+    expect(ctx.statusCalls).toHaveLength(0);
   });
 });
 
@@ -653,7 +490,7 @@ describe("tool_call modal choice handling", () => {
     );
     expect(result1).toBeUndefined();
     expect(ctx.selectCalls).toHaveLength(1);
-    expect(ctx.statusCalls.at(-1)?.value).toContain("guard off");
+    expect(ctx.statusCalls).toHaveLength(0);
 
     const result2 = await toolCallHandler(
       makeBashEvent("rm file.txt") as never,

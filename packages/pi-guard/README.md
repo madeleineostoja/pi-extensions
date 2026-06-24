@@ -6,7 +6,7 @@ pi-guard intercepts built-in `bash` tool calls that can delete, discard, overwri
 
 ## Usage
 
-**Guard is on by default in interactive sessions.** Each fresh session starts with it enabled; the footer shows `guard` while it is active.
+**Guard is on by default in interactive sessions.** Each fresh session starts with it enabled and prompts only when a risky shell command is detected.
 
 **When the agent proposes a risky shell command**, a modal appears showing the detected risk:
 
@@ -23,18 +23,6 @@ File removal: src/old.ts
 - **Allow similar this session** — runs the command and suppresses future prompts for the same risk category.
 - **Allow all this session** — runs the command and disables guard for the rest of the session.
 - **Block** (or press Escape/cancel) — blocks the command. If you provide feedback, the agent receives it; if you dismiss without feedback, the agent is told not to retry blindly.
-
-**Slash command**
-
-| Command      | Effect              |
-| ------------ | ------------------- |
-| `/guard`     | Toggle guard on/off |
-| `/guard on`  | Enable              |
-| `/guard off` | Disable             |
-
-Current state is always visible in the footer (`guard` or `guard off`).
-
-**Keyboard shortcut** — `Ctrl+G` toggles guard mode.
 
 ## Guarded categories
 
