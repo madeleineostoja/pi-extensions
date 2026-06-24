@@ -1,10 +1,9 @@
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { completeSimple as defaultCompleteSimple } from "@earendil-works/pi-ai/compat";
 import type {
   Api,
   AssistantMessage,
   Context,
   Model,
-  Models,
   SimpleStreamOptions,
   StopReason,
 } from "@earendil-works/pi-ai";
@@ -15,9 +14,7 @@ type CompleteSimple = (
   options?: SimpleStreamOptions,
 ) => Promise<AssistantMessage>;
 
-export type CompleteTextDeps =
-  | { models?: Models; completeSimple?: never }
-  | { completeSimple?: CompleteSimple; models?: never };
+export type CompleteTextDeps = { completeSimple?: CompleteSimple };
 
 export type CompleteTextResult =
   | { ok: true; text: string; stopReason: StopReason }
@@ -28,8 +25,6 @@ export type CompleteTextResult =
       text?: string;
     };
 
-let cachedModels: Models | undefined;
-
 export async function completeText(
   model: Model<Api>,
   context: Context,
@@ -37,9 +32,11 @@ export async function completeText(
   deps?: CompleteTextDeps,
 ): Promise<CompleteTextResult> {
   try {
-    const response = deps?.completeSimple
-      ? await deps.completeSimple(model, context, options)
-      : await getModels(deps).completeSimple(model, context, options);
+    const response = await (deps?.completeSimple ?? defaultCompleteSimple)(
+      model,
+      context,
+      options,
+    );
     return completionResult(response);
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
@@ -51,14 +48,6 @@ export async function completeText(
       message: err instanceof Error ? err.message : String(err),
     };
   }
-}
-
-function getModels(deps?: CompleteTextDeps): Models {
-  if (deps?.models) {
-    return deps.models;
-  }
-  cachedModels ??= builtinModels();
-  return cachedModels;
 }
 
 function completionResult(response: AssistantMessage): CompleteTextResult {
