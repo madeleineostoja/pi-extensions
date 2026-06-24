@@ -30,7 +30,7 @@ import type {
   ExtensionContext,
   ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
-import { sandboxExtension } from "../index.js";
+import { BLOCK_REASON, sandboxExtension } from "../index.js";
 
 // ---------------------------------------------------------------------------
 // Mock factories
@@ -82,8 +82,9 @@ function makeCtx(
 ): ExtensionContext {
   const setStatusFn = vi.fn();
   const notifyFn = vi.fn();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-sandbox-ctx-"));
   return {
-    cwd: "/tmp/test-cwd",
+    cwd,
     mode: "rpc",
     ui: {
       notify: notifyFn,
@@ -176,6 +177,24 @@ async function fireToolCall(
     throw new Error("no tool_call handler registered");
   }
   return handler(event, ctx);
+}
+
+function startSandbox(overrides: Partial<Record<string, unknown>> = {}): {
+  pi: ExtensionAPI;
+  ctx: ExtensionContext;
+} {
+  const pi = makePi();
+  const ctx = makeCtx(overrides);
+  ctx.cwd = fs.realpathSync(ctx.cwd);
+  fs.mkdirSync(path.join(ctx.cwd, ".pi"), { recursive: true });
+  fs.writeFileSync(
+    path.join(ctx.cwd, ".pi", "sandbox.json"),
+    JSON.stringify({ audit: { log: false } }),
+    "utf8",
+  );
+  sandboxExtension(pi);
+  fireSessionStart(pi, ctx);
+  return { pi, ctx };
 }
 
 // ---------------------------------------------------------------------------
@@ -486,5 +505,211 @@ describe("sandboxExtension — policy load failure", () => {
       (args) => args[0] === "tool_call",
     );
     expect(toolCallRegistrations.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("sandboxExtension — FS prompt-on-deny", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("passes the session abort signal to the FS prompt", async () => {
+    const controller = new AbortController();
+    const { pi, ctx } = startSandbox({
+      mode: "tui",
+      signal: controller.signal,
+    });
+    const blockedPath = path.join(os.homedir(), ".pi-sandbox-signal.txt");
+    (ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      "Allow this path once",
+    );
+
+    await fireToolCall(
+      pi,
+      ctx,
+      makeToolCallEvent("read", { path: blockedPath }),
+    );
+
+    expect(ctx.ui.select).toHaveBeenCalledWith(
+      expect.stringContaining("Sandbox blocked read access"),
+      expect.any(Array),
+      { signal: controller.signal },
+    );
+  });
+
+  it("allows a TUI read once without mutating session grants or emitting policy-change audit", async () => {
+    const { pi, ctx } = startSandbox({ mode: "tui" });
+    const blockedPath = path.join(os.homedir(), ".pi-sandbox-once.txt");
+    (ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      "Allow this path once",
+    );
+
+    const result = await fireToolCall(
+      pi,
+      ctx,
+      makeToolCallEvent("read", { path: blockedPath }),
+    );
+
+    expect(result).toBeUndefined();
+    expect(ctx.ui.select).toHaveBeenCalledTimes(1);
+    const auditEvents = (pi.events.emit as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([event]) => event === "sandbox:audit")
+      .map(([, payload]) => payload as { kind: string; scope?: string });
+    expect(auditEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "fs",
+          decision: "allowed",
+          source: "prompt",
+          scope: "once",
+        }),
+      ]),
+    );
+    expect(auditEvents).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "policy-change" }),
+      ]),
+    );
+
+    const registerCalls = (pi.registerCommand as ReturnType<typeof vi.fn>).mock
+      .calls as unknown[][];
+    const sandboxCommand = registerCalls.find((args) => args[0] === "sandbox");
+    expect(sandboxCommand).toBeDefined();
+    const cmdHandler = (
+      sandboxCommand![1] as {
+        handler: (args: string, ctx: ExtensionContext) => Promise<void>;
+      }
+    ).handler;
+    await cmdHandler("summary", ctx);
+    const summary = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls
+      .map(([message]) => String(message))
+      .find((message) => message.includes("Sandbox Policy Summary"));
+    expect(summary).toContain("Session reads:   (none)");
+    expect(summary).toContain("Session writes:  (none)");
+  });
+
+  it("session read grants suppress a later prompt for the same path", async () => {
+    const { pi, ctx } = startSandbox({ mode: "tui" });
+    const blockedPath = path.join(os.homedir(), ".pi-sandbox-session.txt");
+    (ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      "Allow this path for this session",
+    );
+
+    await expect(
+      fireToolCall(pi, ctx, makeToolCallEvent("read", { path: blockedPath })),
+    ).resolves.toBeUndefined();
+    await expect(
+      fireToolCall(pi, ctx, makeToolCallEvent("read", { path: blockedPath })),
+    ).resolves.toBeUndefined();
+
+    expect(ctx.ui.select).toHaveBeenCalledTimes(1);
+    expect(pi.events.emit).toHaveBeenCalledWith(
+      "sandbox:audit",
+      expect.objectContaining({
+        kind: "policy-change",
+        decision: "granted",
+        scope: "session",
+        source: "prompt",
+      }),
+    );
+  });
+
+  it("parent-directory grants allow later reads beneath that directory without re-prompting", async () => {
+    const { pi, ctx } = startSandbox({ mode: "tui" });
+    const dir = fs.mkdtempSync(path.join(os.homedir(), ".pi-sandbox-parent-"));
+    const firstPath = path.join(dir, "first.txt");
+    const secondPath = path.join(dir, "second.txt");
+    fs.writeFileSync(firstPath, "");
+    fs.writeFileSync(secondPath, "");
+    (ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      `Allow parent directory this session (${fs.realpathSync(dir)})`,
+    );
+
+    await expect(
+      fireToolCall(pi, ctx, makeToolCallEvent("read", { path: firstPath })),
+    ).resolves.toBeUndefined();
+    await expect(
+      fireToolCall(pi, ctx, makeToolCallEvent("read", { path: secondPath })),
+    ).resolves.toBeUndefined();
+
+    expect(ctx.ui.select).toHaveBeenCalledTimes(1);
+    expect(pi.events.emit).toHaveBeenCalledWith(
+      "sandbox:audit",
+      expect.objectContaining({
+        kind: "policy-change",
+        scope: "parent-session",
+        path: fs.realpathSync(dir),
+      }),
+    );
+  });
+
+  it("does not prompt for denyPattern matches", async () => {
+    const { pi, ctx } = startSandbox({ mode: "tui" });
+    const envDir = path.join(fs.realpathSync(ctx.cwd), "nested");
+    fs.mkdirSync(envDir, { recursive: true });
+    const envPath = path.join(envDir, ".env");
+    fs.writeFileSync(envPath, "SECRET=1");
+
+    const registerCalls = (pi.registerCommand as ReturnType<typeof vi.fn>).mock
+      .calls as unknown[][];
+    const sandboxCommand = registerCalls.find((args) => args[0] === "sandbox");
+    expect(sandboxCommand).toBeDefined();
+    const cmdHandler = (
+      sandboxCommand![1] as {
+        handler: (args: string, ctx: ExtensionContext) => Promise<void>;
+      }
+    ).handler;
+    await cmdHandler(`allow read ${envPath}`, ctx);
+    await cmdHandler("reload", ctx);
+
+    await expect(
+      fireToolCall(pi, ctx, makeToolCallEvent("read", { path: envPath })),
+    ).resolves.toEqual({ block: true, reason: BLOCK_REASON });
+
+    expect(ctx.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("fails closed without prompting for non-TUI allowlist misses", async () => {
+    const { pi, ctx } = startSandbox({ mode: "rpc" });
+    const blockedPath = path.join(os.homedir(), ".pi-sandbox-rpc.txt");
+
+    await expect(
+      fireToolCall(pi, ctx, makeToolCallEvent("read", { path: blockedPath })),
+    ).resolves.toEqual({ block: true, reason: BLOCK_REASON });
+
+    expect(ctx.ui.select).not.toHaveBeenCalled();
+  });
+
+  it("edit session grants cover both required read and write access", async () => {
+    const { pi, ctx } = startSandbox({ mode: "tui" });
+    const editPath = path.join(os.homedir(), ".pi-sandbox-edit.txt");
+    (ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+      "Allow this path for this session",
+    );
+
+    await expect(
+      fireToolCall(pi, ctx, makeToolCallEvent("edit", { path: editPath })),
+    ).resolves.toBeUndefined();
+    await expect(
+      fireToolCall(pi, ctx, makeToolCallEvent("edit", { path: editPath })),
+    ).resolves.toBeUndefined();
+
+    expect(ctx.ui.select).toHaveBeenCalledTimes(1);
+    expect(pi.events.emit).toHaveBeenCalledWith(
+      "sandbox:audit",
+      expect.objectContaining({
+        kind: "policy-change",
+        rule: "fs.allowRead",
+        path: editPath,
+      }),
+    );
+    expect(pi.events.emit).toHaveBeenCalledWith(
+      "sandbox:audit",
+      expect.objectContaining({
+        kind: "policy-change",
+        rule: "fs.allowWrite",
+        path: editPath,
+      }),
+    );
   });
 });

@@ -233,6 +233,7 @@ function sandboxExtension(pi: ExtensionAPI): void {
         const parentPath = path.dirname(grantPath);
         const promptResult = await promptForPermission({
           ui: ctx.ui,
+          signal: ctx.signal,
           title: `Sandbox blocked ${result.toolName} access`,
           detail: `${result.toolName} requested ${grantPath}`,
           choices: [
