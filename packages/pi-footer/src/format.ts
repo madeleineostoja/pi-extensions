@@ -184,12 +184,23 @@ export function hasAnsi(text: string): boolean {
   return text.includes("\x1b");
 }
 
+const STATUS_ORDER = new Map([
+  ["pi-implement.status", 0],
+  ["pi-readonly.mode", 1],
+  ["sandbox", 2],
+  ["pi-usage", 3],
+]);
+
 export function buildStatusLine(
   statuses: ReadonlyMap<string, string>,
   theme: Theme,
 ): string {
   const sorted = Array.from(statuses.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => {
+      const aOrder = STATUS_ORDER.get(a) ?? Number.MAX_SAFE_INTEGER;
+      const bOrder = STATUS_ORDER.get(b) ?? Number.MAX_SAFE_INTEGER;
+      return aOrder === bOrder ? a.localeCompare(b) : aOrder - bOrder;
+    })
     .map(([, text]) => {
       const sanitized = sanitizeStatusText(text);
       return hasAnsi(sanitized) ? sanitized : theme.fg("muted", sanitized);

@@ -213,15 +213,31 @@ describe("status line sanitization", () => {
     });
   });
 
-  it("sorts statuses by key", () => {
+  it("prioritizes common extension statuses before sorting unknown keys", () => {
     const result = buildStatusLine(
       new Map([
         ["z", "z-status"],
+        ["pi-usage", "usage-status"],
+        ["sandbox", "sandbox-status"],
+        ["pi-implement.status", "implement-status"],
         ["a", "a-status"],
+        ["pi-readonly.mode", "readonly-status"],
       ]),
       makePlainTheme(),
     );
 
+    expect(result.indexOf("implement-status")).toBeLessThan(
+      result.indexOf("readonly-status"),
+    );
+    expect(result.indexOf("readonly-status")).toBeLessThan(
+      result.indexOf("sandbox-status"),
+    );
+    expect(result.indexOf("sandbox-status")).toBeLessThan(
+      result.indexOf("usage-status"),
+    );
+    expect(result.indexOf("usage-status")).toBeLessThan(
+      result.indexOf("a-status"),
+    );
     expect(result.indexOf("a-status")).toBeLessThan(result.indexOf("z-status"));
   });
 });
