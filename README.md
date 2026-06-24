@@ -14,8 +14,8 @@ Personal extensions for the [Pi](https://github.com/earendil-works/pi) agent har
 | [pi-defaults](packages/pi-defaults)           | Keep `settings.json` model/provider and thinking defaults stable across sessions.                 |
 | [pi-footer](packages/pi-footer)               | Replace the built-in footer with a compact status bar for cwd, git, model, cost, and context.     |
 | [pi-guard](packages/pi-guard)                 | Ask before running risky destructive shell commands.                                              |
-| [pi-implement](packages/pi-implement)         | Run `/implement` on a markdown plan checklist, reviewing and committing one task at a time.        |
-| [pi-model-handoff](packages/pi-model-handoff) | Prompt to compact context when downshifting from a frontier model to a cheaper model.             |
+| [pi-implement](packages/pi-implement)         | Run `/implement` on a markdown plan checklist, reviewing and committing one task at a time.       |
+| [pi-model-handoff](packages/pi-model-handoff) | Prompt to compact context when handing an active session from one model to another.               |
 | [pi-subagents](packages/pi-subagents)         | Run foreground or background General, Explore, and Review agents inside the current Pi session.   |
 | [pi-readonly](packages/pi-readonly)           | Ask before built-in `edit` and `write` tool calls apply changes.                                  |
 | [pi-sandbox](packages/pi-sandbox)             | Limit file, subprocess, and network access with policy gates and `nono` sandboxing.               |

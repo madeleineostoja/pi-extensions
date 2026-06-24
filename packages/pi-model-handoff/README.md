@@ -1,6 +1,6 @@
 # pi-model-handoff
 
-Pi extension that shows an informational context-size notice when switching models and provides an explicit `/handoff` command to compact the already-incurred context.
+Pi extension that shows an informational context-size notice when switching models and provides an explicit `/handoff` command to compact the already-incurred context for model-to-model continuation.
 
 ## How it works
 
@@ -21,14 +21,14 @@ If there is nothing to summarize, or the switch is a restore, same-model change,
 After switching, you can run `/handoff` at any time to compact the conversation history. The command:
 
 1. Reads the **last assistant message** in the transcript.
-2. If that message was produced by a model different from the current one, uses that model to write an implementation-focused summary (reusing Pi's native compaction system).
+2. If that message was produced by a model different from the current one, uses that model to write a continuation-focused handoff summary (reusing Pi's native compaction system).
 3. Leaves the current model selected.
 
 If the last assistant message is from the current model, or there is no prior assistant message, or the previous model is no longer registered, `/handoff` fails with an error notification and makes no state change.
 
 ## Reusing Pi's compaction
 
-The extension does not implement its own summarization. It reuses Pi's native compaction path with the same `HANDOFF_INSTRUCTIONS` prompt that preserves goals, decisions, file paths, symbols, and next steps. Pi continues to own cut-point selection, recent-context retention, progress display, cancellation, and queued-input behaviour.
+The extension does not implement its own summarization. It reuses Pi's native compaction path with the same `HANDOFF_INSTRUCTIONS` prompt that preserves goals, decisions, file paths, symbols, blockers, open questions, and remaining work without assuming a fixed next-step plan. Pi continues to own cut-point selection, recent-context retention, progress display, cancellation, and queued-input behaviour.
 
 ## Limitations
 

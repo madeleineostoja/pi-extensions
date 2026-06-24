@@ -60,7 +60,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("handoff", {
-    description: "Compact the incurred context using the previous model",
+    description: "Compact the current context using the previous model",
     handler: async (_args, ctx) => {
       const branch = ctx.sessionManager.getBranch();
       let lastAssistant: { provider: string; model: string } | undefined;

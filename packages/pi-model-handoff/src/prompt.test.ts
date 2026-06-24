@@ -38,10 +38,11 @@ function makeEstimate(
 }
 
 describe("HANDOFF_INSTRUCTIONS", () => {
-  it("contains implementation-focused guidance", () => {
+  it("contains continuation-focused guidance", () => {
     expect(HANDOFF_INSTRUCTIONS).toContain("goal");
     expect(HANDOFF_INSTRUCTIONS).toContain("file paths");
-    expect(HANDOFF_INSTRUCTIONS).toContain("next steps");
+    expect(HANDOFF_INSTRUCTIONS).toContain("open questions");
+    expect(HANDOFF_INSTRUCTIONS).toContain("remaining work");
   });
 });
 

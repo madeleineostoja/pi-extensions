@@ -2,12 +2,12 @@ import { convertCurrency } from "@pi-extensions/lib";
 import type { HandoffEstimate, ModelRef } from "./decision.ts";
 
 export const HANDOFF_INSTRUCTIONS =
-  `Create an implementation-focused summary that preserves the following: ` +
-  `the user's goal, constraints and preferences, concrete decisions made ` +
-  `(with rationale), exact file paths, symbols and function names, ` +
-  `commands or tests used, dead ends encountered, current blockers, ` +
-  `and the exact next steps the user asked for. ` +
-  `Be concise but do not omit technical details needed to continue work.`;
+  `Create a model-handoff summary for continuing this session with another model. ` +
+  `Preserve the user's goal, constraints and preferences, concrete decisions made ` +
+  `(with rationale), exact file paths, symbols and function names, commands or ` +
+  `tests used, dead ends encountered, current blockers, open questions, and any ` +
+  `known remaining work without assuming the next model should follow a fixed set ` +
+  `of steps. Be concise but do not omit technical details needed to continue work.`;
 
 function roundTo2SigFigs(n: number): number {
   if (n === 0) {
