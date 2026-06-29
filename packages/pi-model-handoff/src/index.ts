@@ -4,7 +4,6 @@ import {
   getAgentDir,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { refreshCurrencyRate } from "@pi-extensions/lib";
 import { prepareCompaction } from "./compaction";
 import {
   buildModelRef,
@@ -48,7 +47,6 @@ export default function (pi: ExtensionAPI) {
       ctx.modelRegistry.isUsingOAuth(event.model),
     );
 
-    await refreshCurrencyRate({ from: "USD", to: "NZD" }).catch(() => {});
     const estimate = computeHandoffEstimate(preparation, targetRef);
     const notification = formatSwitchNotification(targetRef, estimate);
 

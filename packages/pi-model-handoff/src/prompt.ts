@@ -1,4 +1,3 @@
-import { convertCurrency } from "@pi-extensions/lib";
 import type { HandoffEstimate, ModelRef } from "./decision.ts";
 
 export const HANDOFF_INSTRUCTIONS =
@@ -18,17 +17,11 @@ function roundTo2SigFigs(n: number): number {
   return Math.round(n / power) * power;
 }
 
-export function formatConvertedCost(
-  usd: number | undefined,
-): string | undefined {
+export function formatCost(usd: number | undefined): string | undefined {
   if (usd === undefined) {
     return undefined;
   }
-  const nzd = convertCurrency({ amount: usd, from: "USD", to: "NZD" });
-  if (nzd === undefined) {
-    return undefined;
-  }
-  return `~$${nzd.toFixed(2)}`;
+  return `~$${usd.toFixed(2)}`;
 }
 
 export function formatTokens(n: number): string {
@@ -49,7 +42,7 @@ export function formatSwitchNotification(
 ): string {
   const targetName = targetRef.name ?? `${targetRef.provider}/${targetRef.id}`;
   let msg = `Switched to ${targetName} · ${formatTokens(estimate.currentTokens)} context`;
-  const cost = formatConvertedCost(estimate.targetFullContextInputCost);
+  const cost = formatCost(estimate.targetFullContextInputCost);
   if (cost !== undefined) {
     msg += ` (${cost})`;
   }

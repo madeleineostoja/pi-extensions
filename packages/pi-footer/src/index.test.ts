@@ -1,20 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type {
   ExtensionAPI,
   ExtensionContext,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import registerExtension from "./index.js";
-
-const refreshCurrencyRateMock = vi.hoisted(() => vi.fn());
-const convertCurrencyMock = vi.hoisted(() => vi.fn());
-
-vi.mock("@pi-extensions/lib", () => {
-  return {
-    refreshCurrencyRate: refreshCurrencyRateMock,
-    convertCurrency: convertCurrencyMock,
-  };
-});
 
 function makeFakePi() {
   const handlers = new Map<
@@ -107,135 +97,7 @@ function makeFakeFooterData() {
 }
 
 describe("footer extension", () => {
-  beforeEach(() => {
-    refreshCurrencyRateMock.mockReset();
-    convertCurrencyMock.mockReset();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("calls refreshCurrencyRate during setup and requests render when it resolves", async () => {
-    let resolveRefresh: () => void = () => {};
-    refreshCurrencyRateMock.mockReturnValue(
-      new Promise<void>((resolve) => {
-        resolveRefresh = resolve;
-      }),
-    );
-
-    const { pi, handlers } = makeFakePi();
-    registerExtension(pi);
-
-    const { ctx, footerCallbacks } = makeFakeCtx();
-    const handler = handlers.get("session_start")![0];
-    await handler({} as SessionStartEvent, ctx);
-
-    expect(footerCallbacks).toHaveLength(1);
-    const tui = makeFakeTui();
-    const footerData = makeFakeFooterData();
-    footerCallbacks[0](tui, ctx.ui.theme, footerData);
-
-    expect(refreshCurrencyRateMock).toHaveBeenCalledWith({
-      from: "USD",
-      to: "NZD",
-    });
-    expect(tui.getRenderRequests()).toHaveLength(0);
-
-    resolveRefresh();
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(tui.getRenderRequests()).toHaveLength(1);
-  });
-
-  it("hides cost when convertCurrency returns undefined", async () => {
-    refreshCurrencyRateMock.mockResolvedValue(undefined);
-    convertCurrencyMock.mockReturnValue(undefined);
-
-    const { pi, handlers } = makeFakePi();
-    registerExtension(pi);
-
-    const { ctx, footerCallbacks } = makeFakeCtx({
-      branch: [
-        {
-          type: "message",
-          message: {
-            role: "assistant",
-            provider: "openai",
-            model: "gpt-test",
-            usage: {
-              input: 1000,
-              output: 1000,
-              cost: { input: 0.01, output: 0.02, total: 0.03 },
-            },
-          },
-        },
-      ],
-    });
-    const handler = handlers.get("session_start")![0];
-    await handler({} as SessionStartEvent, ctx);
-
-    const tui = makeFakeTui();
-    const footerData = makeFakeFooterData();
-    const footer = footerCallbacks[0](tui, ctx.ui.theme, footerData) as {
-      render: (width: number) => string[];
-    };
-    const lines = footer.render(120);
-
-    expect(convertCurrencyMock).toHaveBeenCalledWith({
-      amount: 0.03,
-      from: "USD",
-      to: "NZD",
-    });
-    expect(lines[0]).not.toContain("$");
-  });
-
-  it("shows converted cost when convertCurrency returns a value", async () => {
-    refreshCurrencyRateMock.mockResolvedValue(undefined);
-    convertCurrencyMock.mockReturnValue(0.051);
-
-    const { pi, handlers } = makeFakePi();
-    registerExtension(pi);
-
-    const { ctx, footerCallbacks } = makeFakeCtx({
-      branch: [
-        {
-          type: "message",
-          message: {
-            role: "assistant",
-            provider: "openai",
-            model: "gpt-test",
-            usage: {
-              input: 1000,
-              output: 1000,
-              cost: { input: 0.01, output: 0.02, total: 0.03 },
-            },
-          },
-        },
-      ],
-    });
-    const handler = handlers.get("session_start")![0];
-    await handler({} as SessionStartEvent, ctx);
-
-    const tui = makeFakeTui();
-    const footerData = makeFakeFooterData();
-    const footer = footerCallbacks[0](tui, ctx.ui.theme, footerData) as {
-      render: (width: number) => string[];
-    };
-    const lines = footer.render(120);
-
-    expect(convertCurrencyMock).toHaveBeenCalledWith({
-      amount: 0.03,
-      from: "USD",
-      to: "NZD",
-    });
-    expect(lines[0]).toContain("$0.05");
-  });
-
   it("preserves subscription hiding behaviour", async () => {
-    refreshCurrencyRateMock.mockResolvedValue(undefined);
-    convertCurrencyMock.mockReturnValue(0.051);
-
     const { pi, handlers } = makeFakePi();
     registerExtension(pi);
 

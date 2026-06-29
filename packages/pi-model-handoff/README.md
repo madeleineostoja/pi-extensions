@@ -11,7 +11,7 @@ Switched to Kimi K2.6 · 200k context (~$0.12) · /handoff (~6k)
 ```
 
 - **200k** — current context tokens.
-- **~$0.12** — NZD-converted next-message input cost on the new model (omitted for subscription/OAuth models when no rate is cached).
+- **~$0.12** — next-message input cost on the new model (omitted for subscription/OAuth models).
 - **~6k** — estimated post-handoff context size.
 
 If there is nothing to summarize, or the switch is a restore, same-model change, or outside TUI mode, the extension stays silent.
@@ -34,7 +34,7 @@ The extension does not implement its own summarization. It reuses Pi's native co
 
 - No automatic handoff based on context-window pressure.
 - No custom session rewriting, prompt replay, or input queue implementation.
-- Subscription/OAuth model costs are excluded from the notice when no rate is cached.
+- Subscription/OAuth model costs are excluded from the notice.
 
 ## License
 

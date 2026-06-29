@@ -1,6 +1,5 @@
 export { completeText } from "./complete.js";
 export type { CompleteTextDeps, CompleteTextResult } from "./complete.js";
-export { convertCurrency, refreshCurrencyRate } from "./currency.js";
 export { parseModelRef, isModelRef } from "./model-ref.js";
 export { sanitizeTitle, buildTitlePrompt } from "./title.js";
 export {

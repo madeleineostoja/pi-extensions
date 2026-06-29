@@ -1,15 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { formatSwitchNotification, HANDOFF_INSTRUCTIONS } from "./prompt";
 import type { HandoffEstimate, ModelRef } from "./decision";
-
-const convertCurrencyMock = vi.hoisted(() => vi.fn());
-
-vi.mock("@pi-extensions/lib", () => {
-  return {
-    convertCurrency: convertCurrencyMock,
-    refreshCurrencyRate: vi.fn(),
-  };
-});
 
 function makeRef(overrides: Partial<ModelRef> = {}): ModelRef {
   return {
@@ -47,12 +38,7 @@ describe("HANDOFF_INSTRUCTIONS", () => {
 });
 
 describe("formatSwitchNotification", () => {
-  beforeEach(() => {
-    convertCurrencyMock.mockReset();
-  });
-
   it("renders the full notification for a billable target", () => {
-    convertCurrencyMock.mockImplementation(({ amount }) => amount * 1.7);
     const notification = formatSwitchNotification(
       makeRef({ name: "Kimi K2.6" }),
       makeEstimate({
@@ -62,22 +48,7 @@ describe("formatSwitchNotification", () => {
       }),
     );
     expect(notification).toBe(
-      "Switched to Kimi K2.6 · 200k context (~$0.09) · /handoff (~6.0k)",
-    );
-  });
-
-  it("omits the cost parenthetical when no rate is available", () => {
-    convertCurrencyMock.mockReturnValue(undefined);
-    const notification = formatSwitchNotification(
-      makeRef({ name: "GPT-4o" }),
-      makeEstimate({
-        currentTokens: 200_000,
-        estimatedHandoffTokens: 6000,
-        targetFullContextInputCost: 0.05,
-      }),
-    );
-    expect(notification).toBe(
-      "Switched to GPT-4o · 200k context · /handoff (~6.0k)",
+      "Switched to Kimi K2.6 · 200k context (~$0.05) · /handoff (~6.0k)",
     );
   });
 

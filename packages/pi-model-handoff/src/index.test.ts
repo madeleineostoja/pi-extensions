@@ -44,21 +44,6 @@ vi.mock("./compaction", async () => {
   };
 });
 
-const refreshCurrencyRateMock = vi.hoisted(() => vi.fn());
-const convertCurrencyMock = vi.hoisted(() => vi.fn());
-
-vi.mock("@pi-extensions/lib", () => {
-  return {
-    refreshCurrencyRate: refreshCurrencyRateMock,
-    convertCurrency: convertCurrencyMock,
-  };
-});
-
-beforeEach(() => {
-  refreshCurrencyRateMock.mockReset().mockResolvedValue(undefined);
-  convertCurrencyMock.mockReset();
-});
-
 function makeFakeExtensionAPI() {
   const handlers: Record<
     string,
@@ -356,7 +341,6 @@ describe("model_select handler", () => {
   });
 
   it("shows notification for billable target", async () => {
-    convertCurrencyMock.mockReturnValue(2.55);
     const { handlers } = captureHandlers();
     const handler = handlers["model_select"][0];
     const ctx = makeFakeCtx();
@@ -383,7 +367,7 @@ describe("model_select handler", () => {
     await waitForDeferredNotifications();
     expect(ctx.notifyCalls).toContainEqual({
       message:
-        "Switched to openai-gpt-4o · 300k context (~$2.55) · /handoff (~24k)",
+        "Switched to openai-gpt-4o · 300k context (~$1.50) · /handoff (~24k)",
       type: "info",
     });
   });
