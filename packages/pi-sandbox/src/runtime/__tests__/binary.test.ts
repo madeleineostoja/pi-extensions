@@ -118,16 +118,14 @@ describe("isSupportedPlatform", () => {
 
 describe("resolveNonoPath", () => {
   let tmpDir: string;
-  let fakePkgRoot: string;
-  let fakeBinDir: string;
+  let cacheDir: string;
   let pathDir: string;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-binary-test-"));
-    fakePkgRoot = path.join(tmpDir, "pkg");
-    fakeBinDir = path.join(fakePkgRoot, "bin");
+    cacheDir = path.join(tmpDir, "cache");
     pathDir = path.join(tmpDir, "pathdir");
-    fs.mkdirSync(fakeBinDir, { recursive: true });
+    fs.mkdirSync(cacheDir, { recursive: true });
     fs.mkdirSync(pathDir, { recursive: true });
   });
 
@@ -135,26 +133,36 @@ describe("resolveNonoPath", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns the pkg-root binary when it is executable", () => {
-    const pkgBin = path.join(fakeBinDir, "nono");
-    fs.writeFileSync(pkgBin, "#!/bin/sh\necho nono 0.57.0");
-    fs.chmodSync(pkgBin, 0o755);
+  it("returns the explicit override when it is executable", () => {
+    const overrideBin = path.join(tmpDir, "override", "nono");
+    fs.mkdirSync(path.dirname(overrideBin), { recursive: true });
+    fs.writeFileSync(overrideBin, "#!/bin/sh\necho nono 0.57.0");
+    fs.chmodSync(overrideBin, 0o755);
 
-    const result = resolveNonoPath(fakePkgRoot, pathDir);
-    expect(result).toBe(pkgBin);
+    const result = resolveNonoPath(cacheDir, pathDir, overrideBin);
+    expect(result).toBe(overrideBin);
   });
 
-  it("falls back to PATH when pkg-root binary is absent", () => {
+  it("returns the cached binary when it is executable", () => {
+    const cachedBin = path.join(cacheDir, "nono");
+    fs.writeFileSync(cachedBin, "#!/bin/sh\necho nono 0.57.0");
+    fs.chmodSync(cachedBin, 0o755);
+
+    const result = resolveNonoPath(cacheDir, pathDir);
+    expect(result).toBe(cachedBin);
+  });
+
+  it("falls back to PATH when the cache binary is absent", () => {
     const pathBin = path.join(pathDir, "nono");
     fs.writeFileSync(pathBin, "#!/bin/sh\necho nono 0.57.0");
     fs.chmodSync(pathBin, 0o755);
 
-    const result = resolveNonoPath(fakePkgRoot, pathDir);
+    const result = resolveNonoPath(cacheDir, pathDir);
     expect(result).toBe(pathBin);
   });
 
-  it("returns null when neither pkg-root nor PATH has nono", () => {
-    const result = resolveNonoPath(fakePkgRoot, pathDir);
+  it("returns null when neither override, cache, nor PATH has nono", () => {
+    const result = resolveNonoPath(cacheDir, pathDir);
     expect(result).toBeNull();
   });
 });

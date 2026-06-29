@@ -10,6 +10,7 @@
   ],
   "files": [
     "src",
+    "scripts/postinstall.js",
     "README.md"
   ],
   "pi": {

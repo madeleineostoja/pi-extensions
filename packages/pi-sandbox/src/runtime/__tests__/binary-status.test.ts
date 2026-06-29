@@ -6,20 +6,18 @@ import { getBinaryStatusFrom } from "../binary.js";
 
 let tmpDir: string;
 
-function writeMarker(root: string, data: object): void {
-  const binDir = path.join(root, "bin");
-  fs.mkdirSync(binDir, { recursive: true });
+function writeMarker(cacheDir: string, data: object): void {
+  fs.mkdirSync(cacheDir, { recursive: true });
   fs.writeFileSync(
-    path.join(binDir, ".install-status.json"),
+    path.join(cacheDir, ".install-status.json"),
     JSON.stringify(data),
     "utf8",
   );
 }
 
-function writeBinary(root: string): void {
-  const binDir = path.join(root, "bin");
-  fs.mkdirSync(binDir, { recursive: true });
-  const binPath = path.join(binDir, "nono");
+function writeBinary(cacheDir: string): void {
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const binPath = path.join(cacheDir, "nono");
   fs.writeFileSync(binPath, "#!/bin/sh\necho nono 0.57.0\n", "utf8");
   fs.chmodSync(binPath, 0o755);
 }

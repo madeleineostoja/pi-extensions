@@ -3,11 +3,17 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 const _require = createRequire(import.meta.url);
 
 export type BinaryStatus =
-  | { kind: "ok"; path: string; version: string }
+  | {
+      kind: "ok";
+      path: string;
+      version: string;
+      source: "override" | "cache" | "path";
+    }
   | {
       kind: "platform-unsupported";
       platform: string;
@@ -51,10 +57,72 @@ function whichInPath(name: string, pathEnv: string): string | null {
   return null;
 }
 
-export function resolveNonoPath(root: string, pathEnv: string): string | null {
-  const pkgBin = path.join(root, "bin", "nono");
-  if (isExecutable(pkgBin)) {
-    return pkgBin;
+function targetSegment(target: string): string {
+  return target.replace(/^nono-/, "");
+}
+
+export function cacheDirForTarget(version: string, target: string): string {
+  return path.join(
+    getAgentDir(),
+    "cache",
+    "pi-sandbox",
+    "nono",
+    version,
+    targetSegment(target),
+  );
+}
+
+export function getPlatformTarget(): string | null {
+  const { platform, arch } = process;
+
+  if (platform === "darwin") {
+    if (arch === "arm64") {
+      return "nono-aarch64-apple-darwin";
+    }
+    if (arch === "x64") {
+      return "nono-x86_64-apple-darwin";
+    }
+    return null;
+  }
+
+  if (platform === "linux") {
+    if (detectMusl()) {
+      return null;
+    }
+    if (arch === "arm64") {
+      return "nono-aarch64-unknown-linux-gnu";
+    }
+    if (arch === "x64") {
+      return "nono-x86_64-unknown-linux-gnu";
+    }
+    return null;
+  }
+
+  return null;
+}
+
+export function getNonoCacheDir(): string | null {
+  const target = getPlatformTarget();
+  if (target === null) {
+    return null;
+  }
+  return cacheDirForTarget(pinnedVersion(), target);
+}
+
+export function resolveNonoPath(
+  cacheDir: string | null,
+  pathEnv: string,
+  overridePath?: string,
+): string | null {
+  if (overridePath && isExecutable(overridePath)) {
+    return overridePath;
+  }
+
+  if (cacheDir !== null) {
+    const cachedBin = path.join(cacheDir, "nono");
+    if (isExecutable(cachedBin)) {
+      return cachedBin;
+    }
   }
 
   const onPath = whichInPath("nono", pathEnv);
@@ -141,18 +209,7 @@ export function detectMusl(): boolean {
  * Determine whether the current platform is supported for nono binary download.
  */
 export function isSupportedPlatform(): boolean {
-  const { platform, arch } = process;
-  if (platform === "darwin" && (arch === "arm64" || arch === "x64")) {
-    return true;
-  }
-  if (
-    platform === "linux" &&
-    !detectMusl() &&
-    (arch === "arm64" || arch === "x64")
-  ) {
-    return true;
-  }
-  return false;
+  return getPlatformTarget() !== null;
 }
 
 type InstallStatusOk = {
@@ -170,8 +227,8 @@ type InstallStatusFail = {
 
 type InstallStatus = InstallStatusOk | InstallStatusFail;
 
-function readInstallStatus(root: string): InstallStatus | null {
-  const statusPath = path.join(root, "bin", ".install-status.json");
+function readInstallStatus(cacheDir: string): InstallStatus | null {
+  const statusPath = path.join(cacheDir, ".install-status.json");
   try {
     const raw = fs.readFileSync(statusPath, "utf8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -190,9 +247,9 @@ function readInstallStatus(root: string): InstallStatus | null {
   }
 }
 
-export function getBinaryStatusFrom(root: string): BinaryStatus {
-  const status = readInstallStatus(root);
-  const binPath = path.join(root, "bin", "nono");
+export function getBinaryStatusFrom(cacheDir: string): BinaryStatus {
+  const status = readInstallStatus(cacheDir);
+  const binPath = path.join(cacheDir, "nono");
   const binaryPresent = isExecutable(binPath);
 
   if (status === null) {
@@ -231,32 +288,69 @@ export function getBinaryStatusFrom(root: string): BinaryStatus {
     };
   }
 
-  return { kind: "ok", path: binPath, version: status.version };
+  return {
+    kind: "ok",
+    path: binPath,
+    version: status.version,
+    source: "cache",
+  };
+}
+
+function statusForExternalBinary(
+  binPath: string,
+  source: "override" | "path",
+): BinaryStatus {
+  return {
+    kind: "ok",
+    path: binPath,
+    version: readNonoVersion(binPath) ?? "unknown",
+    source,
+  };
 }
 
 /**
- * Return the structured installation status of the nono binary.
+ * Return the structured runtime status of the nono binary.
  *
- * Reads `bin/.install-status.json` written by postinstall and cross-checks it
- * against the binary's actual presence on disk. Disagreements (marker says ok
- * but binary is absent, or vice versa) are surfaced as `install-failed` with a
- * synthetic reason so callers don't need to probe the filesystem themselves.
+ * Checks the same resolution order as `getNonoPath`: explicit override, cached
+ * install, then PATH fallback. Cache installs are cross-checked against their
+ * marker so install drift is still reported when no external binary is usable.
  */
 export function getBinaryStatus(): BinaryStatus {
-  return getBinaryStatusFrom(pkgRoot());
+  const overridePath = process.env.PI_SANDBOX_NONO_PATH;
+  if (overridePath && isExecutable(overridePath)) {
+    return statusForExternalBinary(overridePath, "override");
+  }
+
+  const cacheDir = getNonoCacheDir();
+  if (cacheDir !== null) {
+    const cacheStatus = getBinaryStatusFrom(cacheDir);
+    if (cacheStatus.kind === "ok") {
+      return cacheStatus;
+    }
+
+    const pathBin = whichInPath("nono", process.env.PATH ?? "");
+    if (pathBin !== null) {
+      return statusForExternalBinary(pathBin, "path");
+    }
+
+    return cacheStatus;
+  }
+
+  const pathBin = whichInPath("nono", process.env.PATH ?? "");
+  if (pathBin !== null) {
+    return statusForExternalBinary(pathBin, "path");
+  }
+
+  return { kind: "platform-unsupported", platform: process.platform };
 }
 
 /**
- * Resolve the nono binary path. Returns the pkg-root binary when install
- * status is ok, falls back to `nono` on $PATH, or null for in-process-only mode.
+ * Resolve the nono binary path. Returns an explicit override when executable,
+ * then the cached binary, then `nono` on $PATH, or null for in-process-only mode.
  */
 export function getNonoPath(): string | null {
   const status = getBinaryStatus();
-  if (status.kind === "ok") {
-    return status.path;
-  }
-
-  return whichInPath("nono", process.env.PATH ?? "");
+  return status.kind === "ok" ? status.path : null;
 }
 
 export type BinaryRuntime = {

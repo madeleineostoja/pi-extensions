@@ -2,10 +2,10 @@
 import https from "node:https";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.resolve(__dirname, "..");
@@ -14,15 +14,31 @@ const pkg = JSON.parse(
 );
 const NONO_VERSION = pkg.nonoVersion;
 const NONO_SHA256SUMS_HASH = pkg.nonoSha256SumsHash;
-const BIN_DIR = path.join(pkgRoot, "bin");
-const BIN_PATH = path.join(BIN_DIR, "nono");
-const STATUS_PATH = path.join(BIN_DIR, ".install-status.json");
+const CACHE_ROOT = path.join(
+  getAgentDir(),
+  "cache",
+  "pi-sandbox",
+  "nono",
+  NONO_VERSION,
+);
+let statusDir = path.join(
+  CACHE_ROOT,
+  `unsupported-${process.platform}-${process.arch}`,
+);
+
+function targetSegment(target) {
+  return target.replace(/^nono-/, "");
+}
+
+function cacheDirForTarget(target) {
+  return path.join(CACHE_ROOT, targetSegment(target));
+}
 
 function writeStatus(status) {
   try {
-    fs.mkdirSync(BIN_DIR, { recursive: true });
+    fs.mkdirSync(statusDir, { recursive: true });
     fs.writeFileSync(
-      STATUS_PATH,
+      path.join(statusDir, ".install-status.json"),
       JSON.stringify({ ...status, ts: Date.now() }),
       "utf8",
     );
@@ -32,18 +48,6 @@ function writeStatus(status) {
       err.message,
     );
   }
-}
-
-if (process.env.PI_SANDBOX_SKIP_DOWNLOAD === "1") {
-  console.log(
-    "pi-sandbox: PI_SANDBOX_SKIP_DOWNLOAD=1, skipping nono download.",
-  );
-  writeStatus({
-    ok: false,
-    reason: "download-skipped",
-    detail: "PI_SANDBOX_SKIP_DOWNLOAD=1 was set.",
-  });
-  process.exit(0);
 }
 
 function getPlatformTarget() {
@@ -174,6 +178,20 @@ async function main() {
   }
 
   const { target } = result;
+  statusDir = cacheDirForTarget(target);
+
+  if (process.env.PI_SANDBOX_SKIP_DOWNLOAD === "1") {
+    console.log(
+      "pi-sandbox: PI_SANDBOX_SKIP_DOWNLOAD=1, skipping nono download.",
+    );
+    writeStatus({
+      ok: false,
+      reason: "download-skipped",
+      detail: "PI_SANDBOX_SKIP_DOWNLOAD=1 was set.",
+    });
+    process.exit(0);
+  }
+
   const tarball = `${target.replace(/^nono-/, `nono-v${NONO_VERSION}-`)}.tar.gz`;
   const baseUrl = `https://github.com/always-further/nono/releases/download/v${NONO_VERSION}`;
   const tarballUrl = `${baseUrl}/${tarball}`;
@@ -266,15 +284,13 @@ async function main() {
     process.exit(0);
   }
 
-  fs.mkdirSync(BIN_DIR, { recursive: true });
+  fs.mkdirSync(statusDir, { recursive: true });
 
-  const tmpTar = path.join(os.tmpdir(), `pi-sandbox-nono-${Date.now()}.tar.gz`);
-  const extractDir = path.join(
-    os.tmpdir(),
-    `pi-sandbox-nono-extract-${Date.now()}`,
-  );
-  fs.writeFileSync(tmpTar, tarballData);
+  const tmpDir = path.join(statusDir, `.tmp-${process.pid}-${Date.now()}`);
+  const tmpTar = path.join(tmpDir, "nono.tar.gz");
+  const extractDir = path.join(tmpDir, "extract");
   fs.mkdirSync(extractDir, { recursive: true });
+  fs.writeFileSync(tmpTar, tarballData);
 
   try {
     execFileSync("tar", ["-xzf", tmpTar, "-C", extractDir], { stdio: "pipe" });
@@ -283,12 +299,7 @@ async function main() {
       `pi-sandbox: tar extraction failed (${err.message}). Skipping nono install.`,
     );
     try {
-      fs.unlinkSync(tmpTar);
-    } catch {
-      /* ignore */
-    }
-    try {
-      fs.rmSync(extractDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
       /* ignore */
     }
@@ -298,12 +309,6 @@ async function main() {
       detail: `tar extraction failed: ${err.message}`,
     });
     process.exit(0);
-  } finally {
-    try {
-      fs.unlinkSync(tmpTar);
-    } catch {
-      /* ignore */
-    }
   }
 
   const foundBin = findFile(extractDir, "nono");
@@ -312,7 +317,7 @@ async function main() {
       "pi-sandbox: nono binary not found in tarball. Skipping nono install.",
     );
     try {
-      fs.rmSync(extractDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {
       /* ignore */
     }
@@ -324,14 +329,15 @@ async function main() {
     process.exit(0);
   }
 
-  fs.renameSync(foundBin, BIN_PATH);
+  const binPath = path.join(statusDir, "nono");
+  fs.renameSync(foundBin, binPath);
   try {
-    fs.rmSync(extractDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   } catch {
     /* ignore */
   }
 
-  if (!fs.existsSync(BIN_PATH)) {
+  if (!fs.existsSync(binPath)) {
     console.log(
       "pi-sandbox: binary not found after extraction. Skipping nono install.",
     );
@@ -343,8 +349,8 @@ async function main() {
     process.exit(0);
   }
 
-  fs.chmodSync(BIN_PATH, 0o755);
-  console.log(`pi-sandbox: nono v${NONO_VERSION} installed at ${BIN_PATH}`);
+  fs.chmodSync(binPath, 0o755);
+  console.log(`pi-sandbox: nono v${NONO_VERSION} installed at ${binPath}`);
   writeStatus({ ok: true, version: NONO_VERSION });
 }
 
