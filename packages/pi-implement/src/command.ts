@@ -29,6 +29,7 @@ import {
 } from "./orchestrator.js";
 import type { RunState, AgentDisplayRef, StatePatch } from "./status.js";
 import {
+  cleanupFooterStatusParts,
   formatFooterStatusParts,
   formatRunStatus,
   formatWidgetLines,
@@ -386,31 +387,41 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             const activeLocks = lockCheck.active
               .map((lock) => lock.reason)
               .join("\n- ");
-            ctx.ui.notify(
-              `pi-implement cleanup refused: active run lock(s) found:\n- ${activeLocks}\nOpen /implement and choose Stop run in the owning session first.`,
-              "warning",
+            const forced = await ctx.ui.confirm(
+              "pi-implement cleanup",
+              `Active run lock(s) found:\n- ${activeLocks}\n\nNo run is active in this session. Force cleanup and remove these locks?`,
             );
-            return;
+            if (!forced) {
+              ctx.ui.notify("pi-implement cleanup cancelled.", "info");
+              return;
+            }
           }
           for (const stale of lockCheck.staleRemoved) {
             ctx.ui.notify(`Removed stale pi-implement lock: ${stale}.`, "info");
           }
-          const runIds = listRunIds(repoRoot);
+          setCleanupStatus(ctx);
           let cleaned = 0;
-          for (const runId of runIds) {
-            const paths = getStatePaths(repoRoot, runId);
-            try {
-              cleanupRun(paths);
-              cleaned++;
-            } catch (err) {
-              const reason = err instanceof Error ? err.message : String(err);
-              ctx.ui.notify(
-                `Cleanup warning for ${runId}: ${reason}`,
-                "warning",
-              );
+          let worktrees = 0;
+          let branches = 0;
+          try {
+            const runIds = listRunIds(repoRoot);
+            for (const runId of runIds) {
+              const paths = getStatePaths(repoRoot, runId);
+              try {
+                await cleanupRun(paths);
+                cleaned++;
+              } catch (err) {
+                const reason = err instanceof Error ? err.message : String(err);
+                ctx.ui.notify(
+                  `Cleanup warning for ${runId}: ${reason}`,
+                  "warning",
+                );
+              }
             }
+            ({ worktrees, branches } = await sweepRunArtifacts(repoRoot));
+          } finally {
+            syncStatus(ctx, active.state);
           }
-          const { worktrees, branches } = sweepRunArtifacts(repoRoot);
           const parts = [`removed ${cleaned} run(s)`];
           if (worktrees) {
             parts.push(`pruned ${worktrees} worktree(s)`);
@@ -788,7 +799,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           verifyCommand: config.config.verifyCommand,
         });
       })()
-        .then(() => {
+        .then(async () => {
           currentSnapshotClient = undefined;
           if (!isCurrentRun()) {
             return;
@@ -808,7 +819,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           if (paths) {
             appendEvent(paths, { type: "run_done" });
             try {
-              cleanupRun(paths);
+              await cleanupRun(paths);
             } catch (err) {
               const reason = err instanceof Error ? err.message : String(err);
               appendEvent(paths, { type: "cleanup_failed", reason });
@@ -820,7 +831,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
             }
           }
         })
-        .catch((err: unknown) => {
+        .catch(async (err: unknown) => {
           currentSnapshotClient = undefined;
           if (!isCurrentRun()) {
             return;
@@ -862,7 +873,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
                 reason: err.message,
               });
               try {
-                cleanupRun(paths);
+                await cleanupRun(paths);
               } catch (cleanupErr) {
                 const reason =
                   cleanupErr instanceof Error
@@ -1045,6 +1056,17 @@ function syncStatus(ctx: ExtensionCommandContext, state: RunState): void {
   ctx.ui.setStatus(
     STATUS_KEY,
     `${ctx.ui.theme.fg(color, parts.glyph)} ${ctx.ui.theme.fg(textColor, parts.text)}`,
+  );
+}
+
+function setCleanupStatus(ctx: ExtensionCommandContext): void {
+  if (ctx.mode !== "tui") {
+    return;
+  }
+  const parts = cleanupFooterStatusParts();
+  ctx.ui.setStatus(
+    STATUS_KEY,
+    `${ctx.ui.theme.fg("success", parts.glyph)} ${ctx.ui.theme.fg("muted", parts.text)}`,
   );
 }
 

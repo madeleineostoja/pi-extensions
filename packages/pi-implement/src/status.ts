@@ -163,6 +163,10 @@ export function formatFooterStatusParts(
   return footerStatusParts(`implement ${progress}`, "active");
 }
 
+export function cleanupFooterStatusParts(): FooterStatusParts {
+  return footerStatusParts("implement cleaning…", "active");
+}
+
 export function formatFooterStatus(state: RunState): string {
   const parts = formatFooterStatusParts(state);
   return parts ? `${parts.glyph} ${parts.text}` : "";

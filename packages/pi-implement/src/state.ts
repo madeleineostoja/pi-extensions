@@ -1,4 +1,5 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   mkdirSync,
   readFileSync,
@@ -9,6 +10,9 @@ import {
   existsSync,
   rmSync,
 } from "node:fs";
+import { rm } from "node:fs/promises";
+
+const execFileAsync = promisify(execFile);
 import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
@@ -382,14 +386,14 @@ export function readTaskJson(
   }
 }
 
-export function cleanupRun(paths: StatePaths): void {
+export async function cleanupRun(paths: StatePaths): Promise<void> {
   const run = readRunJson(paths);
   const runId = run?.runId ?? basename(paths.runDir);
   const cleanupEntries = readTaskCleanupEntries(paths);
   if (run?.repoRoot) {
     for (const entry of cleanupEntries) {
       if (entry.worktreePath) {
-        runGitCleanup(run.repoRoot, [
+        await runGitCleanup(run.repoRoot, [
           "worktree",
           "remove",
           "--force",
@@ -399,23 +403,23 @@ export function cleanupRun(paths: StatePaths): void {
     }
     for (const entry of cleanupEntries) {
       if (entry.branchName?.startsWith(`pi-implement/${runId}/`)) {
-        runGitCleanup(run.repoRoot, ["branch", "-D", entry.branchName]);
+        await runGitCleanup(run.repoRoot, ["branch", "-D", entry.branchName]);
       }
     }
   }
   if (existsSync(paths.runDir)) {
-    rmSync(paths.runDir, { recursive: true, force: true });
+    await rm(paths.runDir, { recursive: true, force: true });
   }
   if (existsSync(paths.worktreesDir)) {
-    rmSync(paths.worktreesDir, { recursive: true, force: true });
+    await rm(paths.worktreesDir, { recursive: true, force: true });
   }
   removeLocksForRun(paths, runId);
 }
 
-export function cleanupAllRuns(
+export async function cleanupAllRuns(
   repoRoot: string,
   excludeRunIds?: string[],
-): { cleaned: number; warnings: string[] } {
+): Promise<{ cleaned: number; warnings: string[] }> {
   const warnings: string[] = [];
   const runIds = listRunIds(repoRoot);
   let cleaned = 0;
@@ -425,7 +429,7 @@ export function cleanupAllRuns(
     }
     try {
       const paths = getStatePaths(repoRoot, runId);
-      cleanupRun(paths);
+      await cleanupRun(paths);
       cleaned++;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -440,20 +444,21 @@ export function cleanupAllRuns(
 // interrupted run or a partially-deleted state dir). Runs that still have a
 // run dir are owned by cleanupRun and are left untouched, so this never
 // destroys artifacts for a run that callers can still resume or inspect.
-export function sweepRunArtifacts(repoRoot: string): {
+export async function sweepRunArtifacts(repoRoot: string): Promise<{
   worktrees: number;
   branches: number;
-} {
+}> {
   const worktreesBase = safeRealpath(join(getBaseDir(repoRoot), "worktrees"));
   const knownRunIds = new Set(listRunIds(repoRoot));
   let worktrees = 0;
   let branches = 0;
 
   try {
-    const list = execFileSync("git", ["worktree", "list", "--porcelain"], {
-      cwd: repoRoot,
-      encoding: "utf-8",
-    });
+    const { stdout: list } = await execFileAsync(
+      "git",
+      ["worktree", "list", "--porcelain"],
+      { cwd: repoRoot, encoding: "utf-8" },
+    );
     for (const line of list.split("\n")) {
       if (!line.startsWith("worktree ")) {
         continue;
@@ -464,9 +469,8 @@ export function sweepRunArtifacts(repoRoot: string): {
         continue;
       }
       try {
-        execFileSync("git", ["worktree", "remove", "--force", wtPath], {
+        await execFileAsync("git", ["worktree", "remove", "--force", wtPath], {
           cwd: repoRoot,
-          stdio: "ignore",
         });
         worktrees++;
       } catch {
@@ -478,19 +482,17 @@ export function sweepRunArtifacts(repoRoot: string): {
   }
 
   try {
-    execFileSync("git", ["worktree", "prune"], {
-      cwd: repoRoot,
-      stdio: "ignore",
-    });
+    await execFileAsync("git", ["worktree", "prune"], { cwd: repoRoot });
   } catch {
     // ignore
   }
 
   try {
-    const list = execFileSync("git", ["branch", "--list", "pi-implement/*"], {
-      cwd: repoRoot,
-      encoding: "utf-8",
-    });
+    const { stdout: list } = await execFileAsync(
+      "git",
+      ["branch", "--list", "pi-implement/*"],
+      { cwd: repoRoot, encoding: "utf-8" },
+    );
     const names = list
       .split("\n")
       .map((b) => b.trim().replace(/^\*\s*/, ""))
@@ -501,10 +503,7 @@ export function sweepRunArtifacts(repoRoot: string): {
         continue;
       }
       try {
-        execFileSync("git", ["branch", "-D", name], {
-          cwd: repoRoot,
-          stdio: "ignore",
-        });
+        await execFileAsync("git", ["branch", "-D", name], { cwd: repoRoot });
         branches++;
       } catch {
         // ignore
@@ -581,9 +580,9 @@ function safeRealpath(path: string): string {
   return existsSync(path) ? realpathSync(path) : path;
 }
 
-function runGitCleanup(repoRoot: string, args: string[]): void {
+async function runGitCleanup(repoRoot: string, args: string[]): Promise<void> {
   try {
-    execFileSync("git", args, { cwd: repoRoot, stdio: "ignore" });
+    await execFileAsync("git", args, { cwd: repoRoot });
   } catch {
     return;
   }

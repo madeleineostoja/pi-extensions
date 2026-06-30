@@ -473,7 +473,7 @@ describe("run state lifecycle", () => {
     expect(events[0].timestamp).toBeDefined();
   });
 
-  it("cleans up run directory", () => {
+  it("cleans up run directory", async () => {
     const repo = tempRepo();
     const paths = getStatePaths(repo, "r20240115-120000");
     const run = {
@@ -495,7 +495,7 @@ describe("run state lifecycle", () => {
     expect(existsSync(paths.runDir)).toBe(true);
     expect(existsSync(paths.lockFile)).toBe(true);
 
-    cleanupRun(paths);
+    await cleanupRun(paths);
     expect(existsSync(paths.runDir)).toBe(false);
     expect(existsSync(paths.lockFile)).toBe(false);
   });
@@ -503,7 +503,7 @@ describe("run state lifecycle", () => {
   it(
     "removes registered worktrees and task branches during cleanup",
     { timeout: 15000 },
-    () => {
+    async () => {
       const repo = tempRepo();
       git(repo, "init", "-q");
       git(repo, "config", "user.email", "test@example.com");
@@ -550,7 +550,7 @@ describe("run state lifecycle", () => {
       );
       expect(git(repo, "branch", "--list", branchName)).toContain(branchName);
 
-      cleanupRun(paths);
+      await cleanupRun(paths);
 
       expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(
         worktreePath,
@@ -566,7 +566,7 @@ describe("run state lifecycle", () => {
   it(
     "sweepRunArtifacts deletes orphaned branches and worktrees with no run dir",
     { timeout: 15000 },
-    () => {
+    async () => {
       const repo = tempRepo();
       git(repo, "init", "-q");
       git(repo, "config", "user.email", "test@example.com");
@@ -596,7 +596,7 @@ describe("run state lifecycle", () => {
       git(repo, "branch", liveBranch, "HEAD");
       git(repo, "worktree", "add", "-q", liveWorktree, liveBranch);
 
-      const result = sweepRunArtifacts(repo);
+      const result = await sweepRunArtifacts(repo);
       expect(result.worktrees).toBe(1);
       expect(result.branches).toBe(1);
 

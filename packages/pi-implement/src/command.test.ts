@@ -54,6 +54,7 @@ type FakeContext = {
     notify(message: string, level: string): void;
     select(title: string, choices: string[]): Promise<string | undefined>;
     input(title: string, placeholder?: string): Promise<string | undefined>;
+    confirm(title: string, body: string): Promise<boolean>;
     setStatus(key: string, text: string | undefined): void;
     setWidget(key: string, lines: string[] | undefined): void;
     theme: { fg(color: string, text: string): string };
@@ -93,6 +94,9 @@ function setup(events = createEventBus()) {
       },
       async input() {
         return undefined;
+      },
+      async confirm() {
+        return false;
       },
       setStatus(key: string, text: string | undefined) {
         this.statuses.push({ key, text });
