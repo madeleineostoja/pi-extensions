@@ -77,7 +77,10 @@ class FakeGit implements GitClient {
     return this.statusText.trim() === "";
   }
   stagedPaths: string[][] = [];
-  async stageAllExcept() {}
+  stageAllExceptCalls = 0;
+  async stageAllExcept() {
+    this.stageAllExceptCalls++;
+  }
   async stagePaths(paths: string[]) {
     this.stagedPaths.push(paths);
   }
@@ -10556,6 +10559,280 @@ describe("runImplementation", () => {
     const taskJson = readTaskJson(paths, "task-1");
     expect(taskJson).toBeDefined();
     expect(taskJson!.integrationAttempts).toBe(1);
+  });
+
+  describe("post-commit checkout recovery", () => {
+    function singleTaskGraph(
+      paths: ReturnType<typeof makePaths>,
+      planPath: string,
+    ) {
+      writeGraphJson(paths.runDir, {
+        version: 1,
+        runId: "r1",
+        baseSha: "h1",
+        planPath,
+        planHash: "hash",
+        nodes: [
+          {
+            id: "task-1",
+            planIndex: 1,
+            title: "Do thing",
+            taskHash: "hash",
+            dependsOn: [],
+            mode: "parallel",
+            affectedAreas: [],
+            conflictHints: [],
+            validationCommands: [],
+            confidence: "high",
+            reasons: [],
+            evidencePaths: [],
+          },
+        ],
+      });
+    }
+
+    it("folds precommit-hook tracked-file changes into the landed commit", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      singleTaskGraph(paths, planPath);
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      // A precommit formatter reformats a file already in the approved task diff
+      // (FakeGit reports the candidate as "file.ts") while creating the commit,
+      // so the tree only turns dirty after commit succeeds.
+      const originalCommit = git.commit.bind(git);
+      git.commit = async (message: string) => {
+        const result = await originalCommit(message);
+        git.statusText = " M file.ts";
+        return result;
+      };
+      const originalReword = git.reword.bind(git);
+      let integrationRewords = 0;
+      let stagedBeforeAmend = -1;
+      git.reword = async (message: string) => {
+        integrationRewords++;
+        stagedBeforeAmend = git.stageAllExceptCalls;
+        git.statusText = "";
+        return originalReword(message);
+      };
+
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      // Folded via amend after staging, not a second commit: one commit beyond
+      // base, and the amend SHA is what lands.
+      expect(integrationRewords).toBe(1);
+      expect(stagedBeforeAmend).toBeGreaterThan(0);
+      expect(git.commits).toHaveLength(1);
+      expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
+
+      const taskJson = readTaskJson(paths, "task-1");
+      expect(taskJson?.status).toBe("landed");
+      expect(taskJson?.landedCommitSha).toContain("-reword-");
+      expect(
+        readEvents(paths).some(
+          (e) =>
+            e.type === "task_landed" &&
+            e.taskId === "task-1" &&
+            typeof e.commitSha === "string" &&
+            e.commitSha.includes("-reword-"),
+        ),
+      ).toBe(true);
+    });
+
+    it("blocks when the commit hook changes tracked files outside the task diff", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      singleTaskGraph(paths, planPath);
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      // A repo-wide formatter touches a tracked file not in the approved diff
+      // (candidate is "file.ts"); that must not be silently folded in.
+      const originalCommit = git.commit.bind(git);
+      git.commit = async (message: string) => {
+        const result = await originalCommit(message);
+        git.statusText = " M unrelated.ts";
+        return result;
+      };
+
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          verifyCommand: "echo ok",
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+            selfHeal: { model: "p/m", type: "general-purpose" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow(BlockedError);
+
+      const taskJson = readTaskJson(paths, "task-1");
+      expect(taskJson?.status).toBe("integration_failed");
+      expect(taskJson?.lastReason).toContain("outside the approved task diff");
+      // Blocked before folding: nothing was staged or amended.
+      expect(git.stageAllExceptCalls).toBe(0);
+    });
+
+    it("blocks when the post-commit tree has unexpected untracked files", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      singleTaskGraph(paths, planPath);
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const originalCommit = git.commit.bind(git);
+      git.commit = async (message: string) => {
+        const result = await originalCommit(message);
+        git.statusText = "?? junk.txt";
+        return result;
+      };
+
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          verifyCommand: "echo ok",
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+            selfHeal: { model: "p/m", type: "general-purpose" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow(BlockedError);
+
+      const taskJson = readTaskJson(paths, "task-1");
+      expect(taskJson?.status).toBe("integration_failed");
+      expect(taskJson?.lastReason).toContain("untracked files after commit");
+      // rollback restored HEAD here, so no stuck-commit warning is emitted.
+      expect(taskJson?.lastReason).not.toContain(
+        "rollback did not restore HEAD",
+      );
+    });
+
+    it("flags a stuck integration commit when rollback cannot restore HEAD", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      singleTaskGraph(paths, planPath);
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const originalCommit = git.commit.bind(git);
+      git.commit = async (message: string) => {
+        const result = await originalCommit(message);
+        git.statusText = "?? junk.txt";
+        return result;
+      };
+      // Simulate a reset that cannot move HEAD back (e.g. lock/interrupted op),
+      // leaving the integration commit on the branch after a "failed" rollback.
+      git.resetHard = async () => {};
+
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          verifyCommand: "echo ok",
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+            selfHeal: { model: "p/m", type: "general-purpose" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow(BlockedError);
+
+      const taskJson = readTaskJson(paths, "task-1");
+      expect(taskJson?.status).toBe("integration_failed");
+      expect(taskJson?.lastReason).toContain("rollback did not restore HEAD");
+      expect(taskJson?.lastReason).toContain("may still be present");
+    });
   });
 
   describe("dynamic per-task review", () => {

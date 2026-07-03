@@ -1602,20 +1602,21 @@ async function landApprovedTask(
   const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
 
   const failForRework = async (source: string, reason: string) => {
-    await rollbackIntegration(
+    const rollback = await rollbackIntegration(
       deps,
       preIntegrationHead,
       planArtifacts,
       planArtifactSnapshot,
     );
+    const detail = annotateRollbackReason(reason, rollback, preIntegrationHead);
     task.integrationAttempts++;
-    task.lastReason = `${source}: ${reason}`;
+    task.lastReason = `${source}: ${detail}`;
     if (deps.paths) {
       persistTaskArtifact(
         deps.paths,
         taskId,
         "integration.md",
-        `# Integration failed\n\nSource: ${source}\n\nPre-integration HEAD: ${preIntegrationHead}\n\n${reason}\n`,
+        `# Integration failed\n\nSource: ${source}\n\nPre-integration HEAD: ${preIntegrationHead}\n\n${detail}\n`,
       );
       appendEvent(deps.paths, {
         type: "integration_failed",
@@ -1632,21 +1633,22 @@ async function landApprovedTask(
   };
 
   const failBlocked = async (source: string, reason: string) => {
-    await rollbackIntegration(
+    const rollback = await rollbackIntegration(
       deps,
       preIntegrationHead,
       planArtifacts,
       planArtifactSnapshot,
     );
+    const detail = annotateRollbackReason(reason, rollback, preIntegrationHead);
     task.integrationAttempts++;
     task.status = "integration_failed";
-    task.lastReason = `${source}: ${reason}`;
+    task.lastReason = `${source}: ${detail}`;
     if (deps.paths) {
       persistTaskArtifact(
         deps.paths,
         taskId,
         "integration.md",
-        `# Integration blocked\n\nSource: ${source}\n\nPre-integration HEAD: ${preIntegrationHead}\n\n${reason}\n`,
+        `# Integration blocked\n\nSource: ${source}\n\nPre-integration HEAD: ${preIntegrationHead}\n\n${detail}\n`,
       );
       appendEvent(deps.paths, {
         type: "integration_failed",
@@ -1853,36 +1855,59 @@ async function landApprovedTask(
         `Commit hook changed a plan artifact: ${changedPlanArtifactAfterCommit}`,
       );
     }
+    let finalHead = landedHead;
     if (!(await deps.git.isCleanExcept(planArtifacts))) {
-      return await failBlocked(
-        "commit",
-        "Commit succeeded but main checkout is dirty",
-      );
+      // A precommit hook (e.g. a formatter) can only dirty the tree while it
+      // creates the commit, so this is first observable after commit. Fold
+      // those hook-owned edits into the just-created commit instead of
+      // blocking on a clean tree the hook itself prevents from ever existing.
+      // Any thrown git error here is a post-commit cleanup failure, not an
+      // implementer problem, so it must block rather than fall through to the
+      // rework path in the outer catch.
+      let foldReason: string | undefined;
+      try {
+        foldReason = await foldPostCommitHookChanges(
+          deps,
+          planArtifacts,
+          planArtifactSnapshot,
+          candidateSnapshot.stagedPaths,
+          task.approvedCommitMessage ?? `chore: implement ${task.title}`,
+        );
+      } catch (err) {
+        foldReason = err instanceof Error ? err.message : String(err);
+      }
+      if (foldReason) {
+        return await failBlocked(
+          "commit",
+          `Commit succeeded but ${foldReason}`,
+        );
+      }
+      finalHead = await deps.git.head();
     }
 
     task.status = "landed";
-    task.landedCommitSha = landedHead;
+    task.landedCommitSha = finalHead;
     sched.landedOrder.push(taskId);
 
     if (deps.paths) {
       appendEvent(deps.paths, {
         type: "task_landed",
         taskId,
-        commitSha: landedHead,
+        commitSha: finalHead,
       });
       const existing = readTaskJson(deps.paths, taskId);
       writeTaskJson(deps.paths, taskId, {
         ...buildTaskJsonSnapshot(existing, task),
         status: "landed",
-        landedCommitSha: landedHead,
+        landedCommitSha: finalHead,
       });
     }
 
     deps.updateState((prev) => ({
-      currentMainHead: landedHead,
+      currentMainHead: finalHead,
       ...checkpointPatch(
         prev,
-        `\u2713 Task ${task.planIndex + 1}/${plan.tasks.length} landed @ ${landedHead.slice(0, 7)}`,
+        `\u2713 Task ${task.planIndex + 1}/${plan.tasks.length} landed @ ${finalHead.slice(0, 7)}`,
       ),
     }));
     return "landed";
@@ -1980,12 +2005,14 @@ async function ensureCleanMainCheckoutBeforeIntegration(
   };
 }
 
+type RollbackOutcome = { headRestored: boolean; currentHead?: string };
+
 async function rollbackIntegration(
   deps: OrchestratorDeps,
   preIntegrationHead: string,
   planArtifacts: string[],
   planArtifactSnapshot: Map<string, string | undefined>,
-): Promise<void> {
+): Promise<RollbackOutcome> {
   await deps.git.cherryPickAbort().catch(async () => {
     await deps.git.resetHard(preIntegrationHead).catch(() => undefined);
   });
@@ -1994,6 +2021,88 @@ async function rollbackIntegration(
     .restoreWorktreeFromIndexExcept(planArtifacts)
     .catch(() => undefined);
   restorePlanArtifacts(planArtifacts, planArtifactSnapshot);
+
+  // resetHard failures are intentionally swallowed above so cleanup keeps
+  // going, but that means a stuck reset could leave the just-created commit on
+  // the branch while the task is still reported as failed. Re-read HEAD so the
+  // reason can flag that the commit may still be present rather than implying a
+  // clean rollback.
+  const currentHead = await deps.git
+    .head()
+    .then((h) => h)
+    .catch(() => undefined);
+  return {
+    headRestored: currentHead === preIntegrationHead,
+    currentHead,
+  };
+}
+
+function annotateRollbackReason(
+  reason: string,
+  rollback: RollbackOutcome,
+  preIntegrationHead: string,
+): string {
+  if (rollback.headRestored) {
+    return reason;
+  }
+  const at = rollback.currentHead
+    ? ` HEAD is at ${rollback.currentHead.slice(0, 12)}.`
+    : "";
+  return `${reason}\n\nWARNING: rollback did not restore HEAD to ${preIntegrationHead.slice(0, 12)}; an integration commit may still be present on the branch.${at}`;
+}
+
+// A precommit hook that mutates tracked files (e.g. a formatter) leaves the
+// tree dirty only after the commit exists. Fold those hook-owned edits into the
+// just-created commit via amend so the formatted content lands, rather than
+// blocking a valid commit or discarding the hook's changes. Folding is scoped
+// to files already in the approved candidate: a hook may reformat what the task
+// touched, but changes to unrelated tracked files (e.g. a repo-wide formatter)
+// are out of scope and block instead of being silently absorbed. Returns a
+// reason string when the tree cannot be brought to a clean state safely.
+async function foldPostCommitHookChanges(
+  deps: OrchestratorDeps,
+  planArtifacts: string[],
+  planArtifactSnapshot: Map<string, string | undefined>,
+  allowedPaths: string[],
+  commitMessage: string,
+): Promise<string | undefined> {
+  const { staged, unstaged, untracked } = await collectChangedPaths(deps);
+  const disallowedUntracked = untracked.filter(
+    (p) => !isPlanArtifactPath(p, planArtifacts, deps.planPath),
+  );
+  if (disallowedUntracked.length > 0) {
+    return `main checkout has untracked files after commit: ${disallowedUntracked.join(", ")}`;
+  }
+
+  const inScope = new Set(allowedPaths.map((p) => normalizeStatusPath(p)));
+  const outOfScope = [...new Set([...staged, ...unstaged])].filter(
+    (p) =>
+      !isPlanArtifactPath(p, planArtifacts, deps.planPath) &&
+      !inScope.has(normalizeStatusPath(p)),
+  );
+  if (outOfScope.length > 0) {
+    return `commit hook changed tracked files outside the approved task diff: ${outOfScope.join(", ")}`;
+  }
+
+  await deps.git.stageAllExcept(planArtifacts);
+  const amend = await deps.git.reword(commitMessage);
+  if (amend.exitCode !== 0) {
+    return (
+      amend.stderr || amend.stdout || "amend of post-commit changes failed"
+    );
+  }
+
+  const changedPlanArtifact = changedSnapshotPath(
+    planArtifacts,
+    planArtifactSnapshot,
+  );
+  if (changedPlanArtifact) {
+    return `commit hook changed a plan artifact: ${changedPlanArtifact}`;
+  }
+  if (!(await deps.git.isCleanExcept(planArtifacts))) {
+    return "main checkout is dirty";
+  }
+  return undefined;
 }
 
 type IntegrationCandidateSnapshot = {
