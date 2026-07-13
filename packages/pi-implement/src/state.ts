@@ -113,7 +113,22 @@ export type EventEntry =
   | { type: "overall_review_approved" }
   | { type: "overall_rework_started"; attempt: number; artifactPath?: string }
   | { type: "overall_rework_failed"; attempt: number; reason: string }
-  | { type: "overall_rework_committed"; attempt: number; commitSha: string };
+  | { type: "overall_rework_committed"; attempt: number; commitSha: string }
+  | {
+      type: "papercuts_processed";
+      role: string;
+      taskId?: string;
+      created: number;
+      merged: number;
+      suppressed: number;
+      rejected: number;
+    }
+  | {
+      type: "papercuts_warning";
+      role: string;
+      taskId?: string;
+      message: string;
+    };
 
 export type DurableEvent = EventEntry & { timestamp: string };
 

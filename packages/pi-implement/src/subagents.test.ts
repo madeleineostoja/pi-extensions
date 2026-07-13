@@ -111,6 +111,29 @@ describe("RuntimeSubagentClient", () => {
     );
     const call = runtime.runManagedAgent.mock.calls.at(-1)?.[0];
     expect(call.excludeTools).not.toContain("explore");
+    expect(call.excludeTools).toContain("propose_papercut");
+  });
+
+  it("keeps propose_papercut unavailable to write-capable managed workers", async () => {
+    const runtime = makeRuntime();
+    const pi = { __runtime: runtime };
+    const ctx = { cwd: "/repo", modelRegistry: { find: vi.fn() } };
+    const client = new RuntimeSubagentClient(
+      pi as never,
+      ctx as never,
+      "run-1",
+    );
+
+    await client.spawn({
+      type: "pi-implement:implementer",
+      prompt: "implement",
+      description: "implement task",
+      role: "implementer",
+    });
+
+    expect(runtime.runManagedAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ excludeTools: ["propose_papercut"] }),
+    );
   });
 
   it("lets pi-implement-owned implementer and reviewer types receive injected explore", async () => {

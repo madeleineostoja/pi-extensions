@@ -20,6 +20,7 @@ import {
   buildReviewerPrompt,
   buildSchedulerSelfHealPrompt,
   formatExecutionManifestSummary,
+  PAPERCUT_GUIDANCE,
 } from "./prompts.js";
 import { markTaskDone, markTaskUndone, parsePlanFile } from "./plan.js";
 import type { PlanTask } from "./plan.js";
@@ -47,6 +48,10 @@ import type { ExecutionManifest } from "./execution-plan.js";
 import type { CommandResult, GitClient } from "./git.js";
 import type { SubagentClient } from "./subagents.js";
 import type { EffectiveRoles } from "./config.js";
+import {
+  persistPapercutCandidates,
+  type PapercutStoreFactory,
+} from "./papercuts.js";
 import type {
   RunState,
   ParallelTaskState,
@@ -134,6 +139,62 @@ const MAX_SELF_HEAL_ATTEMPTS = 2;
 const MAX_OVERALL_REWORK_ATTEMPTS = 2;
 const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_BROAD_PLANNER_FULL_FILE_CHARS = 20_000;
+
+async function recordPapercuts(
+  deps: OrchestratorDeps,
+  value: unknown,
+  role: string,
+  taskId?: string,
+): Promise<void> {
+  try {
+    const result = await persistPapercutCandidates(
+      value,
+      await deps.git.mainRoot(),
+      {
+        kind: "pi-implement",
+        runId: deps.runId,
+        taskId,
+        role,
+      },
+      deps.papercutStoreFactory,
+    );
+    if (!result) {
+      return;
+    }
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "papercuts_processed",
+        role,
+        taskId,
+        created: result.created,
+        merged: result.merged,
+        suppressed: result.suppressed,
+        rejected: result.rejected,
+      });
+      if (result.warning) {
+        appendEvent(deps.paths, {
+          type: "papercuts_warning",
+          role,
+          taskId,
+          message: result.warning,
+        });
+      }
+    }
+    const summary = `Papercuts: ${result.created} created, ${result.merged} merged, ${result.suppressed} suppressed`;
+    deps.updateState((prev) => checkpointPatch(prev, summary));
+  } catch (error) {
+    const message = `Papercut persistence failed: ${error instanceof Error ? error.message : String(error)}`;
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "papercuts_warning",
+        role,
+        taskId,
+        message,
+      });
+    }
+    deps.updateState((prev) => checkpointPatch(prev, message));
+  }
+}
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -973,6 +1034,7 @@ export type OrchestratorDeps = {
   shouldStop(): boolean;
   signal?: AbortSignal;
   verifyCommand?: string;
+  papercutStoreFactory?: PapercutStoreFactory;
 };
 
 export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
@@ -2282,6 +2344,7 @@ async function tryIntegrationSelfHeal(
     return undefined;
   }
 
+  await recordPapercuts(deps, result.result, "selfHeal", taskId);
   return parsed;
 }
 
@@ -2536,6 +2599,7 @@ async function trySchedulerSelfHeal(
       return undefined;
     }
 
+    await recordPapercuts(deps, result.result, "selfHeal");
     return parsed;
   } catch {
     return undefined;
@@ -3385,6 +3449,8 @@ Plan artifacts are not part of the implementation commit and should be ignored: 
 ${diff}
 \`\`\`
 
+${PAPERCUT_GUIDANCE}
+
 Submit the integration review verdict through the injected completion tool as your final action.`;
 
   const id = await deps.subagents.spawn({
@@ -3428,6 +3494,7 @@ Submit the integration review verdict through the injected completion tool as yo
       JSON.stringify(result.result, null, 2),
     );
   }
+  await recordPapercuts(deps, result.result, "reviewer", taskId);
   const verdict = parseIntegrationReviewVerdict(result.result);
   if (verdict.ok) {
     return { ok: true };
@@ -3572,6 +3639,7 @@ async function runOverallReviewOnce(
   if (result.status !== "completed") {
     throw new BlockedError(`Overall review ${result.status}: ${result.error}`);
   }
+  const completion = result.result;
 
   // Boundary checks
   if ((await deps.git.head()) !== preReviewHead) {
@@ -3596,7 +3664,8 @@ async function runOverallReviewOnce(
     throw new BlockedError("overall reviewer changed worktree state");
   }
 
-  const verdict = parseOverallReviewVerdict(result.result);
+  await recordPapercuts(deps, completion, "reviewer");
+  const verdict = parseOverallReviewVerdict(completion);
   if (verdict.verdict === "approved") {
     return { verdict: "approved" };
   }
@@ -3823,6 +3892,8 @@ async function runOverallReworkAttempt(
       blocking: false,
     };
   }
+
+  await recordPapercuts(deps, result.result, "overall-rework");
 
   // Stage all except plan artifacts
   await deps.git.stageAllExcept(planArtifacts);
@@ -4888,6 +4959,7 @@ async function runTaskWorker(args: {
       continue;
     }
     priorSummary = parsed.result.summary;
+    await recordPapercuts(deps, implementation.result, "implementer", taskId);
 
     await taskGit.stageAllExcept(planArtifacts);
     const hasStaged = await taskGit.hasStagedChanges();
@@ -5181,6 +5253,7 @@ async function runTaskWorker(args: {
         attempt++;
         continue;
       }
+      await recordPapercuts(deps, review.result, "reviewer", taskId);
       const isAnchoredReview = (priorReviewRequiredChanges?.length ?? 0) > 0;
       let unresolved: string[] = [];
       if (verdict.verdict === "changes_requested") {

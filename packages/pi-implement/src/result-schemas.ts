@@ -1,4 +1,4 @@
-import { Type, type Static } from "typebox";
+import { Type, type Static, type TSchema } from "typebox";
 
 const nonEmptyString = () => Type.String({ minLength: 1 });
 const stringArray = () => Type.Array(nonEmptyString());
@@ -7,6 +7,9 @@ const verificationStepSchema = Type.Object({
   result: nonEmptyString(),
   rationale: nonEmptyString(),
 });
+const papercutCandidatesSchema = Type.Optional(Type.Array(Type.Unknown()));
+const withPapercuts = <T extends Record<string, TSchema>>(schema: T) =>
+  Type.Object({ ...schema, papercuts: papercutCandidatesSchema });
 
 const sourceMaterialModeSchema = Type.Union([
   Type.Object({ kind: Type.Literal("full-file") }),
@@ -113,13 +116,13 @@ export const sourceMaterialRepairSchema = Type.Union([
 ]);
 
 export const implementerResultSchema = Type.Union([
-  Type.Object({
+  withPapercuts({
     outcome: Type.Literal("changed"),
     summary: nonEmptyString(),
     verification: Type.Array(verificationStepSchema, { minItems: 1 }),
     commitMessage: nonEmptyString(),
   }),
-  Type.Object({
+  withPapercuts({
     outcome: Type.Literal("already_satisfied"),
     summary: nonEmptyString(),
     verification: Type.Array(verificationStepSchema, { minItems: 1 }),
@@ -128,16 +131,16 @@ export const implementerResultSchema = Type.Union([
 ]);
 
 export const reviewerVerdictSchema = Type.Union([
-  Type.Object({ verdict: Type.Literal("approved") }),
-  Type.Object({
+  withPapercuts({ verdict: Type.Literal("approved") }),
+  withPapercuts({
     verdict: Type.Literal("changes_requested"),
     requiredChanges: Type.Array(nonEmptyString(), { minItems: 1 }),
   }),
 ]);
 
 export const integrationReviewSchema = Type.Union([
-  Type.Object({ verdict: Type.Literal("approved") }),
-  Type.Object({
+  withPapercuts({ verdict: Type.Literal("approved") }),
+  withPapercuts({
     verdict: Type.Literal("changes_requested"),
     requiredChanges: Type.Array(nonEmptyString(), { minItems: 1 }),
     reason: Type.Optional(nonEmptyString()),
@@ -153,8 +156,11 @@ const selfHealBaseSchema = {
 };
 
 export const integrationSelfHealSchema = Type.Union([
-  Type.Object({ ...selfHealBaseSchema, retryIntegration: Type.Literal(false) }),
-  Type.Object({
+  withPapercuts({
+    ...selfHealBaseSchema,
+    retryIntegration: Type.Literal(false),
+  }),
+  withPapercuts({
     ...selfHealBaseSchema,
     retryIntegration: Type.Literal(true),
     retryMode: Type.Union([
@@ -165,21 +171,21 @@ export const integrationSelfHealSchema = Type.Union([
   }),
 ]);
 
-export const schedulerSelfHealSchema = Type.Object({
+export const schedulerSelfHealSchema = withPapercuts({
   ...selfHealBaseSchema,
   retryScheduler: Type.Boolean(),
 });
 
 export const overallReviewSchema = Type.Union([
-  Type.Object({ verdict: Type.Literal("approved") }),
-  Type.Object({
+  withPapercuts({ verdict: Type.Literal("approved") }),
+  withPapercuts({
     verdict: Type.Literal("changes_requested"),
     requiredChanges: Type.Array(nonEmptyString(), { minItems: 1 }),
     recommendationMarkdown: Type.Optional(nonEmptyString()),
   }),
 ]);
 
-export const overallReworkSchema = Type.Object({
+export const overallReworkSchema = withPapercuts({
   summary: nonEmptyString(),
   verification: Type.Array(verificationStepSchema, { minItems: 1 }),
   commitMessage: Type.Optional(nonEmptyString()),

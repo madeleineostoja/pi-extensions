@@ -68,6 +68,7 @@ const READ_ONLY_TOOLS = [
 const MUTATING_TOOLS = [
   "edit",
   "write",
+  "propose_papercut",
   "Agent",
   "get_subagent_result",
   "steer_subagent",
@@ -117,7 +118,7 @@ export class RuntimeSubagentClient implements SubagentClient {
             ),
             excludeTools: MUTATING_TOOLS,
           }
-        : {}),
+        : { excludeTools: ["propose_papercut"] }),
     });
     return snapshot.id;
   }

@@ -1,6 +1,10 @@
 import type { ExecutionManifest } from "./execution-plan.js";
 import type { ParsedImplementerResult } from "./verdict.js";
 
+export const PAPERCUT_GUIDANCE = `## Optional Papercut Candidates
+
+If this work exposed a novel recurring project-specific failure absent from current instructions, tests, tooling, or docs, include it in the optional \`papercuts\` result array. Exclude expected intermediate, transient, ordinary self-corrected, and correctly guided failures.`;
+
 export function formatExecutionManifestSummary(
   manifest?: ExecutionManifest,
 ): string {
@@ -113,6 +117,8 @@ ${args.compiledContract}
 
 ${formatSourceMaterialSection(args.sourceMaterial)}
 
+${PAPERCUT_GUIDANCE}
+
 Submit the result through the injected completion tool as your final action.
 `;
 }
@@ -208,6 +214,8 @@ ${args.implementer.summary}
 
 ${formatVerification(args.implementer)}
 
+${PAPERCUT_GUIDANCE}
+
 Submit the review verdict through the injected completion tool as your final action. For requested changes, include at most five concise, concrete required changes.
 `;
 }
@@ -267,6 +275,8 @@ ${formatVerification(args.implementer)}
 Current HEAD: ${args.headSha}
 
 ${diffSection}
+${PAPERCUT_GUIDANCE}
+
 Submit the review verdict through the injected completion tool as your final action. For requested changes, include at most five concise, concrete required changes.
 `;
 }
@@ -342,6 +352,8 @@ Submit the self-heal result through the injected completion tool as your final a
 - \`retry_validation\`: the candidate is already applied and only validation should be rerun, usually after environment repair such as dependency installation.
 
 If you cannot repair the issue, set \`repaired: false\` and \`retryIntegration: false\`, and provide a clear \`remainingBlocker\`.
+
+${PAPERCUT_GUIDANCE}
 `;
 }
 
@@ -418,6 +430,8 @@ You must NOT:
 Submit the self-heal result through the injected completion tool as your final action.
 
 If you cannot repair the issue, set \`repaired: false\` and \`retryScheduler: false\`, and provide a clear \`remainingBlocker\`.
+
+${PAPERCUT_GUIDANCE}
 `;
 }
 
@@ -474,6 +488,8 @@ ${args.diff}
 - Approve if the feature is complete, correct, and the tasks integrate well.
 - Request changes if there are material gaps, missed edge cases, integration problems, or insufficient verification.
 - Be specific about what must change. In particular, check for planner/compiler omissions: requirements in the original plan that may have been missed because no compiled task contract covered them.
+
+${PAPERCUT_GUIDANCE}
 
 Submit the overall review verdict through the injected completion tool as your final action. For requested changes, include concrete follow-up changes and optional concise recovery guidance.
 `;
@@ -546,6 +562,8 @@ ${args.diff}
 
 ${args.requiredChanges.map((c) => `- ${c}`).join("\n")}
 ${recommendationSection}${priorFailuresSection}
+${PAPERCUT_GUIDANCE}
+
 Submit the overall rework result through the injected completion tool as your final action.
 
 The commitMessage is optional; if omitted or invalid, a fallback will be used.

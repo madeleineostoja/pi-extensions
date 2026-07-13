@@ -50,12 +50,13 @@ class FakeGit implements GitClient {
   deletedBranches: string[] = [];
   worktreeChild: FakeGit | undefined;
   rootValue = "/repo";
+  mainRootValue = "/repo";
 
   async root() {
     return this.rootValue;
   }
   async mainRoot() {
-    return this.rootValue;
+    return this.mainRootValue;
   }
   activeOperationValue: string | undefined;
   async checkoutIdentity() {
@@ -194,6 +195,7 @@ class FakeGit implements GitClient {
       this.worktreeChild.headValue = this.headValue;
     }
     this.worktreeChild.rootValue = worktreePath;
+    this.worktreeChild.mainRootValue = this.mainRootValue;
     return this.worktreeChild;
   }
 }
@@ -638,6 +640,106 @@ describe("runImplementation", () => {
       ]),
     );
     expect(states.at(-1)).toMatchObject({ phase: "done" });
+  });
+
+  it("persists serial worker candidates to the main root with concise events", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    const git = new FakeGit();
+    git.rootValue = "/serial-checkout";
+    git.mainRootValue = "/main-checkout";
+    const store = { propose: async () => ({ kind: "created" as const }) };
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: { ...GOOD_IMPL, papercuts: [{ key: "gap" }] },
+      },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      paths,
+      runId: "r1",
+      mode: "serial",
+      papercutStoreFactory: async (root) => {
+        expect(root).toBe("/main-checkout");
+        return store;
+      },
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    expect(readEvents(paths)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "papercuts_processed",
+          created: 1,
+          merged: 0,
+          suppressed: 0,
+        }),
+      ]),
+    );
+  });
+
+  it("keeps papercut store failures advisory for approved implementation work", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: { ...GOOD_IMPL, papercuts: [{ key: "gap" }] },
+      },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        paths,
+        runId: "r1",
+        mode: "serial",
+        papercutStoreFactory: async () => {
+          throw new Error("unavailable");
+        },
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(readEvents(paths)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "papercuts_warning",
+          message: expect.stringContaining("unavailable"),
+        }),
+      ]),
+    );
   });
 
   it("serial task implementer spawn uses the task cwd and role", async () => {
@@ -3448,6 +3550,53 @@ describe("runImplementation", () => {
     expect(readFileSync(join(taskDir, "diff.patch"), "utf-8")).toContain(
       "diff --git",
     );
+  });
+
+  it("routes task-worktree candidates to the main checkout store", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const git = new FakeGit();
+    git.rootValue = "/main-checkout";
+    git.mainRootValue = "/main-checkout";
+    const child = new FakeGit();
+    git.worktreeChild = child;
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      {
+        status: "completed",
+        result: { ...GOOD_IMPL, papercuts: [{ key: "gap" }] },
+      },
+      { status: "completed", result: GOOD_REVIEW },
+    ];
+    const paths = makePaths(dir);
+    const roots: string[] = [];
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        papercutStoreFactory: async (root) => {
+          roots.push(root);
+          return { propose: async () => ({ kind: "created" as const }) };
+        },
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("parallel task approved");
+
+    expect(child.rootValue).toContain(paths.worktreesDir);
+    expect(roots).toEqual(["/main-checkout"]);
   });
 
   it("worktree-backed task implementer spawn carries cwd === worktreePath", async () => {

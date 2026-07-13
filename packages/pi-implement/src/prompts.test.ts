@@ -3,9 +3,12 @@ import type { ExecutionManifest } from "./execution-plan.js";
 import {
   buildAlreadySatisfiedReviewerPrompt,
   buildImplementerPrompt,
-  buildOverallReviewerPrompt,
+  buildIntegrationSelfHealPrompt,
   buildOverallReworkPrompt,
+  buildOverallReviewerPrompt,
   buildReviewerPrompt,
+  buildSchedulerSelfHealPrompt,
+  PAPERCUT_GUIDANCE,
 } from "./prompts.js";
 
 const WORKTREE_PATH = "/repo/.pi/implement/worktrees/r1/t001-my-task";
@@ -37,6 +40,69 @@ Do the thing.
 
 - Sibling item
 `;
+
+describe("papercut prompt guidance", () => {
+  it("is included for every eligible role and omitted from planner/material selection prompts", () => {
+    expect(
+      buildImplementerPrompt({
+        compiledContract: COMPILED_CONTRACT,
+        worktreePath: WORKTREE_PATH,
+      }),
+    ).toContain(PAPERCUT_GUIDANCE);
+    expect(
+      buildReviewerPrompt({
+        compiledContract: COMPILED_CONTRACT,
+        worktreePath: WORKTREE_PATH,
+        implementer: IMPLEMENTER_RESULT,
+      }),
+    ).toContain(PAPERCUT_GUIDANCE);
+    expect(
+      buildIntegrationSelfHealPrompt({
+        taskId: "task-1",
+        title: "Task",
+        planIndex: 0,
+        taskCommitSha: "abc",
+        preIntegrationHead: "def",
+        mainCheckoutPath: "/repo",
+      }),
+    ).toContain(PAPERCUT_GUIDANCE);
+    expect(
+      buildSchedulerSelfHealPrompt({
+        runId: "run-1",
+        baseSha: "abc",
+        currentHead: "def",
+        planPath: "/repo/plan.md",
+        graphSummary: "graph",
+        eventsTail: "",
+        gitStatus: "",
+        matchingBranches: [],
+        worktrees: [],
+      }),
+    ).toContain(PAPERCUT_GUIDANCE);
+    expect(
+      buildOverallReviewerPrompt({
+        planContent: "# Plan",
+        planPath: "/repo/plan.md",
+        baseSha: "abc",
+        headSha: "def",
+        diff: "diff",
+      }),
+    ).toContain(PAPERCUT_GUIDANCE);
+    expect(
+      buildOverallReworkPrompt({
+        planContent: "# Plan",
+        planPath: "/repo/plan.md",
+        baseSha: "abc",
+        headSha: "def",
+        diff: "diff",
+        requiredChanges: ["Fix it"],
+      }),
+    ).toContain(PAPERCUT_GUIDANCE);
+    expect(PAPERCUT_GUIDANCE).toContain(
+      "expected intermediate, transient, ordinary self-corrected, and correctly guided failures",
+    );
+  });
+});
 
 describe("buildImplementerPrompt", () => {
   it("carries the compiled contract and assigned worktree contract", () => {

@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@pi-extensions/lib": "0.1.0",
+    "pi-papercuts": "*",
     "pi-subagents": "*"
   },
   "pi": {
