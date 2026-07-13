@@ -1,0 +1,23 @@
+{
+  "name": "pi-lsp",
+  "description": "Read-only, workspace-scoped LSP runtime for Pi extensions.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "pi-package",
+    "lsp",
+    "language-server"
+  ],
+  "dependencies": {
+    "svelte-language-server": "0.17.19",
+    "typescript": "5.7.3",
+    "typescript-language-server": "4.3.3"
+  },
+  "scripts": {
+    "test": "vitest run --testTimeout 15000"
+  }
+}
