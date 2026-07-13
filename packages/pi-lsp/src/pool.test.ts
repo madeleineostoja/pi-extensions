@@ -5,7 +5,12 @@ import { join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContentLengthDecoder, encodeMessage } from "./protocol.js";
-import { getLspPool, LspPool, type PoolAcquireResult } from "./pool.js";
+import {
+  getLspPool,
+  LspPool,
+  LSP_POOL_MANAGER_KEY,
+  type PoolAcquireResult,
+} from "./pool.js";
 import type { ResolvedServer } from "./server.js";
 
 class FakeChild extends EventEmitter {
@@ -102,6 +107,23 @@ describe("LspPool", () => {
     await pool.shutdown();
   });
 
+  it("terminates a crashed client's child before replacement", async () => {
+    const first = new FakeChild();
+    const second = new FakeChild();
+    respondToInitialize(first);
+    respondToInitialize(second);
+    const children = [first, second];
+    const pool = new LspPool({
+      spawn: vi.fn(() => children.shift()!) as never,
+    });
+    const root = workspace();
+    expect(isClient(await pool.acquire(server(), root))).toBe(true);
+    first.emit("exit", 1, null);
+    expect(first.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(isClient(await pool.acquire(server(), root))).toBe(true);
+    await pool.shutdown();
+  });
+
   it("removes crashed clients so a later request starts a replacement", async () => {
     const first = new FakeChild();
     const second = new FakeChild();
@@ -128,9 +150,30 @@ describe("LspPool", () => {
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
-  it("replaces a closed global pool", async () => {
+  it("forcefully stops initialized clients during pool shutdown", async () => {
+    const child = new FakeChild();
+    respondToInitialize(child);
+    const pool = new LspPool({ spawn: vi.fn(() => child) as never });
+    const root = workspace();
+    expect(isClient(await pool.acquire(server(), root))).toBe(true);
+    const methods: string[] = [];
+    child.stdin.on("data", (frame: Buffer) => {
+      methods.push(new ContentLengthDecoder().push(frame)[0].method!);
+    });
+    await pool.shutdown();
+    expect(methods).not.toContain("shutdown");
+    expect(methods).not.toContain("exit");
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(pool.status()).toEqual([]);
+  });
+
+  it("replaces a closed or invalid global pool manager", async () => {
     const first = getLspPool();
     await first.shutdown();
+    const scope = globalThis as Record<symbol, unknown>;
+    scope[LSP_POOL_MANAGER_KEY] = {
+      pool: { closed: false, acquire() {}, shutdown: "not-a-function" },
+    };
     const second = getLspPool();
     expect(second).not.toBe(first);
     await second.shutdown();

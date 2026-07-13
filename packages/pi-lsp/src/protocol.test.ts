@@ -52,30 +52,42 @@ describe("Content-Length JSON-RPC protocol", () => {
     await expect(second).resolves.toBe("second");
     await expect(first).rejects.toThrow("bad");
   });
-  it("cancels timed out, pre-aborted, and aborted requests", async () => {
+  it("settles pre-aborted requests without writing", async () => {
     const child = new FakeProcess();
     const connection = new JsonRpcConnection(child);
     const writes: Buffer[] = [];
     child.stdin.on("data", (value) => writes.push(Buffer.from(value)));
-    await expect(
-      connection.request("slow", {}, { timeoutMs: 1 }),
-    ).rejects.toBeInstanceOf(RequestTimeoutError);
-    const preAborted = new AbortController();
-    preAborted.abort();
-    await expect(
-      connection.request("pre-abort", {}, { signal: preAborted.signal }),
-    ).rejects.toBeInstanceOf(RequestCancelledError);
     const controller = new AbortController();
-    const request = connection.request(
-      "abort",
-      {},
-      { signal: controller.signal },
-    );
     controller.abort();
-    await expect(request).rejects.toBeInstanceOf(RequestCancelledError);
-    expect(
-      writes.map((value) => new ContentLengthDecoder().push(value)[0].method),
-    ).toContain("$/cancelRequest");
+    await expect(
+      connection.request("pre-abort", {}, { signal: controller.signal }),
+    ).rejects.toBeInstanceOf(RequestCancelledError);
+    expect(writes).toEqual([]);
+  });
+  it("cancels sent requests for timeouts and aborts", async () => {
+    vi.useFakeTimers();
+    try {
+      const child = new FakeProcess();
+      const connection = new JsonRpcConnection(child);
+      const writes: Buffer[] = [];
+      child.stdin.on("data", (value) => writes.push(Buffer.from(value)));
+      const timedOut = connection
+        .request("slow", {}, { timeoutMs: 100 })
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(timedOut).resolves.toBeInstanceOf(RequestTimeoutError);
+      const controller = new AbortController();
+      const aborted = connection
+        .request("abort", {}, { signal: controller.signal })
+        .catch((error: unknown) => error);
+      controller.abort();
+      await expect(aborted).resolves.toBeInstanceOf(RequestCancelledError);
+      expect(
+        writes.map((value) => new ContentLengthDecoder().push(value)[0].method),
+      ).toEqual(["slow", "$/cancelRequest", "abort", "$/cancelRequest"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("rejects pending work on crash and safely rejects server edits", async () => {
     const child = new FakeProcess();
@@ -100,7 +112,7 @@ describe("Content-Length JSON-RPC protocol", () => {
       failureReason: "pi-lsp is read-only",
     });
   });
-  it("does not throw when cancellation or a server reply races a close", async () => {
+  it("does not write notifications or replies after close races", async () => {
     const child = new FakeProcess();
     const connection = new JsonRpcConnection(child, async () => {
       child.emit("exit", 1, null);

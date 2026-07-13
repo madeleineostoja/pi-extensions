@@ -203,10 +203,15 @@ export class LspClient {
           };
     });
   }
-  async shutdown(): Promise<void> {
+  async shutdown(options: { force?: boolean } = {}): Promise<void> {
     if (this.#shutdown) {
+      if (options.force) {
+        this.#clearWaiters();
+        this.#connection.close(new Error("LSP client forcefully shut down"));
+      }
       return this.#shutdown;
     }
+    this.#clearWaiters();
     this.#shutdown = (async () => {
       for (const uri of this.#documents.keys()) {
         try {
@@ -216,7 +221,7 @@ export class LspClient {
         } catch {}
       }
       this.#documents.clear();
-      if (this.#initialized && !this.#connection.closed) {
+      if (!options.force && this.#initialized && !this.#connection.closed) {
         try {
           await this.#request("shutdown", {}, { timeoutMs: 1_000 });
         } catch {
@@ -226,7 +231,6 @@ export class LspClient {
           } catch {}
         }
       }
-      this.#clearWaiters();
       this.#connection.close();
     })();
     return this.#shutdown;

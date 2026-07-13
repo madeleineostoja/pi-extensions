@@ -86,6 +86,7 @@ type Pending = {
   timer?: ReturnType<typeof setTimeout>;
   signal?: AbortSignal;
   abort?: () => void;
+  sent: boolean;
 };
 export type ServerRequestHandler = (
   method: string,
@@ -148,7 +149,9 @@ export class JsonRpcConnection {
   }
 
   notify(method: string, params?: unknown): void {
-    this.#write({ method, ...(params === undefined ? {} : { params }) });
+    try {
+      this.#write({ method, ...(params === undefined ? {} : { params }) });
+    } catch {}
   }
 
   request(
@@ -156,6 +159,11 @@ export class JsonRpcConnection {
     params?: unknown,
     options: { timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<unknown> {
+    if (options.signal?.aborted) {
+      return Promise.reject(
+        new RequestCancelledError(`LSP request cancelled: ${method}`),
+      );
+    }
     if (this.#closed) {
       return Promise.reject(
         new Error(`LSP connection is closed: ${this.#stderr}`),
@@ -164,7 +172,13 @@ export class JsonRpcConnection {
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
       const cancel = () => {
-        this.#safeNotify("$/cancelRequest", { id });
+        const pending = this.#pending.get(id);
+        if (!pending) {
+          return;
+        }
+        if (pending.sent) {
+          this.#safeNotify("$/cancelRequest", { id });
+        }
         this.#settle(
           id,
           new RequestCancelledError(`LSP request cancelled: ${method}`),
@@ -175,10 +189,13 @@ export class JsonRpcConnection {
         reject,
         signal: options.signal,
         abort: cancel,
+        sent: false,
       };
       if (options.timeoutMs !== undefined) {
         pending.timer = setTimeout(() => {
-          this.#safeNotify("$/cancelRequest", { id });
+          if (this.#pending.get(id)?.sent) {
+            this.#safeNotify("$/cancelRequest", { id });
+          }
           this.#settle(
             id,
             new RequestTimeoutError(`LSP request timed out: ${method}`),
@@ -187,16 +204,16 @@ export class JsonRpcConnection {
       }
       this.#pending.set(id, pending);
       options.signal?.addEventListener("abort", cancel, { once: true });
-      if (options.signal?.aborted) {
-        cancel();
-        return;
-      }
       try {
         this.#write({
           id,
           method,
           ...(params === undefined ? {} : { params }),
         });
+        const active = this.#pending.get(id);
+        if (active) {
+          active.sent = true;
+        }
       } catch (error) {
         this.#settle(
           id,
@@ -217,9 +234,7 @@ export class JsonRpcConnection {
     this.#transport.stdin.write(encodeMessage(message));
   }
   #safeNotify(method: string, params?: unknown): void {
-    try {
-      this.notify(method, params);
-    } catch {}
+    this.notify(method, params);
   }
   #receive(chunk: Buffer): void {
     try {

@@ -30,7 +30,7 @@ export type LspPoolOptions = {
   initializeTimeoutMs?: number;
   spawn?: typeof spawn;
 };
-const managerKey = Symbol.for("pi-lsp:pool");
+export const LSP_POOL_MANAGER_KEY = Symbol.for("pi-lsp:pool");
 const defaultOptions = {
   maxProcesses: 6,
   idleMs: 5 * 60_000,
@@ -184,7 +184,9 @@ export class LspPool {
       client = new LspClient(connection, workspaceRoot);
       connection.onClose(() => {
         if (entry.client === client && this.#entries.get(entry.key) === entry) {
+          entry.disposed = true;
           this.#entries.delete(entry.key);
+          this.#terminate(entry.process);
         }
       });
       await client.initialize(
@@ -195,11 +197,12 @@ export class LspPool {
         { timeoutMs: this.#options.initializeTimeoutMs },
       );
       if (
+        connection.closed ||
         this.#closed ||
         entry.disposed ||
         this.#entries.get(entry.key) !== entry
       ) {
-        await client.shutdown();
+        await client.shutdown({ force: true });
         throw new Error("LSP startup was cancelled");
       }
       entry.client = client;
@@ -248,7 +251,7 @@ export class LspPool {
     }
     entry.abortStart?.();
     try {
-      await entry.client?.shutdown();
+      await entry.client?.shutdown({ force });
     } finally {
       this.#terminate(entry.process);
     }
@@ -300,19 +303,27 @@ export class LspPool {
   }
 }
 
-type GlobalManager = { pool?: { closed?: unknown; acquire?: unknown } };
+type GlobalManager = { pool?: unknown };
+function isLivePool(value: unknown): value is LspPool {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "closed" in value &&
+    (value as { closed?: unknown }).closed === false &&
+    "acquire" in value &&
+    typeof (value as { acquire?: unknown }).acquire === "function" &&
+    "shutdown" in value &&
+    typeof (value as { shutdown?: unknown }).shutdown === "function"
+  );
+}
 export function getLspPool(): LspPool {
   const scope = globalThis as Record<symbol, unknown>;
-  const existing = scope[managerKey] as GlobalManager | undefined;
-  if (
-    existing?.pool &&
-    existing.pool.closed === false &&
-    typeof existing.pool.acquire === "function"
-  ) {
-    return existing.pool as LspPool;
+  const existing = scope[LSP_POOL_MANAGER_KEY] as GlobalManager | undefined;
+  if (isLivePool(existing?.pool)) {
+    return existing.pool;
   }
   const manager = { pool: new LspPool() };
-  scope[managerKey] = manager;
+  scope[LSP_POOL_MANAGER_KEY] = manager;
   return manager.pool;
 }
 

@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LspClient } from "./client.js";
@@ -185,6 +186,48 @@ describe("document synchronization and diagnostics", () => {
     );
     controller.abort();
     await expect(waiting).rejects.toThrow("cancelled");
+  });
+
+  it("sends exit after graceful shutdown and skips the handshake when forced", async () => {
+    const dir = temp();
+    const file = join(dir, "sample.ts");
+    writeFileSync(file, "one");
+    const root = realpathSync(dir);
+    const graceful = setup(root);
+    const initialization = graceful.client.initialize(pathToFileURL(root).href);
+    await vi.waitFor(() =>
+      expect(graceful.requests.at(-1)?.method).toBe("initialize"),
+    );
+    graceful.process.stdout.write(
+      encodeMessage({
+        id: graceful.requests.at(-1)!.id,
+        result: { capabilities: {} },
+      }),
+    );
+    await initialization;
+    await graceful.client.synchronize(file, "typescript");
+    const closing = graceful.client.shutdown();
+    await vi.waitFor(() =>
+      expect(graceful.requests.at(-1)?.method).toBe("shutdown"),
+    );
+    graceful.process.stdout.write(
+      encodeMessage({ id: graceful.requests.at(-1)!.id, result: null }),
+    );
+    await closing;
+    expect(graceful.requests.map((request) => request.method)).toContain(
+      "textDocument/didClose",
+    );
+    expect(graceful.requests.map((request) => request.method)).toContain(
+      "exit",
+    );
+
+    const forced = setup(dir);
+    await forced.client.synchronize(file, "typescript");
+    await forced.client.shutdown({ force: true });
+    expect(forced.requests.map((request) => request.method)).toEqual([
+      "textDocument/didOpen",
+      "textDocument/didClose",
+    ]);
   });
 
   it("rejects files and diagnostic publications outside its workspace", async () => {
