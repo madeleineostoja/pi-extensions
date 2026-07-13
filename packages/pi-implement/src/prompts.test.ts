@@ -127,20 +127,16 @@ describe("buildImplementerPrompt", () => {
     expect(prompt).not.toContain("Sibling task A");
   });
 
-  it("documents both outcome values in the result schema", () => {
+  it("directs the implementer to submit a typed completion", () => {
     const prompt = buildImplementerPrompt({
       compiledContract: COMPILED_CONTRACT,
       worktreePath: WORKTREE_PATH,
     });
 
-    expect(prompt).toContain('outcome: "changed"');
-    expect(prompt).toContain('outcome: "already_satisfied"');
     expect(prompt).toContain(
-      "when the current repository state already satisfies the selected task and no file changes are necessary",
+      "Submit the result through the injected completion tool as your final action.",
     );
-    expect(prompt).toContain(
-      "You must verify the selected task against current files and tests before claiming",
-    );
+    expect(prompt).not.toContain("<pi-implement-result>");
   });
 
   it("includes selected task source material without dropping the compiled contract", () => {
@@ -533,11 +529,9 @@ Raw auth requirement.
     });
 
     expect(prompt).toContain(
-      '<pi-review-result>\n{\n  "verdict": "approved"\n}\n</pi-review-result>',
+      "Submit the review verdict through the injected completion tool as your final action.",
     );
-    expect(prompt).toContain(
-      '<pi-review-result>\n{\n  "verdict": "changes_requested",\n  "requiredChanges": [\n    "Concrete material issue that must be fixed before approval."\n  ]\n}\n</pi-review-result>',
-    );
+    expect(prompt).not.toContain("<pi-review-result>");
     expect(prompt).not.toContain("reviewDepth");
     expect(prompt).not.toContain("triageReason");
   });
@@ -842,12 +836,14 @@ describe("buildOverallReviewerPrompt", () => {
     expect(prompt).toContain("t001-task");
     expect(prompt).toContain("aaa1111");
     expect(prompt).toContain("diff --git a/file.ts b/file.ts");
-    expect(prompt).toContain("<pi-overall-review-result>");
+    expect(prompt).toContain(
+      "Submit the overall review verdict through the injected completion tool",
+    );
     expect(prompt).toContain(
       "Per-task reviewers may have approved simple tasks after bounded triage; this overall pass remains responsible for whole-feature integration and missed original-plan requirements.",
     );
-    expect(prompt).toContain("approved");
-    expect(prompt).toContain("changes_requested");
+    expect(prompt).toContain("Approve if the feature is complete");
+    expect(prompt).toContain("Request changes if there are material gaps");
   });
 
   it("omits run ID and landed tasks when not provided", () => {

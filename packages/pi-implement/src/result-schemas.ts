@@ -1,0 +1,209 @@
+import { Type, type Static } from "typebox";
+
+const nonEmptyString = () => Type.String({ minLength: 1 });
+const stringArray = () => Type.Array(nonEmptyString());
+const verificationStepSchema = Type.Object({
+  command: nonEmptyString(),
+  result: nonEmptyString(),
+  rationale: nonEmptyString(),
+});
+
+const sourceMaterialModeSchema = Type.Union([
+  Type.Object({ kind: Type.Literal("full-file") }),
+  Type.Object({
+    kind: Type.Literal("line-range"),
+    startLine: Type.Integer({ minimum: 1 }),
+    endLine: Type.Integer({ minimum: 1 }),
+  }),
+]);
+
+export const sourceMaterialReferenceSchema = Type.Object({
+  origin: Type.Union([
+    Type.Literal("task-anchor"),
+    Type.Literal("task-link"),
+    Type.Literal("planner"),
+    Type.Literal("needs-material"),
+    Type.Literal("fallback"),
+  ]),
+  path: nonEmptyString(),
+  mode: sourceMaterialModeSchema,
+  reason: nonEmptyString(),
+});
+
+export const needsMaterialRequestSchema = Type.Object({
+  pathHint: nonEmptyString(),
+  relativeTo: Type.Optional(nonEmptyString()),
+  reason: nonEmptyString(),
+});
+
+export const needsMaterialResponseSchema = Type.Object({
+  kind: Type.Literal("needs_material"),
+  requests: Type.Array(needsMaterialRequestSchema, { minItems: 1 }),
+});
+
+const compiledContractSchema = Type.Object({
+  objective: nonEmptyString(),
+  inScope: Type.Array(nonEmptyString(), { minItems: 1 }),
+  acceptanceCriteria: Type.Array(nonEmptyString(), { minItems: 1 }),
+  outOfScope: Type.Array(nonEmptyString(), { minItems: 1 }),
+  supportingDesignContext: Type.Optional(nonEmptyString()),
+  implementationNotes: Type.Optional(nonEmptyString()),
+  verificationGuidance: Type.Optional(nonEmptyString()),
+});
+
+const executionTaskSchema = Type.Object({
+  id: nonEmptyString(),
+  planIndex: Type.Optional(Type.Integer({ minimum: 1 })),
+  title: nonEmptyString(),
+  taskHash: Type.Optional(nonEmptyString()),
+  status: Type.Union([Type.Literal("todo"), Type.Literal("done")]),
+  dependsOn: stringArray(),
+  mode: Type.Optional(
+    Type.Union([Type.Literal("serial"), Type.Literal("parallel")]),
+  ),
+  affectedAreas: stringArray(),
+  conflictHints: stringArray(),
+  sourceReferences: stringArray(),
+  sourceRefs: Type.Optional(
+    Type.Array(
+      Type.Object({
+        path: nonEmptyString(),
+        quote: Type.Optional(nonEmptyString()),
+      }),
+    ),
+  ),
+  sourceMaterialRefs: Type.Optional(Type.Array(sourceMaterialReferenceSchema)),
+  validationCommands: Type.Optional(stringArray()),
+  reasons: Type.Optional(stringArray()),
+  evidencePaths: Type.Optional(stringArray()),
+  sourceCheckbox: Type.Optional(
+    Type.Object({
+      path: nonEmptyString(),
+      lineNumber: Type.Integer({ minimum: 1 }),
+      lineText: nonEmptyString(),
+    }),
+  ),
+  compiledContract: compiledContractSchema,
+});
+
+export const executionManifestSchema = Type.Object({
+  version: Type.Literal(1),
+  tasks: Type.Array(executionTaskSchema, { minItems: 1 }),
+  sourcePlanHash: Type.Optional(nonEmptyString()),
+  sourcePlanPath: Type.Optional(nonEmptyString()),
+  sourceCorpusHash: Type.Optional(nonEmptyString()),
+  plannerReason: Type.Optional(nonEmptyString()),
+  plannerConfidence: Type.Optional(
+    Type.Union([
+      Type.Literal("high"),
+      Type.Literal("medium"),
+      Type.Literal("low"),
+    ]),
+  ),
+  maxConcurrency: Type.Optional(Type.Integer({ minimum: 1 })),
+});
+
+export const sourceMaterialRepairSchema = Type.Union([
+  Type.Object({
+    taskId: nonEmptyString(),
+    sourceMaterialRefs: Type.Array(sourceMaterialReferenceSchema),
+    reason: nonEmptyString(),
+  }),
+  needsMaterialResponseSchema,
+]);
+
+export const implementerResultSchema = Type.Union([
+  Type.Object({
+    outcome: Type.Literal("changed"),
+    summary: nonEmptyString(),
+    verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+    commitMessage: nonEmptyString(),
+  }),
+  Type.Object({
+    outcome: Type.Literal("already_satisfied"),
+    summary: nonEmptyString(),
+    verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+    commitMessage: Type.Optional(nonEmptyString()),
+  }),
+]);
+
+export const reviewerVerdictSchema = Type.Union([
+  Type.Object({ verdict: Type.Literal("approved") }),
+  Type.Object({
+    verdict: Type.Literal("changes_requested"),
+    requiredChanges: Type.Array(nonEmptyString(), { minItems: 1 }),
+  }),
+]);
+
+export const integrationReviewSchema = Type.Union([
+  Type.Object({ verdict: Type.Literal("approved") }),
+  Type.Object({
+    verdict: Type.Literal("changes_requested"),
+    requiredChanges: Type.Array(nonEmptyString(), { minItems: 1 }),
+    reason: Type.Optional(nonEmptyString()),
+  }),
+]);
+
+const selfHealBaseSchema = {
+  repaired: Type.Boolean(),
+  summary: Type.Optional(nonEmptyString()),
+  commands: Type.Optional(stringArray()),
+  filesChanged: Type.Optional(stringArray()),
+  remainingBlocker: Type.Optional(Type.Union([nonEmptyString(), Type.Null()])),
+};
+
+export const integrationSelfHealSchema = Type.Union([
+  Type.Object({ ...selfHealBaseSchema, retryIntegration: Type.Literal(false) }),
+  Type.Object({
+    ...selfHealBaseSchema,
+    retryIntegration: Type.Literal(true),
+    retryMode: Type.Union([
+      Type.Literal("continue_candidate"),
+      Type.Literal("retry_cherry_pick"),
+      Type.Literal("retry_validation"),
+    ]),
+  }),
+]);
+
+export const schedulerSelfHealSchema = Type.Object({
+  ...selfHealBaseSchema,
+  retryScheduler: Type.Boolean(),
+});
+
+export const overallReviewSchema = Type.Union([
+  Type.Object({ verdict: Type.Literal("approved") }),
+  Type.Object({
+    verdict: Type.Literal("changes_requested"),
+    requiredChanges: Type.Array(nonEmptyString(), { minItems: 1 }),
+    recommendationMarkdown: Type.Optional(nonEmptyString()),
+  }),
+]);
+
+export const overallReworkSchema = Type.Object({
+  summary: nonEmptyString(),
+  verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+  commitMessage: Type.Optional(nonEmptyString()),
+});
+
+export type ExecutionManifestCompletion = Static<
+  typeof executionManifestSchema
+>;
+export type SourceMaterialRepairCompletion = Static<
+  typeof sourceMaterialRepairSchema
+>;
+export type NeedsMaterialCompletion = Static<
+  typeof needsMaterialResponseSchema
+>;
+export type ImplementerCompletion = Static<typeof implementerResultSchema>;
+export type ReviewerCompletion = Static<typeof reviewerVerdictSchema>;
+export type IntegrationReviewCompletion = Static<
+  typeof integrationReviewSchema
+>;
+export type IntegrationSelfHealCompletion = Static<
+  typeof integrationSelfHealSchema
+>;
+export type SchedulerSelfHealCompletion = Static<
+  typeof schedulerSelfHealSchema
+>;
+export type OverallReviewCompletion = Static<typeof overallReviewSchema>;
+export type OverallReworkCompletion = Static<typeof overallReworkSchema>;

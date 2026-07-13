@@ -1,6 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { extractJsonObject } from "./graph.js";
 import {
   hashContent,
   isWithinAnyAllowedRoot,
@@ -33,20 +32,8 @@ export type NeedsMaterialResolutionResult = {
 };
 
 export function parseNeedsMaterialResponse(
-  text: string,
+  parsed: unknown,
 ): { ok: true; value: NeedsMaterialResponse } | { ok: false; reason: string } {
-  const candidate = extractJsonObject(text);
-  if (!candidate.ok) {
-    return candidate;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(candidate.text);
-  } catch {
-    return { ok: false, reason: "Needs-material response is not valid JSON." };
-  }
-
   if (!isRecord(parsed)) {
     return {
       ok: false,

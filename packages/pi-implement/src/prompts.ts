@@ -113,41 +113,7 @@ ${args.compiledContract}
 
 ${formatSourceMaterialSection(args.sourceMaterial)}
 
-End with exactly one <pi-implement-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
-
-Use \`outcome: "changed"\` when you have made new code, test, or documentation changes that require a commit.
-Use \`outcome: "already_satisfied"\` only when the current repository state already satisfies the selected task and no file changes are necessary. You must verify the selected task against current files and tests before claiming \`already_satisfied\`; do not use it to avoid work.
-
-<pi-implement-result>
-{
-  "outcome": "changed",
-  "summary": "Briefly describe what changed.",
-  "verification": [
-    {
-      "command": "command or check that was run",
-      "result": "passed, failed, or not applicable",
-      "rationale": "why this verification is sufficient or what limitation remains"
-    }
-  ],
-  "commitMessage": "type: short description\\n\\nOptional body explaining non-obvious context."
-}
-</pi-implement-result>
-
-Or for already-satisfied:
-
-<pi-implement-result>
-{
-  "outcome": "already_satisfied",
-  "summary": "Briefly describe why the task is already satisfied.",
-  "verification": [
-    {
-      "command": "command or check that was run",
-      "result": "passed, failed, or not applicable",
-      "rationale": "why this verification is sufficient or what limitation remains"
-    }
-  ]
-}
-</pi-implement-result>
+Submit the result through the injected completion tool as your final action.
 `;
 }
 
@@ -242,24 +208,7 @@ ${args.implementer.summary}
 
 ${formatVerification(args.implementer)}
 
-End with exactly one <pi-review-result> block containing raw JSON. Do not wrap it in a markdown code fence. Approve with:
-
-<pi-review-result>
-{
-  "verdict": "approved"
-}
-</pi-review-result>
-
-Or request changes with at most 5 concise required changes:
-
-<pi-review-result>
-{
-  "verdict": "changes_requested",
-  "requiredChanges": [
-    "Concrete material issue that must be fixed before approval."
-  ]
-}
-</pi-review-result>
+Submit the review verdict through the injected completion tool as your final action. For requested changes, include at most five concise, concrete required changes.
 `;
 }
 
@@ -318,24 +267,7 @@ ${formatVerification(args.implementer)}
 Current HEAD: ${args.headSha}
 
 ${diffSection}
-End with exactly one <pi-review-result> block containing raw JSON. Do not wrap it in a markdown code fence. Approve with:
-
-<pi-review-result>
-{
-  "verdict": "approved"
-}
-</pi-review-result>
-
-Or request changes with at most 5 concise required changes:
-
-<pi-review-result>
-{
-  "verdict": "changes_requested",
-  "requiredChanges": [
-    "Concrete material issue that must be fixed before approval."
-  ]
-}
-</pi-review-result>
+Submit the review verdict through the injected completion tool as your final action. For requested changes, include at most five concise, concrete required changes.
 `;
 }
 
@@ -402,19 +334,7 @@ You must NOT:
 
 ## Repair Result
 
-End with exactly one <pi-self-heal-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
-
-<pi-self-heal-result>
-{
-  "repaired": true,
-  "retryIntegration": true,
-  "retryMode": "continue_candidate",
-  "summary": "Briefly describe what was repaired.",
-  "commands": ["commands", "run"],
-  "filesChanged": ["file1.ts", "package-lock.json"],
-  "remainingBlocker": null
-}
-</pi-self-heal-result>
+Submit the self-heal result through the injected completion tool as your final action.
 
 \`retryMode\` must be one of:
 - \`continue_candidate\`: the current checkout/index contains the repaired integration candidate. The orchestrator will proceed to snapshot and validation.
@@ -495,18 +415,7 @@ You must NOT:
 
 ## Repair Result
 
-End with exactly one <pi-self-heal-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
-
-<pi-self-heal-result>
-{
-  "repaired": true,
-  "retryScheduler": true,
-  "summary": "Briefly describe what was repaired.",
-  "commands": ["commands", "run"],
-  "filesChanged": [],
-  "remainingBlocker": null
-}
-</pi-self-heal-result>
+Submit the self-heal result through the injected completion tool as your final action.
 
 If you cannot repair the issue, set \`repaired: false\` and \`retryScheduler: false\`, and provide a clear \`remainingBlocker\`.
 `;
@@ -566,25 +475,7 @@ ${args.diff}
 - Request changes if there are material gaps, missed edge cases, integration problems, or insufficient verification.
 - Be specific about what must change. In particular, check for planner/compiler omissions: requirements in the original plan that may have been missed because no compiled task contract covered them.
 
-End with exactly one <pi-overall-review-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
-
-Approved:
-<pi-overall-review-result>
-{
-  "verdict": "approved"
-}
-</pi-overall-review-result>
-
-Changes requested:
-<pi-overall-review-result>
-{
-  "verdict": "changes_requested",
-  "requiredChanges": [
-    "Concrete follow-up change required before considering the feature complete."
-  ],
-  "recommendationMarkdown": "## Suggested Follow-up\\n\\n..."
-}
-</pi-overall-review-result>
+Submit the overall review verdict through the injected completion tool as your final action. For requested changes, include concrete follow-up changes and optional concise recovery guidance.
 `;
 }
 
@@ -655,21 +546,7 @@ ${args.diff}
 
 ${args.requiredChanges.map((c) => `- ${c}`).join("\n")}
 ${recommendationSection}${priorFailuresSection}
-End with exactly one <pi-overall-rework-result> block containing raw JSON matching this shape. Do not wrap it in a markdown code fence. Do not put comments in the JSON.
-
-<pi-overall-rework-result>
-{
-  "summary": "Briefly describe what changed.",
-  "verification": [
-    {
-      "command": "command or check that was run",
-      "result": "passed, failed, or not applicable",
-      "rationale": "why this verification is sufficient or what limitation remains"
-    }
-  ],
-  "commitMessage": "type: short description"
-}
-</pi-overall-rework-result>
+Submit the overall rework result through the injected completion tool as your final action.
 
 The commitMessage is optional; if omitted or invalid, a fallback will be used.
 `;

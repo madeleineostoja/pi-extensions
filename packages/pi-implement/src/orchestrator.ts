@@ -78,7 +78,17 @@ import {
   writeRunJson,
 } from "./state.js";
 import type { RunMode } from "./state.js";
-import { extractJsonObject, readGraphJson, writeGraphJson } from "./graph.js";
+import { readGraphJson, writeGraphJson } from "./graph.js";
+import {
+  implementerResultSchema,
+  integrationReviewSchema,
+  integrationSelfHealSchema,
+  overallReworkSchema,
+  overallReviewSchema,
+  reviewerVerdictSchema,
+  schedulerSelfHealSchema,
+  sourceMaterialRepairSchema,
+} from "./result-schemas.js";
 import type { ImplementGraph } from "./graph.js";
 import {
   createSchedulerRun,
@@ -575,6 +585,11 @@ async function repairPlannerSourceMaterialRefs(
       role: "planner",
       readOnly: true,
       cwd: args.repoRoot,
+      completion: {
+        description:
+          "Submit corrected source material references or a material request.",
+        schema: sourceMaterialRepairSchema,
+      },
     });
     repairId = id;
     const ref: AgentDisplayRef = {
@@ -660,7 +675,7 @@ Your job is to return a corrected set of sourceMaterialRefs for this task only. 
 
 If the required material is a safe local Markdown file that is missing from the plan corpus, you may instead request it by returning a needs_material response. The orchestrator will resolve the path, add the file to the material store, and rerun this repair step once. Only request local Markdown files; URLs and non-Markdown files will be rejected.
 
-Respond with strict JSON only, beginning with { and ending with }. Do not include markdown fences or analysis outside the JSON.
+Submit corrected references or a material request through the injected completion tool as your final action.
 
 Schema for corrected refs:
 {
@@ -687,7 +702,7 @@ type SourceMaterialRepairResponse = {
   reason: string;
 };
 
-function parseSourceMaterialRepairResponse(text: string):
+function parseSourceMaterialRepairResponse(parsed: unknown):
   | {
       ok: true;
       value:
@@ -695,22 +710,11 @@ function parseSourceMaterialRepairResponse(text: string):
         | import("./needs-material.js").NeedsMaterialResponse;
     }
   | { ok: false; reason: string } {
-  const candidate = extractJsonObject(text);
-  if (!candidate.ok) {
-    return candidate;
-  }
-
-  const needsMaterial = parseNeedsMaterialResponse(text);
+  const needsMaterial = parseNeedsMaterialResponse(parsed);
   if (needsMaterial.ok) {
     return { ok: true, value: needsMaterial.value };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(candidate.text);
-  } catch {
-    return { ok: false, reason: "Repair response is not valid JSON." };
-  }
   if (!isRecord(parsed)) {
     return { ok: false, reason: "Repair response JSON must be an object." };
   }
@@ -2219,6 +2223,10 @@ async function tryIntegrationSelfHeal(
     role: "selfHeal",
     taskId,
     cwd: task.worktreePath,
+    completion: {
+      description: "Submit the integration self-heal result.",
+      schema: integrationSelfHealSchema,
+    },
   });
   const ref: AgentDisplayRef = {
     id,
@@ -2251,13 +2259,13 @@ async function tryIntegrationSelfHeal(
       deps.paths,
       taskId,
       `self-heal-${task.selfHealAttempts}-result.md`,
-      result.result,
+      JSON.stringify(result.result, null, 2),
     );
     appendEvent(deps.paths, {
       type: "self_heal_completed",
       taskId,
       attempt: task.selfHealAttempts,
-      result: result.result,
+      result: JSON.stringify(result.result, null, 2),
     });
   }
 
@@ -2480,6 +2488,10 @@ async function trySchedulerSelfHeal(
       thinking: deps.roles.selfHeal.thinking,
       role: "selfHeal",
       cwd: await deps.git.root(),
+      completion: {
+        description: "Submit the scheduler self-heal result.",
+        schema: schedulerSelfHealSchema,
+      },
     });
     const ref: AgentDisplayRef = {
       id,
@@ -2508,7 +2520,7 @@ async function trySchedulerSelfHeal(
       appendEvent(deps.paths, {
         type: "scheduler_self_heal_completed",
         attempt: currentAttempts + 1,
-        result: result.result,
+        result: JSON.stringify(result.result, null, 2),
       });
     }
 
@@ -3373,11 +3385,7 @@ Plan artifacts are not part of the implementation commit and should be ignored: 
 ${diff}
 \`\`\`
 
-End with exactly one tagged JSON result:
-<pi-integration-review-result>{"verdict":"approved"}</pi-integration-review-result>
-
-Or:
-<pi-integration-review-result>{"verdict":"changes_requested","requiredChanges":["..."],"reason":"..."}</pi-integration-review-result>`;
+Submit the integration review verdict through the injected completion tool as your final action.`;
 
   const id = await deps.subagents.spawn({
     type: deps.roles.reviewer.type,
@@ -3389,6 +3397,10 @@ Or:
     taskId,
     cwd: await deps.git.root(),
     readOnly: true,
+    completion: {
+      description: "Submit the integration review verdict.",
+      schema: integrationReviewSchema,
+    },
   });
   const ref: AgentDisplayRef = {
     id,
@@ -3413,7 +3425,7 @@ Or:
       deps.paths,
       taskId,
       "integration-review.md",
-      result.result,
+      JSON.stringify(result.result, null, 2),
     );
   }
   const verdict = parseIntegrationReviewVerdict(result.result);
@@ -3424,40 +3436,30 @@ Or:
 }
 
 function parseIntegrationReviewVerdict(
-  text: string,
+  value: unknown,
 ): { ok: true } | { ok: false; reason: string } {
-  const match = text.match(
-    /<pi-integration-review-result>([\s\S]*?)<\/pi-integration-review-result>/,
-  );
-  if (!match?.[1]) {
-    return { ok: false, reason: "Integration review result tag missing" };
-  }
-  try {
-    const parsed = JSON.parse(match[1]) as {
-      verdict?: unknown;
-      requiredChanges?: unknown;
-      reason?: unknown;
-    };
-    if (parsed.verdict === "approved") {
-      return { ok: true };
-    }
-    const requiredChanges = Array.isArray(parsed.requiredChanges)
-      ? parsed.requiredChanges.filter((v): v is string => typeof v === "string")
-      : [];
-    const reason =
-      typeof parsed.reason === "string" && parsed.reason.trim()
-        ? parsed.reason.trim()
-        : requiredChanges.join("\n");
+  if (!isRecord(value)) {
     return {
       ok: false,
-      reason: reason || "Integration review requested changes",
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      reason: `Integration review JSON invalid: ${err instanceof Error ? err.message : String(err)}`,
+      reason: "Integration review completion must be an object.",
     };
   }
+  if (value.verdict === "approved") {
+    return { ok: true };
+  }
+  const requiredChanges = Array.isArray(value.requiredChanges)
+    ? value.requiredChanges.filter(
+        (entry): entry is string => typeof entry === "string",
+      )
+    : [];
+  const reason =
+    typeof value.reason === "string" && value.reason.trim()
+      ? value.reason.trim()
+      : requiredChanges.join("\n");
+  return {
+    ok: false,
+    reason: reason || "Integration review requested changes",
+  };
 }
 
 export function nextOverallReviewArtifactPath(planPath: string): string {
@@ -3551,6 +3553,10 @@ async function runOverallReviewOnce(
     role: "reviewer",
     cwd: await deps.git.root(),
     readOnly: true,
+    completion: {
+      description: "Submit the overall review verdict.",
+      schema: overallReviewSchema,
+    },
   });
   const ref: AgentDisplayRef = {
     id,
@@ -3599,7 +3605,7 @@ async function runOverallReviewOnce(
     verdict: "changes_requested",
     requiredChanges: verdict.requiredChanges,
     recommendationMarkdown: verdict.recommendationMarkdown,
-    rawResult: result.result,
+    rawResult: JSON.stringify(result.result, null, 2),
   };
 }
 
@@ -3703,6 +3709,10 @@ async function runOverallReworkAttempt(
     thinking: deps.roles.implementer.thinking,
     role: "implementer",
     cwd: await deps.git.root(),
+    completion: {
+      description: "Submit the overall rework result.",
+      schema: overallReworkSchema,
+    },
   });
   const ref: AgentDisplayRef = {
     id,
@@ -3732,7 +3742,7 @@ async function runOverallReworkAttempt(
     mkdirSync(artifactDir, { recursive: true });
     writeFileSync(
       join(artifactDir, `rework-result-${attemptNumber}.md`),
-      result.result,
+      JSON.stringify(result.result, null, 2),
       "utf-8",
     );
   }
@@ -4729,6 +4739,10 @@ async function runTaskWorker(args: {
       role: "implementer",
       taskId,
       cwd: effectiveWorktreePath,
+      completion: {
+        description: "Submit the implementation result.",
+        schema: implementerResultSchema,
+      },
     });
     const implementerRef: AgentDisplayRef = {
       id: implementerId,
@@ -4807,7 +4821,7 @@ async function runTaskWorker(args: {
         deps.paths,
         taskId,
         "result.md",
-        implementation.result,
+        JSON.stringify(implementation.result, null, 2),
       );
       writeTaskJson(deps.paths, taskId, {
         id: taskId,
@@ -5025,6 +5039,10 @@ async function runTaskWorker(args: {
         taskId,
         cwd: effectiveWorktreePath,
         readOnly: true,
+        completion: {
+          description: "Submit the task review verdict.",
+          schema: reviewerVerdictSchema,
+        },
       });
       const reviewerRef: AgentDisplayRef = {
         id: reviewerId,

@@ -16,6 +16,17 @@ import type { EffectiveRoles } from "./config.js";
 import type { ImplementGraph } from "./graph.js";
 import type { ExecutionManifest, ExecutionTask } from "./execution-plan.js";
 
+function typedPlannerFixture(result?: string): unknown {
+  if (result === undefined) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(result);
+  } catch {
+    return result;
+  }
+}
+
 const PLAN_PATH = "/repo/plan.md";
 
 let tmpRunDir: string;
@@ -121,7 +132,7 @@ function makeSubagents(result?: string): SubagentClient {
     .fn()
     .mockResolvedValue(
       result !== undefined
-        ? { status: "completed", result }
+        ? { status: "completed", result: typedPlannerFixture(result) }
         : { status: "failed", error: "not configured" },
     );
   return {

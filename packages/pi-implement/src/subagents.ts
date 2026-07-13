@@ -4,6 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { getSubagentRuntime } from "pi-subagents/runtime";
 import type { RuntimeSnapshot, ThinkingLevel } from "pi-subagents/runtime";
+import type { TSchema } from "typebox";
 
 export type SubagentClient = {
   probe(timeoutMs?: number): Promise<ProbeResult>;
@@ -31,6 +32,11 @@ export type SpawnArgs = {
   role?: PiImplementWorkerRole;
   taskId?: string;
   readOnly?: boolean;
+  completion?: {
+    description: string;
+    schema: TSchema;
+    label?: string;
+  };
 };
 
 export type AgentSnapshot = {
@@ -46,7 +52,7 @@ export type AgentSnapshot = {
 };
 
 export type SubagentResult =
-  | { status: "completed"; result: string }
+  | { status: "completed"; result: unknown }
   | { status: "failed"; error: string }
   | { status: "stopped"; error: string };
 
@@ -102,6 +108,7 @@ export class RuntimeSubagentClient implements SubagentClient {
       mode: "background",
       ctx: this.ctx,
       rosterVisibility: "hide",
+      completion: args.completion,
       ...(args.readOnly || role === "reviewer" || role === "planner"
         ? {
             tools: READ_ONLY_TOOLS.filter(
@@ -146,7 +153,7 @@ export class RuntimeSubagentClient implements SubagentClient {
         if (snapshot.status === "completed") {
           finish({
             status: "completed",
-            result: subagentResultText(snapshot.result),
+            result: snapshot.result,
           });
           return;
         }
@@ -210,37 +217,4 @@ function toAgentSnapshot(snapshot: RuntimeSnapshot): AgentSnapshot {
     model: snapshot.model,
     thinking: snapshot.thinking,
   };
-}
-
-export function subagentResultText(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (value === undefined || value === null) {
-    return "";
-  }
-  if (Array.isArray(value)) {
-    return value.map(subagentResultText).filter(Boolean).join("\n");
-  }
-  if (typeof value !== "object") {
-    return String(value);
-  }
-  const object = value as Record<string, unknown>;
-  for (const key of ["result", "output", "text", "content", "message"]) {
-    const nested = object[key];
-    if (nested !== undefined) {
-      const text = subagentResultText(nested);
-      if (text) {
-        return text;
-      }
-    }
-  }
-  if (object.type === "text" && typeof object.text === "string") {
-    return object.text;
-  }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
 }

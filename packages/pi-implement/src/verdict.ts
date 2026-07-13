@@ -1,5 +1,3 @@
-import { extractJsonObject } from "./graph.js";
-
 export type VerificationStep = {
   command: string;
   result: string;
@@ -59,24 +57,14 @@ export type OverallReworkResult = {
 };
 
 export function parseImplementerResult(
-  text: string,
+  value: unknown,
 ):
   | { ok: true; result: ParsedImplementerResult }
   | { ok: false; reason: string } {
-  const parsedValues = parseTaggedJsonObjects(text, "pi-implement-result");
-  if (!parsedValues.ok) {
-    return parsedValues;
+  if (!isRecord(value)) {
+    return { ok: false, reason: "Implementer completion must be an object." };
   }
-
-  let lastReason = "Implementer JSON could not be parsed.";
-  for (const value of parsedValues.values) {
-    const result = parseImplementerResultValue(value);
-    if (result.ok) {
-      return result;
-    }
-    lastReason = result.reason;
-  }
-  return { ok: false, reason: lastReason };
+  return parseImplementerResultValue(value);
 }
 
 function parseImplementerResultValue(
@@ -169,15 +157,15 @@ function parseImplementerResultValue(
   };
 }
 
-export function parseOverallReviewVerdict(text: string): OverallReviewVerdict {
-  const parsed = parseTaggedJsonObject(text, "pi-overall-review-result");
-  if (!parsed.ok) {
+export function parseOverallReviewVerdict(
+  value: unknown,
+): OverallReviewVerdict {
+  if (!isRecord(value)) {
     return {
       verdict: "changes_requested",
-      requiredChanges: [parsed.reason],
+      requiredChanges: ["Overall review completion must be an object."],
     };
   }
-  const value = parsed.value;
   if (value.verdict === "approved") {
     return { verdict: "approved" };
   }
@@ -219,12 +207,13 @@ export function parseOverallReviewVerdict(text: string): OverallReviewVerdict {
   };
 }
 
-export function parseReviewerVerdict(text: string): ReviewerVerdict {
-  const parsed = parseTaggedJsonObject(text, "pi-review-result");
-  if (!parsed.ok) {
-    return { verdict: "error", reason: parsed.reason };
+export function parseReviewerVerdict(value: unknown): ReviewerVerdict {
+  if (!isRecord(value)) {
+    return {
+      verdict: "error",
+      reason: "Reviewer completion must be an object.",
+    };
   }
-  const value = parsed.value;
   if (value.verdict === "approved") {
     return { verdict: "approved" };
   }
@@ -285,15 +274,16 @@ function fallbackType(taskText: string): string {
 }
 
 export function parseIntegrationSelfHealResult(
-  text: string,
+  value: unknown,
 ):
   | { ok: true; result: IntegrationSelfHealResult }
   | { ok: false; reason: string } {
-  const parsed = parseTaggedJsonObject(text, "pi-self-heal-result");
-  if (!parsed.ok) {
-    return parsed;
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      reason: "Integration self-heal completion must be an object.",
+    };
   }
-  const value = parsed.value;
   const repaired = value.repaired === true;
   const retryIntegration = value.retryIntegration === true;
   const retryMode = parseRetryMode(value.retryMode);
@@ -327,13 +317,14 @@ export function parseIntegrationSelfHealResult(
 }
 
 export function parseOverallReworkResult(
-  text: string,
+  value: unknown,
 ): { ok: true; result: OverallReworkResult } | { ok: false; reason: string } {
-  const parsed = parseTaggedJsonObject(text, "pi-overall-rework-result");
-  if (!parsed.ok) {
-    return parsed;
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      reason: "Overall rework completion must be an object.",
+    };
   }
-  const value = parsed.value;
   const summary = value.summary;
   const verification = value.verification;
   const commitMessage = value.commitMessage;
@@ -385,15 +376,16 @@ export function parseOverallReworkResult(
 }
 
 export function parseSchedulerSelfHealResult(
-  text: string,
+  value: unknown,
 ):
   | { ok: true; result: SchedulerSelfHealResult }
   | { ok: false; reason: string } {
-  const parsed = parseTaggedJsonObject(text, "pi-self-heal-result");
-  if (!parsed.ok) {
-    return parsed;
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      reason: "Scheduler self-heal completion must be an object.",
+    };
   }
-  const value = parsed.value;
   const repaired = value.repaired === true;
   const retryScheduler = value.retryScheduler === true;
   return {
@@ -428,76 +420,6 @@ function parseRetryMode(
     return value;
   }
   return undefined;
-}
-
-function parseTaggedJsonObject(
-  text: string,
-  tag:
-    | "pi-implement-result"
-    | "pi-review-result"
-    | "pi-overall-review-result"
-    | "pi-self-heal-result"
-    | "pi-overall-rework-result",
-):
-  | { ok: true; value: Record<string, unknown> }
-  | { ok: false; reason: string } {
-  const parsed = parseTaggedJsonObjects(text, tag);
-  if (!parsed.ok) {
-    return parsed;
-  }
-  return { ok: true, value: parsed.values[0] };
-}
-
-function parseTaggedJsonObjects(
-  text: string,
-  tag: string,
-):
-  | { ok: true; values: Record<string, unknown>[] }
-  | { ok: false; reason: string } {
-  const candidates = taggedContents(text, tag);
-  if (candidates.length === 0) {
-    return { ok: false, reason: `Response did not include <${tag}> output.` };
-  }
-
-  let lastReason = "Tagged JSON output could not be parsed.";
-  const values: Record<string, unknown>[] = [];
-  for (const candidate of [...candidates].reverse()) {
-    const json = extractJsonObject(stripMarkdownFence(candidate));
-    if (!json.ok) {
-      lastReason = json.reason;
-      continue;
-    }
-    try {
-      const parsed = JSON.parse(json.text) as unknown;
-      if (!isRecord(parsed)) {
-        lastReason = "Tagged JSON output must be an object.";
-        continue;
-      }
-      values.push(parsed);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      lastReason = `Could not parse tagged JSON output: ${message}`;
-    }
-  }
-
-  if (values.length === 0) {
-    return { ok: false, reason: lastReason };
-  }
-  return { ok: true, values };
-}
-
-function taggedContents(text: string, tag: string): string[] {
-  const pattern = new RegExp(
-    `<\\s*${tag}\\s*>\\s*([\\s\\S]*?)\\s*</\\s*${tag}\\s*>`,
-    "gi",
-  );
-  return [...text.matchAll(pattern)].map((match) => match[1]?.trim() ?? "");
-}
-
-function stripMarkdownFence(text: string): string {
-  const trimmed = text.trim();
-  const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  return fence?.[1]?.trim() ?? trimmed;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

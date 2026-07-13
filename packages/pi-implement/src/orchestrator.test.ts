@@ -233,14 +233,27 @@ class FakeSubagents implements SubagentClient {
   }
 }
 
-const GOOD_IMPL =
-  '<pi-implement-result>{"summary":"done","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"feat: do thing"}</pi-implement-result>';
-const GOOD_ALREADY_SATISFIED_IMPL =
-  '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"tests","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
-const GOOD_REVIEW =
-  '<pi-review-result>{"verdict":"approved"}</pi-review-result>';
-const GOOD_INTEGRATION_REVIEW =
-  '<pi-integration-review-result>{"verdict":"approved"}</pi-integration-review-result>';
+const GOOD_IMPL = {
+  outcome: "changed",
+  summary: "done",
+  verification: [
+    { command: "tests", result: "passed", rationale: "covers change" },
+  ],
+  commitMessage: "feat: do thing",
+};
+const GOOD_ALREADY_SATISFIED_IMPL = {
+  outcome: "already_satisfied",
+  summary: "already done",
+  verification: [
+    {
+      command: "tests",
+      result: "passed",
+      rationale: "task already satisfied",
+    },
+  ],
+};
+const GOOD_REVIEW = { verdict: "approved" };
+const GOOD_INTEGRATION_REVIEW = { verdict: "approved" };
 
 function makePaths(dir: string) {
   const paths = {
@@ -354,12 +367,19 @@ function testRoles() {
   };
 }
 
-const GOOD_OVERALL_REVIEW =
-  '<pi-overall-review-result>{"verdict":"approved"}</pi-overall-review-result>';
-const BAD_OVERALL_REVIEW =
-  '<pi-overall-review-result>{"verdict":"changes_requested","requiredChanges":["add integration tests"],"recommendationMarkdown":"## Suggested\\n\\nAdd tests."}</pi-overall-review-result>';
-const GOOD_REWORK =
-  '<pi-overall-rework-result>{"summary":"fixed","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"fix: address overall review"}</pi-overall-rework-result>';
+const GOOD_OVERALL_REVIEW = { verdict: "approved" };
+const BAD_OVERALL_REVIEW = {
+  verdict: "changes_requested",
+  requiredChanges: ["add integration tests"],
+  recommendationMarkdown: "## Suggested\n\nAdd tests.",
+};
+const GOOD_REWORK = {
+  summary: "fixed",
+  verification: [
+    { command: "tests", result: "passed", rationale: "covers change" },
+  ],
+  commitMessage: "fix: address overall review",
+};
 
 describe("nextOverallReviewArtifactPath", () => {
   it("returns a sibling path for the first review", () => {
@@ -393,8 +413,8 @@ function makeSelfHealResult(args: {
   summary?: string;
   commands?: string[];
   filesChanged?: string[];
-}): string {
-  return `<pi-self-heal-result>${JSON.stringify(args)}</pi-self-heal-result>`;
+}) {
+  return args;
 }
 
 function makeSchedulerSelfHealResult(args: {
@@ -404,8 +424,8 @@ function makeSchedulerSelfHealResult(args: {
   commands?: string[];
   filesChanged?: string[];
   remainingBlocker?: string | null;
-}): string {
-  return `<pi-self-heal-result>${JSON.stringify(args)}</pi-self-heal-result>`;
+}) {
+  return args;
 }
 
 describe("runImplementation", () => {
@@ -859,7 +879,9 @@ describe("runImplementation", () => {
     expect(reviewerPrompt).toContain(
       "Request changes if the staged diff substantially implements an unselected sibling task",
     );
-    expect(reviewerPrompt).toContain('"verdict": "changes_requested"');
+    expect(reviewerPrompt).toContain(
+      "Submit the review verdict through the injected completion tool",
+    );
 
     const updatedPlan = readFileSync(planPath, "utf-8");
     expect(updatedPlan).toContain("- [x] Task one");
@@ -965,21 +987,30 @@ describe("runImplementation", () => {
     writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
     const git = new FakeGit();
     const subagents = new FakeSubagents();
-    const implementation =
-      '<pi-implement-result>{"summary":"done","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"fix: do thing"}</pi-implement-result>';
+    const implementation = {
+      summary: "done",
+      verification: [
+        { command: "tests", result: "passed", rationale: "covers change" },
+      ],
+      commitMessage: "fix: do thing",
+    };
     subagents.results = [
       { status: "completed", result: "not json" },
       { status: "completed", result: implementation },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["tighten it"],
+        },
       },
       { status: "completed", result: implementation },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["tighten it"],
+        },
       },
       { status: "completed", result: implementation },
       {
@@ -1012,7 +1043,7 @@ describe("runImplementation", () => {
 
     expect(currentState.checkpointQueue).toEqual(
       expect.arrayContaining([
-        "\u00b7 Task 1/1 implementation finished: Response did not include <pi-implement-result> output.",
+        "\u00b7 Task 1/1 implementation finished: Implementer completion must be an object.",
         "\u00b7 Task 1/1 review changes requested: tighten it",
         "\u00b7 Task 1/1 review changes requested: tighten it",
       ]),
@@ -1111,7 +1142,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-selected-task",
           sourceMaterialRefs: [
             {
@@ -1122,7 +1153,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Dropped ref outside the ingested corpus.",
-        }),
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -1318,7 +1349,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-selected-task",
           sourceMaterialRefs: [
             {
@@ -1329,7 +1360,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Fixed invalid line range.",
-        }),
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -1441,7 +1472,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-selected-task",
           sourceMaterialRefs: [
             {
@@ -1452,7 +1483,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Failed to correct range.",
-        }),
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -1564,7 +1595,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-selected-task",
           sourceMaterialRefs: [
             {
@@ -1581,7 +1612,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Replaced anchor and added planner ref.",
-        }),
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -1690,7 +1721,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           kind: "needs_material",
           requests: [
             {
@@ -1699,11 +1730,11 @@ describe("runImplementation", () => {
               reason: "Contains required context.",
             },
           ],
-        }),
+        },
       },
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-selected-task",
           sourceMaterialRefs: [
             {
@@ -1714,7 +1745,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Narrowed requested material.",
-        }),
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -1815,7 +1846,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           kind: "needs_material",
           requests: [
             {
@@ -1823,7 +1854,7 @@ describe("runImplementation", () => {
               reason: "External reference.",
             },
           ],
-        }),
+        },
       },
     ];
     const paths = makePaths(dir);
@@ -1901,17 +1932,17 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           kind: "needs_material",
           requests: [{ pathHint: "extra.md", reason: "Need this first." }],
-        }),
+        },
       },
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           kind: "needs_material",
           requests: [{ pathHint: "missing.md", reason: "Need this second." }],
-        }),
+        },
       },
     ];
     const paths = makePaths(dir);
@@ -1988,14 +2019,14 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           kind: "needs_material",
           requests: [{ pathHint: "extra.md", reason: "Need context." }],
-        }),
+        },
       },
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-selected-task",
           sourceMaterialRefs: [
             {
@@ -2006,7 +2037,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Narrowed requested material.",
-        }),
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -2103,7 +2134,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           kind: "needs_material",
           requests: [
             {
@@ -2112,11 +2143,11 @@ describe("runImplementation", () => {
               reason: "Contains required context.",
             },
           ],
-        }),
+        },
       },
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-selected-task",
           sourceMaterialRefs: [
             {
@@ -2127,7 +2158,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Narrowed requested material.",
-        }),
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -2231,7 +2262,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           kind: "needs_material",
           requests: [
             {
@@ -2240,7 +2271,7 @@ describe("runImplementation", () => {
               reason: "Already the entry plan.",
             },
           ],
-        }),
+        },
       },
     ];
     const paths = makePaths(dir);
@@ -2314,10 +2345,10 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           kind: "needs_material",
           requests: [],
-        }),
+        },
       },
     ];
     const paths = makePaths(dir);
@@ -2394,7 +2425,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-selected-task",
           sourceMaterialRefs: [
             {
@@ -2405,7 +2436,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Could not narrow the ref.",
-        }),
+        },
       },
     ];
     const paths = makePaths(dir);
@@ -2489,7 +2520,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-copy-exact-fixture",
           sourceMaterialRefs: [
             {
@@ -2500,7 +2531,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Could not locate alternative corpus file.",
-        }),
+        },
       },
     ];
     const paths = makePaths(dir);
@@ -2581,7 +2612,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-copy-exact-fixture",
           sourceMaterialRefs: [
             {
@@ -2592,7 +2623,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Could not narrow to a line range.",
-        }),
+        },
       },
     ];
     const paths = makePaths(dir);
@@ -2682,7 +2713,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-copy-exact-fixture",
           sourceMaterialRefs: [
             {
@@ -2693,7 +2724,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Added required exact material ref.",
-        }),
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -3162,7 +3193,7 @@ describe("runImplementation", () => {
     subagents.results = [
       {
         status: "completed",
-        result: JSON.stringify({
+        result: {
           taskId: "t001-selected-task",
           sourceMaterialRefs: [
             {
@@ -3173,7 +3204,7 @@ describe("runImplementation", () => {
             },
           ],
           reason: "Dropped duplicate and missing refs.",
-        }),
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -3409,10 +3440,10 @@ describe("runImplementation", () => {
       "Do thing",
     );
     expect(readFileSync(join(taskDir, "result.md"), "utf-8")).toContain(
-      "pi-implement-result",
+      '"outcome": "changed"',
     );
     expect(readFileSync(join(taskDir, "review.md"), "utf-8")).toContain(
-      "pi-review-result",
+      "Submit the review verdict through the injected completion tool",
     );
     expect(readFileSync(join(taskDir, "diff.patch"), "utf-8")).toContain(
       "diff --git",
@@ -3961,8 +3992,10 @@ describe("runImplementation", () => {
       { status: "completed", result: GOOD_IMPL },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["fix the bug"],
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -4007,8 +4040,10 @@ describe("runImplementation", () => {
       { status: "completed", result: GOOD_IMPL },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["fix the bug"],
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -4048,14 +4083,18 @@ describe("runImplementation", () => {
       { status: "completed", result: GOOD_IMPL },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["fix the bug"],
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["fix the bug"],
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -4090,20 +4129,26 @@ describe("runImplementation", () => {
       { status: "completed", result: GOOD_IMPL },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["fix the bug"],
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["fix the bug"],
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["fix the bug"],
+        },
       },
     ];
 
@@ -4137,14 +4182,18 @@ describe("runImplementation", () => {
       { status: "completed", result: GOOD_IMPL },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["tighten it"],
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it again"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["tighten it again"],
+        },
       },
       { status: "completed", result: GOOD_OVERALL_REVIEW },
     ];
@@ -4177,8 +4226,10 @@ describe("runImplementation", () => {
       { status: "completed", result: GOOD_IMPL },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["tighten it"],
+        },
       },
       { status: "completed", result: "not json" },
       { status: "completed", result: GOOD_IMPL },
@@ -4223,8 +4274,10 @@ describe("runImplementation", () => {
       { status: "completed", result: GOOD_IMPL },
       {
         status: "completed",
-        result:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten it"]}</pi-review-result>',
+        result: {
+          verdict: "changes_requested",
+          requiredChanges: ["tighten it"],
+        },
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: "not a valid review result" },
@@ -5535,8 +5588,13 @@ describe("runImplementation", () => {
       },
     ];
 
-    const BAD_COMMIT_REWORK =
-      '<pi-overall-rework-result>{"summary":"fixed","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"bad message"}</pi-overall-rework-result>';
+    const BAD_COMMIT_REWORK = {
+      summary: "fixed",
+      verification: [
+        { command: "tests", result: "passed", rationale: "covers change" },
+      ],
+      commitMessage: "bad message",
+    };
 
     subagents.results = [
       { status: "completed", result: GOOD_IMPL },
@@ -5939,14 +5997,16 @@ describe("runImplementation", () => {
 
     expect(error).toBeDefined();
     expect(error!.message).toContain("Latest rework failure:");
-    expect(error!.message).toContain("Response did not include");
+    expect(error!.message).toContain(
+      "Overall rework completion must be an object.",
+    );
 
     const artifactPath = join(dir, "plan.overall-review.md");
     expect(existsSync(artifactPath)).toBe(true);
     const content = readFileSync(artifactPath, "utf-8");
     expect(content).toContain("add integration tests");
     expect(content).toContain("## Raw Result");
-    expect(content).toContain(BAD_OVERALL_REVIEW);
+    expect(content).toContain(JSON.stringify(BAD_OVERALL_REVIEW, null, 2));
     expect(content).toContain("Rework Attempts");
   });
 
@@ -6162,8 +6222,17 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
-    const ALREADY_SATISFIED_IMPL =
-      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+    const ALREADY_SATISFIED_IMPL = {
+      outcome: "already_satisfied",
+      summary: "already done",
+      verification: [
+        {
+          command: "npm test",
+          result: "passed",
+          rationale: "task already satisfied",
+        },
+      ],
+    };
     subagents.results = [
       { status: "completed", result: ALREADY_SATISFIED_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -6217,8 +6286,17 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
-    const ALREADY_SATISFIED_IMPL =
-      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+    const ALREADY_SATISFIED_IMPL = {
+      outcome: "already_satisfied",
+      summary: "already done",
+      verification: [
+        {
+          command: "npm test",
+          result: "passed",
+          rationale: "task already satisfied",
+        },
+      ],
+    };
     subagents.results = [
       { status: "completed", result: ALREADY_SATISFIED_IMPL },
       { status: "completed", result: GOOD_REVIEW },
@@ -6257,12 +6335,29 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
-    const ALREADY_SATISFIED_IMPL =
-      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
-    const CHANGES_REQUESTED =
-      '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["Add a missing test case."]}</pi-review-result>';
-    const EXPLICIT_CHANGED_IMPL =
-      '<pi-implement-result>{"outcome":"changed","summary":"fixed","verification":[{"command":"npm test","result":"passed","rationale":"covers change"}],"commitMessage":"feat: do thing"}</pi-implement-result>';
+    const ALREADY_SATISFIED_IMPL = {
+      outcome: "already_satisfied",
+      summary: "already done",
+      verification: [
+        {
+          command: "npm test",
+          result: "passed",
+          rationale: "task already satisfied",
+        },
+      ],
+    };
+    const CHANGES_REQUESTED = {
+      verdict: "changes_requested",
+      requiredChanges: ["Add a missing test case."],
+    };
+    const EXPLICIT_CHANGED_IMPL = {
+      outcome: "changed",
+      summary: "fixed",
+      verification: [
+        { command: "npm test", result: "passed", rationale: "covers change" },
+      ],
+      commitMessage: "feat: do thing",
+    };
 
     subagents.results = [
       { status: "completed", result: ALREADY_SATISFIED_IMPL },
@@ -6309,8 +6404,14 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
-    const EXPLICIT_CHANGED_IMPL =
-      '<pi-implement-result>{"outcome":"changed","summary":"done","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"feat: do thing"}</pi-implement-result>';
+    const EXPLICIT_CHANGED_IMPL = {
+      outcome: "changed",
+      summary: "done",
+      verification: [
+        { command: "tests", result: "passed", rationale: "covers change" },
+      ],
+      commitMessage: "feat: do thing",
+    };
 
     subagents.results = [
       { status: "completed", result: EXPLICIT_CHANGED_IMPL },
@@ -6346,8 +6447,14 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
-    const EXPLICIT_CHANGED_IMPL =
-      '<pi-implement-result>{"outcome":"changed","summary":"done","verification":[{"command":"tests","result":"passed","rationale":"covers change"}],"commitMessage":"feat: do thing"}</pi-implement-result>';
+    const EXPLICIT_CHANGED_IMPL = {
+      outcome: "changed",
+      summary: "done",
+      verification: [
+        { command: "tests", result: "passed", rationale: "covers change" },
+      ],
+      commitMessage: "feat: do thing",
+    };
 
     subagents.results = [
       { status: "completed", result: EXPLICIT_CHANGED_IMPL },
@@ -6389,8 +6496,17 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
-    const ALREADY_SATISFIED_IMPL =
-      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+    const ALREADY_SATISFIED_IMPL = {
+      outcome: "already_satisfied",
+      summary: "already done",
+      verification: [
+        {
+          command: "npm test",
+          result: "passed",
+          rationale: "task already satisfied",
+        },
+      ],
+    };
 
     subagents.results = [
       { status: "completed", result: ALREADY_SATISFIED_IMPL },
@@ -6434,10 +6550,21 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
-    const ALREADY_SATISFIED_IMPL =
-      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
-    const CHANGES_REVIEW =
-      '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["These edits are out of scope."]}</pi-review-result>';
+    const ALREADY_SATISFIED_IMPL = {
+      outcome: "already_satisfied",
+      summary: "already done",
+      verification: [
+        {
+          command: "npm test",
+          result: "passed",
+          rationale: "task already satisfied",
+        },
+      ],
+    };
+    const CHANGES_REVIEW = {
+      verdict: "changes_requested",
+      requiredChanges: ["These edits are out of scope."],
+    };
 
     subagents.results = [
       { status: "completed", result: ALREADY_SATISFIED_IMPL },
@@ -6478,10 +6605,21 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
-    const ALREADY_SATISFIED_IMPL =
-      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
-    const CHANGES_REQUESTED =
-      '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["Add a missing test case."]}</pi-review-result>';
+    const ALREADY_SATISFIED_IMPL = {
+      outcome: "already_satisfied",
+      summary: "already done",
+      verification: [
+        {
+          command: "npm test",
+          result: "passed",
+          rationale: "task already satisfied",
+        },
+      ],
+    };
+    const CHANGES_REQUESTED = {
+      verdict: "changes_requested",
+      requiredChanges: ["Add a missing test case."],
+    };
 
     subagents.results = [
       { status: "completed", result: ALREADY_SATISFIED_IMPL },
@@ -6530,8 +6668,17 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     const subagents = new FakeSubagents();
     const paths = makePaths(dir);
-    const ALREADY_SATISFIED_IMPL =
-      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+    const ALREADY_SATISFIED_IMPL = {
+      outcome: "already_satisfied",
+      summary: "already done",
+      verification: [
+        {
+          command: "npm test",
+          result: "passed",
+          rationale: "task already satisfied",
+        },
+      ],
+    };
 
     subagents.results = [
       { status: "completed", result: ALREADY_SATISFIED_IMPL },
@@ -6992,7 +7139,9 @@ describe("runImplementation", () => {
       expect(prompt).toContain("install dependencies");
       expect(prompt).toContain("must NOT");
       expect(prompt).toContain("Edit source plan");
-      expect(prompt).toContain("<pi-self-heal-result>");
+      expect(prompt).toContain(
+        "Submit the self-heal result through the injected completion tool",
+      );
       expect(prompt).toContain("retryMode");
     });
 
@@ -10861,7 +11010,7 @@ describe("runImplementation", () => {
     async function runChangedCandidateReviewScenario(args: {
       stagedNameStatus: string;
       diffText?: string;
-      reviewerResult?: string;
+      reviewerResult?: unknown;
       expectedError?: string | RegExp;
     }) {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
@@ -11052,8 +11201,10 @@ describe("runImplementation", () => {
     it("change requests from low-risk candidates retry through reviewer feedback", async () => {
       const { subagents, planPath } = await runChangedCandidateReviewScenario({
         stagedNameStatus: "M\tREADME.md",
-        reviewerResult:
-          '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["tighten docs"]}</pi-review-result>',
+        reviewerResult: {
+          verdict: "changes_requested",
+          requiredChanges: ["tighten docs"],
+        },
       });
 
       expect(subagents.spawns.map((spawn) => spawn.role)).toEqual([
@@ -11314,8 +11465,10 @@ describe("runImplementation", () => {
         { status: "completed", result: GOOD_IMPL },
         {
           status: "completed",
-          result:
-            '<pi-review-result>{"verdict":"changes_requested","requiredChanges":["fix the bug"]}</pi-review-result>',
+          result: {
+            verdict: "changes_requested",
+            requiredChanges: ["fix the bug"],
+          },
         },
         { status: "completed", result: GOOD_IMPL },
         { status: "completed", result: GOOD_REVIEW },
@@ -11506,8 +11659,17 @@ describe("runImplementation", () => {
     const planPath = join(dir, "plan.md");
     writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do it\n", "utf-8");
     const paths = makePaths(dir);
-    const ALREADY_SATISFIED_IMPL =
-      '<pi-implement-result>{"outcome":"already_satisfied","summary":"already done","verification":[{"command":"npm test","result":"passed","rationale":"task already satisfied"}]}</pi-implement-result>';
+    const ALREADY_SATISFIED_IMPL = {
+      outcome: "already_satisfied",
+      summary: "already done",
+      verification: [
+        {
+          command: "npm test",
+          result: "passed",
+          rationale: "task already satisfied",
+        },
+      ],
+    };
 
     const git = new FakeGit();
     const subagents = new FakeSubagents();

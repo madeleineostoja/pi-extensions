@@ -25,7 +25,7 @@ import { validateGraph, writeGraphJson } from "./graph.js";
 import type { ImplementGraph } from "./graph.js";
 import {
   buildDeterministicSourceMaterialRefs,
-  parseExecutionPlan,
+  parseExecutionPlanValue,
   generateMinimalExecutionManifest,
   validateExecutionManifest,
   writeExecutionManifest,
@@ -33,6 +33,7 @@ import {
   type ExecutionTask,
   type SourceMaterialRef,
 } from "./execution-plan.js";
+import { executionManifestSchema } from "./result-schemas.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -164,7 +165,7 @@ async function runExecutionPlanner(
     };
   }
 
-  let rawResult: string;
+  let rawResult: unknown;
   try {
     const id = await req.subagents.spawn({
       type: req.roles.planner.type,
@@ -176,6 +177,10 @@ async function runExecutionPlanner(
       role: "planner",
       readOnly: true,
       cwd: req.repoRoot,
+      completion: {
+        description: "Submit the execution manifest for the selected tasks.",
+        schema: executionManifestSchema,
+      },
     });
     const plannerRef: AgentDisplayRef = {
       id,
@@ -202,11 +207,6 @@ async function runExecutionPlanner(
     };
   }
 
-  const initialParse = parseExecutionPlan(rawResult);
-  if (!initialParse.ok && isMalformedPlannerJsonReason(initialParse.reason)) {
-    rawResult = await tryRepairExecutionPlannerOutput(req, rawResult);
-  }
-
   return processExecutionPlannerResult(
     rawResult,
     req,
@@ -215,66 +215,13 @@ async function runExecutionPlanner(
   );
 }
 
-function isMalformedPlannerJsonReason(reason: string): boolean {
-  return (
-    reason.includes("valid JSON") ||
-    reason.includes("multiple JSON objects") ||
-    reason.includes("No JSON object")
-  );
-}
-
-async function tryRepairExecutionPlannerOutput(
-  req: StrategyRequest,
-  rawResult: string,
-): Promise<string> {
-  const prompt = `The execution planner returned output that could not be parsed as the required JSON manifest.
-
-Repair the formatting only. Preserve the intended tasks, ids, titles, dependencies, contracts, and source references. Do not add implementation work. Return strict JSON only, beginning with { and ending with }.
-
-Original output:
-
-${rawResult}`;
-  let repairId: string | undefined;
-  try {
-    const id = await req.subagents.spawn({
-      type: req.roles.planner.type,
-      prompt,
-      description: "execution planner: repair manifest JSON",
-      model: req.roles.planner.model,
-      thinking: req.roles.planner.thinking,
-      role: "planner",
-      readOnly: true,
-      cwd: req.repoRoot,
-    });
-    repairId = id;
-    const plannerRef: AgentDisplayRef = {
-      id,
-      role: "planner",
-      label: "Planner · Repair execution manifest JSON",
-      startedAt: new Date().toISOString(),
-    };
-    req.updateState((prev) => addStrategyAgentPatch(prev, plannerRef));
-    const result = await req.subagents.waitFor(id, req.signal);
-    req.updateState((prev) => removeStrategyAgentPatch(prev, id));
-    if (result.status === "completed" && parseExecutionPlan(result.result).ok) {
-      return result.result;
-    }
-  } catch {
-    const id = repairId;
-    if (id) {
-      req.updateState((prev) => removeStrategyAgentPatch(prev, id));
-    }
-  }
-  return rawResult;
-}
-
 function processExecutionPlannerResult(
-  rawResult: string,
+  rawResult: unknown,
   req: StrategyRequest,
   unchecked: PlanTask[],
   _maxConcurrency: number,
 ): StrategyOutcome {
-  const parsed = parseExecutionPlan(rawResult);
+  const parsed = parseExecutionPlanValue(rawResult);
   let manifest = parsed.ok
     ? normalizePlannerManifest(parsed.value, unchecked, req)
     : fallbackPlannerManifest(
@@ -785,9 +732,9 @@ ${gitStatus}
 
 ## Response Format
 
-Respond with strict JSON only. Your final response must begin with { and end with }. Do not include markdown fences, analysis, or any text outside the JSON.
+Submit the execution manifest through the injected completion tool as your final action.
 
-Return an execution manifest matching this schema:
+The completion schema requires:
 
 {
   "version": 1,

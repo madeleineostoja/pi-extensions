@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { RuntimeSubagentClient, subagentResultText } from "./subagents.js";
+import { RuntimeSubagentClient } from "./subagents.js";
+import { implementerResultSchema } from "./result-schemas.js";
 
 function makeRuntime() {
   const snapshots = new Map<string, any>();
@@ -56,6 +57,10 @@ describe("RuntimeSubagentClient", () => {
       role: "implementer",
       taskId: "t001-task",
       cwd: "/repo/.pi/implement/worktrees/run-1/t001-task",
+      completion: {
+        description: "Submit the implementation result.",
+        schema: implementerResultSchema,
+      },
     });
 
     expect(id).toBe("agent-1");
@@ -72,6 +77,10 @@ describe("RuntimeSubagentClient", () => {
         thinking: "high",
         mode: "background",
         rosterVisibility: "hide",
+        completion: {
+          description: "Submit the implementation result.",
+          schema: implementerResultSchema,
+        },
       }),
     );
   });
@@ -121,7 +130,7 @@ describe("RuntimeSubagentClient", () => {
     );
   });
 
-  it("waits for runtime snapshots and normalizes result text", async () => {
+  it("waits for runtime snapshots and preserves typed completion values", async () => {
     const runtime = makeRuntime();
     const pi = { __runtime: runtime };
     const ctx = { cwd: "/repo", modelRegistry: { find: vi.fn() } };
@@ -134,12 +143,12 @@ describe("RuntimeSubagentClient", () => {
     runtime.wait.mockResolvedValue({
       id: "agent-1",
       status: "completed",
-      result: { content: [{ type: "text", text: "ok" }] },
+      result: { outcome: "changed", summary: "ok" },
     });
 
     await expect(client.waitFor("agent-1")).resolves.toEqual({
       status: "completed",
-      result: "ok",
+      result: { outcome: "changed", summary: "ok" },
     });
   });
 
@@ -164,10 +173,5 @@ describe("RuntimeSubagentClient", () => {
         tokensTotal: 42,
       }),
     ]);
-  });
-
-  it("normalizes nested output", () => {
-    expect(subagentResultText({ output: { text: "done" } })).toBe("done");
-    expect(subagentResultText([{ text: "a" }, { text: "b" }])).toBe("a\nb");
   });
 });

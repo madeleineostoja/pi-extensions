@@ -21,7 +21,7 @@ function makeStore(dir: string, planName = "plan.md") {
 
 describe("parseNeedsMaterialResponse", () => {
   it("parses a valid needs_material response", () => {
-    const text = JSON.stringify({
+    const response = {
       kind: "needs_material",
       requests: [
         {
@@ -30,8 +30,8 @@ describe("parseNeedsMaterialResponse", () => {
           reason: "Contains the API contract.",
         },
       ],
-    });
-    const result = parseNeedsMaterialResponse(text);
+    };
+    const result = parseNeedsMaterialResponse(response);
     expect(result.ok).toBe(true);
     if (!result.ok) {
       return;
@@ -49,10 +49,10 @@ describe("parseNeedsMaterialResponse", () => {
   });
 
   it("rejects a response missing kind", () => {
-    const text = JSON.stringify({
+    const response = {
       requests: [{ pathHint: "x.md", reason: "need it" }],
-    });
-    const result = parseNeedsMaterialResponse(text);
+    };
+    const result = parseNeedsMaterialResponse(response);
     expect(result.ok).toBe(false);
     if (result.ok) {
       return;
@@ -61,11 +61,11 @@ describe("parseNeedsMaterialResponse", () => {
   });
 
   it("rejects a request missing pathHint", () => {
-    const text = JSON.stringify({
+    const response = {
       kind: "needs_material",
       requests: [{ reason: "need it" }],
-    });
-    const result = parseNeedsMaterialResponse(text);
+    };
+    const result = parseNeedsMaterialResponse(response);
     expect(result.ok).toBe(false);
     if (result.ok) {
       return;
@@ -74,11 +74,11 @@ describe("parseNeedsMaterialResponse", () => {
   });
 
   it("rejects a request missing reason", () => {
-    const text = JSON.stringify({
+    const response = {
       kind: "needs_material",
       requests: [{ pathHint: "x.md" }],
-    });
-    const result = parseNeedsMaterialResponse(text);
+    };
+    const result = parseNeedsMaterialResponse(response);
     expect(result.ok).toBe(false);
     if (result.ok) {
       return;

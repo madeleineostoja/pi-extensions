@@ -437,7 +437,12 @@ export function parseExecutionPlan(
   } catch {
     return { ok: false, reason: "Planner output is not valid JSON." };
   }
+  return parseExecutionPlanValue(parsed);
+}
 
+export function parseExecutionPlanValue(
+  parsed: unknown,
+): { ok: true; value: ExecutionManifest } | { ok: false; reason: string } {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return { ok: false, reason: "Execution plan JSON must be an object." };
   }
