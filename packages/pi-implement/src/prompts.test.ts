@@ -3,6 +3,7 @@ import type { ExecutionManifest } from "./execution-plan.js";
 import {
   buildAlreadySatisfiedReviewerPrompt,
   buildImplementerPrompt,
+  buildIntegrationReviewerPrompt,
   buildIntegrationSelfHealPrompt,
   buildOverallReworkPrompt,
   buildOverallReviewerPrompt,
@@ -54,6 +55,24 @@ describe("papercut prompt guidance", () => {
         compiledContract: COMPILED_CONTRACT,
         worktreePath: WORKTREE_PATH,
         implementer: IMPLEMENTER_RESULT,
+      }),
+    ).toContain(PAPERCUT_GUIDANCE);
+    expect(
+      buildAlreadySatisfiedReviewerPrompt({
+        compiledContract: COMPILED_CONTRACT,
+        worktreePath: WORKTREE_PATH,
+        implementer: {
+          outcome: "already_satisfied",
+          summary: "Already done",
+          verification: IMPLEMENTER_RESULT.verification,
+        },
+        headSha: "abc",
+      }),
+    ).toContain(PAPERCUT_GUIDANCE);
+    expect(
+      buildIntegrationReviewerPrompt({
+        diff: "diff --git a/file.ts b/file.ts",
+        planArtifacts: ["plan.md"],
       }),
     ).toContain(PAPERCUT_GUIDANCE);
     expect(

@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   runImplementation,
   BlockedError,
@@ -650,7 +650,8 @@ describe("runImplementation", () => {
     const git = new FakeGit();
     git.rootValue = "/serial-checkout";
     git.mainRootValue = "/main-checkout";
-    const store = { propose: async () => ({ kind: "created" as const }) };
+    const propose = vi.fn(async () => ({ kind: "created" as const }));
+    const store = { propose };
     const subagents = new FakeSubagents();
     subagents.results = [
       {
@@ -682,10 +683,21 @@ describe("runImplementation", () => {
       shouldStop: () => false,
     });
 
+    expect(propose).toHaveBeenCalledWith(
+      { key: "gap" },
+      {
+        kind: "pi-implement",
+        runId: "r1",
+        taskId: "t001-do-thing",
+        role: "implementer",
+      },
+    );
     expect(readEvents(paths)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: "papercuts_processed",
+          role: "implementer",
+          taskId: "t001-do-thing",
           created: 1,
           merged: 0,
           suppressed: 0,
@@ -2896,6 +2908,10 @@ describe("runImplementation", () => {
       s.description.includes("repair source material refs"),
     );
     expect(repairSpawn).toBeDefined();
+    expect(repairSpawn?.prompt).not.toContain("Optional Papercut Candidates");
+    expect(repairSpawn?.prompt).not.toContain(
+      "optional `papercuts` result array",
+    );
 
     const prompt = readFileSync(
       join(paths.tasksDir, "t001-copy-exact-fixture", "prompt.md"),

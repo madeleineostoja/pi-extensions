@@ -281,6 +281,29 @@ Submit the review verdict through the injected completion tool as your final act
 `;
 }
 
+export function buildIntegrationReviewerPrompt(args: {
+  diff: string;
+  planArtifacts: string[];
+}): string {
+  return `Review this integrated parallel task diff on the main checkout.
+
+No command validation is configured or auto-detected. Decide whether the integrated diff is safe to commit.
+
+Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, or run any command that changes files or git state. Use read-only commands only.
+
+Plan artifacts are not part of the implementation commit and should be ignored: ${args.planArtifacts.join(", ")}
+
+## Staged Diff
+
+\`\`\`diff
+${args.diff}
+\`\`\`
+
+${PAPERCUT_GUIDANCE}
+
+Submit the integration review verdict through the injected completion tool as your final action.`;
+}
+
 export function buildIntegrationSelfHealPrompt(args: {
   taskId: string;
   title: string;

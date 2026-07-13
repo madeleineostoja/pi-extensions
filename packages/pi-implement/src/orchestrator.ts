@@ -14,13 +14,13 @@ import { promisify } from "node:util";
 import {
   buildAlreadySatisfiedReviewerPrompt,
   buildImplementerPrompt,
+  buildIntegrationReviewerPrompt,
   buildIntegrationSelfHealPrompt,
   buildOverallReviewerPrompt,
   buildOverallReworkPrompt,
   buildReviewerPrompt,
   buildSchedulerSelfHealPrompt,
   formatExecutionManifestSummary,
-  PAPERCUT_GUIDANCE,
 } from "./prompts.js";
 import { markTaskDone, markTaskUndone, parsePlanFile } from "./plan.js";
 import type { PlanTask } from "./plan.js";
@@ -3435,23 +3435,7 @@ async function runIntegrationReviewFallback(
   schedulerTask?: SchedulerTask,
 ): Promise<ValidationResult> {
   const diff = await deps.git.stagedDiff();
-  const prompt = `Review this integrated parallel task diff on the main checkout.
-
-No command validation is configured or auto-detected. Decide whether the integrated diff is safe to commit.
-
-Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, or run any command that changes files or git state. Use read-only commands only.
-
-Plan artifacts are not part of the implementation commit and should be ignored: ${planArtifacts.join(", ")}
-
-## Staged Diff
-
-\`\`\`diff
-${diff}
-\`\`\`
-
-${PAPERCUT_GUIDANCE}
-
-Submit the integration review verdict through the injected completion tool as your final action.`;
+  const prompt = buildIntegrationReviewerPrompt({ diff, planArtifacts });
 
   const id = await deps.subagents.spawn({
     type: deps.roles.reviewer.type,

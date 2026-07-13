@@ -86,5 +86,8 @@ describe("managed completion schemas", () => {
     expect("papercuts" in sourceMaterialRepairSchema.anyOf[0].properties).toBe(
       false,
     );
+    expect("papercuts" in sourceMaterialRepairSchema.anyOf[1].properties).toBe(
+      false,
+    );
   });
 });

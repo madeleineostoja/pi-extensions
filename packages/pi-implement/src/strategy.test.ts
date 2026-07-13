@@ -867,6 +867,8 @@ describe("selectStrategy - planner prompt content", () => {
       mock: { calls: Array<Array<{ prompt: string }>> };
     };
     const prompt = spawnMock.mock.calls[0][0].prompt;
+    expect(prompt).not.toContain("Optional Papercut Candidates");
+    expect(prompt).not.toContain("optional `papercuts` result array");
     expect(prompt).toContain("Repo root: /repo");
     expect(prompt).toContain("Base SHA: abc123");
     expect(prompt).toContain("Plan path: /repo/plan.md");

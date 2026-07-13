@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@pi-extensions/lib": `${root}lib/src/index.ts`,
+      "pi-papercuts": `${root}packages/pi-papercuts/src/index.ts`,
     },
   },
   test: {
