@@ -1,8 +1,17 @@
 import {
+  AuthStorage,
+  createAgentSession,
+  DefaultResourceLoader,
+  ModelRegistry,
   SessionManager,
+  SettingsManager,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import { validateToolArguments } from "@earendil-works/pi-ai";
+import {
+  createFauxCore,
+  fauxAssistantMessage,
+  fauxToolCall,
+} from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -78,6 +87,92 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
     },
     ...overrides,
   };
+}
+
+const TEST_PROVIDER = "managed-completion-test";
+const TEST_MODEL = "managed-completion-model";
+const TEST_CWD = "/managed-completion-workspace";
+
+type FauxResponse = Parameters<
+  ReturnType<typeof createFauxCore>["setResponses"]
+>[0];
+
+async function createRealSessionHarness(responses: FauxResponse) {
+  const faux = createFauxCore({
+    provider: TEST_PROVIDER,
+    api: "openai-completions",
+    models: [{ id: TEST_MODEL }],
+  });
+  const fauxModel = faux.getModel(TEST_MODEL);
+  if (!fauxModel) {
+    throw new Error("Missing faux test model.");
+  }
+  faux.setResponses(responses);
+  const authStorage = AuthStorage.inMemory();
+  const modelRegistry = ModelRegistry.inMemory(authStorage);
+  modelRegistry.registerProvider(TEST_PROVIDER, {
+    api: fauxModel.api,
+    baseUrl: fauxModel.baseUrl,
+    apiKey: "test-key",
+    streamSimple: faux.streamSimple,
+    models: [
+      {
+        id: fauxModel.id,
+        name: fauxModel.name,
+        api: fauxModel.api,
+        baseUrl: fauxModel.baseUrl,
+        reasoning: fauxModel.reasoning,
+        input: fauxModel.input,
+        cost: fauxModel.cost,
+        contextWindow: fauxModel.contextWindow,
+        maxTokens: fauxModel.maxTokens,
+      },
+    ],
+  });
+  const model = modelRegistry.find(TEST_PROVIDER, TEST_MODEL);
+  if (!model) {
+    throw new Error("Test model registration failed.");
+  }
+  const settingsManager = SettingsManager.inMemory({
+    compaction: { enabled: false },
+    retry: { enabled: false },
+  });
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: TEST_CWD,
+    agentDir: TEST_CWD,
+    settingsManager,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+  });
+  await resourceLoader.reload();
+  const sessions: AgentSession[] = [];
+  const createSession = async (
+    options: Parameters<typeof createAgentSession>[0] = {},
+  ) => {
+    const created = await createAgentSession({
+      ...options,
+      cwd: TEST_CWD,
+      model,
+      modelRegistry,
+      authStorage,
+      settingsManager,
+      resourceLoader,
+      noTools: "builtin",
+    });
+    sessions.push(created.session);
+    return { session: created.session };
+  };
+  return { createSession, faux, model, modelRegistry, sessions };
+}
+
+function realContext(
+  model: NonNullable<ReturnType<ModelRegistry["find"]>>,
+  modelRegistry: ModelRegistry,
+) {
+  return makeCtx({ model, modelRegistry }) as never;
 }
 
 function completionTool(options: unknown): {
@@ -656,64 +751,231 @@ describe("SubagentRuntime", () => {
     );
   });
 
-  it("runs validated managed completion through the child prompt and cleans up before waiters resolve", async () => {
+  it("retries a schema-rejected completion through Pi's sequential agent loop", async () => {
     const { pi } = fakePi();
-    const schema = Type.Object({ summary: Type.Literal("accepted") });
-    const session = makeSession("ignored prose");
-    let options: unknown;
-    const toolContext = { abort: vi.fn() };
-    session.prompt = vi.fn(async () => {
-      const tool = completionTool(options);
-      expect(() =>
-        validateToolArguments(tool as never, {
-          type: "toolCall",
-          id: "invalid-completion",
-          name: MANAGED_COMPLETION_TOOL_NAME,
-          arguments: { summary: "rejected" },
-        }),
-      ).toThrow(/Validation failed/);
-      const params = validateToolArguments(tool as never, {
-        type: "toolCall",
-        id: "valid-completion",
-        name: MANAGED_COMPLETION_TOOL_NAME,
-        arguments: { summary: "accepted" },
-      });
-      await tool.execute(
-        "complete-1",
-        params,
-        undefined,
-        undefined,
-        toolContext,
-      );
-    });
-    const runtime = new SubagentRuntime(pi as never, {
-      createSession: vi.fn(async (created) => {
-        options = created;
-        return { session };
-      }),
-    });
+    const { createSession, faux, model, modelRegistry, sessions } =
+      await createRealSessionHarness([
+        fauxAssistantMessage(
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            { summary: "rejected" },
+            { id: "invalid-completion" },
+          ),
+        ),
+        fauxAssistantMessage(
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            { summary: "accepted" },
+            { id: "valid-completion" },
+          ),
+        ),
+      ]);
+    const runtime = new SubagentRuntime(pi as never, { createSession });
 
-    const started = await runtime.runManagedAgent({
+    const final = await runtime.runManagedAgent({
       type: "general-purpose",
       prompt: "work",
-      cwd: "/workspace",
-      ctx: makeCtx() as never,
-      mode: "background",
-      completion: { schema, description: "Return the final summary." },
+      cwd: TEST_CWD,
+      ctx: realContext(model, modelRegistry),
+      completion: {
+        schema: Type.Object({ summary: Type.Literal("accepted") }),
+        description: "Return the final summary.",
+      },
     });
-    const completed = await runtime.wait<{ summary: string }>(started.id);
-    const typedResult: string | undefined = completed.result?.summary;
 
-    expect(typedResult).toBe("accepted");
-    expect(completed).toMatchObject({
+    expect(final).toMatchObject({
       status: "completed",
       result: { summary: "accepted" },
     });
-    expect(completionTool(options).executionMode).toBe("sequential");
-    expect(toolContext.abort).toHaveBeenCalledOnce();
-    expect(session.abort).toHaveBeenCalledOnce();
-    expect(session.dispose).toHaveBeenCalledOnce();
-    expect(session.subscribe.mock.results[0]?.value).toHaveBeenCalledOnce();
+    expect(faux.state.callCount).toBe(2);
+    expect(sessions[0]?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "invalid-completion",
+          isError: true,
+        }),
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "valid-completion",
+          isError: false,
+        }),
+      ]),
+    );
+  });
+
+  it("runs sibling calls through Pi's sequential loop and terminates after completion", async () => {
+    const { pi } = fakePi();
+    const earlier = vi.fn(async () => ({
+      content: [{ type: "text" as const, text: "earlier sibling" }],
+      details: {},
+    }));
+    const later = vi.fn(async () => ({
+      content: [{ type: "text" as const, text: "later sibling" }],
+      details: {},
+    }));
+    const { createSession, faux, model, modelRegistry } =
+      await createRealSessionHarness([
+        fauxAssistantMessage([
+          fauxToolCall("earlier_sibling", {}, { id: "earlier" }),
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            { result: "complete" },
+            { id: "complete" },
+          ),
+          fauxToolCall("later_sibling", {}, { id: "later" }),
+        ]),
+      ]);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: async (options) =>
+        createSession({
+          ...options,
+          customTools: [
+            ...(options?.customTools ?? []),
+            {
+              name: "earlier_sibling",
+              label: "earlier sibling",
+              description: "Records an earlier sequential sibling.",
+              parameters: Type.Object({}),
+              executionMode: "sequential",
+              execute: earlier,
+            },
+            {
+              name: "later_sibling",
+              label: "later sibling",
+              description: "Records a later sequential sibling.",
+              parameters: Type.Object({}),
+              executionMode: "sequential",
+              execute: later,
+            },
+          ],
+        }),
+    });
+
+    const final = await runtime.runManagedAgent({
+      type: "general-purpose",
+      prompt: "work",
+      cwd: TEST_CWD,
+      ctx: realContext(model, modelRegistry),
+      completion: {
+        schema: Type.Object({ result: Type.String() }),
+        description: "Return a result.",
+      },
+    });
+
+    expect(final).toMatchObject({ result: { result: "complete" } });
+    expect(earlier).toHaveBeenCalledOnce();
+    expect(later).not.toHaveBeenCalled();
+    expect(faux.state.callCount).toBe(2);
+  });
+
+  it("keeps nested Explore usable through Pi's live tool loop beside completion", async () => {
+    const { pi } = fakePi();
+    const { createSession, faux, model, modelRegistry } =
+      await createRealSessionHarness([
+        fauxAssistantMessage(
+          fauxToolCall(
+            "explore",
+            { question: "Where is the runtime?", breadth: "quick" },
+            { id: "explore" },
+          ),
+        ),
+        fauxAssistantMessage("The runtime is in runtime.ts."),
+        fauxAssistantMessage(
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            { result: "exploration complete" },
+            { id: "complete" },
+          ),
+        ),
+      ]);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession,
+      publicConfig: {
+        agents: {
+          General: {},
+          Explore: { model: `${TEST_PROVIDER}/${TEST_MODEL}` },
+          Review: {},
+        },
+      },
+    });
+
+    const final = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "Explore, then complete.",
+      cwd: TEST_CWD,
+      ctx: realContext(model, modelRegistry),
+      completion: {
+        schema: Type.Object({ result: Type.String() }),
+        description: "Return a result.",
+      },
+    });
+
+    expect(final).toMatchObject({
+      status: "completed",
+      result: { result: "exploration complete" },
+    });
+    expect(faux.state.callCount).toBe(3);
+  });
+
+  it("stops an externally cancelled live child before completion through Pi's loop", async () => {
+    const { pi } = fakePi();
+    const controller = new AbortController();
+    const cancelled = vi.fn(async () => {
+      controller.abort();
+      return {
+        content: [{ type: "text" as const, text: "cancelled" }],
+        details: {},
+      };
+    });
+    const { createSession, faux, model, modelRegistry } =
+      await createRealSessionHarness([
+        fauxAssistantMessage([
+          fauxToolCall("cancel_child", {}, { id: "cancel" }),
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            { result: "must not be accepted" },
+            { id: "complete" },
+          ),
+        ]),
+      ]);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: async (options) =>
+        createSession({
+          ...options,
+          customTools: [
+            ...(options?.customTools ?? []),
+            {
+              name: "cancel_child",
+              label: "cancel child",
+              description: "Cancels the child through its caller signal.",
+              parameters: Type.Object({}),
+              executionMode: "sequential",
+              execute: cancelled,
+            },
+          ],
+        }),
+    });
+
+    const final = await runtime.runManagedAgent({
+      type: "general-purpose",
+      prompt: "work",
+      cwd: TEST_CWD,
+      ctx: realContext(model, modelRegistry),
+      signal: controller.signal,
+      completion: {
+        schema: Type.Object({ result: Type.String() }),
+        description: "Return a result.",
+      },
+    });
+
+    expect(final).toMatchObject({
+      status: "stopped",
+      error: "Stopped by user.",
+    });
+    expect(final.result).toBeUndefined();
+    expect(cancelled).toHaveBeenCalledOnce();
+    expect(faux.state.callCount).toBe(2);
   });
 
   it("fails managed completion runs that settle without the completion tool", async () => {
@@ -739,42 +1001,124 @@ describe("SubagentRuntime", () => {
     });
   });
 
-  it("preserves accepted completion across late cancellation and provider failures", async () => {
+  it("preserves accepted completion across live cancellation during cleanup", async () => {
     const { pi } = fakePi();
-    const schema = Type.Object({ result: Type.String() });
-    const session = makeSession();
-    let options: unknown;
     const controller = new AbortController();
-    session.prompt = vi.fn(async () => {
-      await completionTool(options).execute(
-        "complete-1",
-        { result: "accepted" },
-        undefined,
-        undefined,
-        { abort: vi.fn() },
-      );
-      controller.abort();
-      throw new Error("late provider failure");
-    });
+    const { createSession, faux, model, modelRegistry } =
+      await createRealSessionHarness([
+        fauxAssistantMessage(
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            { result: "accepted" },
+            { id: "complete" },
+          ),
+        ),
+      ]);
     const runtime = new SubagentRuntime(pi as never, {
-      createSession: vi.fn(async (created) => {
-        options = created;
+      createSession: async (options) => {
+        const { session } = await createSession(options);
+        const dispose = session.dispose.bind(session);
+        session.dispose = () => {
+          controller.abort();
+          dispose();
+        };
         return { session };
-      }),
+      },
     });
 
     const final = await runtime.runManagedAgent({
       type: "general-purpose",
       prompt: "work",
-      cwd: "/workspace",
-      ctx: makeCtx() as never,
+      cwd: TEST_CWD,
+      ctx: realContext(model, modelRegistry),
       signal: controller.signal,
-      completion: { schema, description: "Return a result." },
+      completion: {
+        schema: Type.Object({ result: Type.String() }),
+        description: "Return a result.",
+      },
     });
 
     expect(final).toMatchObject({
       status: "completed",
       result: { result: "accepted" },
+    });
+    expect(faux.state.callCount).toBe(1);
+  });
+
+  it("preserves accepted completion across later provider and session failures", async () => {
+    const { pi } = fakePi();
+    const providerHarness = await createRealSessionHarness([
+      fauxAssistantMessage(
+        fauxToolCall(
+          MANAGED_COMPLETION_TOOL_NAME,
+          { result: "provider accepted" },
+          { id: "complete" },
+        ),
+      ),
+    ]);
+    const providerRuntime = new SubagentRuntime(pi as never, {
+      createSession: async (options) => {
+        const { session } = await providerHarness.createSession(options);
+        const prompt = session.prompt.bind(session);
+        session.prompt = async (...args) => {
+          await prompt(...args);
+          throw new Error("late provider failure");
+        };
+        return { session };
+      },
+    });
+    const providerFinal = await providerRuntime.runManagedAgent({
+      type: "general-purpose",
+      prompt: "work",
+      cwd: TEST_CWD,
+      ctx: realContext(providerHarness.model, providerHarness.modelRegistry),
+      completion: {
+        schema: Type.Object({ result: Type.String() }),
+        description: "Return a result.",
+      },
+    });
+
+    expect(providerFinal).toMatchObject({
+      status: "completed",
+      result: { result: "provider accepted" },
+    });
+
+    const sessionHarness = await createRealSessionHarness([
+      fauxAssistantMessage(
+        fauxToolCall(
+          MANAGED_COMPLETION_TOOL_NAME,
+          { result: "session accepted" },
+          { id: "complete" },
+        ),
+      ),
+    ]);
+    const sessionRuntime = new SubagentRuntime(pi as never, {
+      createSession: async (options) => {
+        const { session } = await sessionHarness.createSession(options);
+        const prompt = session.prompt.bind(session);
+        session.prompt = async (...args) => {
+          await prompt(...args);
+          Object.defineProperty(session, "state", {
+            value: { errorMessage: "late session failure" },
+          });
+        };
+        return { session };
+      },
+    });
+    const sessionFinal = await sessionRuntime.runManagedAgent({
+      type: "general-purpose",
+      prompt: "work",
+      cwd: TEST_CWD,
+      ctx: realContext(sessionHarness.model, sessionHarness.modelRegistry),
+      completion: {
+        schema: Type.Object({ result: Type.String() }),
+        description: "Return a result.",
+      },
+    });
+
+    expect(sessionFinal).toMatchObject({
+      status: "completed",
+      result: { result: "session accepted" },
     });
   });
 
@@ -807,19 +1151,21 @@ describe("SubagentRuntime", () => {
     });
     pending.resolve();
 
-    const failedSession = makeSession();
-    failedSession.prompt = vi.fn(async () => {
-      throw new Error("provider unavailable");
-    });
+    const providerHarness = await createRealSessionHarness([
+      fauxAssistantMessage("", {
+        stopReason: "error",
+        errorMessage: "provider unavailable",
+      }),
+    ]);
     const providerRuntime = new SubagentRuntime(pi as never, {
-      createSession: vi.fn(async () => ({ session: failedSession })),
+      createSession: providerHarness.createSession,
     });
     await expect(
       providerRuntime.runManagedAgent({
         type: "general-purpose",
         prompt: "work",
-        cwd: "/workspace",
-        ctx: makeCtx() as never,
+        cwd: TEST_CWD,
+        ctx: realContext(providerHarness.model, providerHarness.modelRegistry),
         completion: {
           schema: Type.Object({ result: Type.String() }),
           description: "Return a result.",
@@ -830,19 +1176,28 @@ describe("SubagentRuntime", () => {
       error: "provider unavailable",
     });
 
-    const sessionFailure = makeSession();
-    Object.defineProperty(sessionFailure, "state", {
-      value: { errorMessage: "session unavailable" },
-    });
+    const sessionHarness = await createRealSessionHarness([
+      fauxAssistantMessage("settled prose"),
+    ]);
     const sessionRuntime = new SubagentRuntime(pi as never, {
-      createSession: vi.fn(async () => ({ session: sessionFailure })),
+      createSession: async (options) => {
+        const { session } = await sessionHarness.createSession(options);
+        const prompt = session.prompt.bind(session);
+        session.prompt = async (...args) => {
+          await prompt(...args);
+          Object.defineProperty(session, "state", {
+            value: { errorMessage: "session unavailable" },
+          });
+        };
+        return { session };
+      },
     });
     await expect(
       sessionRuntime.runManagedAgent({
         type: "general-purpose",
         prompt: "work",
-        cwd: "/workspace",
-        ctx: makeCtx() as never,
+        cwd: TEST_CWD,
+        ctx: realContext(sessionHarness.model, sessionHarness.modelRegistry),
         completion: {
           schema: Type.Object({ result: Type.String() }),
           description: "Return a result.",
@@ -854,50 +1209,71 @@ describe("SubagentRuntime", () => {
     });
   });
 
-  it("keeps earlier siblings effective and prevents later siblings after completion", async () => {
+  it("keeps completion dispatchable through explicit allowlist and exclusion collisions", async () => {
     const { pi } = fakePi();
-    const session = makeSession();
-    let options: unknown;
-    const effects: string[] = [];
-    session.prompt = vi.fn(async () => {
-      effects.push("earlier sibling");
-      const context = {
-        abort: vi.fn(() => effects.push("completion abort")),
-      };
-      await completionTool(options).execute(
-        "complete-1",
-        { result: "complete" },
-        undefined,
-        undefined,
-        context,
-      );
-      if (!context.abort.mock.calls.length) {
-        effects.push("later sibling");
-      }
-    });
-    const runtime = new SubagentRuntime(pi as never, {
-      createSession: vi.fn(async (created) => {
-        options = created;
-        return { session };
-      }),
-    });
+    const { createSession, model, modelRegistry } =
+      await createRealSessionHarness([
+        fauxAssistantMessage(
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            { result: "accepted" },
+            { id: "complete" },
+          ),
+        ),
+      ]);
+    const runtime = new SubagentRuntime(pi as never, { createSession });
 
     const final = await runtime.runManagedAgent({
       type: "general-purpose",
       prompt: "work",
-      cwd: "/workspace",
-      ctx: makeCtx() as never,
+      cwd: TEST_CWD,
+      ctx: realContext(model, modelRegistry),
+      tools: ["read"],
+      excludeTools: [MANAGED_COMPLETION_TOOL_NAME, "bash"],
       completion: {
         schema: Type.Object({ result: Type.String() }),
         description: "Return a result.",
       },
     });
 
-    expect(final).toMatchObject({ result: { result: "complete" } });
-    expect(effects).toEqual(["earlier sibling", "completion abort"]);
+    expect(final).toMatchObject({ result: { result: "accepted" } });
   });
 
-  it("protects the reserved completion tool, rejects duplicates, and coexists with Explore", async () => {
+  it("suppresses a duplicate completion emitted through Pi's sequential loop", async () => {
+    const { pi } = fakePi();
+    const { createSession, faux, model, modelRegistry } =
+      await createRealSessionHarness([
+        fauxAssistantMessage([
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            { result: "first" },
+            { id: "first-completion" },
+          ),
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            { result: "second" },
+            { id: "duplicate-completion" },
+          ),
+        ]),
+      ]);
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+
+    const final = await runtime.runManagedAgent({
+      type: "general-purpose",
+      prompt: "work",
+      cwd: TEST_CWD,
+      ctx: realContext(model, modelRegistry),
+      completion: {
+        schema: Type.Object({ result: Type.String() }),
+        description: "Return a result.",
+      },
+    });
+
+    expect(final).toMatchObject({ result: { result: "first" } });
+    expect(faux.state.callCount).toBe(1);
+  });
+
+  it("rejects a direct duplicate completion without replacing the first payload", async () => {
     const { pi } = fakePi();
     const session = makeSession();
     let options: unknown;
@@ -928,8 +1304,6 @@ describe("SubagentRuntime", () => {
       prompt: "work",
       cwd: "/workspace",
       ctx: makeCtx() as never,
-      tools: ["read"],
-      excludeTools: [MANAGED_COMPLETION_TOOL_NAME, "bash"],
       completion: {
         schema: Type.Object({ result: Type.String() }),
         description: "Return a result.",
@@ -937,23 +1311,6 @@ describe("SubagentRuntime", () => {
     });
 
     expect(final).toMatchObject({ result: { result: "first" } });
-    expect((options as { tools: string[] }).tools).toEqual([
-      "read",
-      MANAGED_COMPLETION_TOOL_NAME,
-    ]);
-    expect((options as { excludeTools: string[] }).excludeTools).toEqual([
-      "bash",
-    ]);
-    expect(
-      (options as { customTools: Array<{ name: string }> }).customTools.map(
-        (tool) => tool.name,
-      ),
-    ).toEqual(["explore", MANAGED_COMPLETION_TOOL_NAME]);
-    expect(session.setActiveToolsByName).toHaveBeenCalledWith([
-      "read",
-      "explore",
-      MANAGED_COMPLETION_TOOL_NAME,
-    ]);
   });
 
   it("uses public config defaults for model and thinking metadata", () => {
