@@ -47,10 +47,12 @@ export type {
 export {
   getSubagentRuntime,
   getSubagentRuntimes,
+  MANAGED_COMPLETION_TOOL_NAME,
   SubagentRuntime,
 } from "./runtime.js";
 export type {
   ExtensionBindingStatus,
+  ManagedCompletion,
   PublicAgentMode,
   QueueSubagentInput,
   RosterVisibility,

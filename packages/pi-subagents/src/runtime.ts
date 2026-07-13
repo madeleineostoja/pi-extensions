@@ -11,7 +11,7 @@ import {
   getAgentDir,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static, type TSchema } from "typebox";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
 import {
@@ -83,7 +83,7 @@ export type RuntimeHealth = {
   };
 };
 
-export type RuntimeSnapshot = {
+export type RuntimeSnapshot<TResult = unknown> = {
   id: string;
   status: SubagentRuntimeStatus;
   owner: RuntimeOwner;
@@ -96,7 +96,7 @@ export type RuntimeSnapshot = {
   rosterVisibility: RosterVisibility;
   timestamps: RuntimeTimestamps;
   health?: RuntimeHealth;
-  result?: unknown;
+  result?: TResult;
   error?: string;
 };
 
@@ -127,7 +127,15 @@ export type ExploreToolParams = {
   breadth?: ExploreBreadth;
 };
 
-export type RunManagedAgentInput = {
+export type ManagedCompletion<TSchemaValue extends TSchema = TSchema> = {
+  description: string;
+  schema: TSchemaValue;
+  label?: string;
+};
+
+export type RunManagedAgentInput<
+  TSchemaValue extends TSchema | undefined = undefined,
+> = {
   type: string;
   prompt: string;
   description?: string;
@@ -143,9 +151,15 @@ export type RunManagedAgentInput = {
   systemPrompt?: string;
   systemPromptMode?: PromptMode;
   rosterVisibility?: RosterVisibility;
+  completion?: ManagedCompletion<
+    TSchemaValue extends TSchema ? TSchemaValue : TSchema
+  >;
 };
 
-export type RunPublicAgentInput = Omit<RunManagedAgentInput, "type"> & {
+export type RunPublicAgentInput = Omit<
+  RunManagedAgentInput,
+  "type" | "completion"
+> & {
   type: PublicBuiltinType;
 };
 
@@ -162,6 +176,11 @@ type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
     initialization?: Promise<void>;
     resolveInitialization?: () => void;
     finalization?: Promise<RuntimeSnapshot>;
+    completion?: {
+      definition: ManagedCompletion;
+      accepted: boolean;
+      payload?: unknown;
+    };
     inspectListeners: Set<RuntimeSubscriptionListener>;
   };
 
@@ -211,6 +230,7 @@ const EXPLORE_TOOL_INACTIVITY_MS = 120_000;
 const EXPLORE_TOOL_INACTIVITY_POLL_MS = 10_000;
 const EXPLORE_TOOL_MAX_RESULT_CHARS = 50_000;
 export const TERMINAL_MESSAGE_TAIL_LIMIT = 100;
+export const MANAGED_COMPLETION_TOOL_NAME = "pi_managed_complete";
 const exploreEligibleTypes = new Set([
   "General",
   "Review",
@@ -483,8 +503,8 @@ function splitModelRef(modelRef: string): {
   };
 }
 
-function resolveSystemPromptInput(
-  input: RunManagedAgentInput,
+function resolveSystemPromptInput<TSchemaValue extends TSchema | undefined>(
+  input: RunManagedAgentInput<TSchemaValue>,
 ): { prompt: string; mode: PromptMode } | undefined {
   const profile = publicAgentProfile(input.type);
   const prompt = input.systemPrompt ?? profile?.systemPrompt;
@@ -747,7 +767,13 @@ export class SubagentRuntime {
     });
   }
 
-  async runManagedAgent(input: RunManagedAgentInput): Promise<RuntimeSnapshot> {
+  async runManagedAgent<TSchemaValue extends TSchema | undefined = undefined>(
+    input: RunManagedAgentInput<TSchemaValue>,
+  ): Promise<
+    RuntimeSnapshot<
+      TSchemaValue extends TSchema ? Static<TSchemaValue> : unknown
+    >
+  > {
     if (input.prompt.trim() === "") {
       throw new Error("Agent prompt must not be empty");
     }
@@ -762,13 +788,25 @@ export class SubagentRuntime {
       rosterVisibility: input.rosterVisibility,
     });
     const record = this.#requireRecord(queued.id);
+    if (input.completion) {
+      record.completion = {
+        definition: input.completion,
+        accepted: false,
+      };
+    }
     this.start(record.id);
     const running = this.#runRecord(record, input);
     if (input.mode === "background") {
       void running;
-      return projectSnapshot(record);
+      return projectSnapshot(record) as RuntimeSnapshot<
+        TSchemaValue extends TSchema ? Static<TSchemaValue> : unknown
+      >;
     }
-    return running;
+    return running as Promise<
+      RuntimeSnapshot<
+        TSchemaValue extends TSchema ? Static<TSchemaValue> : unknown
+      >
+    >;
   }
 
   createExploreTool(parent: RuntimeSnapshot): ToolDefinition {
@@ -964,23 +1002,29 @@ export class SubagentRuntime {
     return projectSnapshot(record);
   }
 
-  async result(id: string, wait: boolean): Promise<RuntimeSnapshot> {
+  async result<TResult = unknown>(
+    id: string,
+    wait: boolean,
+  ): Promise<RuntimeSnapshot<TResult>> {
     if (wait) {
-      return this.wait(id);
+      return this.wait<TResult>(id);
     }
     const record = this.#requireRecord(id);
     refreshHealth(record);
-    return projectSnapshot(record);
+    return projectSnapshot(record) as RuntimeSnapshot<TResult>;
   }
 
-  wait(id: string): Promise<RuntimeSnapshot> {
+  wait<TResult = unknown>(id: string): Promise<RuntimeSnapshot<TResult>> {
     const record = this.#requireRecord(id);
     if (isTerminal(record.status)) {
-      return record.finalization ?? Promise.resolve(projectSnapshot(record));
+      return (record.finalization ??
+        Promise.resolve(projectSnapshot(record))) as Promise<
+        RuntimeSnapshot<TResult>
+      >;
     }
     return new Promise((resolve) => {
       const waiters = this.#waiters.get(id) ?? [];
-      waiters.push({ resolve });
+      waiters.push({ resolve: resolve as (snapshot: RuntimeSnapshot) => void });
       this.#waiters.set(id, waiters);
     });
   }
@@ -1029,9 +1073,9 @@ export class SubagentRuntime {
       });
   }
 
-  async #runRecord(
+  async #runRecord<TSchemaValue extends TSchema | undefined>(
     record: RuntimeRecord,
-    input: RunManagedAgentInput,
+    input: RunManagedAgentInput<TSchemaValue>,
   ): Promise<RuntimeSnapshot> {
     const abort = () => {
       if (this.#isCurrentRecord(record) && !isTerminal(record.status)) {
@@ -1051,14 +1095,30 @@ export class SubagentRuntime {
         : undefined;
       const profileTools = publicAgentProfile(record.type)?.tools;
       const allowExplore = isExploreEligible(record.type) && !nested;
+      const completionTools = record.completion
+        ? [MANAGED_COMPLETION_TOOL_NAME]
+        : [];
       const explicitTools =
         input.tools === undefined
           ? undefined
-          : normalizeActiveToolNames(input.tools, { allowExplore });
+          : [
+              ...new Set([
+                ...normalizeActiveToolNames(input.tools, { allowExplore }),
+                ...completionTools,
+              ]),
+            ];
       const profileAllowlist =
         profileTools === undefined
           ? undefined
-          : normalizeActiveToolNames(profileTools, { allowExplore });
+          : [
+              ...new Set([
+                ...normalizeActiveToolNames(profileTools, { allowExplore }),
+                ...completionTools,
+              ]),
+            ];
+      const excludeTools = input.excludeTools?.filter(
+        (name) => name !== MANAGED_COMPLETION_TOOL_NAME,
+      );
       const createSessionOptions = {
         cwd: record.cwd,
         model,
@@ -1074,13 +1134,19 @@ export class SubagentRuntime {
             }),
         ...(nested
           ? {
-              tools: explicitTools ?? [...readOnlyToolNames],
-              excludeTools: input.excludeTools ?? [
+              tools: explicitTools ?? [
+                ...readOnlyToolNames,
+                ...completionTools,
+              ],
+              excludeTools: excludeTools ?? [
                 "explore",
                 ...publicToolNames,
                 "edit",
                 "write",
               ],
+              ...(record.completion
+                ? { customTools: [this.#managedCompletionTool(record)] }
+                : {}),
             }
           : {
               ...(explicitTools === undefined
@@ -1088,9 +1154,7 @@ export class SubagentRuntime {
                   ? {}
                   : { tools: [...profileAllowlist] }
                 : { tools: explicitTools }),
-              ...(input.excludeTools === undefined
-                ? {}
-                : { excludeTools: input.excludeTools }),
+              ...(excludeTools === undefined ? {} : { excludeTools }),
               customTools: this.#customToolsFor(record),
             }),
       };
@@ -1150,10 +1214,17 @@ export class SubagentRuntime {
       await this.#flushSteering(record);
       await prompt;
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
-        return projectSnapshot(record);
+        return record.finalization ?? projectSnapshot(record);
       }
       if (session.state.errorMessage) {
         this.fail(record.id, session.state.errorMessage);
+        return record.finalization ?? projectSnapshot(record);
+      }
+      if (record.completion && !record.completion.accepted) {
+        this.fail(
+          record.id,
+          "Managed agent settled without invoking required completion tool.",
+        );
         return record.finalization ?? projectSnapshot(record);
       }
       const result = session.getLastAssistantText() ?? "";
@@ -1161,7 +1232,7 @@ export class SubagentRuntime {
       return record.finalization ?? projectSnapshot(record);
     } catch (error) {
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
-        return projectSnapshot(record);
+        return record.finalization ?? projectSnapshot(record);
       }
       this.fail(record.id, error);
       return record.finalization ?? projectSnapshot(record);
@@ -1175,10 +1246,58 @@ export class SubagentRuntime {
   }
 
   #customToolsFor(record: RuntimeRecord): ToolDefinition[] | undefined {
-    if (!isExploreEligible(record.type)) {
-      return undefined;
+    const tools: ToolDefinition[] = [];
+    if (isExploreEligible(record.type)) {
+      tools.push(this.createExploreTool(projectSnapshot(record)));
     }
-    return [this.createExploreTool(projectSnapshot(record))];
+    if (record.completion) {
+      tools.push(this.#managedCompletionTool(record));
+    }
+    return tools.length > 0 ? tools : undefined;
+  }
+
+  #managedCompletionTool(record: RuntimeRecord): ToolDefinition {
+    const completion = record.completion;
+    if (!completion) {
+      throw new Error("Managed completion tool requested without a contract.");
+    }
+    return {
+      name: MANAGED_COMPLETION_TOOL_NAME,
+      label: completion.definition.label ?? "Complete managed task",
+      description: completion.definition.description,
+      promptSnippet:
+        "Complete the managed task with its required structured result.",
+      promptGuidelines: [
+        "Call pi_managed_complete exactly once as your final action after all other required work.",
+      ],
+      parameters: completion.definition.schema,
+      executionMode: "sequential",
+      execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+        if (completion.accepted) {
+          throw new Error("Managed completion has already been accepted.");
+        }
+        if (isTerminal(record.status)) {
+          throw new Error(
+            `Managed agent ${record.id} is already ${record.status}.`,
+          );
+        }
+        const payload = copyTerminalValue(params);
+        completion.accepted = true;
+        completion.payload = payload;
+        this.complete(record.id, payload);
+        ctx.abort();
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Managed completion accepted.",
+            },
+          ],
+          details: payload,
+          terminate: true,
+        };
+      },
+    };
   }
 
   async #disposeSession(session: AgentSession): Promise<void> {
@@ -1204,10 +1323,13 @@ export class SubagentRuntime {
     const getActiveTools = this.pi.getActiveTools?.bind(this.pi);
     const allowExplore =
       isExploreEligible(record.type) && !isNestedOwner(record.owner);
+    const completionTools = record.completion
+      ? [MANAGED_COMPLETION_TOOL_NAME]
+      : [];
     if (explicitTools) {
       const activeTools = allowExplore
-        ? [...explicitTools, "explore"]
-        : explicitTools;
+        ? [...explicitTools, "explore", ...completionTools]
+        : [...explicitTools, ...completionTools];
       session.setActiveToolsByName(
         normalizeActiveToolNames([...new Set(activeTools)], { allowExplore }),
       );
@@ -1216,7 +1338,10 @@ export class SubagentRuntime {
     const profileTools = publicAgentProfile(record.type)?.tools;
     if (profileTools !== undefined && !isNestedOwner(record.owner)) {
       session.setActiveToolsByName(
-        normalizeActiveToolNames([...new Set(profileTools)], { allowExplore }),
+        normalizeActiveToolNames(
+          [...new Set([...profileTools, ...completionTools])],
+          { allowExplore },
+        ),
       );
       return;
     }
@@ -1230,7 +1355,10 @@ export class SubagentRuntime {
       activeTools = [...activeTools, "explore"];
     }
     session.setActiveToolsByName(
-      normalizeActiveToolNames([...new Set(activeTools)], { allowExplore }),
+      normalizeActiveToolNames(
+        [...new Set([...activeTools, ...completionTools])],
+        { allowExplore },
+      ),
     );
   }
 
