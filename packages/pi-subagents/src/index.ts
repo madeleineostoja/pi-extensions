@@ -1,7 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { showAgentsDashboard } from "./agents-dashboard.js";
-import { PUBLIC_AGENT_PROFILES } from "./agent-profiles.js";
+import {
+  AGENT_PROMPT_GUIDELINES,
+  PUBLIC_AGENT_PROFILES,
+} from "./agent-profiles.js";
 import { getSubagentRuntime, getSubagentRuntimes } from "./runtime.js";
 import { SubagentRosterController } from "./roster.js";
 import {
@@ -11,6 +14,7 @@ import {
 } from "./tool-rendering.js";
 
 export {
+  AGENT_PROMPT_GUIDELINES,
   GENERAL_DESC,
   GENERAL_PROMPT,
   EXPLORE_DESC,
@@ -137,6 +141,7 @@ export default function (pi: ExtensionAPI): void {
     label: "Agent",
     description:
       "Run a General, Explore, or Review subagent. Defaults to foreground and returns the result; for background, use get_subagent_result with wait:true to join instead of polling.",
+    promptGuidelines: AGENT_PROMPT_GUIDELINES,
     parameters: PublicAgentParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const mode = params.mode ?? "foreground";

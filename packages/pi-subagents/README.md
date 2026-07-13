@@ -10,11 +10,13 @@ Three built-in public agent types are available:
 
 | Agent     | Use it for                                                                                                                         |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `General` | Well-scoped implementation, research, or synthesis work that benefits from a separate context.                                     |
+| `General` | Well-scoped implementation, research, or synthesis work with clear boundaries. Not for discovery or review.                        |
 | `Explore` | Codebase discovery: locating symbols, tracing usage, mapping unfamiliar areas, and answering "where/how is this wired?" questions. |
-| `Review`  | Independent second-pass review of diffs, plans, or proposed changes.                                                               |
+| `Review`  | Independent second-pass review of concrete work such as diffs, commits, patches, and staged or unstaged changes.                   |
 
 Subagents inherit the parent session's extension environment. They bind the configured Pi extensions in their own session and inherit the parent's active tool set, except that `Agent`, `get_subagent_result`, and `steer_subagent` are withheld from all subagents to avoid accidental agent fan-out. `Explore` is read-oriented by prompt convention and is best used for discovery rather than edits; `Review` is intended to stay read-only by instruction.
+
+While the `Agent` tool is active, it injects routing guidelines into the parent prompt. These direct non-trivial codebase discovery to `Explore`, independent second-pass review of active implementation work to `Review`, and reserve `General` for bounded implementation, research, or synthesis. A fresh session whose primary task is already a review should review directly rather than delegate without useful context isolation.
 
 ## Tools
 

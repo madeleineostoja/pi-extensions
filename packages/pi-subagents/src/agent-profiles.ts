@@ -95,7 +95,13 @@ export const REVIEW_DESC =
   "Independent read-only reviewer for concrete code artifacts (PRs, commits, patches, staged/unstaged diffs). Inspects correctness, safety, verification, scope, and maintainability, and reports back. Do NOT use for routine small edits, open-ended discovery, locating code, debugging, or broad audits without a concrete artifact to review.";
 
 export const GENERAL_DESC =
-  "Well-scoped implementation, research, or synthesis work that benefits from a separate context and a thorough self-contained report. NOT for trivial single-file edits, pure code-location (use Explore), or concrete-artifact review (use Review).";
+  "Well-scoped implementation, research, or synthesis work that benefits from a separate context and a thorough self-contained report. NOT for trivial single-file edits, pure code-location (use Explore), or reviewing concrete work (use Review).";
+
+export const AGENT_PROMPT_GUIDELINES = [
+  "Use the Agent tool with subagent_type Explore for non-trivial codebase discovery: locating symbols, tracing usage, answering 'where is X / what references Y / what calls Z', or mapping patterns across files. Reach for Explore before doing your own multi-step or wide search; skip it when a targeted read or two is enough.",
+  "Use the Agent tool with subagent_type Review as an independent second-pass reviewer for large, risky, or multi-file diffs during an active implementation session. Do not substitute General for reviewing work. In a fresh session where the user's main request is already a review, review the artifact directly instead of delegating it.",
+  "Use the Agent tool with subagent_type General only for well-scoped implementation, research, or synthesis work with clear boundaries. Do not use General for codebase discovery or reviewing work; use Explore or Review respectively.",
+];
 
 export const PUBLIC_AGENT_PROFILES: Record<PublicBuiltinType, AgentProfile> = {
   General: {

@@ -25,6 +25,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 
 import registerExtension from "./index.js";
 import {
+  AGENT_PROMPT_GUIDELINES,
   EXPLORE_PROMPT,
   GENERAL_PROMPT,
   PUBLIC_AGENT_PROFILES,
@@ -39,6 +40,7 @@ type ToolDef = {
   name: string;
   description: string;
   parameters: unknown;
+  promptGuidelines?: string[];
   execute: (...args: any[]) => Promise<any>;
   renderCall?: (...args: any[]) => unknown;
   renderResult?: (...args: any[]) => unknown;
@@ -211,6 +213,13 @@ describe("public subagent tools", () => {
       "steer_subagent",
     ]);
     expect(tools[0].description).toContain("foreground");
+    expect(tools[0].promptGuidelines).toEqual(AGENT_PROMPT_GUIDELINES);
+    expect(tools[0].promptGuidelines).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("subagent_type Review"),
+        expect.stringContaining("Do not substitute General"),
+      ]),
+    );
     expect(tools[0].renderCall).toEqual(expect.any(Function));
     expect(tools[0].renderResult).toEqual(expect.any(Function));
     expect(tools[1].description).toContain("wait:true");
