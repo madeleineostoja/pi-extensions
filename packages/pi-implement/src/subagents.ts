@@ -50,7 +50,15 @@ export type SubagentResult =
   | { status: "failed"; error: string }
   | { status: "stopped"; error: string };
 
-const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls", "explore"];
+const READ_ONLY_TOOLS = [
+  "read",
+  "bash",
+  "grep",
+  "find",
+  "ls",
+  "explore",
+  "lsp",
+];
 const MUTATING_TOOLS = [
   "edit",
   "write",
@@ -63,7 +71,7 @@ export class RuntimeSubagentClient implements SubagentClient {
   private readonly runtime;
 
   constructor(
-    pi: ExtensionAPI,
+    private readonly pi: ExtensionAPI,
     private readonly ctx: ExtensionCommandContext,
     private readonly runId: string,
   ) {
@@ -95,7 +103,13 @@ export class RuntimeSubagentClient implements SubagentClient {
       ctx: this.ctx,
       rosterVisibility: "hide",
       ...(args.readOnly || role === "reviewer" || role === "planner"
-        ? { tools: READ_ONLY_TOOLS, excludeTools: MUTATING_TOOLS }
+        ? {
+            tools: READ_ONLY_TOOLS.filter(
+              (name) =>
+                this.pi.getActiveTools?.().includes(name) ?? name !== "lsp",
+            ),
+            excludeTools: MUTATING_TOOLS,
+          }
         : {}),
     });
     return snapshot.id;

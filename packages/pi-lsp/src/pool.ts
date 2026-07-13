@@ -8,6 +8,8 @@ import { canonicalPath } from "./workspace.js";
 export type PoolKey = `${string}|${string}|${string}`;
 type Entry = {
   key: PoolKey;
+  server: ResolvedServer;
+  workspaceRoot: string;
   client?: LspClient;
   process?: ChildProcess;
   starting?: Promise<LspClient>;
@@ -94,7 +96,12 @@ export class LspPool {
           return existing;
         }
         await this.#makeRoom();
-        const created: Entry = { key, lastActivity: Date.now() };
+        const created: Entry = {
+          key,
+          server,
+          workspaceRoot: root,
+          lastActivity: Date.now(),
+        };
         this.#entries.set(key, created);
         created.starting = this.#start(created, server, root);
         return created;
@@ -150,17 +157,29 @@ export class LspPool {
 
   status(): Array<{
     key: string;
+    kind: ResolvedServer["kind"];
+    workspaceRoot: string;
     activeRequests: number;
     openDocuments: number;
-    failed: boolean;
+    state: "running" | "starting" | "cooling-down";
     starting: boolean;
+    failed: boolean;
+    reason?: string;
   }> {
     return [...this.#entries.values()].map((entry) => ({
       key: entry.key,
+      kind: entry.server.kind,
+      workspaceRoot: entry.workspaceRoot,
       activeRequests: entry.client?.activeRequests ?? 0,
       openDocuments: entry.client?.openDocumentCount ?? 0,
-      failed: Boolean(entry.failure),
+      state: entry.client
+        ? "running"
+        : entry.starting
+          ? "starting"
+          : "cooling-down",
       starting: Boolean(entry.starting),
+      failed: Boolean(entry.failure),
+      ...(entry.failure ? { reason: entry.failure.message } : {}),
     }));
   }
 

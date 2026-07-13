@@ -107,12 +107,12 @@ export const PUBLIC_AGENT_PROFILES: Record<PublicBuiltinType, AgentProfile> = {
     systemPrompt: EXPLORE_PROMPT,
     promptMode: "replace",
     description: EXPLORE_DESC,
-    tools: ["read", "bash", "grep", "find", "ls"],
+    tools: ["read", "bash", "grep", "find", "ls", "lsp"],
   },
   Review: {
     systemPrompt: REVIEW_PROMPT,
     promptMode: "append",
     description: REVIEW_DESC,
-    tools: ["read", "bash", "grep", "find", "ls", "explore"],
+    tools: ["read", "bash", "grep", "find", "ls", "explore", "lsp"],
   },
 };

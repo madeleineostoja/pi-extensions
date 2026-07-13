@@ -215,15 +215,17 @@ export function withoutPublicAgentTools(names: string[]): string[] {
 
 function normalizeActiveToolNames(
   names: string[],
-  options: { allowExplore: boolean },
+  options: { allowExplore: boolean; registered?: readonly string[] },
 ): string[] {
   return withoutPublicAgentTools(names).filter(
-    (name) => options.allowExplore || name !== "explore",
+    (name) =>
+      (options.allowExplore || name !== "explore") &&
+      (name !== "lsp" || options.registered?.includes("lsp") !== false),
   );
 }
 
 const readOnlyToolNames = normalizeActiveToolNames(
-  ["read", "bash", "grep", "find", "ls"],
+  ["read", "bash", "grep", "find", "ls", "lsp"],
   { allowExplore: false },
 );
 const defaultSystemPromptMode: PromptMode = "append";
@@ -1089,6 +1091,7 @@ export class SubagentRuntime {
     input.signal?.addEventListener("abort", abort, { once: true });
     try {
       const { model } = resolveModelRef(input.ctx, record.model);
+      const registered = this.pi.getActiveTools?.();
       const nested = isNestedOwner(record.owner);
       const promptInput = resolveSystemPromptInput(input);
       const resources = promptInput
@@ -1104,7 +1107,10 @@ export class SubagentRuntime {
           ? undefined
           : [
               ...new Set([
-                ...normalizeActiveToolNames(input.tools, { allowExplore }),
+                ...normalizeActiveToolNames(input.tools, {
+                  allowExplore,
+                  registered,
+                }),
                 ...completionTools,
               ]),
             ];
@@ -1113,7 +1119,10 @@ export class SubagentRuntime {
           ? undefined
           : [
               ...new Set([
-                ...normalizeActiveToolNames(profileTools, { allowExplore }),
+                ...normalizeActiveToolNames(profileTools, {
+                  allowExplore,
+                  registered,
+                }),
                 ...completionTools,
               ]),
             ];
@@ -1135,10 +1144,12 @@ export class SubagentRuntime {
             }),
         ...(nested
           ? {
-              tools: explicitTools ?? [
-                ...readOnlyToolNames,
-                ...completionTools,
-              ],
+              tools:
+                explicitTools ??
+                normalizeActiveToolNames(
+                  [...readOnlyToolNames, ...completionTools],
+                  { allowExplore, registered },
+                ),
               excludeTools: excludeTools ?? [
                 "explore",
                 ...publicToolNames,
@@ -1322,6 +1333,7 @@ export class SubagentRuntime {
     explicitTools?: string[],
   ): void {
     const getActiveTools = this.pi.getActiveTools?.bind(this.pi);
+    const registered = getActiveTools?.();
     const allowExplore =
       isExploreEligible(record.type) && !isNestedOwner(record.owner);
     const completionTools = record.completion
@@ -1332,7 +1344,10 @@ export class SubagentRuntime {
         ? [...explicitTools, "explore", ...completionTools]
         : [...explicitTools, ...completionTools];
       session.setActiveToolsByName(
-        normalizeActiveToolNames([...new Set(activeTools)], { allowExplore }),
+        normalizeActiveToolNames([...new Set(activeTools)], {
+          allowExplore,
+          registered,
+        }),
       );
       return;
     }
@@ -1341,7 +1356,7 @@ export class SubagentRuntime {
       session.setActiveToolsByName(
         normalizeActiveToolNames(
           [...new Set([...profileTools, ...completionTools])],
-          { allowExplore },
+          { allowExplore, registered },
         ),
       );
       return;
@@ -1349,7 +1364,7 @@ export class SubagentRuntime {
     if (!getActiveTools && !isNestedOwner(record.owner)) {
       return;
     }
-    let activeTools = getActiveTools?.() ?? [];
+    let activeTools = registered ?? [];
     if (isNestedOwner(record.owner)) {
       activeTools = readOnlyToolNames;
     } else if (allowExplore) {
@@ -1358,7 +1373,7 @@ export class SubagentRuntime {
     session.setActiveToolsByName(
       normalizeActiveToolNames(
         [...new Set([...activeTools, ...completionTools])],
-        { allowExplore },
+        { allowExplore, registered },
       ),
     );
   }

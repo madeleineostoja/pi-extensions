@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { JsonRpcConnection, RequestCancelledError } from "./protocol.js";
 import {
-  normalizeDiagnostics,
+  normalizeDiagnosticsResult,
   type NormalizedDiagnostic,
 } from "./normalize.js";
 import {
@@ -23,15 +23,36 @@ type PushDiagnostics = {
   version?: number;
   hash?: string;
   diagnostics: NormalizedDiagnostic[];
+  truncated: boolean;
 };
 type PullDiagnosticsProvider = { identifier?: string };
+type ServerCapabilities = {
+  diagnosticProvider?: PullDiagnosticsProvider;
+  definitionProvider?: unknown;
+  typeDefinitionProvider?: unknown;
+  implementationProvider?: unknown;
+  referencesProvider?: unknown;
+  hoverProvider?: unknown;
+  documentSymbolProvider?: unknown;
+  workspaceSymbolProvider?: unknown;
+};
 export type DiagnosticsResult = {
   diagnostics: NormalizedDiagnostic[];
   fresh: boolean;
+  truncated: boolean;
   stale?: boolean;
   timedOut?: boolean;
   resultId?: string;
 };
+export type SemanticPosition = { line: number; character: number };
+export type SemanticCapability =
+  | "definition"
+  | "typeDefinition"
+  | "implementation"
+  | "references"
+  | "hover"
+  | "documentSymbol"
+  | "workspaceSymbol";
 
 export class LspClient {
   #connection: SpawnedConnection;
@@ -45,9 +66,10 @@ export class LspClient {
       resultId?: string;
       invalidated: boolean;
       diagnostics: NormalizedDiagnostic[];
+      truncated: boolean;
     }
   >();
-  #capabilities: { diagnosticProvider?: PullDiagnosticsProvider } = {};
+  #capabilities: ServerCapabilities = {};
   #initialized = false;
   #initializing?: Promise<unknown>;
   #shutdown?: Promise<void>;
@@ -67,8 +89,12 @@ export class LspClient {
   get openDocumentCount(): number {
     return this.#documents.size;
   }
-  get capabilities(): { diagnosticProvider?: PullDiagnosticsProvider } {
+  get capabilities(): ServerCapabilities {
     return this.#capabilities;
+  }
+  supports(capability: SemanticCapability): boolean {
+    const key = `${capability}Provider` as keyof ServerCapabilities;
+    return Boolean(this.#capabilities[key]);
   }
   async initialize(
     rootUri: string,
@@ -168,23 +194,34 @@ export class LspClient {
           return {
             diagnostics: previous?.diagnostics ?? [],
             fresh: true,
+            truncated: previous?.truncated ?? false,
             resultId: report.resultId ?? previous?.resultId,
           };
         }
-        const diagnostics = normalizeDiagnostics(report?.items);
+        const normalized = normalizeDiagnosticsResult(report?.items);
         this.#pullResults.set(document.uri, {
           resultId: report?.resultId,
           invalidated: false,
-          diagnostics,
+          diagnostics: normalized.items,
+          truncated: normalized.truncated,
         });
-        return { diagnostics, fresh: true, resultId: report?.resultId };
+        return {
+          diagnostics: normalized.items,
+          fresh: true,
+          truncated: normalized.truncated,
+          resultId: report?.resultId,
+        };
       }
       const cached = this.#pushDiagnostics.get(document.uri);
       if (
         cached?.version === document.version &&
         cached.hash === document.hash
       ) {
-        return { diagnostics: cached.diagnostics, fresh: true };
+        return {
+          diagnostics: cached.diagnostics,
+          fresh: true,
+          truncated: cached.truncated,
+        };
       }
       const fresh = await this.#waitForPush(
         document.uri,
@@ -194,14 +231,69 @@ export class LspClient {
         options.signal,
       );
       return fresh
-        ? { diagnostics: fresh.diagnostics, fresh: true }
+        ? {
+            diagnostics: fresh.diagnostics,
+            fresh: true,
+            truncated: fresh.truncated,
+          }
         : {
             diagnostics: [],
             fresh: false,
+            truncated: false,
             stale: Boolean(cached),
             timedOut: true,
           };
     });
+  }
+  async semantic(
+    capability: Exclude<SemanticCapability, "workspaceSymbol">,
+    file: string,
+    languageId: string,
+    position: SemanticPosition | undefined,
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<unknown> {
+    if (!this.supports(capability)) {
+      throw new Error(`LSP server does not support ${capability}`);
+    }
+    const document = await this.synchronize(file, languageId);
+    const method = {
+      definition: "textDocument/definition",
+      typeDefinition: "textDocument/typeDefinition",
+      implementation: "textDocument/implementation",
+      references: "textDocument/references",
+      hover: "textDocument/hover",
+      documentSymbol: "textDocument/documentSymbol",
+    } as const;
+    if (capability === "documentSymbol") {
+      return this.#request(
+        method[capability],
+        { textDocument: { uri: document.uri } },
+        options,
+      );
+    }
+    if (!position) {
+      throw new Error(`${capability} requires a position`);
+    }
+    return this.#request(
+      method[capability],
+      {
+        textDocument: { uri: document.uri },
+        position,
+        ...(capability === "references"
+          ? { context: { includeDeclaration: true } }
+          : {}),
+      },
+      options,
+    );
+  }
+  async workspaceSymbols(
+    query: string,
+    options: { timeoutMs?: number; signal?: AbortSignal } = {},
+  ): Promise<unknown> {
+    if (!this.supports("workspaceSymbol")) {
+      throw new Error("LSP server does not support workspace symbols");
+    }
+    return this.#request("workspace/symbol", { query }, options);
   }
   async shutdown(options: { force?: boolean } = {}): Promise<void> {
     if (this.#shutdown) {
@@ -280,10 +372,12 @@ export class LspClient {
       return;
     }
     const doc = this.#documents.get(value.uri);
+    const normalized = normalizeDiagnosticsResult(value.diagnostics);
     const cache: PushDiagnostics = {
       version: value.version,
       hash: doc && value.version === doc.version ? doc.hash : undefined,
-      diagnostics: normalizeDiagnostics(value.diagnostics),
+      diagnostics: normalized.items,
+      truncated: normalized.truncated,
     };
     this.#pushDiagnostics.set(value.uri, cache);
     for (const wake of this.#pushWaiters.get(value.uri) ?? []) {
@@ -368,9 +462,7 @@ export class LspClient {
     this.#pushWaiters.clear();
   }
 }
-function isCapabilities(
-  value: unknown,
-): value is { diagnosticProvider?: PullDiagnosticsProvider } {
+function isCapabilities(value: unknown): value is ServerCapabilities {
   return Boolean(value && typeof value === "object");
 }
 function digest(text: string): string {
