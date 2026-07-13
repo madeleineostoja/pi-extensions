@@ -537,18 +537,16 @@ function usageLabel(snapshot: RuntimeSnapshot): string {
 }
 
 function transcriptLabel(snapshot: RuntimeSnapshot): string {
-  if (
-    snapshot.health?.transcript?.sessionFile ||
-    snapshot.health?.transcript?.sessionId
-  ) {
-    return `Transcript: ${[
-      snapshot.health.transcript.sessionFile,
-      snapshot.health.transcript.sessionId,
-    ]
+  const transcript = snapshot.health?.transcript;
+  if (transcript?.sessionFile) {
+    return `Transcript: ${[transcript.sessionFile, transcript.sessionId]
       .filter(Boolean)
       .join(" · ")}`;
   }
-  return "Transcript: unavailable";
+  if (transcript?.sessionId) {
+    return `Transcript: in-memory child · ${transcript.sessionId}`;
+  }
+  return "Transcript: in-memory child";
 }
 
 function formatMessageTail(

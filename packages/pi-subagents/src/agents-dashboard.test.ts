@@ -358,6 +358,45 @@ describe("/agents dashboard", () => {
     expect(ui.terminalInputListenerCount).toBe(0);
   });
 
+  it("renders retained terminal inspection data when a live inspector completes", async () => {
+    const running = snapshot({
+      id: "subagent-1",
+      status: "running",
+      health: { lastAssistantText: "live" },
+    });
+    const messages = [
+      { role: "assistant", content: [{ type: "text", text: "live" }] },
+    ];
+    const runtime = makeRuntime([running], messages);
+    const ui = makeCtx();
+    ui.ctx.ui.select = vi.fn(
+      async (_title: string, options: string[]) => options[0],
+    );
+
+    const dashboard = showAgentsDashboard(runtime, ui.ctx as never);
+    await vi.waitFor(() => expect(ui.component).toBeDefined());
+
+    running.status = "completed";
+    running.health = { resultPreview: "completed result" };
+    messages.splice(0, 1, {
+      role: "assistant",
+      content: [{ type: "text", text: "retained tail" }],
+    });
+    runtime.emit("subagent-1");
+
+    const rendered = ui.component?.render(80).join("\n") ?? "";
+    expect(ui.requestRender).toHaveBeenCalled();
+    expect(rendered).toContain("completed result");
+    expect(rendered).toContain("retained tail");
+    expect(rendered).toContain("Transcript: in-memory child");
+    expect(rendered).toContain("esc/q: close");
+    expect(rendered).not.toContain("s/x: stop");
+
+    ui.closeCustom();
+    await dashboard;
+    expect(runtime.listenerCount("subagent-1")).toBe(0);
+  });
+
   it("requires confirmation before stopping from the live inspector", async () => {
     const running = snapshot({ id: "subagent-1", status: "running" });
     const runtime = makeRuntime([running]);

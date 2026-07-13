@@ -66,7 +66,7 @@ Steering fails for unknown, queued, completed, failed, or stopped agents.
 
 Foreground agents are for bounded work where the caller needs the answer before continuing. Background agents are for longer independent work; keep the returned `id`, optionally steer them, then join them with `get_subagent_result`.
 
-Use `/agents` to inspect current-session subagents and stop running work. Runtime records are session-scoped and include status, owner, type, description, cwd, model/thinking overrides, timestamps, health, and final result or error.
+Use `/agents` to inspect current-session subagents and stop running work. Runtime records are session-scoped and include status, owner, type, description, cwd, model/thinking overrides, timestamps, health, and final result or error. Child sessions are in-memory only: they do not appear in `/resume` and cannot be resumed. After a child exits, `/agents` retains a bounded terminal message tail for inspection.
 
 ## Configuration
 

@@ -1,9 +1,13 @@
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import {
+  SessionManager,
+  type AgentSession,
+} from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import {
   getSubagentRuntime,
   getSubagentRuntimes,
   SubagentRuntime,
+  TERMINAL_MESSAGE_TAIL_LIMIT,
 } from "./runtime.js";
 
 type Message = {
@@ -321,6 +325,146 @@ describe("SubagentRuntime", () => {
     expect(listener).toHaveBeenCalledTimes(1);
     runtime.stop(started.id);
     promptDone.resolve();
+  });
+
+  it("uses an in-memory session manager and retains an immutable bounded terminal tail", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession("done");
+    session.prompt = vi.fn(() => promptDone.promise);
+    let sessionManager: SessionManager | undefined;
+    const createSession = vi.fn(
+      async (options: { sessionManager?: SessionManager }) => {
+        sessionManager = options.sessionManager;
+        return { session };
+      },
+    );
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: createSession as never,
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    session.messages.push(
+      ...Array.from(
+        { length: TERMINAL_MESSAGE_TAIL_LIMIT + 1 },
+        (_, index) =>
+          ({
+            role: "assistant",
+            content: [{ type: "text", text: `message ${index}` }],
+          }) as AgentSession["messages"][number],
+      ),
+    );
+    promptDone.resolve();
+
+    await runtime.wait(started.id);
+
+    expect(sessionManager).toBeInstanceOf(SessionManager);
+    expect(sessionManager?.getSessionFile()).toBeUndefined();
+    const inspection = runtime.inspect(started.id);
+    expect(inspection?.snapshot.status).toBe("completed");
+    expect(inspection?.messages).toHaveLength(TERMINAL_MESSAGE_TAIL_LIMIT);
+    expect(inspection?.messages[0]).toMatchObject({
+      content: [{ text: "message 1" }],
+    });
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+    session.messages[session.messages.length - 1] = {
+      role: "assistant",
+      content: [{ type: "text", text: "mutated" }],
+    } as AgentSession["messages"][number];
+    expect(runtime.inspect(started.id)?.messages.at(-1)).toMatchObject({
+      content: [{ text: `message ${TERMINAL_MESSAGE_TAIL_LIMIT}` }],
+    });
+  });
+
+  it("does not prompt or activate tools when stopped during extension binding", async () => {
+    const { pi } = fakePi();
+    const binding = deferred<void>();
+    const session = makeSession("done");
+    session.bindExtensions = vi.fn(() => binding.promise.then(() => undefined));
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.bindExtensions).toHaveBeenCalled());
+
+    runtime.stop(started.id);
+    binding.resolve();
+    await runtime.wait(started.id);
+
+    expect(session.setActiveToolsByName).not.toHaveBeenCalled();
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+    expect(runtime.inspect(started.id)).toMatchObject({
+      snapshot: { status: "stopped", extensionBinding: "unbound" },
+    });
+  });
+
+  it("does not prompt or activate tools when retired during extension binding", async () => {
+    const { pi } = fakePi();
+    const binding = deferred<void>();
+    const session = makeSession("done");
+    session.bindExtensions = vi.fn(() => binding.promise.then(() => undefined));
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.bindExtensions).toHaveBeenCalled());
+    const waiter = runtime.wait(started.id);
+
+    runtime.handleSessionShutdown("quit");
+    binding.resolve();
+    await runtime.waitForShutdown();
+
+    await expect(waiter).resolves.toMatchObject({ status: "stopped" });
+    expect(session.setActiveToolsByName).not.toHaveBeenCalled();
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+    expect(runtime.inspect(started.id)).toBeUndefined();
+  });
+
+  it("resolves waiters when a terminal inspector listener throws", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession("done");
+    session.prompt = vi.fn(() => promptDone.promise);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    const waiter = runtime.wait(started.id);
+    runtime.subscribe(started.id, () => {
+      throw new Error("broken inspector");
+    });
+
+    runtime.stop(started.id);
+
+    await expect(waiter).resolves.toMatchObject({ status: "stopped" });
+    expect(session.dispose).toHaveBeenCalledTimes(1);
   });
 
   it("models failed and stopped terminal states", () => {

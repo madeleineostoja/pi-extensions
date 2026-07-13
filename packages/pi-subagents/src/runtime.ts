@@ -9,6 +9,7 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
+  SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Model } from "@earendil-works/pi-ai";
@@ -157,6 +158,10 @@ type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
     steeringQueue: string[];
     health?: RuntimeHealth;
     unsubscribeSession?: () => void;
+    retainedMessages?: readonly unknown[];
+    initialization?: Promise<void>;
+    resolveInitialization?: () => void;
+    finalization?: Promise<RuntimeSnapshot>;
     inspectListeners: Set<RuntimeSubscriptionListener>;
   };
 
@@ -183,7 +188,7 @@ const publicToolNames = new Set([
   "steer_subagent",
 ]);
 const sessionStartReasons = new Set(["startup", "new", "resume", "fork"]);
-const replacementShutdownReasons = new Set(["new", "resume", "fork"]);
+const retirementShutdownReasons = new Set(["quit", "new", "resume", "fork"]);
 export function withoutPublicAgentTools(names: string[]): string[] {
   return names.filter((name) => !publicToolNames.has(name));
 }
@@ -205,6 +210,7 @@ const defaultSystemPromptMode: PromptMode = "append";
 const EXPLORE_TOOL_INACTIVITY_MS = 120_000;
 const EXPLORE_TOOL_INACTIVITY_POLL_MS = 10_000;
 const EXPLORE_TOOL_MAX_RESULT_CHARS = 50_000;
+export const TERMINAL_MESSAGE_TAIL_LIMIT = 100;
 const exploreEligibleTypes = new Set([
   "General",
   "Review",
@@ -245,6 +251,31 @@ function latestTimestamp(
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function copyTerminalValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map(copyTerminalValue));
+  }
+  if (isObject(value)) {
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [
+          key,
+          copyTerminalValue(entry),
+        ]),
+      ),
+    );
+  }
+  return value;
+}
+
+function copyTerminalMessages(
+  messages: readonly unknown[],
+): readonly unknown[] {
+  return Object.freeze(
+    messages.slice(-TERMINAL_MESSAGE_TAIL_LIMIT).map(copyTerminalValue),
+  );
 }
 
 function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
@@ -591,6 +622,7 @@ export class SubagentRuntime {
   #nextId = 1;
   #currentSessionId = 0;
   #createSession: CreateSession;
+  #shutdownFinalization?: Promise<void>;
 
   constructor(
     public readonly pi: ExtensionAPI,
@@ -630,46 +662,47 @@ export class SubagentRuntime {
   }
 
   handleSessionShutdown(reason?: string): RuntimeSnapshot[] {
-    if (!replacementShutdownReasons.has(reason ?? "")) {
+    if (!retirementShutdownReasons.has(reason ?? "")) {
       return [];
     }
-    return this.retireCurrentSession(`Session replaced (${reason}).`);
+    const message =
+      reason === "quit"
+        ? "Session ended (quit)."
+        : `Session replaced (${reason}).`;
+    return this.retireCurrentSession(message);
   }
 
   retireCurrentSession(reason = "Session replaced."): RuntimeSnapshot[] {
     const currentRecords = [...this.#records.values()].filter(
       (record) => record.runtimeSessionId === this.#currentSessionId,
     );
-    const retired: RuntimeSnapshot[] = [];
     for (const record of currentRecords) {
-      record.unsubscribeSession?.();
-      record.unsubscribeSession = undefined;
+      record.retired = true;
       if (!isTerminal(record.status)) {
-        record.session?.abort().catch(() => {});
         const timestamp = now();
         record.status = "stopped";
         record.error = reason;
         record.completedAt = timestamp;
         record.updatedAt = timestamp;
-        refreshHealth(record);
-        record.retired = true;
-        retired.push(
-          this.#finish(record, {
-            allowRetiredNotification: true,
-            clearInspectListeners: true,
-          }),
-        );
-      } else {
-        record.retired = true;
-        this.#notifyInspectListeners(record, {
-          allowRetired: true,
-          clear: true,
-        });
-        this.#waiters.delete(record.id);
       }
+      void this.#finalize(record, {
+        allowRetiredNotification: true,
+        clearInspectListeners: true,
+      });
       this.#records.delete(record.id);
+      this.#notifyInspectListeners(record, {
+        allowRetired: true,
+        clear: true,
+      });
     }
-    return retired;
+    this.#shutdownFinalization = Promise.all(
+      currentRecords.map((record) => record.finalization ?? Promise.resolve()),
+    ).then(() => {});
+    return currentRecords.map(projectSnapshot);
+  }
+
+  async waitForShutdown(): Promise<void> {
+    await this.#shutdownFinalization;
   }
 
   queue(input: QueueSubagentInput): RuntimeSnapshot {
@@ -881,8 +914,8 @@ export class SubagentRuntime {
     record.result = result;
     record.completedAt = timestamp;
     record.updatedAt = timestamp;
-    refreshHealth(record);
-    return this.#finish(record);
+    void this.#finalize(record);
+    return projectSnapshot(record);
   }
 
   fail(id: string, error: unknown): RuntimeSnapshot {
@@ -893,21 +926,20 @@ export class SubagentRuntime {
     record.error = errorText(error);
     record.completedAt = timestamp;
     record.updatedAt = timestamp;
-    refreshHealth(record);
-    return this.#finish(record);
+    void this.#finalize(record);
+    return projectSnapshot(record);
   }
 
   stop(id: string, error = "Stopped by user."): RuntimeSnapshot {
     const record = this.#requireRecord(id);
     this.#ensureNotTerminal(record);
-    record.session?.abort().catch(() => {});
     const timestamp = now();
     record.status = "stopped";
     record.error = error;
     record.completedAt = timestamp;
     record.updatedAt = timestamp;
-    refreshHealth(record);
-    return this.#finish(record);
+    void this.#finalize(record);
+    return projectSnapshot(record);
   }
 
   async steer(id: string, message: string): Promise<RuntimeSnapshot> {
@@ -944,8 +976,7 @@ export class SubagentRuntime {
   wait(id: string): Promise<RuntimeSnapshot> {
     const record = this.#requireRecord(id);
     if (isTerminal(record.status)) {
-      refreshHealth(record);
-      return Promise.resolve(projectSnapshot(record));
+      return record.finalization ?? Promise.resolve(projectSnapshot(record));
     }
     return new Promise((resolve) => {
       const waiters = this.#waiters.get(id) ?? [];
@@ -971,7 +1002,9 @@ export class SubagentRuntime {
     refreshHealth(record);
     return {
       snapshot: projectSnapshot(record),
-      messages: [...(record.session?.messages ?? [])],
+      messages: record.session
+        ? [...record.session.messages]
+        : [...(record.retainedMessages ?? [])],
     };
   }
 
@@ -1029,6 +1062,7 @@ export class SubagentRuntime {
       const createSessionOptions = {
         cwd: record.cwd,
         model,
+        sessionManager: SessionManager.inMemory(record.cwd),
         ...(record.thinking === undefined
           ? {}
           : { thinkingLevel: record.thinking }),
@@ -1067,6 +1101,9 @@ export class SubagentRuntime {
       }
       record.session = session;
       record.unsubscribeSession = session.subscribe((event) => {
+        if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
+          return;
+        }
         const candidate = isObject(event as unknown)
           ? (event as Record<string, unknown>)
           : undefined;
@@ -1085,13 +1122,29 @@ export class SubagentRuntime {
         record.updatedAt = now();
         this.#notifyInspectListeners(record);
       });
-      await session.bindExtensions({
-        mode: "print",
-        abortHandler: () => void session.abort(),
-        shutdownHandler: () => {},
+      const initialization = new Promise<void>((resolve) => {
+        record.resolveInitialization = resolve;
       });
+      record.initialization = initialization;
+      try {
+        await session.bindExtensions({
+          mode: "print",
+          abortHandler: () => void session.abort(),
+          shutdownHandler: () => {},
+        });
+      } finally {
+        record.resolveInitialization?.();
+        record.resolveInitialization = undefined;
+        record.initialization = undefined;
+      }
+      if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
+        return record.finalization ?? projectSnapshot(record);
+      }
       record.extensionBinding = "bound";
       this.#inheritActiveTools(record, session, input.tools);
+      if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
+        return record.finalization ?? projectSnapshot(record);
+      }
       const prompt = session.prompt(input.prompt, { source: "extension" });
       record.canSteer = true;
       await this.#flushSteering(record);
@@ -1100,19 +1153,23 @@ export class SubagentRuntime {
         return projectSnapshot(record);
       }
       if (session.state.errorMessage) {
-        return this.fail(record.id, session.state.errorMessage);
+        this.fail(record.id, session.state.errorMessage);
+        return record.finalization ?? projectSnapshot(record);
       }
       const result = session.getLastAssistantText() ?? "";
-      return this.complete(record.id, result);
+      this.complete(record.id, result);
+      return record.finalization ?? projectSnapshot(record);
     } catch (error) {
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         return projectSnapshot(record);
       }
-      return this.fail(record.id, error);
+      this.fail(record.id, error);
+      return record.finalization ?? projectSnapshot(record);
     } finally {
       input.signal?.removeEventListener("abort", abort);
-      if (record.session) {
+      if (record.session && !record.finalization) {
         await this.#disposeSession(record.session);
+        record.session = undefined;
       }
     }
   }
@@ -1125,20 +1182,18 @@ export class SubagentRuntime {
   }
 
   async #disposeSession(session: AgentSession): Promise<void> {
-    for (const record of this.#records.values()) {
-      if (record.session === session) {
-        record.unsubscribeSession?.();
-        record.unsubscribeSession = undefined;
-        refreshHealth(record);
+    try {
+      if (session.extensionRunner.hasHandlers("session_shutdown")) {
+        await session.extensionRunner.emit({
+          type: "session_shutdown",
+          reason: "quit",
+        });
       }
+    } catch {
+      // Child shutdown is best-effort; disposal must still complete.
+    } finally {
+      session.dispose();
     }
-    if (session.extensionRunner.hasHandlers("session_shutdown")) {
-      await session.extensionRunner.emit({
-        type: "session_shutdown",
-        reason: "quit",
-      });
-    }
-    session.dispose();
   }
 
   #inheritActiveTools(
@@ -1228,28 +1283,58 @@ export class SubagentRuntime {
       record.inspectListeners.clear();
     }
     for (const listener of listeners) {
-      listener();
+      try {
+        listener();
+      } catch {
+        // Inspector callbacks cannot interrupt terminal cleanup or waiters.
+      }
     }
   }
 
-  #finish(
+  #finalize(
     record: RuntimeRecord,
     options: {
       allowRetiredNotification?: boolean;
       clearInspectListeners?: boolean;
     } = {},
-  ): RuntimeSnapshot {
-    const finalSnapshot = projectSnapshot(record);
-    this.#notifyInspectListeners(record, {
-      allowRetired: options.allowRetiredNotification,
-      clear: options.clearInspectListeners,
-    });
-    const waiters = this.#waiters.get(record.id) ?? [];
-    this.#waiters.delete(record.id);
-    for (const waiter of waiters) {
-      waiter.resolve(finalSnapshot);
+  ): Promise<RuntimeSnapshot> {
+    if (record.finalization) {
+      return record.finalization;
     }
-    return finalSnapshot;
+    record.canSteer = false;
+    const session = record.session;
+    refreshHealth(record);
+    record.retainedMessages = copyTerminalMessages(session?.messages ?? []);
+    record.unsubscribeSession?.();
+    record.unsubscribeSession = undefined;
+    record.finalization = (async () => {
+      try {
+        await session?.abort();
+      } catch {
+        // Cancellation is best-effort; cleanup still proceeds.
+      }
+      await record.initialization;
+      if (session) {
+        await this.#disposeSession(session);
+        if (record.session === session) {
+          record.session = undefined;
+        }
+      }
+      refreshHealth(record);
+      const finalSnapshot = projectSnapshot(record);
+      if (!options.clearInspectListeners) {
+        this.#notifyInspectListeners(record, {
+          allowRetired: options.allowRetiredNotification,
+        });
+      }
+      const waiters = this.#waiters.get(record.id) ?? [];
+      this.#waiters.delete(record.id);
+      for (const waiter of waiters) {
+        waiter.resolve(finalSnapshot);
+      }
+      return finalSnapshot;
+    })();
+    return record.finalization;
   }
 }
 
