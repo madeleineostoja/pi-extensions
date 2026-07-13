@@ -220,6 +220,7 @@ describe("status line sanitization", () => {
         ["pi-usage", "usage-status"],
         ["sandbox", "sandbox-status"],
         ["pi-implement.status", "implement-status"],
+        ["pi-papercuts.status", "papercuts-status"],
         ["a", "a-status"],
         ["pi-readonly.mode", "readonly-status"],
       ]),
@@ -227,6 +228,9 @@ describe("status line sanitization", () => {
     );
 
     expect(result.indexOf("implement-status")).toBeLessThan(
+      result.indexOf("papercuts-status"),
+    );
+    expect(result.indexOf("papercuts-status")).toBeLessThan(
       result.indexOf("readonly-status"),
     );
     expect(result.indexOf("readonly-status")).toBeLessThan(

@@ -205,6 +205,7 @@ const publicToolNames = new Set([
   "Agent",
   "get_subagent_result",
   "steer_subagent",
+  "propose_papercut",
 ]);
 const sessionStartReasons = new Set(["startup", "new", "resume", "fork"]);
 const retirementShutdownReasons = new Set(["quit", "new", "resume", "fork"]);

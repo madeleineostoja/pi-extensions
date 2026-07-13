@@ -61,7 +61,13 @@ function deferred<T>() {
 }
 
 function makePi(
-  activeTools = ["read", "bash", "Agent", "get_subagent_result"],
+  activeTools = [
+    "read",
+    "bash",
+    "Agent",
+    "get_subagent_result",
+    "propose_papercut",
+  ],
 ) {
   const tools: ToolDef[] = [];
   const messages: Message[] = [];
@@ -494,7 +500,12 @@ describe("public subagent tools", () => {
   });
 
   it("withholds public agent tools from inherited active tools for all subagent types", async () => {
-    const publicAgentTools = ["Agent", "get_subagent_result", "steer_subagent"];
+    const publicAgentTools = [
+      "Agent",
+      "get_subagent_result",
+      "steer_subagent",
+      "propose_papercut",
+    ];
     const { pi } = makePi([
       "read",
       "bash",
@@ -582,7 +593,14 @@ describe("public subagent tools", () => {
       type: "general-purpose",
       prompt: "explicit tools",
       cwd: "/workspace",
-      tools: ["read", "explore", "Agent", "get_subagent_result", "bash"],
+      tools: [
+        "read",
+        "explore",
+        "Agent",
+        "get_subagent_result",
+        "propose_papercut",
+        "bash",
+      ],
       ctx: makeCtx() as never,
     });
 

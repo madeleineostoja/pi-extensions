@@ -2,13 +2,12 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
-  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { ensureGitInfoExclude } from "@pi-extensions/lib";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -320,30 +319,7 @@ export class ExecGitClient implements GitClient {
   }
 
   async ensureInfoExclude(pattern: string): Promise<void> {
-    const commonDir = (
-      await this.run([
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-common-dir",
-      ])
-    ).stdout.trim();
-    const infoDir = join(commonDir, "info");
-    const excludePath = join(infoDir, "exclude");
-    if (!existsSync(excludePath)) {
-      mkdirSync(infoDir, { recursive: true });
-      writeFileSync(excludePath, `${pattern}\n`, "utf-8");
-      return;
-    }
-    const content = readFileSync(excludePath, "utf-8");
-    const lines = content.split("\n");
-    if (lines.includes(pattern)) {
-      return;
-    }
-    writeFileSync(
-      excludePath,
-      `${content.endsWith("\n") ? content : `${content}\n`}${pattern}\n`,
-      "utf-8",
-    );
+    await ensureGitInfoExclude(this.cwd, pattern);
   }
 
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient {

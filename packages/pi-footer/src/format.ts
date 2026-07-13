@@ -186,9 +186,10 @@ export function hasAnsi(text: string): boolean {
 
 const STATUS_ORDER = new Map([
   ["pi-implement.status", 0],
-  ["pi-readonly.mode", 1],
-  ["sandbox", 2],
-  ["pi-usage", 3],
+  ["pi-papercuts.status", 1],
+  ["pi-readonly.mode", 2],
+  ["sandbox", 3],
+  ["pi-usage", 4],
 ]);
 
 export function buildStatusLine(

@@ -1,0 +1,26 @@
+{
+  "name": "pi-papercuts",
+  "description": "Maintain a durable, human-reviewed queue of recurring project papercuts.",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "papercuts"
+  ],
+  "scripts": {
+    "test": "vitest run --testTimeout 15000"
+  },
+  "dependencies": {
+    "@pi-extensions/lib": "0.1.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

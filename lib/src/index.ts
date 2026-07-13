@@ -1,3 +1,4 @@
+export { ensureGitInfoExclude, gitCommonDir } from "./git.js";
 export { completeText } from "./complete.js";
 export type { CompleteTextDeps, CompleteTextResult } from "./complete.js";
 export { parseModelRef, isModelRef } from "./model-ref.js";
