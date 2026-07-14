@@ -19,8 +19,10 @@ import {
   RuntimeSubagentClient,
   type SpawnArgs,
   type SubagentClient,
+  type SubagentHandle,
   type SubagentResult,
 } from "./subagents.js";
+import type { Static, TSchema } from "typebox";
 import {
   runImplementation,
   BlockedError,
@@ -935,7 +937,9 @@ class TrackingSubagentClient implements SubagentClient {
     return this.inner.probe(timeoutMs);
   }
 
-  async spawn(args: SpawnArgs): Promise<string> {
+  async spawn<TSchemaValue extends TSchema>(
+    args: SpawnArgs<TSchemaValue>,
+  ): Promise<SubagentHandle<Static<TSchemaValue>>> {
     const id = await this.inner.spawn(args);
     this.activeIds.add(id);
     this.emitChange();
@@ -946,7 +950,10 @@ class TrackingSubagentClient implements SubagentClient {
     await this.inner.stop(id);
   }
 
-  async waitFor(id: string, signal?: AbortSignal): Promise<SubagentResult> {
+  async waitFor<TResult>(
+    id: SubagentHandle<TResult>,
+    signal?: AbortSignal,
+  ): Promise<SubagentResult<TResult>> {
     try {
       return await this.inner.waitFor(id, signal ?? this.signal);
     } finally {

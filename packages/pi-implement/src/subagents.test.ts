@@ -153,6 +153,38 @@ describe("RuntimeSubagentClient", () => {
     );
   });
 
+  it("preserves the completion schema type through spawn and waitFor", async () => {
+    const runtime = makeRuntime();
+    const pi = { __runtime: runtime };
+    const ctx = { cwd: "/repo", modelRegistry: { find: vi.fn() } };
+    const client = new RuntimeSubagentClient(
+      pi as never,
+      ctx as never,
+      "run-1",
+    );
+    const id = await client.spawn({
+      type: "x",
+      prompt: "p",
+      description: "d",
+      completion: { description: "complete", schema: implementerResultSchema },
+    });
+    runtime.wait.mockResolvedValue({
+      id,
+      status: "completed",
+      result: {
+        outcome: "changed",
+        summary: "ok",
+        verification: [{ command: "test", result: "passed", rationale: "ok" }],
+        commitMessage: "feat: ok",
+      },
+    });
+
+    const result = await client.waitFor(id);
+    if (result.status === "completed") {
+      expect(result.result.outcome).toBe("changed");
+    }
+  });
+
   it("waits for runtime snapshots and preserves typed completion values", async () => {
     const runtime = makeRuntime();
     const pi = { __runtime: runtime };

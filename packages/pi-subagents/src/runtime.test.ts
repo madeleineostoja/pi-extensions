@@ -501,6 +501,65 @@ describe("SubagentRuntime", () => {
     });
   });
 
+  it("waits for stop during async session creation before disposing the eventual child", async () => {
+    const { pi } = fakePi();
+    const sessionReady = deferred<{ session: AgentSession }>();
+    const session = makeSession("done");
+    const createSession = vi.fn(() => sessionReady.promise);
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+
+    await vi.waitFor(() => expect(createSession).toHaveBeenCalled());
+    runtime.stop(started.id);
+    const stopped = runtime.wait(started.id);
+    await expect(
+      Promise.race([stopped, Promise.resolve("pending")]),
+    ).resolves.toBe("pending");
+    sessionReady.resolve({ session });
+
+    await expect(stopped).resolves.toMatchObject({ status: "stopped" });
+    expect(session.abort).toHaveBeenCalledOnce();
+    expect(session.dispose).toHaveBeenCalledOnce();
+    expect(session.bindExtensions).not.toHaveBeenCalled();
+    expect(session.prompt).not.toHaveBeenCalled();
+  });
+
+  it("waits for quit during async session creation before disposing the eventual child", async () => {
+    const { pi } = fakePi();
+    const sessionReady = deferred<{ session: AgentSession }>();
+    const session = makeSession("done");
+    const createSession = vi.fn(() => sessionReady.promise);
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(createSession).toHaveBeenCalled());
+
+    runtime.handleSessionShutdown("quit");
+    const shutdown = runtime.waitForShutdown();
+    await expect(
+      Promise.race([shutdown, Promise.resolve("pending")]),
+    ).resolves.toBe("pending");
+    sessionReady.resolve({ session });
+
+    await expect(shutdown).resolves.toBeUndefined();
+    expect(session.abort).toHaveBeenCalledOnce();
+    expect(session.dispose).toHaveBeenCalledOnce();
+    expect(session.bindExtensions).not.toHaveBeenCalled();
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(runtime.snapshot(started.id)).toBeUndefined();
+  });
+
   it("does not prompt or activate tools when stopped during extension binding", async () => {
     const { pi } = fakePi();
     const binding = deferred<void>();
@@ -691,6 +750,35 @@ describe("SubagentRuntime", () => {
     );
   });
 
+  it("waits for replacement cleanup before the replacement session proceeds", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession("late result");
+    session.prompt = vi.fn(() => promptDone.promise);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+
+    runtime.handleSessionShutdown("resume");
+    const replacement = runtime.beginSession("resume");
+    expect(runtime.snapshot(started.id)).toBeUndefined();
+    expect(session.dispose).not.toHaveBeenCalled();
+
+    await runtime.waitForShutdown();
+
+    expect(replacement).toBeUndefined();
+    expect(session.abort).toHaveBeenCalledOnce();
+    expect(session.dispose).toHaveBeenCalledOnce();
+  });
+
   it("retires records for new and fork shutdowns but not reload", () => {
     const { pi } = fakePi();
     const runtime = new SubagentRuntime(pi as never);
@@ -749,6 +837,47 @@ describe("SubagentRuntime", () => {
     await expect(runtime.result(started.id, false)).rejects.toThrow(
       `Unknown subagent ${started.id}`,
     );
+  });
+
+  it("keeps accepted managed completion when later cancellation reaches the runtime", async () => {
+    const { pi } = fakePi();
+    const controller = new AbortController();
+    const session = makeSession();
+    let options: unknown;
+    session.prompt = vi.fn(async () => {
+      const tool = completionTool(options);
+      await tool.execute(
+        "complete",
+        { result: "accepted" },
+        undefined,
+        undefined,
+        { abort: () => controller.abort() },
+      );
+    });
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async (created) => {
+        options = created;
+        return { session };
+      }),
+    });
+
+    const final = await runtime.runManagedAgent({
+      type: "general-purpose",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      signal: controller.signal,
+      completion: {
+        schema: Type.Object({ result: Type.String() }),
+        description: "Return a result.",
+      },
+    });
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(final).toMatchObject({
+      status: "completed",
+      result: { result: "accepted" },
+    });
   });
 
   it("retries a schema-rejected completion through Pi's sequential agent loop", async () => {

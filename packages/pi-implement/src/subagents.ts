@@ -4,13 +4,22 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { getSubagentRuntime } from "pi-subagents/runtime";
 import type { RuntimeSnapshot, ThinkingLevel } from "pi-subagents/runtime";
-import type { TSchema } from "typebox";
+import type { Static, TSchema } from "typebox";
+
+export type SubagentHandle<TResult = unknown> = string & {
+  readonly __subagentResult?: TResult;
+};
 
 export type SubagentClient = {
   probe(timeoutMs?: number): Promise<ProbeResult>;
-  spawn(args: SpawnArgs): Promise<string>;
+  spawn<TSchemaValue extends TSchema = TSchema>(
+    args: SpawnArgs<TSchemaValue>,
+  ): Promise<SubagentHandle<Static<TSchemaValue>>>;
   stop(id: string): Promise<void>;
-  waitFor(id: string, signal?: AbortSignal): Promise<SubagentResult>;
+  waitFor<TResult = any>(
+    id: SubagentHandle<TResult>,
+    signal?: AbortSignal,
+  ): Promise<SubagentResult<TResult>>;
   snapshots?(ids?: string[]): AgentSnapshot[];
 };
 
@@ -22,7 +31,7 @@ export type PiImplementWorkerRole =
   | "planner"
   | "selfHeal";
 
-export type SpawnArgs = {
+export type SpawnArgs<TSchemaValue extends TSchema = TSchema> = {
   type: string;
   prompt: string;
   description: string;
@@ -34,7 +43,7 @@ export type SpawnArgs = {
   readOnly?: boolean;
   completion?: {
     description: string;
-    schema: TSchema;
+    schema: TSchemaValue;
     label?: string;
   };
 };
@@ -51,8 +60,8 @@ export type AgentSnapshot = {
   thinking?: ThinkingLevel;
 };
 
-export type SubagentResult =
-  | { status: "completed"; result: unknown }
+export type SubagentResult<TResult = any> =
+  | { status: "completed"; result: TResult }
   | { status: "failed"; error: string }
   | { status: "stopped"; error: string };
 
@@ -90,7 +99,9 @@ export class RuntimeSubagentClient implements SubagentClient {
     return { ok: true, version: 3 };
   }
 
-  async spawn(args: SpawnArgs): Promise<string> {
+  async spawn<TSchemaValue extends TSchema = TSchema>(
+    args: SpawnArgs<TSchemaValue>,
+  ): Promise<SubagentHandle<Static<TSchemaValue>>> {
     const cwd = args.cwd ?? this.ctx.cwd;
     const role = args.role ?? "implementer";
     const snapshot = await this.runtime.runManagedAgent({
@@ -109,7 +120,7 @@ export class RuntimeSubagentClient implements SubagentClient {
       mode: "background",
       ctx: this.ctx,
       rosterVisibility: "hide",
-      completion: args.completion,
+      completion: args.completion as never,
       ...(args.readOnly || role === "reviewer" || role === "planner"
         ? {
             tools: READ_ONLY_TOOLS.filter(
@@ -120,50 +131,56 @@ export class RuntimeSubagentClient implements SubagentClient {
           }
         : { excludeTools: ["propose_papercut"] }),
     });
-    return snapshot.id;
+    return snapshot.id as SubagentHandle<Static<TSchemaValue>>;
   }
 
   async stop(id: string): Promise<void> {
     this.runtime.stop(id);
   }
 
-  waitFor(id: string, signal?: AbortSignal): Promise<SubagentResult> {
-    if (signal?.aborted) {
-      return Promise.resolve({ status: "stopped", error: "Stopped by user." });
+  async waitFor<TResult = any>(
+    id: SubagentHandle<TResult>,
+    signal?: AbortSignal,
+  ): Promise<SubagentResult<TResult>> {
+    const stopIfActive = (): boolean => {
+      const snapshot = this.runtime.snapshot(id) as
+        | RuntimeSnapshot<TResult>
+        | undefined;
+      if (
+        !snapshot ||
+        ["completed", "failed", "stopped"].includes(snapshot.status)
+      ) {
+        return false;
+      }
+      this.runtime.stop(id);
+      return true;
+    };
+
+    let stopped = signal?.aborted === true && stopIfActive();
+    const abort = () => {
+      try {
+        stopped = stopIfActive() || stopped;
+      } catch {
+        // The worker may have completed between its snapshot and stop call.
+      }
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      const snapshot = (await this.runtime.wait(
+        id,
+      )) as RuntimeSnapshot<TResult>;
+      if (snapshot.status === "completed") {
+        return { status: "completed", result: snapshot.result as TResult };
+      }
+      return {
+        status: snapshot.status === "stopped" || stopped ? "stopped" : "failed",
+        error:
+          snapshot.error ??
+          (stopped ? "Stopped by user." : `Subagent ${snapshot.status}.`),
+      };
+    } finally {
+      signal?.removeEventListener("abort", abort);
     }
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = (result: SubagentResult) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        signal?.removeEventListener("abort", abort);
-        resolve(result);
-      };
-      const abort = () => {
-        try {
-          this.runtime.stop(id);
-        } catch {
-          // The runtime may already have completed the worker.
-        }
-        finish({ status: "stopped", error: "Stopped by user." });
-      };
-      signal?.addEventListener("abort", abort, { once: true });
-      void this.runtime.wait(id).then((snapshot) => {
-        if (snapshot.status === "completed") {
-          finish({
-            status: "completed",
-            result: snapshot.result,
-          });
-          return;
-        }
-        finish({
-          status: snapshot.status === "stopped" ? "stopped" : "failed",
-          error: snapshot.error ?? `Subagent ${snapshot.status}.`,
-        });
-      });
-    });
   }
 
   snapshots(ids?: string[]): AgentSnapshot[] {

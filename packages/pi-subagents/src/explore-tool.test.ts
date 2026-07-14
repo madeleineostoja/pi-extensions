@@ -232,6 +232,7 @@ describe("runtime-injected explore tool", () => {
     const pi = makePi([
       "read",
       "bash",
+      "lsp",
       "Agent",
       "get_subagent_result",
       "steer_subagent",
@@ -275,7 +276,7 @@ describe("runtime-injected explore tool", () => {
         cwd: "/task-worktree",
         model: { provider: "configured", id: "explore" },
         thinkingLevel: "low",
-        tools: ["read", "bash", "grep", "find", "ls"],
+        tools: ["read", "bash", "grep", "find", "ls", "lsp"],
         excludeTools: [
           "explore",
           "Agent",
@@ -293,7 +294,12 @@ describe("runtime-injected explore tool", () => {
       "grep",
       "find",
       "ls",
+      "lsp",
     ]);
+    expect(child.prompt).toHaveBeenCalledWith(
+      expect.stringContaining("lsp when available"),
+      { source: "extension" },
+    );
     expect(runtime.snapshots()).toEqual([parent]);
     expect(runtime.snapshots({ includeNested: true })).toContainEqual(
       expect.objectContaining({

@@ -576,7 +576,7 @@ function findModel(
 function buildExplorePrompt(params: ExploreToolParams): string {
   return [
     "You are a nested read-only Explore child. Answer the parent agent's bounded codebase exploration question.",
-    "Use only read, bash, grep, find, and ls. Do not edit, write, stage, commit, spawn agents, or call custom/public agent tools.",
+    "Use only read, bash, grep, find, ls, and lsp when available. Do not edit, write, stage, commit, spawn agents, or call custom/public agent tools.",
     `Breadth: ${params.breadth ?? "medium"}`,
     "Return concise findings with relevant file paths and enough context for the parent to continue with direct reads/searches.",
     "",
@@ -702,11 +702,7 @@ export class SubagentRuntime {
     for (const record of currentRecords) {
       record.retired = true;
       if (!isTerminal(record.status)) {
-        const timestamp = now();
-        record.status = "stopped";
-        record.error = reason;
-        record.completedAt = timestamp;
-        record.updatedAt = timestamp;
+        this.#markStopped(record, reason);
       }
       void this.#finalize(record, {
         allowRetiredNotification: true,
@@ -974,11 +970,7 @@ export class SubagentRuntime {
   stop(id: string, error = "Stopped by user."): RuntimeSnapshot {
     const record = this.#requireRecord(id);
     this.#ensureNotTerminal(record);
-    const timestamp = now();
-    record.status = "stopped";
-    record.error = error;
-    record.completedAt = timestamp;
-    record.updatedAt = timestamp;
+    this.#markStopped(record, error);
     void this.#finalize(record);
     return projectSnapshot(record);
   }
@@ -1089,6 +1081,9 @@ export class SubagentRuntime {
       return this.stop(record.id, "Stopped by user.");
     }
     input.signal?.addEventListener("abort", abort, { once: true });
+    record.initialization = new Promise<void>((resolve) => {
+      record.resolveInitialization = resolve;
+    });
     try {
       const { model } = resolveModelRef(input.ctx, record.model);
       const registered = this.pi.getActiveTools?.();
@@ -1170,42 +1165,45 @@ export class SubagentRuntime {
               customTools: this.#customToolsFor(record),
             }),
       };
-      const { session } = await this.#createSession(createSessionOptions);
-      if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
-        await this.#disposeSession(session);
-        return projectSnapshot(record);
-      }
-      record.session = session;
-      record.unsubscribeSession = session.subscribe((event) => {
-        if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
-          return;
-        }
-        const candidate = isObject(event as unknown)
-          ? (event as Record<string, unknown>)
-          : undefined;
-        const toolCall = candidate?.toolCall;
-        const toolName =
-          isObject(toolCall) && typeof toolCall.name === "string"
-            ? toolCall.name
-            : typeof candidate?.toolName === "string"
-              ? candidate.toolName
-              : undefined;
-        record.health = {
-          ...record.health,
-          ...(toolName === undefined ? {} : { activeTool: toolName }),
-          lastActivity: now(),
-        };
-        record.updatedAt = now();
-        this.#notifyInspectListeners(record);
-      });
-      const initialization = new Promise<void>((resolve) => {
-        record.resolveInitialization = resolve;
-      });
-      record.initialization = initialization;
+      let session: AgentSession | undefined;
       try {
-        await session.bindExtensions({
+        const created = await this.#createSession(createSessionOptions);
+        session = created.session;
+        if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
+          try {
+            await session.abort();
+          } catch {
+            // The eventual child may never have started; disposal still proceeds.
+          }
+          await this.#disposeSession(session);
+          return projectSnapshot(record);
+        }
+        record.session = session;
+        record.unsubscribeSession = session.subscribe((event) => {
+          if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
+            return;
+          }
+          const candidate = isObject(event as unknown)
+            ? (event as Record<string, unknown>)
+            : undefined;
+          const toolCall = candidate?.toolCall;
+          const toolName =
+            isObject(toolCall) && typeof toolCall.name === "string"
+              ? toolCall.name
+              : typeof candidate?.toolName === "string"
+                ? candidate.toolName
+                : undefined;
+          record.health = {
+            ...record.health,
+            ...(toolName === undefined ? {} : { activeTool: toolName }),
+            lastActivity: now(),
+          };
+          record.updatedAt = now();
+          this.#notifyInspectListeners(record);
+        });
+        await session!.bindExtensions({
           mode: "print",
-          abortHandler: () => void session.abort(),
+          abortHandler: () => void session!.abort(),
           shutdownHandler: () => {},
         });
       } finally {
@@ -1213,11 +1211,17 @@ export class SubagentRuntime {
         record.resolveInitialization = undefined;
         record.initialization = undefined;
       }
+      const initializedSession = session;
+      if (!initializedSession) {
+        throw new Error(
+          "Subagent session initialization did not return a session.",
+        );
+      }
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         return record.finalization ?? projectSnapshot(record);
       }
       record.extensionBinding = "bound";
-      this.#inheritActiveTools(record, session, input.tools);
+      this.#inheritActiveTools(record, initializedSession, input.tools);
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         return record.finalization ?? projectSnapshot(record);
       }
@@ -1243,6 +1247,9 @@ export class SubagentRuntime {
       this.complete(record.id, result);
       return record.finalization ?? projectSnapshot(record);
     } catch (error) {
+      record.resolveInitialization?.();
+      record.resolveInitialization = undefined;
+      record.initialization = undefined;
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         return record.finalization ?? projectSnapshot(record);
       }
@@ -1250,8 +1257,12 @@ export class SubagentRuntime {
       return record.finalization ?? projectSnapshot(record);
     } finally {
       input.signal?.removeEventListener("abort", abort);
-      if (record.session && !record.finalization) {
-        await this.#disposeSession(record.session);
+      record.resolveInitialization?.();
+      record.resolveInitialization = undefined;
+      record.initialization = undefined;
+      const session = record.session;
+      if (session && !record.finalization) {
+        await this.#disposeSession(session);
         record.session = undefined;
       }
     }
@@ -1415,6 +1426,19 @@ export class SubagentRuntime {
     }
   }
 
+  #markStopped(record: RuntimeRecord, error: string): void {
+    const timestamp = now();
+    if (record.completion?.accepted) {
+      record.status = "completed";
+      record.result = record.completion.payload;
+    } else {
+      record.status = "stopped";
+      record.error = error;
+    }
+    record.completedAt = timestamp;
+    record.updatedAt = timestamp;
+  }
+
   #notifyInspectListeners(
     record: RuntimeRecord,
     options: { allowRetired?: boolean; clear?: boolean } = {},
@@ -1446,18 +1470,21 @@ export class SubagentRuntime {
       return record.finalization;
     }
     record.canSteer = false;
-    const session = record.session;
+    const activeSession = record.session;
     refreshHealth(record);
-    record.retainedMessages = copyTerminalMessages(session?.messages ?? []);
+    record.retainedMessages = copyTerminalMessages(
+      activeSession?.messages ?? [],
+    );
     record.unsubscribeSession?.();
     record.unsubscribeSession = undefined;
     record.finalization = (async () => {
       try {
-        await session?.abort();
+        await activeSession?.abort();
       } catch {
         // Cancellation is best-effort; cleanup still proceeds.
       }
       await record.initialization;
+      const session = record.session;
       if (session) {
         await this.#disposeSession(session);
         if (record.session === session) {

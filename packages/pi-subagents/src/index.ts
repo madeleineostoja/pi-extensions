@@ -120,9 +120,7 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (event: { reason?: string } = {}) => {
     roster.dispose();
     runtime.handleSessionShutdown(event.reason);
-    if (event.reason === "quit") {
-      await runtime.waitForShutdown();
-    }
+    await runtime.waitForShutdown();
   });
 
   pi.on("session_start", (event: { reason?: string } = {}) => {
