@@ -17,6 +17,19 @@ const proposal = {
 };
 
 describe("persistPapercutCandidates", () => {
+  it("loads pi-papercuts through its public package entry point", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-implement-papercuts-"));
+    execFileSync("git", ["init", "-q"], { cwd: root });
+
+    await expect(
+      persistPapercutCandidates({ papercuts: [proposal] }, root, {
+        kind: "pi-implement",
+        runId: "run-1",
+        role: "implementer",
+      }),
+    ).resolves.toMatchObject({ created: 1 });
+  });
+
   it("does nothing when a typed result has no papercuts", async () => {
     const createStore = vi.fn();
     await expect(

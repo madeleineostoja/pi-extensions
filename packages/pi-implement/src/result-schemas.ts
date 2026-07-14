@@ -7,7 +7,12 @@ const verificationStepSchema = Type.Object({
   result: nonEmptyString(),
   rationale: nonEmptyString(),
 });
-const papercutCandidatesSchema = Type.Optional(Type.Array(Type.Unknown()));
+const papercutCandidatesSchema = Type.Optional(
+  Type.Array(Type.Unknown(), {
+    description:
+      "Optional papercut proposals. Each candidate must provide key, title, trigger, impact, currentGap, proposedResolution, and suggestedDestination (agents, skill, test, lint, tooling, docs, or code). Malformed candidates are discarded without failing the result.",
+  }),
+);
 const withPapercuts = <T extends Record<string, TSchema>>(schema: T) =>
   Type.Object({ ...schema, papercuts: papercutCandidatesSchema });
 

@@ -10,6 +10,38 @@ import registerExtension, {
 } from "./index.js";
 import { createPapercutStore } from "./store.js";
 
+const loadGate = vi.hoisted(() => ({
+  current: undefined as
+    | { entered: () => void; promise: Promise<void> }
+    | undefined,
+}));
+
+vi.mock("./store.js", async (importOriginal) => {
+  const store = await importOriginal<typeof import("./store.js")>();
+  const delayLoad = (
+    papercutStore: ReturnType<typeof store.createPapercutStore>,
+  ) => ({
+    ...papercutStore,
+    load: async () => {
+      const gate = loadGate.current;
+      gate?.entered();
+      if (gate) {
+        await gate.promise;
+      }
+      return papercutStore.load();
+    },
+  });
+  return {
+    ...store,
+    createPapercutStore: (
+      ...args: Parameters<typeof store.createPapercutStore>
+    ) => delayLoad(store.createPapercutStore(...args)),
+    createPapercutStoreForCwd: async (
+      ...args: Parameters<typeof store.createPapercutStoreForCwd>
+    ) => delayLoad(await store.createPapercutStoreForCwd(...args)),
+  };
+});
+
 const roots: string[] = [];
 
 function repo(): string {
@@ -20,6 +52,7 @@ function repo(): string {
 }
 
 afterEach(() => {
+  loadGate.current = undefined;
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -191,6 +224,201 @@ describe("pi-papercuts extension", () => {
     expect(notify).toHaveBeenLastCalledWith("usage: /papercuts", "warning");
   });
 
+  it("does not let a failed stale refresh notify or update a replacement session", async () => {
+    const handlers = new Map<string, any>();
+    const pi = {
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      on: (event: string, handler: unknown) => handlers.set(event, handler),
+    };
+    registerExtension(pi as never);
+    let enterLoad!: () => void;
+    let rejectLoad!: (error: Error) => void;
+    loadGate.current = {
+      entered: () => enterLoad(),
+      promise: new Promise<void>((_resolve, reject) => {
+        rejectLoad = reject;
+      }),
+    };
+    const staleSetStatus = vi.fn();
+    const staleNotify = vi.fn();
+    const staleContext = {
+      cwd: repo(),
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        notify: staleNotify,
+        setStatus: staleSetStatus,
+        theme: { fg: (_color: string, text: string) => text },
+      },
+    };
+    const staleStart = handlers.get("session_start")({}, staleContext);
+    await new Promise<void>((resolve) => {
+      enterLoad = resolve;
+    });
+    loadGate.current = undefined;
+    const activeSetStatus = vi.fn();
+    const activeContext = {
+      ...staleContext,
+      cwd: repo(),
+      ui: {
+        notify: vi.fn(),
+        setStatus: activeSetStatus,
+        theme: staleContext.ui.theme,
+      },
+    };
+    await handlers.get("session_start")({}, activeContext);
+
+    rejectLoad!(new Error("registry unavailable"));
+    await staleStart;
+
+    expect(staleSetStatus).not.toHaveBeenCalled();
+    expect(staleNotify).not.toHaveBeenCalled();
+    expect(activeSetStatus).toHaveBeenLastCalledWith(
+      PAPERCUT_STATUS_KEY,
+      undefined,
+    );
+  });
+
+  it("does not let a proposal refresh update a replacement session", async () => {
+    let tool: any;
+    const handlers = new Map<string, any>();
+    const pi = {
+      registerTool: (definition: unknown) => {
+        tool = definition;
+      },
+      registerCommand: vi.fn(),
+      on: (event: string, handler: unknown) => handlers.set(event, handler),
+    };
+    registerExtension(pi as never);
+    const staleSetStatus = vi.fn();
+    const staleContext = {
+      cwd: repo(),
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        notify: vi.fn(),
+        setStatus: staleSetStatus,
+        theme: { fg: (_color: string, text: string) => text },
+      },
+    };
+    await handlers.get("session_start")({}, staleContext);
+    staleSetStatus.mockClear();
+
+    let enterLoad!: () => void;
+    let resolveLoad!: () => void;
+    loadGate.current = {
+      entered: () => enterLoad(),
+      promise: new Promise<void>((resolve) => {
+        resolveLoad = resolve;
+      }),
+    };
+    const staleProposal = tool.execute(
+      "id",
+      proposal,
+      undefined,
+      undefined,
+      staleContext,
+    );
+    await new Promise<void>((resolve) => {
+      enterLoad = resolve;
+    });
+
+    loadGate.current = undefined;
+    const activeSetStatus = vi.fn();
+    const activeContext = {
+      ...staleContext,
+      cwd: repo(),
+      ui: {
+        notify: vi.fn(),
+        setStatus: activeSetStatus,
+        theme: staleContext.ui.theme,
+      },
+    };
+    await handlers.get("session_start")({}, activeContext);
+
+    resolveLoad!();
+    await staleProposal;
+
+    expect(staleSetStatus).not.toHaveBeenCalled();
+    expect(activeSetStatus).toHaveBeenLastCalledWith(
+      PAPERCUT_STATUS_KEY,
+      undefined,
+    );
+  });
+
+  it("does not let an in-flight refresh update a shutdown session", async () => {
+    const handlers = new Map<string, any>();
+    const pi = {
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      on: (event: string, handler: unknown) => handlers.set(event, handler),
+    };
+    registerExtension(pi as never);
+    let enterLoad!: () => void;
+    let resolveLoad!: () => void;
+    loadGate.current = {
+      entered: () => enterLoad(),
+      promise: new Promise<void>((resolve) => {
+        resolveLoad = resolve;
+      }),
+    };
+    const setStatus = vi.fn();
+    const ctx = {
+      cwd: repo(),
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        notify: vi.fn(),
+        setStatus,
+        theme: { fg: (_color: string, text: string) => text },
+      },
+    };
+    const start = handlers.get("session_start")({}, ctx);
+    await new Promise<void>((resolve) => {
+      enterLoad = resolve;
+    });
+
+    handlers.get("session_shutdown")({}, ctx);
+    resolveLoad!();
+    await start;
+
+    expect(setStatus).toHaveBeenCalledTimes(1);
+    expect(setStatus).toHaveBeenCalledWith(PAPERCUT_STATUS_KEY, undefined);
+  });
+
+  it("refreshes the live footer when another extension persists a papercut", async () => {
+    const handlers = new Map<string, any>();
+    const pi = {
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      on: (event: string, handler: unknown) => handlers.set(event, handler),
+    };
+    registerExtension(pi as never);
+    const root = repo();
+    const setStatus = vi.fn();
+    const ctx = {
+      cwd: root,
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        notify: vi.fn(),
+        setStatus,
+        theme: { fg: (_color: string, text: string) => text },
+      },
+    };
+
+    await handlers.get("session_start")({}, ctx);
+    await createPapercutStore(root).propose(proposal, {
+      kind: "pi-implement",
+      runId: "run-1",
+      role: "implementer",
+    });
+    await vi.waitFor(() => {
+      expect(setStatus).toHaveBeenLastCalledWith(PAPERCUT_STATUS_KEY, "󰶯 1");
+    });
+  });
+
   it("runs every menu action durably and leaves Work on this unchanged", async () => {
     let command: any;
     const pi = {
@@ -297,7 +525,7 @@ describe("pi-papercuts extension", () => {
       "Close",
     ]);
     expect((await store.load()).records).toEqual([]);
-    expect(setStatus).toHaveBeenLastCalledWith(PAPERCUT_STATUS_KEY, undefined);
+    expect(setStatus).not.toHaveBeenCalled();
   });
 
   it("prints populated deterministic summaries without opening a modal", async () => {

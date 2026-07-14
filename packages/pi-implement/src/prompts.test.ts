@@ -120,6 +120,11 @@ describe("papercut prompt guidance", () => {
     expect(PAPERCUT_GUIDANCE).toContain(
       "expected intermediate, transient, ordinary self-corrected, and correctly guided failures",
     );
+    expect(PAPERCUT_GUIDANCE).toContain("`suggestedDestination`");
+    expect(PAPERCUT_GUIDANCE).toContain("`proposedResolution`");
+    expect(PAPERCUT_GUIDANCE).toContain(
+      "Malformed candidates are discarded without failing your result",
+    );
   });
 });
 

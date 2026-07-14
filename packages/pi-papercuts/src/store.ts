@@ -80,6 +80,26 @@ export type ProposalOutcome =
   | { kind: "rejected"; reason: string };
 
 export type PapercutStore = ReturnType<typeof createPapercutStore>;
+export type PapercutChange = { registryPath: string };
+
+type PapercutChangeListener = (change: PapercutChange) => void;
+
+const changeListeners = new Set<PapercutChangeListener>();
+
+export function onPapercutChange(listener: PapercutChangeListener): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
+
+function emitPapercutChange(change: PapercutChange): void {
+  for (const listener of changeListeners) {
+    try {
+      listener(change);
+    } catch {
+      // Store mutations must not fail because a UI observer cannot refresh.
+    }
+  }
+}
 
 export function normalizeKey(value: string): string {
   return value
@@ -707,6 +727,7 @@ export function createPapercutStore(root: string) {
         const current = readRegistry(registryPath);
         const { file, result } = operation(current);
         atomicWrite(registryPath, canonicalizeFile(file));
+        emitPapercutChange({ registryPath });
         return result;
       } finally {
         release();

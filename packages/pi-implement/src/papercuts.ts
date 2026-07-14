@@ -1,9 +1,6 @@
-export type PapercutSource = {
-  kind: "pi-implement";
-  runId?: string;
-  taskId?: string;
-  role: string;
-};
+import type { PapercutSource } from "pi-papercuts";
+
+export type { PapercutSource } from "pi-papercuts";
 
 export type PapercutProposalOutcome = {
   kind: "created" | "merged" | "ignored" | "resolved" | "rejected";

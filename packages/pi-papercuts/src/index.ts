@@ -5,6 +5,7 @@ import type {
 import { Type } from "typebox";
 import {
   createPapercutStoreForCwd,
+  onPapercutChange,
   type PapercutFile,
   type PapercutProposal,
   type PapercutRecord,
@@ -14,10 +15,13 @@ export {
   createPapercutStore,
   createPapercutStoreForCwd,
   normalizeKey,
+  onPapercutChange,
   parsePapercutFile,
 } from "./store.js";
 export type {
+  PapercutChange,
   PapercutFile,
+  PapercutStore,
   PapercutProposal,
   PapercutRecord,
   PapercutSource,
@@ -149,12 +153,36 @@ export default function (pi: ExtensionAPI) {
     return store;
   }
 
-  async function refreshStatus(ctx: ExtensionContext): Promise<void> {
-    if (ctx.mode !== "tui") {
+  let activeRegistryPath: string | undefined;
+  let refreshContext: ExtensionContext | undefined;
+  let sessionGeneration = 0;
+  let queuedRefresh:
+    | { context: ExtensionContext; generation: number }
+    | undefined;
+  let unsubscribeFromPapercutChanges = () => {};
+
+  function isActiveSession(ctx: ExtensionContext, generation: number): boolean {
+    return refreshContext === ctx && sessionGeneration === generation;
+  }
+
+  async function refreshStatus(
+    ctx: ExtensionContext,
+    generation: number,
+  ): Promise<void> {
+    const sessionIsActive = () => isActiveSession(ctx, generation);
+    if (ctx.mode !== "tui" || !sessionIsActive()) {
       return;
     }
     try {
-      const file = await (await storeFor(ctx)).load();
+      const store = await storeFor(ctx);
+      if (!sessionIsActive()) {
+        return;
+      }
+      activeRegistryPath = store.registryPath;
+      const file = await store.load();
+      if (!sessionIsActive()) {
+        return;
+      }
       const count = pendingRecords(file).length;
       ctx.ui.setStatus(
         PAPERCUT_STATUS_KEY,
@@ -163,6 +191,9 @@ export default function (pi: ExtensionAPI) {
           : undefined,
       );
     } catch (error) {
+      if (!sessionIsActive()) {
+        return;
+      }
       ctx.ui.setStatus(PAPERCUT_STATUS_KEY, undefined);
       ctx.ui.notify(
         `Papercuts unavailable: ${error instanceof Error ? error.message : String(error)}`,
@@ -171,7 +202,30 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  async function browse(ctx: ExtensionContext): Promise<void> {
+  function queueStatusRefresh(ctx: ExtensionContext, generation: number): void {
+    if (
+      !isActiveSession(ctx, generation) ||
+      (queuedRefresh?.context === ctx &&
+        queuedRefresh.generation === generation)
+    ) {
+      return;
+    }
+    const queued = { context: ctx, generation };
+    queuedRefresh = queued;
+    queueMicrotask(() => {
+      if (queuedRefresh === queued) {
+        queuedRefresh = undefined;
+      }
+      if (isActiveSession(ctx, generation)) {
+        void refreshStatus(ctx, generation);
+      }
+    });
+  }
+
+  async function browse(
+    ctx: ExtensionContext,
+    generation: number,
+  ): Promise<void> {
     const store = await storeFor(ctx);
     while (true) {
       const file = await store.load();
@@ -255,7 +309,7 @@ export default function (pi: ExtensionAPI) {
             await store.delete(record.key, true);
           }
         }
-        await refreshStatus(ctx);
+        await refreshStatus(ctx, generation);
       } catch (error) {
         ctx.ui.notify(
           `Papercut action failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -273,11 +327,12 @@ export default function (pi: ExtensionAPI) {
       "propose_papercut — record an eligible recurring project-specific gap for human review",
     parameters: PapercutProposalSchema,
     async execute(_id, proposal: PapercutProposal, _signal, _update, ctx) {
+      const generation = sessionGeneration;
       try {
         const result = await (
           await storeFor(ctx)
         ).propose(proposal, { kind: "agent" });
-        await refreshStatus(ctx);
+        await refreshStatus(ctx, generation);
         const text =
           result.kind === "rejected"
             ? `Papercut rejected: ${result.reason}`
@@ -305,6 +360,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("papercuts", {
     description: "Browse durable project papercuts",
     handler: async (args, ctx) => {
+      const generation = sessionGeneration;
       if (args.trim()) {
         ctx.ui.notify("usage: /papercuts", "warning");
         return;
@@ -316,7 +372,7 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify(formatPapercutSummary(file), "info");
           return;
         }
-        await browse(ctx);
+        await browse(ctx, generation);
       } catch (error) {
         ctx.ui.notify(
           `Papercuts unavailable: ${error instanceof Error ? error.message : String(error)}`,
@@ -326,8 +382,30 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("session_start", async (_event, ctx) => refreshStatus(ctx));
+  pi.on("session_start", async (_event, ctx) => {
+    const generation = ++sessionGeneration;
+    refreshContext = ctx;
+    activeRegistryPath = undefined;
+    unsubscribeFromPapercutChanges();
+    unsubscribeFromPapercutChanges = onPapercutChange((change) => {
+      if (
+        isActiveSession(ctx, generation) &&
+        change.registryPath === activeRegistryPath
+      ) {
+        queueStatusRefresh(ctx, generation);
+      }
+    });
+    await refreshStatus(ctx, generation);
+  });
   pi.on("session_shutdown", (_event, ctx) => {
+    if (refreshContext !== ctx) {
+      return;
+    }
+    ++sessionGeneration;
+    refreshContext = undefined;
+    activeRegistryPath = undefined;
+    unsubscribeFromPapercutChanges();
+    unsubscribeFromPapercutChanges = () => {};
     if (ctx.mode === "tui") {
       ctx.ui.setStatus(PAPERCUT_STATUS_KEY, undefined);
     }

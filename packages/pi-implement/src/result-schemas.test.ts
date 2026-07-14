@@ -79,6 +79,12 @@ describe("managed completion schemas", () => {
         papercuts: candidates,
       }),
     ).toBe(true);
+    const papercuts = implementerResultSchema.anyOf[0].properties
+      .papercuts as unknown as { description?: string };
+    expect(papercuts.description).toContain("suggestedDestination");
+    expect(papercuts.description).toContain(
+      "Malformed candidates are discarded",
+    );
   });
 
   it("keeps planner and material-selection schemas free of papercut fields", () => {

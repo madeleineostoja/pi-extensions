@@ -3,7 +3,7 @@ import type { ParsedImplementerResult } from "./verdict.js";
 
 export const PAPERCUT_GUIDANCE = `## Optional Papercut Candidates
 
-If this work exposed a novel recurring project-specific failure absent from current instructions, tests, tooling, or docs, include it in the optional \`papercuts\` result array. Exclude expected intermediate, transient, ordinary self-corrected, and correctly guided failures.`;
+If this work exposed a novel recurring project-specific failure absent from current instructions, tests, tooling, or docs, include it in the optional \`papercuts\` result array. Each candidate must contain \`key\`, \`title\`, \`trigger\`, \`impact\`, \`currentGap\`, \`proposedResolution\`, and \`suggestedDestination\`. Use \`suggestedDestination\` only for \`agents\`, \`skill\`, \`test\`, \`lint\`, \`tooling\`, \`docs\`, or \`code\`. Malformed candidates are discarded without failing your result. Exclude expected intermediate, transient, ordinary self-corrected, and correctly guided failures.`;
 
 export function formatExecutionManifestSummary(
   manifest?: ExecutionManifest,
