@@ -307,6 +307,38 @@ describe("run state lifecycle", () => {
     expect(read).toEqual(task);
   });
 
+  it("preserves the first source base SHA while allowing the branch base to advance", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    writeTaskJson(paths, "t001-test", {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test task",
+      status: "coding",
+      dependsOn: [],
+      attempts: 0,
+      integrationAttempts: 0,
+      sourceBaseSha: "source-sha",
+      baseSha: "source-sha",
+    });
+    writeTaskJson(paths, "t001-test", {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test task",
+      status: "coding",
+      dependsOn: [],
+      attempts: 1,
+      integrationAttempts: 1,
+      sourceBaseSha: "incorrect-replacement",
+      baseSha: "rework-sha",
+    });
+
+    expect(readTaskJson(paths, "t001-test")).toMatchObject({
+      sourceBaseSha: "source-sha",
+      baseSha: "rework-sha",
+    });
+  });
+
   it("writes and reads task.json with reviewed metadata", () => {
     const repo = tempRepo();
     const paths = getStatePaths(repo, "r20240115-120000");

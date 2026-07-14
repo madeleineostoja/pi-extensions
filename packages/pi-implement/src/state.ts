@@ -59,6 +59,7 @@ export type TaskJson = {
   dependsOn: string[];
   attempts: number;
   integrationAttempts: number;
+  sourceBaseSha?: string;
   baseSha?: string;
   worktreePath?: string;
   branchName?: string;
@@ -345,8 +346,12 @@ export function writeTaskJson(
   task: TaskJson,
 ): void {
   const path = join(paths.tasksDir, taskId, "task.json");
+  const existing = readTaskJson(paths, taskId);
+  const persisted = existing?.sourceBaseSha
+    ? { ...task, sourceBaseSha: existing.sourceBaseSha }
+    : task;
   mkdirSync(dirname(path), { recursive: true });
-  writeAtomic(path, JSON.stringify(task, null, 2));
+  writeAtomic(path, JSON.stringify(persisted, null, 2));
 }
 
 export function appendEvent(paths: StatePaths, entry: EventEntry): void {

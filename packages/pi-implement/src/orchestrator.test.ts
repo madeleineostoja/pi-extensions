@@ -1223,6 +1223,111 @@ describe("runImplementation", () => {
     expect(git.deletedBranches).toHaveLength(0);
   });
 
+  it("blocks a managed serial run without a graph before it can use the main checkout", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+
+    await expect(
+      runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "serial",
+        runId: "r1",
+        paths,
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      }),
+    ).rejects.toThrow("requires a persisted scheduler graph");
+
+    expect(subagents.spawns).toHaveLength(0);
+    expect(git.commits).toHaveLength(0);
+    expect(git.createdBranches).toHaveLength(0);
+  });
+
+  it("runs planner-serial tasks through the isolated worker and serialized landing lifecycle", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
+    const paths = makePaths(dir);
+    writeGraphJson(paths.runDir, {
+      version: 1,
+      runId: "r1",
+      baseSha: "h1",
+      planPath,
+      planHash: "hash",
+      nodes: [
+        {
+          id: "t001-do-thing",
+          planIndex: 1,
+          title: "Do thing",
+          taskHash: "hash",
+          dependsOn: [],
+          mode: "serial",
+          affectedAreas: [],
+          conflictHints: [],
+          validationCommands: [],
+          confidence: "high",
+          reasons: [],
+          evidencePaths: [],
+        },
+      ],
+    });
+    const git = new FakeGit();
+    const subagents = new FakeSubagents();
+    subagents.results = [
+      { status: "completed", result: GOOD_IMPL },
+      { status: "completed", result: GOOD_REVIEW },
+      { status: "completed", result: GOOD_INTEGRATION_REVIEW },
+      { status: "completed", result: GOOD_OVERALL_REVIEW },
+    ];
+
+    await runImplementation({
+      git,
+      subagents,
+      planPath,
+      mode: "serial",
+      runId: "r1",
+      paths,
+      roles: {
+        implementer: { model: "p/m", type: "general-purpose" },
+        reviewer: { model: "p/m", type: "general-purpose" },
+        planner: { model: "p/m", type: "Explore" },
+        selfHeal: { model: "p/m", type: "general-purpose" },
+      },
+      updateState: () => {},
+      shouldStop: () => false,
+    });
+
+    const worktreePath = join(paths.worktreesDir, "t001-do-thing");
+    expect(subagents.spawns[0]?.cwd).toBe(worktreePath);
+    expect(git.createdBranches).toEqual(["pi-implement/r1/t001-do-thing"]);
+    expect(git.addedWorktrees).toEqual([
+      { path: worktreePath, branch: "pi-implement/r1/t001-do-thing" },
+    ]);
+    expect(git.commits).toEqual(["feat: do thing"]);
+    expect(git.removedWorktrees).toEqual([worktreePath]);
+    expect(git.deletedBranches).toEqual(["pi-implement/r1/t001-do-thing"]);
+    expect(readTaskJson(paths, "t001-do-thing")).toMatchObject({
+      status: "landed",
+      sourceBaseSha: "h1",
+      baseSha: "h1",
+      branchName: "pi-implement/r1/t001-do-thing",
+      worktreePath,
+    });
+    expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
+  });
+
   it("validates planner-selected material against the recorded plan corpus", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
@@ -4658,6 +4763,13 @@ describe("runImplementation", () => {
       }),
     ).rejects.toThrow("Worktree setup failed");
     expect(git.deletedBranches).toContain("pi-implement/r1/task-1");
+    expect(readTaskJson(paths, "task-1")).toMatchObject({
+      status: "failed",
+      sourceBaseSha: "h1",
+      baseSha: "h1",
+      branchName: "pi-implement/r1/task-1",
+      worktreePath: join(paths.worktreesDir, "task-1"),
+    });
   });
 
   it("runs an approved overall review after serial tasks land", async () => {
@@ -8257,7 +8369,7 @@ describe("runImplementation", () => {
       shouldStop: () => false,
     });
 
-    // Two attempts: first creates branch/worktree, second cleans up and recreates
+    // Retry cleanup happens before recreation; landing removes the final isolated workspace.
     const taskBranches = git.createdBranches.filter((b) =>
       b.includes("task-1"),
     );
@@ -8268,10 +8380,10 @@ describe("runImplementation", () => {
     expect(taskWorktrees).toHaveLength(2);
     expect(
       git.removedWorktrees.filter((w) => w.includes("task-1")),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(
       git.deletedBranches.filter((b) => b.includes("task-1")),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
   });
 
   it("does not fail with branch already exists on needs_rework retry because it deletes first", async () => {

@@ -23,6 +23,8 @@ export type SchedulerTask = {
   status: SchedulerTaskStatus;
   dependsOn: string[];
   mode: "serial" | "parallel";
+  sourceBaseSha?: string;
+  baseSha?: string;
   worktreePath?: string;
   branchName?: string;
   taskCommitSha?: string;

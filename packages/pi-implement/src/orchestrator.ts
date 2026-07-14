@@ -1092,142 +1092,18 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
   deps = { ...deps, executionManifest, planArtifacts };
   validateRecordedPlanCorpus(deps);
 
-  if (deps.mode === "serial") {
-    await runSerialImplementation(deps, plan, planArtifacts, runBaseSha);
-    return;
-  }
-
-  // For auto/parallel: try to load a graph and run the scheduler
-  const graph = deps.paths ? readGraphJson(deps.paths.runDir) : undefined;
-  if (graph && deps.paths && deps.runId) {
-    await runParallelImplementation(
-      deps,
-      graph,
-      plan,
-      planArtifacts,
-      runBaseSha,
+  if (!deps.paths || !deps.runId) {
+    throw new BlockedError(
+      "managed task execution requires persisted run state and a run ID",
     );
-    return;
   }
-
-  // Fallback to serial if no graph (shouldn't happen in normal flow)
-  await runSerialImplementation(deps, plan, planArtifacts, runBaseSha);
-}
-
-async function runSerialImplementation(
-  deps: OrchestratorDeps,
-  initialPlan: ReturnType<typeof parsePlanFile>,
-  planArtifacts: string[],
-  runBaseSha: string,
-): Promise<void> {
-  let plan = initialPlan;
-
-  for (;;) {
-    throwIfStopped(deps);
-    plan = parsePlanFile(deps.planPath);
-    if (!(await deps.git.isCleanExcept(planArtifacts))) {
-      throw new BlockedError("dirty worktree");
-    }
-    if (!deps.executionManifest) {
-      throw new BlockedError("no execution manifest available");
-    }
-    validateRecordedPlanCorpus(deps);
-    const next = nextUncheckedManifestTask(
-      plan,
-      deps.executionManifest,
-      deps.paths,
+  const graph = readGraphJson(deps.paths.runDir);
+  if (!graph) {
+    throw new BlockedError(
+      "managed task execution requires a persisted scheduler graph",
     );
-    const task = next?.planTask;
-    deps.updateState({
-      taskIndex: task?.index ?? completedPlanTaskIndex(plan),
-      totalTasks: plan.tasks.length,
-    });
-    if (!task) {
-      await runOverallReviewLoop(deps, plan, planArtifacts, runBaseSha);
-      deps.updateState({
-        phase: "done",
-        taskIndex: plan.tasks.length,
-        totalTasks: plan.tasks.length,
-        activeSubagentId: undefined,
-      });
-      return;
-    }
-
-    const taskId = taskIdFromTask(task.index - 1, task.text);
-    const runId = deps.runId ?? "run";
-    const branchName = `pi-implement/${runId}/${taskId}`;
-
-    if (deps.paths) {
-      writeTaskJson(deps.paths, taskId, {
-        id: taskId,
-        planIndex: task.index - 1,
-        title: task.text,
-        status: "pending",
-        dependsOn: [],
-        attempts: 0,
-        integrationAttempts: 0,
-      });
-    }
-
-    const baseSha = await deps.git.head();
-    const paths = deps.paths;
-    const worktreePath =
-      deps.mode === "parallel" && paths
-        ? join(paths.worktreesDir, taskId)
-        : undefined;
-
-    if (worktreePath) {
-      await deps.git.createTaskBranch(branchName, baseSha);
-      await deps.git.addWorktree(worktreePath, branchName);
-      if (deps.paths) {
-        writeTaskJson(deps.paths, taskId, {
-          id: taskId,
-          planIndex: task.index - 1,
-          title: task.text,
-          status: "pending",
-          dependsOn: [],
-          attempts: 0,
-          integrationAttempts: 0,
-          baseSha,
-          worktreePath,
-          branchName,
-        });
-      }
-    }
-
-    const taskGit = worktreePath
-      ? deps.git.forWorktree(worktreePath, await deps.git.root())
-      : deps.git;
-
-    try {
-      const landed = await runTaskWorker({
-        deps,
-        plan,
-        task,
-        taskId,
-        taskGit,
-        worktreePath,
-        branchName,
-        baseSha,
-        planArtifacts,
-        runBaseSha,
-      });
-      if (!landed) {
-        break;
-      }
-    } finally {
-      if (worktreePath && deps.mode !== "parallel") {
-        await deps.git.removeWorktree(worktreePath).catch(() => undefined);
-        await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
-      }
-    }
-
-    if (deps.mode === "parallel") {
-      throw new BlockedError(
-        "parallel task approved, but main-checkout integration is not implemented yet",
-      );
-    }
   }
+  await runParallelImplementation(deps, graph, plan, planArtifacts, runBaseSha);
 }
 
 // ── Parallel scheduler ──────────────────────────────────────────────────────
@@ -1240,8 +1116,6 @@ type WorkerResult = {
     | { kind: "failed"; reason: string }
     | { kind: "stopped" };
 };
-
-type TaskWorkerResult = "changed" | "satisfied" | false;
 
 async function runParallelImplementation(
   deps: OrchestratorDeps,
@@ -1521,47 +1395,40 @@ async function launchTaskWorker(
 ): Promise<WorkerResult> {
   const task = sched.tasks.get(taskId)!;
   const baseSha = await deps.git.head();
-  const runId = deps.runId ?? "run";
+  const sourceBaseSha = task.sourceBaseSha ?? baseSha;
+  const runId = deps.runId!;
   const branchName = `pi-implement/${runId}/${taskId}`;
-  const worktreePath = deps.paths
-    ? join(deps.paths.worktreesDir, taskId)
-    : undefined;
+  const worktreePath = join(deps.paths!.worktreesDir, taskId);
 
-  if (worktreePath) {
-    try {
-      if (wasNeedsRework) {
-        await deps.git.removeWorktree(worktreePath).catch(() => undefined);
-        await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
-      }
-      await deps.git.createTaskBranch(branchName, baseSha);
-      await deps.git.addWorktree(worktreePath, branchName);
-      task.worktreePath = worktreePath;
-      task.branchName = branchName;
-      if (deps.paths) {
-        const existing = readTaskJson(deps.paths, taskId);
-        writeTaskJson(deps.paths, taskId, {
-          ...buildTaskJsonSnapshot(existing, task),
-          status: "coding",
-          baseSha,
-          worktreePath,
-          branchName,
-        });
-        appendEvent(deps.paths, { type: "task_started", taskId });
-      }
-    } catch (err) {
+  task.sourceBaseSha = sourceBaseSha;
+  task.baseSha = baseSha;
+  task.worktreePath = worktreePath;
+  task.branchName = branchName;
+  const existing = readTaskJson(deps.paths!, taskId);
+  writeTaskJson(deps.paths!, taskId, {
+    ...buildTaskJsonSnapshot(existing, task),
+    status: "coding",
+  });
+
+  try {
+    if (wasNeedsRework) {
       await deps.git.removeWorktree(worktreePath).catch(() => undefined);
       await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
-      const reason = err instanceof Error ? err.message : String(err);
-      return {
-        taskId,
-        outcome: { kind: "failed", reason: `Worktree setup failed: ${reason}` },
-      };
     }
+    await deps.git.createTaskBranch(branchName, baseSha);
+    await deps.git.addWorktree(worktreePath, branchName);
+    appendEvent(deps.paths!, { type: "task_started", taskId });
+  } catch (err) {
+    await deps.git.removeWorktree(worktreePath).catch(() => undefined);
+    await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
+    const reason = err instanceof Error ? err.message : String(err);
+    return {
+      taskId,
+      outcome: { kind: "failed", reason: `Worktree setup failed: ${reason}` },
+    };
   }
 
-  const taskGit = worktreePath
-    ? deps.git.forWorktree(worktreePath, await deps.git.root())
-    : deps.git;
+  const taskGit = deps.git.forWorktree(worktreePath, await deps.git.root());
 
   const plan = parsePlanFile(deps.planPath);
 
@@ -1591,6 +1458,7 @@ async function launchTaskWorker(
     }
 
     if (success === "satisfied") {
+      await cleanupTaskWorkspace(deps, task);
       return { taskId, outcome: { kind: "satisfied" } };
     }
 
@@ -1969,6 +1837,8 @@ async function landApprovedTask(
       });
     }
 
+    await cleanupTaskWorkspace(deps, task);
+
     deps.updateState((prev) => ({
       currentMainHead: finalHead,
       ...checkpointPatch(
@@ -1981,6 +1851,17 @@ async function landApprovedTask(
     const reason = err instanceof Error ? err.message : String(err);
     return await failForRework("integration", reason);
   }
+}
+
+async function cleanupTaskWorkspace(
+  deps: OrchestratorDeps,
+  task: SchedulerTask,
+): Promise<void> {
+  if (!task.worktreePath || !task.branchName) {
+    return;
+  }
+  await deps.git.removeWorktree(task.worktreePath).catch(() => undefined);
+  await deps.git.deleteTaskBranch(task.branchName).catch(() => undefined);
 }
 
 function markIntegrationFailure(
@@ -4441,64 +4322,6 @@ function validateRecordedPlanCorpus(deps: OrchestratorDeps): void {
   }
 }
 
-function readTaskJsonByPlanIndex(
-  paths: StatePaths,
-  planIndex: number,
-): TaskJson | undefined {
-  if (!existsSync(paths.tasksDir)) {
-    return undefined;
-  }
-  for (const dirent of readdirSync(paths.tasksDir, { withFileTypes: true })) {
-    if (!dirent.isDirectory()) {
-      continue;
-    }
-    const taskJson = readTaskJson(paths, dirent.name);
-    if (
-      taskJson &&
-      (taskJson.planIndex === planIndex || taskJson.planIndex === planIndex - 1)
-    ) {
-      return taskJson;
-    }
-  }
-  return undefined;
-}
-
-function nextUncheckedManifestTask(
-  plan: ReturnType<typeof parsePlanFile>,
-  manifest: ExecutionManifest,
-  paths?: StatePaths,
-):
-  | {
-      planTask: PlanTask;
-      manifestTask: import("./execution-plan.js").ExecutionTask;
-    }
-  | undefined {
-  for (const manifestTask of manifest.tasks) {
-    const planTask = plan.tasks.find((t) => t.index === manifestTask.planIndex);
-    if (!planTask) {
-      continue;
-    }
-    if (!planTask.checked) {
-      // If run state says the task is already landed/satisfied, trust
-      // canonical run state over the source checkbox.
-      if (paths) {
-        const taskJson = readTaskJsonByPlanIndex(paths, manifestTask.planIndex);
-        if (taskJson?.status === "landed" || taskJson?.status === "satisfied") {
-          continue;
-        }
-      }
-      return { planTask, manifestTask };
-    }
-  }
-  return undefined;
-}
-
-function completedPlanTaskIndex(
-  plan: ReturnType<typeof parsePlanFile>,
-): number | undefined {
-  return plan.tasks.length > 0 ? plan.tasks.length : undefined;
-}
-
 function updateParallelState(
   deps: OrchestratorDeps,
   sched: SchedulerRun,
@@ -4622,7 +4445,8 @@ function taskToJson(task: SchedulerTask): TaskJson {
     dependsOn: task.dependsOn,
     attempts: 0,
     integrationAttempts: task.integrationAttempts,
-    baseSha: undefined,
+    sourceBaseSha: task.sourceBaseSha,
+    baseSha: task.baseSha,
     worktreePath: task.worktreePath,
     branchName: task.branchName,
     taskCommitSha: task.taskCommitSha,
@@ -4679,7 +4503,7 @@ async function runTaskWorker(args: {
   wasNeedsRework?: boolean;
   initialFeedback?: RetryFeedback;
   attemptOrdinalBase?: number;
-}): Promise<TaskWorkerResult> {
+}): Promise<"changed" | "satisfied" | false> {
   const {
     deps,
     plan,
