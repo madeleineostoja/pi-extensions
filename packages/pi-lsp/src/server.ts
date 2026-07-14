@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { canonicalPath, isWithin, type ServerKind } from "./workspace.js";
+import { canonicalPath, type ServerKind } from "./workspace.js";
 
 const require = createRequire(import.meta.url);
 export type TypeScriptSdk = {
@@ -56,7 +56,6 @@ export function resolveServer(
 
 export function resolveTypeScriptSdk(workspace: string): TypeScriptSdk {
   let current = canonicalPath(workspace);
-  const boundary = current;
   while (true) {
     const candidate = join(
       current,
@@ -73,7 +72,7 @@ export function resolveTypeScriptSdk(workspace: string): TypeScriptSdk {
       };
     }
     const parent = dirname(current);
-    if (parent === current || !isWithin(boundary, parent)) {
+    if (existsSync(join(current, ".git")) || parent === current) {
       break;
     }
     current = parent;

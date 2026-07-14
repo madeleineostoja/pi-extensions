@@ -1,7 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { LspClient } from "./client.js";
-import { JsonRpcConnection } from "./protocol.js";
+import {
+  JsonRpcConnection,
+  RequestCancelledError,
+  RequestTimeoutError,
+} from "./protocol.js";
 import type { ResolvedServer } from "./server.js";
 import { canonicalPath } from "./workspace.js";
 
@@ -25,6 +29,10 @@ export type PoolUnavailable = {
   coolingDown?: boolean;
 };
 export type PoolAcquireResult = LspClient | PoolUnavailable;
+export type PoolAcquireOptions = {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+};
 export type LspPoolOptions = {
   maxProcesses?: number;
   idleMs?: number;
@@ -75,38 +83,53 @@ export class LspPool {
   async acquire(
     server: ResolvedServer,
     workspaceRoot: string,
+    options: PoolAcquireOptions = {},
   ): Promise<PoolAcquireResult> {
+    const deadline =
+      options.timeoutMs === undefined
+        ? undefined
+        : Date.now() + options.timeoutMs;
     const root = canonicalPath(workspaceRoot);
     const key = this.key(server, root);
     let entry: Entry | undefined;
     try {
-      entry = await this.#withLock(async () => {
-        if (this.#closed) {
-          return undefined;
-        }
-        const existing = this.#entries.get(key);
-        if (existing?.client || existing?.starting) {
-          existing.lastActivity = Date.now();
-          return existing;
-        }
-        if (
-          existing?.failedAt &&
-          Date.now() - existing.failedAt < this.#options.failureCooldownMs
-        ) {
-          return existing;
-        }
-        await this.#makeRoom();
-        const created: Entry = {
-          key,
-          server,
-          workspaceRoot: root,
-          lastActivity: Date.now(),
-        };
-        this.#entries.set(key, created);
-        created.starting = this.#start(created, server, root);
-        return created;
-      });
+      entry = await this.#await(
+        this.#withLock(async () => {
+          this.#assertCallerActive(options, deadline);
+          if (this.#closed) {
+            return undefined;
+          }
+          const existing = this.#entries.get(key);
+          if (existing?.client || existing?.starting) {
+            existing.lastActivity = Date.now();
+            return existing;
+          }
+          if (
+            existing?.failedAt &&
+            Date.now() - existing.failedAt < this.#options.failureCooldownMs
+          ) {
+            return existing;
+          }
+          await this.#makeRoom(options, deadline);
+          this.#assertCallerActive(options, deadline);
+          const created: Entry = {
+            key,
+            server,
+            workspaceRoot: root,
+            lastActivity: Date.now(),
+          };
+          this.#entries.set(key, created);
+          created.starting = this.#start(created, server, root);
+          void created.starting.catch(() => {});
+          return created;
+        }),
+        this.#remainingOptions(options, deadline),
+        "LSP pool acquisition",
+      );
     } catch (error) {
+      if (error instanceof RequestCancelledError) {
+        throw error;
+      }
       return this.#unavailable(asError(error));
     }
     if (!entry) {
@@ -117,8 +140,15 @@ export class LspPool {
     }
     if (entry.starting) {
       try {
-        return await entry.starting;
+        return await this.#await(
+          entry.starting,
+          this.#remainingOptions(options, deadline),
+          "LSP pool acquisition",
+        );
       } catch (error) {
+        if (error instanceof RequestCancelledError) {
+          throw error;
+        }
         return this.#unavailable(asError(error));
       }
     }
@@ -244,7 +274,11 @@ export class LspPool {
     }
   }
 
-  async #makeRoom(): Promise<void> {
+  async #makeRoom(
+    options: PoolAcquireOptions,
+    deadline: number | undefined,
+  ): Promise<void> {
+    this.#assertCallerActive(options, deadline);
     const live = [...this.#entries.entries()].filter(
       ([, entry]) => entry.client || entry.starting,
     );
@@ -257,6 +291,7 @@ export class LspPool {
     if (!candidate) {
       throw new Error("LSP process limit reached with only active clients");
     }
+    this.#assertCallerActive(options, deadline);
     await this.#dispose(...candidate);
   }
 
@@ -297,6 +332,83 @@ export class LspPool {
       }
     }, 1_000);
     timer.unref();
+  }
+
+  #remainingOptions(
+    options: PoolAcquireOptions,
+    deadline: number | undefined,
+  ): PoolAcquireOptions {
+    this.#assertCallerActive(options, deadline);
+    if (deadline === undefined) {
+      return options;
+    }
+    return { ...options, timeoutMs: deadline - Date.now() };
+  }
+
+  #assertCallerActive(
+    options: PoolAcquireOptions,
+    deadline: number | undefined,
+  ): void {
+    if (options.signal?.aborted) {
+      throw new RequestCancelledError("LSP pool acquisition cancelled");
+    }
+    if (deadline !== undefined && deadline <= Date.now()) {
+      throw new RequestTimeoutError("LSP pool acquisition timed out");
+    }
+  }
+
+  #await<T>(
+    promise: Promise<T>,
+    options: PoolAcquireOptions,
+    operation: string,
+  ): Promise<T> {
+    if (options.signal?.aborted) {
+      return Promise.reject(
+        new RequestCancelledError(`${operation} cancelled`),
+      );
+    }
+    if (options.timeoutMs !== undefined && options.timeoutMs <= 0) {
+      return Promise.reject(new RequestTimeoutError(`${operation} timed out`));
+    }
+    if (options.timeoutMs === undefined && !options.signal) {
+      return promise;
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        options.signal?.removeEventListener("abort", abort);
+      };
+      const settle = (callback: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        callback();
+      };
+      const abort = () =>
+        settle(() =>
+          reject(new RequestCancelledError(`${operation} cancelled`)),
+        );
+      const timer =
+        options.timeoutMs === undefined
+          ? undefined
+          : setTimeout(
+              () =>
+                settle(() =>
+                  reject(new RequestTimeoutError(`${operation} timed out`)),
+                ),
+              options.timeoutMs,
+            );
+      options.signal?.addEventListener("abort", abort, { once: true });
+      promise.then(
+        (value) => settle(() => resolve(value)),
+        (error) => settle(() => reject(error)),
+      );
+    });
   }
 
   async #withLock<T>(operation: () => Promise<T>): Promise<T> {

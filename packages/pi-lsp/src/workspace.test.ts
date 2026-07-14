@@ -53,6 +53,31 @@ describe("workspace and server resolution", () => {
       available: false,
     });
   });
+  it("finds a TypeScript SDK hoisted above the selected workspace", () => {
+    const repository = temp();
+    const workspace = join(repository, "packages", "app");
+    const sdk = join(
+      repository,
+      "node_modules",
+      "typescript",
+      "lib",
+      "tsserverlibrary.js",
+    );
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(join(sdk, ".."), { recursive: true });
+    writeFileSync(sdk, "");
+    writeFileSync(
+      join(repository, "node_modules", "typescript", "package.json"),
+      '{"version":"1.2.3"}',
+    );
+    expect(resolveTypeScriptSdk(workspace)).toMatchObject({
+      path: expect.stringMatching(
+        /node_modules\/typescript\/lib\/tsserverlibrary\.js$/,
+      ),
+      source: "workspace",
+      version: "1.2.3",
+    });
+  });
   it("records packaged TypeScript fallback metadata", () => {
     const sdk = resolveTypeScriptSdk(temp());
     expect(sdk).toMatchObject({ source: "packaged" });

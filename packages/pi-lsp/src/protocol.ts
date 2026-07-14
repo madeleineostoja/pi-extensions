@@ -139,6 +139,12 @@ export class JsonRpcConnection {
     this.#events.on("notification", listener);
     return () => this.#events.off("notification", listener);
   }
+  onServerRequest(
+    listener: (method: string, params: unknown) => void,
+  ): () => void {
+    this.#events.on("serverRequest", listener);
+    return () => this.#events.off("serverRequest", listener);
+  }
   onClose(listener: (reason: Error) => void): () => void {
     this.#events.on("close", listener);
     return () => this.#events.off("close", listener);
@@ -276,6 +282,7 @@ export class JsonRpcConnection {
       return;
     }
     try {
+      this.#events.emit("serverRequest", message.method, message.params);
       const result = await this.#serverRequest(message.method, message.params);
       this.#safeReply({ id: message.id, result });
     } catch (error) {

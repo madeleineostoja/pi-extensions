@@ -70,6 +70,20 @@ describe("document synchronization and diagnostics", () => {
     ).toBe(2);
   });
 
+  it("advertises versioned publish diagnostics", async () => {
+    const dir = realpathSync(temp());
+    const { client, process, requests } = setup(dir);
+    const initialization = client.initialize(pathToFileURL(dir).href);
+    await vi.waitFor(() => expect(requests.at(-1)?.method).toBe("initialize"));
+    expect(requests.at(-1)?.params.capabilities).toMatchObject({
+      textDocument: { publishDiagnostics: { versionSupport: true } },
+    });
+    process.stdout.write(
+      encodeMessage({ id: requests.at(-1)!.id, result: { capabilities: {} } }),
+    );
+    await initialization;
+  });
+
   it("uses pull full and unchanged reports and respects refresh invalidation", async () => {
     const dir = temp();
     const file = join(dir, "sample.rb");
@@ -106,7 +120,10 @@ describe("document synchronization and diagnostics", () => {
     );
     expect((await unchanged).diagnostics).toHaveLength(1);
     process.stdout.write(
-      encodeMessage({ method: "workspace/diagnostic/refresh" }),
+      encodeMessage({
+        id: 99,
+        method: "workspace/diagnostic/refresh",
+      }),
     );
     const refreshed = client.diagnostics(file, "ruby", {
       diagnosticProvider: {},
@@ -121,6 +138,106 @@ describe("document synchronization and diagnostics", () => {
       }),
     );
     await refreshed;
+  });
+
+  it("does not let stale pull responses overwrite the current document snapshot", async () => {
+    const dir = temp();
+    const file = join(dir, "sample.rb");
+    writeFileSync(file, "first");
+    const { client, process, requests } = setup(dir);
+    const first = client.diagnostics(file, "ruby", { diagnosticProvider: {} });
+    await vi.waitFor(() =>
+      expect(requests.at(-1)?.method).toBe("textDocument/diagnostic"),
+    );
+    const firstRequest = requests.at(-1)!;
+    writeFileSync(file, "second");
+    const second = client.diagnostics(file, "ruby", { diagnosticProvider: {} });
+    await vi.waitFor(() =>
+      expect(requests.at(-1)?.id).not.toBe(firstRequest.id),
+    );
+    const secondRequest = requests.at(-1)!;
+    process.stdout.write(
+      encodeMessage({
+        id: secondRequest.id,
+        result: { kind: "full", resultId: "second", items: [] },
+      }),
+    );
+    process.stdout.write(
+      encodeMessage({
+        id: firstRequest.id,
+        result: { kind: "full", resultId: "first", items: [] },
+      }),
+    );
+    await expect(second).resolves.toMatchObject({ fresh: true });
+    await expect(first).resolves.toMatchObject({ fresh: false, stale: true });
+
+    const current = client.diagnostics(file, "ruby", {
+      diagnosticProvider: {},
+    });
+    await vi.waitFor(() =>
+      expect(requests.at(-1)?.params.previousResultId).toBe("second"),
+    );
+    process.stdout.write(
+      encodeMessage({
+        id: requests.at(-1)!.id,
+        result: { kind: "unchanged", resultId: "second" },
+      }),
+    );
+    await expect(current).resolves.toMatchObject({ fresh: true });
+  });
+
+  it("accepts versionless push diagnostics for the synchronized snapshot", async () => {
+    const dir = temp();
+    const file = join(dir, "sample.ts");
+    writeFileSync(file, "one");
+    const { client, process } = setup(dir);
+    const document = await client.synchronize(file, "typescript");
+    process.stdout.write(
+      encodeMessage({
+        method: "textDocument/publishDiagnostics",
+        params: {
+          uri: document.uri,
+          diagnostics: [{ message: "valid", range: {} }],
+        },
+      }),
+    );
+    await expect(
+      client.diagnostics(file, "typescript", {}),
+    ).resolves.toMatchObject({
+      fresh: true,
+      diagnostics: [expect.objectContaining({ message: "valid" })],
+    });
+  });
+
+  it("never treats versionless diagnostics after a change as fresh", async () => {
+    const dir = temp();
+    const file = join(dir, "sample.ts");
+    writeFileSync(file, "one");
+    const { client, process, requests } = setup(dir);
+    const first = await client.synchronize(file, "typescript");
+    writeFileSync(file, "two");
+    const diagnostics = client.diagnostics(
+      file,
+      "typescript",
+      {},
+      { timeoutMs: 25 },
+    );
+    await vi.waitFor(() =>
+      expect(requests.at(-1)?.method).toBe("textDocument/didChange"),
+    );
+    process.stdout.write(
+      encodeMessage({
+        method: "textDocument/publishDiagnostics",
+        params: {
+          uri: first.uri,
+          diagnostics: [{ message: "delayed", range: {} }],
+        },
+      }),
+    );
+    await expect(diagnostics).resolves.toMatchObject({
+      fresh: false,
+      diagnostics: [],
+    });
   });
 
   it("waits for a changed push snapshot instead of accepting an old publication", async () => {

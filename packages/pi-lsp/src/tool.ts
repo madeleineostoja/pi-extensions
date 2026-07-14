@@ -6,7 +6,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { RequestCancelledError } from "./protocol.js";
+import { RequestCancelledError, RequestTimeoutError } from "./protocol.js";
 import {
   normalizeHoverResult,
   normalizeLocations,
@@ -146,6 +146,7 @@ export async function executeLsp(
     const details = lspStatus(ctx.cwd);
     return result(renderStatus(details), details);
   }
+  let resolvedRoute: { kind: ServerKind; workspaceRoot: string } | undefined;
   try {
     const target = targetFor(input, ctx.cwd);
     const route = routeFor(input, target, ctx.cwd);
@@ -165,9 +166,12 @@ export async function executeLsp(
         ctx,
       );
     }
+    resolvedRoute = route;
+    const deadline = Date.now() + boundedTimeout(input.timeout);
     const client = await getLspPool().acquire(
       route.server,
       route.workspaceRoot,
+      { timeoutMs: remainingTimeout(deadline), signal },
     );
     if ("available" in client) {
       return unavailable(
@@ -179,13 +183,12 @@ export async function executeLsp(
         client.coolingDown,
       );
     }
-    const timeoutMs = boundedTimeout(input.timeout);
     if (input.action === "diagnostics") {
       const diagnostics = await client.diagnostics(
         target!,
         languageId(route.kind, target!),
         client.capabilities,
-        { timeoutMs, signal },
+        { timeoutMs: remainingTimeout(deadline), signal },
       );
       const details = {
         action: input.action,
@@ -223,7 +226,7 @@ export async function executeLsp(
     const raw =
       input.action === "workspace_symbols"
         ? await client.workspaceSymbols(input.query ?? "", {
-            timeoutMs,
+            timeoutMs: remainingTimeout(deadline),
             signal,
           })
         : await client.semantic(
@@ -233,7 +236,7 @@ export async function executeLsp(
             positionActions.has(input.action)
               ? positionFor(input, target!)
               : undefined,
-            { timeoutMs, signal },
+            { timeoutMs: remainingTimeout(deadline), signal },
           );
     return semanticResult(input.action, raw, route);
   } catch (error) {
@@ -242,8 +245,8 @@ export async function executeLsp(
     }
     return unavailable(
       input.action,
-      canonicalPath(ctx.cwd),
-      "typescript",
+      resolvedRoute?.workspaceRoot ?? canonicalPath(ctx.cwd),
+      resolvedRoute?.kind ?? "typescript",
       conciseError(error),
       ctx,
     );
@@ -491,6 +494,13 @@ function boundedTimeout(seconds: number | undefined): number {
     MAX_TIMEOUT_MS,
     Math.round((seconds ?? DEFAULT_TIMEOUT_MS / 1_000) * 1_000),
   );
+}
+function remainingTimeout(deadline: number): number {
+  const timeoutMs = deadline - Date.now();
+  if (timeoutMs <= 0) {
+    throw new RequestTimeoutError("LSP request timed out");
+  }
+  return timeoutMs;
 }
 function languageId(kind: ServerKind, file: string): string {
   if (kind !== "typescript") {

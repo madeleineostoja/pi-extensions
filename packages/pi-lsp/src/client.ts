@@ -25,6 +25,15 @@ type PushDiagnostics = {
   diagnostics: NormalizedDiagnostic[];
   truncated: boolean;
 };
+type PullDiagnostics = {
+  version: number;
+  hash: string;
+  resultId?: string;
+  invalidated: boolean;
+  diagnostics: NormalizedDiagnostic[];
+  truncated: boolean;
+  requestSequence: number;
+};
 type PullDiagnosticsProvider = { identifier?: string };
 type ServerCapabilities = {
   diagnosticProvider?: PullDiagnosticsProvider;
@@ -60,15 +69,9 @@ export class LspClient {
   #documents = new Map<string, Document>();
   #pushDiagnostics = new Map<string, PushDiagnostics>();
   #pushWaiters = new Map<string, Set<(reason?: Error) => void>>();
-  #pullResults = new Map<
-    string,
-    {
-      resultId?: string;
-      invalidated: boolean;
-      diagnostics: NormalizedDiagnostic[];
-      truncated: boolean;
-    }
-  >();
+  #pullResults = new Map<string, PullDiagnostics>();
+  #pullRequestSequences = new Map<string, number>();
+  #pullRefreshSequence = 0;
   #capabilities: ServerCapabilities = {};
   #initialized = false;
   #initializing?: Promise<unknown>;
@@ -82,6 +85,11 @@ export class LspClient {
     connection.onNotification((method, params) =>
       this.#notification(method, params),
     );
+    connection.onServerRequest((method) => {
+      if (method === "workspace/diagnostic/refresh") {
+        this.#invalidatePullResults();
+      }
+    });
   }
   get activeRequests(): number {
     return this.#activeRequests;
@@ -120,7 +128,10 @@ export class LspClient {
             configuration: true,
             workspaceEdit: { documentChanges: false },
           },
-          textDocument: { diagnostic: { dynamicRegistration: false } },
+          textDocument: {
+            diagnostic: { dynamicRegistration: false },
+            publishDiagnostics: { versionSupport: true },
+          },
         },
         ...(initializationOptions === undefined
           ? {}
@@ -179,7 +190,11 @@ export class LspClient {
     return this.#activity(async () => {
       const document = await this.synchronize(file, languageId);
       if (capabilities.diagnosticProvider) {
-        const previous = this.#pullResults.get(document.uri);
+        const previous = this.#pullResultFor(document.uri, document);
+        const requestSequence =
+          (this.#pullRequestSequences.get(document.uri) ?? 0) + 1;
+        const refreshSequence = this.#pullRefreshSequence;
+        this.#pullRequestSequences.set(document.uri, requestSequence);
         const report = (await this.#request(
           "textDocument/diagnostic",
           {
@@ -190,32 +205,45 @@ export class LspClient {
           },
           options,
         )) as { kind?: string; items?: unknown[]; resultId?: string };
+        const current = this.#pullResultFor(document.uri, document);
+        const currentRequest =
+          this.#pullRequestSequences.get(document.uri) === requestSequence;
+        const currentRefresh = this.#pullRefreshSequence === refreshSequence;
         if (report?.kind === "unchanged") {
-          return {
-            diagnostics: previous?.diagnostics ?? [],
-            fresh: true,
-            truncated: previous?.truncated ?? false,
-            resultId: report.resultId ?? previous?.resultId,
-          };
+          if (current && currentRequest && currentRefresh) {
+            return {
+              diagnostics: current.diagnostics,
+              fresh: true,
+              truncated: current.truncated,
+              resultId: report.resultId ?? current.resultId,
+            };
+          }
+          return stalePullResult();
         }
         const normalized = normalizeDiagnosticsResult(report?.items);
-        this.#pullResults.set(document.uri, {
-          resultId: report?.resultId,
-          invalidated: false,
-          diagnostics: normalized.items,
-          truncated: normalized.truncated,
-        });
-        return {
-          diagnostics: normalized.items,
-          fresh: true,
-          truncated: normalized.truncated,
-          resultId: report?.resultId,
-        };
+        if (currentRequest && currentRefresh && this.#isCurrent(document)) {
+          this.#pullResults.set(document.uri, {
+            version: document.version,
+            hash: document.hash,
+            resultId: report?.resultId,
+            invalidated: false,
+            diagnostics: normalized.items,
+            truncated: normalized.truncated,
+            requestSequence,
+          });
+          return {
+            diagnostics: normalized.items,
+            fresh: true,
+            truncated: normalized.truncated,
+            resultId: report?.resultId,
+          };
+        }
+        return stalePullResult();
       }
       const cached = this.#pushDiagnostics.get(document.uri);
       if (
-        cached?.version === document.version &&
-        cached.hash === document.hash
+        cached?.hash === document.hash &&
+        (cached.version === undefined || cached.version === document.version)
       ) {
         return {
           diagnostics: cached.diagnostics,
@@ -351,9 +379,7 @@ export class LspClient {
   }
   #notification(method: string, params: unknown): void {
     if (method === "workspace/diagnostic/refresh") {
-      for (const value of this.#pullResults.values()) {
-        value.invalidated = true;
-      }
+      this.#invalidatePullResults();
       return;
     }
     if (method !== "textDocument/publishDiagnostics") {
@@ -373,9 +399,17 @@ export class LspClient {
     }
     const doc = this.#documents.get(value.uri);
     const normalized = normalizeDiagnosticsResult(value.diagnostics);
+    if (value.version === undefined && doc && doc.version > 1) {
+      return;
+    }
     const cache: PushDiagnostics = {
       version: value.version,
-      hash: doc && value.version === doc.version ? doc.hash : undefined,
+      hash:
+        doc &&
+        (value.version === doc.version ||
+          (value.version === undefined && doc.version === 1))
+          ? doc.hash
+          : undefined,
       diagnostics: normalized.items,
       truncated: normalized.truncated,
     };
@@ -383,6 +417,35 @@ export class LspClient {
     for (const wake of this.#pushWaiters.get(value.uri) ?? []) {
       wake();
     }
+  }
+  #invalidatePullResults(): void {
+    this.#pullRefreshSequence += 1;
+    for (const value of this.#pullResults.values()) {
+      value.invalidated = true;
+    }
+  }
+  #pullResultFor(
+    uri: string,
+    document: { version: number; hash: string },
+  ): PullDiagnostics | undefined {
+    const result = this.#pullResults.get(uri);
+    return result &&
+      result.version === document.version &&
+      result.hash === document.hash
+      ? result
+      : undefined;
+  }
+  #isCurrent(document: {
+    uri: string;
+    version: number;
+    hash: string;
+  }): boolean {
+    const current = this.#documents.get(document.uri);
+    return Boolean(
+      current &&
+      current.version === document.version &&
+      current.hash === document.hash,
+    );
   }
   #waitForPush(
     uri: string,
@@ -394,7 +457,8 @@ export class LspClient {
     return new Promise((resolve, reject) => {
       const find = () => {
         const value = this.#pushDiagnostics.get(uri);
-        return value?.version === version && value.hash === hash
+        return value?.hash === hash &&
+          (value.version === undefined || value.version === version)
           ? value
           : undefined;
       };
@@ -461,6 +525,14 @@ export class LspClient {
     }
     this.#pushWaiters.clear();
   }
+}
+function stalePullResult(): DiagnosticsResult {
+  return {
+    diagnostics: [],
+    fresh: false,
+    truncated: false,
+    stale: true,
+  };
 }
 function isCapabilities(value: unknown): value is ServerCapabilities {
   return Boolean(value && typeof value === "object");
