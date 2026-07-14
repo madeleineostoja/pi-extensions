@@ -1,3 +1,11 @@
+import type {
+  FindingAssessment,
+  RegressionFindingDraft,
+  ReviewFindingDraft,
+  ReviewObservation,
+} from "./result-schemas.js";
+import { validateAssessmentCoverage } from "./review-convergence.js";
+
 export type VerificationStep = {
   command: string;
   result: string;
@@ -30,6 +38,20 @@ export type OverallReviewVerdict =
       requiredChanges: string[];
       recommendationMarkdown?: string;
     };
+
+export type InitialReviewResult =
+  | { verdict: "approved" }
+  | {
+      verdict: "changes_requested";
+      findings: ReviewFindingDraft[];
+      recommendationMarkdown?: string;
+    };
+
+export type AnchoredReviewResult = {
+  assessments: FindingAssessment[];
+  regressions: RegressionFindingDraft[];
+  observations?: ReviewObservation[];
+};
 
 export type IntegrationSelfHealResult = {
   repaired: boolean;
@@ -239,6 +261,197 @@ export function parseReviewerVerdict(value: unknown): ReviewerVerdict {
     };
   }
   return { verdict: "changes_requested", requiredChanges: changes };
+}
+
+export function parseInitialReviewResult(
+  value: unknown,
+  options?: { allowRecommendationMarkdown?: boolean },
+): { ok: true; result: InitialReviewResult } | { ok: false; reason: string } {
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      reason: "Initial review completion must be an object.",
+    };
+  }
+  if (value.verdict === "approved") {
+    if (
+      Object.hasOwn(value, "findings") ||
+      Object.hasOwn(value, "recommendationMarkdown")
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Initial approved review cannot include findings or recommendationMarkdown.",
+      };
+    }
+    return { ok: true, result: { verdict: "approved" } };
+  }
+  if (value.verdict !== "changes_requested") {
+    return {
+      ok: false,
+      reason: "Initial review verdict must be approved or changes_requested.",
+    };
+  }
+  if (!Array.isArray(value.findings) || value.findings.length === 0) {
+    return {
+      ok: false,
+      reason:
+        "Initial changes_requested review must include non-empty findings.",
+    };
+  }
+  const findings: ReviewFindingDraft[] = [];
+  for (const finding of value.findings) {
+    const parsed = parseFindingDraft(finding);
+    if (!parsed) {
+      return {
+        ok: false,
+        reason:
+          "Each initial finding requires non-empty summary, evidence, requiredChange, and acceptanceCriteria.",
+      };
+    }
+    findings.push(parsed);
+  }
+  let recommendationMarkdown: string | undefined;
+  if (Object.hasOwn(value, "recommendationMarkdown")) {
+    if (!options?.allowRecommendationMarkdown) {
+      return {
+        ok: false,
+        reason: "recommendationMarkdown is allowed only for overall reviews.",
+      };
+    }
+    if (!isNonEmptyString(value.recommendationMarkdown)) {
+      return {
+        ok: false,
+        reason: "recommendationMarkdown must be a non-empty string.",
+      };
+    }
+    recommendationMarkdown = value.recommendationMarkdown.trim();
+  }
+  return {
+    ok: true,
+    result: { verdict: "changes_requested", findings, recommendationMarkdown },
+  };
+}
+
+export function parseAnchoredReviewResult(
+  value: unknown,
+  outstandingIds: readonly string[],
+): { ok: true; result: AnchoredReviewResult } | { ok: false; reason: string } {
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      reason: "Anchored review completion must be an object.",
+    };
+  }
+  if (!Array.isArray(value.assessments) || !Array.isArray(value.regressions)) {
+    return {
+      ok: false,
+      reason:
+        "Anchored review must include assessments and regressions arrays.",
+    };
+  }
+  const assessments: FindingAssessment[] = [];
+  for (const assessment of value.assessments) {
+    if (
+      !isRecord(assessment) ||
+      !isNonEmptyString(assessment.id) ||
+      (assessment.status !== "resolved" &&
+        assessment.status !== "unresolved") ||
+      !isNonEmptyString(assessment.evidence)
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each anchored assessment requires an ID, status, and evidence.",
+      };
+    }
+    assessments.push({
+      id: assessment.id.trim(),
+      status: assessment.status,
+      evidence: assessment.evidence.trim(),
+    });
+  }
+  try {
+    validateAssessmentCoverage(outstandingIds, assessments);
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const regressions: RegressionFindingDraft[] = [];
+  for (const regression of value.regressions) {
+    const draft = parseFindingDraft(regression);
+    if (
+      !draft ||
+      !isRecord(regression) ||
+      !Array.isArray(regression.changedPaths) ||
+      regression.changedPaths.length === 0 ||
+      !regression.changedPaths.every(isNonEmptyString) ||
+      !isNonEmptyString(regression.causalEvidence)
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each regression requires a finding, changedPaths, and causalEvidence.",
+      };
+    }
+    regressions.push({
+      ...draft,
+      changedPaths: regression.changedPaths.map((path) => path.trim()),
+      causalEvidence: regression.causalEvidence.trim(),
+    });
+  }
+  const observations = Array.isArray(value.observations)
+    ? value.observations.map(parseObservation)
+    : undefined;
+  if (observations?.some((observation) => observation === undefined)) {
+    return {
+      ok: false,
+      reason: "Each observation requires non-empty summary and evidence.",
+    };
+  }
+  return {
+    ok: true,
+    result: {
+      assessments,
+      regressions,
+      observations: observations as ReviewObservation[] | undefined,
+    },
+  };
+}
+
+function parseFindingDraft(value: unknown): ReviewFindingDraft | undefined {
+  if (
+    !isRecord(value) ||
+    !isNonEmptyString(value.summary) ||
+    !isNonEmptyString(value.evidence) ||
+    !isNonEmptyString(value.requiredChange) ||
+    !Array.isArray(value.acceptanceCriteria) ||
+    value.acceptanceCriteria.length === 0 ||
+    !value.acceptanceCriteria.every(isNonEmptyString)
+  ) {
+    return undefined;
+  }
+  return {
+    summary: value.summary.trim(),
+    evidence: value.evidence.trim(),
+    requiredChange: value.requiredChange.trim(),
+    acceptanceCriteria: value.acceptanceCriteria.map((criterion) =>
+      criterion.trim(),
+    ),
+  };
+}
+
+function parseObservation(value: unknown): ReviewObservation | undefined {
+  if (
+    !isRecord(value) ||
+    !isNonEmptyString(value.summary) ||
+    !isNonEmptyString(value.evidence)
+  ) {
+    return undefined;
+  }
+  return { summary: value.summary.trim(), evidence: value.evidence.trim() };
 }
 
 export function isValidCommitMessage(message: string): boolean {

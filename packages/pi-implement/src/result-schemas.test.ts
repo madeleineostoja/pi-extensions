@@ -8,6 +8,8 @@ import {
   overallReviewSchema,
   overallReworkSchema,
   reviewerVerdictSchema,
+  initialTaskReviewSchema,
+  initialOverallReviewSchema,
   schedulerSelfHealSchema,
   sourceMaterialRepairSchema,
 } from "./result-schemas.js";
@@ -85,6 +87,62 @@ describe("managed completion schemas", () => {
     expect(papercuts.description).toContain(
       "Malformed candidates are discarded",
     );
+  });
+
+  it("accepts typed initial reviews and rejects empty atomic finding fields", () => {
+    const finding = {
+      summary: "Missing validation",
+      evidence: "src/api.ts accepts invalid input",
+      requiredChange: "Validate the input",
+      acceptanceCriteria: ["Invalid input is rejected"],
+    };
+    expect(
+      Value.Check(reviewerVerdictSchema, {
+        verdict: "changes_requested",
+        findings: [finding],
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(initialTaskReviewSchema, {
+        verdict: "changes_requested",
+        findings: [finding],
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(initialTaskReviewSchema, {
+        verdict: "changes_requested",
+        findings: [{ ...finding, acceptanceCriteria: [] }],
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps initial task and overall review result boundaries exclusive", () => {
+    const finding = {
+      summary: "Missing validation",
+      evidence: "src/api.ts accepts invalid input",
+      requiredChange: "Validate the input",
+      acceptanceCriteria: ["Invalid input is rejected"],
+    };
+    expect(
+      Value.Check(initialTaskReviewSchema, {
+        verdict: "approved",
+        findings: [finding],
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(initialTaskReviewSchema, {
+        verdict: "changes_requested",
+        findings: [finding],
+        recommendationMarkdown: "Advice",
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(initialOverallReviewSchema, {
+        verdict: "changes_requested",
+        findings: [finding],
+        recommendationMarkdown: "Advice",
+      }),
+    ).toBe(true);
   });
 
   it("keeps planner and material-selection schemas free of papercut fields", () => {

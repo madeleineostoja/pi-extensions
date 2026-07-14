@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   parseImplementerResult,
+  parseAnchoredReviewResult,
+  parseInitialReviewResult,
   parseIntegrationSelfHealResult,
   parseOverallReviewVerdict,
   parseReviewerVerdict,
@@ -71,6 +73,71 @@ describe("typed result validators", () => {
         ],
       },
     );
+  });
+
+  it("validates atomic initial findings and anchored coverage semantically", () => {
+    const finding = {
+      summary: "Missing validation",
+      evidence: "src/api.ts accepts invalid input",
+      requiredChange: "Validate the input",
+      acceptanceCriteria: ["Invalid input is rejected"],
+    };
+    expect(
+      parseInitialReviewResult({
+        verdict: "changes_requested",
+        findings: [finding],
+      }),
+    ).toMatchObject({ ok: true, result: { verdict: "changes_requested" } });
+    expect(
+      parseInitialReviewResult({
+        verdict: "changes_requested",
+        findings: [{ ...finding, acceptanceCriteria: [] }],
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      parseInitialReviewResult({ verdict: "approved", findings: [finding] }),
+    ).toMatchObject({ ok: false });
+    expect(
+      parseInitialReviewResult({
+        verdict: "changes_requested",
+        findings: [finding],
+        recommendationMarkdown: "Advice",
+      }),
+    ).toMatchObject({ ok: false, reason: expect.stringContaining("overall") });
+    expect(
+      parseInitialReviewResult(
+        {
+          verdict: "changes_requested",
+          findings: [finding],
+          recommendationMarkdown: "Advice",
+        },
+        { allowRecommendationMarkdown: true },
+      ),
+    ).toMatchObject({ ok: true, result: { recommendationMarkdown: "Advice" } });
+    expect(
+      parseAnchoredReviewResult(
+        {
+          assessments: [
+            { id: "R1", status: "resolved", evidence: "fixed" },
+            { id: "R1", status: "resolved", evidence: "duplicate" },
+          ],
+          regressions: [],
+        },
+        ["R1", "R2"],
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("more than once"),
+    });
+    expect(
+      parseAnchoredReviewResult(
+        {
+          assessments: [{ id: "R3", status: "resolved", evidence: "unknown" }],
+          regressions: [],
+        },
+        ["R1"],
+      ),
+    ).toMatchObject({ ok: false, reason: expect.stringContaining("unknown") });
   });
 
   it("rejects unsafe retry decisions without a retry mode", () => {

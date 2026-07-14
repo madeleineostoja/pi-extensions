@@ -15,6 +15,11 @@ const papercutCandidatesSchema = Type.Optional(
 );
 const withPapercuts = <T extends Record<string, TSchema>>(schema: T) =>
   Type.Object({ ...schema, papercuts: papercutCandidatesSchema });
+const closedWithPapercuts = <T extends Record<string, TSchema>>(schema: T) =>
+  Type.Object(
+    { ...schema, papercuts: papercutCandidatesSchema },
+    { additionalProperties: false },
+  );
 
 const sourceMaterialModeSchema = Type.Union([
   Type.Object({ kind: Type.Literal("full-file") }),
@@ -135,6 +140,53 @@ export const implementerResultSchema = Type.Union([
   }),
 ]);
 
+export const reviewFindingDraftSchema = Type.Object({
+  summary: nonEmptyString(),
+  evidence: nonEmptyString(),
+  requiredChange: nonEmptyString(),
+  acceptanceCriteria: Type.Array(nonEmptyString(), { minItems: 1 }),
+});
+
+export const regressionFindingDraftSchema = Type.Intersect([
+  reviewFindingDraftSchema,
+  Type.Object({
+    changedPaths: Type.Array(nonEmptyString(), { minItems: 1 }),
+    causalEvidence: nonEmptyString(),
+  }),
+]);
+
+export const reviewObservationSchema = Type.Object({
+  summary: nonEmptyString(),
+  evidence: nonEmptyString(),
+});
+
+export const findingAssessmentSchema = Type.Object({
+  id: nonEmptyString(),
+  status: Type.Union([Type.Literal("resolved"), Type.Literal("unresolved")]),
+  evidence: nonEmptyString(),
+});
+
+const initialReviewSchema = (allowRecommendationMarkdown: boolean) =>
+  Type.Union([
+    closedWithPapercuts({ verdict: Type.Literal("approved") }),
+    closedWithPapercuts({
+      verdict: Type.Literal("changes_requested"),
+      findings: Type.Array(reviewFindingDraftSchema, { minItems: 1 }),
+      ...(allowRecommendationMarkdown
+        ? { recommendationMarkdown: Type.Optional(nonEmptyString()) }
+        : {}),
+    }),
+  ]);
+
+export const initialTaskReviewSchema = initialReviewSchema(false);
+export const initialOverallReviewSchema = initialReviewSchema(true);
+export const anchoredReviewSchema = withPapercuts({
+  assessments: Type.Array(findingAssessmentSchema),
+  regressions: Type.Array(regressionFindingDraftSchema),
+  observations: Type.Optional(Type.Array(reviewObservationSchema)),
+});
+
+/** Temporary compatibility transport for call sites not yet migrated to typed reviews. */
 export const reviewerVerdictSchema = Type.Union([
   withPapercuts({ verdict: Type.Literal("approved") }),
   withPapercuts({
@@ -206,6 +258,19 @@ export type NeedsMaterialCompletion = Static<
   typeof needsMaterialResponseSchema
 >;
 export type ImplementerCompletion = Static<typeof implementerResultSchema>;
+export type ReviewFindingDraft = Static<typeof reviewFindingDraftSchema>;
+export type RegressionFindingDraft = Static<
+  typeof regressionFindingDraftSchema
+>;
+export type ReviewObservation = Static<typeof reviewObservationSchema>;
+export type FindingAssessment = Static<typeof findingAssessmentSchema>;
+export type InitialTaskReviewCompletion = Static<
+  typeof initialTaskReviewSchema
+>;
+export type InitialOverallReviewCompletion = Static<
+  typeof initialOverallReviewSchema
+>;
+export type AnchoredReviewCompletion = Static<typeof anchoredReviewSchema>;
 export type ReviewerCompletion = Static<typeof reviewerVerdictSchema>;
 export type IntegrationReviewCompletion = Static<
   typeof integrationReviewSchema

@@ -1,5 +1,6 @@
 import type { ExecutionManifest } from "./execution-plan.js";
 import type { ParsedImplementerResult } from "./verdict.js";
+import type { ReviewFinding } from "./review-convergence.js";
 
 export const PAPERCUT_GUIDANCE = `## Optional Papercut Candidates
 
@@ -216,7 +217,7 @@ ${formatVerification(args.implementer)}
 
 ${PAPERCUT_GUIDANCE}
 
-Submit the review verdict through the injected completion tool as your final action. For requested changes, include at most five concise, concrete required changes.
+Submit the review verdict through the injected completion tool as your final action. Include every blocking issue you identify; do not truncate the blocking set.
 `;
 }
 
@@ -277,7 +278,7 @@ Current HEAD: ${args.headSha}
 ${diffSection}
 ${PAPERCUT_GUIDANCE}
 
-Submit the review verdict through the injected completion tool as your final action. For requested changes, include at most five concise, concrete required changes.
+Submit the review verdict through the injected completion tool as your final action. Include every blocking issue you identify; do not truncate the blocking set.
 `;
 }
 
@@ -591,6 +592,127 @@ Submit the overall rework result through the injected completion tool as your fi
 
 The commitMessage is optional; if omitted or invalid, a fallback will be used.
 `;
+}
+
+export function buildInitialTaskReviewPrompt(args: {
+  compiledContract: string;
+  worktreePath: string;
+  candidateContext: string;
+}): string {
+  return buildInitialReviewPrompt({
+    scope: "task",
+    compiledContract: args.compiledContract,
+    worktreePath: args.worktreePath,
+    candidateContext: args.candidateContext,
+  });
+}
+
+export function buildAnchoredTaskReviewPrompt(args: {
+  compiledContract: string;
+  worktreePath: string;
+  candidateContext: string;
+  outstandingFindings: ReviewFinding[];
+  previousCandidate: string;
+  currentCandidate: string;
+  latestDelta: string;
+}): string {
+  return buildAnchoredReviewPrompt({ scope: "task", ...args });
+}
+
+export function buildInitialOverallReviewPrompt(args: {
+  planContext: string;
+  candidateContext: string;
+}): string {
+  return buildInitialReviewPrompt({
+    scope: "overall",
+    compiledContract: args.planContext,
+    worktreePath: "the main checkout",
+    candidateContext: args.candidateContext,
+  });
+}
+
+export function buildAnchoredOverallReviewPrompt(args: {
+  planContext: string;
+  candidateContext: string;
+  outstandingFindings: ReviewFinding[];
+  previousCandidate: string;
+  currentCandidate: string;
+  latestDelta: string;
+}): string {
+  return buildAnchoredReviewPrompt({
+    scope: "overall",
+    compiledContract: args.planContext,
+    worktreePath: "the main checkout",
+    ...args,
+  });
+}
+
+function buildInitialReviewPrompt(args: {
+  scope: "task" | "overall";
+  compiledContract: string;
+  worktreePath: string;
+  candidateContext: string;
+}): string {
+  const recommendation =
+    args.scope === "overall"
+      ? " You may include advisory recommendationMarkdown, which never controls approval."
+      : "";
+  return `You are conducting an initial ${args.scope} review in ${args.worktreePath}. This is a complete review: return the full known blocking set, with no arbitrary finding limit.
+
+${args.compiledContract}
+
+## Candidate Context
+
+${args.candidateContext}
+
+If approved, submit { verdict: "approved" }. Otherwise submit { verdict: "changes_requested", findings } where every atomic finding has summary, evidence, requiredChange, and non-empty acceptanceCriteria. One independently resolvable defect belongs in each finding. Omit optional or non-blocking concerns from this initial result.${recommendation}
+
+${PAPERCUT_GUIDANCE}`;
+}
+
+function buildAnchoredReviewPrompt(args: {
+  scope: "task" | "overall";
+  compiledContract: string;
+  worktreePath: string;
+  candidateContext: string;
+  outstandingFindings: ReviewFinding[];
+  previousCandidate: string;
+  currentCandidate: string;
+  latestDelta: string;
+}): string {
+  return `You are conducting an anchored ${args.scope} re-review in ${args.worktreePath}. Assess every supplied finding ID exactly once. Do not report ordinary new findings during re-review.
+
+## Contract Context
+
+${args.compiledContract}
+
+## Candidate Context
+
+Previous candidate: ${args.previousCandidate}
+Current candidate: ${args.currentCandidate}
+
+${args.candidateContext}
+
+## Outstanding Findings
+
+${formatFindings(args.outstandingFindings)}
+
+## Latest Rework Delta
+
+${args.latestDelta}
+
+Submit assessments with each known ID exactly once and status resolved or unresolved plus evidence. You may add regressions only when the latest delta caused them: each regression must include changedPaths that intersect the latest delta and causalEvidence explaining causality. Put all other concerns in observations; observations never block. A resolved ID cannot be reopened. Do not impose a finding cap.
+
+${PAPERCUT_GUIDANCE}`;
+}
+
+function formatFindings(findings: ReviewFinding[]): string {
+  return findings
+    .map(
+      (finding) =>
+        `### ${finding.id}: ${finding.summary}\nEvidence: ${finding.evidence}\nRequired change: ${finding.requiredChange}\nAcceptance criteria:\n${finding.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}`,
+    )
+    .join("\n\n");
 }
 
 function formatVerification(result: ParsedImplementerResult): string {

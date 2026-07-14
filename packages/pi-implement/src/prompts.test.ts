@@ -6,6 +6,10 @@ import {
   buildIntegrationReviewerPrompt,
   buildIntegrationSelfHealPrompt,
   buildOverallReworkPrompt,
+  buildInitialTaskReviewPrompt,
+  buildAnchoredTaskReviewPrompt,
+  buildInitialOverallReviewPrompt,
+  buildAnchoredOverallReviewPrompt,
   buildOverallReviewerPrompt,
   buildReviewerPrompt,
   buildSchedulerSelfHealPrompt,
@@ -903,6 +907,68 @@ Raw auth requirement.
 
     expect(prompt).not.toContain("critical");
     expect(prompt).not.toContain("escape");
+  });
+});
+
+describe("typed review protocol prompts", () => {
+  const outstandingFinding = {
+    id: "R1",
+    summary: "Missing validation",
+    evidence: "src/api.ts accepts invalid input",
+    requiredChange: "Validate the input",
+    acceptanceCriteria: ["Invalid input is rejected"],
+    introducedRound: 0,
+    origin: "initial" as const,
+  };
+
+  it("builds a complete initial task prompt without a finding cap", () => {
+    const prompt = buildInitialTaskReviewPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      candidateContext: "diff --git a/src/api.ts",
+    });
+    expect(prompt).toContain("full known blocking set");
+    expect(prompt).toContain("acceptanceCriteria");
+    expect(prompt).toContain("Omit optional or non-blocking concerns");
+    expect(prompt).not.toContain("observations");
+    expect(prompt).not.toContain("at most five");
+  });
+
+  it("builds an anchored task prompt with IDs and regression-only additions", () => {
+    const prompt = buildAnchoredTaskReviewPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      candidateContext: "candidate details",
+      outstandingFindings: [outstandingFinding],
+      previousCandidate: "abc",
+      currentCandidate: "def",
+      latestDelta: "src/api.ts",
+    });
+    expect(prompt).toContain("R1: Missing validation");
+    expect(prompt).toContain("exactly once");
+    expect(prompt).toContain(
+      "regressions only when the latest delta caused them",
+    );
+    expect(prompt).toContain("observations never block");
+  });
+
+  it("builds separately testable initial and anchored overall prompts", () => {
+    expect(
+      buildInitialOverallReviewPrompt({
+        planContext: "# Plan",
+        candidateContext: "combined diff",
+      }),
+    ).toContain("advisory recommendationMarkdown");
+    expect(
+      buildAnchoredOverallReviewPrompt({
+        planContext: "# Plan",
+        candidateContext: "combined diff",
+        outstandingFindings: [outstandingFinding],
+        previousCandidate: "abc",
+        currentCandidate: "def",
+        latestDelta: "src/api.ts",
+      }),
+    ).toContain("A resolved ID cannot be reopened");
   });
 });
 
