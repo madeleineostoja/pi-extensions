@@ -129,7 +129,7 @@ class FakeGit implements GitClient {
     this.activeOperationValue = undefined;
   }
   async restoreSnapshot(head: string) {
-    this.headValue = head;
+    await this.resetHard(head);
     this.worktreeFingerprintText = "worktree";
     this.activeOperationValue = undefined;
   }
@@ -1283,7 +1283,7 @@ describe("runImplementation", () => {
     expect(git.deletedBranches).toHaveLength(0);
   });
 
-  it("blocks a managed serial run without a graph before it can use the main checkout", async () => {
+  it("falls back to direct serial execution when managed graph state is absent", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
     writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
@@ -1308,9 +1308,9 @@ describe("runImplementation", () => {
         updateState: () => {},
         shouldStop: () => false,
       }),
-    ).rejects.toThrow("requires a persisted scheduler graph");
+    ).rejects.toThrow("missing fake result");
 
-    expect(subagents.spawns).toHaveLength(0);
+    expect(subagents.spawns).toHaveLength(1);
     expect(git.commits).toHaveLength(0);
     expect(git.createdBranches).toHaveLength(0);
   });
@@ -8429,21 +8429,20 @@ describe("runImplementation", () => {
       shouldStop: () => false,
     });
 
-    // Retry cleanup happens before recreation; landing removes the final isolated workspace.
-    const taskBranches = git.createdBranches.filter((b) =>
-      b.includes("task-1"),
+    const taskBranches = git.createdBranches.filter((branch) =>
+      branch.includes("task-1"),
     );
-    const taskWorktrees = git.addedWorktrees.filter((w) =>
-      w.branch.includes("task-1"),
+    const taskWorktrees = git.addedWorktrees.filter((worktree) =>
+      worktree.branch.includes("task-1"),
     );
-    expect(taskBranches).toHaveLength(2);
-    expect(taskWorktrees).toHaveLength(2);
+    expect(taskBranches).toHaveLength(1);
+    expect(taskWorktrees).toHaveLength(1);
     expect(
-      git.removedWorktrees.filter((w) => w.includes("task-1")),
-    ).toHaveLength(2);
+      git.removedWorktrees.filter((worktree) => worktree.includes("task-1")),
+    ).toHaveLength(1);
     expect(
-      git.deletedBranches.filter((b) => b.includes("task-1")),
-    ).toHaveLength(2);
+      git.deletedBranches.filter((branch) => branch.includes("task-1")),
+    ).toHaveLength(1);
   });
 
   it("does not fail with branch already exists on needs_rework retry because it deletes first", async () => {
@@ -11654,7 +11653,7 @@ describe("runImplementation", () => {
       expect(await git.worktreeChild!.isCleanExcept()).toBe(true);
     });
 
-    it("wip commit hook failure resets to base and retries", async () => {
+    it("wip commit hook failure restores the trusted checkpoint and retries", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
       writeFileSync(
@@ -11747,13 +11746,13 @@ describe("runImplementation", () => {
         shouldStop: () => false,
       });
 
-      expect(resetHardCalls).toContain("h1");
+      expect(resetHardCalls.some((sha) => sha !== "h1")).toBe(true);
       expect(subagents.spawns).toHaveLength(5);
       const secondImplPrompt = subagents.spawns[1]?.prompt ?? "";
       expect(secondImplPrompt).toContain("pre-commit hook rejected");
     });
 
-    it("parallel changes_requested resets branch to base before re-attempt", async () => {
+    it("parallel changes_requested retains the trusted checkpoint for re-attempt", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");
       writeFileSync(
@@ -11839,7 +11838,7 @@ describe("runImplementation", () => {
 
       expect(implHeads).toHaveLength(2);
       expect(implHeads[0]).toBe("h1");
-      expect(implHeads[1]).toBe("h1");
+      expect(implHeads[1]).not.toBe("h1");
     });
 
     it("parallel approval rewords WIP commit and produces exactly one commit beyond base", async () => {

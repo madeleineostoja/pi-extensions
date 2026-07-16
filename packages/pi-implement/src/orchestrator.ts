@@ -1103,17 +1103,171 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
   validateRecordedPlanCorpus(deps);
 
   if (!deps.paths || !deps.runId) {
-    throw new BlockedError(
-      "managed task execution requires persisted run state and a run ID",
-    );
+    await runUnmanagedImplementation(deps, plan, planArtifacts, runBaseSha);
+    return;
   }
   const graph = readGraphJson(deps.paths.runDir);
   if (!graph) {
-    throw new BlockedError(
-      "managed task execution requires a persisted scheduler graph",
-    );
+    await runUnmanagedImplementation(deps, plan, planArtifacts, runBaseSha);
+    return;
   }
   await runParallelImplementation(deps, graph, plan, planArtifacts, runBaseSha);
+}
+
+async function runUnmanagedImplementation(
+  deps: OrchestratorDeps,
+  initialPlan: ReturnType<typeof parsePlanFile>,
+  planArtifacts: string[],
+  runBaseSha: string,
+): Promise<void> {
+  let plan = initialPlan;
+
+  for (;;) {
+    throwIfStopped(deps);
+    plan = parsePlanFile(deps.planPath);
+    if (!(await deps.git.isCleanExcept(planArtifacts))) {
+      throw new BlockedError("dirty worktree");
+    }
+    if (!deps.executionManifest) {
+      throw new BlockedError("no execution manifest available");
+    }
+    validateRecordedPlanCorpus(deps);
+    const next = nextUncheckedManifestTask(
+      plan,
+      deps.executionManifest,
+      deps.paths,
+    );
+    const task = next?.planTask;
+    deps.updateState({
+      taskIndex: task?.index ?? completedPlanTaskIndex(plan),
+      totalTasks: plan.tasks.length,
+    });
+    if (!task) {
+      await runOverallReviewLoop(deps, plan, planArtifacts, runBaseSha);
+      deps.updateState({
+        phase: "done",
+        taskIndex: plan.tasks.length,
+        totalTasks: plan.tasks.length,
+        activeSubagentId: undefined,
+      });
+      return;
+    }
+
+    const taskId = taskIdFromTask(task.index - 1, task.text);
+    const runId = deps.runId ?? "run";
+    const branchName = `pi-implement/${runId}/${taskId}`;
+
+    if (deps.paths) {
+      writeTaskJson(deps.paths, taskId, {
+        id: taskId,
+        planIndex: task.index - 1,
+        title: task.text,
+        status: "pending",
+        dependsOn: [],
+        attempts: 0,
+        integrationAttempts: 0,
+      });
+    }
+
+    const baseSha = await deps.git.head();
+    const worktreePath =
+      deps.mode === "parallel" && deps.paths
+        ? join(deps.paths.worktreesDir, taskId)
+        : undefined;
+
+    if (worktreePath) {
+      await deps.git.createTaskBranch(branchName, baseSha);
+      await deps.git.addWorktree(worktreePath, branchName);
+      writeTaskJson(deps.paths!, taskId, {
+        id: taskId,
+        planIndex: task.index - 1,
+        title: task.text,
+        status: "pending",
+        dependsOn: [],
+        attempts: 0,
+        integrationAttempts: 0,
+        baseSha,
+        worktreePath,
+        branchName,
+      });
+    }
+
+    const taskGit = worktreePath
+      ? deps.git.forWorktree(worktreePath, await deps.git.root())
+      : deps.git;
+
+    const landed = await runTaskWorker({
+      deps,
+      plan,
+      task,
+      taskId,
+      taskGit,
+      worktreePath,
+      branchName,
+      baseSha,
+      planArtifacts,
+      runBaseSha,
+    });
+    if (!landed) {
+      return;
+    }
+    if (deps.mode === "parallel") {
+      throw new BlockedError(
+        "parallel task approved, but main-checkout integration is not implemented yet",
+      );
+    }
+  }
+}
+
+function readTaskJsonByPlanIndex(
+  paths: StatePaths,
+  planIndex: number,
+): TaskJson | undefined {
+  if (!existsSync(paths.tasksDir)) {
+    return undefined;
+  }
+  for (const dirent of readdirSync(paths.tasksDir, { withFileTypes: true })) {
+    if (!dirent.isDirectory()) {
+      continue;
+    }
+    const taskJson = readTaskJson(paths, dirent.name);
+    if (
+      taskJson &&
+      (taskJson.planIndex === planIndex || taskJson.planIndex === planIndex - 1)
+    ) {
+      return taskJson;
+    }
+  }
+  return undefined;
+}
+
+function nextUncheckedManifestTask(
+  plan: ReturnType<typeof parsePlanFile>,
+  manifest: ExecutionManifest,
+  paths?: StatePaths,
+): { planTask: PlanTask } | undefined {
+  for (const manifestTask of manifest.tasks) {
+    const planTask = plan.tasks.find(
+      (task) => task.index === manifestTask.planIndex,
+    );
+    if (!planTask || planTask.checked) {
+      continue;
+    }
+    if (paths) {
+      const taskJson = readTaskJsonByPlanIndex(paths, manifestTask.planIndex);
+      if (taskJson?.status === "landed" || taskJson?.status === "satisfied") {
+        continue;
+      }
+    }
+    return { planTask };
+  }
+  return undefined;
+}
+
+function completedPlanTaskIndex(
+  plan: ReturnType<typeof parsePlanFile>,
+): number | undefined {
+  return plan.tasks.length > 0 ? plan.tasks.length : undefined;
 }
 
 // ── Parallel scheduler ──────────────────────────────────────────────────────
@@ -1849,12 +2003,6 @@ async function landApprovedTask(
     }
 
     const landedHead = await deps.git.head();
-    if ((await deps.git.treeAt(landedHead)) !== candidateSnapshot.tree) {
-      return await failForRework(
-        "commit-hook",
-        "commit hook changed the approved candidate tree",
-      );
-    }
     if (landedHead === preIntegrationHead) {
       return await failForRework(
         "commit",
@@ -1871,14 +2019,34 @@ async function landApprovedTask(
         `Commit hook changed a plan artifact: ${changedPlanArtifactAfterCommit}`,
       );
     }
+    let finalHead = landedHead;
     if (!(await deps.git.isCleanExcept(planArtifacts))) {
+      let foldReason: string | undefined;
+      try {
+        foldReason = await foldPostCommitHookChanges(
+          deps,
+          planArtifacts,
+          planArtifactSnapshot,
+          candidateSnapshot.stagedPaths,
+          task.approvedCommitMessage ?? `chore: implement ${task.title}`,
+        );
+      } catch (err) {
+        foldReason = err instanceof Error ? err.message : String(err);
+      }
+      if (foldReason) {
+        return await failBlocked(
+          "commit",
+          `Commit succeeded but ${foldReason}`,
+        );
+      }
+      finalHead = await deps.git.head();
+    } else if ((await deps.git.treeAt(landedHead)) !== candidateSnapshot.tree) {
       return await failForRework(
         "commit-hook",
-        "commit hook changed the integrated candidate after approval",
+        "commit hook changed the approved candidate tree",
       );
     }
 
-    const finalHead = landedHead;
     task.status = "landed";
     task.landedCommitSha = finalHead;
     sched.landedOrder.push(taskId);
@@ -2053,6 +2221,52 @@ function annotateRollbackReason(
     ? ` HEAD is at ${rollback.currentHead.slice(0, 12)}.`
     : "";
   return `${reason}\n\nWARNING: rollback did not restore HEAD to ${preIntegrationHead.slice(0, 12)}; an integration commit may still be present on the branch.${at}`;
+}
+
+async function foldPostCommitHookChanges(
+  deps: OrchestratorDeps,
+  planArtifacts: string[],
+  planArtifactSnapshot: Map<string, string | undefined>,
+  allowedPaths: string[],
+  commitMessage: string,
+): Promise<string | undefined> {
+  const { staged, unstaged, untracked } = await collectChangedPaths(deps);
+  const disallowedUntracked = untracked.filter(
+    (path) => !isPlanArtifactPath(path, planArtifacts, deps.planPath),
+  );
+  if (disallowedUntracked.length > 0) {
+    return `main checkout has untracked files after commit: ${disallowedUntracked.join(", ")}`;
+  }
+
+  const inScope = new Set(allowedPaths.map(normalizeStatusPath));
+  const outOfScope = [...new Set([...staged, ...unstaged])].filter(
+    (path) =>
+      !isPlanArtifactPath(path, planArtifacts, deps.planPath) &&
+      !inScope.has(normalizeStatusPath(path)),
+  );
+  if (outOfScope.length > 0) {
+    return `commit hook changed tracked files outside the approved task diff: ${outOfScope.join(", ")}`;
+  }
+
+  await deps.git.stageAllExcept(planArtifacts);
+  const amend = await deps.git.reword(commitMessage);
+  if (amend.exitCode !== 0) {
+    return (
+      amend.stderr || amend.stdout || "amend of post-commit changes failed"
+    );
+  }
+
+  const changedPlanArtifact = changedSnapshotPath(
+    planArtifacts,
+    planArtifactSnapshot,
+  );
+  if (changedPlanArtifact) {
+    return `commit hook changed a plan artifact: ${changedPlanArtifact}`;
+  }
+  if (!(await deps.git.isCleanExcept(planArtifacts))) {
+    return "main checkout is dirty";
+  }
+  return undefined;
 }
 
 type IntegrationCandidateSnapshot = {
