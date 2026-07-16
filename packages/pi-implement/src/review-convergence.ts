@@ -33,6 +33,21 @@ export type AnchoredReviewUpdate = {
   observations: ReviewObservation[];
 };
 
+export function applyNoopReview(state: ReviewConvergenceState): {
+  state: ReviewConvergenceState;
+  outcome: Exclude<ReviewConvergenceOutcome, "approved">;
+} {
+  const nextState: ReviewConvergenceState = {
+    ...state,
+    round: state.round + 1,
+    consecutiveStalledRounds: state.consecutiveStalledRounds + 1,
+  };
+  return {
+    state: nextState,
+    outcome: nextState.consecutiveStalledRounds >= 2 ? "stalled" : "continue",
+  };
+}
+
 export function createReviewConvergenceState(args: {
   drafts: ReviewFindingDraft[];
   idPrefix?: string;
@@ -97,6 +112,9 @@ export function applyAnchoredReview(args: {
     args.review.assessments,
   );
 
+  const assessmentsById = new Map(
+    args.review.assessments.map((assessment) => [assessment.id, assessment]),
+  );
   const unresolvedIds = new Set(
     args.review.assessments
       .filter((assessment) => assessment.status === "unresolved")
@@ -108,7 +126,10 @@ export function applyAnchoredReview(args: {
   );
   const round = args.state.round + 1;
   const findings = [
-    ...args.state.findings,
+    ...args.state.findings.map((finding) => ({
+      ...finding,
+      evidence: assessmentsById.get(finding.id)?.evidence ?? finding.evidence,
+    })),
     ...allocateFindings({
       drafts: qualifyingRegressions,
       idPrefix: args.idPrefix,

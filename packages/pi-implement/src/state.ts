@@ -79,6 +79,40 @@ export type TaskJson = {
     lastReason?: string;
     reviewedCount?: number;
     skippedCount?: number;
+    convergence?: {
+      epoch: number;
+      closedEpochs: Array<{
+        epoch: number;
+        findings: Array<{
+          id: string;
+          summary: string;
+          evidence: string;
+          requiredChange: string;
+          acceptanceCriteria: string[];
+          introducedRound: number;
+          origin: "initial" | "regression";
+        }>;
+      }>;
+      state: {
+        round: number;
+        findings: Array<{
+          id: string;
+          summary: string;
+          evidence: string;
+          requiredChange: string;
+          acceptanceCriteria: string[];
+          introducedRound: number;
+          origin: "initial" | "regression";
+        }>;
+        outstandingIds: string[];
+        bestOutstandingCount: number;
+        consecutiveStalledRounds: number;
+      };
+      previousCandidate?: string;
+      previousCandidatePatch?: string;
+      latestEvidence?: string;
+      verificationFailures?: string[];
+    };
   };
 };
 

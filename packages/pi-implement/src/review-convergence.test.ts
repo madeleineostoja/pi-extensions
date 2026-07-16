@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyAnchoredReview,
+  applyNoopReview,
   createReviewConvergenceState,
   openRegressionReviewEpoch,
 } from "./review-convergence.js";
@@ -42,7 +43,10 @@ describe("review convergence", () => {
       latestDeltaPaths: [],
     });
     expect(result.state.outstandingIds).toEqual(["R2"]);
-    expect(result.state.findings[1]).toMatchObject(finding("second"));
+    expect(result.state.findings[1]).toMatchObject({
+      ...finding("second"),
+      evidence: "unresolved",
+    });
     expect(result.state.consecutiveStalledRounds).toBe(0);
   });
 
@@ -124,6 +128,17 @@ describe("review convergence", () => {
       latestDeltaPaths: ["src/newer.ts"],
     });
     expect(increased.outcome).toBe("stalled");
+  });
+
+  it("counts unchanged rework as a semantic stalled round without a review", () => {
+    const state = createReviewConvergenceState({
+      drafts: [finding("initial")],
+    });
+    const first = applyNoopReview(state);
+    expect(first.outcome).toBe("continue");
+    expect(first.state.round).toBe(1);
+    const second = applyNoopReview(first.state);
+    expect(second.outcome).toBe("stalled");
   });
 
   it("stalls when outstanding IDs ping-pong without reducing the low-water mark", () => {

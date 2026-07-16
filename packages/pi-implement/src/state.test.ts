@@ -214,6 +214,56 @@ describe("run locks", () => {
   });
 });
 
+describe("task review state", () => {
+  it("retains convergence state when later task updates omit it", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    const task = {
+      id: "t001-task",
+      planIndex: 0,
+      title: "Task",
+      status: "needs_rework" as const,
+      dependsOn: [],
+      attempts: 1,
+      integrationAttempts: 0,
+      review: {
+        lastDecision: "required" as const,
+        convergence: {
+          epoch: 1,
+          closedEpochs: [],
+          state: {
+            round: 1,
+            findings: [
+              {
+                id: "R1",
+                summary: "Missing test",
+                evidence: "No coverage",
+                requiredChange: "Add coverage",
+                acceptanceCriteria: ["Case is covered"],
+                introducedRound: 0,
+                origin: "initial" as const,
+              },
+            ],
+            outstandingIds: ["R1"],
+            bestOutstandingCount: 1,
+            consecutiveStalledRounds: 0,
+          },
+        },
+      },
+    };
+    writeTaskJson(paths, task.id, task);
+    writeTaskJson(paths, task.id, {
+      ...task,
+      status: "reviewing",
+      review: task.review,
+    });
+
+    expect(
+      readTaskJson(paths, task.id)?.review?.convergence?.state.outstandingIds,
+    ).toEqual(["R1"]);
+  });
+});
+
 describe("run state lifecycle", () => {
   it("creates run state with all files", () => {
     const repo = tempRepo();

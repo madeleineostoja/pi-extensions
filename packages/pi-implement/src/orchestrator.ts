@@ -12,13 +12,13 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
-  buildAlreadySatisfiedReviewerPrompt,
+  buildAnchoredTaskReviewPrompt,
+  buildInitialTaskReviewPrompt,
   buildImplementerPrompt,
   buildIntegrationReviewerPrompt,
   buildIntegrationSelfHealPrompt,
   buildOverallReviewerPrompt,
   buildOverallReworkPrompt,
-  buildReviewerPrompt,
   buildSchedulerSelfHealPrompt,
   formatExecutionManifestSummary,
 } from "./prompts.js";
@@ -71,11 +71,12 @@ import type {
 import {
   fallbackCommitMessage,
   isValidCommitMessage,
+  parseAnchoredReviewResult,
   parseImplementerResult,
+  parseInitialReviewResult,
   parseIntegrationSelfHealResult,
   parseOverallReviewVerdict,
   parseOverallReworkResult,
-  parseReviewerVerdict,
   parseSchedulerSelfHealResult,
 } from "./verdict.js";
 import type {
@@ -95,16 +96,26 @@ import {
 import type { RunMode } from "./state.js";
 import { readGraphJson, writeGraphJson } from "./graph.js";
 import {
+  anchoredReviewSchema,
   implementerResultSchema,
+  initialTaskReviewSchema,
   integrationReviewSchema,
   integrationSelfHealSchema,
   overallReworkSchema,
   overallReviewSchema,
-  reviewerVerdictSchema,
   schedulerSelfHealSchema,
   sourceMaterialRepairSchema,
 } from "./result-schemas.js";
 import type { ImplementGraph } from "./graph.js";
+import {
+  applyAnchoredReview,
+  applyNoopReview,
+  createReviewConvergenceState,
+} from "./review-convergence.js";
+import type {
+  ReviewConvergenceState,
+  ReviewFinding,
+} from "./review-convergence.js";
 import {
   createSchedulerRun,
   computeReadyTasks,
@@ -139,11 +150,7 @@ import {
   type Phase1MaterialInventory,
 } from "./material-inventory.js";
 
-// One initial full review plus up to two anchored re-reviews.
-// If the second anchored re-review still returns unresolved required changes, block.
-const MAX_ANCHORED_REVIEW_CHANGE_REQUESTS = 2;
 const MAX_SYSTEM_FAILURES = 2;
-const MAX_ACCUMULATED_DIFF_CHARS = 50000;
 const MAX_REWORK_ATTEMPTS = 2;
 const MAX_SELF_HEAL_ATTEMPTS = 2;
 const MAX_OVERALL_REWORK_ATTEMPTS = 2;
@@ -4744,7 +4751,6 @@ async function runTaskWorker(args: {
     baseSha,
     planArtifacts,
     schedulerTask,
-    runBaseSha,
     initialFeedback,
   } = args;
 
@@ -4752,8 +4758,14 @@ async function runTaskWorker(args: {
   let priorSummary: string | undefined;
   let attempt = 1;
   let systemFailures = 0;
-  let anchoredReviewChangeRequests = 0;
-  let priorReviewRequiredChanges: string[] | undefined;
+  let convergence = currentTaskReviewMetadata(deps.paths, taskId)?.convergence;
+  let reviewState = convergence?.state as ReviewConvergenceState | undefined;
+  let reviewEpoch = convergence?.epoch ?? 1;
+  let closedEpochs = convergence?.closedEpochs ?? [];
+  let previousCandidate = convergence?.previousCandidate;
+  let previousCandidatePatch = convergence?.previousCandidatePatch;
+  let latestEvidence = convergence?.latestEvidence;
+  let verificationFailures = convergence?.verificationFailures ?? [];
   let candidate: CandidateMetadata = {
     sourceBaseSha: schedulerTask?.sourceBaseSha ?? baseSha,
     candidateBaseSha: schedulerTask?.candidateBaseSha ?? baseSha,
@@ -4764,6 +4776,27 @@ async function runTaskWorker(args: {
     trustedCheckpoint: schedulerTask?.trustedCheckpoint,
     discardedBundles: schedulerTask?.discardedBundles ?? [],
   };
+  const persistReview = (
+    lastDecision: "reviewed" | "required" = "required",
+  ) => ({
+    lastDecision,
+    reviewedCount:
+      lastDecision === "reviewed"
+        ? (currentTaskReviewMetadata(deps.paths, taskId)?.reviewedCount ?? 0) +
+          1
+        : currentTaskReviewMetadata(deps.paths, taskId)?.reviewedCount,
+    convergence: reviewState
+      ? {
+          epoch: reviewEpoch,
+          closedEpochs,
+          state: reviewState,
+          previousCandidate,
+          previousCandidatePatch,
+          latestEvidence,
+          verificationFailures,
+        }
+      : undefined,
+  });
   const persistCandidate = (status: TaskJson["status"], reason?: string) => {
     if (schedulerTask) {
       Object.assign(schedulerTask, candidate);
@@ -4789,7 +4822,7 @@ async function runTaskWorker(args: {
         branchName,
         activeSubagentIds: [],
         lastReason: reason,
-        review: existing?.review,
+        review: reviewState ? persistReview() : existing?.review,
       });
     }
   };
@@ -4830,7 +4863,7 @@ async function runTaskWorker(args: {
     };
     await restoreAndVerify(taskGit, snapshot, planArtifacts);
   };
-  for (;;) {
+  workerLoop: for (;;) {
     throwIfStopped(deps);
     const taskHeadBefore = worktreePath
       ? await taskGit.head()
@@ -5015,8 +5048,6 @@ async function runTaskWorker(args: {
         `Implementer subagent failed: ${implementation.error}`,
       );
       systemFailures++;
-      priorReviewRequiredChanges = undefined;
-      anchoredReviewChangeRequests = 0;
       attempt++;
       continue;
     }
@@ -5099,12 +5130,16 @@ async function runTaskWorker(args: {
         parsed.reason,
       );
       systemFailures++;
-      priorReviewRequiredChanges = undefined;
-      anchoredReviewChangeRequests = 0;
       attempt++;
       continue;
     }
     priorSummary = parsed.result.summary;
+    verificationFailures = parsed.result.verification
+      .filter((step) => verificationFailed(step.result))
+      .map(
+        (step) =>
+          `${step.command}: ${step.result}${step.rationale ? ` (${step.rationale})` : ""}`,
+      );
     await recordPapercuts(deps, implementation.result, "implementer", taskId);
 
     await taskGit.stageAllExcept(planArtifacts);
@@ -5143,11 +5178,27 @@ async function runTaskWorker(args: {
     let candidatePatch: string | undefined;
     let worktreeFingerprintBefore: string | undefined;
     let reviewHeadBefore: string;
-    let reviewerPrompt: string | undefined;
+    let reviewerPrompt: string;
+    let candidateIdentity: string;
+    let latestDeltaPaths: string[] = [];
+    let latestDelta = "(no candidate delta)";
+    let semanticNoop = false;
 
     if (hasStaged) {
       fingerprintBefore = await taskGit.stagedFingerprint();
       candidatePatch = await taskGit.stagedDiff();
+      if (reviewState && previousCandidatePatch !== undefined) {
+        const delta = await taskGit.stagedDeltaFromPatch(
+          previousCandidatePatch,
+        );
+        latestDeltaPaths = parseNameStatusPaths(delta.nameStatus);
+        latestDelta = delta.diff;
+      } else {
+        latestDeltaPaths = parseNameStatusPaths(
+          await taskGit.stagedNameStatus(),
+        );
+        latestDelta = candidatePatch;
+      }
       worktreeFingerprintBefore =
         await taskGit.worktreeFingerprintExcept(planArtifacts);
 
@@ -5156,25 +5207,6 @@ async function runTaskWorker(args: {
       }
 
       reviewHeadBefore = await taskGit.head();
-
-      const outOfScopeTasks = deps.executionManifest
-        ? deps.executionManifest.tasks
-            .filter((mt) => mt.planIndex !== task.index)
-            .map((mt) => `- ${mt.title}`)
-        : plan.tasks
-            .filter((t) => t.index !== task.index)
-            .map((t) => t.originalLine);
-      reviewerPrompt = buildReviewerPrompt({
-        compiledContract,
-        worktreePath: effectiveWorktreePath,
-        implementer: parsed.result,
-        outOfScopeTasks,
-        priorRequiredChanges: priorReviewRequiredChanges,
-        baseSha: worktreePath ? baseSha : undefined,
-        alreadySatisfiedDiscrepancy,
-        sourceMaterial: sourceMaterialPacket?.section,
-      });
-
       if (worktreePath) {
         const checkpoint = await checkpointCandidate(taskGit, candidate);
         if (checkpoint.result && checkpoint.result.exitCode !== 0) {
@@ -5192,6 +5224,15 @@ async function runTaskWorker(args: {
           continue;
         }
         candidate = checkpoint.candidate;
+        if (reviewState && previousCandidate) {
+          latestDeltaPaths = parseNameStatusPaths(
+            await taskGit.diffRangeNameStatus(
+              previousCandidate,
+              candidate.trustedCheckpoint!,
+            ),
+          );
+        }
+        semanticNoop = Boolean(reviewState && !checkpoint.changed);
         if (checkpoint.changed) {
           trustedSnapshot = await captureRestoreSnapshot(
             taskGit,
@@ -5211,41 +5252,19 @@ async function runTaskWorker(args: {
         worktreeFingerprintBefore =
           await taskGit.worktreeFingerprintExcept(planArtifacts);
       }
+      candidateIdentity = worktreePath
+        ? candidate.trustedCheckpoint!
+        : fingerprintBefore;
+      semanticNoop ||= Boolean(
+        reviewState && previousCandidate === candidateIdentity,
+      );
     } else if (parsed.result.outcome === "already_satisfied") {
       await taskGit.reset();
       reviewHeadBefore = await taskGit.head();
-
-      let accumulatedDiff: string | undefined;
-      if (runBaseSha) {
-        try {
-          const diff = await taskGit.diffRange(
-            runBaseSha,
-            await taskGit.head(),
-          );
-          accumulatedDiff =
-            diff.length <= MAX_ACCUMULATED_DIFF_CHARS ? diff : undefined;
-        } catch {
-          accumulatedDiff = undefined;
-        }
-      }
-
-      const outOfScopeTasks = deps.executionManifest
-        ? deps.executionManifest.tasks
-            .filter((mt) => mt.planIndex !== task.index)
-            .map((mt) => `- ${mt.title}`)
-        : plan.tasks
-            .filter((t) => t.index !== task.index)
-            .map((t) => t.originalLine);
-      reviewerPrompt = buildAlreadySatisfiedReviewerPrompt({
-        compiledContract,
-        worktreePath: effectiveWorktreePath,
-        implementer: parsed.result,
-        headSha: reviewHeadBefore,
-        accumulatedDiff,
-        outOfScopeTasks,
-        priorRequiredChanges: priorReviewRequiredChanges,
-        sourceMaterial: sourceMaterialPacket?.section,
-      });
+      candidateIdentity = reviewHeadBefore;
+      semanticNoop = Boolean(
+        reviewState && previousCandidate === candidateIdentity,
+      );
     } else {
       const message =
         'No committable changes were produced after excluding plan artifacts and ignored files. Likely causes: the implementer produced no candidate code changes, only plan or ignored-file changes were made, or the task may already be satisfied and should be reported with outcome: "already_satisfied".';
@@ -5257,11 +5276,79 @@ async function runTaskWorker(args: {
       );
       systemFailures++;
       await taskGit.reset();
-      priorReviewRequiredChanges = undefined;
-      anchoredReviewChangeRequests = 0;
       attempt++;
       continue;
     }
+
+    if (semanticNoop && reviewState) {
+      const update = applyNoopReview(reviewState);
+      reviewState = update.state;
+      latestEvidence = `Implementer reported rework without changing candidate ${candidateIdentity}.`;
+      if (update.outcome === "stalled") {
+        persistCandidate("blocked", latestEvidence);
+        throw new BlockedError(
+          `task ${task.index} stalled after unchanged candidate rework`,
+        );
+      }
+      feedback = typedReviewerFeedback(
+        reviewState.findings,
+        reviewState.outstandingIds,
+        latestEvidence,
+        verificationFailures,
+      );
+      persistCandidate("needs_rework", latestEvidence);
+      attempt++;
+      continue;
+    }
+
+    const candidateContext = [
+      `Candidate identity: ${candidateIdentity}`,
+      `Implementer summary: ${parsed.result.summary}`,
+      parsed.result.outcome === "already_satisfied"
+        ? `There is no staged candidate diff; the implementer reports the task is already satisfied.\nCurrent HEAD: ${candidateIdentity}`
+        : "",
+      alreadySatisfiedDiscrepancy
+        ? "## Outcome Discrepancy\nThe implementer reported already_satisfied while producing a candidate delta; assess the delta as the ground truth."
+        : "",
+      "Implementer verification:",
+      ...parsed.result.verification.map(
+        (step) => `- ${step.command}: ${step.result} (${step.rationale})`,
+      ),
+      verificationFailures.length
+        ? `Prior verification failures:\n${verificationFailures.map((failure) => `- ${failure}`).join("\n")}`
+        : "",
+      sourceMaterialPacket?.section
+        ? `## Referenced Source Material\n\n${sourceMaterialPacket.section}`
+        : "",
+      `Latest candidate delta:\n${latestDelta}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const outOfScopeTasks = deps.executionManifest
+      ? deps.executionManifest.tasks
+          .filter((manifestTask) => manifestTask.planIndex !== task.index)
+          .map((manifestTask) => `- ${manifestTask.title}`)
+      : plan.tasks
+          .filter((planTask) => planTask.index !== task.index)
+          .map((planTask) => planTask.originalLine);
+    reviewerPrompt = reviewState
+      ? buildAnchoredTaskReviewPrompt({
+          compiledContract,
+          worktreePath: effectiveWorktreePath,
+          candidateContext,
+          outstandingFindings: reviewState.findings.filter((finding) =>
+            reviewState!.outstandingIds.includes(finding.id),
+          ),
+          previousCandidate: previousCandidate ?? "(initial candidate)",
+          currentCandidate: candidateIdentity,
+          latestDelta,
+        })
+      : buildInitialTaskReviewPrompt({
+          compiledContract,
+          worktreePath: effectiveWorktreePath,
+          candidateContext,
+          outOfScopeTasks,
+        });
     if (schedulerTask) {
       schedulerTask.status = "reviewing";
     }
@@ -5272,215 +5359,89 @@ async function runTaskWorker(args: {
     }
 
     {
-      const reviewerSnapshot = worktreePath
-        ? await captureRestoreSnapshot(taskGit, planArtifacts)
-        : undefined;
-      const reviewerId = await deps.subagents.spawn({
-        type: deps.roles.reviewer.type,
-        prompt: reviewerPrompt!,
-        description: `review task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
-        model: deps.roles.reviewer.model,
-        thinking: deps.roles.reviewer.thinking,
-        role: "reviewer",
-        taskId,
-        cwd: effectiveWorktreePath,
-        readOnly: true,
-        completion: {
-          description: "Submit the task review verdict.",
-          schema: reviewerVerdictSchema,
-        },
-      });
-      const reviewerRef: AgentDisplayRef = {
-        id: reviewerId,
-        role: "reviewer",
-        label: `Task ${task.index}/${plan.tasks.length} reviewer \u00b7 ${shortTask(task.text)}`,
-        startedAt: new Date().toISOString(),
-        taskId,
-        taskIndex: task.index,
-        taskTotal: plan.tasks.length,
-        taskTitle: shortTask(task.text),
-      };
-      setSchedulerActiveAgent(schedulerTask, reviewerRef);
-      deps.updateState((prev) => addActiveAgentPatch(prev, reviewerRef));
-      if (deps.paths) {
-        writeTaskJson(deps.paths, taskId, {
-          id: taskId,
-          planIndex: task.index - 1,
-          title: task.text,
-          status: "reviewing",
-          dependsOn: [],
-          attempts: attempt,
-          integrationAttempts: 0,
-          baseSha: candidate.candidateBaseSha,
-          candidateBaseSha: candidate.candidateBaseSha,
-          candidateSha: candidate.candidateSha,
-          candidateTree: candidate.candidateTree,
-          trustedCheckpoint: candidate.trustedCheckpoint,
-          discardedBundles: candidate.discardedBundles,
-          worktreePath,
-          branchName,
-          activeSubagentIds: [reviewerId],
-          review: currentTaskReviewMetadata(deps.paths, taskId),
-        });
-      }
-      const review = await deps.subagents.waitFor(reviewerId, deps.signal);
-      clearSchedulerActiveAgent(schedulerTask, reviewerId);
-      deps.updateState((prev) => removeActiveAgentPatch(prev, reviewerId));
-      if (deps.paths) {
-        writeTaskJson(deps.paths, taskId, {
-          id: taskId,
-          planIndex: task.index - 1,
-          title: task.text,
-          status: review.status === "completed" ? "reviewing" : "failed",
-          dependsOn: [],
-          attempts: attempt,
-          integrationAttempts: 0,
-          baseSha: candidate.candidateBaseSha,
-          candidateBaseSha: candidate.candidateBaseSha,
-          candidateSha: candidate.candidateSha,
-          candidateTree: candidate.candidateTree,
-          trustedCheckpoint: candidate.trustedCheckpoint,
-          discardedBundles: candidate.discardedBundles,
-          worktreePath,
-          branchName,
-          activeSubagentIds: [],
-          lastReason: review.status !== "completed" ? review.error : undefined,
-          review: currentTaskReviewMetadata(deps.paths, taskId),
-        });
-      }
-      if (review.status === "stopped") {
-        await resetTaskForRetry(
-          taskGit,
-          worktreePath,
-          candidate.trustedCheckpoint ?? reviewHeadBefore,
-          planArtifacts,
-          reviewerSnapshot,
-        );
-        throw new StoppedError();
-      }
-      if (deps.signal?.aborted || deps.shouldStop()) {
-        await resetTaskForRetry(
-          taskGit,
-          worktreePath,
-          candidate.trustedCheckpoint ?? reviewHeadBefore,
-          planArtifacts,
-          reviewerSnapshot,
-        );
-        throw new StoppedError();
-      }
-      if (review.status === "failed") {
-        await resetTaskForRetry(
-          taskGit,
-          worktreePath,
-          candidate.trustedCheckpoint ?? reviewHeadBefore,
-          planArtifacts,
-          reviewerSnapshot,
-        );
-        feedback = recordSystemFailure(
-          task.index,
-          systemFailures,
-          "system",
-          `Reviewer subagent failed: ${review.error}`,
-        );
-        systemFailures++;
-        priorReviewRequiredChanges = undefined;
-        anchoredReviewChangeRequests = 0;
-        attempt++;
-        continue;
-      }
-
-      // Boundary checks
-      if (!worktreePath && (await deps.git.head()) !== taskHeadBefore) {
-        throw new BlockedError("reviewer changed HEAD");
-      }
-      const changedPlanArtifactAfterReview = changedSnapshotPath(
+      const reviewerSnapshot = await captureRestoreSnapshot(
+        taskGit,
         planArtifacts,
-        planArtifactSnapshot,
       );
-      if (
-        changedPlanArtifactAfterReview ||
-        (worktreePath &&
-          (await snapshotChanged(taskGit, reviewerSnapshot!, planArtifacts)))
-      ) {
-        try {
-          await restoreAndVerify(taskGit, reviewerSnapshot!, planArtifacts);
-        } catch (err) {
-          throw new BlockedError(
-            `reviewer mutation could not be restored: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-        if (changedPlanArtifactAfterReview) {
-          throw new BlockedError(
-            `reviewer changed a plan artifact: ${changedPlanArtifactAfterReview}`,
-          );
-        }
-      }
-      if ((await taskGit.head()) !== reviewHeadBefore) {
-        throw new BlockedError("reviewer changed HEAD");
-      }
-
-      if (
-        !hasStaged &&
-        !worktreePath &&
-        !(await deps.git.isCleanExcept(planArtifacts))
-      ) {
-        throw new BlockedError("reviewer dirtied the serial checkout");
-      }
-
-      if (hasStaged) {
-        await healReviewerMutations({
-          taskGit,
-          planArtifacts,
-          stagedFingerprintBefore: fingerprintBefore!,
-          candidatePatch: candidatePatch!,
-          worktreeFingerprintBefore: worktreeFingerprintBefore!,
-          committedSha: worktreePath ? reviewHeadBefore : undefined,
-          snapshot: reviewerSnapshot,
+      let reviewerSystemFailures = 0;
+      reviewerLoop: for (;;) {
+        const reviewerId = await deps.subagents.spawn({
+          type: deps.roles.reviewer.type,
+          prompt: reviewerPrompt!,
+          description: `review task ${task.index}/${plan.tasks.length}: ${shortTask(task.text)}`,
+          model: deps.roles.reviewer.model,
+          thinking: deps.roles.reviewer.thinking,
+          role: "reviewer",
+          taskId,
+          cwd: effectiveWorktreePath,
+          readOnly: true,
+          completion: {
+            description: "Submit the typed task review.",
+            schema: reviewState
+              ? anchoredReviewSchema
+              : initialTaskReviewSchema,
+          },
         });
-      }
-      const verdict = parseReviewerVerdict(review.result);
-      if (verdict.verdict === "error") {
-        await resetTaskForRetry(
-          taskGit,
-          worktreePath,
-          candidate.trustedCheckpoint ?? reviewHeadBefore,
-          planArtifacts,
-          reviewerSnapshot,
-        );
-        feedback = recordSystemFailure(
-          task.index,
-          systemFailures,
-          "system",
-          `Reviewer produced invalid verdict: ${verdict.reason}`,
-        );
-        systemFailures++;
-        priorReviewRequiredChanges = undefined;
-        anchoredReviewChangeRequests = 0;
-        attempt++;
-        continue;
-      }
-      await recordPapercuts(deps, review.result, "reviewer", taskId);
-      const isAnchoredReview = (priorReviewRequiredChanges?.length ?? 0) > 0;
-      let unresolved: string[] = [];
-      if (verdict.verdict === "changes_requested") {
-        if (isAnchoredReview) {
-          unresolved = verdict.requiredChanges.filter((change: string) =>
-            priorReviewRequiredChanges!.includes(change),
-          );
-        } else {
-          unresolved = verdict.requiredChanges;
+        const reviewerRef: AgentDisplayRef = {
+          id: reviewerId,
+          role: "reviewer",
+          label: `Task ${task.index}/${plan.tasks.length} reviewer \u00b7 ${shortTask(task.text)}`,
+          startedAt: new Date().toISOString(),
+          taskId,
+          taskIndex: task.index,
+          taskTotal: plan.tasks.length,
+          taskTitle: shortTask(task.text),
+        };
+        setSchedulerActiveAgent(schedulerTask, reviewerRef);
+        deps.updateState((prev) => addActiveAgentPatch(prev, reviewerRef));
+        if (deps.paths) {
+          writeTaskJson(deps.paths, taskId, {
+            id: taskId,
+            planIndex: task.index - 1,
+            title: task.text,
+            status: "reviewing",
+            dependsOn: [],
+            attempts: attempt,
+            integrationAttempts: 0,
+            baseSha: candidate.candidateBaseSha,
+            candidateBaseSha: candidate.candidateBaseSha,
+            candidateSha: candidate.candidateSha,
+            candidateTree: candidate.candidateTree,
+            trustedCheckpoint: candidate.trustedCheckpoint,
+            discardedBundles: candidate.discardedBundles,
+            worktreePath,
+            branchName,
+            activeSubagentIds: [reviewerId],
+            review: currentTaskReviewMetadata(deps.paths, taskId),
+          });
         }
-      }
-      deps.updateState((prev) =>
-        checkpointPatch(
-          prev,
-          verdict.verdict === "approved" || unresolved.length === 0
-            ? `\u2713 Task ${task.index}/${plan.tasks.length} review approved`
-            : `\u00b7 Task ${task.index}/${plan.tasks.length} review changes requested: ${formatRequiredChanges(unresolved)}`,
-        ),
-      );
-      if (verdict.verdict === "changes_requested") {
-        if (!isAnchoredReview) {
+        const review = await deps.subagents.waitFor(reviewerId, deps.signal);
+        clearSchedulerActiveAgent(schedulerTask, reviewerId);
+        deps.updateState((prev) => removeActiveAgentPatch(prev, reviewerId));
+        if (deps.paths) {
+          writeTaskJson(deps.paths, taskId, {
+            id: taskId,
+            planIndex: task.index - 1,
+            title: task.text,
+            status: review.status === "completed" ? "reviewing" : "failed",
+            dependsOn: [],
+            attempts: attempt,
+            integrationAttempts: 0,
+            baseSha: candidate.candidateBaseSha,
+            candidateBaseSha: candidate.candidateBaseSha,
+            candidateSha: candidate.candidateSha,
+            candidateTree: candidate.candidateTree,
+            trustedCheckpoint: candidate.trustedCheckpoint,
+            discardedBundles: candidate.discardedBundles,
+            worktreePath,
+            branchName,
+            activeSubagentIds: [],
+            lastReason:
+              review.status !== "completed" ? review.error : undefined,
+            review: currentTaskReviewMetadata(deps.paths, taskId),
+          });
+        }
+        if (review.status === "stopped") {
           await resetTaskForRetry(
             taskGit,
             worktreePath,
@@ -5488,30 +5449,182 @@ async function runTaskWorker(args: {
             planArtifacts,
             reviewerSnapshot,
           );
-          priorReviewRequiredChanges = verdict.requiredChanges;
-          feedback = reviewerFeedback(verdict.requiredChanges);
-          attempt++;
-          continue;
+          throw new StoppedError();
         }
-        if (unresolved.length === 0) {
-          // Anchored review returned only non-matching items — treat as approved.
-          // Do NOT reset so the approved candidate diff remains staged.
-          priorReviewRequiredChanges = undefined;
-          anchoredReviewChangeRequests = 0;
-          // Fall through to approval path below
-        } else {
-          anchoredReviewChangeRequests++;
-          if (
-            anchoredReviewChangeRequests >= MAX_ANCHORED_REVIEW_CHANGE_REQUESTS
-          ) {
-            await taskGit.reset();
-            const message = unresolved
-              .map((change) => `- ${change}`)
-              .join("\n");
+        if (deps.signal?.aborted || deps.shouldStop()) {
+          await resetTaskForRetry(
+            taskGit,
+            worktreePath,
+            candidate.trustedCheckpoint ?? reviewHeadBefore,
+            planArtifacts,
+            reviewerSnapshot,
+          );
+          throw new StoppedError();
+        }
+        if (review.status === "failed") {
+          try {
+            await restoreAndVerify(taskGit, reviewerSnapshot, planArtifacts);
+          } catch (error) {
             throw new BlockedError(
-              `anchored review change request limit reached for task ${task.index}:\n${message}`,
+              `reviewer mutation could not be restored: ${error instanceof Error ? error.message : String(error)}`,
             );
           }
+          recordSystemFailure(
+            task.index,
+            reviewerSystemFailures,
+            "system",
+            `Reviewer subagent failed: ${review.error}`,
+          );
+          reviewerSystemFailures++;
+          continue reviewerLoop;
+        }
+
+        // Boundary checks
+        if (!worktreePath && (await deps.git.head()) !== taskHeadBefore) {
+          throw new BlockedError("reviewer changed HEAD");
+        }
+        const changedPlanArtifactAfterReview = changedSnapshotPath(
+          planArtifacts,
+          planArtifactSnapshot,
+        );
+        if (
+          changedPlanArtifactAfterReview ||
+          (worktreePath &&
+            (await snapshotChanged(taskGit, reviewerSnapshot!, planArtifacts)))
+        ) {
+          try {
+            await restoreAndVerify(taskGit, reviewerSnapshot!, planArtifacts);
+          } catch (err) {
+            throw new BlockedError(
+              `reviewer mutation could not be restored: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+          if (changedPlanArtifactAfterReview) {
+            throw new BlockedError(
+              `reviewer changed a plan artifact: ${changedPlanArtifactAfterReview}`,
+            );
+          }
+        }
+        if ((await taskGit.head()) !== reviewHeadBefore) {
+          throw new BlockedError("reviewer changed HEAD");
+        }
+
+        if (
+          !hasStaged &&
+          !worktreePath &&
+          !(await deps.git.isCleanExcept(planArtifacts))
+        ) {
+          throw new BlockedError("reviewer dirtied the serial checkout");
+        }
+
+        if (hasStaged) {
+          await healReviewerMutations({
+            taskGit,
+            planArtifacts,
+            stagedFingerprintBefore: fingerprintBefore!,
+            candidatePatch: candidatePatch!,
+            worktreeFingerprintBefore: worktreeFingerprintBefore!,
+            committedSha: worktreePath ? reviewHeadBefore : undefined,
+            snapshot: reviewerSnapshot,
+          });
+        }
+        const anchoredReviewState = reviewState;
+        if (anchoredReviewState) {
+          const parsedReview = parseAnchoredReviewResult(
+            review.result,
+            anchoredReviewState.outstandingIds,
+          );
+          if (!parsedReview.ok) {
+            recordSystemFailure(
+              task.index,
+              reviewerSystemFailures,
+              "system",
+              `Reviewer produced invalid typed completion: ${parsedReview.reason}`,
+            );
+            reviewerSystemFailures++;
+            continue reviewerLoop;
+          }
+          let update;
+          try {
+            update = applyAnchoredReview({
+              state: anchoredReviewState,
+              review: parsedReview.result,
+              latestDeltaPaths,
+            });
+          } catch (error) {
+            recordSystemFailure(
+              task.index,
+              reviewerSystemFailures,
+              "system",
+              `Reviewer protocol failure: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            reviewerSystemFailures++;
+            continue reviewerLoop;
+          }
+          reviewState = update.state;
+          latestEvidence =
+            update.observations
+              .map(
+                (observation) =>
+                  `${observation.summary}: ${observation.evidence}`,
+              )
+              .join("\n") || undefined;
+          if (update.outcome === "stalled") {
+            persistCandidate(
+              "blocked",
+              "task review stalled without a new low outstanding count",
+            );
+            throw new BlockedError(
+              `task ${task.index} review stalled without a new low outstanding count`,
+            );
+          }
+        } else {
+          const parsedReview = parseInitialReviewResult(review.result);
+          if (!parsedReview.ok) {
+            recordSystemFailure(
+              task.index,
+              reviewerSystemFailures,
+              "system",
+              `Reviewer produced invalid typed completion: ${parsedReview.reason}`,
+            );
+            reviewerSystemFailures++;
+            continue reviewerLoop;
+          }
+          reviewState = createReviewConvergenceState({
+            drafts:
+              parsedReview.result.verdict === "changes_requested"
+                ? parsedReview.result.findings
+                : [],
+          });
+        }
+        await recordPapercuts(deps, review.result, "reviewer", taskId);
+
+        previousCandidate = candidateIdentity;
+        previousCandidatePatch = candidatePatch;
+        const outstanding = reviewState.outstandingIds;
+        deps.updateState((prev) =>
+          checkpointPatch(
+            prev,
+            outstanding.length === 0
+              ? `\u2713 Task ${task.index}/${plan.tasks.length} review approved`
+              : `\u00b7 Task ${task.index}/${plan.tasks.length} review changes requested: ${reviewState!.findings
+                  .filter((finding) => outstanding.includes(finding.id))
+                  .map((finding) => finding.summary)
+                  .join("; ")}`,
+          ),
+        );
+        if (outstanding.length > 0) {
+          latestEvidence = assessmentEvidence(
+            reviewState.findings,
+            outstanding,
+            "The reviewer returned no assessment evidence.",
+          );
+          feedback = typedReviewerFeedback(
+            reviewState.findings,
+            outstanding,
+            latestEvidence,
+            verificationFailures,
+          );
           await resetTaskForRetry(
             taskGit,
             worktreePath,
@@ -5519,19 +5632,22 @@ async function runTaskWorker(args: {
             planArtifacts,
             reviewerSnapshot,
           );
-          priorReviewRequiredChanges = unresolved;
-          feedback = reviewerFeedback(unresolved);
+          persistCandidate("needs_rework", latestEvidence);
           attempt++;
-          continue;
+          continue workerLoop;
         }
+        closedEpochs.push({
+          epoch: reviewEpoch,
+          findings: reviewState.findings,
+        });
+        break reviewerLoop;
       }
     }
 
-    // Clear anchor on any approval path
-    priorReviewRequiredChanges = undefined;
-    anchoredReviewChangeRequests = 0;
-
-    const taskReviewMeta = nextTaskReviewMetadata(deps.paths, taskId);
+    const taskReviewMeta = {
+      ...nextTaskReviewMetadata(deps.paths, taskId),
+      ...persistReview("reviewed"),
+    };
 
     // Approved
     if (
@@ -5708,8 +5824,6 @@ async function runTaskWorker(args: {
           `${hookMutated ? "Approval hook changed the reviewed checkpoint; restoration succeeded, but rework is required.\n\n" : ""}${hookResult.stderr || hookResult.stdout}`,
         );
         systemFailures++;
-        priorReviewRequiredChanges = undefined;
-        anchoredReviewChangeRequests = 0;
         attempt++;
         persistCandidate("integration_failed", feedback.message);
         if (deps.paths) {
@@ -5818,8 +5932,6 @@ async function runTaskWorker(args: {
       `Commit failed. Fix the issue and try again.\n\n${commit.stderr || commit.stdout}`,
     );
     systemFailures++;
-    priorReviewRequiredChanges = undefined;
-    anchoredReviewChangeRequests = 0;
     attempt++;
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
@@ -6143,19 +6255,55 @@ function recordSystemFailure(
   return { source, message };
 }
 
-function reviewerFeedback(requiredChanges: string[]): RetryFeedback {
-  const message = requiredChanges.map((change) => `- ${change}`).join("\n");
-  return { source: "reviewer", message };
+function verificationFailed(result: string): boolean {
+  return /\b(fail(?:ed|ure)?|error|not\s+(?:pass|successful|clean|ok)|did not pass|unsuccessful)\b/i.test(
+    result,
+  );
+}
+
+function assessmentEvidence(
+  findings: readonly ReviewFinding[],
+  outstandingIds: readonly string[],
+  fallback: string,
+): string {
+  const evidenceById = new Map(
+    findings.map((finding) => [finding.id, finding.evidence]),
+  );
+  const evidence = outstandingIds
+    .map((id) => `${id}: ${evidenceById.get(id) ?? fallback}`)
+    .join("\n");
+  return evidence || fallback;
+}
+
+function typedReviewerFeedback(
+  findings: readonly ReviewFinding[],
+  outstandingIds: readonly string[],
+  latestEvidence: string | undefined,
+  verificationFailures: readonly string[],
+): RetryFeedback {
+  const outstanding = findings.filter((finding) =>
+    outstandingIds.includes(finding.id),
+  );
+  return {
+    source: "reviewer",
+    message: [
+      "Outstanding findings:",
+      ...outstanding.map(
+        (finding) =>
+          `- ${finding.id}: ${finding.summary}\n  Evidence: ${finding.evidence}\n  Required change: ${finding.requiredChange}\n  Acceptance criteria:\n${finding.acceptanceCriteria.map((criterion) => `  - ${criterion}`).join("\n")}`,
+      ),
+      latestEvidence ? `Latest review evidence:\n${latestEvidence}` : "",
+      verificationFailures.length
+        ? `Prior verification failures:\n${verificationFailures.map((failure) => `- ${failure}`).join("\n")}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+  };
 }
 
 function formatFeedback(feedback: RetryFeedback): string {
   return `Source: ${feedback.source}\n${feedback.message}`;
-}
-
-function formatRequiredChanges(requiredChanges: string[]): string {
-  return requiredChanges
-    .map((change) => change.replace(/\s+/g, " ").trim())
-    .join("; ");
 }
 
 function throwIfStopped(deps: OrchestratorDeps): void {

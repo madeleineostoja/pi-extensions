@@ -598,12 +598,14 @@ export function buildInitialTaskReviewPrompt(args: {
   compiledContract: string;
   worktreePath: string;
   candidateContext: string;
+  outOfScopeTasks?: string[];
 }): string {
   return buildInitialReviewPrompt({
     scope: "task",
     compiledContract: args.compiledContract,
     worktreePath: args.worktreePath,
     candidateContext: args.candidateContext,
+    outOfScopeTasks: args.outOfScopeTasks,
   });
 }
 
@@ -652,6 +654,7 @@ function buildInitialReviewPrompt(args: {
   compiledContract: string;
   worktreePath: string;
   candidateContext: string;
+  outOfScopeTasks?: string[];
 }): string {
   const recommendation =
     args.scope === "overall"
@@ -659,15 +662,29 @@ function buildInitialReviewPrompt(args: {
       : "";
   return `You are conducting an initial ${args.scope} review in ${args.worktreePath}. This is a complete review: return the full known blocking set, with no arbitrary finding limit.
 
+## Compiled Task Contract
+
 ${args.compiledContract}
 
 ## Candidate Context
 
 ${args.candidateContext}
 
+## Task Packet Fidelity
+
+Use the compiled task contract and referenced source material below to verify scope and exact-source fidelity.
+
+## Scope Review Rules
+
+- Small prerequisite changes needed for the selected task may be approved.
+- Request changes if the staged diff substantially implements an unselected sibling task or unrelated cleanup.
+- Completing a sibling task's own deliverable is scope creep.
+${args.scope === "task" ? buildSiblingTasksSection(args.outOfScopeTasks) : ""}
 If approved, submit { verdict: "approved" }. Otherwise submit { verdict: "changes_requested", findings } where every atomic finding has summary, evidence, requiredChange, and non-empty acceptanceCriteria. One independently resolvable defect belongs in each finding. Omit optional or non-blocking concerns from this initial result.${recommendation}
 
-${PAPERCUT_GUIDANCE}`;
+${PAPERCUT_GUIDANCE}
+
+Submit the review verdict through the injected completion tool as your final action.`;
 }
 
 function buildAnchoredReviewPrompt(args: {
@@ -682,6 +699,8 @@ function buildAnchoredReviewPrompt(args: {
 }): string {
   return `You are conducting an anchored ${args.scope} re-review in ${args.worktreePath}. Assess every supplied finding ID exactly once. Do not report ordinary new findings during re-review.
 
+## Review Mode: Anchored Re-review
+
 ## Contract Context
 
 ${args.compiledContract}
@@ -693,7 +712,7 @@ Current candidate: ${args.currentCandidate}
 
 ${args.candidateContext}
 
-## Outstanding Findings
+## Prior Required Changes
 
 ${formatFindings(args.outstandingFindings)}
 

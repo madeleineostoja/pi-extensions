@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -40,6 +40,10 @@ export type GitClient = {
   stagedDiffStat(): Promise<string>;
   stagedNameStatus(): Promise<string>;
   stagedDiff(): Promise<string>;
+  stagedDeltaFromPatch(
+    previousPatch: string,
+  ): Promise<{ diff: string; nameStatus: string }>;
+  diffRangeNameStatus(baseSha: string, headSha: string): Promise<string>;
   stagedDiffExcept(paths: string[]): Promise<string>;
   workingDiff(): Promise<string>;
   workingDiffExcept(paths: string[]): Promise<string>;
@@ -253,6 +257,44 @@ export class ExecGitClient implements GitClient {
 
   async stagedDiff(): Promise<string> {
     return (await this.run(["diff", "--cached", "--binary", "HEAD"])).stdout;
+  }
+
+  async stagedDeltaFromPatch(
+    previousPatch: string,
+  ): Promise<{ diff: string; nameStatus: string }> {
+    const tempIndex = join(
+      tmpdir(),
+      `pi-implement-index-${process.pid}-${randomBytes(8).toString("hex")}`,
+    );
+    try {
+      await this.run(["read-tree", "HEAD"], false, {
+        GIT_INDEX_FILE: tempIndex,
+      });
+      if (previousPatch.trim()) {
+        const patchPath = `${tempIndex}.patch`;
+        try {
+          writeFileSync(patchPath, previousPatch, "utf-8");
+          await this.run(
+            ["apply", "--index", "--whitespace=nowarn", patchPath],
+            false,
+            { GIT_INDEX_FILE: tempIndex },
+          );
+        } finally {
+          rmSync(patchPath, { force: true });
+        }
+      }
+      const previousTree = (
+        await this.run(["write-tree"], false, { GIT_INDEX_FILE: tempIndex })
+      ).stdout.trim();
+      const currentTree = (await this.run(["write-tree"])).stdout.trim();
+      const [diff, nameStatus] = await Promise.all([
+        this.run(["diff", "--binary", previousTree, currentTree]),
+        this.run(["diff", "--name-status", previousTree, currentTree]),
+      ]);
+      return { diff: diff.stdout, nameStatus: nameStatus.stdout };
+    } finally {
+      rmSync(tempIndex, { force: true });
+    }
   }
 
   async stagedDiffExcept(paths: string[]): Promise<string> {
@@ -470,6 +512,11 @@ export class ExecGitClient implements GitClient {
       .stdout;
   }
 
+  async diffRangeNameStatus(baseSha: string, headSha: string): Promise<string> {
+    return (await this.run(["diff", "--name-status", `${baseSha}..${headSha}`]))
+      .stdout;
+  }
+
   async diffRangeExcept(
     baseSha: string,
     headSha: string,
@@ -572,11 +619,13 @@ export class ExecGitClient implements GitClient {
   private async run(
     args: string[],
     allowFailure = false,
+    env?: NodeJS.ProcessEnv,
   ): Promise<CommandResult> {
     try {
       const result = await execFileAsync("git", args, {
         cwd: this.cwd,
         maxBuffer: 20 * 1024 * 1024,
+        env: env ? { ...process.env, ...env } : undefined,
       });
       return {
         stdout: result.stdout,

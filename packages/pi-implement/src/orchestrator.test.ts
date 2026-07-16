@@ -113,6 +113,9 @@ class FakeGit implements GitClient {
   async stagedDiff() {
     return this.diffText;
   }
+  async stagedDeltaFromPatch(_previousPatch: string) {
+    return { diff: this.diffText, nameStatus: await this.stagedNameStatus() };
+  }
   async stagedDiffExcept() {
     return this.diffText;
   }
@@ -138,7 +141,7 @@ class FakeGit implements GitClient {
   restoredPatches: string[] = [];
   addWorktreeError?: Error;
   async stagedFingerprint() {
-    return `${this.diffText}:${this.statusText}`;
+    return `${this.diffText}:${this.statusText}:${this.stageAllExceptCalls}`;
   }
   async worktreeFingerprintExcept() {
     return this.worktreeFingerprintText;
@@ -226,6 +229,9 @@ class FakeGit implements GitClient {
   async diffRange(_baseSha: string, _headSha: string): Promise<string> {
     return this.diffText;
   }
+  async diffRangeNameStatus(_baseSha: string, _headSha: string) {
+    return this.stagedNameStatus();
+  }
   async diffRangeExcept(
     _baseSha: string,
     _headSha: string,
@@ -277,19 +283,84 @@ class FakeSubagents implements SubagentClient {
   async waitFor(_id?: string, _signal?: AbortSignal) {
     const index = _id ? Number(_id.replace("agent-", "")) - 1 : -1;
     const args = index >= 0 ? this.spawns[index] : undefined;
-    if (args) {
-      const routed = this.resultsByDescription.find((r) =>
-        typeof r.match === "string"
-          ? args.description.includes(r.match)
-          : r.match.test(args.description),
-      );
-      if (routed) {
-        return routed.result;
-      }
+    const routed = args
+      ? this.resultsByDescription.find((r) =>
+          typeof r.match === "string"
+            ? args.description.includes(r.match)
+            : r.match.test(args.description),
+        )
+      : undefined;
+    const result = routed?.result ?? this.results.shift();
+    if (routed && this.results[0] === routed.result) {
+      this.results.shift();
     }
-    const result = this.results.shift();
     if (!result) {
       throw new Error("missing fake result");
+    }
+    if (
+      result.status === "completed" &&
+      result.result &&
+      typeof result.result === "object" &&
+      "verdict" in result.result &&
+      (result.result as { verdict?: unknown }).verdict ===
+        "changes_requested" &&
+      Array.isArray(
+        (result.result as { requiredChanges?: unknown }).requiredChanges,
+      )
+    ) {
+      const requiredChanges = (result.result as { requiredChanges: string[] })
+        .requiredChanges;
+      const ids = [...(args?.prompt.matchAll(/^### (R\d+):/gm) ?? [])].map(
+        (match) => match[1]!,
+      );
+      if (ids.length > 0) {
+        return {
+          ...result,
+          result: {
+            assessments: ids.map((id) => ({
+              id,
+              status: "unresolved",
+              evidence: "Legacy fixture reports the finding unresolved.",
+            })),
+            regressions: [],
+          },
+        };
+      }
+      return {
+        ...result,
+        result: {
+          verdict: "changes_requested",
+          findings: requiredChanges.map((requiredChange) => ({
+            summary: requiredChange,
+            evidence: "Legacy fixture finding.",
+            requiredChange,
+            acceptanceCriteria: [requiredChange],
+          })),
+        },
+      };
+    }
+    if (
+      result.status === "completed" &&
+      result.result &&
+      typeof result.result === "object" &&
+      (result.result as { verdict?: unknown }).verdict === "approved"
+    ) {
+      const ids = [...(args?.prompt.matchAll(/^### (R\d+):/gm) ?? [])].map(
+        (match) => match[1]!,
+      );
+      if (ids.length > 0) {
+        return {
+          ...result,
+          result: {
+            assessments: ids.map((id) => ({
+              id,
+              status: "resolved",
+              evidence: "Legacy fixture approves resolution.",
+            })),
+            regressions: [],
+          },
+        };
+      }
     }
     return result;
   }
@@ -314,7 +385,7 @@ const GOOD_ALREADY_SATISFIED_IMPL = {
     },
   ],
 };
-const GOOD_REVIEW = { verdict: "approved" };
+const GOOD_REVIEW = { verdict: "approved" } as const;
 const GOOD_INTEGRATION_REVIEW = { verdict: "approved" };
 
 function makePaths(dir: string) {
@@ -4502,7 +4573,7 @@ describe("runImplementation", () => {
     expect(git.commits).toHaveLength(0);
   });
 
-  it("ignores non-matching anchored reviewer items and proceeds as approved", async () => {
+  it("retries invalid anchored coverage without invoking implementation", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
     writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
@@ -4521,8 +4592,15 @@ describe("runImplementation", () => {
       {
         status: "completed",
         result: {
-          verdict: "changes_requested",
-          requiredChanges: ["tighten it again"],
+          assessments: [{ id: "unknown", status: "resolved", evidence: "bad" }],
+          regressions: [],
+        },
+      },
+      {
+        status: "completed",
+        result: {
+          assessments: [{ id: "R1", status: "resolved", evidence: "fixed" }],
+          regressions: [],
         },
       },
       { status: "completed", result: GOOD_OVERALL_REVIEW },
@@ -4542,11 +4620,18 @@ describe("runImplementation", () => {
       shouldStop: () => false,
     });
 
-    expect(subagents.spawns).toHaveLength(5);
+    expect(subagents.spawns.map((spawn) => spawn.role)).toEqual([
+      "implementer",
+      "reviewer",
+      "implementer",
+      "reviewer",
+      "reviewer",
+      "reviewer",
+    ]);
     expect(git.commits).toEqual(["feat: do thing"]);
   });
 
-  it("clears anchor after system failure so next reviewer is not anchored", async () => {
+  it("retries reviewer provider failures with the same anchored review", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
     writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
@@ -4561,9 +4646,15 @@ describe("runImplementation", () => {
           requiredChanges: ["tighten it"],
         },
       },
-      { status: "completed", result: "not json" },
       { status: "completed", result: GOOD_IMPL },
-      { status: "completed", result: GOOD_REVIEW },
+      { status: "failed", error: "reviewer provider failed" },
+      {
+        status: "completed",
+        result: {
+          assessments: [{ id: "R1", status: "resolved", evidence: "fixed" }],
+          regressions: [],
+        },
+      },
       { status: "completed", result: GOOD_OVERALL_REVIEW },
     ];
 
@@ -4582,19 +4673,11 @@ describe("runImplementation", () => {
     });
 
     expect(subagents.spawns).toHaveLength(6);
-    const postFailureReviewerPrompt = subagents.spawns[4]?.prompt ?? "";
-    expect(postFailureReviewerPrompt).not.toContain(
-      "## Review Mode: Anchored Re-review",
-    );
-    expect(postFailureReviewerPrompt).not.toContain(
-      "## Prior Required Changes",
-    );
-    expect(postFailureReviewerPrompt).toContain(
-      "## Review Mode: Initial Material Review",
-    );
+    const retryReviewerPrompt = subagents.spawns[3]?.prompt ?? "";
+    expect(retryReviewerPrompt).toContain("## Review Mode: Anchored Re-review");
   });
 
-  it("treats malformed anchored reviewer verdict as system failure and clears anchor", async () => {
+  it("retries malformed anchored review without invoking implementation", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
     const planPath = join(dir, "plan.md");
     writeFileSync(planPath, "# Plan\n\n## Tasks\n\n- [ ] Do thing\n", "utf-8");
@@ -4611,8 +4694,13 @@ describe("runImplementation", () => {
       },
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: "not a valid review result" },
-      { status: "completed", result: GOOD_IMPL },
-      { status: "completed", result: GOOD_REVIEW },
+      {
+        status: "completed",
+        result: {
+          assessments: [{ id: "R1", status: "resolved", evidence: "fixed" }],
+          regressions: [],
+        },
+      },
       { status: "completed", result: GOOD_OVERALL_REVIEW },
     ];
 
@@ -4630,15 +4718,9 @@ describe("runImplementation", () => {
       shouldStop: () => false,
     });
 
-    expect(subagents.spawns).toHaveLength(7);
-    const thirdReviewerPrompt = subagents.spawns[5]?.prompt ?? "";
-    expect(thirdReviewerPrompt).not.toContain(
-      "## Review Mode: Anchored Re-review",
-    );
-    expect(thirdReviewerPrompt).not.toContain("## Prior Required Changes");
-    expect(thirdReviewerPrompt).toContain(
-      "## Review Mode: Initial Material Review",
-    );
+    expect(subagents.spawns).toHaveLength(6);
+    const retryReviewerPrompt = subagents.spawns[3]?.prompt ?? "";
+    expect(retryReviewerPrompt).toContain("## Review Mode: Anchored Re-review");
     expect(git.commits).toEqual(["feat: do thing"]);
   });
 
@@ -8520,6 +8602,12 @@ describe("runImplementation", () => {
       { status: "completed", result: GOOD_REVIEW },
       { status: "completed", result: GOOD_OVERALL_REVIEW },
     ];
+    subagents.resultsByDescription = [
+      {
+        match: "review task",
+        result: { status: "completed", result: GOOD_REVIEW },
+      },
+    ];
 
     await runImplementation({
       git,
@@ -11523,9 +11611,12 @@ describe("runImplementation", () => {
         expect(existsSync(join(paths.tasksDir, "task-1", "review.md"))).toBe(
           true,
         );
-        expect(readTaskJson(paths, "task-1")?.review).toEqual({
+        expect(readTaskJson(paths, "task-1")?.review).toMatchObject({
           lastDecision: "reviewed",
           reviewedCount: 1,
+          convergence: {
+            state: { outstandingIds: [] },
+          },
         });
         expect(
           readTaskJson(paths, "task-1")?.review?.skippedCount,
@@ -11563,12 +11654,10 @@ describe("runImplementation", () => {
       expect(subagents.spawns.map((spawn) => spawn.role)).toEqual([
         "implementer",
         "reviewer",
-        "implementer",
-        "reviewer",
         "reviewer",
       ]);
-      expect(subagents.spawns[2]?.prompt).toContain(
-        "Reviewer produced invalid verdict",
+      expect(subagents.spawns[1]?.prompt).toContain(
+        "You are conducting an initial task review",
       );
     });
 
