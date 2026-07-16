@@ -25,6 +25,11 @@ export type SchedulerTask = {
   mode: "serial" | "parallel";
   sourceBaseSha?: string;
   baseSha?: string;
+  candidateBaseSha?: string;
+  candidateSha?: string;
+  candidateTree?: string;
+  trustedCheckpoint?: string;
+  discardedBundles: string[];
   worktreePath?: string;
   branchName?: string;
   taskCommitSha?: string;
@@ -66,6 +71,7 @@ export function createSchedulerRun(
       mode: node.mode,
       activeAgentIds: [],
       activeAgentRefs: [],
+      discardedBundles: [],
       integrationAttempts: 0,
       selfHealAttempts: 0,
     });

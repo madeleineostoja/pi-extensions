@@ -121,6 +121,26 @@ describe("git helpers", () => {
     expect(git(cwd, "status", "--porcelain")).toBe("M  tracked.ts\n");
   });
 
+  it("creates and amends hook-free recovery checkpoints", async () => {
+    const cwd = repo();
+    const client = new ExecGitClient(cwd);
+    writeFileSync(join(cwd, "tracked.ts"), "export const value = 2;\n");
+    await client.stageAllExcept([]);
+    expect(
+      (await client.checkpoint("pi-implement: candidate", false)).exitCode,
+    ).toBe(0);
+    const first = await client.head();
+
+    writeFileSync(join(cwd, "next.ts"), "export const next = true;\n");
+    await client.stageAllExcept([]);
+    expect(
+      (await client.checkpoint("pi-implement: candidate", true)).exitCode,
+    ).toBe(0);
+
+    expect(await client.head()).not.toBe(first);
+    expect(git(cwd, "rev-list", "--count", "HEAD~1..HEAD").trim()).toBe("1");
+  });
+
   it("restores the staged candidate patch after index mutation", async () => {
     const cwd = repo();
     writeFileSync(join(cwd, "tracked.ts"), "export const value = 2;\n");

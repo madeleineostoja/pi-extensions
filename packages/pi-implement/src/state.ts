@@ -61,6 +61,11 @@ export type TaskJson = {
   integrationAttempts: number;
   sourceBaseSha?: string;
   baseSha?: string;
+  candidateBaseSha?: string;
+  candidateSha?: string;
+  candidateTree?: string;
+  trustedCheckpoint?: string;
+  discardedBundles?: string[];
   worktreePath?: string;
   branchName?: string;
   taskCommitSha?: string;
@@ -81,6 +86,14 @@ export type EventEntry =
   | { type: "strategy_selected"; reason: string; mode: RunMode }
   | { type: "task_started"; taskId: string }
   | { type: "task_approved"; taskId: string; commitSha?: string }
+  | {
+      type: "candidate_checkpointed";
+      taskId: string;
+      commitSha: string;
+      amended: boolean;
+    }
+  | { type: "candidate_noop"; taskId: string }
+  | { type: "candidate_quarantined"; taskId: string; bundlePath: string }
   | { type: "integration_failed"; taskId: string; reason: string }
   | { type: "task_landed"; taskId: string; commitSha: string }
   | { type: "task_satisfied"; taskId: string }
@@ -347,9 +360,15 @@ export function writeTaskJson(
 ): void {
   const path = join(paths.tasksDir, taskId, "task.json");
   const existing = readTaskJson(paths, taskId);
-  const persisted = existing?.sourceBaseSha
-    ? { ...task, sourceBaseSha: existing.sourceBaseSha }
-    : task;
+  const persisted = {
+    ...task,
+    sourceBaseSha: existing?.sourceBaseSha ?? task.sourceBaseSha,
+    candidateBaseSha: task.candidateBaseSha ?? existing?.candidateBaseSha,
+    candidateSha: task.candidateSha ?? existing?.candidateSha,
+    candidateTree: task.candidateTree ?? existing?.candidateTree,
+    trustedCheckpoint: task.trustedCheckpoint ?? existing?.trustedCheckpoint,
+    discardedBundles: task.discardedBundles ?? existing?.discardedBundles,
+  };
   mkdirSync(dirname(path), { recursive: true });
   writeAtomic(path, JSON.stringify(persisted, null, 2));
 }

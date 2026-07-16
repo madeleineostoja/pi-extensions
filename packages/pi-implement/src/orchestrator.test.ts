@@ -51,6 +51,7 @@ class FakeGit implements GitClient {
   worktreeChild: FakeGit | undefined;
   rootValue = "/repo";
   mainRootValue = "/repo";
+  branchValue = "";
 
   async root() {
     return this.rootValue;
@@ -62,11 +63,23 @@ class FakeGit implements GitClient {
   async checkoutIdentity() {
     return `${this.rootValue}/.git`;
   }
+  async currentBranch() {
+    return this.branchValue;
+  }
   async activeOperation() {
     return this.activeOperationValue;
   }
   async head() {
     return this.headValue;
+  }
+  async tree() {
+    return `tree-${this.diffText}`;
+  }
+  async treeAt(_commit: string) {
+    return `tree-${this.diffText}`;
+  }
+  async isAmendOf() {
+    return true;
   }
   async status() {
     return this.statusText;
@@ -100,6 +113,26 @@ class FakeGit implements GitClient {
   async stagedDiff() {
     return this.diffText;
   }
+  async stagedDiffExcept() {
+    return this.diffText;
+  }
+  async workingDiff() {
+    return "";
+  }
+  async workingDiffExcept() {
+    return "";
+  }
+  async nonignoredUntracked() {
+    return [];
+  }
+  async abortActiveOperation() {
+    this.activeOperationValue = undefined;
+  }
+  async restoreSnapshot(head: string) {
+    this.headValue = head;
+    this.worktreeFingerprintText = "worktree";
+    this.activeOperationValue = undefined;
+  }
   worktreeFingerprintText = "worktree";
   restoredFromIndex = 0;
   restoredPatches: string[] = [];
@@ -117,6 +150,20 @@ class FakeGit implements GitClient {
   async restoreStagedPatch(patch: string) {
     this.restoredPatches.push(patch);
     this.worktreeFingerprintText = "worktree";
+  }
+  async checkpoint(message: string, amend: boolean): Promise<CommandResult> {
+    return amend ? this.reword(message) : this.commit(message);
+  }
+  async runCheckpointHooks(_checkpoint: string): Promise<CommandResult> {
+    return {
+      command: "git commit -C",
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    };
+  }
+  async rewordInternal(message: string): Promise<CommandResult> {
+    return this.reword(message);
   }
   async commit(message: string): Promise<CommandResult> {
     this.commits.push(message);
@@ -166,6 +213,9 @@ class FakeGit implements GitClient {
       throw this.addWorktreeError;
     }
     this.addedWorktrees.push({ path: worktreePath, branch: branchName });
+    if (this.worktreeChild?.rootValue === worktreePath) {
+      this.worktreeChild.branchValue = branchName;
+    }
   }
   async removeWorktree(worktreePath: string) {
     this.removedWorktrees.push(worktreePath);
@@ -174,6 +224,13 @@ class FakeGit implements GitClient {
     this.deletedBranches.push(branchName);
   }
   async diffRange(_baseSha: string, _headSha: string): Promise<string> {
+    return this.diffText;
+  }
+  async diffRangeExcept(
+    _baseSha: string,
+    _headSha: string,
+    _paths: string[],
+  ): Promise<string> {
     return this.diffText;
   }
   async listBranchesMatching(pattern: string): Promise<string[]> {
@@ -196,6 +253,9 @@ class FakeGit implements GitClient {
     }
     this.worktreeChild.rootValue = worktreePath;
     this.worktreeChild.mainRootValue = this.mainRootValue;
+    this.worktreeChild.branchValue =
+      this.addedWorktrees.find((worktree) => worktree.path === worktreePath)
+        ?.branch ?? "";
     return this.worktreeChild;
   }
 }

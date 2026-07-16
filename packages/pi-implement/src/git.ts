@@ -25,8 +25,12 @@ export type GitClient = {
   root(): Promise<string>;
   mainRoot(): Promise<string>;
   checkoutIdentity(): Promise<string>;
+  currentBranch(): Promise<string>;
   activeOperation(): Promise<string | undefined>;
   head(): Promise<string>;
+  tree(): Promise<string>;
+  treeAt(commit: string): Promise<string>;
+  isAmendOf(before: string, after: string): Promise<boolean>;
   status(): Promise<string>;
   isClean(): Promise<boolean>;
   isCleanExcept(paths: string[]): Promise<boolean>;
@@ -36,10 +40,24 @@ export type GitClient = {
   stagedDiffStat(): Promise<string>;
   stagedNameStatus(): Promise<string>;
   stagedDiff(): Promise<string>;
+  stagedDiffExcept(paths: string[]): Promise<string>;
+  workingDiff(): Promise<string>;
+  workingDiffExcept(paths: string[]): Promise<string>;
+  nonignoredUntracked(): Promise<string[]>;
+  abortActiveOperation(): Promise<void>;
+  restoreSnapshot(
+    head: string,
+    stagedPatch: string,
+    workingPatch: string,
+    protectedPaths: string[],
+  ): Promise<void>;
   stagedFingerprint(): Promise<string>;
   worktreeFingerprintExcept(paths: string[]): Promise<string>;
   restoreWorktreeFromIndexExcept(paths: string[]): Promise<void>;
   restoreStagedPatch(patch: string, protectedPaths: string[]): Promise<void>;
+  checkpoint(message: string, amend: boolean): Promise<CommandResult>;
+  runCheckpointHooks(checkpoint: string): Promise<CommandResult>;
+  rewordInternal(message: string): Promise<CommandResult>;
   commit(message: string): Promise<CommandResult>;
   reword(message: string): Promise<CommandResult>;
   reset(): Promise<void>;
@@ -52,6 +70,11 @@ export type GitClient = {
   removeWorktree(worktreePath: string): Promise<void>;
   deleteTaskBranch(branchName: string): Promise<void>;
   diffRange(baseSha: string, headSha: string): Promise<string>;
+  diffRangeExcept(
+    baseSha: string,
+    headSha: string,
+    paths: string[],
+  ): Promise<string>;
   listBranchesMatching(pattern: string): Promise<string[]>;
   listWorktrees(): Promise<string[]>;
   ensureInfoExclude(pattern: string): Promise<void>;
@@ -88,6 +111,10 @@ export class ExecGitClient implements GitClient {
     return realpathSync(gitDir);
   }
 
+  async currentBranch(): Promise<string> {
+    return (await this.run(["branch", "--show-current"])).stdout.trim();
+  }
+
   async activeOperation(): Promise<string | undefined> {
     for (const [ref, label] of [
       ["CHERRY_PICK_HEAD", "cherry-pick"],
@@ -116,6 +143,46 @@ export class ExecGitClient implements GitClient {
 
   async head(): Promise<string> {
     return (await this.run(["rev-parse", "HEAD"])).stdout.trim();
+  }
+
+  async tree(): Promise<string> {
+    return (await this.run(["write-tree"])).stdout.trim();
+  }
+
+  async treeAt(commit: string): Promise<string> {
+    return (await this.run(["rev-parse", `${commit}^{tree}`])).stdout.trim();
+  }
+
+  async isAmendOf(before: string, after: string): Promise<boolean> {
+    if (before === after) {
+      return true;
+    }
+    const [
+      beforeParents,
+      afterParents,
+      beforeTree,
+      afterTree,
+      beforeMessage,
+      afterMessage,
+    ] = await Promise.all([
+      this.run(["show", "-s", "--format=%P", before], true),
+      this.run(["show", "-s", "--format=%P", after], true),
+      this.run(["rev-parse", `${before}^{tree}`], true),
+      this.run(["rev-parse", `${after}^{tree}`], true),
+      this.run(["show", "-s", "--format=%B", before], true),
+      this.run(["show", "-s", "--format=%B", after], true),
+    ]);
+    return (
+      beforeParents.exitCode === 0 &&
+      afterParents.exitCode === 0 &&
+      beforeTree.exitCode === 0 &&
+      afterTree.exitCode === 0 &&
+      beforeMessage.exitCode === 0 &&
+      afterMessage.exitCode === 0 &&
+      beforeParents.stdout.trim() === afterParents.stdout.trim() &&
+      beforeTree.stdout.trim() === afterTree.stdout.trim() &&
+      beforeMessage.stdout === afterMessage.stdout
+    );
   }
 
   async status(): Promise<string> {
@@ -188,6 +255,43 @@ export class ExecGitClient implements GitClient {
     return (await this.run(["diff", "--cached", "--binary", "HEAD"])).stdout;
   }
 
+  async stagedDiffExcept(paths: string[]): Promise<string> {
+    return (
+      await this.run([
+        "diff",
+        "--cached",
+        "--binary",
+        "HEAD",
+        "--",
+        ...(await this.protectedPathspecs(paths)),
+      ])
+    ).stdout;
+  }
+
+  async workingDiff(): Promise<string> {
+    return (await this.run(["diff", "--binary"])).stdout;
+  }
+
+  async workingDiffExcept(paths: string[]): Promise<string> {
+    return (
+      await this.run([
+        "diff",
+        "--binary",
+        "--",
+        ...(await this.protectedPathspecs(paths)),
+      ])
+    ).stdout;
+  }
+
+  async nonignoredUntracked(): Promise<string[]> {
+    return (
+      await this.run(["ls-files", "--others", "--exclude-standard", "-z"])
+    ).stdout
+      .split("\0")
+      .filter(Boolean)
+      .sort();
+  }
+
   async stagedFingerprint(): Promise<string> {
     const [tree, nameStatus, diff] = await Promise.all([
       this.run(["write-tree"]),
@@ -222,6 +326,52 @@ export class ExecGitClient implements GitClient {
     await this.run(["clean", "-fd", "--", ...pathspecs]);
   }
 
+  async abortActiveOperation(): Promise<void> {
+    const operation = await this.activeOperation();
+    if (!operation) {
+      return;
+    }
+    const command =
+      operation === "cherry-pick"
+        ? ["cherry-pick", "--abort"]
+        : operation === "merge"
+          ? ["merge", "--abort"]
+          : operation === "revert"
+            ? ["revert", "--abort"]
+            : ["rebase", "--abort"];
+    const result = await this.run(command, true);
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `${result.command} failed: ${result.stderr || result.stdout}`,
+      );
+    }
+  }
+
+  async restoreSnapshot(
+    head: string,
+    stagedPatch: string,
+    workingPatch: string,
+    protectedPaths: string[],
+  ): Promise<void> {
+    await this.resetHard(head);
+    await this.restoreWorktreeFromIndexExcept(protectedPaths);
+    const tmpDir = mkdtempSync(join(tmpdir(), "pi-implement-snapshot-"));
+    const stagedPath = join(tmpDir, "staged.patch");
+    const workingPath = join(tmpDir, "working.patch");
+    try {
+      writeFileSync(stagedPath, stagedPatch, "utf-8");
+      writeFileSync(workingPath, workingPatch, "utf-8");
+      if (stagedPatch.trim()) {
+        await this.run(["apply", "--index", "--whitespace=nowarn", stagedPath]);
+      }
+      if (workingPatch.trim()) {
+        await this.run(["apply", "--whitespace=nowarn", workingPath]);
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+
   async restoreStagedPatch(
     patch: string,
     protectedPaths: string[],
@@ -240,6 +390,27 @@ export class ExecGitClient implements GitClient {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  }
+
+  async checkpoint(message: string, amend: boolean): Promise<CommandResult> {
+    return this.run(
+      amend
+        ? ["commit", "--amend", "--no-verify", "-m", message]
+        : ["commit", "--no-verify", "-m", message],
+      true,
+    );
+  }
+
+  async runCheckpointHooks(checkpoint: string): Promise<CommandResult> {
+    const reset = await this.run(["reset", "--soft", `${checkpoint}^`], true);
+    if (reset.exitCode !== 0) {
+      return reset;
+    }
+    return this.run(["commit", "-C", checkpoint], true);
+  }
+
+  async rewordInternal(message: string): Promise<CommandResult> {
+    return this.run(["commit", "--amend", "--no-verify", "-m", message], true);
   }
 
   async commit(message: string): Promise<CommandResult> {
@@ -299,6 +470,22 @@ export class ExecGitClient implements GitClient {
       .stdout;
   }
 
+  async diffRangeExcept(
+    baseSha: string,
+    headSha: string,
+    paths: string[],
+  ): Promise<string> {
+    return (
+      await this.run([
+        "diff",
+        "--binary",
+        `${baseSha}..${headSha}`,
+        "--",
+        ...(await this.protectedPathspecs(paths)),
+      ])
+    ).stdout;
+  }
+
   async listBranchesMatching(pattern: string): Promise<string[]> {
     const result = await this.run(["branch", "--list", pattern]);
     return result.stdout
@@ -356,13 +543,18 @@ export class ExecGitClient implements GitClient {
   }
 
   private async repoRelativePaths(paths: string[]): Promise<string[]> {
-    const root = this.mainRepoRoot ?? (await this.root());
+    const root = await this.root();
     const realRoot = safeRealpath(root);
+    const sourceRoot = this.mainRepoRoot ?? root;
+    const realSourceRoot = safeRealpath(sourceRoot);
     const seen = new Set<string>();
     const result: string[] = [];
     for (const path of paths) {
       const rel = isAbsolute(path)
-        ? (relativeInside(root, path) ?? relativeInside(realRoot, path))
+        ? (relativeInside(root, path) ??
+          relativeInside(realRoot, path) ??
+          relativeInside(sourceRoot, path) ??
+          relativeInside(realSourceRoot, path))
         : path;
       if (!rel) {
         continue;

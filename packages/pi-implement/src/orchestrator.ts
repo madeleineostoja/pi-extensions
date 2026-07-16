@@ -46,6 +46,16 @@ import {
 } from "./source-checkbox.js";
 import type { ExecutionManifest } from "./execution-plan.js";
 import type { CommandResult, GitClient } from "./git.js";
+import {
+  captureRestoreSnapshot,
+  checkpointCandidate,
+  persistDiscardedBundle,
+  protectedArtifactsChanged,
+  restoreAndVerify,
+  snapshotChanged,
+  type CandidateMetadata,
+  type RestoreSnapshot,
+} from "./candidate.js";
 import type { SubagentClient } from "./subagents.js";
 import type { EffectiveRoles } from "./config.js";
 import {
@@ -1143,6 +1153,7 @@ async function runParallelImplementation(
   });
 
   scheduler: for (;;) {
+    throwIfStopped(deps);
     if (allTasksTerminal(sched)) {
       if (anyTaskFailedBlockedStopped(sched)) {
         const healProgress = await attemptSchedulerSelfHeal(
@@ -1165,7 +1176,6 @@ async function runParallelImplementation(
       break;
     }
 
-    throwIfStopped(deps);
     plan = parsePlanFile(deps.planPath);
     validateRecordedPlanCorpus(deps);
 
@@ -1308,6 +1318,7 @@ async function runParallelImplementation(
 
     // Nothing running and nothing to land
     if (!toLand && !hasActiveRework) {
+      throwIfStopped(deps);
       const healProgress = await attemptSchedulerSelfHeal(
         deps,
         sched,
@@ -1394,33 +1405,53 @@ async function launchTaskWorker(
   wasNeedsRework: boolean,
 ): Promise<WorkerResult> {
   const task = sched.tasks.get(taskId)!;
-  const baseSha = await deps.git.head();
-  const sourceBaseSha = task.sourceBaseSha ?? baseSha;
+  const existing = readTaskJson(deps.paths!, taskId);
+  const baseSha =
+    existing?.candidateBaseSha ?? task.baseSha ?? (await deps.git.head());
+  const sourceBaseSha =
+    task.sourceBaseSha ?? existing?.sourceBaseSha ?? baseSha;
   const runId = deps.runId!;
   const branchName = `pi-implement/${runId}/${taskId}`;
   const worktreePath = join(deps.paths!.worktreesDir, taskId);
 
   task.sourceBaseSha = sourceBaseSha;
   task.baseSha = baseSha;
+  task.candidateBaseSha = existing?.candidateBaseSha ?? baseSha;
+  task.candidateSha = existing?.candidateSha;
+  task.candidateTree = existing?.candidateTree;
+  task.trustedCheckpoint = existing?.trustedCheckpoint;
+  task.discardedBundles = existing?.discardedBundles ?? [];
   task.worktreePath = worktreePath;
   task.branchName = branchName;
-  const existing = readTaskJson(deps.paths!, taskId);
   writeTaskJson(deps.paths!, taskId, {
     ...buildTaskJsonSnapshot(existing, task),
     status: "coding",
   });
 
+  let createdWorkspace = false;
+  let createdBranch = false;
   try {
-    if (wasNeedsRework) {
+    if (wasNeedsRework && !existing?.trustedCheckpoint) {
       await deps.git.removeWorktree(worktreePath).catch(() => undefined);
       await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
     }
-    await deps.git.createTaskBranch(branchName, baseSha);
-    await deps.git.addWorktree(worktreePath, branchName);
+    const registeredWorktrees = await deps.git.listWorktrees();
+    if (!registeredWorktrees.includes(worktreePath)) {
+      if (wasNeedsRework && existing?.trustedCheckpoint) {
+        await deps.git.addWorktree(worktreePath, branchName);
+      } else {
+        await deps.git.createTaskBranch(branchName, baseSha);
+        createdBranch = true;
+        await deps.git.addWorktree(worktreePath, branchName);
+      }
+      createdWorkspace = true;
+    }
     appendEvent(deps.paths!, { type: "task_started", taskId });
   } catch (err) {
-    await deps.git.removeWorktree(worktreePath).catch(() => undefined);
-    await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
+    if (createdWorkspace || createdBranch) {
+      await deps.git.removeWorktree(worktreePath).catch(() => undefined);
+      await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
+    }
     const reason = err instanceof Error ? err.message : String(err);
     return {
       taskId,
@@ -1428,7 +1459,43 @@ async function launchTaskWorker(
     };
   }
 
-  const taskGit = deps.git.forWorktree(worktreePath, await deps.git.root());
+  const mainRepoRoot = await deps.git.root();
+  const taskGit = deps.git.forWorktree(worktreePath, mainRepoRoot);
+  const taskPlanArtifacts = planArtifacts.map((artifact) => {
+    if (!isAbsolute(artifact)) {
+      return artifact;
+    }
+    const withinMainRoot = relative(mainRepoRoot, artifact);
+    return withinMainRoot && !withinMainRoot.startsWith("..")
+      ? join(worktreePath, withinMainRoot)
+      : artifact;
+  });
+  if (wasNeedsRework && existing?.trustedCheckpoint) {
+    const retainedSnapshot = await captureRestoreSnapshot(
+      taskGit,
+      taskPlanArtifacts,
+    );
+    const [actualBranch, actualHead, actualTree, checkpointTree] =
+      await Promise.all([
+        taskGit.currentBranch(),
+        taskGit.head(),
+        taskGit.tree(),
+        taskGit.treeAt(existing.trustedCheckpoint),
+      ]);
+    if (
+      actualBranch !== branchName ||
+      actualHead !== existing.trustedCheckpoint ||
+      actualTree !== checkpointTree ||
+      retainedSnapshot.activeOperation ||
+      retainedSnapshot.workingPatch ||
+      retainedSnapshot.untrackedPaths.length > 0 ||
+      (existing.candidateSha && retainedSnapshot.head !== existing.candidateSha)
+    ) {
+      throw new BlockedError(
+        "retained task worktree does not match its trusted checkpoint",
+      );
+    }
+  }
 
   const plan = parsePlanFile(deps.planPath);
 
@@ -1442,7 +1509,7 @@ async function launchTaskWorker(
       worktreePath,
       branchName,
       baseSha,
-      planArtifacts,
+      planArtifacts: taskPlanArtifacts,
       schedulerTask: task,
       runBaseSha,
       wasNeedsRework,
@@ -1534,6 +1601,10 @@ async function landApprovedTask(
 
   const preIntegrationHead = integrationStartHead;
   const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
+  const preIntegrationSnapshot = await captureRestoreSnapshot(
+    deps.git,
+    planArtifacts,
+  );
 
   const failForRework = async (source: string, reason: string) => {
     const rollback = await rollbackIntegration(
@@ -1541,6 +1612,7 @@ async function landApprovedTask(
       preIntegrationHead,
       planArtifacts,
       planArtifactSnapshot,
+      preIntegrationSnapshot,
     );
     const detail = annotateRollbackReason(reason, rollback, preIntegrationHead);
     task.integrationAttempts++;
@@ -1572,6 +1644,7 @@ async function landApprovedTask(
       preIntegrationHead,
       planArtifacts,
       planArtifactSnapshot,
+      preIntegrationSnapshot,
     );
     const detail = annotateRollbackReason(reason, rollback, preIntegrationHead);
     task.integrationAttempts++;
@@ -1611,6 +1684,7 @@ async function landApprovedTask(
       );
       const preHealSnapshot: IntegrationCandidateSnapshot = {
         head: preIntegrationHead,
+        tree: "",
         stagedFingerprint: "",
         worktreeFingerprint: "",
         stagedPaths: preHealStagedPaths,
@@ -1655,6 +1729,7 @@ async function landApprovedTask(
             preIntegrationHead,
             planArtifacts,
             planArtifactSnapshot,
+            preIntegrationSnapshot,
           );
           cherryPick = await deps.git.cherryPickNoCommit(task.taskCommitSha);
           cherryPickSucceeded = cherryPick.exitCode === 0;
@@ -1727,6 +1802,7 @@ async function landApprovedTask(
           preIntegrationHead,
           planArtifacts,
           planArtifactSnapshot,
+          preIntegrationSnapshot,
         );
         const cp = await deps.git.cherryPickNoCommit(task.taskCommitSha);
         if (cp.exitCode !== 0) {
@@ -1773,6 +1849,12 @@ async function landApprovedTask(
     }
 
     const landedHead = await deps.git.head();
+    if ((await deps.git.treeAt(landedHead)) !== candidateSnapshot.tree) {
+      return await failForRework(
+        "commit-hook",
+        "commit hook changed the approved candidate tree",
+      );
+    }
     if (landedHead === preIntegrationHead) {
       return await failForRework(
         "commit",
@@ -1789,36 +1871,14 @@ async function landApprovedTask(
         `Commit hook changed a plan artifact: ${changedPlanArtifactAfterCommit}`,
       );
     }
-    let finalHead = landedHead;
     if (!(await deps.git.isCleanExcept(planArtifacts))) {
-      // A precommit hook (e.g. a formatter) can only dirty the tree while it
-      // creates the commit, so this is first observable after commit. Fold
-      // those hook-owned edits into the just-created commit instead of
-      // blocking on a clean tree the hook itself prevents from ever existing.
-      // Any thrown git error here is a post-commit cleanup failure, not an
-      // implementer problem, so it must block rather than fall through to the
-      // rework path in the outer catch.
-      let foldReason: string | undefined;
-      try {
-        foldReason = await foldPostCommitHookChanges(
-          deps,
-          planArtifacts,
-          planArtifactSnapshot,
-          candidateSnapshot.stagedPaths,
-          task.approvedCommitMessage ?? `chore: implement ${task.title}`,
-        );
-      } catch (err) {
-        foldReason = err instanceof Error ? err.message : String(err);
-      }
-      if (foldReason) {
-        return await failBlocked(
-          "commit",
-          `Commit succeeded but ${foldReason}`,
-        );
-      }
-      finalHead = await deps.git.head();
+      return await failForRework(
+        "commit-hook",
+        "commit hook changed the integrated candidate after approval",
+      );
     }
 
+    const finalHead = landedHead;
     task.status = "landed";
     task.landedCommitSha = finalHead;
     sched.landedOrder.push(taskId);
@@ -1959,29 +2019,26 @@ async function rollbackIntegration(
   preIntegrationHead: string,
   planArtifacts: string[],
   planArtifactSnapshot: Map<string, string | undefined>,
+  snapshot: RestoreSnapshot,
 ): Promise<RollbackOutcome> {
-  await deps.git.cherryPickAbort().catch(async () => {
+  try {
+    await restoreAndVerify(deps.git, snapshot, planArtifacts);
+    return { headRestored: true, currentHead: snapshot.head };
+  } catch {
+    await deps.git.cherryPickAbort().catch(async () => {
+      await deps.git.resetHard(preIntegrationHead).catch(() => undefined);
+    });
     await deps.git.resetHard(preIntegrationHead).catch(() => undefined);
-  });
-  await deps.git.resetHard(preIntegrationHead).catch(() => undefined);
-  await deps.git
-    .restoreWorktreeFromIndexExcept(planArtifacts)
-    .catch(() => undefined);
-  restorePlanArtifacts(planArtifacts, planArtifactSnapshot);
-
-  // resetHard failures are intentionally swallowed above so cleanup keeps
-  // going, but that means a stuck reset could leave the just-created commit on
-  // the branch while the task is still reported as failed. Re-read HEAD so the
-  // reason can flag that the commit may still be present rather than implying a
-  // clean rollback.
-  const currentHead = await deps.git
-    .head()
-    .then((h) => h)
-    .catch(() => undefined);
-  return {
-    headRestored: currentHead === preIntegrationHead,
-    currentHead,
-  };
+    await deps.git
+      .restoreWorktreeFromIndexExcept(planArtifacts)
+      .catch(() => undefined);
+    restorePlanArtifacts(planArtifacts, planArtifactSnapshot);
+    const currentHead = await deps.git.head().catch(() => undefined);
+    return {
+      headRestored: currentHead === preIntegrationHead,
+      currentHead,
+    };
+  }
 }
 
 function annotateRollbackReason(
@@ -1998,62 +2055,9 @@ function annotateRollbackReason(
   return `${reason}\n\nWARNING: rollback did not restore HEAD to ${preIntegrationHead.slice(0, 12)}; an integration commit may still be present on the branch.${at}`;
 }
 
-// A precommit hook that mutates tracked files (e.g. a formatter) leaves the
-// tree dirty only after the commit exists. Fold those hook-owned edits into the
-// just-created commit via amend so the formatted content lands, rather than
-// blocking a valid commit or discarding the hook's changes. Folding is scoped
-// to files already in the approved candidate: a hook may reformat what the task
-// touched, but changes to unrelated tracked files (e.g. a repo-wide formatter)
-// are out of scope and block instead of being silently absorbed. Returns a
-// reason string when the tree cannot be brought to a clean state safely.
-async function foldPostCommitHookChanges(
-  deps: OrchestratorDeps,
-  planArtifacts: string[],
-  planArtifactSnapshot: Map<string, string | undefined>,
-  allowedPaths: string[],
-  commitMessage: string,
-): Promise<string | undefined> {
-  const { staged, unstaged, untracked } = await collectChangedPaths(deps);
-  const disallowedUntracked = untracked.filter(
-    (p) => !isPlanArtifactPath(p, planArtifacts, deps.planPath),
-  );
-  if (disallowedUntracked.length > 0) {
-    return `main checkout has untracked files after commit: ${disallowedUntracked.join(", ")}`;
-  }
-
-  const inScope = new Set(allowedPaths.map((p) => normalizeStatusPath(p)));
-  const outOfScope = [...new Set([...staged, ...unstaged])].filter(
-    (p) =>
-      !isPlanArtifactPath(p, planArtifacts, deps.planPath) &&
-      !inScope.has(normalizeStatusPath(p)),
-  );
-  if (outOfScope.length > 0) {
-    return `commit hook changed tracked files outside the approved task diff: ${outOfScope.join(", ")}`;
-  }
-
-  await deps.git.stageAllExcept(planArtifacts);
-  const amend = await deps.git.reword(commitMessage);
-  if (amend.exitCode !== 0) {
-    return (
-      amend.stderr || amend.stdout || "amend of post-commit changes failed"
-    );
-  }
-
-  const changedPlanArtifact = changedSnapshotPath(
-    planArtifacts,
-    planArtifactSnapshot,
-  );
-  if (changedPlanArtifact) {
-    return `commit hook changed a plan artifact: ${changedPlanArtifact}`;
-  }
-  if (!(await deps.git.isCleanExcept(planArtifacts))) {
-    return "main checkout is dirty";
-  }
-  return undefined;
-}
-
 type IntegrationCandidateSnapshot = {
   head: string;
+  tree: string;
   stagedFingerprint: string;
   worktreeFingerprint: string;
   stagedPaths: string[];
@@ -2063,15 +2067,16 @@ async function snapshotIntegrationCandidate(
   deps: OrchestratorDeps,
   planArtifacts: string[],
 ): Promise<IntegrationCandidateSnapshot> {
-  const [head, stagedFingerprint, worktreeFingerprint, stagedNameStatus] =
+  const [head, tree, stagedFingerprint, worktreeFingerprint, stagedNameStatus] =
     await Promise.all([
       deps.git.head(),
+      deps.git.tree(),
       deps.git.stagedFingerprint(),
       deps.git.worktreeFingerprintExcept(planArtifacts),
       deps.git.stagedNameStatus(),
     ]);
   const stagedPaths = parseNameStatusPaths(stagedNameStatus);
-  return { head, stagedFingerprint, worktreeFingerprint, stagedPaths };
+  return { head, tree, stagedFingerprint, worktreeFingerprint, stagedPaths };
 }
 
 async function detectIntegrationMutation(
@@ -4447,6 +4452,11 @@ function taskToJson(task: SchedulerTask): TaskJson {
     integrationAttempts: task.integrationAttempts,
     sourceBaseSha: task.sourceBaseSha,
     baseSha: task.baseSha,
+    candidateBaseSha: task.candidateBaseSha,
+    candidateSha: task.candidateSha,
+    candidateTree: task.candidateTree,
+    trustedCheckpoint: task.trustedCheckpoint,
+    discardedBundles: task.discardedBundles,
     worktreePath: task.worktreePath,
     branchName: task.branchName,
     taskCommitSha: task.taskCommitSha,
@@ -4482,6 +4492,11 @@ function buildTaskJsonSnapshot(
 ): TaskJson {
   return {
     ...taskToJson(task),
+    candidateBaseSha: task.candidateBaseSha ?? existing?.candidateBaseSha,
+    candidateSha: task.candidateSha ?? existing?.candidateSha,
+    candidateTree: task.candidateTree ?? existing?.candidateTree,
+    trustedCheckpoint: task.trustedCheckpoint ?? existing?.trustedCheckpoint,
+    discardedBundles: task.discardedBundles ?? existing?.discardedBundles,
     review: existing?.review,
   };
 }
@@ -4525,11 +4540,90 @@ async function runTaskWorker(args: {
   let systemFailures = 0;
   let anchoredReviewChangeRequests = 0;
   let priorReviewRequiredChanges: string[] | undefined;
+  let candidate: CandidateMetadata = {
+    sourceBaseSha: schedulerTask?.sourceBaseSha ?? baseSha,
+    candidateBaseSha: schedulerTask?.candidateBaseSha ?? baseSha,
+    branchName,
+    worktreePath,
+    candidateSha: schedulerTask?.candidateSha,
+    candidateTree: schedulerTask?.candidateTree,
+    trustedCheckpoint: schedulerTask?.trustedCheckpoint,
+    discardedBundles: schedulerTask?.discardedBundles ?? [],
+  };
+  const persistCandidate = (status: TaskJson["status"], reason?: string) => {
+    if (schedulerTask) {
+      Object.assign(schedulerTask, candidate);
+    }
+    if (deps.paths) {
+      const existing = readTaskJson(deps.paths, taskId);
+      writeTaskJson(deps.paths, taskId, {
+        id: taskId,
+        planIndex: task.index - 1,
+        title: task.text,
+        status,
+        dependsOn: [],
+        attempts: attempt,
+        integrationAttempts: 0,
+        sourceBaseSha: candidate.sourceBaseSha,
+        baseSha: candidate.candidateBaseSha,
+        candidateBaseSha: candidate.candidateBaseSha,
+        candidateSha: candidate.candidateSha,
+        candidateTree: candidate.candidateTree,
+        trustedCheckpoint: candidate.trustedCheckpoint,
+        discardedBundles: candidate.discardedBundles,
+        worktreePath,
+        branchName,
+        activeSubagentIds: [],
+        lastReason: reason,
+        review: existing?.review,
+      });
+    }
+  };
+  let trustedSnapshot: RestoreSnapshot | undefined;
+  const quarantineAndRestore = async (reason: string) => {
+    if (!worktreePath) {
+      return;
+    }
+    const trusted = candidate.trustedCheckpoint ?? candidate.candidateBaseSha;
+    const bundlePath = join(
+      deps.paths!.tasksDir,
+      taskId,
+      "discarded",
+      `${Date.now()}-${attempt}`,
+    );
+    const bundle = await persistDiscardedBundle({
+      git: taskGit,
+      destination: bundlePath,
+      protectedPaths: planArtifacts,
+      baseSha: trusted,
+    });
+    candidate = {
+      ...candidate,
+      discardedBundles: [...candidate.discardedBundles, bundle],
+    };
+    persistCandidate("needs_rework", reason);
+    appendEvent(deps.paths!, {
+      type: "candidate_quarantined",
+      taskId,
+      bundlePath: bundle,
+    });
+    const snapshot = trustedSnapshot ?? {
+      ...(await captureRestoreSnapshot(taskGit, planArtifacts)),
+      head: trusted,
+      stagedPatch: "",
+      workingPatch: "",
+      untrackedArtifacts: new Map(),
+    };
+    await restoreAndVerify(taskGit, snapshot, planArtifacts);
+  };
   for (;;) {
     throwIfStopped(deps);
     const taskHeadBefore = worktreePath
       ? await taskGit.head()
       : await deps.git.head();
+    trustedSnapshot = worktreePath
+      ? await captureRestoreSnapshot(taskGit, planArtifacts)
+      : undefined;
     const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
     const compiledContractEntry = deps.executionManifest?.tasks.find(
       (mt) => mt.planIndex === task.index,
@@ -4644,7 +4738,12 @@ async function runTaskWorker(args: {
         dependsOn: [],
         attempts: attempt,
         integrationAttempts: 0,
-        baseSha,
+        baseSha: candidate.candidateBaseSha,
+        candidateBaseSha: candidate.candidateBaseSha,
+        candidateSha: candidate.candidateSha,
+        candidateTree: candidate.candidateTree,
+        trustedCheckpoint: candidate.trustedCheckpoint,
+        discardedBundles: candidate.discardedBundles,
         worktreePath,
         branchName,
         activeSubagentIds: [implementerId],
@@ -4659,12 +4758,20 @@ async function runTaskWorker(args: {
     clearSchedulerActiveAgent(schedulerTask, implementerId);
     deps.updateState((prev) => removeActiveAgentPatch(prev, implementerId));
 
-    if (implementation.status === "stopped") {
+    if (
+      implementation.status === "stopped" ||
+      deps.shouldStop() ||
+      deps.signal?.aborted
+    ) {
+      await quarantineAndRestore("implementer stopped before completion");
       throw new StoppedError();
     }
     throwIfStopped(deps);
 
     if (implementation.status === "failed") {
+      await quarantineAndRestore(
+        "implementer provider failure before completion",
+      );
       if (deps.paths) {
         writeTaskJson(deps.paths, taskId, {
           id: taskId,
@@ -4674,7 +4781,12 @@ async function runTaskWorker(args: {
           dependsOn: [],
           attempts: attempt,
           integrationAttempts: 0,
-          baseSha,
+          baseSha: candidate.candidateBaseSha,
+          candidateBaseSha: candidate.candidateBaseSha,
+          candidateSha: candidate.candidateSha,
+          candidateTree: candidate.candidateTree,
+          trustedCheckpoint: candidate.trustedCheckpoint,
+          discardedBundles: candidate.discardedBundles,
           worktreePath,
           branchName,
           activeSubagentIds: [],
@@ -4726,16 +4838,28 @@ async function runTaskWorker(args: {
       planArtifacts,
       planArtifactSnapshot,
     );
-    if (changedPlanArtifact) {
+    const protectedArtifactChanged =
+      worktreePath && trustedSnapshot
+        ? protectedArtifactsChanged(trustedSnapshot)
+        : false;
+    if (changedPlanArtifact || protectedArtifactChanged) {
+      const artifact = changedPlanArtifact ?? "protected artifact state";
+      await quarantineAndRestore(
+        `implementer changed a plan artifact: ${artifact}`,
+      );
       throw new BlockedError(
-        `implementer changed a plan artifact: ${changedPlanArtifact}`,
+        `implementer changed a plan artifact: ${artifact}`,
       );
     }
     if (worktreePath && (await taskGit.head()) !== taskHeadBefore) {
+      await quarantineAndRestore("implementer changed task worktree HEAD");
       throw new BlockedError("implementer changed task worktree HEAD");
     }
 
     let parsed = parseImplementerResult(implementation.result);
+    if (!parsed.ok) {
+      await quarantineAndRestore("implementer returned an invalid completion");
+    }
     deps.updateState((prev) =>
       checkpointPatch(
         prev,
@@ -4770,14 +4894,23 @@ async function runTaskWorker(args: {
     await recordPapercuts(deps, implementation.result, "implementer", taskId);
 
     await taskGit.stageAllExcept(planArtifacts);
-    const hasStaged = await taskGit.hasStagedChanges();
+    const hasImplementationDelta = await taskGit.hasStagedChanges();
+    const hasStaged =
+      hasImplementationDelta ||
+      (parsed.ok &&
+        parsed.result.outcome === "changed" &&
+        Boolean(worktreePath && candidate.trustedCheckpoint) &&
+        (await taskGit.head()) === candidate.trustedCheckpoint);
 
     // The implementer claimed the task was already satisfied but left staged
     // changes. The diff is the ground truth, so treat this as a `changed`
     // candidate and let the reviewer judge whether to commit it or send it
     // back for rework rather than silently dropping or blindly landing it.
     let alreadySatisfiedDiscrepancy = false;
-    if (hasStaged && parsed.result.outcome === "already_satisfied") {
+    if (
+      hasImplementationDelta &&
+      parsed.result.outcome === "already_satisfied"
+    ) {
       alreadySatisfiedDiscrepancy = true;
       parsed = {
         ok: true,
@@ -4829,21 +4962,37 @@ async function runTaskWorker(args: {
       });
 
       if (worktreePath) {
-        const wipCommit = await taskGit.commit("pi-implement: candidate");
-        if (wipCommit.exitCode !== 0) {
-          await taskGit.resetHard(baseSha);
+        const checkpoint = await checkpointCandidate(taskGit, candidate);
+        if (checkpoint.result && checkpoint.result.exitCode !== 0) {
+          await quarantineAndRestore(
+            `Unable to checkpoint implementation: ${checkpoint.result.stderr || checkpoint.result.stdout}`,
+          );
           feedback = recordSystemFailure(
             task.index,
             systemFailures,
-            "commit-hook",
-            `Commit failed. Fix the issue and try again.\n\n${wipCommit.stderr || wipCommit.stdout}`,
+            "system",
+            `Unable to checkpoint implementation. Fix the issue and try again.\n\n${checkpoint.result.stderr || checkpoint.result.stdout}`,
           );
           systemFailures++;
-          priorReviewRequiredChanges = undefined;
-          anchoredReviewChangeRequests = 0;
           attempt++;
           continue;
         }
+        candidate = checkpoint.candidate;
+        if (checkpoint.changed) {
+          trustedSnapshot = await captureRestoreSnapshot(
+            taskGit,
+            planArtifacts,
+          );
+          appendEvent(deps.paths!, {
+            type: "candidate_checkpointed",
+            taskId,
+            commitSha: candidate.trustedCheckpoint!,
+            amended: Boolean(reviewHeadBefore !== candidate.candidateBaseSha),
+          });
+        } else {
+          appendEvent(deps.paths!, { type: "candidate_noop", taskId });
+        }
+        persistCandidate("reviewing");
         reviewHeadBefore = await taskGit.head();
         worktreeFingerprintBefore =
           await taskGit.worktreeFingerprintExcept(planArtifacts);
@@ -4909,6 +5058,9 @@ async function runTaskWorker(args: {
     }
 
     {
+      const reviewerSnapshot = worktreePath
+        ? await captureRestoreSnapshot(taskGit, planArtifacts)
+        : undefined;
       const reviewerId = await deps.subagents.spawn({
         type: deps.roles.reviewer.type,
         prompt: reviewerPrompt!,
@@ -4945,7 +5097,12 @@ async function runTaskWorker(args: {
           dependsOn: [],
           attempts: attempt,
           integrationAttempts: 0,
-          baseSha,
+          baseSha: candidate.candidateBaseSha,
+          candidateBaseSha: candidate.candidateBaseSha,
+          candidateSha: candidate.candidateSha,
+          candidateTree: candidate.candidateTree,
+          trustedCheckpoint: candidate.trustedCheckpoint,
+          discardedBundles: candidate.discardedBundles,
           worktreePath,
           branchName,
           activeSubagentIds: [reviewerId],
@@ -4964,7 +5121,12 @@ async function runTaskWorker(args: {
           dependsOn: [],
           attempts: attempt,
           integrationAttempts: 0,
-          baseSha,
+          baseSha: candidate.candidateBaseSha,
+          candidateBaseSha: candidate.candidateBaseSha,
+          candidateSha: candidate.candidateSha,
+          candidateTree: candidate.candidateTree,
+          trustedCheckpoint: candidate.trustedCheckpoint,
+          discardedBundles: candidate.discardedBundles,
           worktreePath,
           branchName,
           activeSubagentIds: [],
@@ -4976,20 +5138,29 @@ async function runTaskWorker(args: {
         await resetTaskForRetry(
           taskGit,
           worktreePath,
-          reviewHeadBefore,
+          candidate.trustedCheckpoint ?? reviewHeadBefore,
           planArtifacts,
+          reviewerSnapshot,
         );
         throw new StoppedError();
       }
-      await throwIfStoppedAndReset(deps, taskGit);
+      if (deps.signal?.aborted || deps.shouldStop()) {
+        await resetTaskForRetry(
+          taskGit,
+          worktreePath,
+          candidate.trustedCheckpoint ?? reviewHeadBefore,
+          planArtifacts,
+          reviewerSnapshot,
+        );
+        throw new StoppedError();
+      }
       if (review.status === "failed") {
         await resetTaskForRetry(
           taskGit,
           worktreePath,
-          systemFailures + 1 >= MAX_SYSTEM_FAILURES
-            ? reviewHeadBefore
-            : baseSha,
+          candidate.trustedCheckpoint ?? reviewHeadBefore,
           planArtifacts,
+          reviewerSnapshot,
         );
         feedback = recordSystemFailure(
           task.index,
@@ -5012,10 +5183,23 @@ async function runTaskWorker(args: {
         planArtifacts,
         planArtifactSnapshot,
       );
-      if (changedPlanArtifactAfterReview) {
-        throw new BlockedError(
-          `reviewer changed a plan artifact: ${changedPlanArtifactAfterReview}`,
-        );
+      if (
+        changedPlanArtifactAfterReview ||
+        (worktreePath &&
+          (await snapshotChanged(taskGit, reviewerSnapshot!, planArtifacts)))
+      ) {
+        try {
+          await restoreAndVerify(taskGit, reviewerSnapshot!, planArtifacts);
+        } catch (err) {
+          throw new BlockedError(
+            `reviewer mutation could not be restored: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        if (changedPlanArtifactAfterReview) {
+          throw new BlockedError(
+            `reviewer changed a plan artifact: ${changedPlanArtifactAfterReview}`,
+          );
+        }
       }
       if ((await taskGit.head()) !== reviewHeadBefore) {
         throw new BlockedError("reviewer changed HEAD");
@@ -5037,6 +5221,7 @@ async function runTaskWorker(args: {
           candidatePatch: candidatePatch!,
           worktreeFingerprintBefore: worktreeFingerprintBefore!,
           committedSha: worktreePath ? reviewHeadBefore : undefined,
+          snapshot: reviewerSnapshot,
         });
       }
       const verdict = parseReviewerVerdict(review.result);
@@ -5044,10 +5229,9 @@ async function runTaskWorker(args: {
         await resetTaskForRetry(
           taskGit,
           worktreePath,
-          systemFailures + 1 >= MAX_SYSTEM_FAILURES
-            ? reviewHeadBefore
-            : baseSha,
+          candidate.trustedCheckpoint ?? reviewHeadBefore,
           planArtifacts,
+          reviewerSnapshot,
         );
         feedback = recordSystemFailure(
           task.index,
@@ -5086,8 +5270,9 @@ async function runTaskWorker(args: {
           await resetTaskForRetry(
             taskGit,
             worktreePath,
-            baseSha,
+            candidate.trustedCheckpoint ?? reviewHeadBefore,
             planArtifacts,
+            reviewerSnapshot,
           );
           priorReviewRequiredChanges = verdict.requiredChanges;
           feedback = reviewerFeedback(verdict.requiredChanges);
@@ -5116,8 +5301,9 @@ async function runTaskWorker(args: {
           await resetTaskForRetry(
             taskGit,
             worktreePath,
-            baseSha,
+            candidate.trustedCheckpoint ?? reviewHeadBefore,
             planArtifacts,
+            reviewerSnapshot,
           );
           priorReviewRequiredChanges = unresolved;
           feedback = reviewerFeedback(unresolved);
@@ -5192,7 +5378,8 @@ async function runTaskWorker(args: {
     if (
       !hasStaged &&
       parsed.result.outcome === "already_satisfied" &&
-      worktreePath
+      worktreePath &&
+      !candidate.trustedCheckpoint
     ) {
       throwIfStopped(deps);
       if (!(await taskGit.isCleanExcept(planArtifacts))) {
@@ -5267,41 +5454,51 @@ async function runTaskWorker(args: {
     await throwIfStoppedAndReset(deps, taskGit);
 
     if (worktreePath) {
-      const taskCommit = await taskGit.reword(approvedMessage);
+      const taskCommit = await taskGit.rewordInternal(approvedMessage);
       if (taskCommit.exitCode !== 0) {
-        const headAfterFailedCommit = await taskGit.head();
-        if (headAfterFailedCommit !== reviewHeadBefore) {
-          throw new BlockedError(
-            "task reword failed but HEAD changed; inspect manually",
-          );
-        }
-        await taskGit.resetHard(baseSha);
+        throw new BlockedError(
+          `could not finalize approved checkpoint: ${taskCommit.stderr || taskCommit.stdout}`,
+        );
+      }
+      const taskCommitSha = await taskGit.head();
+      candidate = {
+        ...candidate,
+        candidateSha: taskCommitSha,
+        trustedCheckpoint: taskCommitSha,
+      };
+      persistCandidate("reviewing");
+      const hookSnapshot = await captureRestoreSnapshot(taskGit, planArtifacts);
+      const hookResult = await taskGit.runCheckpointHooks(hookSnapshot.head);
+      let hookMutated = false;
+      try {
+        const hookHead = await taskGit.head();
+        const expectedAmend =
+          hookResult.exitCode === 0 &&
+          (await taskGit.isAmendOf(hookSnapshot.head, hookHead));
+        hookMutated =
+          (hookHead !== hookSnapshot.head && !expectedAmend) ||
+          (await snapshotChanged(taskGit, hookSnapshot, planArtifacts, {
+            ignoreHead: true,
+          }));
+        await restoreAndVerify(taskGit, hookSnapshot, planArtifacts);
+      } catch (err) {
+        throw new BlockedError(
+          `approval hook mutation could not be restored: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      if (hookResult.exitCode !== 0 || hookMutated) {
         feedback = recordSystemFailure(
           task.index,
           systemFailures,
           "commit-hook",
-          `Commit failed. Fix the issue and try again.\n\n${taskCommit.stderr || taskCommit.stdout}`,
+          `${hookMutated ? "Approval hook changed the reviewed checkpoint; restoration succeeded, but rework is required.\n\n" : ""}${hookResult.stderr || hookResult.stdout}`,
         );
         systemFailures++;
         priorReviewRequiredChanges = undefined;
         anchoredReviewChangeRequests = 0;
         attempt++;
+        persistCandidate("integration_failed", feedback.message);
         if (deps.paths) {
-          writeTaskJson(deps.paths, taskId, {
-            id: taskId,
-            planIndex: task.index - 1,
-            title: task.text,
-            status: "integration_failed",
-            dependsOn: [],
-            attempts: attempt,
-            integrationAttempts: systemFailures,
-            baseSha,
-            worktreePath,
-            branchName,
-            activeSubagentIds: [],
-            lastReason: feedback.message,
-            review: currentTaskReviewMetadata(deps.paths, taskId),
-          });
           appendEvent(deps.paths, {
             type: "integration_failed",
             taskId,
@@ -5309,11 +5506,6 @@ async function runTaskWorker(args: {
           });
         }
         continue;
-      }
-
-      const taskCommitSha = await taskGit.head();
-      if (taskCommitSha === reviewHeadBefore) {
-        throw new BlockedError("task reword succeeded but HEAD did not change");
       }
       if (!(await taskGit.isCleanExcept(planArtifacts))) {
         throw new BlockedError(
@@ -5464,6 +5656,7 @@ async function healReviewerMutations(args: {
   candidatePatch: string;
   worktreeFingerprintBefore: string;
   committedSha?: string;
+  snapshot?: RestoreSnapshot;
 }): Promise<void> {
   const {
     taskGit,
@@ -5472,20 +5665,18 @@ async function healReviewerMutations(args: {
     candidatePatch,
     worktreeFingerprintBefore,
     committedSha,
+    snapshot,
   } = args;
 
-  if (committedSha) {
-    const worktreeFingerprintAfter =
-      await taskGit.worktreeFingerprintExcept(planArtifacts);
-    if (worktreeFingerprintAfter === worktreeFingerprintBefore) {
+  if (committedSha && snapshot) {
+    if (!(await snapshotChanged(taskGit, snapshot, planArtifacts))) {
       return;
     }
-    await taskGit.resetHard(committedSha);
-    const healedWorktreeFingerprint =
-      await taskGit.worktreeFingerprintExcept(planArtifacts);
-    if (healedWorktreeFingerprint !== worktreeFingerprintBefore) {
+    try {
+      await restoreAndVerify(taskGit, snapshot, planArtifacts);
+    } catch (err) {
       throw new BlockedError(
-        "reviewer changed the candidate diff and auto-heal failed",
+        `reviewer changed the candidate and exact auto-heal failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
     return;
@@ -5778,10 +5969,15 @@ async function resetTaskForRetry(
   worktreePath: string | undefined,
   resetSha: string,
   planArtifacts: string[],
+  snapshot?: RestoreSnapshot,
 ): Promise<void> {
   if (worktreePath) {
-    await taskGit.resetHard(resetSha);
-    await taskGit.restoreWorktreeFromIndexExcept(planArtifacts);
+    if (snapshot) {
+      await restoreAndVerify(taskGit, snapshot, planArtifacts);
+    } else {
+      await taskGit.resetHard(resetSha);
+      await taskGit.restoreWorktreeFromIndexExcept(planArtifacts);
+    }
     return;
   }
   await taskGit.reset();
