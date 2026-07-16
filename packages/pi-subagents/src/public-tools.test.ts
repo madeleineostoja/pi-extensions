@@ -216,8 +216,13 @@ describe("public subagent tools", () => {
     expect(tools[0].promptGuidelines).toEqual(AGENT_PROMPT_GUIDELINES);
     expect(tools[0].promptGuidelines).toEqual(
       expect.arrayContaining([
+        expect.stringContaining("subagent_type Explore"),
         expect.stringContaining("subagent_type Review"),
         expect.stringContaining("Do not substitute General"),
+        expect.stringMatching(
+          /Do not delegate ordinary implementation.*to General/,
+        ),
+        expect.stringContaining("materially benefits from separate context"),
       ]),
     );
     expect(tools[0].renderCall).toEqual(expect.any(Function));
