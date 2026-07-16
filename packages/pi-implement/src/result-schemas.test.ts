@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   executionManifestSchema,
   implementerResultSchema,
-  integrationReviewSchema,
+  integrationInitialReviewSchema,
   integrationSelfHealSchema,
   overallReviewSchema,
   overallReworkSchema,
@@ -49,7 +49,7 @@ describe("managed completion schemas", () => {
       }),
     ).toBe(true);
     expect(
-      Value.Check(integrationReviewSchema, {
+      Value.Check(integrationInitialReviewSchema, {
         verdict: "approved",
         papercuts: candidates,
       }),

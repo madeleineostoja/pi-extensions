@@ -361,20 +361,32 @@ describe("git helpers", () => {
     await client.deleteTaskBranch(branchName);
   });
 
-  it("returns the diff between two commits", async () => {
+  it("returns and applies the complete diff between two commits", async () => {
     const cwd = repo();
     const client = new ExecGitClient(cwd);
     const baseSha = await client.head();
 
+    writeFileSync(join(cwd, "tracked.ts"), "export const value = 2;\n");
     writeFileSync(join(cwd, "feature.ts"), "export const feat = true;\n");
-    git(cwd, "add", "feature.ts");
+    git(cwd, "add", "tracked.ts", "feature.ts");
     git(cwd, "commit", "-m", "feat: add feature");
 
     const headSha = await client.head();
     const diff = await client.diffRange(baseSha, headSha);
+    git(cwd, "reset", "--hard", baseSha);
 
-    expect(diff).toContain("feature.ts");
-    expect(diff).toContain("export const feat = true;");
+    const result = await client.applyPatch(diff);
+
+    expect(result.exitCode).toBe(0);
+    expect(await client.stagedNameStatus()).toBe(
+      "A\tfeature.ts\nM\ttracked.ts\n",
+    );
+    expect(readFileSync(join(cwd, "feature.ts"), "utf-8")).toBe(
+      "export const feat = true;\n",
+    );
+    expect(readFileSync(join(cwd, "tracked.ts"), "utf-8")).toBe(
+      "export const value = 2;\n",
+    );
   });
 
   it("rewords the current commit message without changing parent", async () => {

@@ -1,4 +1,5 @@
 import type { ImplementGraph } from "./graph.js";
+import type { IntegrationLedger } from "./integration-ledger.js";
 import type { AgentDisplayRef } from "./status.js";
 
 export type SchedulerTaskStatus =
@@ -40,6 +41,7 @@ export type SchedulerTask = {
   selfHealAttempts: number;
   lastReason?: string;
   approvedCommitMessage?: string;
+  integrationLedger?: IntegrationLedger;
 };
 
 export type SchedulerRun = {

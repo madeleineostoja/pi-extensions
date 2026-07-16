@@ -30,6 +30,7 @@ export type GitClient = {
   head(): Promise<string>;
   tree(): Promise<string>;
   treeAt(commit: string): Promise<string>;
+  isAncestor(ancestor: string, descendant: string): Promise<boolean>;
   isAmendOf(before: string, after: string): Promise<boolean>;
   status(): Promise<string>;
   isClean(): Promise<boolean>;
@@ -68,6 +69,7 @@ export type GitClient = {
   resetHard(commitSha: string): Promise<void>;
   aheadOfBase(branchName: string, baseSha: string): Promise<boolean>;
   cherryPickNoCommit(commitSha: string): Promise<CommandResult>;
+  applyPatch(patch: string): Promise<CommandResult>;
   cherryPickAbort(): Promise<void>;
   createTaskBranch(branchName: string, baseSha: string): Promise<void>;
   addWorktree(worktreePath: string, branchName: string): Promise<void>;
@@ -155,6 +157,17 @@ export class ExecGitClient implements GitClient {
 
   async treeAt(commit: string): Promise<string> {
     return (await this.run(["rev-parse", `${commit}^{tree}`])).stdout.trim();
+  }
+
+  async isAncestor(ancestor: string, descendant: string): Promise<boolean> {
+    return (
+      (
+        await this.run(
+          ["merge-base", "--is-ancestor", ancestor, descendant],
+          true,
+        )
+      ).exitCode === 0
+    );
   }
 
   async isAmendOf(before: string, after: string): Promise<boolean> {
@@ -485,6 +498,20 @@ export class ExecGitClient implements GitClient {
 
   async cherryPickNoCommit(commitSha: string): Promise<CommandResult> {
     return this.run(["cherry-pick", "--no-commit", commitSha], true);
+  }
+
+  async applyPatch(patch: string): Promise<CommandResult> {
+    const tmpDir = mkdtempSync(join(tmpdir(), "pi-implement-transplant-"));
+    const patchPath = join(tmpDir, "candidate.patch");
+    try {
+      writeFileSync(patchPath, patch, "utf-8");
+      return await this.run(
+        ["apply", "--index", "--3way", "--whitespace=nowarn", patchPath],
+        true,
+      );
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   }
 
   async cherryPickAbort(): Promise<void> {

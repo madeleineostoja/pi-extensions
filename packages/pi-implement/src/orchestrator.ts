@@ -99,7 +99,8 @@ import {
   anchoredReviewSchema,
   implementerResultSchema,
   initialTaskReviewSchema,
-  integrationReviewSchema,
+  integrationAnchoredReviewSchema,
+  integrationInitialReviewSchema,
   integrationSelfHealSchema,
   overallReworkSchema,
   overallReviewSchema,
@@ -111,7 +112,15 @@ import {
   applyAnchoredReview,
   applyNoopReview,
   createReviewConvergenceState,
+  openRegressionReviewEpoch,
 } from "./review-convergence.js";
+import {
+  completeIntegrationRound,
+  createIntegrationLedger,
+  reassessIntegrationGate,
+  sameIntegrationPipeline,
+  type IntegrationGate,
+} from "./integration-ledger.js";
 import type {
   ReviewConvergenceState,
   ReviewFinding,
@@ -151,7 +160,6 @@ import {
 } from "./material-inventory.js";
 
 const MAX_SYSTEM_FAILURES = 2;
-const MAX_REWORK_ATTEMPTS = 2;
 const MAX_SELF_HEAL_ATTEMPTS = 2;
 const MAX_OVERALL_REWORK_ATTEMPTS = 2;
 const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
@@ -1110,7 +1118,12 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
   validateRecordedPlanCorpus(deps);
 
   if (!deps.paths || !deps.runId) {
-    await runUnmanagedImplementation(deps, plan, planArtifacts, runBaseSha);
+    if (plan.tasks.some((task) => !task.checked)) {
+      throw new BlockedError(
+        "changed tasks require managed run state for isolated transactional landing",
+      );
+    }
+    await runOverallReviewLoop(deps, plan, planArtifacts, runBaseSha);
     return;
   }
   const graph = readGraphJson(deps.paths.runDir);
@@ -1127,6 +1140,39 @@ async function runUnmanagedImplementation(
   planArtifacts: string[],
   runBaseSha: string,
 ): Promise<void> {
+  if (deps.paths && deps.runId) {
+    const graph: ImplementGraph = {
+      version: 1,
+      runId: deps.runId,
+      baseSha: await deps.git.head(),
+      planPath: deps.planPath,
+      planHash: readRunJson(deps.paths)?.planHash ?? "unmanaged",
+      nodes: (deps.executionManifest?.tasks ?? []).map((task) => ({
+        id: task.id,
+        planIndex: task.planIndex,
+        title: task.title,
+        taskHash: task.taskHash,
+        dependsOn: task.dependsOn,
+        mode: task.mode ?? "serial",
+        affectedAreas: task.affectedAreas,
+        conflictHints: task.conflictHints,
+        validationCommands: task.validationCommands ?? [],
+        confidence: "high",
+        reasons: task.reasons ?? [],
+        evidencePaths: task.evidencePaths ?? [],
+      })),
+    };
+    if (graph.nodes.length > 0) {
+      await runParallelImplementation(
+        deps,
+        graph,
+        initialPlan,
+        planArtifacts,
+        runBaseSha,
+      );
+      return;
+    }
+  }
   let plan = initialPlan;
 
   for (;;) {
@@ -1202,6 +1248,24 @@ async function runUnmanagedImplementation(
     const taskGit = worktreePath
       ? deps.git.forWorktree(worktreePath, await deps.git.root())
       : deps.git;
+    const unmanagedTask: SchedulerTask = {
+      id: taskId,
+      planIndex: task.index,
+      title: task.text,
+      status: "coding",
+      dependsOn: [],
+      mode: deps.mode === "parallel" ? "parallel" : "serial",
+      sourceBaseSha: baseSha,
+      baseSha,
+      candidateBaseSha: baseSha,
+      discardedBundles: [],
+      worktreePath,
+      branchName,
+      activeAgentIds: [],
+      activeAgentRefs: [],
+      integrationAttempts: 0,
+      selfHealAttempts: 0,
+    };
 
     const landed = await runTaskWorker({
       deps,
@@ -1214,15 +1278,64 @@ async function runUnmanagedImplementation(
       baseSha,
       planArtifacts,
       runBaseSha,
+      schedulerTask: unmanagedTask,
     });
     if (!landed) {
       return;
     }
-    if (deps.mode === "parallel") {
-      throw new BlockedError(
-        "parallel task approved, but main-checkout integration is not implemented yet",
-      );
+    if (!worktreePath) {
+      continue;
     }
+    if (landed === "satisfied") {
+      await cleanupTaskWorkspace(deps, unmanagedTask);
+      markSourceCheckboxDone(deps, taskId, task);
+      continue;
+    }
+    const taskJson = deps.paths ? readTaskJson(deps.paths, taskId) : undefined;
+    Object.assign(unmanagedTask, {
+      status: "approved" as const,
+      taskCommitSha:
+        taskJson?.taskCommitSha ??
+        unmanagedTask.candidateSha ??
+        (await taskGit.head()),
+      candidateSha: taskJson?.candidateSha ?? unmanagedTask.candidateSha,
+      candidateBaseSha:
+        taskJson?.candidateBaseSha ?? unmanagedTask.candidateBaseSha ?? baseSha,
+      sourceBaseSha:
+        taskJson?.sourceBaseSha ?? unmanagedTask.sourceBaseSha ?? baseSha,
+      trustedCheckpoint:
+        taskJson?.trustedCheckpoint ?? unmanagedTask.trustedCheckpoint,
+      approvedCommitMessage:
+        taskJson?.commitMessage ??
+        unmanagedTask.approvedCommitMessage ??
+        `chore: implement ${task.text}`,
+      integrationLedger:
+        taskJson?.integrationLedger ?? unmanagedTask.integrationLedger,
+    });
+    const scheduler: SchedulerRun = {
+      runId,
+      maxConcurrency: 1,
+      tasks: new Map([[taskId, unmanagedTask]]),
+      landedOrder: [],
+      phase: "integrating",
+    };
+    const result = await landApprovedTask(
+      deps,
+      scheduler,
+      taskId,
+      plan,
+      planArtifacts,
+    );
+    if (result === "landed") {
+      markSourceCheckboxDone(deps, taskId, task);
+      continue;
+    }
+    if (result === "needs_rework") {
+      continue;
+    }
+    throw new BlockedError(
+      unmanagedTask.lastReason ?? `Task ${task.index} integration failed`,
+    );
   }
 }
 
@@ -1580,6 +1693,7 @@ async function launchTaskWorker(
   task.candidateBaseSha = existing?.candidateBaseSha ?? baseSha;
   task.candidateSha = existing?.candidateSha;
   task.candidateTree = existing?.candidateTree;
+  task.integrationLedger = existing?.integrationLedger;
   task.trustedCheckpoint = existing?.trustedCheckpoint;
   task.discardedBundles = existing?.discardedBundles ?? [];
   task.worktreePath = worktreePath;
@@ -1727,12 +1841,43 @@ async function landApprovedTask(
   planArtifacts: string[],
 ): Promise<"landed" | "needs_rework" | "integration_failed"> {
   const task = sched.tasks.get(taskId)!;
-  if (!task.taskCommitSha) {
+  const candidateSha = task.candidateSha ?? task.taskCommitSha;
+  const candidateBaseSha = task.candidateBaseSha ?? task.baseSha;
+  if (!candidateSha || !candidateBaseSha) {
     return markIntegrationFailure(
       deps,
       task,
       taskId,
-      "Task commit SHA missing",
+      "Candidate identity or base SHA missing",
+    );
+  }
+  let candidateDelta: string;
+  try {
+    const candidateTree = await deps.git.treeAt(candidateSha);
+    await deps.git.treeAt(candidateBaseSha);
+    if (task.trustedCheckpoint && candidateSha !== task.trustedCheckpoint) {
+      throw new Error("candidate SHA does not match the trusted checkpoint");
+    }
+    if (task.taskCommitSha && candidateSha !== task.taskCommitSha) {
+      throw new Error("candidate SHA does not match the approved task commit");
+    }
+    if (task.candidateTree && candidateTree !== task.candidateTree) {
+      throw new Error(
+        "candidate tree does not match the recorded candidate tree",
+      );
+    }
+    if (!(await deps.git.isAncestor(candidateBaseSha, candidateSha))) {
+      throw new Error(
+        `candidate base ${candidateBaseSha} is not an ancestor of ${candidateSha}`,
+      );
+    }
+    candidateDelta = await deps.git.diffRange(candidateBaseSha, candidateSha);
+  } catch (error) {
+    return markIntegrationFailure(
+      deps,
+      task,
+      taskId,
+      `Candidate identity/base is not eligible: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
@@ -1745,6 +1890,52 @@ async function landApprovedTask(
   }
 
   const integrationStartHead = await deps.git.head();
+  const validationCommands = await resolveValidationCommands(deps);
+  const integrationGates: IntegrationGate[] = [
+    {
+      key: "apply",
+      kind: "apply",
+      label: "Apply or transplant candidate delta",
+    },
+    ...validationCommands.map((command, index) => ({
+      key: `validator:${index}`,
+      kind: "validator" as const,
+      label: `Validator: ${command.display}`,
+    })),
+    { key: "hook", kind: "hook", label: "Approval hook" },
+    ...(validationCommands.length === 0
+      ? [
+          {
+            key: "fallback",
+            kind: "fallback" as const,
+            label: "Fallback integration review",
+          },
+        ]
+      : []),
+  ];
+  if (
+    !sameIntegrationPipeline(
+      task.integrationLedger,
+      integrationStartHead,
+      integrationGates,
+    )
+  ) {
+    task.integrationLedger = createIntegrationLedger({
+      epoch: (task.integrationLedger?.epoch ?? 0) + 1,
+      mainBaseSha: integrationStartHead,
+      gates: integrationGates,
+    });
+  }
+  const recordGate = (key: string, passed: boolean, evidence: string) => {
+    const update = reassessIntegrationGate({
+      ledger: task.integrationLedger!,
+      key,
+      passed,
+      evidence,
+    });
+    task.integrationLedger = update.ledger;
+    return update.outcome;
+  };
   const cleanBeforeIntegration = await ensureCleanMainCheckoutBeforeIntegration(
     deps,
     taskId,
@@ -1767,7 +1958,38 @@ async function landApprovedTask(
     planArtifacts,
   );
 
-  const failForRework = async (source: string, reason: string) => {
+  const failForRework = async (
+    source: string,
+    reason: string,
+    semanticProgress = false,
+  ) => {
+    const gate =
+      source === "cherry-pick" || source === "transplant"
+        ? "apply"
+        : source.startsWith("validator:")
+          ? source
+          : source === "commit-hook" || source === "hook"
+            ? "hook"
+            : source === "fallback"
+              ? "fallback"
+              : undefined;
+    if (
+      gate &&
+      task.integrationLedger?.gates.some((item) => item.key === gate)
+    ) {
+      recordGate(gate, false, reason);
+    }
+    const completedRound = semanticProgress
+      ? {
+          ledger: {
+            ...task.integrationLedger!,
+            consecutiveStalledRounds: 0,
+          },
+          outcome: "continue" as const,
+        }
+      : completeIntegrationRound(task.integrationLedger!);
+    task.integrationLedger = completedRound.ledger;
+    const convergence = completedRound.outcome;
     const rollback = await rollbackIntegration(
       deps,
       preIntegrationHead,
@@ -1791,11 +2013,20 @@ async function landApprovedTask(
         reason: task.lastReason,
       });
     }
-    if (task.integrationAttempts > MAX_REWORK_ATTEMPTS) {
+    if (!rollback.exactRestored) {
       task.status = "integration_failed";
+      task.lastReason = `${task.lastReason}\n\nRollback proof failed; integration is hard-blocked.`;
+      persistIntegrationState(deps, taskId, task);
+      return "integration_failed" as const;
+    }
+    if (convergence === "stalled") {
+      task.status = "integration_failed";
+      task.lastReason = `${task.lastReason}\n\nIntegration stalled without a new low outstanding count.`;
+      persistIntegrationState(deps, taskId, task);
       return "integration_failed" as const;
     }
     task.status = "needs_rework";
+    persistIntegrationState(deps, taskId, task);
     return "needs_rework" as const;
   };
 
@@ -1836,9 +2067,12 @@ async function landApprovedTask(
   try {
     task.selfHealAttempts = 0;
 
-    // ── Cherry-pick with optional self-heal ──
-    let cherryPick = await deps.git.cherryPickNoCommit(task.taskCommitSha);
+    // ── Apply the complete candidate-base-to-candidate delta ──
+    let cherryPick = await deps.git.applyPatch(candidateDelta);
     let cherryPickSucceeded = cherryPick.exitCode === 0;
+    if (cherryPickSucceeded) {
+      recordGate("apply", true, "Candidate delta applied successfully.");
+    }
     if (!cherryPickSucceeded) {
       const preHealStagedPaths = parseNameStatusPaths(
         await deps.git.stagedNameStatus(),
@@ -1884,18 +2118,31 @@ async function landApprovedTask(
         }
       }
       if (healResult?.result.retryIntegration) {
+        if (healResult.result.retryMode === "continue_candidate") {
+          return await failForRework(
+            "transplant",
+            "Integration self-heal changed the candidate. Its edits were restored; explicit task rework must checkpoint and pass regression review before retry.",
+          );
+        }
         if (healResult.result.retryMode === "retry_cherry_pick") {
-          await rollbackIntegration(
+          const retryRollback = await rollbackIntegration(
             deps,
             preIntegrationHead,
             planArtifacts,
             planArtifactSnapshot,
             preIntegrationSnapshot,
           );
-          cherryPick = await deps.git.cherryPickNoCommit(task.taskCommitSha);
+          if (!retryRollback.exactRestored) {
+            return await failBlocked(
+              "rollback",
+              "Integration retry rollback could not be proved exact.",
+            );
+          }
+          cherryPick = await deps.git.applyPatch(candidateDelta);
           cherryPickSucceeded = cherryPick.exitCode === 0;
-        } else {
-          cherryPickSucceeded = true;
+          if (cherryPickSucceeded) {
+            recordGate("apply", true, "Candidate delta applied successfully.");
+          }
         }
       }
       if (!cherryPickSucceeded) {
@@ -1919,6 +2166,7 @@ async function landApprovedTask(
       taskId,
       planArtifacts,
       task,
+      validationCommands,
     );
     while (!validation.ok && task.selfHealAttempts < MAX_SELF_HEAL_ATTEMPTS) {
       const preHealSnapshot = candidateSnapshot;
@@ -1956,22 +2204,44 @@ async function landApprovedTask(
       if (!healResult?.result.retryIntegration) {
         break;
       }
-
+      const healedCandidateChanged = await integrationCandidateChanged(
+        deps,
+        planArtifacts,
+        preHealSnapshot,
+      );
+      if (healedCandidateChanged) {
+        return await failForRework(
+          "validation",
+          "Integration self-heal changed the candidate. Its edits were restored; explicit task rework must checkpoint and pass regression review before retry.",
+        );
+      }
       if (healResult.result.retryMode === "retry_cherry_pick") {
-        await rollbackIntegration(
+        const retryRollback = await rollbackIntegration(
           deps,
           preIntegrationHead,
           planArtifacts,
           planArtifactSnapshot,
           preIntegrationSnapshot,
         );
-        const cp = await deps.git.cherryPickNoCommit(task.taskCommitSha);
+        if (!retryRollback.exactRestored) {
+          return await failBlocked(
+            "rollback",
+            "Integration retry rollback could not be proved exact.",
+          );
+        }
+        const cp = await deps.git.applyPatch(candidateDelta);
         if (cp.exitCode !== 0) {
           return await failForRework(
             "cherry-pick",
             cp.stderr || cp.stdout || "git cherry-pick --no-commit failed",
           );
         }
+        recordGate("apply", true, "Candidate delta applied successfully.");
+      } else if (healResult.result.retryMode !== "retry_validation") {
+        return await failForRework(
+          "validation",
+          "Integration self-heal changed the candidate. Its edits were restored; explicit task rework must checkpoint and pass regression review before retry.",
+        );
       }
 
       candidateSnapshot = await snapshotIntegrationCandidate(
@@ -1983,11 +2253,26 @@ async function landApprovedTask(
         taskId,
         planArtifacts,
         task,
+        validationCommands,
       );
     }
 
+    for (const gate of validation.passedGates ?? []) {
+      recordGate(gate, true, "Validator passed.");
+    }
     if (!validation.ok) {
-      return await failForRework("validation", validation.reason);
+      return await failForRework(
+        validation.failedGate ?? "validation",
+        validation.reason,
+        validation.semanticProgress,
+      );
+    }
+    if (validationCommands.length === 0) {
+      recordGate(
+        "fallback",
+        true,
+        "Typed fallback integration review approved.",
+      );
     }
     const mutationReason = await detectIntegrationMutation(
       deps,
@@ -2009,6 +2294,7 @@ async function landApprovedTask(
       );
     }
 
+    recordGate("hook", true, "Approval hook passed.");
     const landedHead = await deps.git.head();
     if (landedHead === preIntegrationHead) {
       return await failForRework(
@@ -2026,59 +2312,55 @@ async function landApprovedTask(
         `Commit hook changed a plan artifact: ${changedPlanArtifactAfterCommit}`,
       );
     }
-    let finalHead = landedHead;
     if (!(await deps.git.isCleanExcept(planArtifacts))) {
-      let foldReason: string | undefined;
-      try {
-        foldReason = await foldPostCommitHookChanges(
-          deps,
-          planArtifacts,
-          planArtifactSnapshot,
-          candidateSnapshot.stagedPaths,
-          task.approvedCommitMessage ?? `chore: implement ${task.title}`,
-        );
-      } catch (err) {
-        foldReason = err instanceof Error ? err.message : String(err);
-      }
-      if (foldReason) {
-        return await failBlocked(
-          "commit",
-          `Commit succeeded but ${foldReason}`,
-        );
-      }
-      finalHead = await deps.git.head();
-    } else if ((await deps.git.treeAt(landedHead)) !== candidateSnapshot.tree) {
       return await failForRework(
         "commit-hook",
-        "commit hook changed the approved candidate tree",
+        "approval hook left content outside the reviewed candidate; restored content requires explicit rework and a fresh hook run",
+      );
+    }
+    if ((await deps.git.treeAt(landedHead)) !== candidateSnapshot.tree) {
+      return await failForRework(
+        "commit-hook",
+        "commit hook changed the approved candidate tree; explicit rework and a fresh hook run are required",
       );
     }
 
+    if (task.integrationLedger!.outstandingIds.length > 0) {
+      return await failForRework(
+        "integration",
+        "Integration ledger has outstanding obligations after validation.",
+      );
+    }
+    task.candidateBaseSha = preIntegrationHead;
+    task.candidateSha = landedHead;
+    task.candidateTree = candidateSnapshot.tree;
+    task.trustedCheckpoint = landedHead;
+    task.taskCommitSha = landedHead;
     task.status = "landed";
-    task.landedCommitSha = finalHead;
+    task.landedCommitSha = landedHead;
     sched.landedOrder.push(taskId);
 
     if (deps.paths) {
       appendEvent(deps.paths, {
         type: "task_landed",
         taskId,
-        commitSha: finalHead,
+        commitSha: landedHead,
       });
       const existing = readTaskJson(deps.paths, taskId);
       writeTaskJson(deps.paths, taskId, {
         ...buildTaskJsonSnapshot(existing, task),
         status: "landed",
-        landedCommitSha: finalHead,
+        landedCommitSha: landedHead,
       });
     }
 
     await cleanupTaskWorkspace(deps, task);
 
     deps.updateState((prev) => ({
-      currentMainHead: finalHead,
+      currentMainHead: landedHead,
       ...checkpointPatch(
         prev,
-        `\u2713 Task ${task.planIndex + 1}/${plan.tasks.length} landed @ ${finalHead.slice(0, 7)}`,
+        `\u2713 Task ${task.planIndex + 1}/${plan.tasks.length} landed @ ${landedHead.slice(0, 7)}`,
       ),
     }));
     return "landed";
@@ -2097,6 +2379,22 @@ async function cleanupTaskWorkspace(
   }
   await deps.git.removeWorktree(task.worktreePath).catch(() => undefined);
   await deps.git.deleteTaskBranch(task.branchName).catch(() => undefined);
+}
+
+function persistIntegrationState(
+  deps: OrchestratorDeps,
+  taskId: string,
+  task: SchedulerTask,
+): void {
+  if (!deps.paths) {
+    return;
+  }
+  const existing = readTaskJson(deps.paths, taskId);
+  writeTaskJson(deps.paths, taskId, {
+    ...buildTaskJsonSnapshot(existing, task),
+    status: task.status,
+    lastReason: task.lastReason,
+  });
 }
 
 function markIntegrationFailure(
@@ -2154,40 +2452,17 @@ async function ensureCleanMainCheckoutBeforeIntegration(
     };
   }
 
-  const { staged, unstaged, untracked } = await collectChangedPaths(deps);
-  const dirtyPaths = [...staged, ...unstaged, ...untracked];
-  const dirtyPlanArtifact = dirtyPaths.find((path) =>
-    isPlanArtifactPath(path, planArtifacts, deps.planPath),
-  );
-  if (dirtyPlanArtifact) {
-    return {
-      ok: false,
-      reason: `Main checkout dirty before integration includes a plan artifact: ${dirtyPlanArtifact}. Status:\n${statusBefore}`,
-    };
-  }
-
-  await deps.git.reset();
-  await deps.git.restoreWorktreeFromIndexExcept(planArtifacts);
-
-  if (await deps.git.isCleanExcept(planArtifacts)) {
-    if (deps.paths) {
-      persistTaskArtifact(
-        deps.paths,
-        taskId,
-        "pre-integration-cleanup.md",
-        `# Pre-integration cleanup\n\nRemoved non-plan checkout residue before integration.\n\n## Status before\n\n\`\`\`\n${statusBefore}\n\`\`\`\n`,
-      );
-    }
-    return { ok: true };
-  }
-
   return {
     ok: false,
-    reason: `Main checkout dirty before integration after cleanup. Status before:\n${statusBefore}\n\nStatus after:\n${await deps.git.status()}`,
+    reason: `Main checkout dirty before integration; refusing to delete unowned changes. Status:\n${statusBefore}`,
   };
 }
 
-type RollbackOutcome = { headRestored: boolean; currentHead?: string };
+type RollbackOutcome = {
+  headRestored: boolean;
+  exactRestored: boolean;
+  currentHead?: string;
+};
 
 async function rollbackIntegration(
   deps: OrchestratorDeps,
@@ -2198,7 +2473,11 @@ async function rollbackIntegration(
 ): Promise<RollbackOutcome> {
   try {
     await restoreAndVerify(deps.git, snapshot, planArtifacts);
-    return { headRestored: true, currentHead: snapshot.head };
+    return {
+      headRestored: true,
+      exactRestored: true,
+      currentHead: snapshot.head,
+    };
   } catch {
     await deps.git.cherryPickAbort().catch(async () => {
       await deps.git.resetHard(preIntegrationHead).catch(() => undefined);
@@ -2209,8 +2488,16 @@ async function rollbackIntegration(
       .catch(() => undefined);
     restorePlanArtifacts(planArtifacts, planArtifactSnapshot);
     const currentHead = await deps.git.head().catch(() => undefined);
+    const exactRestored = await snapshotChanged(
+      deps.git,
+      snapshot,
+      planArtifacts,
+    )
+      .then((changed) => !changed)
+      .catch(() => false);
     return {
-      headRestored: currentHead === preIntegrationHead,
+      headRestored: currentHead === preIntegrationHead && exactRestored,
+      exactRestored,
       currentHead,
     };
   }
@@ -2221,59 +2508,13 @@ function annotateRollbackReason(
   rollback: RollbackOutcome,
   preIntegrationHead: string,
 ): string {
-  if (rollback.headRestored) {
+  if (rollback.exactRestored) {
     return reason;
   }
   const at = rollback.currentHead
     ? ` HEAD is at ${rollback.currentHead.slice(0, 12)}.`
     : "";
   return `${reason}\n\nWARNING: rollback did not restore HEAD to ${preIntegrationHead.slice(0, 12)}; an integration commit may still be present on the branch.${at}`;
-}
-
-async function foldPostCommitHookChanges(
-  deps: OrchestratorDeps,
-  planArtifacts: string[],
-  planArtifactSnapshot: Map<string, string | undefined>,
-  allowedPaths: string[],
-  commitMessage: string,
-): Promise<string | undefined> {
-  const { staged, unstaged, untracked } = await collectChangedPaths(deps);
-  const disallowedUntracked = untracked.filter(
-    (path) => !isPlanArtifactPath(path, planArtifacts, deps.planPath),
-  );
-  if (disallowedUntracked.length > 0) {
-    return `main checkout has untracked files after commit: ${disallowedUntracked.join(", ")}`;
-  }
-
-  const inScope = new Set(allowedPaths.map(normalizeStatusPath));
-  const outOfScope = [...new Set([...staged, ...unstaged])].filter(
-    (path) =>
-      !isPlanArtifactPath(path, planArtifacts, deps.planPath) &&
-      !inScope.has(normalizeStatusPath(path)),
-  );
-  if (outOfScope.length > 0) {
-    return `commit hook changed tracked files outside the approved task diff: ${outOfScope.join(", ")}`;
-  }
-
-  await deps.git.stageAllExcept(planArtifacts);
-  const amend = await deps.git.reword(commitMessage);
-  if (amend.exitCode !== 0) {
-    return (
-      amend.stderr || amend.stdout || "amend of post-commit changes failed"
-    );
-  }
-
-  const changedPlanArtifact = changedSnapshotPath(
-    planArtifacts,
-    planArtifactSnapshot,
-  );
-  if (changedPlanArtifact) {
-    return `commit hook changed a plan artifact: ${changedPlanArtifact}`;
-  }
-  if (!(await deps.git.isCleanExcept(planArtifacts))) {
-    return "main checkout is dirty";
-  }
-  return undefined;
 }
 
 type IntegrationCandidateSnapshot = {
@@ -2298,6 +2539,21 @@ async function snapshotIntegrationCandidate(
     ]);
   const stagedPaths = parseNameStatusPaths(stagedNameStatus);
   return { head, tree, stagedFingerprint, worktreeFingerprint, stagedPaths };
+}
+
+async function integrationCandidateChanged(
+  deps: OrchestratorDeps,
+  planArtifacts: string[],
+  snapshot: IntegrationCandidateSnapshot,
+): Promise<boolean> {
+  const current = await snapshotIntegrationCandidate(deps, planArtifacts);
+  return (
+    current.head !== snapshot.head ||
+    current.tree !== snapshot.tree ||
+    current.stagedFingerprint !== snapshot.stagedFingerprint ||
+    current.worktreeFingerprint !== snapshot.worktreeFingerprint ||
+    current.stagedPaths.join("\u0000") !== snapshot.stagedPaths.join("\u0000")
+  );
 }
 
 async function detectIntegrationMutation(
@@ -3353,17 +3609,27 @@ function collectRunArtifactPaths(
   return artifactPaths.length > 0 ? artifactPaths : undefined;
 }
 
-type ValidationResult = { ok: true } | { ok: false; reason: string };
+type ValidationResult =
+  | { ok: true; passedGates?: string[] }
+  | {
+      ok: false;
+      reason: string;
+      failedGate?: string;
+      passedGates?: string[];
+      semanticProgress?: boolean;
+    };
 
 async function validateIntegratedTask(
   deps: OrchestratorDeps,
   taskId: string,
   planArtifacts: string[],
   schedulerTask?: SchedulerTask,
+  commands?: ValidationCommand[],
 ): Promise<ValidationResult> {
-  const commands = await resolveValidationCommands(deps);
-  if (commands.length > 0) {
-    for (const command of commands) {
+  const resolvedCommands = commands ?? (await resolveValidationCommands(deps));
+  if (resolvedCommands.length > 0) {
+    const passedGates: string[] = [];
+    for (const [index, command] of resolvedCommands.entries()) {
       const result = await runValidationCommand(command, await deps.git.root());
       if (deps.paths) {
         persistTaskArtifact(
@@ -3377,10 +3643,13 @@ async function validateIntegratedTask(
         return {
           ok: false,
           reason: `${command.display} failed\n\n${result.stderr || result.stdout}`,
+          failedGate: `validator:${index}`,
+          passedGates,
         };
       }
+      passedGates.push(`validator:${index}`);
     }
-    return { ok: true };
+    return { ok: true, passedGates };
   }
 
   deps.updateState({
@@ -3540,9 +3809,20 @@ async function runIntegrationReviewFallback(
   taskId: string,
   planArtifacts: string[],
   schedulerTask?: SchedulerTask,
+  reviewerSystemFailures = 0,
 ): Promise<ValidationResult> {
   const diff = await deps.git.stagedDiff();
-  const prompt = buildIntegrationReviewerPrompt({ diff, planArtifacts });
+  const fallbackState = schedulerTask?.integrationLedger?.fallbackReview;
+  const outstanding = fallbackState
+    ? fallbackState.findings.filter((finding) =>
+        fallbackState.outstandingIds.includes(finding.id),
+      )
+    : undefined;
+  const prompt = buildIntegrationReviewerPrompt({
+    diff,
+    planArtifacts,
+    outstandingFindings: outstanding,
+  });
 
   const id = await deps.subagents.spawn({
     type: deps.roles.reviewer.type,
@@ -3555,8 +3835,10 @@ async function runIntegrationReviewFallback(
     cwd: await deps.git.root(),
     readOnly: true,
     completion: {
-      description: "Submit the integration review verdict.",
-      schema: integrationReviewSchema,
+      description: "Submit the typed integration review result.",
+      schema: fallbackState
+        ? integrationAnchoredReviewSchema
+        : integrationInitialReviewSchema,
     },
   });
   const ref: AgentDisplayRef = {
@@ -3567,57 +3849,153 @@ async function runIntegrationReviewFallback(
   };
   setSchedulerActiveAgent(schedulerTask, ref);
   deps.updateState((prev) => addActiveAgentPatch(prev, ref));
-  const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
-    clearSchedulerActiveAgent(schedulerTask, id);
-    deps.updateState((prev) => removeActiveAgentPatch(prev, id));
-  });
-  if (result.status !== "completed") {
-    return {
-      ok: false,
-      reason: `Integration review ${result.status}: ${result.error}`,
-    };
-  }
-  if (deps.paths) {
-    persistTaskArtifact(
-      deps.paths,
-      taskId,
-      "integration-review.md",
-      JSON.stringify(result.result, null, 2),
+  for (;;) {
+    const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
+      clearSchedulerActiveAgent(schedulerTask, id);
+      deps.updateState((prev) => removeActiveAgentPatch(prev, id));
+    });
+    if (result.status !== "completed") {
+      recordSystemFailure(
+        schedulerTask?.planIndex ?? 0,
+        reviewerSystemFailures,
+        "system",
+        `Integration review ${result.status}: ${result.error}`,
+      );
+      reviewerSystemFailures++;
+      return runIntegrationReviewFallback(
+        deps,
+        taskId,
+        planArtifacts,
+        schedulerTask,
+        reviewerSystemFailures,
+      );
+    }
+    if (deps.paths) {
+      persistTaskArtifact(
+        deps.paths,
+        taskId,
+        "integration-review.md",
+        JSON.stringify(result.result, null, 2),
+      );
+    }
+    await recordPapercuts(deps, result.result, "reviewer", taskId);
+    if (!schedulerTask?.integrationLedger) {
+      return {
+        ok: false,
+        reason: "Integration fallback ledger is unavailable.",
+      };
+    }
+    const candidateFingerprint = await deps.git.stagedFingerprint();
+    const candidatePatch = await deps.git.stagedDiff();
+    if (!fallbackState) {
+      const parsed = parseInitialReviewResult(result.result);
+      if (!parsed.ok) {
+        recordSystemFailure(
+          schedulerTask.planIndex,
+          reviewerSystemFailures,
+          "system",
+          parsed.reason,
+        );
+        reviewerSystemFailures++;
+        return runIntegrationReviewFallback(
+          deps,
+          taskId,
+          planArtifacts,
+          schedulerTask,
+          reviewerSystemFailures,
+        );
+      }
+      if (parsed.result.verdict === "approved") {
+        return { ok: true };
+      }
+      schedulerTask.integrationLedger = {
+        ...schedulerTask.integrationLedger,
+        fallbackReview: createReviewConvergenceState({
+          drafts: parsed.result.findings,
+          idPrefix: "IF",
+        }),
+        fallbackCandidateFingerprint: candidateFingerprint,
+        fallbackCandidatePatch: candidatePatch,
+      };
+      persistIntegrationState(deps, taskId, schedulerTask);
+      return {
+        ok: false,
+        reason: parsed.result.findings
+          .map((finding) => finding.requiredChange)
+          .join("\n"),
+        failedGate: "fallback",
+      };
+    }
+    const parsed = parseAnchoredReviewResult(
+      result.result,
+      fallbackState.outstandingIds,
     );
+    if (!parsed.ok) {
+      recordSystemFailure(
+        schedulerTask.planIndex,
+        reviewerSystemFailures,
+        "system",
+        parsed.reason,
+      );
+      reviewerSystemFailures++;
+      return runIntegrationReviewFallback(
+        deps,
+        taskId,
+        planArtifacts,
+        schedulerTask,
+        reviewerSystemFailures,
+      );
+    }
+    try {
+      const previousPatch =
+        schedulerTask.integrationLedger.fallbackCandidatePatch ?? "";
+      const latestDeltaPaths = parseNameStatusPaths(
+        (await deps.git.stagedDeltaFromPatch(previousPatch)).nameStatus,
+      );
+      const update = applyAnchoredReview({
+        state: fallbackState,
+        review: parsed.result,
+        latestDeltaPaths,
+        idPrefix: "IF",
+      });
+      schedulerTask.integrationLedger = {
+        ...schedulerTask.integrationLedger,
+        fallbackReview: update.state,
+        fallbackCandidateFingerprint: candidateFingerprint,
+        fallbackCandidatePatch: candidatePatch,
+      };
+      persistIntegrationState(deps, taskId, schedulerTask);
+      if (update.outcome === "approved") {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        reason:
+          update.outcome === "stalled"
+            ? "Typed integration fallback review stalled."
+            : "Typed integration fallback review requested changes.",
+        failedGate: "fallback",
+        semanticProgress:
+          update.state.bestOutstandingCount <
+          fallbackState.bestOutstandingCount,
+      };
+    } catch (error) {
+      recordSystemFailure(
+        schedulerTask.planIndex,
+        reviewerSystemFailures,
+        "system",
+        `Invalid anchored integration review: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      reviewerSystemFailures++;
+      return runIntegrationReviewFallback(
+        deps,
+        taskId,
+        planArtifacts,
+        schedulerTask,
+        reviewerSystemFailures,
+      );
+    }
   }
-  await recordPapercuts(deps, result.result, "reviewer", taskId);
-  const verdict = parseIntegrationReviewVerdict(result.result);
-  if (verdict.ok) {
-    return { ok: true };
-  }
-  return { ok: false, reason: verdict.reason };
-}
-
-function parseIntegrationReviewVerdict(
-  value: unknown,
-): { ok: true } | { ok: false; reason: string } {
-  if (!isRecord(value)) {
-    return {
-      ok: false,
-      reason: "Integration review completion must be an object.",
-    };
-  }
-  if (value.verdict === "approved") {
-    return { ok: true };
-  }
-  const requiredChanges = Array.isArray(value.requiredChanges)
-    ? value.requiredChanges.filter(
-        (entry): entry is string => typeof entry === "string",
-      )
-    : [];
-  const reason =
-    typeof value.reason === "string" && value.reason.trim()
-      ? value.reason.trim()
-      : requiredChanges.join("\n");
-  return {
-    ok: false,
-    reason: reason || "Integration review requested changes",
-  };
 }
 
 export function nextOverallReviewArtifactPath(planPath: string): string {
@@ -4686,6 +5064,7 @@ function taskToJson(task: SchedulerTask): TaskJson {
     lastReason: task.lastReason,
     commitMessage: task.approvedCommitMessage,
     selfHealAttempts: task.selfHealAttempts,
+    integrationLedger: task.integrationLedger,
   };
 }
 
@@ -4810,7 +5189,7 @@ async function runTaskWorker(args: {
         status,
         dependsOn: [],
         attempts: attempt,
-        integrationAttempts: 0,
+        integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
         sourceBaseSha: candidate.sourceBaseSha,
         baseSha: candidate.candidateBaseSha,
         candidateBaseSha: candidate.candidateBaseSha,
@@ -4984,7 +5363,7 @@ async function runTaskWorker(args: {
         status: "coding",
         dependsOn: [],
         attempts: attempt,
-        integrationAttempts: 0,
+        integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
         baseSha: candidate.candidateBaseSha,
         candidateBaseSha: candidate.candidateBaseSha,
         candidateSha: candidate.candidateSha,
@@ -5027,7 +5406,7 @@ async function runTaskWorker(args: {
           status: "failed",
           dependsOn: [],
           attempts: attempt,
-          integrationAttempts: 0,
+          integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
           baseSha: candidate.candidateBaseSha,
           candidateBaseSha: candidate.candidateBaseSha,
           candidateSha: candidate.candidateSha,
@@ -5066,7 +5445,7 @@ async function runTaskWorker(args: {
         status: "reviewing",
         dependsOn: [],
         attempts: attempt,
-        integrationAttempts: 0,
+        integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
         baseSha,
         worktreePath,
         branchName,
@@ -5402,7 +5781,7 @@ async function runTaskWorker(args: {
             status: "reviewing",
             dependsOn: [],
             attempts: attempt,
-            integrationAttempts: 0,
+            integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
             baseSha: candidate.candidateBaseSha,
             candidateBaseSha: candidate.candidateBaseSha,
             candidateSha: candidate.candidateSha,
@@ -5426,7 +5805,7 @@ async function runTaskWorker(args: {
             status: review.status === "completed" ? "reviewing" : "failed",
             dependsOn: [],
             attempts: attempt,
-            integrationAttempts: 0,
+            integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
             baseSha: candidate.candidateBaseSha,
             candidateBaseSha: candidate.candidateBaseSha,
             candidateSha: candidate.candidateSha,
@@ -5546,11 +5925,32 @@ async function runTaskWorker(args: {
           }
           let update;
           try {
-            update = applyAnchoredReview({
-              state: anchoredReviewState,
-              review: parsedReview.result,
-              latestDeltaPaths,
-            });
+            if (anchoredReviewState.outstandingIds.length === 0) {
+              const regressionEpoch = openRegressionReviewEpoch({
+                closedState: anchoredReviewState,
+                regressions: parsedReview.result.regressions,
+                latestDeltaPaths,
+              });
+              reviewEpoch++;
+              reviewState = regressionEpoch.state;
+              update = {
+                state: reviewState,
+                outcome:
+                  reviewState.outstandingIds.length === 0
+                    ? "approved"
+                    : "continue",
+                observations: [
+                  ...(parsedReview.result.observations ?? []),
+                  ...regressionEpoch.observations,
+                ],
+              };
+            } else {
+              update = applyAnchoredReview({
+                state: anchoredReviewState,
+                review: parsedReview.result,
+                latestDeltaPaths,
+              });
+            }
           } catch (error) {
             recordSystemFailure(
               task.index,
@@ -5686,7 +6086,7 @@ async function runTaskWorker(args: {
           status: "satisfied",
           dependsOn: [],
           attempts: attempt,
-          integrationAttempts: 0,
+          integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
           baseSha,
           worktreePath,
           branchName,
@@ -5708,8 +6108,7 @@ async function runTaskWorker(args: {
     if (
       !hasStaged &&
       parsed.result.outcome === "already_satisfied" &&
-      worktreePath &&
-      !candidate.trustedCheckpoint
+      worktreePath
     ) {
       throwIfStopped(deps);
       if (!(await taskGit.isCleanExcept(planArtifacts))) {
@@ -5733,7 +6132,7 @@ async function runTaskWorker(args: {
           status: "satisfied",
           dependsOn: [],
           attempts: attempt,
-          integrationAttempts: 0,
+          integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
           baseSha,
           worktreePath,
           branchName,
@@ -5750,7 +6149,7 @@ async function runTaskWorker(args: {
       return "satisfied";
     }
 
-    // Approved (changed/legacy)
+    // Approved changed candidate
     if (deps.paths) {
       writeTaskJson(deps.paths, taskId, {
         id: taskId,
@@ -5759,7 +6158,7 @@ async function runTaskWorker(args: {
         status: "approved",
         dependsOn: [],
         attempts: attempt,
-        integrationAttempts: 0,
+        integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
         baseSha,
         worktreePath,
         branchName,
@@ -5796,45 +6195,7 @@ async function runTaskWorker(args: {
         candidateSha: taskCommitSha,
         trustedCheckpoint: taskCommitSha,
       };
-      persistCandidate("reviewing");
-      const hookSnapshot = await captureRestoreSnapshot(taskGit, planArtifacts);
-      const hookResult = await taskGit.runCheckpointHooks(hookSnapshot.head);
-      let hookMutated = false;
-      try {
-        const hookHead = await taskGit.head();
-        const expectedAmend =
-          hookResult.exitCode === 0 &&
-          (await taskGit.isAmendOf(hookSnapshot.head, hookHead));
-        hookMutated =
-          (hookHead !== hookSnapshot.head && !expectedAmend) ||
-          (await snapshotChanged(taskGit, hookSnapshot, planArtifacts, {
-            ignoreHead: true,
-          }));
-        await restoreAndVerify(taskGit, hookSnapshot, planArtifacts);
-      } catch (err) {
-        throw new BlockedError(
-          `approval hook mutation could not be restored: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      if (hookResult.exitCode !== 0 || hookMutated) {
-        feedback = recordSystemFailure(
-          task.index,
-          systemFailures,
-          "commit-hook",
-          `${hookMutated ? "Approval hook changed the reviewed checkpoint; restoration succeeded, but rework is required.\n\n" : ""}${hookResult.stderr || hookResult.stdout}`,
-        );
-        systemFailures++;
-        attempt++;
-        persistCandidate("integration_failed", feedback.message);
-        if (deps.paths) {
-          appendEvent(deps.paths, {
-            type: "integration_failed",
-            taskId,
-            reason: feedback.message,
-          });
-        }
-        continue;
-      }
+      persistCandidate("approved");
       if (!(await taskGit.isCleanExcept(planArtifacts))) {
         throw new BlockedError(
           "task commit succeeded but task worktree is dirty",
@@ -5849,7 +6210,7 @@ async function runTaskWorker(args: {
           status: "approved",
           dependsOn: [],
           attempts: attempt,
-          integrationAttempts: 0,
+          integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
           baseSha,
           worktreePath,
           branchName,
@@ -5867,7 +6228,6 @@ async function runTaskWorker(args: {
       return "changed";
     }
 
-    // Non-worktree serial mode
     markSourceCheckboxDone(deps, taskId, task);
     try {
       throwIfStopped(deps);
@@ -5902,7 +6262,7 @@ async function runTaskWorker(args: {
           status: "landed",
           dependsOn: [],
           attempts: attempt,
-          integrationAttempts: 0,
+          integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
           landedCommitSha: head,
           activeSubagentIds: [],
           review: taskReviewMeta,

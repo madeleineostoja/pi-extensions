@@ -16,6 +16,7 @@ const execFileAsync = promisify(execFile);
 import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
+import type { IntegrationLedger } from "./integration-ledger.js";
 export type RunMode = "auto" | "serial" | "parallel";
 
 export type RunJson = {
@@ -74,6 +75,7 @@ export type TaskJson = {
   lastReason?: string;
   commitMessage?: string;
   selfHealAttempts?: number;
+  integrationLedger?: IntegrationLedger;
   review?: {
     lastDecision: "reviewed" | "required" | "skipped";
     lastReason?: string;
@@ -402,6 +404,7 @@ export function writeTaskJson(
     candidateTree: task.candidateTree ?? existing?.candidateTree,
     trustedCheckpoint: task.trustedCheckpoint ?? existing?.trustedCheckpoint,
     discardedBundles: task.discardedBundles ?? existing?.discardedBundles,
+    integrationLedger: task.integrationLedger ?? existing?.integrationLedger,
   };
   mkdirSync(dirname(path), { recursive: true });
   writeAtomic(path, JSON.stringify(persisted, null, 2));

@@ -285,15 +285,28 @@ Submit the review verdict through the injected completion tool as your final act
 export function buildIntegrationReviewerPrompt(args: {
   diff: string;
   planArtifacts: string[];
+  outstandingFindings?: Array<{
+    id: string;
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+  }>;
 }): string {
-  return `Review this integrated parallel task diff on the main checkout.
+  const anchored = args.outstandingFindings
+    ? `\n## Outstanding Integration Findings\n\n${args.outstandingFindings.map((finding) => `- ${finding.id}: ${finding.summary}\n  Evidence: ${finding.evidence}\n  Required change: ${finding.requiredChange}\n  Acceptance: ${finding.acceptanceCriteria.join("; ")}`).join("\n")}\n`
+    : "";
+  const resultProtocol = args.outstandingFindings
+    ? "Return an anchored assessment for every outstanding ID exactly once, attributable regressions caused by the staged delta, and optional observations."
+    : "Return approved or changes_requested with atomic typed findings.";
+  return `Review this integrated task diff on the main checkout.
 
 No command validation is configured or auto-detected. Decide whether the integrated diff is safe to commit.
 
 Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, or run any command that changes files or git state. Use read-only commands only.
 
 Plan artifacts are not part of the implementation commit and should be ignored: ${args.planArtifacts.join(", ")}
-
+${anchored}
 ## Staged Diff
 
 \`\`\`diff
@@ -302,7 +315,9 @@ ${args.diff}
 
 ${PAPERCUT_GUIDANCE}
 
-Submit the integration review verdict through the injected completion tool as your final action.`;
+${resultProtocol}
+
+Submit the typed integration review result through the injected completion tool as your final action.`;
 }
 
 export function buildIntegrationSelfHealPrompt(args: {

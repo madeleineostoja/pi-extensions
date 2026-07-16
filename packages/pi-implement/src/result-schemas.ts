@@ -195,14 +195,8 @@ export const reviewerVerdictSchema = Type.Union([
   }),
 ]);
 
-export const integrationReviewSchema = Type.Union([
-  withPapercuts({ verdict: Type.Literal("approved") }),
-  withPapercuts({
-    verdict: Type.Literal("changes_requested"),
-    requiredChanges: Type.Array(nonEmptyString(), { minItems: 1 }),
-    reason: Type.Optional(nonEmptyString()),
-  }),
-]);
+export const integrationInitialReviewSchema = initialReviewSchema(false);
+export const integrationAnchoredReviewSchema = anchoredReviewSchema;
 
 const selfHealBaseSchema = {
   repaired: Type.Boolean(),
@@ -272,8 +266,11 @@ export type InitialOverallReviewCompletion = Static<
 >;
 export type AnchoredReviewCompletion = Static<typeof anchoredReviewSchema>;
 export type ReviewerCompletion = Static<typeof reviewerVerdictSchema>;
-export type IntegrationReviewCompletion = Static<
-  typeof integrationReviewSchema
+export type IntegrationInitialReviewCompletion = Static<
+  typeof integrationInitialReviewSchema
+>;
+export type IntegrationAnchoredReviewCompletion = Static<
+  typeof integrationAnchoredReviewSchema
 >;
 export type IntegrationSelfHealCompletion = Static<
   typeof integrationSelfHealSchema
