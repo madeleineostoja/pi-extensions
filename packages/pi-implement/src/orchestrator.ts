@@ -17,7 +17,8 @@ import {
   buildImplementerPrompt,
   buildIntegrationReviewerPrompt,
   buildIntegrationSelfHealPrompt,
-  buildOverallReviewerPrompt,
+  buildInitialOverallReviewPrompt,
+  buildAnchoredOverallReviewPrompt,
   buildOverallReworkPrompt,
   buildSchedulerSelfHealPrompt,
   formatExecutionManifestSummary,
@@ -75,7 +76,6 @@ import {
   parseImplementerResult,
   parseInitialReviewResult,
   parseIntegrationSelfHealResult,
-  parseOverallReviewVerdict,
   parseOverallReworkResult,
   parseSchedulerSelfHealResult,
 } from "./verdict.js";
@@ -83,7 +83,7 @@ import type {
   IntegrationSelfHealResult,
   SchedulerSelfHealResult,
 } from "./verdict.js";
-import type { StatePaths, TaskJson } from "./state.js";
+import type { OverallReviewJson, StatePaths, TaskJson } from "./state.js";
 import {
   writeTaskJson,
   appendEvent,
@@ -103,7 +103,7 @@ import {
   integrationInitialReviewSchema,
   integrationSelfHealSchema,
   overallReworkSchema,
-  overallReviewSchema,
+  initialOverallReviewSchema,
   schedulerSelfHealSchema,
   sourceMaterialRepairSchema,
 } from "./result-schemas.js";
@@ -161,7 +161,6 @@ import {
 
 const MAX_SYSTEM_FAILURES = 2;
 const MAX_SELF_HEAL_ATTEMPTS = 2;
-const MAX_OVERALL_REWORK_ATTEMPTS = 2;
 const VALIDATION_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_BROAD_PLANNER_FULL_FILE_CHARS = 20_000;
 
@@ -1123,7 +1122,7 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
         "changed tasks require managed run state for isolated transactional landing",
       );
     }
-    await runOverallReviewLoop(deps, plan, planArtifacts, runBaseSha);
+    await runConvergentOverallReviewLoop(deps, plan, planArtifacts, runBaseSha);
     return;
   }
   const graph = readGraphJson(deps.paths.runDir);
@@ -1196,7 +1195,12 @@ async function runUnmanagedImplementation(
       totalTasks: plan.tasks.length,
     });
     if (!task) {
-      await runOverallReviewLoop(deps, plan, planArtifacts, runBaseSha);
+      await runConvergentOverallReviewLoop(
+        deps,
+        plan,
+        planArtifacts,
+        runBaseSha,
+      );
       deps.updateState({
         phase: "done",
         taskIndex: plan.tasks.length,
@@ -1632,7 +1636,12 @@ async function runParallelImplementation(
       });
       throw new BlockedError(finalValidation.reason);
     }
-    await runOverallReviewLoop(deps, initialPlan, planArtifacts, graph.baseSha);
+    await runConvergentOverallReviewLoop(
+      deps,
+      initialPlan,
+      planArtifacts,
+      graph.baseSha,
+    );
     markCompletedParallelSourceCheckboxes(deps, sched, plan);
   }
 
@@ -4013,76 +4022,136 @@ export function nextOverallReviewArtifactPath(planPath: string): string {
   }
 }
 
-type OverallReviewOutcome =
-  | { verdict: "approved" }
-  | {
-      verdict: "changes_requested";
-      requiredChanges: string[];
-      recommendationMarkdown?: string;
-      rawResult: string;
-    };
+type OverallReviewState = {
+  baseSha: string;
+  branchName: string;
+  worktreePath: string;
+  candidate: CandidateMetadata;
+  convergence: ReviewConvergenceState;
+  closedEpochs: Array<{ epoch: number; findings: ReviewFinding[] }>;
+  epoch: number;
+  previousCandidate?: string;
+  previousCandidatePatch?: string;
+  latestEvidence?: string;
+  integrationLedger?: ReturnType<typeof createIntegrationLedger>;
+};
 
-async function runOverallReviewOnce(
-  deps: OrchestratorDeps,
-  plan: ReturnType<typeof parsePlanFile>,
+function overallPlanContext(args: {
+  deps: OrchestratorDeps;
+  planContent: string;
+  baseSha: string;
+  headSha: string;
+  fullDiff: string;
+  landedTasks: Array<{ id: string; title: string; commitSha?: string }>;
+  bundleMaterial?: string;
+  corpusMaterial?: string;
+}): string {
+  return [
+    `Plan: ${args.deps.planPath}`,
+    `Run base: ${args.baseSha}`,
+    `Post-task main HEAD: ${args.headSha}`,
+    args.deps.runId ? `Run ID: ${args.deps.runId}` : "",
+    "## Original Human Plan",
+    args.planContent,
+    args.bundleMaterial
+      ? `## Referenced Plan Material\n\n${args.bundleMaterial}`
+      : "",
+    args.corpusMaterial ? `## Plan Corpus\n\n${args.corpusMaterial}` : "",
+    formatExecutionManifestSummary(args.deps.executionManifest),
+    args.landedTasks.length
+      ? `## Landed Tasks\n\n${args.landedTasks.map((task) => `- ${task.id}: ${task.title}${task.commitSha ? ` @ ${task.commitSha.slice(0, 7)}` : ""}`).join("\n")}`
+      : "",
+    "## Full Feature Diff",
+    `\`\`\`diff\n${args.fullDiff}\n\`\`\``,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+async function overallMaterial(deps: OrchestratorDeps): Promise<{
+  bundleMaterial?: string;
+  corpusMaterial?: string;
+}> {
+  return {
+    bundleMaterial: deps.materialStore
+      ? formatStoreBundleMaterial(deps.materialStore)
+      : deps.manifest
+        ? formatBundleMaterial(deps.manifest)
+        : undefined,
+    corpusMaterial: deps.materialStore
+      ? formatStoreCorpusMaterial(deps.materialStore)
+      : deps.corpusMaterial,
+  };
+}
+
+function overallWorktreePlanArtifacts(
+  worktreePath: string,
+  mainRoot: string,
   planArtifacts: string[],
-  baseSha: string,
-): Promise<OverallReviewOutcome> {
-  throwIfStopped(deps);
+): string[] {
+  return planArtifacts.map((artifact) =>
+    isAbsolute(artifact)
+      ? join(worktreePath, relative(mainRoot, artifact))
+      : artifact,
+  );
+}
 
-  if (!(await deps.git.isCleanExcept(planArtifacts))) {
-    throw new BlockedError("dirty worktree before final review");
+function persistOverallReviewState(
+  deps: OrchestratorDeps,
+  overall: OverallReviewState,
+  status: OverallReviewJson["status"],
+  lastReason?: string,
+): void {
+  if (!deps.paths) {
+    return;
   }
-
-  const planContent = readFileSync(deps.planPath, "utf-8");
-  const headSha = await deps.git.head();
-
-  let bundleMaterial: string | undefined;
-  if (deps.materialStore) {
-    bundleMaterial = formatStoreBundleMaterial(deps.materialStore);
-  } else if (deps.manifest) {
-    bundleMaterial = formatBundleMaterial(deps.manifest);
+  const run = readRunJson(deps.paths);
+  if (!run) {
+    return;
   }
-
-  let corpusMaterial: string | undefined;
-  if (deps.materialStore) {
-    corpusMaterial = formatStoreCorpusMaterial(deps.materialStore);
-  } else if (deps.corpusMaterial) {
-    corpusMaterial = deps.corpusMaterial;
-  }
-
-  if (baseSha === headSha) {
-    return { verdict: "approved" };
-  }
-
-  const diff = await deps.git.diffRange(baseSha, headSha);
-
-  const landedTasks = deps.paths ? getLandedTasks(deps.paths) : [];
-
-  const prompt = buildOverallReviewerPrompt({
-    planContent,
-    planPath: deps.planPath,
-    baseSha,
-    headSha,
-    diff,
-    runId: deps.runId,
-    landedTasks,
-    bundleMaterial,
-    corpusMaterial,
-    executionManifest: deps.executionManifest,
+  writeRunJson(deps.paths, {
+    ...run,
+    currentPhase: status,
+    updatedAt: new Date().toISOString(),
+    overallReview: {
+      baseSha: overall.baseSha,
+      branchName: overall.branchName,
+      worktreePath: overall.worktreePath,
+      candidate: overall.candidate,
+      convergence: {
+        epoch: overall.epoch,
+        closedEpochs: overall.closedEpochs,
+        state: overall.convergence,
+        previousCandidate: overall.previousCandidate,
+        previousCandidatePatch: overall.previousCandidatePatch,
+        latestEvidence: overall.latestEvidence,
+      },
+      integrationLedger: overall.integrationLedger,
+      status,
+      lastReason,
+    },
   });
+}
 
-  deps.updateState({ phase: "final_review", activeSubagentId: undefined });
-
-  const preReviewHead = await deps.git.head();
-  const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
-  const stagedFingerprint = await deps.git.stagedFingerprint();
-  const worktreeFingerprint =
-    await deps.git.worktreeFingerprintExcept(planArtifacts);
-
+async function runInitialOverallReview(args: {
+  deps: OrchestratorDeps;
+  planArtifacts: string[];
+  planContext: string;
+  candidate: string;
+  fullDiff: string;
+}): Promise<
+  | { ok: true; convergence: ReviewConvergenceState }
+  | { ok: false; reason: string }
+> {
+  const { deps, planArtifacts } = args;
+  const snapshot = await captureRestoreSnapshot(deps.git, planArtifacts);
   const id = await deps.subagents.spawn({
     type: deps.roles.reviewer.type,
-    prompt,
+    prompt: buildInitialOverallReviewPrompt({
+      planContext: args.planContext,
+      candidateContext: `Candidate identity: ${args.candidate}\n\n${args.fullDiff}`,
+      worktreePath: await deps.git.root(),
+    }),
     description: "overall review",
     model: deps.roles.reviewer.model,
     thinking: deps.roles.reviewer.thinking,
@@ -4090,8 +4159,8 @@ async function runOverallReviewOnce(
     cwd: await deps.git.root(),
     readOnly: true,
     completion: {
-      description: "Submit the overall review verdict.",
-      schema: overallReviewSchema,
+      description: "Submit the typed overall review.",
+      schema: initialOverallReviewSchema,
     },
   });
   const ref: AgentDisplayRef = {
@@ -4100,675 +4169,816 @@ async function runOverallReviewOnce(
     label: "Reviewer · Overall review",
     startedAt: new Date().toISOString(),
   };
-  deps.updateState((prev) => addActiveAgentPatch(prev, ref));
+  deps.updateState((previous) => addActiveAgentPatch(previous, ref));
   const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
-    deps.updateState((prev) => removeActiveAgentPatch(prev, id));
+    deps.updateState((previous) => removeActiveAgentPatch(previous, id));
   });
-
+  if (await snapshotChanged(deps.git, snapshot, planArtifacts)) {
+    try {
+      await restoreAndVerify(deps.git, snapshot, planArtifacts);
+    } catch (error) {
+      return {
+        ok: false,
+        reason: `overall reviewer mutation could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
   if (result.status !== "completed") {
-    throw new BlockedError(`Overall review ${result.status}: ${result.error}`);
+    return {
+      ok: false,
+      reason: `Overall reviewer ${result.status}: ${result.error}`,
+    };
   }
-  const completion = result.result;
-
-  // Boundary checks
-  if ((await deps.git.head()) !== preReviewHead) {
-    throw new BlockedError("overall reviewer changed HEAD");
+  const parsed = parseInitialReviewResult(result.result, {
+    allowRecommendationMarkdown: true,
+  });
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      reason: `Invalid initial overall review: ${parsed.reason}`,
+    };
   }
-  const changedPlanArtifact = changedSnapshotPath(
-    planArtifacts,
-    planArtifactSnapshot,
-  );
-  if (changedPlanArtifact) {
-    throw new BlockedError(
-      `overall reviewer changed a plan artifact: ${changedPlanArtifact}`,
-    );
-  }
-  const stagedFingerprintAfter = await deps.git.stagedFingerprint();
-  if (stagedFingerprintAfter !== stagedFingerprint) {
-    throw new BlockedError("overall reviewer changed staged state");
-  }
-  const worktreeFingerprintAfter =
-    await deps.git.worktreeFingerprintExcept(planArtifacts);
-  if (worktreeFingerprintAfter !== worktreeFingerprint) {
-    throw new BlockedError("overall reviewer changed worktree state");
-  }
-
-  await recordPapercuts(deps, completion, "reviewer");
-  const verdict = parseOverallReviewVerdict(completion);
-  if (verdict.verdict === "approved") {
-    return { verdict: "approved" };
-  }
-
+  await recordPapercuts(deps, result.result, "overall-reviewer");
   return {
-    verdict: "changes_requested",
-    requiredChanges: verdict.requiredChanges,
-    recommendationMarkdown: verdict.recommendationMarkdown,
-    rawResult: JSON.stringify(result.result, null, 2),
+    ok: true,
+    convergence: createReviewConvergenceState({
+      drafts:
+        parsed.result.verdict === "changes_requested"
+          ? parsed.result.findings
+          : [],
+      idPrefix: "O",
+    }),
   };
 }
 
-type OverallReworkAttemptResult =
-  | { ok: true; commitSha: string }
-  | { ok: false; reason: string; blocking: boolean };
-
-async function resetOverallRework(
-  deps: OrchestratorDeps,
-  preAttemptHead: string,
-  planArtifacts: string[],
-  planArtifactSnapshot: Map<string, string | undefined>,
-): Promise<void> {
-  await deps.git.resetHard(preAttemptHead).catch(() => undefined);
-  await deps.git
-    .restoreWorktreeFromIndexExcept(planArtifacts)
-    .catch(() => undefined);
-  restorePlanArtifacts(planArtifacts, planArtifactSnapshot);
-}
-
-async function runOverallReworkAttempt(
-  deps: OrchestratorDeps,
-  plan: ReturnType<typeof parsePlanFile>,
-  planArtifacts: string[],
-  runBaseSha: string,
-  review: Extract<OverallReviewOutcome, { verdict: "changes_requested" }>,
-  attemptNumber: number,
-  priorAttemptFailures: string[],
-): Promise<OverallReworkAttemptResult> {
-  throwIfStopped(deps);
-
-  if (!(await deps.git.isCleanExcept(planArtifacts))) {
-    return {
-      ok: false,
-      reason: "dirty worktree before overall rework",
-      blocking: true,
-    };
-  }
-
-  const preAttemptHead = await deps.git.head();
-  const planArtifactSnapshot = snapshotPlanArtifacts(planArtifacts);
-
-  const headSha = await deps.git.head();
-  const diff = await deps.git.diffRange(runBaseSha, headSha);
-
-  const landedTasks = deps.paths ? getLandedTasks(deps.paths) : [];
-
-  let bundleMaterial: string | undefined;
-  if (deps.materialStore) {
-    bundleMaterial = formatStoreBundleMaterial(deps.materialStore);
-  } else if (deps.manifest) {
-    bundleMaterial = formatBundleMaterial(deps.manifest);
-  }
-
-  let corpusMaterial: string | undefined;
-  if (deps.materialStore) {
-    corpusMaterial = formatStoreCorpusMaterial(deps.materialStore);
-  } else if (deps.corpusMaterial) {
-    corpusMaterial = deps.corpusMaterial;
-  }
-
-  const prompt = buildOverallReworkPrompt({
-    planContent: readFileSync(deps.planPath, "utf-8"),
-    planPath: deps.planPath,
-    baseSha: runBaseSha,
-    headSha,
-    diff,
-    runId: deps.runId,
-    landedTasks,
-    bundleMaterial,
-    corpusMaterial,
-    requiredChanges: review.requiredChanges,
-    recommendationMarkdown: review.recommendationMarkdown,
-    priorAttemptFailures,
-    executionManifest: deps.executionManifest,
-  });
-
-  deps.updateState({ phase: "final_rework", activeSubagentId: undefined });
-
-  if (deps.paths) {
-    const artifactDir = join(deps.paths.runDir, "overall-review");
-    mkdirSync(artifactDir, { recursive: true });
-    const promptPath = join(artifactDir, `rework-prompt-${attemptNumber}.md`);
-    writeFileSync(promptPath, prompt, "utf-8");
-    appendEvent(deps.paths, {
-      type: "overall_rework_started",
-      attempt: attemptNumber,
-      artifactPath: promptPath,
-    });
-  }
-
-  deps.updateState((prev) =>
-    checkpointPatch(prev, `Overall rework started (attempt ${attemptNumber})`),
+async function reviewOverallCandidate(args: {
+  deps: OrchestratorDeps;
+  planArtifacts: string[];
+  state: OverallReviewState;
+  planContext: string;
+  latestDelta: string;
+  latestDeltaPaths: string[];
+  initial?: boolean;
+}): Promise<
+  | { ok: true; approved: boolean; observations: string[] }
+  | { ok: false; reason: string }
+> {
+  const { deps, planArtifacts, state } = args;
+  const mainRoot = await deps.git.root();
+  const candidateGit = deps.git.forWorktree(state.worktreePath, mainRoot);
+  const candidatePlanArtifacts = overallWorktreePlanArtifacts(
+    state.worktreePath,
+    mainRoot,
+    planArtifacts,
   );
-
+  const snapshot = await captureRestoreSnapshot(
+    candidateGit,
+    candidatePlanArtifacts,
+  );
+  const mainSnapshot = await captureRestoreSnapshot(deps.git, planArtifacts);
+  const candidate = state.candidate.trustedCheckpoint!;
+  const prompt = args.initial
+    ? buildInitialOverallReviewPrompt({
+        planContext: args.planContext,
+        candidateContext: `Candidate identity: ${candidate}\n\n${args.latestDelta}`,
+        worktreePath: state.worktreePath,
+      })
+    : buildAnchoredOverallReviewPrompt({
+        planContext: args.planContext,
+        candidateContext: `Candidate identity: ${candidate}`,
+        outstandingFindings: state.convergence.findings.filter((finding) =>
+          state.convergence.outstandingIds.includes(finding.id),
+        ),
+        previousCandidate: state.previousCandidate ?? state.baseSha,
+        currentCandidate: candidate,
+        latestDelta: args.latestDelta,
+        worktreePath: state.worktreePath,
+      });
   const id = await deps.subagents.spawn({
-    type: deps.roles.implementer.type,
+    type: deps.roles.reviewer.type,
     prompt,
-    description: `overall rework attempt ${attemptNumber}`,
-    model: deps.roles.implementer.model,
-    thinking: deps.roles.implementer.thinking,
-    role: "implementer",
-    cwd: await deps.git.root(),
+    description: args.initial ? "overall review" : "anchored overall review",
+    model: deps.roles.reviewer.model,
+    thinking: deps.roles.reviewer.thinking,
+    role: "reviewer",
+    cwd: state.worktreePath,
+    readOnly: true,
     completion: {
-      description: "Submit the overall rework result.",
-      schema: overallReworkSchema,
+      description: "Submit the typed overall review.",
+      schema: args.initial ? initialOverallReviewSchema : anchoredReviewSchema,
     },
   });
   const ref: AgentDisplayRef = {
     id,
-    role: "implementer",
-    label: `Overall rework · attempt ${attemptNumber}`,
+    role: "reviewer",
+    label: args.initial
+      ? "Reviewer · Overall review"
+      : "Reviewer · Overall re-review",
     startedAt: new Date().toISOString(),
   };
-  deps.updateState((prev) => addActiveAgentPatch(prev, ref));
+  deps.updateState((previous) => addActiveAgentPatch(previous, ref));
   const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
-    deps.updateState((prev) => removeActiveAgentPatch(prev, id));
+    deps.updateState((previous) => removeActiveAgentPatch(previous, id));
   });
-
-  // Stopped
-  if (result.status === "stopped") {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    throw new StoppedError();
+  const candidateChanged = await snapshotChanged(
+    candidateGit,
+    snapshot,
+    candidatePlanArtifacts,
+  );
+  const mainChanged = await snapshotChanged(
+    deps.git,
+    mainSnapshot,
+    planArtifacts,
+  );
+  if (candidateChanged || mainChanged) {
+    try {
+      if (candidateChanged) {
+        await restoreAndVerify(candidateGit, snapshot, candidatePlanArtifacts);
+      }
+      if (mainChanged) {
+        await restoreAndVerify(deps.git, mainSnapshot, planArtifacts);
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        reason: `overall reviewer mutation could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
-
-  // Persist result when paths exist
-  if (deps.paths && result.status === "completed") {
-    const artifactDir = join(deps.paths.runDir, "overall-review");
-    mkdirSync(artifactDir, { recursive: true });
-    writeFileSync(
-      join(artifactDir, `rework-result-${attemptNumber}.md`),
-      JSON.stringify(result.result, null, 2),
-      "utf-8",
-    );
-  }
-
-  // Failed subagent
   if (result.status !== "completed") {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    if (deps.paths) {
-      appendEvent(deps.paths, {
-        type: "overall_rework_failed",
-        attempt: attemptNumber,
-        reason: result.error,
-      });
-    }
     return {
       ok: false,
-      reason: `Implementer subagent failed: ${result.error}`,
-      blocking: false,
+      reason: `Overall reviewer ${result.status}: ${result.error}`,
     };
   }
-
-  // Boundary checks
-  if ((await deps.git.head()) !== preAttemptHead) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    return {
-      ok: false,
-      reason: "overall rework implementer changed HEAD",
-      blocking: true,
-    };
-  }
-  const changedPlanArtifact = changedSnapshotPath(
-    planArtifacts,
-    planArtifactSnapshot,
-  );
-  if (changedPlanArtifact) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    return {
-      ok: false,
-      reason: `overall rework implementer changed a plan artifact: ${changedPlanArtifact}`,
-      blocking: true,
-    };
-  }
-
-  // Parse result
-  const parsed = parseOverallReworkResult(result.result);
-  if (!parsed.ok) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    if (deps.paths) {
-      appendEvent(deps.paths, {
-        type: "overall_rework_failed",
-        attempt: attemptNumber,
-        reason: parsed.reason,
-      });
-    }
-    return {
-      ok: false,
-      reason: `Invalid rework result: ${parsed.reason}`,
-      blocking: false,
-    };
-  }
-
-  await recordPapercuts(deps, result.result, "overall-rework");
-
-  // Stage all except plan artifacts
-  await deps.git.stageAllExcept(planArtifacts);
-  const hasStaged = await deps.git.hasStagedChanges();
-
-  if (!hasStaged) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    if (deps.paths) {
-      appendEvent(deps.paths, {
-        type: "overall_rework_failed",
-        attempt: attemptNumber,
-        reason: "reworker produced no staged changes",
-      });
-    }
-    return {
-      ok: false,
-      reason: "Overall reworker produced no staged changes",
-      blocking: false,
-    };
-  }
-
-  const stagedAfter = await deps.git.stagedFingerprint();
-  const worktreeAfter = await deps.git.worktreeFingerprintExcept(planArtifacts);
-
-  // Validation
-  const validationCommands = await resolveValidationCommands(deps);
-  const validationLogs: string[] = [];
-  let validationFailureReason: string | undefined;
-  if (validationCommands.length > 0) {
-    for (const command of validationCommands) {
-      const validationResult = await runValidationCommand(
-        command,
-        await deps.git.root(),
-      );
-      const log = `${command.display}\n\nexitCode: ${validationResult.exitCode}\n\nSTDOUT\n${validationResult.stdout}\n\nSTDERR\n${validationResult.stderr}\n`;
-      validationLogs.push(log);
-      if (deps.paths) {
-        const artifactDir = join(deps.paths.runDir, "overall-review");
-        mkdirSync(artifactDir, { recursive: true });
-        writeFileSync(
-          join(
-            artifactDir,
-            `rework-validation-${attemptNumber}-${safeArtifactName(command.label)}.log`,
-          ),
-          log,
-          "utf-8",
-        );
-      }
-      if (validationResult.exitCode !== 0) {
-        validationFailureReason = `Validation failed: ${command.display}\n\n${validationResult.stderr || validationResult.stdout}`;
-        break;
-      }
-    }
-  }
-
-  // Validation mutation detection — always run, even when validation failed
-  const postValidationHead = await deps.git.head();
-  const postValidationStaged = await deps.git.stagedFingerprint();
-  const postValidationWorktree =
-    await deps.git.worktreeFingerprintExcept(planArtifacts);
-  const changedPlanArtifactAfterValidation = changedSnapshotPath(
-    planArtifacts,
-    planArtifactSnapshot,
-  );
-
-  if (postValidationHead !== preAttemptHead) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    return {
-      ok: false,
-      reason: "Validation changed HEAD during overall rework",
-      blocking: true,
-    };
-  }
-  if (changedPlanArtifactAfterValidation) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    return {
-      ok: false,
-      reason: `Validation changed a plan artifact during overall rework: ${changedPlanArtifactAfterValidation}`,
-      blocking: true,
-    };
-  }
-  if (postValidationStaged !== stagedAfter) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    return {
-      ok: false,
-      reason: "Validation changed staged state during overall rework",
-      blocking: true,
-    };
-  }
-  if (postValidationWorktree !== worktreeAfter) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    return {
-      ok: false,
-      reason: "Validation changed worktree state during overall rework",
-      blocking: true,
-    };
-  }
-
-  if (validationFailureReason) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    if (deps.paths) {
-      appendEvent(deps.paths, {
-        type: "overall_rework_failed",
-        attempt: attemptNumber,
-        reason: validationFailureReason,
-      });
-    }
-    return {
-      ok: false,
-      reason: validationFailureReason,
-      blocking: false,
-    };
-  }
-
-  // Commit
-  const commitMessage = isValidCommitMessage(parsed.result.commitMessage ?? "")
-    ? parsed.result.commitMessage!
-    : "fix: address overall review";
-
-  const commit = await deps.git.commit(commitMessage);
-  if (commit.exitCode !== 0) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    if (deps.paths) {
-      appendEvent(deps.paths, {
-        type: "overall_rework_failed",
-        attempt: attemptNumber,
-        reason: `commit-hook failure: ${commit.stderr || commit.stdout}`,
-      });
-    }
-    return {
-      ok: false,
-      reason: `Commit hook failed: ${commit.stderr || commit.stdout}`,
-      blocking: false,
-    };
-  }
-
-  const postCommitHead = await deps.git.head();
-  if (postCommitHead === preAttemptHead) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    return {
-      ok: false,
-      reason: "Commit succeeded but HEAD did not advance",
-      blocking: false,
-    };
-  }
-
-  const changedPlanArtifactAfterCommit = changedSnapshotPath(
-    planArtifacts,
-    planArtifactSnapshot,
-  );
-  if (changedPlanArtifactAfterCommit) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    return {
-      ok: false,
-      reason: `Commit hook changed a plan artifact during overall rework: ${changedPlanArtifactAfterCommit}`,
-      blocking: true,
-    };
-  }
-
-  if (!(await deps.git.isCleanExcept(planArtifacts))) {
-    await resetOverallRework(
-      deps,
-      preAttemptHead,
-      planArtifacts,
-      planArtifactSnapshot,
-    );
-    return {
-      ok: false,
-      reason: "Commit succeeded but checkout is dirty after overall rework",
-      blocking: false,
-    };
-  }
-
-  if (deps.paths) {
-    appendEvent(deps.paths, {
-      type: "overall_rework_committed",
-      attempt: attemptNumber,
-      commitSha: postCommitHead,
+  await recordPapercuts(deps, result.result, "overall-reviewer");
+  if (args.initial) {
+    const parsed = parseInitialReviewResult(result.result, {
+      allowRecommendationMarkdown: true,
     });
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        reason: `Invalid initial overall review: ${parsed.reason}`,
+      };
+    }
+    state.convergence = createReviewConvergenceState({
+      drafts:
+        parsed.result.verdict === "changes_requested"
+          ? parsed.result.findings
+          : [],
+      idPrefix: "O",
+    });
+    return {
+      ok: true,
+      approved: state.convergence.outstandingIds.length === 0,
+      observations: [],
+    };
   }
-
-  deps.updateState((prev) =>
-    checkpointPatch(
-      prev,
-      `Overall rework committed (attempt ${attemptNumber}) @ ${postCommitHead.slice(0, 7)}`,
-    ),
+  const parsed = parseAnchoredReviewResult(
+    result.result,
+    state.convergence.outstandingIds,
   );
-
-  return { ok: true, commitSha: postCommitHead };
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      reason: `Invalid anchored overall review: ${parsed.reason}`,
+    };
+  }
+  try {
+    const update =
+      state.convergence.outstandingIds.length === 0
+        ? openRegressionReviewEpoch({
+            closedState: state.convergence,
+            regressions: parsed.result.regressions,
+            latestDeltaPaths: args.latestDeltaPaths,
+            idPrefix: "O",
+          })
+        : applyAnchoredReview({
+            state: state.convergence,
+            review: parsed.result,
+            latestDeltaPaths: args.latestDeltaPaths,
+            idPrefix: "O",
+          });
+    const wasClosed = state.convergence.outstandingIds.length === 0;
+    state.convergence = update.state;
+    if (wasClosed) {
+      state.epoch++;
+    }
+    return {
+      ok: true,
+      approved: state.convergence.outstandingIds.length === 0,
+      observations: update.observations.map(
+        (item) => `${item.summary}: ${item.evidence}`,
+      ),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `Overall review protocol failure: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
 }
 
-function buildOverallReviewArtifactContent(
-  deps: OrchestratorDeps,
-  baseSha: string,
-  headSha: string,
-  lastReview: Extract<OverallReviewOutcome, { verdict: "changes_requested" }>,
-  reworkFailures: string[],
-): string {
-  const recommendation =
-    lastReview.recommendationMarkdown ??
-    `## Required Changes\n\n${lastReview.requiredChanges.map((c) => `- ${c}`).join("\n")}`;
-
-  const reworkSection =
-    reworkFailures.length > 0
-      ? `\n## Rework Attempts\n\n${reworkFailures.map((f, i) => `- Attempt ${i + 1}: ${f}`).join("\n")}\n`
-      : "";
-
-  const manifestSection = formatExecutionManifestSummary(
-    deps.executionManifest,
-  );
-
-  const corpusSection =
-    deps.materialStore || deps.corpusMaterial
-      ? `\n## Plan Corpus\n\n${
-          deps.materialStore
-            ? formatStoreCorpusMaterial(deps.materialStore)
-            : deps.corpusMaterial
-        }\n`
-      : "";
-
-  return `# Overall Review: Changes Requested
-
-## Verdict
-
-changes_requested
-
-## Required Changes
-
-${lastReview.requiredChanges.map((c) => `- ${c}`).join("\n")}
-
-## Recommendation
-
-${recommendation}
-
-## Context
-
-- Plan: ${deps.planPath}
-- Base SHA: ${baseSha}
-- Head SHA: ${headSha}
-${deps.runId ? `- Run ID: ${deps.runId}\n` : ""}${reworkSection}${manifestSection}${corpusSection}
-## Raw Result
-
-${lastReview.rawResult}
-`;
-}
-
-async function runOverallReviewLoop(
+async function runConvergentOverallReviewLoop(
   deps: OrchestratorDeps,
   plan: ReturnType<typeof parsePlanFile>,
   planArtifacts: string[],
   runBaseSha: string,
 ): Promise<void> {
-  const reworkFailures: string[] = [];
-
-  const initialReview = await runOverallReviewOnce(
+  throwIfStopped(deps);
+  if (!(await deps.git.isCleanExcept(planArtifacts))) {
+    throw new BlockedError("dirty worktree before final review");
+  }
+  const mainHead = await deps.git.head();
+  if (mainHead === runBaseSha) {
+    return;
+  }
+  const planContent = readFileSync(deps.planPath, "utf-8");
+  const { bundleMaterial, corpusMaterial } = await overallMaterial(deps);
+  const landedTasks = deps.paths ? getLandedTasks(deps.paths) : [];
+  const fullDiff = await deps.git.diffRange(runBaseSha, mainHead);
+  const planContext = overallPlanContext({
     deps,
-    plan,
-    planArtifacts,
-    runBaseSha,
-  );
+    planContent,
+    baseSha: runBaseSha,
+    headSha: mainHead,
+    fullDiff,
+    landedTasks,
+    bundleMaterial,
+    corpusMaterial,
+  });
 
-  if (initialReview.verdict === "approved") {
-    deps.updateState((prev) =>
-      checkpointPatch(prev, "Final overall review approved"),
+  deps.updateState({ phase: "final_review", activeSubagentId: undefined });
+  const initial = await runInitialOverallReview({
+    deps,
+    planArtifacts,
+    planContext,
+    candidate: mainHead,
+    fullDiff,
+  });
+  if (!initial.ok) {
+    throw new BlockedError(initial.reason);
+  }
+  if (initial.convergence.outstandingIds.length === 0) {
+    deps.updateState((previous) =>
+      checkpointPatch(previous, "Final overall review approved"),
     );
     if (deps.paths) {
       appendEvent(deps.paths, { type: "overall_review_approved" });
     }
     return;
   }
-
-  let lastReview: Extract<
-    OverallReviewOutcome,
-    { verdict: "changes_requested" }
-  > = initialReview;
-
+  const branchName = `pi-implement/${deps.runId ?? "overall"}/overall-review`;
+  const worktreePath = deps.paths
+    ? join(deps.paths.worktreesDir, "overall-review")
+    : join(await deps.git.root(), ".pi", "implement", "overall-review");
+  await deps.git.createTaskBranch(branchName, mainHead);
+  try {
+    await deps.git.addWorktree(worktreePath, branchName);
+  } catch (error) {
+    await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
+    throw new BlockedError(
+      `Overall review worktree setup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const mainRoot = await deps.git.root();
+  const candidateGit = deps.git.forWorktree(worktreePath, mainRoot);
+  const candidatePlanArtifacts = overallWorktreePlanArtifacts(
+    worktreePath,
+    mainRoot,
+    planArtifacts,
+  );
+  let overall: OverallReviewState = {
+    baseSha: mainHead,
+    branchName,
+    worktreePath,
+    candidate: {
+      sourceBaseSha: runBaseSha,
+      candidateBaseSha: mainHead,
+      branchName,
+      worktreePath,
+      candidateSha: mainHead,
+      candidateTree: await candidateGit.tree(),
+      trustedCheckpoint: mainHead,
+      discardedBundles: [],
+    },
+    convergence: initial.convergence,
+    closedEpochs: [],
+    epoch: 1,
+  };
+  persistOverallReviewState(deps, overall, "needs_rework");
   if (deps.paths) {
     appendEvent(deps.paths, {
       type: "overall_review_changes_requested",
-      requiredChanges: initialReview.requiredChanges,
+      findingIds: overall.convergence.outstandingIds,
     });
   }
 
-  deps.updateState((prev) =>
-    checkpointPatch(
-      prev,
-      `Overall review changes requested: ${initialReview.requiredChanges.join("; ")}`,
-    ),
-  );
-
-  for (let attempt = 1; attempt <= MAX_OVERALL_REWORK_ATTEMPTS; attempt++) {
-    const rework = await runOverallReworkAttempt(
-      deps,
-      plan,
-      planArtifacts,
-      runBaseSha,
-      lastReview,
-      attempt,
-      reworkFailures,
+  let attempt = 0;
+  let systemFailures = 0;
+  for (;;) {
+    attempt++;
+    const outstanding = overall.convergence.findings.filter((finding) =>
+      overall.convergence.outstandingIds.includes(finding.id),
     );
-
-    if (!rework.ok) {
-      if (rework.blocking) {
-        throw new BlockedError(rework.reason);
+    const candidateBefore = overall.candidate.trustedCheckpoint!;
+    const snapshot = await captureRestoreSnapshot(
+      candidateGit,
+      candidatePlanArtifacts,
+    );
+    const mainSnapshot = await captureRestoreSnapshot(deps.git, planArtifacts);
+    const candidateDiff = await candidateGit.diffRange(
+      overall.baseSha,
+      candidateBefore,
+    );
+    const prompt = buildOverallReworkPrompt({
+      planContent,
+      planPath: deps.planPath,
+      baseSha: runBaseSha,
+      headSha: candidateBefore,
+      diff: `${fullDiff}\n${candidateDiff}`,
+      runId: deps.runId,
+      landedTasks,
+      bundleMaterial,
+      corpusMaterial,
+      findings: outstanding,
+      worktreePath,
+      priorAttemptFailures: overall.latestEvidence
+        ? [overall.latestEvidence]
+        : undefined,
+      executionManifest: deps.executionManifest,
+    });
+    deps.updateState({ phase: "final_rework", activeSubagentId: undefined });
+    const id = await deps.subagents.spawn({
+      type: deps.roles.implementer.type,
+      prompt,
+      description: `overall rework attempt ${attempt}`,
+      model: deps.roles.implementer.model,
+      thinking: deps.roles.implementer.thinking,
+      role: "implementer",
+      cwd: worktreePath,
+      completion: {
+        description: "Submit the overall rework result.",
+        schema: overallReworkSchema,
+      },
+    });
+    const ref: AgentDisplayRef = {
+      id,
+      role: "implementer",
+      label: `Overall rework · attempt ${attempt}`,
+      startedAt: new Date().toISOString(),
+    };
+    deps.updateState((previous) => addActiveAgentPatch(previous, ref));
+    const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
+      deps.updateState((previous) => removeActiveAgentPatch(previous, id));
+    });
+    if (
+      result.status !== "completed" ||
+      !parseOverallReworkResult(result.result).ok
+    ) {
+      const reason =
+        result.status === "completed"
+          ? `Invalid overall rework result: ${(parseOverallReworkResult(result.result) as { reason: string }).reason}`
+          : `Overall rework ${result.status}: ${result.error}`;
+      const bundle = await persistDiscardedBundle({
+        git: candidateGit,
+        destination: join(
+          deps.paths?.runDir ?? dirname(worktreePath),
+          "overall-review",
+          "discarded",
+          `${Date.now()}-${attempt}`,
+        ),
+        protectedPaths: candidatePlanArtifacts,
+        baseSha: candidateBefore,
+      });
+      overall.candidate.discardedBundles.push(bundle);
+      if (deps.paths) {
+        appendEvent(deps.paths, {
+          type: "overall_candidate_quarantined",
+          bundlePath: bundle,
+        });
       }
-      reworkFailures.push(rework.reason);
+      try {
+        await restoreAndVerify(candidateGit, snapshot, candidatePlanArtifacts);
+        await restoreAndVerify(deps.git, mainSnapshot, planArtifacts);
+      } catch (error) {
+        throw new BlockedError(
+          `overall rework restoration failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      overall.latestEvidence = reason;
+      persistOverallReviewState(deps, overall, "needs_rework", reason);
+      if (++systemFailures >= MAX_SYSTEM_FAILURES) {
+        throw new BlockedError(reason);
+      }
       continue;
     }
-
-    // Re-run overall review only after a successful rework commit
-    const review = await runOverallReviewOnce(
-      deps,
-      plan,
-      planArtifacts,
-      runBaseSha,
+    if (
+      protectedArtifactsChanged(snapshot) ||
+      (await candidateGit.head()) !== snapshot.head ||
+      (await snapshotChanged(deps.git, mainSnapshot, planArtifacts))
+    ) {
+      await restoreAndVerify(
+        candidateGit,
+        snapshot,
+        candidatePlanArtifacts,
+      ).catch(() => undefined);
+      await restoreAndVerify(deps.git, mainSnapshot, planArtifacts).catch(
+        () => undefined,
+      );
+      throw new BlockedError(
+        "overall rework implementer violated the candidate safety boundary",
+      );
+    }
+    await recordPapercuts(deps, result.result, "overall-rework");
+    await candidateGit.stageAllExcept(candidatePlanArtifacts);
+    const checkpoint = await checkpointCandidate(
+      candidateGit,
+      overall.candidate,
     );
-
-    if (review.verdict === "approved") {
-      deps.updateState((prev) =>
-        checkpointPatch(prev, "Final overall review approved"),
+    if (checkpoint.result && checkpoint.result.exitCode !== 0) {
+      throw new BlockedError(
+        `could not checkpoint overall candidate: ${checkpoint.result.stderr || checkpoint.result.stdout}`,
+      );
+    }
+    overall.candidate = checkpoint.candidate;
+    persistOverallReviewState(deps, overall, "reviewing");
+    if (deps.paths && checkpoint.changed) {
+      appendEvent(deps.paths, {
+        type: "overall_candidate_checkpointed",
+        commitSha: overall.candidate.trustedCheckpoint!,
+        amended: candidateBefore !== overall.baseSha,
+      });
+    }
+    const candidateAfter = overall.candidate.trustedCheckpoint!;
+    if (!checkpoint.changed || candidateAfter === candidateBefore) {
+      const update = applyNoopReview(overall.convergence);
+      overall.convergence = update.state;
+      overall.latestEvidence = `Overall reworker did not change candidate ${candidateBefore}.`;
+      const integrationNoop = overall.integrationLedger
+        ? completeIntegrationRound(overall.integrationLedger)
+        : undefined;
+      if (integrationNoop) {
+        overall.integrationLedger = integrationNoop.ledger;
+      }
+      const stalled =
+        update.outcome === "stalled" || integrationNoop?.outcome === "stalled";
+      persistOverallReviewState(
+        deps,
+        overall,
+        stalled ? "blocked" : "needs_rework",
+        overall.latestEvidence,
+      );
+      if (stalled) {
+        break;
+      }
+      continue;
+    }
+    const validationSnapshot = await captureRestoreSnapshot(
+      candidateGit,
+      candidatePlanArtifacts,
+    );
+    let validationFailure: string | undefined;
+    for (const command of await resolveValidationCommands(deps)) {
+      const validation = await runValidationCommand(command, worktreePath);
+      if (validation.exitCode !== 0) {
+        validationFailure = `Validation failed: ${command.display}\n${validation.stderr || validation.stdout}`;
+        break;
+      }
+    }
+    if (
+      (await snapshotChanged(
+        candidateGit,
+        validationSnapshot,
+        candidatePlanArtifacts,
+      )) ||
+      (await snapshotChanged(deps.git, mainSnapshot, planArtifacts))
+    ) {
+      try {
+        await restoreAndVerify(
+          candidateGit,
+          validationSnapshot,
+          candidatePlanArtifacts,
+        );
+        await restoreAndVerify(deps.git, mainSnapshot, planArtifacts);
+      } catch (error) {
+        throw new BlockedError(
+          `overall validation mutation could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      throw new BlockedError("validation changed the overall candidate");
+    }
+    if (validationFailure) {
+      overall.latestEvidence = validationFailure;
+      persistOverallReviewState(
+        deps,
+        overall,
+        "needs_rework",
+        validationFailure,
+      );
+    }
+    const reviewBase = overall.previousCandidate ?? overall.baseSha;
+    const latestDelta = await candidateGit.diffRange(
+      reviewBase,
+      candidateAfter,
+    );
+    const latestDeltaPaths = parseNameStatusPaths(
+      await candidateGit.diffRangeNameStatus(reviewBase, candidateAfter),
+    );
+    const review = await reviewOverallCandidate({
+      deps,
+      planArtifacts,
+      state: overall,
+      planContext,
+      latestDelta,
+      latestDeltaPaths,
+    });
+    if (!review.ok) {
+      if (++systemFailures >= MAX_SYSTEM_FAILURES) {
+        throw new BlockedError(review.reason);
+      }
+      overall.latestEvidence = review.reason;
+      persistOverallReviewState(deps, overall, "needs_rework", review.reason);
+      continue;
+    }
+    overall.previousCandidate = candidateAfter;
+    overall.previousCandidatePatch = await candidateGit.diffRange(
+      overall.baseSha,
+      candidateAfter,
+    );
+    overall.latestEvidence =
+      [validationFailure, ...review.observations].filter(Boolean).join("\n") ||
+      undefined;
+    if (!review.approved || validationFailure) {
+      if (overall.convergence.consecutiveStalledRounds >= 2) {
+        break;
+      }
+      persistOverallReviewState(
+        deps,
+        overall,
+        "needs_rework",
+        overall.latestEvidence,
+      );
+      continue;
+    }
+    overall.closedEpochs.push({
+      epoch: overall.epoch,
+      findings: overall.convergence.findings,
+    });
+    const integrated = await integrateOverallCandidate(
+      deps,
+      planArtifacts,
+      overall,
+    );
+    if (integrated.ok) {
+      await deps.git.removeWorktree(worktreePath).catch(() => undefined);
+      await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
+      deps.updateState((previous) =>
+        checkpointPatch(previous, "Final overall review approved"),
       );
       if (deps.paths) {
         appendEvent(deps.paths, { type: "overall_review_approved" });
       }
       return;
     }
-
-    lastReview = review;
-
-    if (deps.paths) {
-      appendEvent(deps.paths, {
-        type: "overall_review_changes_requested",
-        requiredChanges: review.requiredChanges,
-      });
+    overall.latestEvidence = integrated.reason;
+    persistOverallReviewState(
+      deps,
+      overall,
+      integrated.stalled || integrated.hardBlocked ? "blocked" : "needs_rework",
+      integrated.reason,
+    );
+    if (integrated.hardBlocked) {
+      throw new BlockedError(integrated.reason);
     }
+    if (integrated.stalled) {
+      break;
+    }
+  }
+  persistOverallReviewState(
+    deps,
+    overall,
+    "blocked",
+    "overall review stalled without a new low outstanding count",
+  );
+  if (deps.paths) {
+    appendEvent(deps.paths, {
+      type: "overall_review_stalled",
+      findingIds: overall.convergence.outstandingIds,
+    });
+  }
+  const artifactPath = nextOverallReviewArtifactPath(deps.planPath);
+  writeFileSync(
+    artifactPath,
+    `# Overall review stalled\n\nInspect retained run state: ${deps.paths?.runDir ?? "(unmanaged)"}\n\nOutstanding findings: ${overall.convergence.outstandingIds.join(", ")}\n`,
+    "utf-8",
+  );
+  throw new OverallReviewFollowupError(
+    artifactPath,
+    `Overall review stalled: ${overall.convergence.outstandingIds.join(", ")}`,
+  );
+}
 
-    deps.updateState((prev) =>
-      checkpointPatch(
-        prev,
-        `Overall review changes requested: ${review.requiredChanges.join("; ")}`,
-      ),
+async function integrateOverallCandidate(
+  deps: OrchestratorDeps,
+  planArtifacts: string[],
+  overall: OverallReviewState,
+): Promise<
+  | { ok: true }
+  | { ok: false; reason: string; stalled?: boolean; hardBlocked?: boolean }
+> {
+  const mainRoot = await deps.git.root();
+  const candidateGit = deps.git.forWorktree(overall.worktreePath, mainRoot);
+  const candidatePlanArtifacts = overallWorktreePlanArtifacts(
+    overall.worktreePath,
+    mainRoot,
+    planArtifacts,
+  );
+  const candidateSha = overall.candidate.trustedCheckpoint!;
+  const candidateDelta = await candidateGit.diffRange(
+    overall.baseSha,
+    candidateSha,
+  );
+  const gates: IntegrationGate[] = [
+    { key: "apply", kind: "apply", label: "Apply overall candidate delta" },
+    ...(await resolveValidationCommands(deps)).map((command, index) => ({
+      key: `validator:${index}`,
+      kind: "validator" as const,
+      label: `Validator: ${command.display}`,
+    })),
+    { key: "hook", kind: "hook", label: "Approval hook" },
+    ...((await resolveValidationCommands(deps)).length === 0
+      ? [
+          {
+            key: "fallback",
+            kind: "fallback" as const,
+            label: "Typed overall review approval",
+          },
+        ]
+      : []),
+  ];
+  const mainBase = await deps.git.head();
+  if (
+    mainBase !== overall.baseSha ||
+    !(await deps.git.isCleanExcept(planArtifacts))
+  ) {
+    return {
+      ok: false,
+      reason: "main checkout changed before overall integration",
+    };
+  }
+  if (!sameIntegrationPipeline(overall.integrationLedger, mainBase, gates)) {
+    overall.integrationLedger = createIntegrationLedger({
+      epoch: (overall.integrationLedger?.epoch ?? 0) + 1,
+      mainBaseSha: mainBase,
+      gates,
+      idPrefix: "OI",
+    });
+  }
+  const snapshot = await captureRestoreSnapshot(deps.git, planArtifacts);
+  persistOverallReviewState(deps, overall, "integrating");
+  const fail = async (key: string, reason: string) => {
+    const update = reassessIntegrationGate({
+      ledger: overall.integrationLedger!,
+      key,
+      passed: false,
+      evidence: reason,
+    });
+    const completed = completeIntegrationRound(update.ledger);
+    overall.integrationLedger = completed.ledger;
+    persistOverallReviewState(
+      deps,
+      overall,
+      completed.outcome === "stalled" ? "blocked" : "needs_rework",
+      reason,
+    );
+    try {
+      await restoreAndVerify(deps.git, snapshot, planArtifacts);
+    } catch (error) {
+      return {
+        ok: false as const,
+        hardBlocked: true,
+        reason: `${reason}\nRollback failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    return {
+      ok: false as const,
+      reason:
+        completed.outcome === "stalled"
+          ? `${reason}\nOverall integration stalled without a new low outstanding count.`
+          : reason,
+      stalled: completed.outcome === "stalled",
+    };
+  };
+  const apply = await deps.git.applyPatch(candidateDelta);
+  if (apply.exitCode !== 0) {
+    return fail(
+      "apply",
+      apply.stderr || apply.stdout || "could not apply overall candidate",
     );
   }
-
-  const headSha = await deps.git.head();
-  const artifactPath = nextOverallReviewArtifactPath(deps.planPath);
-  const artifactContent = buildOverallReviewArtifactContent(
-    deps,
-    runBaseSha,
-    headSha,
-    lastReview,
-    reworkFailures,
+  overall.integrationLedger = reassessIntegrationGate({
+    ledger: overall.integrationLedger!,
+    key: "apply",
+    passed: true,
+    evidence: "Overall candidate delta applied.",
+  }).ledger;
+  persistOverallReviewState(deps, overall, "integrating");
+  const appliedSnapshot = await captureRestoreSnapshot(deps.git, planArtifacts);
+  const validationCommands = await resolveValidationCommands(deps);
+  for (let index = 0; index < validationCommands.length; index++) {
+    const command = validationCommands[index]!;
+    const result = await runValidationCommand(command, await deps.git.root());
+    if (await snapshotChanged(deps.git, appliedSnapshot, planArtifacts)) {
+      return fail(
+        `validator:${index}`,
+        `Validator changed the integration candidate: ${command.display}`,
+      );
+    }
+    if (result.exitCode !== 0) {
+      return fail(
+        `validator:${index}`,
+        result.stderr ||
+          result.stdout ||
+          `Validation failed: ${command.display}`,
+      );
+    }
+    overall.integrationLedger = reassessIntegrationGate({
+      ledger: overall.integrationLedger!,
+      key: `validator:${index}`,
+      passed: true,
+      evidence: "Validator passed.",
+    }).ledger;
+  }
+  if (validationCommands.length === 0) {
+    overall.integrationLedger = reassessIntegrationGate({
+      ledger: overall.integrationLedger!,
+      key: "fallback",
+      passed: true,
+      evidence: "Typed overall review approved the candidate.",
+    }).ledger;
+  }
+  const beforeHook = await captureRestoreSnapshot(
+    candidateGit,
+    candidatePlanArtifacts,
   );
-  mkdirSync(dirname(artifactPath), { recursive: true });
-  writeFileSync(artifactPath, artifactContent, "utf-8");
-
-  const latestFailure = reworkFailures.at(-1);
-  const message = latestFailure
-    ? `Overall review requested changes: ${lastReview.requiredChanges.join("; ")}. Latest rework failure: ${latestFailure}`
-    : `Overall review requested changes: ${lastReview.requiredChanges.join("; ")}`;
-  throw new OverallReviewFollowupError(artifactPath, message);
+  const approvedTree = await candidateGit.treeAt(candidateSha);
+  const hook = await candidateGit.runCheckpointHooks(candidateSha);
+  const hookTree = await candidateGit.tree();
+  const hookMutated = await snapshotChanged(
+    candidateGit,
+    beforeHook,
+    candidatePlanArtifacts,
+    { ignoreHead: true },
+  );
+  try {
+    await restoreAndVerify(candidateGit, beforeHook, candidatePlanArtifacts);
+  } catch (error) {
+    return fail(
+      "hook",
+      `Approval hook state could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (hookMutated || hookTree !== approvedTree) {
+    return fail(
+      "hook",
+      "Approval hook changed the reviewed overall candidate.",
+    );
+  }
+  if (hook.exitCode !== 0) {
+    return fail("hook", hook.stderr || hook.stdout || "Approval hook failed");
+  }
+  const commit = await deps.git.commit("fix: address overall review");
+  if (commit.exitCode !== 0) {
+    return fail(
+      "hook",
+      commit.stderr || commit.stdout || "Overall integration commit failed",
+    );
+  }
+  overall.integrationLedger = reassessIntegrationGate({
+    ledger: overall.integrationLedger!,
+    key: "hook",
+    passed: true,
+    evidence: "Approval hook passed.",
+  }).ledger;
+  const landedHead = await deps.git.head();
+  if (
+    landedHead === mainBase ||
+    (await deps.git.treeAt(landedHead)) !== approvedTree ||
+    !(await deps.git.isCleanExcept(planArtifacts)) ||
+    (await deps.git.activeOperation())
+  ) {
+    return fail(
+      "hook",
+      "Overall integration did not leave an exact clean commit.",
+    );
+  }
+  persistOverallReviewState(deps, overall, "approved");
+  if (overall.integrationLedger.outstandingIds.length > 0) {
+    return fail("hook", "Overall integration ledger remains outstanding.");
+  }
+  return { ok: true };
 }
 
 function safeArtifactName(value: string): string {

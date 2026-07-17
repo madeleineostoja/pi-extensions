@@ -544,7 +544,9 @@ export function buildOverallReworkPrompt(args: {
   landedTasks?: Array<{ id: string; title: string; commitSha?: string }>;
   bundleMaterial?: string;
   corpusMaterial?: string;
-  requiredChanges: string[];
+  requiredChanges?: string[];
+  findings?: ReviewFinding[];
+  worktreePath?: string;
   recommendationMarkdown?: string;
   priorAttemptFailures?: string[];
   executionManifest?: ExecutionManifest;
@@ -564,6 +566,12 @@ export function buildOverallReworkPrompt(args: {
     args.priorAttemptFailures && args.priorAttemptFailures.length > 0
       ? `\n## Prior Rework Attempt Failures\n\n${args.priorAttemptFailures.map((f, i) => `${i + 1}. ${f}`).join("\n")}\n`
       : "";
+  const requiredChanges = args.findings
+    ? args.findings.map(
+        (finding) =>
+          `${finding.id}: ${finding.summary}\n  Evidence: ${finding.evidence}\n  Required change: ${finding.requiredChange}\n  Acceptance: ${finding.acceptanceCriteria.join("; ")}`,
+      )
+    : (args.requiredChanges ?? []);
   const recommendationSection = args.recommendationMarkdown
     ? `\n## Recommendation\n\n${args.recommendationMarkdown}\n`
     : "";
@@ -581,7 +589,7 @@ Make only the changes required to satisfy the overall review feedback and the or
 
 ## Constraints
 
-Do not edit source plan files or checklist state. Do not stage, commit, reset, checkout, rebase, merge, tag, push, clean, or force-add ignored files.
+Work only in the assigned overall candidate worktree${args.worktreePath ? `:\n\n  ${args.worktreePath}` : ""}. Do not edit source plan files or checklist state. Do not stage, commit, reset, checkout, rebase, merge, tag, push, clean, or force-add ignored files.
 
 ## Context
 
@@ -599,7 +607,7 @@ ${args.diff}
 
 ## Required Changes
 
-${args.requiredChanges.map((c) => `- ${c}`).join("\n")}
+${requiredChanges.map((c) => `- ${c}`).join("\n")}
 ${recommendationSection}${priorFailuresSection}
 ${PAPERCUT_GUIDANCE}
 
@@ -639,13 +647,16 @@ export function buildAnchoredTaskReviewPrompt(args: {
 export function buildInitialOverallReviewPrompt(args: {
   planContext: string;
   candidateContext: string;
+  worktreePath?: string;
 }): string {
-  return buildInitialReviewPrompt({
+  return `${buildInitialReviewPrompt({
     scope: "overall",
     compiledContract: args.planContext,
-    worktreePath: "the main checkout",
+    worktreePath: args.worktreePath ?? "the main checkout",
     candidateContext: args.candidateContext,
-  });
+  })}
+
+Review the complete feature against the original human plan, corpus, execution manifest, landed tasks, and full feature diff. This is review only: do not edit files, change Git state, install dependencies, or run write-producing commands.`;
 }
 
 export function buildAnchoredOverallReviewPrompt(args: {
@@ -655,13 +666,16 @@ export function buildAnchoredOverallReviewPrompt(args: {
   previousCandidate: string;
   currentCandidate: string;
   latestDelta: string;
+  worktreePath?: string;
 }): string {
-  return buildAnchoredReviewPrompt({
+  return `${buildAnchoredReviewPrompt({
     scope: "overall",
     compiledContract: args.planContext,
-    worktreePath: "the main checkout",
+    worktreePath: args.worktreePath ?? "the main checkout",
     ...args,
-  });
+  })}
+
+The full-feature context represents the landed run plus the cumulative overall candidate. Review only: do not edit files, change Git state, install dependencies, or run write-producing commands.`;
 }
 
 function buildInitialReviewPrompt(args: {

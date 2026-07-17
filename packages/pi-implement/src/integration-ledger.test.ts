@@ -42,6 +42,28 @@ describe("integration ledger", () => {
     expect(hook.outcome).toBe("approved");
   });
 
+  it("supports a distinct stable prefix for overall integration obligations", () => {
+    let ledger = createIntegrationLedger({
+      mainBaseSha: "base",
+      gates,
+      idPrefix: "OI",
+    });
+    expect(ledger.outstandingIds).toEqual(["OI1", "OI2", "OI3"]);
+    ledger = reassessIntegrationGate({
+      ledger,
+      key: "apply",
+      passed: true,
+      evidence: "applied",
+    }).ledger;
+    ledger = reassessIntegrationGate({
+      ledger,
+      key: "apply",
+      passed: false,
+      evidence: "regressed",
+    }).ledger;
+    expect(ledger.outstandingIds).toEqual(["OI2", "OI3", "OI4"]);
+  });
+
   it("allocates monotonic regression IDs without resetting the low-water baseline", () => {
     let ledger = createIntegrationLedger({ mainBaseSha: "base", gates });
     ledger = reassessIntegrationGate({

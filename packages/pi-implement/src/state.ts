@@ -33,8 +33,42 @@ export type RunJson = {
   baseSha: string;
   currentPhase: string;
   maxConcurrency: number;
+  overallReview?: OverallReviewJson;
   startedAt: string;
   updatedAt: string;
+};
+
+export type OverallReviewJson = {
+  baseSha: string;
+  branchName: string;
+  worktreePath: string;
+  candidate?: {
+    sourceBaseSha: string;
+    candidateBaseSha: string;
+    branchName: string;
+    worktreePath?: string;
+    candidateSha?: string;
+    candidateTree?: string;
+    trustedCheckpoint?: string;
+    discardedBundles: string[];
+  };
+  convergence?: {
+    epoch: number;
+    closedEpochs: Array<{ epoch: number; findings: unknown[] }>;
+    state: {
+      round: number;
+      findings: unknown[];
+      outstandingIds: string[];
+      bestOutstandingCount: number;
+      consecutiveStalledRounds: number;
+    };
+    previousCandidate?: string;
+    previousCandidatePatch?: string;
+    latestEvidence?: string;
+  };
+  integrationLedger?: IntegrationLedger;
+  status: "needs_rework" | "reviewing" | "approved" | "blocked" | "integrating";
+  lastReason?: string;
 };
 
 export type TaskStatus =
@@ -159,11 +193,18 @@ export type EventEntry =
     }
   | { type: "scheduler_self_heal_failed"; attempt: number; reason: string }
   | { type: "task_self_heal_requeued"; taskId: string; reason: string }
-  | { type: "overall_review_changes_requested"; requiredChanges: string[] }
+  | { type: "overall_review_changes_requested"; findingIds: string[] }
   | { type: "overall_review_approved" }
   | { type: "overall_rework_started"; attempt: number; artifactPath?: string }
   | { type: "overall_rework_failed"; attempt: number; reason: string }
   | { type: "overall_rework_committed"; attempt: number; commitSha: string }
+  | {
+      type: "overall_candidate_checkpointed";
+      commitSha: string;
+      amended: boolean;
+    }
+  | { type: "overall_candidate_quarantined"; bundlePath: string }
+  | { type: "overall_review_stalled"; findingIds: string[] }
   | {
       type: "papercuts_processed";
       role: string;

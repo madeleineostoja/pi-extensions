@@ -874,20 +874,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
                 type: "run_blocked",
                 reason: err.message,
               });
-              try {
-                await cleanupRun(paths);
-              } catch (cleanupErr) {
-                const reason =
-                  cleanupErr instanceof Error
-                    ? cleanupErr.message
-                    : String(cleanupErr);
-                appendEvent(paths, { type: "cleanup_failed", reason });
-                releaseRunLock(paths, runId);
-                ctx.ui.notify(
-                  `pi-implement auto-cleanup warning: ${reason}`,
-                  "warning",
-                );
-              }
+              releaseRunLock(paths, runId);
             }
             if (ctx.mode === "tui") {
               ctx.ui.setWidget(WIDGET_KEY, undefined);

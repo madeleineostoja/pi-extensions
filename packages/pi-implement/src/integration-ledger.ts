@@ -12,6 +12,7 @@ export type IntegrationGate = {
 };
 
 export type IntegrationLedger = {
+  idPrefix: string;
   epoch: number;
   mainBaseSha: string;
   gateSet: string[];
@@ -32,9 +33,11 @@ export function createIntegrationLedger(args: {
   epoch?: number;
   mainBaseSha: string;
   gates: IntegrationGate[];
+  idPrefix?: string;
 }): IntegrationLedger {
+  const idPrefix = args.idPrefix ?? "I";
   const findings = args.gates.map((gate, index) => ({
-    id: `I${index + 1}`,
+    id: `${idPrefix}${index + 1}`,
     summary: gate.label,
     evidence: "Not yet assessed.",
     requiredChange: `Make the ${gate.label} gate pass.`,
@@ -43,6 +46,7 @@ export function createIntegrationLedger(args: {
     origin: "initial" as const,
   }));
   return {
+    idPrefix,
     epoch: args.epoch ?? 1,
     mainBaseSha: args.mainBaseSha,
     gateSet: args.gates.map(integrationGateSignature),
@@ -50,7 +54,7 @@ export function createIntegrationLedger(args: {
     findings,
     outstandingIds: findings.map((finding) => finding.id),
     gateFindingIds: Object.fromEntries(
-      args.gates.map((gate, index) => [gate.key, [`I${index + 1}`]]),
+      args.gates.map((gate, index) => [gate.key, [`${idPrefix}${index + 1}`]]),
     ),
     bestOutstandingCount: findings.length,
     consecutiveStalledRounds: 0,
@@ -70,7 +74,7 @@ function integrationGateIds(ledger: IntegrationLedger, key: string): string[] {
     return persisted;
   }
   const index = ledger.gates.findIndex((gate) => gate.key === key);
-  return index < 0 ? [] : [`I${index + 1}`];
+  return index < 0 ? [] : [`${ledger.idPrefix ?? "I"}${index + 1}`];
 }
 
 export function reassessIntegrationGate(args: {
@@ -97,7 +101,7 @@ export function reassessIntegrationGate(args: {
   if (args.passed) {
     outstandingIds = outstandingIds.filter((id) => !gateIds.includes(id));
   } else if (outstandingForGate.length === 0) {
-    const regressionId = `I${nextFindingNumber(findings)}`;
+    const regressionId = `${args.ledger.idPrefix ?? "I"}${nextFindingNumber(findings, args.ledger.idPrefix ?? "I")}`;
     const original = findings.find((finding) => finding.id === gateIds[0])!;
     findings = [
       ...findings,
@@ -180,10 +184,13 @@ function integrationGateSignature(gate: IntegrationGate): string {
   return `${gate.key}\u0000${gate.kind}\u0000${gate.label}`;
 }
 
-function nextFindingNumber(findings: readonly ReviewFinding[]): number {
+function nextFindingNumber(
+  findings: readonly ReviewFinding[],
+  prefix: string,
+): number {
   return (
     findings.reduce((highest, finding) => {
-      const value = Number(finding.id.slice(1));
+      const value = Number(finding.id.slice(prefix.length));
       return Number.isSafeInteger(value) ? Math.max(highest, value) : highest;
     }, 0) + 1
   );

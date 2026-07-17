@@ -441,8 +441,25 @@ function makeExecutionManifest(
 const GOOD_OVERALL_REVIEW = { verdict: "approved" };
 const BAD_OVERALL_REVIEW = {
   verdict: "changes_requested",
-  requiredChanges: ["add integration tests"],
+  findings: [
+    {
+      summary: "Missing integration coverage",
+      evidence: "The feature has no integration test.",
+      requiredChange: "Add an integration test.",
+      acceptanceCriteria: ["An integration test covers the feature."],
+    },
+  ],
   recommendationMarkdown: "## Suggested\n\nAdd tests.",
+};
+const UNRESOLVED_OVERALL_REVIEW = {
+  assessments: [
+    {
+      id: "O1",
+      status: "unresolved",
+      evidence: "The integration test is still missing.",
+    },
+  ],
+  regressions: [],
 };
 const GOOD_REWORK = {
   summary: "fixed",
@@ -1050,7 +1067,7 @@ describe("runImplementation", () => {
     expect(currentState.tasks?.[0]?.planIndex).toBe(0);
     expect(subagents.spawns).toHaveLength(3);
     const overallPrompt = subagents.spawns[2]?.prompt ?? "";
-    expect(overallPrompt).toContain("pi-implement overall reviewer");
+    expect(overallPrompt).toContain("initial overall review");
     expect(overallPrompt).toContain("h1");
   });
 
@@ -1087,15 +1104,17 @@ describe("runImplementation", () => {
     const subagents = new FakeSubagents();
     subagents.resultsByDescription = [
       {
-        match: "overall review",
+        match: /^overall review$/,
         result: { status: "completed", result: BAD_OVERALL_REVIEW },
       },
     ];
     subagents.results = [
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
-      { status: "completed", result: "invalid rework" },
-      { status: "completed", result: "invalid rework" },
+      { status: "completed", result: GOOD_REWORK },
+      { status: "completed", result: UNRESOLVED_OVERALL_REVIEW },
+      { status: "completed", result: GOOD_REWORK },
+      { status: "completed", result: UNRESOLVED_OVERALL_REVIEW },
     ];
 
     await expect(

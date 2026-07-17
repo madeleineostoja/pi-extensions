@@ -952,6 +952,31 @@ describe("typed review protocol prompts", () => {
     expect(prompt).toContain("observations never block");
   });
 
+  it("keeps typed overall rework findings and the isolated candidate worktree in the prompt", () => {
+    const prompt = buildOverallReworkPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plan.md",
+      baseSha: "base",
+      headSha: "candidate",
+      diff: "diff --git a/a b/a",
+      worktreePath: "/repo/.pi/implement/worktrees/r1/overall-review",
+      findings: [
+        {
+          id: "O1",
+          summary: "Missing coverage",
+          evidence: "No integration test exists.",
+          requiredChange: "Add coverage.",
+          acceptanceCriteria: ["Coverage exists."],
+          introducedRound: 0,
+          origin: "initial",
+        },
+      ],
+    });
+    expect(prompt).toContain("O1: Missing coverage");
+    expect(prompt).toContain("/repo/.pi/implement/worktrees/r1/overall-review");
+    expect(prompt).not.toContain("the main checkout");
+  });
+
   it("builds separately testable initial and anchored overall prompts", () => {
     expect(
       buildInitialOverallReviewPrompt({
