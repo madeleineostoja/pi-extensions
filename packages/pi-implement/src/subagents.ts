@@ -23,6 +23,22 @@ export type SubagentClient = {
   snapshots?(ids?: string[]): AgentSnapshot[];
 };
 
+export function hasLiveManagedRunAgents(
+  runtime: ReturnType<typeof getSubagentRuntime>,
+  runId: string,
+): boolean {
+  return runtime.snapshots({ includeNested: true }).some((snapshot) => {
+    const owner = snapshot.owner;
+    return (
+      typeof owner === "object" &&
+      owner !== null &&
+      owner.kind === "pi-implement" &&
+      owner.runId === runId &&
+      !["completed", "failed", "stopped"].includes(snapshot.status)
+    );
+  });
+}
+
 export type ProbeResult = { ok: true; version?: number } | { ok: false };
 
 export type PiImplementWorkerRole =

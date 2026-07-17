@@ -11,6 +11,7 @@ export type ParsedCommand =
   | {
       kind: "control";
       name: "status" | "stop" | "cleanup" | "config" | "inspect" | "view";
+      runId?: string;
     }
   | { kind: "error"; message: string };
 

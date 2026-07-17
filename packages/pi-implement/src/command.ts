@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import type {
   ExtensionAPI,
@@ -17,11 +17,13 @@ import {
 import { ExecGitClient } from "./git.js";
 import {
   RuntimeSubagentClient,
+  hasLiveManagedRunAgents,
   type SpawnArgs,
   type SubagentClient,
   type SubagentHandle,
   type SubagentResult,
 } from "./subagents.js";
+import { getSubagentRuntime } from "pi-subagents/runtime";
 import type { Static, TSchema } from "typebox";
 import {
   runImplementation,
@@ -213,7 +215,11 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             active.state.phase === "idle" && lastStoppedState
               ? lastStoppedState
               : active.state;
-          ctx.ui.notify(formatRunStatus(stateToShow), "info");
+          const retainedStatus =
+            stateToShow.phase === "idle"
+              ? await formatLatestRetainedRunStatus(ctx.cwd)
+              : undefined;
+          ctx.ui.notify(retainedStatus ?? formatRunStatus(stateToShow), "info");
           if (
             stateToShow.phase === "blocked" ||
             stateToShow.phase === "stopped"
@@ -327,10 +333,10 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         if (parsed.name === "inspect") {
           const git = new ExecGitClient(ctx.cwd);
           const repoRoot = await git.mainRoot();
-          let runId: string | undefined;
-          if (active.state.runId) {
+          let runId: string | undefined = parsed.runId;
+          if (!runId && active.state.runId) {
             runId = active.state.runId;
-          } else {
+          } else if (!runId) {
             const runIds = listRunIds(repoRoot);
             if (runIds.length > 0) {
               runId = runIds.reduce((a, b) => (a > b ? a : b));
@@ -601,7 +607,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             .filter((file) => file.absolutePath !== planPath)
             .map((file) => file.absolutePath),
         ];
-        planHash = createHash("sha256").update(planContent).digest("hex");
+        planHash = hashPlanContent(planContent);
         const retained = listRunIds(repoRoot)
           .map((runId) => ({
             runId,
@@ -614,11 +620,15 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
               entry.run.planPath === planPath &&
               entry.run.currentPhase !== "done",
           );
-        const compatible = retained.filter(
-          (entry) =>
-            entry.run!.planHash === planHash &&
-            entry.run!.corpusHash === corpus.corpusHash &&
-            entry.run!.checkoutRoot === checkoutRoot,
+        const compatible = retained.filter((entry) =>
+          retainedRunMatchesCurrentPlan(
+            entry.run!,
+            entry.paths,
+            planPath,
+            planContent,
+            corpusFileRecords,
+            checkoutRoot,
+          ),
         );
         const requestedRecovery = parsed.mode.recovery;
         if (requestedRecovery) {
@@ -634,9 +644,14 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           }
           if (requestedRecovery.kind === "resume") {
             if (
-              selected.run!.planHash !== planHash ||
-              selected.run!.corpusHash !== corpus.corpusHash ||
-              selected.run!.checkoutRoot !== checkoutRoot
+              !retainedRunMatchesCurrentPlan(
+                selected.run!,
+                selected.paths,
+                planPath,
+                planContent,
+                corpusFileRecords,
+                checkoutRoot,
+              )
             ) {
               ctx.ui.notify(
                 `pi-implement blocked: retained run ${selected.runId} is incompatible with the current plan, corpus, or checkout; inspect or start over explicitly.`,
@@ -665,29 +680,27 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
               );
               return;
             }
-            const taskIds = existsSync(selected.paths.tasksDir)
-              ? readdirSync(selected.paths.tasksDir, { withFileTypes: true })
-                  .filter((entry) => entry.isDirectory())
-                  .map((entry) => entry.name)
-              : [];
-            for (const taskId of taskIds) {
-              const task = readTaskJson(selected.paths, taskId);
-              if (!task?.trustedCheckpoint || !task.worktreePath) {
-                continue;
-              }
-              const taskGit = git.forWorktree(task.worktreePath, repoRoot);
-              if (
-                (await taskGit.head()) !== task.trustedCheckpoint ||
-                (task.candidateTree &&
-                  (await taskGit.tree()) !== task.candidateTree) ||
-                (await taskGit.activeOperation())
-              ) {
-                ctx.ui.notify(
-                  `pi-implement blocked: retained task ${taskId} no longer matches its trusted candidate. Inspect or start over explicitly.`,
-                  "warning",
-                );
-                return;
-              }
+            if (
+              hasLiveManagedRunAgents(getSubagentRuntime(pi), selected.runId)
+            ) {
+              ctx.ui.notify(
+                `pi-implement blocked: retained run ${selected.runId} still has a managed agent.`,
+                "warning",
+              );
+              return;
+            }
+            const resumeProblem = await validateRetainedRunForResume(
+              git,
+              selected.paths,
+              selected.run!,
+              baseSha,
+            );
+            if (resumeProblem) {
+              ctx.ui.notify(
+                `pi-implement blocked: retained run ${selected.runId} ${resumeProblem}. Inspect or start over explicitly.`,
+                "warning",
+              );
+              return;
             }
             retainedResume = {
               runId: selected.runId,
@@ -705,6 +718,15 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             ) {
               ctx.ui.notify(
                 `pi-implement blocked: retained run ${selected.runId} still has a live owner.`,
+                "warning",
+              );
+              return;
+            }
+            if (
+              hasLiveManagedRunAgents(getSubagentRuntime(pi), selected.runId)
+            ) {
+              ctx.ui.notify(
+                `pi-implement blocked: retained run ${selected.runId} still has a managed agent.`,
                 "warning",
               );
               return;
@@ -1165,6 +1187,210 @@ function throwIfCommandStopped(
   }
 }
 
+async function formatLatestRetainedRunStatus(
+  cwd: string,
+): Promise<string | undefined> {
+  const git = new ExecGitClient(cwd);
+  let repoRoot: string;
+  try {
+    repoRoot = await git.mainRoot();
+  } catch {
+    return undefined;
+  }
+  const runId = listRunIds(repoRoot).sort().at(-1);
+  if (!runId) {
+    return undefined;
+  }
+  const paths = getStatePaths(repoRoot, runId);
+  const run = readRunJson(paths);
+  if (!run || run.currentPhase === "done") {
+    return undefined;
+  }
+  const lines = [
+    `Run ${run.runId}: ${run.currentPhase}`,
+    run.terminalReason ? `Reason: ${run.terminalReason}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+  if (run.overallReview?.convergence?.state) {
+    const state = run.overallReview.convergence.state;
+    lines.push(
+      `Overall ${run.overallReview.status}: candidate ${run.overallReview.candidate?.candidateSha ?? "—"}; outstanding ${state.outstandingIds.join(", ") || "none"} (${state.outstandingIds.length}); best ${state.bestOutstandingCount}; stalled rounds ${state.consecutiveStalledRounds}`,
+    );
+  }
+  if (existsSync(paths.tasksDir)) {
+    for (const entry of readdirSync(paths.tasksDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const task = readTaskJson(paths, entry.name);
+      if (!task) {
+        continue;
+      }
+      const convergence = task.review?.convergence?.state;
+      lines.push(
+        convergence
+          ? `${task.id}: ${task.status}; candidate ${task.candidateSha ?? "—"}; outstanding ${convergence.outstandingIds.join(", ") || "none"} (${convergence.outstandingIds.length}); best ${convergence.bestOutstandingCount}; stalled rounds ${convergence.consecutiveStalledRounds}`
+          : `${task.id}: ${task.status}; candidate ${task.candidateSha ?? "—"}`,
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
+function hashPlanContent(content: string): string {
+  return createHash("sha256")
+    .update(normalizePlanCheckboxes(content))
+    .digest("hex");
+}
+
+function normalizePlanCheckboxes(content: string): string {
+  return content.replace(/^(\s*[-*+]\s+\[)[ xX](\]\s+)/gm, "$1 $2");
+}
+
+function retainedRunMatchesCurrentPlan(
+  run: NonNullable<ReturnType<typeof readRunJson>>,
+  paths: ReturnType<typeof getStatePaths>,
+  planPath: string,
+  planContent: string,
+  corpusFiles: Array<{ path: string; hash: string }>,
+  checkoutRoot: string,
+): boolean {
+  const currentFiles = new Map(
+    corpusFiles.map((file) => [file.path, file.hash]),
+  );
+  const recordedFiles = run.corpusFiles ?? [];
+  const recordedPlan = existsSync(paths.planSnapshot)
+    ? readFileSync(paths.planSnapshot, "utf-8")
+    : undefined;
+  return (
+    run.planPath === planPath &&
+    recordedPlan !== undefined &&
+    normalizePlanCheckboxes(planContent) ===
+      normalizePlanCheckboxes(recordedPlan) &&
+    run.checkoutRoot === checkoutRoot &&
+    recordedFiles.length === currentFiles.size &&
+    recordedFiles.every((file) =>
+      file.path === planPath
+        ? currentFiles.has(file.path)
+        : currentFiles.get(file.path) === file.hash,
+    )
+  );
+}
+
+function isRunOwnedWorktree(
+  worktreePath: string,
+  paths: ReturnType<typeof getStatePaths>,
+): boolean {
+  const path = resolve(worktreePath);
+  const root = resolve(paths.worktreesDir);
+  const relation = relative(root, path);
+  return (
+    relation !== "" &&
+    relation !== ".." &&
+    !relation.startsWith(`..${sep}`) &&
+    !relation.includes(`..${sep}`)
+  );
+}
+
+async function validateRetainedRunForResume(
+  git: ExecGitClient,
+  paths: ReturnType<typeof getStatePaths>,
+  run: NonNullable<ReturnType<typeof readRunJson>>,
+  currentHead: string,
+): Promise<string | undefined> {
+  const taskIds = existsSync(paths.tasksDir)
+    ? readdirSync(paths.tasksDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+    : [];
+  for (const taskId of taskIds) {
+    const task = readTaskJson(paths, taskId);
+    if (!task) {
+      return `has unreadable task ${taskId}`;
+    }
+    if (task.status === "landed" || task.status === "satisfied") {
+      if (
+        task.status === "landed" &&
+        (!task.landedCommitSha ||
+          !(await git.isAncestor(task.landedCommitSha, currentHead)))
+      ) {
+        return `has landed task ${taskId} missing from the current checkout history`;
+      }
+      continue;
+    }
+    const hasCandidate = Boolean(task.trustedCheckpoint || task.candidateSha);
+    if (
+      !hasCandidate &&
+      [
+        "pending",
+        "ready",
+        "coding",
+        "reviewing",
+        "needs_rework",
+        "stalled",
+        "failed",
+        "stopped",
+      ].includes(task.status)
+    ) {
+      if (task.worktreePath && isRunOwnedWorktree(task.worktreePath, paths)) {
+        const taskGit = git.forWorktree(task.worktreePath, run.repoRoot);
+        if (
+          !(await taskGit.isCleanExcept([])) ||
+          (await taskGit.activeOperation())
+        ) {
+          return `has uncheckpointed changes for task ${taskId}; inspect or start over instead of resuming`;
+        }
+      }
+      continue;
+    }
+    if (
+      !task.trustedCheckpoint ||
+      !task.candidateBaseSha ||
+      !task.worktreePath ||
+      !task.branchName ||
+      !task.branchName.startsWith(`pi-implement/${run.runId}/`) ||
+      !isRunOwnedWorktree(task.worktreePath, paths)
+    ) {
+      return `has incomplete candidate state for task ${taskId}`;
+    }
+    const taskGit = git.forWorktree(task.worktreePath, run.repoRoot);
+    if (
+      (await taskGit.currentBranch()) !== task.branchName ||
+      (await taskGit.head()) !== task.trustedCheckpoint ||
+      (task.candidateTree && (await taskGit.tree()) !== task.candidateTree) ||
+      !(await taskGit.isAncestor(
+        task.candidateBaseSha,
+        task.trustedCheckpoint,
+      )) ||
+      !(await taskGit.isCleanExcept([])) ||
+      (await taskGit.activeOperation())
+    ) {
+      return `has task ${taskId} that no longer matches its trusted candidate`;
+    }
+  }
+  const overall = run.overallReview;
+  if (overall && overall.status !== "approved") {
+    if (
+      !overall?.candidate?.trustedCheckpoint ||
+      !overall.candidate.worktreePath ||
+      !isRunOwnedWorktree(overall.worktreePath, paths)
+    ) {
+      return "has incomplete overall review candidate state";
+    }
+    const overallGit = git.forWorktree(overall.worktreePath, run.repoRoot);
+    if (
+      (await overallGit.currentBranch()) !== overall.branchName ||
+      (await overallGit.head()) !== overall.candidate.trustedCheckpoint ||
+      (overall.candidate.candidateTree &&
+        (await overallGit.tree()) !== overall.candidate.candidateTree) ||
+      !(await overallGit.isCleanExcept([])) ||
+      (await overallGit.activeOperation())
+    ) {
+      return "has an overall review candidate that no longer matches its trusted checkpoint";
+    }
+  }
+  return undefined;
+}
+
 function describeStrategy(maxConcurrency: number): string {
   return `Auto mode selected; effective max concurrency ${maxConcurrency}.`;
 }
@@ -1241,7 +1467,7 @@ async function promptImplementAction(
       return undefined;
     }
     if (action === "Inspect retained run") {
-      return { kind: "control", name: "inspect" };
+      return { kind: "control", name: "inspect", runId };
     }
     if (action === "Start over") {
       const confirmed = await ctx.ui.confirm(

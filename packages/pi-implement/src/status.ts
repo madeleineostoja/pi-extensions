@@ -29,6 +29,7 @@ export type TaskStatus =
   | "blocked"
   | "needs_rework"
   | "integration_failed"
+  | "stalled"
   | "failed"
   | "stopped";
 

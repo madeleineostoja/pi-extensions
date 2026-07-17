@@ -10,12 +10,12 @@ import {
   existsSync,
   rmSync,
 } from "node:fs";
-import { rm } from "node:fs/promises";
+import { rm, rmdir } from "node:fs/promises";
 
 const execFileAsync = promisify(execFile);
 import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { IntegrationLedger } from "./integration-ledger.js";
 export type RunMode = "auto" | "serial" | "parallel";
 
@@ -591,9 +591,21 @@ export async function cleanupRun(paths: StatePaths): Promise<void> {
         ]
       : []),
   ];
-  if (run?.repoRoot) {
-    for (const entry of cleanupEntries) {
-      if (entry.worktreePath) {
+  if (run?.repoRoot && cleanupEntries.length > 0) {
+    const registeredWorktrees = await listRegisteredWorktrees(run.repoRoot);
+    const ownedEntries = uniqueCleanupEntries(
+      cleanupEntries.map((entry) =>
+        verifiedCleanupEntry(entry, paths.worktreesDir, runId),
+      ),
+    );
+    for (const entry of ownedEntries) {
+      if (
+        registeredWorktrees.some(
+          (registered) =>
+            registered.worktreePath === entry.worktreePath &&
+            registered.branchName === entry.branchName,
+        )
+      ) {
         await runGitCleanup(run.repoRoot, [
           "worktree",
           "remove",
@@ -602,17 +614,17 @@ export async function cleanupRun(paths: StatePaths): Promise<void> {
         ]);
       }
     }
-    for (const entry of cleanupEntries) {
-      if (entry.branchName?.startsWith(`pi-implement/${runId}/`)) {
+    for (const entry of ownedEntries) {
+      if (await branchExists(run.repoRoot, entry.branchName)) {
         await runGitCleanup(run.repoRoot, ["branch", "-D", entry.branchName]);
       }
     }
   }
+  if (existsSync(paths.worktreesDir)) {
+    await rmdir(paths.worktreesDir);
+  }
   if (existsSync(paths.runDir)) {
     await rm(paths.runDir, { recursive: true, force: true });
-  }
-  if (existsSync(paths.worktreesDir)) {
-    await rm(paths.worktreesDir, { recursive: true, force: true });
   }
   removeLocksForRun(paths, runId);
 }
@@ -781,12 +793,102 @@ function safeRealpath(path: string): string {
   return existsSync(path) ? realpathSync(path) : path;
 }
 
-async function runGitCleanup(repoRoot: string, args: string[]): Promise<void> {
-  try {
-    await execFileAsync("git", args, { cwd: repoRoot });
-  } catch {
-    return;
+async function listRegisteredWorktrees(
+  repoRoot: string,
+): Promise<Array<{ worktreePath: string; branchName?: string }>> {
+  const { stdout } = await execFileAsync(
+    "git",
+    ["worktree", "list", "--porcelain"],
+    { cwd: repoRoot, encoding: "utf-8" },
+  );
+  const worktrees: Array<{ worktreePath: string; branchName?: string }> = [];
+  let worktreePath: string | undefined;
+  let branchName: string | undefined;
+  const addWorktree = () => {
+    if (worktreePath) {
+      worktrees.push({ worktreePath: safeRealpath(worktreePath), branchName });
+    }
+    worktreePath = undefined;
+    branchName = undefined;
+  };
+
+  for (const line of stdout.split("\n")) {
+    if (!line) {
+      addWorktree();
+    } else if (line.startsWith("worktree ")) {
+      worktreePath = line.slice("worktree ".length);
+    } else if (line.startsWith("branch refs/heads/")) {
+      branchName = line.slice("branch refs/heads/".length);
+    }
   }
+  addWorktree();
+  return worktrees;
+}
+
+function verifiedCleanupEntry(
+  entry: { worktreePath?: string; branchName?: string },
+  worktreesDir: string,
+  runId: string,
+): { worktreePath: string; branchName: string } {
+  if (!entry.worktreePath || !entry.branchName) {
+    throw new Error(
+      "retained cleanup entry is missing worktree or branch identity",
+    );
+  }
+  if (!entry.branchName.startsWith(`pi-implement/${runId}/`)) {
+    throw new Error(`refusing to clean unowned branch: ${entry.branchName}`);
+  }
+  const worktreePath = safeRealpath(entry.worktreePath);
+  if (!isPathWithin(worktreePath, safeRealpath(worktreesDir))) {
+    throw new Error(
+      `refusing to clean worktree outside this run: ${entry.worktreePath}`,
+    );
+  }
+  return { worktreePath, branchName: entry.branchName };
+}
+
+function isPathWithin(path: string, parent: string): boolean {
+  const relativePath = relative(parent, path);
+  return (
+    relativePath !== "" &&
+    relativePath !== ".." &&
+    !relativePath.startsWith(`..${sep}`) &&
+    !isAbsolute(relativePath)
+  );
+}
+
+function uniqueCleanupEntries(
+  entries: Array<{ worktreePath: string; branchName: string }>,
+): Array<{ worktreePath: string; branchName: string }> {
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    const key = `${entry.worktreePath}\0${entry.branchName}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+async function branchExists(
+  repoRoot: string,
+  branchName: string,
+): Promise<boolean> {
+  try {
+    await execFileAsync(
+      "git",
+      ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
+      { cwd: repoRoot },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function runGitCleanup(repoRoot: string, args: string[]): Promise<void> {
+  await execFileAsync("git", args, { cwd: repoRoot });
 }
 
 function makeRunLock(paths: StatePaths, run: RunJson): RunLock {
