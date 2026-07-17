@@ -4,8 +4,6 @@ import {
   parseAnchoredReviewResult,
   parseInitialReviewResult,
   parseIntegrationSelfHealResult,
-  parseOverallReviewVerdict,
-  parseReviewerVerdict,
 } from "./verdict.js";
 
 describe("typed result validators", () => {
@@ -50,29 +48,6 @@ describe("typed result validators", () => {
         commitMessage: "not conventional",
       }),
     ).toMatchObject({ ok: true });
-  });
-
-  it("handles reviewer and overall-review semantic fallbacks", () => {
-    expect(parseReviewerVerdict({ verdict: "approved" })).toEqual({
-      verdict: "approved",
-    });
-    expect(
-      parseReviewerVerdict({
-        verdict: "changes_requested",
-        requiredChanges: [],
-      }),
-    ).toEqual({
-      verdict: "error",
-      reason: "Reviewer requested changes but did not provide requiredChanges.",
-    });
-    expect(parseOverallReviewVerdict({ verdict: "changes_requested" })).toEqual(
-      {
-        verdict: "changes_requested",
-        requiredChanges: [
-          "Overall review requested changes but did not provide requiredChanges.",
-        ],
-      },
-    );
   });
 
   it("validates atomic initial findings and anchored coverage semantically", () => {

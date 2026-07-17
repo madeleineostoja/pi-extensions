@@ -1,5 +1,4 @@
 import type { ExecutionManifest } from "./execution-plan.js";
-import type { ParsedImplementerResult } from "./verdict.js";
 import type { ReviewFinding } from "./review-convergence.js";
 
 export const PAPERCUT_GUIDANCE = `## Optional Papercut Candidates
@@ -121,164 +120,6 @@ ${formatSourceMaterialSection(args.sourceMaterial)}
 ${PAPERCUT_GUIDANCE}
 
 Submit the result through the injected completion tool as your final action.
-`;
-}
-
-export function buildReviewerPrompt(args: {
-  compiledContract: string;
-  worktreePath: string;
-  implementer: ParsedImplementerResult;
-  outOfScopeTasks?: string[];
-  priorRequiredChanges?: string[];
-  baseSha?: string;
-  alreadySatisfiedDiscrepancy?: boolean;
-  sourceMaterial?: string;
-}): string {
-  const siblingSection = buildSiblingTasksSection(args.outOfScopeTasks);
-  const discrepancySection = args.alreadySatisfiedDiscrepancy
-    ? `\n## Outcome Discrepancy
-
-The implementer reported \`already_satisfied\` (claiming the task needed no changes) but nonetheless produced the staged diff below. Treat the diff as the ground truth and judge it on its own merits: approve only if these changes correctly and minimally satisfy the selected task. Request changes if the diff is spurious, incomplete, out-of-scope, or if the task is genuinely already satisfied and these edits should not be committed.\n`
-    : "";
-  const diffInstructions = args.baseSha
-    ? `The candidate diff is committed on this task branch. Use read-only git commands such as:
-- \`cd ${args.worktreePath} && git diff ${args.baseSha}..HEAD\`
-- \`git diff ${args.baseSha}..HEAD --stat\` (run from the worktree)
-- \`git diff ${args.baseSha}..HEAD --name-status\` (run from the worktree)
-- \`git show HEAD\` (run from the worktree)
-- \`git show HEAD:path/to/file\` (run from the worktree)`
-    : `Inspect the staged candidate diff in the assigned worktree. Use read-only git commands such as:
-- \`cd ${args.worktreePath} && git diff --cached HEAD\`
-- \`git diff --cached --stat HEAD\` (run from the worktree)
-- \`git diff --cached --name-status HEAD\` (run from the worktree)
-- \`git show :path/to/file\` (run from the worktree)`;
-  const isAnchored = (args.priorRequiredChanges?.length ?? 0) > 0;
-  const reviewModeSection = isAnchored
-    ? `## Review Mode: Anchored Re-review
-
-Assess only whether each prior required change is resolved. If requesting changes, \`requiredChanges\` must contain exact copies of unresolved prior item text only. Do not restate, broaden, or introduce new issues, even if you notice one during re-review. New or broader concerns belong to the final overall review/rework loop.
-
-## Prior Required Changes
-
-${args.priorRequiredChanges!.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
-    : `## Review Mode: Initial Material Review
-
-Start with a bounded triage pass over the actual candidate diff before deciding whether full review is needed. Use the read-only diff commands above to inspect the real changes cheaply: staged serial candidates use \`git diff --cached HEAD\`, \`git diff --cached --stat HEAD\`, and \`git diff --cached --name-status HEAD\`; base/head committed worktree candidates use \`git diff <base>..HEAD\`, \`git diff <base>..HEAD --stat\`, \`git diff <base>..HEAD --name-status\`, and \`git show HEAD\`.
-
-The injected \`explore\` tool is optional during triage. Use it only when it is useful for broad map-building or targeted context checks; it is not required for obviously local diffs.
-
-Quick approval is appropriate only when structurally low-risk change types are evident from the actual diff and the implementer verification is adequate. Examples include docs-only edits, additive fixtures/snapshots, generated/repetitive boilerplate, simple exports/wiring, type-only propagation, straightforward tests, and obvious local mechanical edits. Triage is not proof of correctness; it is only deciding whether correctness needs real review.
-
-Continue into full review for semantic correctness, task-contract scope, safety, maintainability, weak or missing verification, ambiguous scope, risky areas, or any uncertainty. That includes business logic, user-visible behavior, auth/security/privacy/crypto/secrets, persistence/schema/migration/data integrity, concurrency/state/lifecycle behavior, public API/compatibility, dependencies/build/CI/deployment, broad refactors, deletions/renames whose impact needs reasoning, weak/missing verification, ambiguous scope, or any uncertainty. If unsure, perform the full review.
-
-If performing full review, perform one complete pass for material task-level blockers. List every blocking issue that must be fixed before this task can be committed.
-
-You may request meaningful cleanup or code-quality fixes when they materially affect maintainability or are naturally coupled to larger required changes. Do not block solely for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or optional refactors. Non-blocking observations should not be included in \`requiredChanges\`; leave broader concerns for the final overall review.`;
-
-  return `You are the pi-implement reviewer for exactly one staged task candidate. This prompt is the complete review contract and must work even if your subagent definition is generic.
-
-Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The compiled task contract is a deliberate single-task slice; sibling task contracts are intentionally omitted and are out of scope.
-
-The candidate diff lives in the assigned worktree for this task:
-
-  ${args.worktreePath}
-
-${diffInstructions}
-
-This is review only, not implementation. Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, run formatters with write/fix flags, or change HEAD. You may run read-only commands and read/search relevant files to understand the current implementation.
-
-You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands. If useful, call the injected \`explore\` tool for broad map-building or targeted context checks before direct reads/searches. Treat exploration as guidance only: verify relevant findings yourself and do not expand scope based on exploration results. If you cannot perform necessary validation because of these limitations, request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result. Treat this as a normal \`changes_requested\` result, not a subagent or system failure.
-
-${reviewModeSection}
-${discrepancySection}
-## Task Packet Fidelity
-
-Use the compiled task contract and referenced source material below to verify scope and exact-source fidelity. The referenced material is the same selected-task packet material given to the implementer, including the raw selected-task anchor and explicit task-linked files when resolved.
-
-## Scope Review Rules
-
-- Small prerequisite changes needed for the selected task may be approved.
-- Request changes if the staged diff substantially implements an unselected sibling task, broad remaining-plan work, or unrelated cleanup that is not a necessary minimal prerequisite for the selected task.
-- Completing a sibling task's own deliverable is scope creep, even if it seems convenient.${siblingSection}
-
-## Compiled Task Contract
-
-${args.compiledContract}
-
-${formatSourceMaterialSection(args.sourceMaterial)}
-
-## Implementer Summary
-
-${args.implementer.summary}
-
-## Implementer Verification
-
-${formatVerification(args.implementer)}
-
-${PAPERCUT_GUIDANCE}
-
-Submit the review verdict through the injected completion tool as your final action. Include every blocking issue you identify; do not truncate the blocking set.
-`;
-}
-
-export function buildAlreadySatisfiedReviewerPrompt(args: {
-  compiledContract: string;
-  worktreePath: string;
-  implementer: ParsedImplementerResult;
-  headSha: string;
-  accumulatedDiff?: string;
-  outOfScopeTasks?: string[];
-  priorRequiredChanges?: string[];
-  sourceMaterial?: string;
-}): string {
-  const siblingSection = buildSiblingTasksSection(args.outOfScopeTasks);
-  const diffSection =
-    args.accumulatedDiff !== undefined
-      ? `## Accumulated Run Diff\n\n\`\`\`diff\n${args.accumulatedDiff}\n\`\`\`\n`
-      : `## Accumulated Run Diff\n\nThe accumulated diff from the run start to current HEAD was too large to include or was not available. Inspect the current repository state directly using read-only git and file commands.\n`;
-  const isAnchored = (args.priorRequiredChanges?.length ?? 0) > 0;
-  const reviewModeSection = isAnchored
-    ? `## Review Mode: Anchored Re-review\n\nAssess only whether each prior required change is resolved. If requesting changes, \`requiredChanges\` must contain exact copies of unresolved prior item text only. Do not restate, broaden, or introduce new issues, even if you notice one during re-review. New or broader concerns belong to the final overall review/rework loop.\n\n## Prior Required Changes\n\n${args.priorRequiredChanges!.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
-    : `## Review Mode: Initial Material Review\n\nPerform one complete pass for material task-level blockers. List every blocking issue that must be fixed before this task can be accepted as already satisfied.\n\nYou may request meaningful cleanup or code-quality fixes when they materially affect maintainability or are naturally coupled to larger required changes. Do not block solely for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or optional refactors. Non-blocking observations should not be included in \`requiredChanges\`; leave broader concerns for the final overall review.`;
-
-  return `You are the pi-implement reviewer for exactly one task. This prompt is the complete review contract and must work even if your subagent definition is generic.
-
-Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification or how to proceed; reach a verdict yourself and finish with the result block. The compiled task contract is a deliberate single-task slice; sibling task contracts are intentionally omitted and are out of scope.
-
-There is no staged candidate diff for this task. The implementer claims the selected task is already satisfied by the current repository state. Your job is to verify that claim.
-
-The selected task's required scope is defined in the compiled task contract and referenced source material. Approve when the compiled contract is satisfied now. Use the referenced material to verify exact-source fidelity, including the raw selected-task anchor and explicit task-linked files when resolved. Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task.
-
-Inspect the current repository state in the assigned worktree:
-
-  ${args.worktreePath}
-
-Use read-only git commands and file inspection to verify the claim. Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, run formatters with write/fix flags, or change HEAD.
-
-You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands. If useful, call the injected \`explore\` tool for broad map-building or targeted context checks before direct reads/searches. Treat exploration as guidance only: verify relevant findings yourself and do not expand scope based on exploration results. If you cannot perform necessary validation because of these limitations, request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result. Treat this as a normal \`changes_requested\` result, not a subagent or system failure.
-
-${reviewModeSection}${siblingSection}
-
-## Compiled Task Contract
-
-${args.compiledContract}
-
-${formatSourceMaterialSection(args.sourceMaterial)}
-
-## Implementer Summary
-
-${args.implementer.summary}
-
-## Implementer Verification
-
-${formatVerification(args.implementer)}
-
-Current HEAD: ${args.headSha}
-
-${diffSection}
-${PAPERCUT_GUIDANCE}
-
-Submit the review verdict through the injected completion tool as your final action. Include every blocking issue you identify; do not truncate the blocking set.
 `;
 }
 
@@ -544,8 +385,7 @@ export function buildOverallReworkPrompt(args: {
   landedTasks?: Array<{ id: string; title: string; commitSha?: string }>;
   bundleMaterial?: string;
   corpusMaterial?: string;
-  requiredChanges?: string[];
-  findings?: ReviewFinding[];
+  findings: ReviewFinding[];
   worktreePath?: string;
   recommendationMarkdown?: string;
   priorAttemptFailures?: string[];
@@ -566,12 +406,10 @@ export function buildOverallReworkPrompt(args: {
     args.priorAttemptFailures && args.priorAttemptFailures.length > 0
       ? `\n## Prior Rework Attempt Failures\n\n${args.priorAttemptFailures.map((f, i) => `${i + 1}. ${f}`).join("\n")}\n`
       : "";
-  const requiredChanges = args.findings
-    ? args.findings.map(
-        (finding) =>
-          `${finding.id}: ${finding.summary}\n  Evidence: ${finding.evidence}\n  Required change: ${finding.requiredChange}\n  Acceptance: ${finding.acceptanceCriteria.join("; ")}`,
-      )
-    : (args.requiredChanges ?? []);
+  const requiredChanges = args.findings.map(
+    (finding) =>
+      `${finding.id}: ${finding.summary}\n  Evidence: ${finding.evidence}\n  Required change: ${finding.requiredChange}\n  Acceptance: ${finding.acceptanceCriteria.join("; ")}`,
+  );
   const recommendationSection = args.recommendationMarkdown
     ? `\n## Recommendation\n\n${args.recommendationMarkdown}\n`
     : "";
@@ -761,13 +599,4 @@ function formatFindings(findings: ReviewFinding[]): string {
         `### ${finding.id}: ${finding.summary}\nEvidence: ${finding.evidence}\nRequired change: ${finding.requiredChange}\nAcceptance criteria:\n${finding.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}`,
     )
     .join("\n\n");
-}
-
-function formatVerification(result: ParsedImplementerResult): string {
-  return result.verification
-    .map(
-      (step) =>
-        `- Command/check: ${step.command}\n  Result: ${step.result}\n  Rationale: ${step.rationale}`,
-    )
-    .join("\n");
 }

@@ -26,19 +26,6 @@ export type ParsedImplementerResult =
       commitMessage?: string;
     };
 
-export type ReviewerVerdict =
-  | { verdict: "approved" }
-  | { verdict: "changes_requested"; requiredChanges: string[] }
-  | { verdict: "error"; reason: string };
-
-export type OverallReviewVerdict =
-  | { verdict: "approved" }
-  | {
-      verdict: "changes_requested";
-      requiredChanges: string[];
-      recommendationMarkdown?: string;
-    };
-
 export type InitialReviewResult =
   | { verdict: "approved" }
   | {
@@ -177,90 +164,6 @@ function parseImplementerResultValue(
         typeof commitMessage === "string" ? commitMessage.trim() : undefined,
     },
   };
-}
-
-export function parseOverallReviewVerdict(
-  value: unknown,
-): OverallReviewVerdict {
-  if (!isRecord(value)) {
-    return {
-      verdict: "changes_requested",
-      requiredChanges: ["Overall review completion must be an object."],
-    };
-  }
-  if (value.verdict === "approved") {
-    return { verdict: "approved" };
-  }
-  if (value.verdict !== "changes_requested") {
-    return {
-      verdict: "changes_requested",
-      requiredChanges: [
-        "Overall review JSON verdict must be either approved or changes_requested.",
-      ],
-    };
-  }
-  const requiredChanges = value.requiredChanges;
-  if (!Array.isArray(requiredChanges) || requiredChanges.length === 0) {
-    return {
-      verdict: "changes_requested",
-      requiredChanges: [
-        "Overall review requested changes but did not provide requiredChanges.",
-      ],
-    };
-  }
-  const changes = requiredChanges.filter(isNonEmptyString);
-  if (changes.length === 0) {
-    return {
-      verdict: "changes_requested",
-      requiredChanges: [
-        "Overall review requiredChanges must contain non-empty strings.",
-      ],
-    };
-  }
-  const recommendationMarkdown =
-    typeof value.recommendationMarkdown === "string" &&
-    value.recommendationMarkdown.trim()
-      ? value.recommendationMarkdown.trim()
-      : undefined;
-  return {
-    verdict: "changes_requested",
-    requiredChanges: changes,
-    recommendationMarkdown,
-  };
-}
-
-export function parseReviewerVerdict(value: unknown): ReviewerVerdict {
-  if (!isRecord(value)) {
-    return {
-      verdict: "error",
-      reason: "Reviewer completion must be an object.",
-    };
-  }
-  if (value.verdict === "approved") {
-    return { verdict: "approved" };
-  }
-  if (value.verdict !== "changes_requested") {
-    return {
-      verdict: "error",
-      reason:
-        "Reviewer JSON verdict must be either approved or changes_requested.",
-    };
-  }
-  const requiredChanges = value.requiredChanges;
-  if (!Array.isArray(requiredChanges) || requiredChanges.length === 0) {
-    return {
-      verdict: "error",
-      reason: "Reviewer requested changes but did not provide requiredChanges.",
-    };
-  }
-  const changes = requiredChanges.filter(isNonEmptyString).slice(0, 5);
-  if (changes.length === 0) {
-    return {
-      verdict: "error",
-      reason: "Reviewer requiredChanges must contain non-empty strings.",
-    };
-  }
-  return { verdict: "changes_requested", requiredChanges: changes };
 }
 
 export function parseInitialReviewResult(

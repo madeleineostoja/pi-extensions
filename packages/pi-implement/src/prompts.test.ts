@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExecutionManifest } from "./execution-plan.js";
 import {
-  buildAlreadySatisfiedReviewerPrompt,
   buildImplementerPrompt,
   buildIntegrationReviewerPrompt,
   buildIntegrationSelfHealPrompt,
@@ -11,21 +10,11 @@ import {
   buildInitialOverallReviewPrompt,
   buildAnchoredOverallReviewPrompt,
   buildOverallReviewerPrompt,
-  buildReviewerPrompt,
   buildSchedulerSelfHealPrompt,
   PAPERCUT_GUIDANCE,
 } from "./prompts.js";
 
 const WORKTREE_PATH = "/repo/.pi/implement/worktrees/r1/t001-my-task";
-
-const IMPLEMENTER_RESULT = {
-  outcome: "changed" as const,
-  summary: "Did the thing",
-  verification: [
-    { command: "npm test", result: "passed", rationale: "covers change" },
-  ],
-  commitMessage: "feat: my task",
-};
 
 const COMPILED_CONTRACT = `# Task Contract
 
@@ -52,25 +41,6 @@ describe("papercut prompt guidance", () => {
       buildImplementerPrompt({
         compiledContract: COMPILED_CONTRACT,
         worktreePath: WORKTREE_PATH,
-      }),
-    ).toContain(PAPERCUT_GUIDANCE);
-    expect(
-      buildReviewerPrompt({
-        compiledContract: COMPILED_CONTRACT,
-        worktreePath: WORKTREE_PATH,
-        implementer: IMPLEMENTER_RESULT,
-      }),
-    ).toContain(PAPERCUT_GUIDANCE);
-    expect(
-      buildAlreadySatisfiedReviewerPrompt({
-        compiledContract: COMPILED_CONTRACT,
-        worktreePath: WORKTREE_PATH,
-        implementer: {
-          outcome: "already_satisfied",
-          summary: "Already done",
-          verification: IMPLEMENTER_RESULT.verification,
-        },
-        headSha: "abc",
       }),
     ).toContain(PAPERCUT_GUIDANCE);
     expect(
@@ -118,7 +88,7 @@ describe("papercut prompt guidance", () => {
         baseSha: "abc",
         headSha: "def",
         diff: "diff",
-        requiredChanges: ["Fix it"],
+        findings: [],
       }),
     ).toContain(PAPERCUT_GUIDANCE);
     expect(PAPERCUT_GUIDANCE).toContain(
@@ -282,631 +252,6 @@ Reason: Selected task checkbox line and task block.
       "do not expand scope based on exploration results",
     );
     expect(prompt).not.toContain("## Scout Context");
-  });
-});
-
-describe("buildReviewerPrompt", () => {
-  it("carries the compiled contract, assigned worktree, and staged-diff contract", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain(COMPILED_CONTRACT.trim());
-    expect(prompt).toContain(WORKTREE_PATH);
-    expect(prompt).toContain("staged candidate diff");
-    expect(prompt).toContain("Do not edit files");
-    expect(prompt).toContain("change HEAD");
-  });
-
-  it("inspects the committed range when baseSha is provided", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      baseSha: "base123",
-    });
-
-    expect(prompt).toContain(
-      "The candidate diff is committed on this task branch",
-    );
-    expect(prompt).toContain("git diff base123..HEAD");
-    expect(prompt).toContain("git show HEAD");
-    expect(prompt).toContain("git show HEAD:path/to/file");
-  });
-
-  it("includes out-of-scope sibling tasks when provided", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      outOfScopeTasks: ["- [ ] Sibling task A", "- [ ] Sibling task B"],
-    });
-
-    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
-    expect(prompt).toContain("- [ ] Sibling task A");
-    expect(prompt).toContain("- [ ] Sibling task B");
-  });
-
-  it("omits the sibling section when no out-of-scope tasks are provided", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
-  });
-
-  it("tells reviewers to request changes for substantial sibling-task implementation", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      outOfScopeTasks: ["- [ ] Sibling task"],
-    });
-
-    expect(prompt).toContain(
-      "Request changes if the staged diff substantially implements an unselected sibling task",
-    );
-    expect(prompt).toContain(
-      "Completing a sibling task's own deliverable is scope creep",
-    );
-    expect(prompt).toContain(
-      "Small prerequisite changes needed for the selected task may be approved",
-    );
-  });
-
-  it("uses the target sibling-task wording in the out-of-scope section", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      outOfScopeTasks: ["- [ ] Sibling task"],
-    });
-
-    expect(prompt).toContain(
-      "The following tasks are not selected. Use them only to identify scope creep in the candidate diff.",
-    );
-  });
-
-  it("includes referenced source material in the reviewer prompt", () => {
-    const sourceMaterial = `### Selected Task Source Anchor
-
-Source: /tmp/plan.md (lines 5-7; origin: task-anchor)
-Reason: Selected task checkbox line and task block.
-
-~~~text
-- [ ] Selected task
-  Keep this detail verbatim.
-~~~
-
-### auth.md
-
-Source: /tmp/auth.md (full file; origin: task-link)
-Reason: Explicit local Markdown material linked from the selected task block.
-
-~~~text
-Raw auth requirement.
-~~~`;
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      outOfScopeTasks: ["- [ ] Sibling task A"],
-      sourceMaterial,
-    });
-
-    expect(prompt).toContain("## Referenced Source Material");
-    expect(prompt).toContain(sourceMaterial);
-    expect(prompt).toContain("### Selected Task Source Anchor");
-    expect(prompt).toContain("### auth.md");
-    expect(prompt).not.toContain("## Referenced Plan Material");
-    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
-    expect(prompt).toContain("- [ ] Sibling task A");
-  });
-
-  it("contains the initial material-blocking-set contract when no prior required changes are given", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain("## Review Mode: Initial Material Review");
-    expect(prompt).toContain(
-      "If performing full review, perform one complete pass for material task-level blockers",
-    );
-    expect(prompt).toContain(
-      "List every blocking issue that must be fixed before this task can be committed",
-    );
-  });
-
-  it("tells initial staged-diff reviewers to triage cheaply over the actual diff", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain(
-      "Start with a bounded triage pass over the actual candidate diff before deciding whether full review is needed",
-    );
-    expect(prompt).toContain("Use the read-only diff commands above");
-    expect(prompt).toContain("staged serial candidates use");
-    expect(prompt).toContain("git diff --cached HEAD");
-    expect(prompt).toContain("base/head committed worktree candidates use");
-    expect(prompt).toContain("git diff <base>..HEAD");
-  });
-
-  it("says explore is optional and only useful for map-building or targeted context checks", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain("The injected `explore` tool is optional");
-    expect(prompt).toContain(
-      "Use it only when it is useful for broad map-building or targeted context checks",
-    );
-    expect(prompt).toContain("it is not required for obviously local diffs");
-  });
-
-  it("permits quick approval only for structurally low-risk diffs with adequate verification", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain(
-      "Quick approval is appropriate only when structurally low-risk change types are evident from the actual diff and the implementer verification is adequate",
-    );
-    expect(prompt).toContain("docs-only edits");
-    expect(prompt).toContain("additive fixtures/snapshots");
-    expect(prompt).toContain("generated/repetitive boilerplate");
-    expect(prompt).toContain("simple exports/wiring");
-    expect(prompt).toContain("type-only propagation");
-    expect(prompt).toContain("straightforward tests");
-    expect(prompt).toContain("obvious local mechanical edits");
-    expect(prompt).toContain(
-      "Triage is not proof of correctness; it is only deciding whether correctness needs real review",
-    );
-  });
-
-  it("requires full review on uncertainty, risk, semantic judgment, ambiguous scope, or weak verification", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain(
-      "Continue into full review for semantic correctness, task-contract scope, safety, maintainability, weak or missing verification, ambiguous scope, risky areas, or any uncertainty",
-    );
-    expect(prompt).toContain("If unsure, perform the full review");
-    expect(prompt).toContain("business logic");
-    expect(prompt).toContain("auth/security/privacy/crypto/secrets");
-    expect(prompt).toContain("deletions/renames whose impact needs reasoning");
-  });
-
-  it("allows meaningful material quality cleanup in initial review", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain(
-      "You may request meaningful cleanup or code-quality fixes when they materially affect maintainability or are naturally coupled to larger required changes",
-    );
-  });
-
-  it("does not invite nit-only blocking in initial review", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain(
-      "Do not block solely for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or optional refactors",
-    );
-    expect(prompt).toContain(
-      "Non-blocking observations should not be included in `requiredChanges`",
-    );
-    expect(prompt).toContain(
-      "leave broader concerns for the final overall review",
-    );
-  });
-
-  it("contains reviewer validation-limitation handoff instructions", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain(
-      "You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands",
-    );
-    expect(prompt).toContain("injected `explore` tool");
-    expect(prompt).toContain("broad map-building or targeted context checks");
-    expect(prompt).toContain(
-      "do not expand scope based on exploration results",
-    );
-    expect(prompt).toContain(
-      "request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result",
-    );
-    expect(prompt).toContain(
-      "Treat this as a normal `changes_requested` result, not a subagent or system failure",
-    );
-  });
-
-  it("contains the anchored re-review mode and prior required changes list", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      priorRequiredChanges: [
-        "Fix the off-by-one error",
-        "Add a test for the edge case",
-      ],
-    });
-
-    expect(prompt).toContain("## Review Mode: Anchored Re-review");
-    expect(prompt).toContain("## Prior Required Changes");
-    expect(prompt).toContain("1. Fix the off-by-one error");
-    expect(prompt).toContain("2. Add a test for the edge case");
-  });
-
-  it("requires exact copies of unresolved prior items only in anchored re-review", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      priorRequiredChanges: ["Fix the off-by-one error"],
-    });
-
-    expect(prompt).toContain(
-      "`requiredChanges` must contain exact copies of unresolved prior item text only",
-    );
-  });
-
-  it("forbids introducing new issues in anchored re-review", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      priorRequiredChanges: ["Fix the off-by-one error"],
-    });
-
-    expect(prompt).toContain(
-      "Do not restate, broaden, or introduce new issues, even if you notice one during re-review",
-    );
-    expect(prompt).toContain(
-      "New or broader concerns belong to the final overall review/rework loop",
-    );
-  });
-
-  it("does not include triage-first shortcuts in anchored re-review", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      priorRequiredChanges: ["Fix the off-by-one error"],
-    });
-
-    expect(prompt).not.toContain("bounded triage pass");
-    expect(prompt).not.toContain("Quick approval");
-  });
-
-  it("does not include critical-issue escape wording in anchored re-review", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      priorRequiredChanges: ["Fix the off-by-one error"],
-    });
-
-    expect(prompt).not.toContain("critical");
-    expect(prompt).not.toContain("escape");
-  });
-
-  it("keeps the final review result schema unchanged without triage routing fields", () => {
-    const prompt = buildReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-    });
-
-    expect(prompt).toContain(
-      "Submit the review verdict through the injected completion tool as your final action.",
-    );
-    expect(prompt).not.toContain("<pi-review-result>");
-    expect(prompt).not.toContain("reviewDepth");
-    expect(prompt).not.toContain("triageReason");
-  });
-});
-
-describe("buildAlreadySatisfiedReviewerPrompt", () => {
-  it("tells the reviewer there is no staged diff and the task is claimed already satisfied", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-    });
-
-    expect(prompt).toContain("There is no staged candidate diff for this task");
-    expect(prompt).toContain(
-      "The implementer claims the selected task is already satisfied by the current repository state",
-    );
-    expect(prompt).toContain(COMPILED_CONTRACT.trim());
-    expect(prompt).toContain(WORKTREE_PATH);
-    expect(prompt).toContain("Do not edit files");
-    expect(prompt).toContain("change HEAD");
-  });
-
-  it("restores the already-satisfied acceptance contract", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-    });
-
-    expect(prompt).toContain(
-      "The selected task's required scope is defined in the compiled task contract",
-    );
-    expect(prompt).toContain(
-      "Approve when the compiled contract is satisfied now",
-    );
-    expect(prompt).toContain(
-      "Do not require a new commit solely because the satisfying changes came from an earlier pi-implement task",
-    );
-  });
-
-  it("includes the accumulated diff when provided", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-      accumulatedDiff: "diff --git a/file.ts b/file.ts\n",
-    });
-
-    expect(prompt).toContain("diff --git a/file.ts b/file.ts");
-    expect(prompt).toContain("Accumulated Run Diff");
-  });
-
-  it("includes an available empty accumulated diff", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-      accumulatedDiff: "",
-    });
-
-    expect(prompt).toContain("Accumulated Run Diff");
-    expect(prompt).toContain("```diff\n\n```");
-    expect(prompt).not.toContain("too large to include or was not available");
-  });
-
-  it("omits the accumulated diff and instructs direct inspection when not provided", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-    });
-
-    expect(prompt).toContain(
-      "Inspect the current repository state directly using read-only git and file commands",
-    );
-  });
-
-  it("includes out-of-scope sibling tasks when provided", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-      outOfScopeTasks: ["- [ ] Sibling task A", "- [ ] Sibling task B"],
-    });
-
-    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
-    expect(prompt).toContain("- [ ] Sibling task A");
-    expect(prompt).toContain("- [ ] Sibling task B");
-    expect(prompt).toContain(
-      "The following tasks are not selected. Use them only to identify scope creep in the candidate diff.",
-    );
-  });
-
-  it("omits the sibling section when no out-of-scope tasks are provided", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-    });
-
-    expect(prompt).not.toContain("## Out-of-Scope Sibling Tasks");
-  });
-
-  it("includes referenced source material in the already-satisfied reviewer prompt", () => {
-    const sourceMaterial = `### Selected Task Source Anchor
-
-Source: /tmp/plan.md (lines 5-7; origin: task-anchor)
-Reason: Selected task checkbox line and task block.
-
-~~~text
-- [ ] Selected task
-  Keep this detail verbatim.
-~~~
-
-### auth.md
-
-Source: /tmp/auth.md (full file; origin: task-link)
-Reason: Explicit local Markdown material linked from the selected task block.
-
-~~~text
-Raw auth requirement.
-~~~`;
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-      outOfScopeTasks: ["- [ ] Sibling task A"],
-      sourceMaterial,
-    });
-
-    expect(prompt).toContain("## Referenced Source Material");
-    expect(prompt).toContain(sourceMaterial);
-    expect(prompt).toContain("### Selected Task Source Anchor");
-    expect(prompt).toContain("### auth.md");
-    expect(prompt).not.toContain("## Referenced Plan Material");
-    expect(prompt).toContain("## Out-of-Scope Sibling Tasks");
-    expect(prompt).toContain("- [ ] Sibling task A");
-  });
-
-  it("contains the initial material-blocking-set contract when no prior required changes are given", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-    });
-
-    expect(prompt).toContain("## Review Mode: Initial Material Review");
-    expect(prompt).toContain(
-      "Perform one complete pass for material task-level blockers",
-    );
-    expect(prompt).toContain(
-      "List every blocking issue that must be fixed before this task can be accepted as already satisfied",
-    );
-  });
-
-  it("allows meaningful material quality cleanup in initial review", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-    });
-
-    expect(prompt).toContain(
-      "You may request meaningful cleanup or code-quality fixes when they materially affect maintainability or are naturally coupled to larger required changes",
-    );
-  });
-
-  it("does not invite nit-only blocking in initial review", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-    });
-
-    expect(prompt).toContain(
-      "Do not block solely for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or optional refactors",
-    );
-    expect(prompt).toContain(
-      "Non-blocking observations should not be included in `requiredChanges`",
-    );
-    expect(prompt).toContain(
-      "leave broader concerns for the final overall review",
-    );
-  });
-
-  it("contains reviewer validation-limitation handoff instructions", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-    });
-
-    expect(prompt).toContain(
-      "You are a read-only reviewer and may be unable to install dependencies, run write-producing setup, or execute unavailable commands",
-    );
-    expect(prompt).toContain("injected `explore` tool");
-    expect(prompt).toContain("broad map-building or targeted context checks");
-    expect(prompt).toContain(
-      "do not expand scope based on exploration results",
-    );
-    expect(prompt).toContain(
-      "request a concrete implementer action such as running the missing verification command, adding or adjusting objective tests, or reporting verification output in the next implementer result",
-    );
-    expect(prompt).toContain(
-      "Treat this as a normal `changes_requested` result, not a subagent or system failure",
-    );
-  });
-
-  it("contains the anchored re-review mode and prior required changes list", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-      priorRequiredChanges: [
-        "Fix the off-by-one error",
-        "Add a test for the edge case",
-      ],
-    });
-
-    expect(prompt).toContain("## Review Mode: Anchored Re-review");
-    expect(prompt).toContain("## Prior Required Changes");
-    expect(prompt).toContain("1. Fix the off-by-one error");
-    expect(prompt).toContain("2. Add a test for the edge case");
-  });
-
-  it("requires exact copies of unresolved prior items only in anchored re-review", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-      priorRequiredChanges: ["Fix the off-by-one error"],
-    });
-
-    expect(prompt).toContain(
-      "`requiredChanges` must contain exact copies of unresolved prior item text only",
-    );
-  });
-
-  it("forbids introducing new issues in anchored re-review", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-      priorRequiredChanges: ["Fix the off-by-one error"],
-    });
-
-    expect(prompt).toContain(
-      "Do not restate, broaden, or introduce new issues, even if you notice one during re-review",
-    );
-    expect(prompt).toContain(
-      "New or broader concerns belong to the final overall review/rework loop",
-    );
-  });
-
-  it("does not include critical-issue escape wording in anchored re-review", () => {
-    const prompt = buildAlreadySatisfiedReviewerPrompt({
-      compiledContract: COMPILED_CONTRACT,
-      worktreePath: WORKTREE_PATH,
-      implementer: IMPLEMENTER_RESULT,
-      headSha: "abc1234",
-      priorRequiredChanges: ["Fix the off-by-one error"],
-    });
-
-    expect(prompt).not.toContain("critical");
-    expect(prompt).not.toContain("escape");
   });
 });
 
@@ -1238,7 +583,7 @@ describe("buildOverallReworkPrompt", () => {
       baseSha: "abc1234",
       headSha: "def5678",
       diff: "diff --git a/file.ts b/file.ts\n",
-      requiredChanges: ["Fix integration"],
+      findings: [],
       executionManifest: SAMPLE_MANIFEST,
     });
 
@@ -1256,7 +601,7 @@ describe("buildOverallReworkPrompt", () => {
       baseSha: "abc1234",
       headSha: "def5678",
       diff: "diff --git a/file.ts b/file.ts\n",
-      requiredChanges: ["Fix integration"],
+      findings: [],
     });
 
     expect(prompt).not.toContain("## Execution Manifest");
@@ -1269,13 +614,32 @@ describe("buildOverallReworkPrompt", () => {
       baseSha: "abc1234",
       headSha: "def5678",
       diff: "diff --git a/file.ts b/file.ts\n",
-      requiredChanges: ["Fix integration", "Add tests"],
+      findings: [
+        {
+          id: "O-1",
+          summary: "Fix integration",
+          evidence: "evidence",
+          requiredChange: "Fix integration",
+          acceptanceCriteria: ["passes"],
+          introducedRound: 1,
+          origin: "initial",
+        },
+        {
+          id: "O-2",
+          summary: "Add tests",
+          evidence: "evidence",
+          requiredChange: "Add tests",
+          acceptanceCriteria: ["passes"],
+          introducedRound: 1,
+          origin: "initial",
+        },
+      ],
       recommendationMarkdown: "## Suggested Fix\n\nRefactor...",
       priorAttemptFailures: ["Attempt 1: tests failed"],
     });
 
-    expect(prompt).toContain("- Fix integration");
-    expect(prompt).toContain("- Add tests");
+    expect(prompt).toContain("Required change: Fix integration");
+    expect(prompt).toContain("Required change: Add tests");
     expect(prompt).toContain("## Suggested Fix");
     expect(prompt).toContain("## Prior Rework Attempt Failures");
     expect(prompt).toContain("Attempt 1: tests failed");
@@ -1288,7 +652,7 @@ describe("buildOverallReworkPrompt", () => {
       baseSha: "abc1234",
       headSha: "def5678",
       diff: "diff --git a/file.ts b/file.ts\n",
-      requiredChanges: ["Fix integration"],
+      findings: [],
     });
 
     expect(prompt).not.toContain("## Plan Corpus");
@@ -1301,7 +665,7 @@ describe("buildOverallReworkPrompt", () => {
       baseSha: "abc1234",
       headSha: "def5678",
       diff: "diff --git a/file.ts b/file.ts\n",
-      requiredChanges: ["Fix integration"],
+      findings: [],
       corpusMaterial: "### requirements.md\n\n# Corpus-only requirement\n",
     });
 
@@ -1317,7 +681,7 @@ describe("buildOverallReworkPrompt", () => {
       baseSha: "abc1234",
       headSha: "def5678",
       diff: "diff --git a/file.ts b/file.ts\n",
-      requiredChanges: ["Fix integration"],
+      findings: [],
       corpusMaterial:
         "### tasks.md\n\nThis file contains a requirement that must be verified in the final rework even though it was not part of any compiled task contract.",
     });

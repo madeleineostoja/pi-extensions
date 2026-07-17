@@ -186,15 +186,6 @@ export const anchoredReviewSchema = withPapercuts({
   observations: Type.Optional(Type.Array(reviewObservationSchema)),
 });
 
-/** Temporary compatibility transport for call sites not yet migrated to typed reviews. */
-export const reviewerVerdictSchema = Type.Union([
-  withPapercuts({ verdict: Type.Literal("approved") }),
-  withPapercuts({
-    verdict: Type.Literal("changes_requested"),
-    requiredChanges: Type.Array(nonEmptyString(), { minItems: 1 }),
-  }),
-]);
-
 export const integrationInitialReviewSchema = initialReviewSchema(false);
 export const integrationAnchoredReviewSchema = anchoredReviewSchema;
 
@@ -227,15 +218,6 @@ export const schedulerSelfHealSchema = withPapercuts({
   retryScheduler: Type.Boolean(),
 });
 
-export const overallReviewSchema = Type.Union([
-  withPapercuts({ verdict: Type.Literal("approved") }),
-  withPapercuts({
-    verdict: Type.Literal("changes_requested"),
-    requiredChanges: Type.Array(nonEmptyString(), { minItems: 1 }),
-    recommendationMarkdown: Type.Optional(nonEmptyString()),
-  }),
-]);
-
 export const overallReworkSchema = withPapercuts({
   summary: nonEmptyString(),
   verification: Type.Array(verificationStepSchema, { minItems: 1 }),
@@ -265,7 +247,6 @@ export type InitialOverallReviewCompletion = Static<
   typeof initialOverallReviewSchema
 >;
 export type AnchoredReviewCompletion = Static<typeof anchoredReviewSchema>;
-export type ReviewerCompletion = Static<typeof reviewerVerdictSchema>;
 export type IntegrationInitialReviewCompletion = Static<
   typeof integrationInitialReviewSchema
 >;
@@ -278,5 +259,4 @@ export type IntegrationSelfHealCompletion = Static<
 export type SchedulerSelfHealCompletion = Static<
   typeof schedulerSelfHealSchema
 >;
-export type OverallReviewCompletion = Static<typeof overallReviewSchema>;
 export type OverallReworkCompletion = Static<typeof overallReworkSchema>;
