@@ -14,6 +14,7 @@ export type SchedulerTaskStatus =
   | "blocked"
   | "needs_rework"
   | "integration_failed"
+  | "stalled"
   | "failed"
   | "stopped";
 
@@ -236,7 +237,8 @@ export function anyTaskFailedBlockedStopped(run: SchedulerRun): boolean {
       task.status === "failed" ||
       task.status === "blocked" ||
       task.status === "stopped" ||
-      task.status === "integration_failed"
+      task.status === "integration_failed" ||
+      task.status === "stalled"
     ) {
       return true;
     }
@@ -251,7 +253,8 @@ function isTerminalStatus(status: SchedulerTaskStatus): boolean {
     status === "failed" ||
     status === "blocked" ||
     status === "stopped" ||
-    status === "integration_failed"
+    status === "integration_failed" ||
+    status === "stalled"
   );
 }
 

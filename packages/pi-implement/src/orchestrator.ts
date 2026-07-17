@@ -1401,6 +1401,7 @@ type WorkerResult = {
   outcome:
     | { kind: "approved"; taskCommitSha: string; commitMessage: string }
     | { kind: "satisfied" }
+    | { kind: "stalled"; reason: string }
     | { kind: "failed"; reason: string }
     | { kind: "stopped" };
 };
@@ -1565,6 +1566,20 @@ async function runParallelImplementation(
             taskId: result.taskId,
           });
         }
+      } else if (result.outcome.kind === "stalled") {
+        task.status = "stalled";
+        task.lastReason = result.outcome.reason;
+        task.activeAgentIds = [];
+        task.activeAgentRefs = [];
+        if (deps.paths) {
+          const existing = readTaskJson(deps.paths, result.taskId);
+          writeTaskJson(deps.paths, result.taskId, {
+            ...buildTaskJsonSnapshot(existing, task),
+            status: "stalled",
+            activeSubagentIds: [],
+            lastReason: result.outcome.reason,
+          });
+        }
       } else if (result.outcome.kind === "failed") {
         task.status = "failed";
         task.lastReason = result.outcome.reason;
@@ -1695,9 +1710,12 @@ function hydrateSchedulerRun(
       status:
         persisted.status === "coding" ||
         persisted.status === "reviewing" ||
-        persisted.status === "stalled"
+        persisted.status === "stalled" ||
+        persisted.status === "stopped"
           ? "needs_rework"
-          : persisted.status,
+          : persisted.status === "integration_failed"
+            ? "stalled"
+            : persisted.status,
       sourceBaseSha: persisted.sourceBaseSha,
       baseSha: persisted.baseSha,
       candidateBaseSha: persisted.candidateBaseSha,
@@ -1877,6 +1895,12 @@ async function launchTaskWorker(
       },
     };
   } catch (err) {
+    if (err instanceof IntegrationSafetyError) {
+      throw err;
+    }
+    if (err instanceof TaskStalledError) {
+      return { taskId, outcome: { kind: "stalled", reason: err.message } };
+    }
     if (err instanceof StoppedError) {
       return { taskId, outcome: { kind: "stopped" } };
     }
@@ -1988,6 +2012,54 @@ async function landApprovedTask(
     task.integrationLedger = update.ledger;
     return update.outcome;
   };
+  const preflightRework = async (source: "apply" | "hook", reason: string) => {
+    recordGate(source, false, reason);
+    const completed = completeIntegrationRound(task.integrationLedger!);
+    task.integrationLedger = completed.ledger;
+    task.lastReason = reason;
+    task.status = completed.outcome === "stalled" ? "stalled" : "needs_rework";
+    persistIntegrationState(deps, taskId, task);
+    return "needs_rework" as const;
+  };
+  if (candidateBaseSha !== integrationStartHead) {
+    const transplanted = await transplantTaskCandidate(
+      deps,
+      task,
+      taskId,
+      candidateSha,
+      candidateDelta,
+      integrationStartHead,
+      planArtifacts,
+    );
+    if (!transplanted.ok) {
+      if (transplanted.hardBlocked) {
+        throw new BlockedError(transplanted.reason);
+      }
+      return await preflightRework("apply", transplanted.reason);
+    }
+    recordGate(
+      "apply",
+      true,
+      "Candidate transplanted onto the current main checkout.",
+    );
+    task.status = "needs_rework";
+    task.lastReason =
+      "Candidate transplanted onto the current main checkout; run regression review before integration.";
+    persistIntegrationState(deps, taskId, task);
+    return "needs_rework";
+  }
+  const candidateHook = await verifyTaskCheckpointHooks(
+    deps,
+    task,
+    candidateSha,
+    planArtifacts,
+  );
+  if (!candidateHook.ok) {
+    if (candidateHook.hardBlocked) {
+      throw new BlockedError(candidateHook.reason);
+    }
+    return await preflightRework("hook", candidateHook.reason);
+  }
   const cleanBeforeIntegration = await ensureCleanMainCheckoutBeforeIntegration(
     deps,
     taskId,
@@ -2072,10 +2144,10 @@ async function landApprovedTask(
       return "integration_failed" as const;
     }
     if (convergence === "stalled") {
-      task.status = "integration_failed";
+      task.status = "stalled";
       task.lastReason = `${task.lastReason}\n\nIntegration stalled without a new low outstanding count.`;
       persistIntegrationState(deps, taskId, task);
-      return "integration_failed" as const;
+      return "needs_rework" as const;
     }
     task.status = "needs_rework";
     persistIntegrationState(deps, taskId, task);
@@ -2313,6 +2385,13 @@ async function landApprovedTask(
       recordGate(gate, true, "Validator passed.");
     }
     if (!validation.ok) {
+      if (validation.hardBlocked) {
+        await failBlocked(
+          validation.failedGate ?? "validation",
+          validation.reason,
+        );
+        throw new IntegrationSafetyError(validation.reason);
+      }
       return await failForRework(
         validation.failedGate ?? "validation",
         validation.reason,
@@ -2333,9 +2412,11 @@ async function landApprovedTask(
       candidateSnapshot,
     );
     if (mutationReason) {
-      return await failBlocked("validation", mutationReason);
+      await failBlocked("validation", mutationReason);
+      throw new IntegrationSafetyError(mutationReason);
     }
 
+    throwIfStopped(deps);
     const commit = await deps.git.commit(
       task.approvedCommitMessage ?? `chore: implement ${task.title}`,
     );
@@ -2417,9 +2498,161 @@ async function landApprovedTask(
     }));
     return "landed";
   } catch (err) {
+    if (err instanceof IntegrationSafetyError) {
+      await failBlocked("safety", err.message);
+      throw err;
+    }
+    if (err instanceof BlockedError) {
+      throw err;
+    }
     const reason = err instanceof Error ? err.message : String(err);
     return await failForRework("integration", reason);
   }
+}
+
+async function transplantTaskCandidate(
+  deps: OrchestratorDeps,
+  task: SchedulerTask,
+  taskId: string,
+  candidateSha: string,
+  candidateDelta: string,
+  mainHead: string,
+  planArtifacts: string[],
+): Promise<
+  { ok: true } | { ok: false; reason: string; hardBlocked?: boolean }
+> {
+  if (!task.worktreePath) {
+    return {
+      ok: false,
+      reason: "Task candidate worktree is unavailable for transplantation",
+    };
+  }
+  const mainRoot = await deps.git.root();
+  const taskGit = deps.git.forWorktree(task.worktreePath, mainRoot);
+  const taskPlanArtifacts = planArtifacts.map((artifact) =>
+    isAbsolute(artifact)
+      ? join(task.worktreePath!, relative(mainRoot, artifact))
+      : artifact,
+  );
+  const snapshot = await captureRestoreSnapshot(taskGit, taskPlanArtifacts);
+  try {
+    await taskGit.resetHard(mainHead);
+    const applied = await taskGit.applyPatch(candidateDelta);
+    if (applied.exitCode !== 0) {
+      throw new Error(
+        applied.stderr || applied.stdout || "could not apply candidate delta",
+      );
+    }
+    await taskGit.stageAllExcept(taskPlanArtifacts);
+    const candidate = await checkpointCandidate(taskGit, {
+      sourceBaseSha: task.sourceBaseSha ?? task.baseSha ?? mainHead,
+      candidateBaseSha: mainHead,
+      branchName: task.branchName!,
+      worktreePath: task.worktreePath,
+      candidateSha: undefined,
+      candidateTree: undefined,
+      trustedCheckpoint: undefined,
+      discardedBundles: task.discardedBundles,
+    });
+    if (candidate.result?.exitCode !== 0 || !candidate.changed) {
+      throw new Error(
+        candidate.result?.stderr ||
+          candidate.result?.stdout ||
+          "could not checkpoint transplanted candidate",
+      );
+    }
+    Object.assign(task, candidate.candidate, { candidateBaseSha: mainHead });
+    const existing = deps.paths ? readTaskJson(deps.paths, taskId) : undefined;
+    if (existing?.review?.convergence) {
+      existing.review.convergence.previousCandidate = mainHead;
+      existing.review.convergence.previousCandidatePatch = "";
+      existing.review.convergence.latestEvidence =
+        "Candidate transplanted onto the current main checkout.";
+      writeTaskJson(deps.paths!, taskId, {
+        ...existing,
+        candidateBaseSha: mainHead,
+        candidateSha: candidate.candidate.candidateSha,
+        candidateTree: candidate.candidate.candidateTree,
+        trustedCheckpoint: candidate.candidate.trustedCheckpoint,
+        review: existing.review,
+      });
+    }
+    if (deps.paths) {
+      persistTaskArtifact(
+        deps.paths,
+        taskId,
+        "candidate-transplant.md",
+        `# Candidate transplanted\n\nPrevious candidate: ${candidateSha}\nNew base: ${mainHead}\nNew candidate: ${candidate.candidate.trustedCheckpoint}\n`,
+      );
+    }
+    return { ok: true };
+  } catch (error) {
+    try {
+      await restoreAndVerify(taskGit, snapshot, taskPlanArtifacts);
+    } catch (restoreError) {
+      return {
+        ok: false,
+        hardBlocked: true,
+        reason: `could not transplant candidate and could not restore its trusted state: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
+      };
+    }
+    return {
+      ok: false,
+      reason: `could not transplant candidate onto current main: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+async function verifyTaskCheckpointHooks(
+  deps: OrchestratorDeps,
+  task: SchedulerTask,
+  checkpoint: string,
+  planArtifacts: string[],
+): Promise<
+  { ok: true } | { ok: false; reason: string; hardBlocked?: boolean }
+> {
+  if (!task.worktreePath) {
+    return {
+      ok: false,
+      reason: "Task candidate worktree is unavailable for checkpoint hooks",
+    };
+  }
+  const mainRoot = await deps.git.root();
+  const taskGit = deps.git.forWorktree(task.worktreePath, mainRoot);
+  const taskPlanArtifacts = planArtifacts.map((artifact) =>
+    isAbsolute(artifact)
+      ? join(task.worktreePath!, relative(mainRoot, artifact))
+      : artifact,
+  );
+  const snapshot = await captureRestoreSnapshot(taskGit, taskPlanArtifacts);
+  const approvedTree = await taskGit.treeAt(checkpoint);
+  const hook = await taskGit.runCheckpointHooks(checkpoint);
+  const hookTree = await taskGit.tree();
+  const mutated = await snapshotChanged(taskGit, snapshot, taskPlanArtifacts, {
+    ignoreHead: true,
+  });
+  try {
+    await restoreAndVerify(taskGit, snapshot, taskPlanArtifacts);
+  } catch (error) {
+    return {
+      ok: false,
+      hardBlocked: true,
+      reason: `task checkpoint hook state could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (mutated || hookTree !== approvedTree) {
+    return {
+      ok: false,
+      reason: "task checkpoint hook changed the approved candidate",
+    };
+  }
+  if (hook.exitCode !== 0) {
+    return {
+      ok: false,
+      reason: hook.stderr || hook.stdout || "task checkpoint hook failed",
+    };
+  }
+  return { ok: true };
 }
 
 async function cleanupTaskWorkspace(
@@ -3669,6 +3902,7 @@ type ValidationResult =
       failedGate?: string;
       passedGates?: string[];
       semanticProgress?: boolean;
+      hardBlocked?: boolean;
     };
 
 async function validateIntegratedTask(
@@ -3863,6 +4097,10 @@ async function runIntegrationReviewFallback(
   schedulerTask?: SchedulerTask,
   reviewerSystemFailures = 0,
 ): Promise<ValidationResult> {
+  const reviewerSnapshot = await captureRestoreSnapshot(
+    deps.git,
+    planArtifacts,
+  );
   const diff = await deps.git.stagedDiff();
   const fallbackState = schedulerTask?.integrationLedger?.fallbackReview;
   const outstanding = fallbackState
@@ -3906,6 +4144,30 @@ async function runIntegrationReviewFallback(
       clearSchedulerActiveAgent(schedulerTask, id);
       deps.updateState((prev) => removeActiveAgentPatch(prev, id));
     });
+    const reviewerMutated = await snapshotChanged(
+      deps.git,
+      reviewerSnapshot,
+      planArtifacts,
+    );
+    if (reviewerMutated) {
+      try {
+        await restoreAndVerify(deps.git, reviewerSnapshot, planArtifacts);
+      } catch (error) {
+        throw new IntegrationSafetyError(
+          `integration fallback reviewer mutation could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      throw new IntegrationSafetyError(
+        "integration fallback reviewer changed the staged integration diff",
+      );
+    }
+    if (
+      result.status === "stopped" ||
+      deps.signal?.aborted ||
+      deps.shouldStop()
+    ) {
+      throw new StoppedError();
+    }
     if (result.status !== "completed") {
       recordSystemFailure(
         schedulerTask?.planIndex ?? 0,
@@ -4212,6 +4474,22 @@ function persistOverallReviewState(
   });
 }
 
+async function restoreSnapshots(
+  ...groups: Array<Array<readonly [GitClient, RestoreSnapshot, string[]]>>
+): Promise<string[]> {
+  const results = await Promise.all(
+    groups.flat().map(async ([git, snapshot, protectedPaths]) => {
+      try {
+        await restoreAndVerify(git, snapshot, protectedPaths);
+        return undefined;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    }),
+  );
+  return results.filter((result): result is string => result !== undefined);
+}
+
 async function runInitialOverallReview(args: {
   deps: OrchestratorDeps;
   planArtifacts: string[];
@@ -4220,7 +4498,7 @@ async function runInitialOverallReview(args: {
   fullDiff: string;
 }): Promise<
   | { ok: true; convergence: ReviewConvergenceState }
-  | { ok: false; reason: string }
+  | { ok: false; reason: string; hardBlocked?: boolean }
 > {
   const { deps, planArtifacts } = args;
   const snapshot = await captureRestoreSnapshot(deps.git, planArtifacts);
@@ -4266,9 +4544,17 @@ async function runInitialOverallReview(args: {
     } catch (error) {
       return {
         ok: false,
+        hardBlocked: true,
         reason: `overall reviewer mutation could not be restored: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
+  }
+  if (
+    result.status === "stopped" ||
+    deps.signal?.aborted ||
+    deps.shouldStop()
+  ) {
+    throw new StoppedError();
   }
   if (result.status !== "completed") {
     return {
@@ -4308,7 +4594,7 @@ async function reviewOverallCandidate(args: {
   initial?: boolean;
 }): Promise<
   | { ok: true; approved: boolean; observations: string[] }
-  | { ok: false; reason: string }
+  | { ok: false; reason: string; hardBlocked?: boolean }
 > {
   const { deps, planArtifacts, state } = args;
   const mainRoot = await deps.git.root();
@@ -4390,19 +4676,26 @@ async function reviewOverallCandidate(args: {
     planArtifacts,
   );
   if (candidateChanged || mainChanged) {
-    try {
-      if (candidateChanged) {
-        await restoreAndVerify(candidateGit, snapshot, candidatePlanArtifacts);
-      }
-      if (mainChanged) {
-        await restoreAndVerify(deps.git, mainSnapshot, planArtifacts);
-      }
-    } catch (error) {
+    const restoreFailures = await restoreSnapshots(
+      candidateChanged
+        ? [[candidateGit, snapshot, candidatePlanArtifacts] as const]
+        : [],
+      mainChanged ? [[deps.git, mainSnapshot, planArtifacts] as const] : [],
+    );
+    if (restoreFailures.length > 0) {
       return {
         ok: false,
-        reason: `overall reviewer mutation could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+        hardBlocked: true,
+        reason: `overall reviewer mutation could not be restored: ${restoreFailures.join("; ")}`,
       };
     }
+  }
+  if (
+    result.status === "stopped" ||
+    deps.signal?.aborted ||
+    deps.shouldStop()
+  ) {
+    throw new StoppedError();
   }
   if (result.status !== "completed") {
     return {
@@ -4477,6 +4770,20 @@ async function reviewOverallCandidate(args: {
       reason: `Overall review protocol failure: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+async function retryOverallReview<
+  T extends { ok: boolean; reason?: string; hardBlocked?: boolean },
+>(review: () => Promise<T>): Promise<T> {
+  let result = await review();
+  for (
+    let failures = 1;
+    !result.ok && !result.hardBlocked && failures < MAX_SYSTEM_FAILURES;
+    failures++
+  ) {
+    result = await review();
+  }
+  return result;
 }
 
 async function runConvergentOverallReviewLoop(
@@ -4559,13 +4866,15 @@ async function runConvergentOverallReviewLoop(
     };
   } else {
     deps.updateState({ phase: "final_review", activeSubagentId: undefined });
-    const initial = await runInitialOverallReview({
-      deps,
-      planArtifacts,
-      planContext,
-      candidate: mainHead,
-      fullDiff,
-    });
+    const initial = await retryOverallReview(() =>
+      runInitialOverallReview({
+        deps,
+        planArtifacts,
+        planContext,
+        candidate: mainHead,
+        fullDiff,
+      }),
+    );
     if (!initial.ok) {
       throw new BlockedError(initial.reason);
     }
@@ -4723,12 +5032,13 @@ async function runConvergentOverallReviewLoop(
           bundlePath: bundle,
         });
       }
-      try {
-        await restoreAndVerify(candidateGit, snapshot, candidatePlanArtifacts);
-        await restoreAndVerify(deps.git, mainSnapshot, planArtifacts);
-      } catch (error) {
+      const restoreFailures = await restoreSnapshots(
+        [[candidateGit, snapshot, candidatePlanArtifacts]],
+        [[deps.git, mainSnapshot, planArtifacts]],
+      );
+      if (restoreFailures.length > 0) {
         throw new BlockedError(
-          `overall rework restoration failed: ${error instanceof Error ? error.message : String(error)}`,
+          `overall rework restoration failed: ${restoreFailures.join("; ")}`,
         );
       }
       overall.latestEvidence = reason;
@@ -4743,16 +5053,14 @@ async function runConvergentOverallReviewLoop(
       (await candidateGit.head()) !== snapshot.head ||
       (await snapshotChanged(deps.git, mainSnapshot, planArtifacts))
     ) {
-      await restoreAndVerify(
-        candidateGit,
-        snapshot,
-        candidatePlanArtifacts,
-      ).catch(() => undefined);
-      await restoreAndVerify(deps.git, mainSnapshot, planArtifacts).catch(
-        () => undefined,
+      const restoreFailures = await restoreSnapshots(
+        [[candidateGit, snapshot, candidatePlanArtifacts]],
+        [[deps.git, mainSnapshot, planArtifacts]],
       );
       throw new BlockedError(
-        "overall rework implementer violated the candidate safety boundary",
+        restoreFailures.length > 0
+          ? `overall rework implementer violated the candidate safety boundary and rollback failed: ${restoreFailures.join("; ")}`
+          : "overall rework implementer violated the candidate safety boundary",
       );
     }
     await recordPapercuts(deps, parsedRework, "overall-rework");
@@ -4834,16 +5142,13 @@ async function runConvergentOverallReviewLoop(
       )) ||
       (await snapshotChanged(deps.git, mainSnapshot, planArtifacts))
     ) {
-      try {
-        await restoreAndVerify(
-          candidateGit,
-          validationSnapshot,
-          candidatePlanArtifacts,
-        );
-        await restoreAndVerify(deps.git, mainSnapshot, planArtifacts);
-      } catch (error) {
+      const restoreFailures = await restoreSnapshots(
+        [[candidateGit, validationSnapshot, candidatePlanArtifacts]],
+        [[deps.git, mainSnapshot, planArtifacts]],
+      );
+      if (restoreFailures.length > 0) {
         throw new BlockedError(
-          `overall validation mutation could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+          `overall validation mutation could not be restored: ${restoreFailures.join("; ")}`,
         );
       }
       throw new BlockedError("validation changed the overall candidate");
@@ -4871,21 +5176,18 @@ async function runConvergentOverallReviewLoop(
     const latestDeltaPaths = parseNameStatusPaths(
       await candidateGit.diffRangeNameStatus(reviewBase, candidateAfter),
     );
-    const review = await reviewOverallCandidate({
-      deps,
-      planArtifacts,
-      state: overall,
-      planContext,
-      latestDelta,
-      latestDeltaPaths,
-    });
+    const review = await retryOverallReview(() =>
+      reviewOverallCandidate({
+        deps,
+        planArtifacts,
+        state: overall,
+        planContext,
+        latestDelta,
+        latestDeltaPaths,
+      }),
+    );
     if (!review.ok) {
-      if (++systemFailures >= MAX_SYSTEM_FAILURES) {
-        throw new BlockedError(review.reason);
-      }
-      overall.latestEvidence = review.reason;
-      persistOverallReviewState(deps, overall, "needs_rework", review.reason);
-      continue;
+      throw new BlockedError(review.reason);
     }
     persistOverallArtifact(
       deps.paths,
@@ -5138,10 +5440,15 @@ async function integrateOverallCandidate(
   try {
     await restoreAndVerify(candidateGit, beforeHook, candidatePlanArtifacts);
   } catch (error) {
-    return fail(
-      "hook",
-      `Approval hook state could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+    const rollback = await restoreSnapshots(
+      [[candidateGit, beforeHook, candidatePlanArtifacts]],
+      [[deps.git, snapshot, planArtifacts]],
     );
+    return {
+      ok: false,
+      hardBlocked: true,
+      reason: `Approval hook state could not be restored: ${error instanceof Error ? error.message : String(error)}${rollback.length > 0 ? `; main rollback also failed: ${rollback.join("; ")}` : ""}`,
+    };
   }
   if (hookMutated || hookTree !== approvedTree) {
     return fail(
@@ -5630,6 +5937,24 @@ async function runTaskWorker(args: {
         },
         review: reviewState ? persistReview() : existing?.review,
       });
+      if (reviewState) {
+        persistTaskArtifact(
+          deps.paths,
+          taskId,
+          "finding-transition.json",
+          JSON.stringify(
+            {
+              epoch: reviewEpoch,
+              outstandingIds: reviewState.outstandingIds,
+              bestOutstandingCount: reviewState.bestOutstandingCount,
+              consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
+              latestEvidence,
+            },
+            null,
+            2,
+          ),
+        );
+      }
     }
   };
   let trustedSnapshot: RestoreSnapshot | undefined;
@@ -5994,9 +6319,7 @@ async function runTaskWorker(args: {
     const hasImplementationDelta = await taskGit.hasStagedChanges();
     const hasStaged =
       hasImplementationDelta ||
-      (parsed.ok &&
-        parsed.result.outcome === "changed" &&
-        Boolean(worktreePath && candidate.trustedCheckpoint) &&
+      (Boolean(worktreePath && candidate.trustedCheckpoint) &&
         (await taskGit.head()) === candidate.trustedCheckpoint);
 
     // The implementer claimed the task was already satisfied but left staged
@@ -6080,7 +6403,11 @@ async function runTaskWorker(args: {
             ),
           );
         }
-        semanticNoop = Boolean(reviewState && !checkpoint.changed);
+        semanticNoop = Boolean(
+          reviewState &&
+          !checkpoint.changed &&
+          previousCandidate === candidate.trustedCheckpoint,
+        );
         if (checkpoint.changed) {
           trustedSnapshot = await captureRestoreSnapshot(
             taskGit,
@@ -6134,7 +6461,7 @@ async function runTaskWorker(args: {
       latestEvidence = `Implementer reported rework without changing candidate ${candidateIdentity}.`;
       if (update.outcome === "stalled") {
         persistCandidate("stalled", latestEvidence);
-        throw new BlockedError(
+        throw new TaskStalledError(
           `task ${task.index} stalled after unchanged candidate rework`,
         );
       }
@@ -6460,7 +6787,7 @@ async function runTaskWorker(args: {
               "stalled",
               "task review stalled without a new low outstanding count",
             );
-            throw new BlockedError(
+            throw new TaskStalledError(
               `task ${task.index} review stalled without a new low outstanding count`,
             );
           }
@@ -6487,6 +6814,7 @@ async function runTaskWorker(args: {
 
         previousCandidate = candidateIdentity;
         previousCandidatePatch = candidatePatch;
+        persistCandidate("reviewing", latestEvidence);
         const outstanding = reviewState.outstandingIds;
         deps.updateState((prev) =>
           checkpointPatch(
@@ -6888,6 +7216,15 @@ export class BlockedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "BlockedError";
+  }
+}
+
+class IntegrationSafetyError extends BlockedError {}
+
+class TaskStalledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TaskStalledError";
   }
 }
 
