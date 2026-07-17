@@ -11,6 +11,7 @@ export type Phase =
   | "final_review"
   | "final_rework"
   | "followup_required"
+  | "stalled"
   | "blocked"
   | "stopping"
   | "stopped"
@@ -61,6 +62,8 @@ export type ParallelTaskState = {
   blockedReason?: string;
   worktreePath?: string;
   landedCommitSha?: string;
+  candidateSha?: string;
+  lastTransition?: { at: string; phase: string; reason?: string };
   activeAgentIds?: string[];
   activeAgentRefs?: AgentDisplayRef[];
   review?: {
@@ -68,6 +71,13 @@ export type ParallelTaskState = {
     lastReason?: string;
     reviewedCount?: number;
     skippedCount?: number;
+    convergence?: {
+      state: {
+        outstandingIds: string[];
+        bestOutstandingCount: number;
+        consecutiveStalledRounds: number;
+      };
+    };
   };
 };
 
@@ -119,6 +129,12 @@ export function formatFooterStatusParts(
 ): FooterStatusParts | undefined {
   if (state.phase === "idle") {
     return undefined;
+  }
+  if (state.phase === "stalled") {
+    return footerStatusParts(
+      `implement stalled${state.lastReason ? ` · ${shorten(state.lastReason, 32)}` : ""}`,
+      "warning",
+    );
   }
   if (state.phase === "blocked") {
     return footerStatusParts(
@@ -223,12 +239,24 @@ export function formatRunStatus(state: RunState, nowMs = Date.now()): string {
       }
       if (task.landedCommitSha) {
         line += ` @ ${shortenSha(task.landedCommitSha)}`;
+      } else if (task.candidateSha) {
+        line += ` · candidate ${shortenSha(task.candidateSha)}`;
       }
       if (task.review) {
         line += ` · review: ${task.review.lastDecision}`;
         if (task.review.lastReason) {
           line += ` (${shorten(task.review.lastReason, 40)})`;
         }
+        const convergence = task.review.convergence;
+        if (convergence) {
+          const state = convergence.state;
+          line += ` · outstanding ${state.outstandingIds.join(", ") || "none"} (${state.outstandingIds.length})`;
+          line += ` · best ${state.bestOutstandingCount}`;
+          line += ` · stalled rounds ${state.consecutiveStalledRounds}`;
+        }
+      }
+      if (task.lastTransition) {
+        line += ` · last transition ${task.lastTransition.phase}`;
       }
       lines.push(line);
     }
@@ -357,7 +385,8 @@ export function formatWidgetLines(
     state.phase === "done" ||
     state.phase === "blocked" ||
     state.phase === "stopped" ||
-    state.phase === "followup_required"
+    state.phase === "followup_required" ||
+    state.phase === "stalled"
   ) {
     return lines;
   }

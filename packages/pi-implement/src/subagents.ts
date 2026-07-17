@@ -61,9 +61,9 @@ export type AgentSnapshot = {
 };
 
 export type SubagentResult<TResult = any> =
-  | { status: "completed"; result: TResult }
-  | { status: "failed"; error: string }
-  | { status: "stopped"; error: string };
+  | { status: "completed"; result: TResult; runtime?: AgentSnapshot }
+  | { status: "failed"; error: string; runtime?: AgentSnapshot }
+  | { status: "stopped"; error: string; runtime?: AgentSnapshot };
 
 const READ_ONLY_TOOLS = [
   "read",
@@ -169,14 +169,20 @@ export class RuntimeSubagentClient implements SubagentClient {
       const snapshot = (await this.runtime.wait(
         id,
       )) as RuntimeSnapshot<TResult>;
+      const runtime = toAgentSnapshot(snapshot);
       if (snapshot.status === "completed") {
-        return { status: "completed", result: snapshot.result as TResult };
+        return {
+          status: "completed",
+          result: snapshot.result as TResult,
+          runtime,
+        };
       }
       return {
         status: snapshot.status === "stopped" || stopped ? "stopped" : "failed",
         error:
           snapshot.error ??
           (stopped ? "Stopped by user." : `Subagent ${snapshot.status}.`),
+        runtime,
       };
     } finally {
       signal?.removeEventListener("abort", abort);

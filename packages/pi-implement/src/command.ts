@@ -63,6 +63,8 @@ import {
   releaseRunLock,
   checkRunLocks,
   sweepRunArtifacts,
+  CURRENT_STATE_VERSION,
+  transitionRunState,
 } from "./state.js";
 
 const STATUS_KEY = "pi-implement.status";
@@ -97,6 +99,7 @@ const STARTABLE_PHASES = new Set([
   "done",
   "stopped",
   "blocked",
+  "stalled",
   "followup_required",
 ]);
 
@@ -350,6 +353,27 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           lines.push(`Run: ${runId}`);
           lines.push(`Run dir: ${paths.runDir}`);
           lines.push(`Worktrees dir: ${paths.worktreesDir}`);
+          lines.push(`State version: ${run.version}`);
+          lines.push(`Phase: ${run.currentPhase}`);
+          if (run.terminalReason) {
+            lines.push(`Terminal reason: ${run.terminalReason}`);
+          }
+          if (run.lastTransition) {
+            lines.push(
+              `Last transition: ${run.lastTransition.phase} at ${run.lastTransition.at}`,
+            );
+          }
+          if (run.overallReview) {
+            const convergence = run.overallReview.convergence?.state;
+            lines.push(
+              `Overall: ${run.overallReview.status} · candidate ${run.overallReview.candidate?.candidateSha ?? "—"}`,
+            );
+            if (convergence) {
+              lines.push(
+                `  outstanding ${convergence.outstandingIds.join(", ") || "none"} (${convergence.outstandingIds.length}) · best ${convergence.bestOutstandingCount} · stalled rounds ${convergence.consecutiveStalledRounds}`,
+              );
+            }
+          }
           if (existsSync(paths.tasksDir)) {
             const taskIds = readdirSync(paths.tasksDir, { withFileTypes: true })
               .filter((d) => d.isDirectory())
@@ -364,6 +388,16 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
                 ? ` (${task.review.lastDecision})`
                 : "";
               let line = `${task.id} [${task.status}${review}] → ${wt}`;
+              if (task.candidateSha) {
+                line += ` · candidate ${task.candidateSha}`;
+              }
+              const convergence = task.review?.convergence?.state;
+              if (convergence) {
+                line += ` · outstanding ${convergence.outstandingIds.join(", ") || "none"} (${convergence.outstandingIds.length}) · best ${convergence.bestOutstandingCount} · stalled rounds ${convergence.consecutiveStalledRounds}`;
+              }
+              if (task.lastTransition) {
+                line += ` · last transition ${task.lastTransition.phase}`;
+              }
               lines.push(line);
             }
           }
@@ -504,6 +538,13 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       let corpusFileRecords: Array<{ path: string; hash: string }>;
       let materialInventory: ReturnType<typeof buildPhase1MaterialInventory>;
       let materialStore: MaterialStore | undefined;
+      let retainedResume:
+        | {
+            runId: string;
+            paths: ReturnType<typeof getStatePaths>;
+            run: NonNullable<ReturnType<typeof readRunJson>>;
+          }
+        | undefined;
       try {
         git = new ExecGitClient(ctx.cwd);
         repoRoot = await git.mainRoot();
@@ -561,6 +602,126 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             .map((file) => file.absolutePath),
         ];
         planHash = createHash("sha256").update(planContent).digest("hex");
+        const retained = listRunIds(repoRoot)
+          .map((runId) => ({
+            runId,
+            paths: getStatePaths(repoRoot, runId, checkoutIdentity),
+          }))
+          .map((entry) => ({ ...entry, run: readRunJson(entry.paths) }))
+          .filter(
+            (entry) =>
+              entry.run &&
+              entry.run.planPath === planPath &&
+              entry.run.currentPhase !== "done",
+          );
+        const compatible = retained.filter(
+          (entry) =>
+            entry.run!.planHash === planHash &&
+            entry.run!.corpusHash === corpus.corpusHash &&
+            entry.run!.checkoutRoot === checkoutRoot,
+        );
+        const requestedRecovery = parsed.mode.recovery;
+        if (requestedRecovery) {
+          const selected = retained.find(
+            (entry) => entry.runId === requestedRecovery.runId,
+          );
+          if (!selected) {
+            ctx.ui.notify(
+              `pi-implement blocked: retained run ${requestedRecovery.runId} was not found for this plan.`,
+              "warning",
+            );
+            return;
+          }
+          if (requestedRecovery.kind === "resume") {
+            if (
+              selected.run!.planHash !== planHash ||
+              selected.run!.corpusHash !== corpus.corpusHash ||
+              selected.run!.checkoutRoot !== checkoutRoot
+            ) {
+              ctx.ui.notify(
+                `pi-implement blocked: retained run ${selected.runId} is incompatible with the current plan, corpus, or checkout; inspect or start over explicitly.`,
+                "warning",
+              );
+              return;
+            }
+            if (selected.run!.version !== CURRENT_STATE_VERSION) {
+              ctx.ui.notify(
+                `pi-implement blocked: retained run ${selected.runId} uses historical state v${selected.run!.version}; inspect or start over explicitly.`,
+                "warning",
+              );
+              return;
+            }
+            const lockCheck = checkRunLocks(
+              getStatePaths(repoRoot, "lock-check", checkoutIdentity),
+            );
+            if (
+              lockCheck.active.some(
+                (lock) => lock.lock?.runId === selected.runId,
+              )
+            ) {
+              ctx.ui.notify(
+                `pi-implement blocked: retained run ${selected.runId} still has a live owner.`,
+                "warning",
+              );
+              return;
+            }
+            const taskIds = existsSync(selected.paths.tasksDir)
+              ? readdirSync(selected.paths.tasksDir, { withFileTypes: true })
+                  .filter((entry) => entry.isDirectory())
+                  .map((entry) => entry.name)
+              : [];
+            for (const taskId of taskIds) {
+              const task = readTaskJson(selected.paths, taskId);
+              if (!task?.trustedCheckpoint || !task.worktreePath) {
+                continue;
+              }
+              const taskGit = git.forWorktree(task.worktreePath, repoRoot);
+              if (
+                (await taskGit.head()) !== task.trustedCheckpoint ||
+                (task.candidateTree &&
+                  (await taskGit.tree()) !== task.candidateTree) ||
+                (await taskGit.activeOperation())
+              ) {
+                ctx.ui.notify(
+                  `pi-implement blocked: retained task ${taskId} no longer matches its trusted candidate. Inspect or start over explicitly.`,
+                  "warning",
+                );
+                return;
+              }
+            }
+            retainedResume = {
+              runId: selected.runId,
+              paths: selected.paths,
+              run: selected.run!,
+            };
+          } else {
+            const lockCheck = checkRunLocks(
+              getStatePaths(repoRoot, "lock-check", checkoutIdentity),
+            );
+            if (
+              lockCheck.active.some(
+                (lock) => lock.lock?.runId === selected.runId,
+              )
+            ) {
+              ctx.ui.notify(
+                `pi-implement blocked: retained run ${selected.runId} still has a live owner.`,
+                "warning",
+              );
+              return;
+            }
+            await cleanupRun(selected.paths);
+          }
+        } else if (retained.length > 0) {
+          const incompatible =
+            compatible.length === 0
+              ? " These run(s) are incompatible with the current plan/corpus/checkout and can only be inspected or explicitly started over."
+              : "";
+          ctx.ui.notify(
+            `pi-implement retained run${retained.length === 1 ? "" : "s"} found: ${retained.map((entry) => entry.runId).join(", ")}. Use --resume <run-id> to continue or --start-over <run-id> to replace one.${incompatible}`,
+            "warning",
+          );
+          return;
+        }
         if (!(await git.isCleanExcept(planArtifacts))) {
           ctx.ui.notify("pi-implement blocked: dirty worktree", "warning");
           return;
@@ -576,15 +737,16 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
 
       const maxConcurrency = resolveMaxParallel(config.config);
       const initialStrategyReason = describeStrategy(maxConcurrency);
-      let runId = "";
-      let paths: ReturnType<typeof getStatePaths> | undefined;
-      let now = "";
-      for (let attempt = 0; attempt < 10; attempt++) {
+      let runId = retainedResume?.runId ?? "";
+      let paths: ReturnType<typeof getStatePaths> | undefined =
+        retainedResume?.paths;
+      let now = retainedResume?.run.updatedAt ?? "";
+      for (let attempt = 0; !retainedResume && attempt < 10; attempt++) {
         runId = makeRunIdWithSuffix(makeRunId(), new Set(listRunIds(repoRoot)));
         paths = getStatePaths(repoRoot, runId, checkoutIdentity);
         now = new Date().toISOString();
         const runJson = {
-          version: 1 as const,
+          version: CURRENT_STATE_VERSION,
           runId,
           mode: "auto" as const,
           strategyReason: initialStrategyReason,
@@ -639,6 +801,16 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           ctx.ui.notify(`pi-implement blocked: ${reason}`, "warning");
           return;
         }
+      }
+      if (retainedResume && paths) {
+        const lock = acquireRunLock(paths, retainedResume.run);
+        if (!lock.ok) {
+          ctx.ui.notify(`pi-implement blocked: ${lock.reason}`, "warning");
+          return;
+        }
+        now = new Date().toISOString();
+        transitionRunState(paths, { currentPhase: "preflight" });
+        ctx.ui.notify(`pi-implement resumed: ${planPath}`, "info");
       }
       if (!paths) {
         ctx.ui.notify(
@@ -726,32 +898,38 @@ Stay idle until the run ends or the user asks you something directly. Do not res
         }
         const current = readRunJson(paths);
         if (current) {
-          writeRunJson(paths, {
-            ...current,
+          transitionRunState(paths, {
             currentPhase: resolved.phase ?? current.currentPhase,
-            updatedAt: new Date().toISOString(),
+            ...(resolved.lastReason
+              ? { terminalReason: resolved.lastReason }
+              : {}),
           });
         }
       };
 
       void (async () => {
-        updateState({ phase: "strategy" });
-        const strategy = await selectStrategy({
-          plan,
-          planContent,
-          planHash,
-          repoRoot,
-          baseSha,
-          config: config.config,
-          roles: effective.roles,
-          subagents: client,
-          paths,
-          runId,
-          signal: abortController.signal,
-          updateState,
-          materialStore,
-          forceSerial,
-        });
+        const strategy = retainedResume
+          ? {
+              mode: retainedResume.run.mode,
+              reason: retainedResume.run.strategyReason,
+              maxConcurrency: retainedResume.run.maxConcurrency,
+            }
+          : await selectStrategy({
+              plan,
+              planContent,
+              planHash,
+              repoRoot,
+              baseSha,
+              config: config.config,
+              roles: effective.roles,
+              subagents: client,
+              paths,
+              runId,
+              signal: abortController.signal,
+              updateState,
+              materialStore,
+              forceSerial,
+            });
         if (strategy.mode === "blocked") {
           throw new BlockedError(strategy.reason);
         }
@@ -851,12 +1029,16 @@ Stay idle until the run ends or the user asks you something directly. Do not res
             syncStatus(ctx, stoppedState);
             if (paths) {
               appendEvent(paths, { type: "run_stopped" });
+              transitionRunState(paths, {
+                currentPhase: "stopped",
+                terminalReason: "Stopped by user.",
+              });
               releaseRunLock(paths, runId);
             }
           } else if (err instanceof OverallReviewFollowupError) {
             const followupState: RunState = {
               ...active.state,
-              phase: "followup_required",
+              phase: "stalled",
               activeSubagentId: undefined,
               activeSubagentIds: [],
               lastReason: err.message,
@@ -873,6 +1055,10 @@ Stay idle until the run ends or the user asks you something directly. Do not res
               appendEvent(paths, {
                 type: "run_blocked",
                 reason: err.message,
+              });
+              transitionRunState(paths, {
+                currentPhase: "stalled",
+                terminalReason: err.message,
               });
               releaseRunLock(paths, runId);
             }
@@ -897,6 +1083,10 @@ Stay idle until the run ends or the user asks you something directly. Do not res
             ctx.ui.notify(`pi-implement blocked: ${reason}`, "warning");
             if (paths) {
               appendEvent(paths, { type: "run_blocked", reason });
+              transitionRunState(paths, {
+                currentPhase: "blocked",
+                terminalReason: reason,
+              });
               releaseRunLock(paths, runId);
             }
           }
@@ -1008,12 +1198,78 @@ async function promptImplementAction(
   if (choice === "Implement a plan") {
     const planPath = await ctx.ui.input("Plan path", "path/to/plan.md");
     const trimmed = planPath?.trim();
-    return trimmed
-      ? {
-          kind: "execution",
-          mode: { kind: "auto", planPath: trimmed, forceSerial: false },
-        }
-      : undefined;
+    if (!trimmed) {
+      return undefined;
+    }
+    const git = new ExecGitClient(ctx.cwd);
+    const repoRoot = await git.mainRoot();
+    const absolutePlanPath = resolve(ctx.cwd, trimmed);
+    const retained = listRunIds(repoRoot)
+      .map((runId) => ({
+        runId,
+        run: readRunJson(getStatePaths(repoRoot, runId)),
+      }))
+      .filter(
+        (entry) =>
+          entry.run &&
+          entry.run.planPath === absolutePlanPath &&
+          entry.run.currentPhase !== "done",
+      );
+    if (retained.length === 0) {
+      return {
+        kind: "execution",
+        mode: { kind: "auto", planPath: trimmed, forceSerial: false },
+      };
+    }
+    const runId =
+      retained.length === 1
+        ? retained[0]!.runId
+        : await ctx.ui.select(
+            "Select retained pi-implement run",
+            retained.map((entry) => entry.runId),
+          );
+    if (!runId) {
+      return undefined;
+    }
+    const action = await ctx.ui.select("Retained pi-implement run", [
+      "Resume retained run",
+      "Inspect retained run",
+      "Start over",
+      "Cancel",
+    ]);
+    if (!action || action === "Cancel") {
+      return undefined;
+    }
+    if (action === "Inspect retained run") {
+      return { kind: "control", name: "inspect" };
+    }
+    if (action === "Start over") {
+      const confirmed = await ctx.ui.confirm(
+        "Start over retained pi-implement run",
+        `Discard retained run ${runId} and its candidate worktrees?`,
+      );
+      if (!confirmed) {
+        return undefined;
+      }
+      return {
+        kind: "execution",
+        mode: {
+          kind: "auto",
+          planPath: trimmed,
+          forceSerial: false,
+          recovery: { kind: "start-over", runId },
+        },
+      };
+    }
+    return {
+      kind: "execution",
+      mode: {
+        kind: "auto",
+        planPath: trimmed,
+        forceSerial: false,
+        recovery: { kind: "resume", runId },
+      },
+    };
   }
   if (choice === "Stop run") {
     return { kind: "control", name: "stop" };

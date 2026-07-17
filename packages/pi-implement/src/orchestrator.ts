@@ -1412,7 +1412,9 @@ async function runParallelImplementation(
   planArtifacts: string[],
   runBaseSha: string,
 ): Promise<void> {
-  const sched = createSchedulerRun(graph, deps.maxConcurrency ?? 1);
+  const sched = deps.paths
+    ? hydrateSchedulerRun(graph, deps.maxConcurrency ?? 1, deps.paths)
+    : createSchedulerRun(graph, deps.maxConcurrency ?? 1);
   const runningWorkers = new Map<string, Promise<WorkerResult>>();
   let plan = initialPlan;
   const reworkTaskIds = new Set<string>();
@@ -1678,6 +1680,48 @@ async function runParallelImplementation(
   }
 }
 
+function hydrateSchedulerRun(
+  graph: ImplementGraph,
+  maxConcurrency: number,
+  paths: StatePaths,
+): SchedulerRun {
+  const sched = createSchedulerRun(graph, maxConcurrency);
+  for (const task of sched.tasks.values()) {
+    const persisted = readTaskJson(paths, task.id);
+    if (!persisted) {
+      continue;
+    }
+    Object.assign(task, {
+      status:
+        persisted.status === "coding" ||
+        persisted.status === "reviewing" ||
+        persisted.status === "stalled"
+          ? "needs_rework"
+          : persisted.status,
+      sourceBaseSha: persisted.sourceBaseSha,
+      baseSha: persisted.baseSha,
+      candidateBaseSha: persisted.candidateBaseSha,
+      candidateSha: persisted.candidateSha,
+      candidateTree: persisted.candidateTree,
+      trustedCheckpoint: persisted.trustedCheckpoint,
+      discardedBundles: persisted.discardedBundles ?? [],
+      worktreePath: persisted.worktreePath,
+      branchName: persisted.branchName,
+      taskCommitSha: persisted.taskCommitSha,
+      landedCommitSha: persisted.landedCommitSha,
+      integrationAttempts: persisted.integrationAttempts,
+      selfHealAttempts: persisted.selfHealAttempts ?? 0,
+      lastReason: persisted.lastReason,
+      approvedCommitMessage: persisted.commitMessage,
+      integrationLedger: persisted.integrationLedger,
+    });
+    if (task.status === "landed" || task.status === "satisfied") {
+      sched.landedOrder.push(task.id);
+    }
+  }
+  return sched;
+}
+
 async function launchTaskWorker(
   deps: OrchestratorDeps,
   sched: SchedulerRun,
@@ -1801,7 +1845,6 @@ async function launchTaskWorker(
         wasNeedsRework && task.lastReason
           ? { source: "integration", message: task.lastReason }
           : undefined,
-      attemptOrdinalBase: task.integrationAttempts,
     });
 
     if (deps.shouldStop() || deps.signal?.aborted) {
@@ -4096,6 +4139,36 @@ function overallWorktreePlanArtifacts(
   );
 }
 
+function persistOverallArtifact(
+  paths: StatePaths | undefined,
+  round: number,
+  filename: string,
+  content: string,
+): void {
+  if (!paths) {
+    return;
+  }
+  const dir = join(
+    paths.runDir,
+    "overall-review",
+    "rounds",
+    String(Math.max(1, round)).padStart(3, "0"),
+  );
+  mkdirSync(dir, { recursive: true });
+  const target = join(dir, filename);
+  if (!existsSync(target)) {
+    writeFileSync(target, content, "utf-8");
+    return;
+  }
+  let ordinal = 2;
+  let alternate = join(dir, filename.replace(/(\.[^.]+)?$/, `-${ordinal}$1`));
+  while (existsSync(alternate)) {
+    ordinal++;
+    alternate = join(dir, filename.replace(/(\.[^.]+)?$/, `-${ordinal}$1`));
+  }
+  writeFileSync(alternate, content, "utf-8");
+}
+
 function persistOverallReviewState(
   deps: OrchestratorDeps,
   overall: OverallReviewState,
@@ -4128,6 +4201,12 @@ function persistOverallReviewState(
       },
       integrationLedger: overall.integrationLedger,
       status,
+      implementationRound: overall.convergence.round,
+      lastTransition: {
+        at: new Date().toISOString(),
+        phase: status,
+        ...(lastReason ? { reason: lastReason } : {}),
+      },
       lastReason,
     },
   });
@@ -4145,13 +4224,15 @@ async function runInitialOverallReview(args: {
 > {
   const { deps, planArtifacts } = args;
   const snapshot = await captureRestoreSnapshot(deps.git, planArtifacts);
+  const prompt = buildInitialOverallReviewPrompt({
+    planContext: args.planContext,
+    candidateContext: `Candidate identity: ${args.candidate}\n\n${args.fullDiff}`,
+    worktreePath: await deps.git.root(),
+  });
+  persistOverallArtifact(deps.paths, 1, "reviewer-prompt.md", prompt);
   const id = await deps.subagents.spawn({
     type: deps.roles.reviewer.type,
-    prompt: buildInitialOverallReviewPrompt({
-      planContext: args.planContext,
-      candidateContext: `Candidate identity: ${args.candidate}\n\n${args.fullDiff}`,
-      worktreePath: await deps.git.root(),
-    }),
+    prompt,
     description: "overall review",
     model: deps.roles.reviewer.model,
     thinking: deps.roles.reviewer.thinking,
@@ -4173,6 +4254,12 @@ async function runInitialOverallReview(args: {
   const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
     deps.updateState((previous) => removeActiveAgentPatch(previous, id));
   });
+  persistOverallArtifact(
+    deps.paths,
+    1,
+    "reviewer-result.json",
+    JSON.stringify({ result, runtime: result.runtime }, null, 2),
+  );
   if (await snapshotChanged(deps.git, snapshot, planArtifacts)) {
     try {
       await restoreAndVerify(deps.git, snapshot, planArtifacts);
@@ -4254,6 +4341,12 @@ async function reviewOverallCandidate(args: {
         latestDelta: args.latestDelta,
         worktreePath: state.worktreePath,
       });
+  persistOverallArtifact(
+    deps.paths,
+    state.convergence.round + 1,
+    "reviewer-prompt.md",
+    prompt,
+  );
   const id = await deps.subagents.spawn({
     type: deps.roles.reviewer.type,
     prompt,
@@ -4280,6 +4373,12 @@ async function reviewOverallCandidate(args: {
   const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
     deps.updateState((previous) => removeActiveAgentPatch(previous, id));
   });
+  persistOverallArtifact(
+    deps.paths,
+    state.convergence.round + 1,
+    "reviewer-result.json",
+    JSON.stringify({ result, runtime: result.runtime }, null, 2),
+  );
   const candidateChanged = await snapshotChanged(
     candidateGit,
     snapshot,
@@ -4391,7 +4490,10 @@ async function runConvergentOverallReviewLoop(
     throw new BlockedError("dirty worktree before final review");
   }
   const mainHead = await deps.git.head();
-  if (mainHead === runBaseSha) {
+  const retainedOverall = deps.paths
+    ? readRunJson(deps.paths)?.overallReview
+    : undefined;
+  if (mainHead === runBaseSha && !retainedOverall) {
     return;
   }
   const planContent = readFileSync(deps.planPath, "utf-8");
@@ -4409,73 +4511,122 @@ async function runConvergentOverallReviewLoop(
     corpusMaterial,
   });
 
-  deps.updateState({ phase: "final_review", activeSubagentId: undefined });
-  const initial = await runInitialOverallReview({
-    deps,
-    planArtifacts,
-    planContext,
-    candidate: mainHead,
-    fullDiff,
-  });
-  if (!initial.ok) {
-    throw new BlockedError(initial.reason);
-  }
-  if (initial.convergence.outstandingIds.length === 0) {
-    deps.updateState((previous) =>
-      checkpointPatch(previous, "Final overall review approved"),
-    );
-    if (deps.paths) {
-      appendEvent(deps.paths, { type: "overall_review_approved" });
-    }
-    return;
-  }
-  const branchName = `pi-implement/${deps.runId ?? "overall"}/overall-review`;
-  const worktreePath = deps.paths
-    ? join(deps.paths.worktreesDir, "overall-review")
-    : join(await deps.git.root(), ".pi", "implement", "overall-review");
-  await deps.git.createTaskBranch(branchName, mainHead);
-  try {
-    await deps.git.addWorktree(worktreePath, branchName);
-  } catch (error) {
-    await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
-    throw new BlockedError(
-      `Overall review worktree setup failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+  const retained = retainedOverall;
   const mainRoot = await deps.git.root();
-  const candidateGit = deps.git.forWorktree(worktreePath, mainRoot);
-  const candidatePlanArtifacts = overallWorktreePlanArtifacts(
-    worktreePath,
-    mainRoot,
-    planArtifacts,
-  );
-  let overall: OverallReviewState = {
-    baseSha: mainHead,
-    branchName,
-    worktreePath,
-    candidate: {
-      sourceBaseSha: runBaseSha,
-      candidateBaseSha: mainHead,
+  let overall: OverallReviewState;
+  let candidateGit: GitClient;
+  let candidatePlanArtifacts: string[];
+  if (retained?.candidate && retained.convergence) {
+    if (
+      !retained.candidate.trustedCheckpoint ||
+      !retained.candidate.worktreePath
+    ) {
+      throw new BlockedError("retained overall candidate is incomplete");
+    }
+    const worktreePath = retained.worktreePath;
+    candidateGit = deps.git.forWorktree(worktreePath, mainRoot);
+    candidatePlanArtifacts = overallWorktreePlanArtifacts(
+      worktreePath,
+      mainRoot,
+      planArtifacts,
+    );
+    if (
+      (await candidateGit.head()) !== retained.candidate.trustedCheckpoint ||
+      (retained.candidate.candidateTree &&
+        (await candidateGit.tree()) !== retained.candidate.candidateTree) ||
+      !(await candidateGit.isCleanExcept(candidatePlanArtifacts)) ||
+      (await candidateGit.activeOperation())
+    ) {
+      throw new BlockedError(
+        "retained overall candidate no longer matches its trusted checkpoint",
+      );
+    }
+    overall = {
+      baseSha: retained.baseSha,
+      branchName: retained.branchName,
+      worktreePath,
+      candidate: retained.candidate,
+      convergence: retained.convergence.state as ReviewConvergenceState,
+      closedEpochs: retained.convergence.closedEpochs as Array<{
+        epoch: number;
+        findings: ReviewFinding[];
+      }>,
+      epoch: retained.convergence.epoch,
+      previousCandidate: retained.convergence.previousCandidate,
+      previousCandidatePatch: retained.convergence.previousCandidatePatch,
+      latestEvidence: retained.convergence.latestEvidence,
+      integrationLedger: retained.integrationLedger,
+    };
+  } else {
+    deps.updateState({ phase: "final_review", activeSubagentId: undefined });
+    const initial = await runInitialOverallReview({
+      deps,
+      planArtifacts,
+      planContext,
+      candidate: mainHead,
+      fullDiff,
+    });
+    if (!initial.ok) {
+      throw new BlockedError(initial.reason);
+    }
+    if (initial.convergence.outstandingIds.length === 0) {
+      deps.updateState((previous) =>
+        checkpointPatch(previous, "Final overall review approved"),
+      );
+      if (deps.paths) {
+        appendEvent(deps.paths, { type: "overall_review_approved" });
+      }
+      return;
+    }
+    const branchName = `pi-implement/${deps.runId ?? "overall"}/overall-review`;
+    const worktreePath = deps.paths
+      ? join(deps.paths.worktreesDir, "overall-review")
+      : join(await deps.git.root(), ".pi", "implement", "overall-review");
+    await deps.git.createTaskBranch(branchName, mainHead);
+    try {
+      await deps.git.addWorktree(worktreePath, branchName);
+    } catch (error) {
+      await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
+      throw new BlockedError(
+        `Overall review worktree setup failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    candidateGit = deps.git.forWorktree(worktreePath, mainRoot);
+    candidatePlanArtifacts = overallWorktreePlanArtifacts(
+      worktreePath,
+      mainRoot,
+      planArtifacts,
+    );
+    overall = {
+      baseSha: mainHead,
       branchName,
       worktreePath,
-      candidateSha: mainHead,
-      candidateTree: await candidateGit.tree(),
-      trustedCheckpoint: mainHead,
-      discardedBundles: [],
-    },
-    convergence: initial.convergence,
-    closedEpochs: [],
-    epoch: 1,
-  };
-  persistOverallReviewState(deps, overall, "needs_rework");
-  if (deps.paths) {
-    appendEvent(deps.paths, {
-      type: "overall_review_changes_requested",
-      findingIds: overall.convergence.outstandingIds,
-    });
+      candidate: {
+        sourceBaseSha: runBaseSha,
+        candidateBaseSha: mainHead,
+        branchName,
+        worktreePath,
+        candidateSha: mainHead,
+        candidateTree: await candidateGit.tree(),
+        trustedCheckpoint: mainHead,
+        discardedBundles: [],
+      },
+      convergence: initial.convergence,
+      closedEpochs: [],
+      epoch: 1,
+    };
+    persistOverallReviewState(deps, overall, "needs_rework");
+    if (deps.paths) {
+      appendEvent(deps.paths, {
+        type: "overall_review_changes_requested",
+        findingIds: overall.convergence.outstandingIds,
+      });
+    }
   }
 
-  let attempt = 0;
+  const worktreePath = overall.worktreePath;
+  const branchName = overall.branchName;
+  let attempt = overall.convergence.round;
   let systemFailures = 0;
   for (;;) {
     attempt++;
@@ -4510,6 +4661,12 @@ async function runConvergentOverallReviewLoop(
       executionManifest: deps.executionManifest,
     });
     deps.updateState({ phase: "final_rework", activeSubagentId: undefined });
+    persistOverallArtifact(
+      deps.paths,
+      attempt,
+      "implementer-prompt.md",
+      prompt,
+    );
     const id = await deps.subagents.spawn({
       type: deps.roles.implementer.type,
       prompt,
@@ -4533,13 +4690,20 @@ async function runConvergentOverallReviewLoop(
     const result = await deps.subagents.waitFor(id, deps.signal).finally(() => {
       deps.updateState((previous) => removeActiveAgentPatch(previous, id));
     });
-    if (
-      result.status !== "completed" ||
-      !parseOverallReworkResult(result.result).ok
-    ) {
+    persistOverallArtifact(
+      deps.paths,
+      attempt,
+      "implementer-result.json",
+      JSON.stringify({ result, runtime: result.runtime }, null, 2),
+    );
+    const parsedRework =
+      result.status === "completed"
+        ? parseOverallReworkResult(result.result)
+        : undefined;
+    if (result.status !== "completed" || !parsedRework?.ok) {
       const reason =
         result.status === "completed"
-          ? `Invalid overall rework result: ${(parseOverallReworkResult(result.result) as { reason: string }).reason}`
+          ? `Invalid overall rework result: ${(parsedRework as { reason: string }).reason}`
           : `Overall rework ${result.status}: ${result.error}`;
       const bundle = await persistDiscardedBundle({
         git: candidateGit,
@@ -4591,7 +4755,7 @@ async function runConvergentOverallReviewLoop(
         "overall rework implementer violated the candidate safety boundary",
       );
     }
-    await recordPapercuts(deps, result.result, "overall-rework");
+    await recordPapercuts(deps, parsedRework, "overall-rework");
     await candidateGit.stageAllExcept(candidatePlanArtifacts);
     const checkpoint = await checkpointCandidate(
       candidateGit,
@@ -4603,6 +4767,21 @@ async function runConvergentOverallReviewLoop(
       );
     }
     overall.candidate = checkpoint.candidate;
+    persistOverallArtifact(
+      deps.paths,
+      attempt,
+      "candidate.json",
+      JSON.stringify(overall.candidate, null, 2),
+    );
+    persistOverallArtifact(
+      deps.paths,
+      attempt,
+      "candidate.diff.patch",
+      await candidateGit.diffRange(
+        overall.baseSha,
+        overall.candidate.trustedCheckpoint!,
+      ),
+    );
     persistOverallReviewState(deps, overall, "reviewing");
     if (deps.paths && checkpoint.changed) {
       appendEvent(deps.paths, {
@@ -4627,7 +4806,7 @@ async function runConvergentOverallReviewLoop(
       persistOverallReviewState(
         deps,
         overall,
-        stalled ? "blocked" : "needs_rework",
+        stalled ? "stalled" : "needs_rework",
         overall.latestEvidence,
       );
       if (stalled) {
@@ -4670,6 +4849,12 @@ async function runConvergentOverallReviewLoop(
       throw new BlockedError("validation changed the overall candidate");
     }
     if (validationFailure) {
+      persistOverallArtifact(
+        deps.paths,
+        attempt,
+        "validation.txt",
+        validationFailure,
+      );
       overall.latestEvidence = validationFailure;
       persistOverallReviewState(
         deps,
@@ -4702,6 +4887,21 @@ async function runConvergentOverallReviewLoop(
       persistOverallReviewState(deps, overall, "needs_rework", review.reason);
       continue;
     }
+    persistOverallArtifact(
+      deps.paths,
+      attempt,
+      "finding-transition.json",
+      JSON.stringify(
+        {
+          outstandingIds: overall.convergence.outstandingIds,
+          bestOutstandingCount: overall.convergence.bestOutstandingCount,
+          consecutiveStalledRounds:
+            overall.convergence.consecutiveStalledRounds,
+        },
+        null,
+        2,
+      ),
+    );
     overall.previousCandidate = candidateAfter;
     overall.previousCandidatePatch = await candidateGit.diffRange(
       overall.baseSha,
@@ -4759,7 +4959,7 @@ async function runConvergentOverallReviewLoop(
   persistOverallReviewState(
     deps,
     overall,
-    "blocked",
+    "stalled",
     "overall review stalled without a new low outstanding count",
   );
   if (deps.paths) {
@@ -4768,7 +4968,10 @@ async function runConvergentOverallReviewLoop(
       findingIds: overall.convergence.outstandingIds,
     });
   }
-  const artifactPath = nextOverallReviewArtifactPath(deps.planPath);
+  const artifactPath = deps.paths
+    ? join(deps.paths.runDir, "overall-review", "stall.md")
+    : nextOverallReviewArtifactPath(deps.planPath);
+  mkdirSync(dirname(artifactPath), { recursive: true });
   writeFileSync(
     artifactPath,
     `# Overall review stalled\n\nInspect retained run state: ${deps.paths?.runDir ?? "(unmanaged)"}\n\nOutstanding findings: ${overall.convergence.outstandingIds.join(", ")}\n`,
@@ -4850,7 +5053,7 @@ async function integrateOverallCandidate(
     persistOverallReviewState(
       deps,
       overall,
-      completed.outcome === "stalled" ? "blocked" : "needs_rework",
+      completed.outcome === "stalled" ? "stalled" : "needs_rework",
       reason,
     );
     try {
@@ -5161,6 +5364,8 @@ function updateParallelState(
       blockedReason: getBlockedReason(task, sched),
       worktreePath: task.worktreePath,
       landedCommitSha: task.landedCommitSha,
+      candidateSha: taskMeta?.candidateSha ?? task.candidateSha,
+      lastTransition: taskMeta?.lastTransition,
       activeAgentIds: task.activeAgentIds,
       activeAgentRefs: task.activeAgentRefs,
       review: taskMeta?.review,
@@ -5307,7 +5512,11 @@ function buildTaskJsonSnapshot(
     candidateTree: task.candidateTree ?? existing?.candidateTree,
     trustedCheckpoint: task.trustedCheckpoint ?? existing?.trustedCheckpoint,
     discardedBundles: task.discardedBundles ?? existing?.discardedBundles,
+    attempts: existing?.attempts ?? 0,
     review: existing?.review,
+    implementationRound: existing?.implementationRound,
+    lastTransition: existing?.lastTransition,
+    runtimeHealth: existing?.runtimeHealth,
   };
 }
 
@@ -5327,7 +5536,6 @@ async function runTaskWorker(args: {
   runBaseSha?: string;
   wasNeedsRework?: boolean;
   initialFeedback?: RetryFeedback;
-  attemptOrdinalBase?: number;
 }): Promise<"changed" | "satisfied" | false> {
   const {
     deps,
@@ -5345,7 +5553,10 @@ async function runTaskWorker(args: {
 
   let feedback: RetryFeedback | undefined = initialFeedback;
   let priorSummary: string | undefined;
-  let attempt = 1;
+  let attempt =
+    (readTaskJson(deps.paths!, taskId)?.implementationRound ??
+      readTaskJson(deps.paths!, taskId)?.attempts ??
+      0) + 1;
   let systemFailures = 0;
   let convergence = currentTaskReviewMetadata(deps.paths, taskId)?.convergence;
   let reviewState = convergence?.state as ReviewConvergenceState | undefined;
@@ -5411,6 +5622,12 @@ async function runTaskWorker(args: {
         branchName,
         activeSubagentIds: [],
         lastReason: reason,
+        implementationRound: attempt,
+        lastTransition: {
+          at: new Date().toISOString(),
+          phase: status,
+          ...(reason ? { reason } : {}),
+        },
         review: reviewState ? persistReview() : existing?.review,
       });
     }
@@ -5513,7 +5730,29 @@ async function runTaskWorker(args: {
     });
 
     if (deps.paths) {
-      persistTaskArtifact(deps.paths, taskId, "prompt.md", implementerPrompt);
+      writeTaskJson(deps.paths, taskId, {
+        ...(readTaskJson(deps.paths, taskId) ?? {
+          id: taskId,
+          planIndex: task.index - 1,
+          title: task.text,
+          status: "coding" as const,
+          dependsOn: [],
+          attempts: attempt,
+          integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
+        }),
+        implementationRound: attempt,
+        lastTransition: {
+          at: new Date().toISOString(),
+          phase: "coding",
+          ...(feedback ? { reason: formatFeedback(feedback) } : {}),
+        },
+      });
+      persistTaskArtifact(
+        deps.paths,
+        taskId,
+        "implementer-prompt.md",
+        implementerPrompt,
+      );
       if (sourceMaterialPacket) {
         persistTaskArtifact(
           deps.paths,
@@ -5593,6 +5832,22 @@ async function runTaskWorker(args: {
     );
     clearSchedulerActiveAgent(schedulerTask, implementerId);
     deps.updateState((prev) => removeActiveAgentPatch(prev, implementerId));
+    if (deps.paths && implementation.runtime) {
+      const existing = readTaskJson(deps.paths, taskId);
+      if (existing) {
+        writeTaskJson(deps.paths, taskId, {
+          ...existing,
+          runtimeHealth: {
+            status: implementation.runtime.status,
+            model: implementation.runtime.model,
+            thinking: implementation.runtime.thinking,
+            toolUses: implementation.runtime.toolUses,
+            tokensTotal: implementation.runtime.tokensTotal,
+            compactionCount: implementation.runtime.compactionCount,
+          },
+        });
+      }
+    }
 
     if (
       implementation.status === "stopped" ||
@@ -5645,8 +5900,12 @@ async function runTaskWorker(args: {
       persistTaskArtifact(
         deps.paths,
         taskId,
-        "result.md",
-        JSON.stringify(implementation.result, null, 2),
+        "implementer-result.json",
+        JSON.stringify(
+          { result: implementation.result, runtime: implementation.runtime },
+          null,
+          2,
+        ),
       );
       writeTaskJson(deps.paths, taskId, {
         id: taskId,
@@ -5874,7 +6133,7 @@ async function runTaskWorker(args: {
       reviewState = update.state;
       latestEvidence = `Implementer reported rework without changing candidate ${candidateIdentity}.`;
       if (update.outcome === "stalled") {
-        persistCandidate("blocked", latestEvidence);
+        persistCandidate("stalled", latestEvidence);
         throw new BlockedError(
           `task ${task.index} stalled after unchanged candidate rework`,
         );
@@ -5944,7 +6203,12 @@ async function runTaskWorker(args: {
     deps.updateState({ phase: "reviewing", activeSubagentId: undefined });
 
     if (deps.paths) {
-      persistTaskArtifact(deps.paths, taskId, "review.md", reviewerPrompt!);
+      persistTaskArtifact(
+        deps.paths,
+        taskId,
+        "reviewer-prompt.md",
+        reviewerPrompt!,
+      );
     }
 
     {
@@ -6005,6 +6269,18 @@ async function runTaskWorker(args: {
           });
         }
         const review = await deps.subagents.waitFor(reviewerId, deps.signal);
+        if (deps.paths) {
+          persistTaskArtifact(
+            deps.paths,
+            taskId,
+            "reviewer-result.json",
+            JSON.stringify(
+              { result: review, runtime: review.runtime },
+              null,
+              2,
+            ),
+          );
+        }
         clearSchedulerActiveAgent(schedulerTask, reviewerId);
         deps.updateState((prev) => removeActiveAgentPatch(prev, reviewerId));
         if (deps.paths) {
@@ -6181,7 +6457,7 @@ async function runTaskWorker(args: {
               .join("\n") || undefined;
           if (update.outcome === "stalled") {
             persistCandidate(
-              "blocked",
+              "stalled",
               "task review stalled without a new low outstanding count",
             );
             throw new BlockedError(
@@ -6759,9 +7035,27 @@ function persistTaskArtifact(
   filename: string,
   content: string,
 ): void {
-  const dir = join(paths.tasksDir, taskId);
+  const task = readTaskJson(paths, taskId);
+  const round = Math.max(1, task?.implementationRound ?? task?.attempts ?? 1);
+  const dir = join(
+    paths.tasksDir,
+    taskId,
+    "rounds",
+    String(round).padStart(3, "0"),
+  );
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, filename), content, "utf-8");
+  const target = join(dir, filename);
+  if (!existsSync(target)) {
+    writeFileSync(target, content, "utf-8");
+    return;
+  }
+  let ordinal = 2;
+  let alternate = join(dir, filename.replace(/(\.[^.]+)?$/, `-${ordinal}$1`));
+  while (existsSync(alternate)) {
+    ordinal++;
+    alternate = join(dir, filename.replace(/(\.[^.]+)?$/, `-${ordinal}$1`));
+  }
+  writeFileSync(alternate, content, "utf-8");
 }
 
 function snapshotPlanArtifacts(

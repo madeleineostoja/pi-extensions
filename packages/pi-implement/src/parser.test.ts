@@ -82,6 +82,38 @@ describe("parseCommand", () => {
     );
   });
 
+  it("parses explicit retained-run recovery flags", () => {
+    expect(parseCommand("plan.md --resume r20240115-120000")).toEqual({
+      kind: "execution",
+      mode: {
+        kind: "auto",
+        planPath: "plan.md",
+        forceSerial: false,
+        recovery: { kind: "resume", runId: "r20240115-120000" },
+      },
+    });
+    expect(parseCommand("plan.md --serial --start-over run-2")).toEqual({
+      kind: "execution",
+      mode: {
+        kind: "auto",
+        planPath: "plan.md",
+        forceSerial: true,
+        recovery: { kind: "start-over", runId: "run-2" },
+      },
+    });
+  });
+
+  it("rejects missing, duplicate, and conflicting recovery flags", () => {
+    for (const input of [
+      "plan.md --resume",
+      "plan.md --start-over",
+      "plan.md --resume one --start-over two",
+      "plan.md --serial --serial",
+    ]) {
+      expect(parseCommand(input).kind).toBe("error");
+    }
+  });
+
   it("rejects unknown flags", () => {
     const result = parseCommand("--unknown plan.md");
     expect(result.kind).toBe("error");

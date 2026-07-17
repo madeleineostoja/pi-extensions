@@ -7,13 +7,13 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 ## Capabilities
 
 - **Autonomous task loop** — drives the full implement → review → commit cycle per task without human input, one commit per approved task.
-- **Independent review gate** — a separate reviewer subagent judges correctness, quality, scope, and verification before anything is committed; changes-requested feedback is fed back to a bounded rework loop.
+- **Independent review gate** — a separate reviewer returns atomic typed findings with stable IDs. Rework preserves one cumulative candidate and continues while the outstanding set reaches new lows; two consecutive non-improving rounds stall for recovery rather than silently discarding work.
 - **Whole-feature overall review** — once all tasks land, a read-only reviewer assesses the combined diff against the original plan and can require follow-up work.
 - **Serial or parallel execution** — auto-selects per plan whether tasks should run one at a time or through a dependency graph. Parallel tasks run in isolated worktrees and integrate back one at a time with verification at each step.
 - **Subagent isolation checks** — implementers and reviewers run from their assigned worktree; the orchestrator detects and blocks (or auto-heals) any out-of-bounds change to HEAD, the candidate diff, the main checkout, or plan artifacts.
 - **Built-in verification** — runs a configured verify command or auto-detected `test`/`typecheck`/`build` scripts, with an LLM integration review as a last resort. Precommit hooks are a hard gate and are never bypassed.
 - **Plan corpus ingestion** — the entry plan and the markdown files it links to (plus `tasks/` siblings) are ingested into the planner's corpus and distilled into per-task contracts, rather than being inlined wholesale into the implementer's context.
-- **Durable, resumable state** — per-run state, artifacts, and worktrees are persisted under `<repo>/.pi/implement/`; runs are lockable across sessions, auto-cleaned on success, and inspectable/recoverable on failure.
+- **Durable retained state** — per-run state, round artifacts, candidate identities, review ledgers, and worktrees are persisted under `<repo>/.pi/implement/`; successful runs auto-clean, while stalled candidates remain inspectable and explicitly cleanable.
 - **Live progress** — a TUI status footer and per-agent widget (tokens, tool uses, compactions) plus progress messages streamed into the session.
 
 ## Usage
@@ -22,6 +22,8 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 /implement                          # open the interactive action menu
 /implement path/to/plan.md          # pick serial or parallel automatically
 /implement path/to/plan.md --serial # force serial execution
+/implement path/to/plan.md --resume <run-id> # explicitly resume a retained run
+/implement path/to/plan.md --start-over <run-id> # explicitly discard one retained run and start again
 ```
 
 The interactive menu includes status, stop, inspect, cleanup, config, and active-agent viewing actions.
@@ -49,9 +51,9 @@ For each unchecked task, pi-implement:
 1. Loads the compiled task contract for the selected task from the execution manifest. The contract includes a precise objective, in-scope items, acceptance criteria, and out-of-scope items. Sibling task contracts are intentionally omitted.
 2. Stages the candidate changes, excluding plan artifacts and never force-adding ignored files. Staging before review lets the reviewer see new untracked files via `git diff --cached HEAD`.
 3. Spawns a reviewer subagent to judge the staged candidate against the compiled contract.
-4. On approval, commits the task. On changes requested, resets the candidate and re-runs the implementer with the reviewer's feedback.
+4. On approval, finalizes and integrates the exact reviewed checkpoint. On changes requested, retains that checkpoint and re-runs the implementer from it with the outstanding typed findings.
 
-The loop is bounded: reviewer change requests and system/commit failures each have a retry ceiling, after which the run is blocked with the accumulated reason rather than looping forever.
+Each finding is atomic and receives an orchestrator-owned ID. Anchored re-reviews assess every outstanding ID and can add only regressions caused by the latest candidate delta. Semantic progress is a strict low-water mark: there is no total review cap, but two consecutive rounds that do not beat the best outstanding count stall the retained candidate. Provider and protocol failures remain separately bounded safety retries.
 
 An implementer may report `already_satisfied` when the current repository state already meets the task and no changes are needed. In that case a dedicated reviewer verifies the claim against the repo, and on approval the checkbox is marked without an empty commit.
 
@@ -59,7 +61,7 @@ An implementer may report `already_satisfied` when the current repository state 
 
 After the last task is committed (and, in parallel mode, after final validation), a read-only overall reviewer inspects the combined base→HEAD diff against the full plan to catch cross-task gaps, missed edge cases, and integration problems.
 
-If the overall reviewer requests changes, pi-implement can autonomously run a bounded rework loop: an implementer addresses the feedback, commits the changes, and the overall review is re-run. This repeats up to a small retry limit. If the limit is exhausted before approval, the run ends in a `followup_required` state and writes a `<plan>.overall-review.md` artifact next to the plan describing the required changes and a suggested follow-up. Re-running `/implement` after addressing them resumes from the remaining work.
+If the overall reviewer requests changes, pi-implement creates an isolated cumulative overall candidate. The main checkout remains untouched until that candidate is approved and integrated. Overall review uses the same typed finding and low-water convergence rules as task review. A stalled overall candidate stays in the retained run directory with its worktree, branch, convergence evidence, and a stall artifact; it is not reduced to an external prose-only follow-up file.
 
 ## Parallel execution and integration
 
@@ -191,8 +193,10 @@ Open `/implement` and choose **View active agents** to inspect active pi-impleme
 
 ## Recovery
 
-Open `/implement` and choose **Stop run** to halt local orchestration and request that active subagents stop. If a run is blocked or stopped, choose **Inspect artifacts** to locate the run directory and worktrees under `<repo>/.pi/implement/` and see each task's status, fix or revert as needed, return to a clean state (except for intended plan checkbox state), then rerun `/implement <plan.md>`.
+Open `/implement` and choose **Stop run** to halt local orchestration and request that active subagents stop. If a run is blocked, stopped, or stalled, choose **Inspect artifacts** to locate its run directory, task/overall candidates, outstanding finding IDs, and per-round evidence under `<repo>/.pi/implement/`. Every round retains its implementer/reviewer prompts and typed results, candidate identity/diff, finding transition, validation evidence, runtime health/model metadata when available, and any discarded worker-delta bundle.
 
-Choose **Cleanup artifacts** to remove durable state and worktrees left behind by failed, blocked, or stopped runs. It refuses while a run is active or another session holds a live run lock, and prunes stale locks it can prove are dead. Successful runs are cleaned up automatically.
+A direct headless/RPC/JSON/print invocation never creates a competing run when a retained compatible run exists: use `--resume <run-id>` or `--start-over <run-id>`. Historical state remains inspectable and cleanable but cannot be resumed. Start-over is destructive and refuses live owners. Choose **Cleanup artifacts** to explicitly remove retained task and overall worktrees/branches; it is idempotent. Successful runs are cleaned automatically.
+
+When a worker fails before a valid completion, pi-implement captures a hashed discarded-delta bundle (tracked patch, untracked archive, and manifest) and proves the candidate's HEAD, index, worktree, untracked paths, Git operation, and protected plan artifacts were restored before retrying.
 
 pi-implement automatically registers `/.pi/implement/` in the repo-local `.git/info/exclude` on startup, so its runtime state never appears as an untracked file in `git status`.

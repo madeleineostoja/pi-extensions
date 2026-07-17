@@ -204,6 +204,11 @@ describe("RuntimeSubagentClient", () => {
     await expect(client.waitFor("agent-1")).resolves.toEqual({
       status: "completed",
       result: { outcome: "changed", summary: "ok" },
+      runtime: expect.objectContaining({
+        id: "agent-1",
+        status: "completed",
+        model: undefined,
+      }),
     });
   });
 

@@ -19,8 +19,25 @@ import { basename, dirname, join, sep } from "node:path";
 import type { IntegrationLedger } from "./integration-ledger.js";
 export type RunMode = "auto" | "serial" | "parallel";
 
+export const CURRENT_STATE_VERSION = 2 as const;
+
+export type RuntimeHealth = {
+  status?: string;
+  model?: string;
+  thinking?: string;
+  toolUses?: number;
+  tokensTotal?: number;
+  compactionCount?: number;
+};
+
+export type DurableTransition = {
+  at: string;
+  phase: string;
+  reason?: string;
+};
+
 export type RunJson = {
-  version: 1;
+  version: 1 | 2;
   runId: string;
   mode: RunMode;
   strategyReason: string;
@@ -34,6 +51,8 @@ export type RunJson = {
   currentPhase: string;
   maxConcurrency: number;
   overallReview?: OverallReviewJson;
+  terminalReason?: string;
+  lastTransition?: DurableTransition;
   startedAt: string;
   updatedAt: string;
 };
@@ -67,7 +86,17 @@ export type OverallReviewJson = {
     latestEvidence?: string;
   };
   integrationLedger?: IntegrationLedger;
-  status: "needs_rework" | "reviewing" | "approved" | "blocked" | "integrating";
+  status:
+    | "needs_rework"
+    | "reviewing"
+    | "approved"
+    | "stalled"
+    | "blocked"
+    | "integrating"
+    | "integration_failed";
+  implementationRound?: number;
+  lastTransition?: DurableTransition;
+  runtimeHealth?: RuntimeHealth;
   lastReason?: string;
 };
 
@@ -83,6 +112,7 @@ export type TaskStatus =
   | "blocked"
   | "needs_rework"
   | "integration_failed"
+  | "stalled"
   | "failed"
   | "stopped";
 
@@ -109,6 +139,9 @@ export type TaskJson = {
   lastReason?: string;
   commitMessage?: string;
   selfHealAttempts?: number;
+  implementationRound?: number;
+  lastTransition?: DurableTransition;
+  runtimeHealth?: RuntimeHealth;
   integrationLedger?: IntegrationLedger;
   review?: {
     lastDecision: "reviewed" | "required" | "skipped";
@@ -427,7 +460,39 @@ export function releaseRunLock(paths: StatePaths, runId: string): void {
 }
 
 export function writeRunJson(paths: StatePaths, run: RunJson): void {
-  writeAtomic(paths.runJson, JSON.stringify(run, null, 2));
+  const existing = readRunJson(paths);
+  const persisted: RunJson = {
+    ...existing,
+    ...run,
+    version: run.version ?? existing?.version ?? CURRENT_STATE_VERSION,
+    overallReview: run.overallReview ?? existing?.overallReview,
+    terminalReason: run.terminalReason ?? existing?.terminalReason,
+    lastTransition: run.lastTransition ?? existing?.lastTransition,
+  } as RunJson;
+  writeAtomic(paths.runJson, JSON.stringify(persisted, null, 2));
+}
+
+export function transitionRunState(
+  paths: StatePaths,
+  patch: Pick<RunJson, "currentPhase"> & Partial<RunJson>,
+): RunJson | undefined {
+  const existing = readRunJson(paths);
+  if (!existing) {
+    return undefined;
+  }
+  const now = new Date().toISOString();
+  const next: RunJson = {
+    ...existing,
+    ...patch,
+    updatedAt: now,
+    lastTransition: {
+      at: now,
+      phase: patch.currentPhase,
+      ...(patch.terminalReason ? { reason: patch.terminalReason } : {}),
+    },
+  };
+  writeRunJson(paths, next);
+  return next;
 }
 
 export function writeTaskJson(
@@ -438,14 +503,23 @@ export function writeTaskJson(
   const path = join(paths.tasksDir, taskId, "task.json");
   const existing = readTaskJson(paths, taskId);
   const persisted = {
+    ...existing,
     ...task,
     sourceBaseSha: existing?.sourceBaseSha ?? task.sourceBaseSha,
+    baseSha: task.baseSha ?? existing?.baseSha,
     candidateBaseSha: task.candidateBaseSha ?? existing?.candidateBaseSha,
     candidateSha: task.candidateSha ?? existing?.candidateSha,
     candidateTree: task.candidateTree ?? existing?.candidateTree,
     trustedCheckpoint: task.trustedCheckpoint ?? existing?.trustedCheckpoint,
     discardedBundles: task.discardedBundles ?? existing?.discardedBundles,
+    worktreePath: task.worktreePath ?? existing?.worktreePath,
+    branchName: task.branchName ?? existing?.branchName,
+    review: task.review ?? existing?.review,
     integrationLedger: task.integrationLedger ?? existing?.integrationLedger,
+    implementationRound:
+      task.implementationRound ?? existing?.implementationRound,
+    lastTransition: task.lastTransition ?? existing?.lastTransition,
+    runtimeHealth: task.runtimeHealth ?? existing?.runtimeHealth,
   };
   mkdirSync(dirname(path), { recursive: true });
   writeAtomic(path, JSON.stringify(persisted, null, 2));
@@ -506,7 +580,17 @@ export function readTaskJson(
 export async function cleanupRun(paths: StatePaths): Promise<void> {
   const run = readRunJson(paths);
   const runId = run?.runId ?? basename(paths.runDir);
-  const cleanupEntries = readTaskCleanupEntries(paths);
+  const cleanupEntries = [
+    ...readTaskCleanupEntries(paths),
+    ...(run?.overallReview
+      ? [
+          {
+            worktreePath: run.overallReview.worktreePath,
+            branchName: run.overallReview.branchName,
+          },
+        ]
+      : []),
+  ];
   if (run?.repoRoot) {
     for (const entry of cleanupEntries) {
       if (entry.worktreePath) {

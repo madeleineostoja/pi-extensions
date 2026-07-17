@@ -1,7 +1,12 @@
 export type ParsedCommand =
   | {
       kind: "execution";
-      mode: { kind: "auto"; planPath: string; forceSerial: boolean };
+      mode: {
+        kind: "auto";
+        planPath: string;
+        forceSerial: boolean;
+        recovery?: { kind: "resume" | "start-over"; runId: string };
+      };
     }
   | {
       kind: "control";
@@ -39,27 +44,37 @@ export function parseCommand(input: string): ParsedCommand {
     return { kind: "error", message: usage() };
   }
 
-  if (tokens.length === 1) {
-    return {
-      kind: "execution",
-      mode: { kind: "auto", planPath: first, forceSerial: false },
-    };
-  }
-
-  if (tokens.length === 2 && tokens[1] === "--serial") {
-    if (first.includes(" ")) {
-      return {
-        kind: "error",
-        message: "Plan path must not contain spaces.",
-      };
+  const flags = tokens.slice(1);
+  let forceSerial = false;
+  let recovery: { kind: "resume" | "start-over"; runId: string } | undefined;
+  for (let index = 0; index < flags.length; index++) {
+    const flag = flags[index];
+    if (flag === "--serial" && !forceSerial) {
+      forceSerial = true;
+      continue;
     }
-    return {
-      kind: "execution",
-      mode: { kind: "auto", planPath: first, forceSerial: true },
-    };
+    if ((flag === "--resume" || flag === "--start-over") && !recovery) {
+      const runId = flags[++index];
+      if (!runId || runId.startsWith("--")) {
+        return { kind: "error", message: usage() };
+      }
+      recovery = {
+        kind: flag === "--resume" ? "resume" : "start-over",
+        runId,
+      };
+      continue;
+    }
+    return { kind: "error", message: usage() };
   }
-
-  return { kind: "error", message: usage() };
+  return {
+    kind: "execution",
+    mode: {
+      kind: "auto",
+      planPath: first,
+      forceSerial,
+      ...(recovery ? { recovery } : {}),
+    },
+  };
 }
 
 function tokenize(input: string): string[] {
@@ -67,5 +82,5 @@ function tokenize(input: string): string[] {
 }
 
 export function usage(): string {
-  return "Usage: /implement to choose an action, or /implement <plan.md> [--serial] to start directly";
+  return "Usage: /implement to choose an action, or /implement <plan.md> [--serial] [--resume <run-id> | --start-over <run-id>]";
 }

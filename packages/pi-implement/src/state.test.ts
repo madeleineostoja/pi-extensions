@@ -323,6 +323,48 @@ describe("run state lifecycle", () => {
     expect(read?.currentPhase).toBe("reviewing");
   });
 
+  it("preserves durable candidate and convergence fields through partial task writes", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    writeTaskJson(paths, "t001-test", {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test task",
+      status: "needs_rework",
+      dependsOn: [],
+      attempts: 1,
+      integrationAttempts: 0,
+      candidateBaseSha: "base",
+      candidateSha: "candidate",
+      candidateTree: "tree",
+      trustedCheckpoint: "candidate",
+      branchName: "pi-implement/r/t001-test",
+      worktreePath: "/worktree",
+      discardedBundles: ["/bundle"],
+      implementationRound: 2,
+      lastTransition: { at: "now", phase: "reviewing" },
+    });
+    writeTaskJson(paths, "t001-test", {
+      id: "t001-test",
+      planIndex: 0,
+      title: "Test task",
+      status: "reviewing",
+      dependsOn: [],
+      attempts: 2,
+      integrationAttempts: 0,
+    });
+    expect(readTaskJson(paths, "t001-test")).toMatchObject({
+      candidateBaseSha: "base",
+      candidateSha: "candidate",
+      candidateTree: "tree",
+      trustedCheckpoint: "candidate",
+      branchName: "pi-implement/r/t001-test",
+      worktreePath: "/worktree",
+      discardedBundles: ["/bundle"],
+      implementationRound: 2,
+    });
+  });
+
   it("writes and reads task.json", () => {
     const repo = tempRepo();
     const paths = getStatePaths(repo, "r20240115-120000");
@@ -642,6 +684,45 @@ describe("run state lifecycle", () => {
       );
       expect(existsSync(paths.runDir)).toBe(false);
       expect(existsSync(paths.lockFile)).toBe(false);
+    },
+  );
+
+  it(
+    "removes the retained overall-review worktree and branch during cleanup",
+    { timeout: 15000 },
+    async () => {
+      const repo = tempRepo();
+      git(repo, "init", "-q");
+      git(repo, "config", "user.email", "test@example.com");
+      git(repo, "config", "user.name", "Test User");
+      writeFileSync(join(repo, "README.md"), "# Test\n", "utf-8");
+      git(repo, "add", "README.md");
+      git(repo, "commit", "-q", "-m", "chore: init");
+      const paths = getStatePaths(repo, "r20240115-120000");
+      const run = makeRun(repo);
+      createRunState(paths, run, "# Plan\n");
+      const branchName = "pi-implement/r20240115-120000/overall-review";
+      const worktreePath = join(paths.worktreesDir, "overall-review");
+      git(repo, "branch", branchName, "HEAD");
+      git(repo, "worktree", "add", "-q", worktreePath, branchName);
+      writeRunJson(paths, {
+        ...run,
+        overallReview: {
+          baseSha: git(repo, "rev-parse", "HEAD").trim(),
+          branchName,
+          worktreePath,
+          status: "stalled",
+        },
+      });
+
+      await cleanupRun(paths);
+
+      expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(
+        worktreePath,
+      );
+      expect(git(repo, "branch", "--list", branchName)).not.toContain(
+        branchName,
+      );
     },
   );
 

@@ -259,6 +259,12 @@ export async function persistDiscardedBundle(args: {
     git.workingDiffExcept(protectedPaths),
     git.head(),
   ]);
+  const trackedPatch = Buffer.from(
+    ["# staged changes", stagedPatch, "# unstaged changes", workingPatch].join(
+      "\n",
+    ),
+    "utf-8",
+  );
   const committedPatch =
     baseSha && baseSha !== head
       ? await git.diffRangeExcept(baseSha, head, protectedPaths)
@@ -270,6 +276,8 @@ export async function persistDiscardedBundle(args: {
     stagedPatchSha256: hash(stagedPatch),
     workingPatch: "working.patch",
     workingPatchSha256: hash(workingPatch),
+    trackedPatch: "tracked.patch",
+    trackedPatchSha256: hash(trackedPatch),
     committedPatch: "committed.patch",
     committedPatchSha256: hash(committedPatch),
     untracked: untrackedPaths.map((path) => untrackedManifestEntry(root, path)),
@@ -278,6 +286,7 @@ export async function persistDiscardedBundle(args: {
   writeFileSync(join(destination, "status.txt"), status);
   writeFileSync(join(destination, "staged.patch"), stagedPatch);
   writeFileSync(join(destination, "working.patch"), workingPatch);
+  writeFileSync(join(destination, "tracked.patch"), trackedPatch);
   writeFileSync(join(destination, "committed.patch"), committedPatch);
   writeFileSync(
     join(destination, "manifest.json"),

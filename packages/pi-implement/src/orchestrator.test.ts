@@ -1137,7 +1137,7 @@ describe("runImplementation", () => {
       }),
     ).rejects.toThrow(OverallReviewFollowupError);
 
-    const artifactPath = join(dir, "plan.overall-review.md");
+    const artifactPath = join(paths.runDir, "overall-review", "stall.md");
     expect(existsSync(artifactPath)).toBe(true);
   });
 
@@ -5062,9 +5062,17 @@ describe("runImplementation", () => {
           "reviewer",
         ]);
         expect(subagents.spawns[1]?.description).toContain("review task");
-        expect(existsSync(join(paths.tasksDir, "task-1", "review.md"))).toBe(
-          true,
-        );
+        expect(
+          existsSync(
+            join(
+              paths.tasksDir,
+              "task-1",
+              "rounds",
+              "001",
+              "reviewer-prompt.md",
+            ),
+          ),
+        ).toBe(true);
         expect(readTaskJson(paths, "task-1")?.review).toMatchObject({
           lastDecision: "reviewed",
           reviewedCount: 1,

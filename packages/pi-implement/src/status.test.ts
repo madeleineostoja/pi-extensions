@@ -108,6 +108,40 @@ describe("status formatting", () => {
     ).toBe("󰚩 implement 2/3");
   });
 
+  it("shows retained candidate and convergence state for a rework task", () => {
+    const status = formatRunStatus({
+      phase: "stalled",
+      tasks: [
+        {
+          id: "t1",
+          planIndex: 0,
+          title: "Task",
+          status: "needs_rework",
+          candidateSha: "abcdef123456",
+          lastTransition: { at: "2024-01-01T00:00:00Z", phase: "stalled" },
+          review: {
+            lastDecision: "required",
+            convergence: {
+              state: {
+                outstandingIds: ["R1", "R3"],
+                bestOutstandingCount: 1,
+                consecutiveStalledRounds: 2,
+              },
+            },
+          },
+        },
+      ],
+    });
+    expect(status).toContain("candidate abcdef1");
+    expect(status).toContain("outstanding R1, R3 (2)");
+    expect(status).toContain("best 1");
+    expect(status).toContain("stalled rounds 2");
+    expect(status).toContain("last transition stalled");
+    expect(formatFooterStatus({ phase: "stalled" })).toBe(
+      "󰚩 implement stalled",
+    );
+  });
+
   it("formats pretty agent labels for implementer/reviewer/task roles", () => {
     const implementer = makeAgentLabel({
       id: "a1",
