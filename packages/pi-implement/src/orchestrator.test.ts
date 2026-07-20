@@ -114,7 +114,9 @@ class FakeGit implements GitClient {
   async stagedDiff() {
     return this.diffText;
   }
-  async stagedDeltaFromPatch(_previousPatch: string) {
+  stagedDeltaFromPatchCalls: string[] = [];
+  async stagedDeltaFromPatch(previousPatch: string) {
+    this.stagedDeltaFromPatchCalls.push(previousPatch);
     return { diff: this.diffText, nameStatus: await this.stagedNameStatus() };
   }
   async stagedDiffExcept() {
@@ -4889,6 +4891,8 @@ describe("runImplementation", () => {
       stagedNameStatus: string;
       diffText?: string;
       reviewerResult?: unknown;
+      reworkReviewerResult?: unknown;
+      configureTaskGit?: (taskGit: FakeGit, rootGit: FakeGit) => void;
       expectedError?: string | RegExp;
     }) {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
@@ -4927,6 +4931,7 @@ describe("runImplementation", () => {
       if (args.diffText) {
         git.worktreeChild!.diffText = args.diffText;
       }
+      args.configureTaskGit?.(git.worktreeChild!, git);
       const subagents = new FakeSubagents();
       subagents.resultsByDescription = [
         {
@@ -4938,7 +4943,10 @@ describe("runImplementation", () => {
         { status: "completed", result: GOOD_IMPL },
         { status: "completed", result: args.reviewerResult ?? GOOD_REVIEW },
         { status: "completed", result: GOOD_IMPL },
-        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: args.reworkReviewerResult ?? GOOD_REVIEW,
+        },
       ];
 
       const run = runImplementation({
@@ -5086,6 +5094,119 @@ describe("runImplementation", () => {
         expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
       },
     );
+
+    it("uses the staged delta when reworking a checkpoint already at HEAD", async () => {
+      const initialDelta = "diff --git a/initial.ts b/initial.ts";
+      const reworkDelta = "diff --git a/rework.ts b/rework.ts";
+      const { git, paths, subagents } = await runChangedCandidateReviewScenario(
+        {
+          stagedNameStatus: "M\trework.ts",
+          diffText: initialDelta,
+          reviewerResult: {
+            verdict: "changes_requested",
+            findings: [
+              {
+                summary: "Rework required",
+                evidence: "The initial candidate is incomplete.",
+                requiredChange: "Complete the candidate.",
+                acceptanceCriteria: ["The candidate is complete."],
+              },
+            ],
+          },
+          reworkReviewerResult: {
+            assessments: [
+              { id: "R1", status: "resolved", evidence: "Rework completed." },
+            ],
+            regressions: [
+              {
+                summary: "Unrelated regression",
+                evidence: "The initial file has an issue.",
+                requiredChange: "Fix the initial file.",
+                acceptanceCriteria: ["The initial file is fixed."],
+                changedPaths: ["initial.ts"],
+                causalEvidence: "The initial candidate changed this file.",
+              },
+            ],
+          },
+          configureTaskGit: (taskGit, rootGit) => {
+            const stageAllExcept = taskGit.stageAllExcept.bind(taskGit);
+            taskGit.stageAllExcept = async () => {
+              await stageAllExcept();
+              if (taskGit.stageAllExceptCalls === 2) {
+                taskGit.diffText = reworkDelta;
+                rootGit.diffText = reworkDelta;
+              }
+            };
+            taskGit.stagedDeltaFromPatch = async () => {
+              throw new Error("previous candidate patch was applied twice");
+            };
+          },
+        },
+      );
+
+      const taskGit = git.worktreeChild!;
+      const taskReviewPrompts = subagents.spawns.filter((spawn) =>
+        spawn.description.includes("review task"),
+      );
+      expect(taskReviewPrompts).toHaveLength(2);
+      expect(taskReviewPrompts[1]!.prompt).toContain(reworkDelta);
+      expect(taskReviewPrompts[1]!.prompt).not.toContain(initialDelta);
+      expect(taskGit.headValue).not.toBe("h1");
+      expect(readTaskJson(paths, "task-1")?.review).toMatchObject({
+        convergence: { state: { outstandingIds: [] } },
+      });
+    });
+
+    it("reconstructs a previous candidate that is not current HEAD", async () => {
+      const initialDelta = "diff --git a/initial.ts b/initial.ts";
+      const reworkDelta = "diff --git a/rework.ts b/rework.ts";
+      const { git, subagents } = await runChangedCandidateReviewScenario({
+        stagedNameStatus: "M\trework.ts",
+        diffText: initialDelta,
+        reviewerResult: {
+          verdict: "changes_requested",
+          findings: [
+            {
+              summary: "Rework required",
+              evidence: "The initial candidate is incomplete.",
+              requiredChange: "Complete the candidate.",
+              acceptanceCriteria: ["The candidate is complete."],
+            },
+          ],
+        },
+        reworkReviewerResult: {
+          assessments: [
+            { id: "R1", status: "resolved", evidence: "Rework completed." },
+          ],
+          regressions: [],
+        },
+        configureTaskGit: (taskGit, rootGit) => {
+          const stageAllExcept = taskGit.stageAllExcept.bind(taskGit);
+          taskGit.stageAllExcept = async () => {
+            await stageAllExcept();
+            if (taskGit.stageAllExceptCalls === 2) {
+              taskGit.headValue = "candidate-base";
+              taskGit.diffText = "full accumulated candidate";
+              rootGit.diffText = "full accumulated candidate";
+            }
+          };
+          taskGit.stagedDeltaFromPatch = async (previousPatch) => {
+            taskGit.stagedDeltaFromPatchCalls.push(previousPatch);
+            return { diff: reworkDelta, nameStatus: "M\trework.ts" };
+          };
+        },
+      });
+
+      const taskGit = git.worktreeChild!;
+      const taskReviewPrompts = subagents.spawns.filter((spawn) =>
+        spawn.description.includes("review task"),
+      );
+      expect(taskGit.stagedDeltaFromPatchCalls).toEqual([initialDelta]);
+      expect(taskReviewPrompts[1]!.prompt).toContain(reworkDelta);
+      expect(taskReviewPrompts[1]!.prompt).not.toContain(
+        "full accumulated candidate",
+      );
+    });
 
     it("parallel candidate is committed before reviewer spawn", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));

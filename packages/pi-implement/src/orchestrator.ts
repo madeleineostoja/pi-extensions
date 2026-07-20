@@ -6358,7 +6358,16 @@ async function runTaskWorker(args: {
     if (hasStaged) {
       fingerprintBefore = await taskGit.stagedFingerprint();
       candidatePatch = await taskGit.stagedDiff();
-      if (reviewState && previousCandidatePatch !== undefined) {
+      const previousCandidateIsHead = Boolean(
+        worktreePath &&
+        previousCandidate &&
+        (await taskGit.head()) === previousCandidate,
+      );
+      if (
+        reviewState &&
+        previousCandidatePatch !== undefined &&
+        !previousCandidateIsHead
+      ) {
         const delta = await taskGit.stagedDeltaFromPatch(
           previousCandidatePatch,
         );
