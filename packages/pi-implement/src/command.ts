@@ -507,7 +507,6 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       }
 
       const planPath = resolve(ctx.cwd, parsed.mode.planPath);
-      const forceSerial = parsed.mode.forceSerial;
 
       const configuredWorkerModels = [
         effective.roles.implementer.model,
@@ -992,7 +991,6 @@ Stay idle until the run ends or the user asks you something directly. Do not res
               signal: abortController.signal,
               updateState,
               materialStore,
-              forceSerial,
               canonicalRunStore,
             });
         if (strategy.mode === "blocked") {
@@ -1002,13 +1000,13 @@ Stay idle until the run ends or the user asks you something directly. Do not res
         appendEvent(paths, {
           type: "strategy_selected",
           reason: strategy.reason,
-          mode: strategy.mode,
+          mode: strategy.maxConcurrency === 1 ? "serial" : "parallel",
         });
         const current = readRunJson(paths);
         if (current) {
           writeRunJson(paths, {
             ...current,
-            mode: strategy.mode,
+            mode: strategy.maxConcurrency === 1 ? "serial" : "parallel",
             strategyReason: strategy.reason,
             maxConcurrency: strategy.maxConcurrency,
             currentPhase: "preflight",
@@ -1017,7 +1015,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
         }
         updateState({
           phase: "preflight",
-          mode: strategy.mode,
+          mode: strategy.maxConcurrency === 1 ? "serial" : "parallel",
           maxConcurrency: strategy.maxConcurrency,
           lastReason: strategy.reason,
         });
@@ -1031,7 +1029,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           materialInventory,
           materialStore,
           roles: effective.roles,
-          mode: strategy.mode,
+          mode: strategy.maxConcurrency === 1 ? "serial" : "parallel",
           maxConcurrency: strategy.maxConcurrency,
           runId,
           paths,
@@ -1620,7 +1618,7 @@ async function promptImplementAction(
     if (retained.length === 0) {
       return {
         kind: "execution",
-        mode: { kind: "auto", planPath: trimmed, forceSerial: false },
+        mode: { kind: "auto", planPath: trimmed },
       };
     }
     const runId =
@@ -1658,7 +1656,6 @@ async function promptImplementAction(
         mode: {
           kind: "auto",
           planPath: trimmed,
-          forceSerial: false,
           recovery: { kind: "start-over", runId },
         },
       };
@@ -1668,7 +1665,6 @@ async function promptImplementAction(
       mode: {
         kind: "auto",
         planPath: trimmed,
-        forceSerial: false,
         recovery: { kind: "resume", runId },
       },
     };

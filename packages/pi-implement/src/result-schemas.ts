@@ -71,9 +71,6 @@ const executionTaskSchema = Type.Object({
   taskHash: Type.Optional(nonEmptyString()),
   status: Type.Union([Type.Literal("todo"), Type.Literal("done")]),
   dependsOn: stringArray(),
-  mode: Type.Optional(
-    Type.Union([Type.Literal("serial"), Type.Literal("parallel")]),
-  ),
   affectedAreas: stringArray(),
   conflictHints: stringArray(),
   sourceReferences: stringArray(),

@@ -387,42 +387,6 @@ describe("selectStrategy - auto mode planner", () => {
     expect(result.mode).toBe("serial");
   });
 
-  it("forces serial mode after building an execution manifest", async () => {
-    const subagents = makeSubagents(
-      JSON.stringify(
-        makeManifest({
-          maxConcurrency: 2,
-          tasks: [
-            makeTask({ id: "t1", planIndex: 1, title: "Task A" }),
-            makeTask({ id: "t2", planIndex: 2, title: "Task B" }),
-          ],
-        }),
-      ),
-    );
-    const plan = makePlan(["Task A", "Task B"]);
-    const result = await selectStrategy({
-      plan,
-      planContent: plan.content,
-      planHash: "hash",
-      repoRoot: "/repo",
-      baseSha: "abc",
-      config: {},
-      roles: makeRoles(),
-      subagents,
-      paths: makeStatePaths(),
-      runId: "r1",
-      forceSerial: true,
-      updateState: () => ({}),
-    });
-    expect(result.mode).toBe("serial");
-    if (result.mode === "serial") {
-      expect(result.maxConcurrency).toBe(1);
-    }
-    expect(
-      (subagents.spawn as ReturnType<typeof vi.fn>).mock.calls,
-    ).toHaveLength(1);
-  });
-
   it("planner can return serial for auto mode via manifest", async () => {
     const subagents = makeSubagents(
       JSON.stringify(

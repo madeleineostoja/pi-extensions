@@ -574,7 +574,10 @@ function invariantIssues(
     }
   }
   const activeAttempts = state.integrationAttempts.filter(
-    (attempt) => attempt.phase !== "completed",
+    (attempt) =>
+      attempt.phase === "preparing" ||
+      attempt.phase === "prepared" ||
+      attempt.phase === "publishing",
   );
   if (activeAttempts.length > 1) {
     issues.push("more than one integration attempt is active");
@@ -598,7 +601,11 @@ function invariantIssues(
           `integration attempt ${attempt.id} has an unknown task owner`,
         );
       }
-      if (leasedTasks.has(attempt.owner.taskId)) {
+      if (
+        attempt.phase !== "paused" &&
+        attempt.phase !== "completed" &&
+        leasedTasks.has(attempt.owner.taskId)
+      ) {
         issues.push(
           `task ${attempt.owner.taskId} owns worker and integration leases`,
         );

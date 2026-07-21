@@ -9,7 +9,7 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 - **Autonomous task loop** — drives the full implement → review → commit cycle per task without human input, one commit per approved task.
 - **Independent review gate** — a separate reviewer returns atomic typed findings with stable IDs. Rework preserves one cumulative candidate and continues while the outstanding set reaches new lows; two consecutive non-improving rounds stall for recovery rather than silently discarding work.
 - **Whole-feature overall review** — once all tasks land, a read-only reviewer assesses the combined diff against the original plan and can require follow-up work.
-- **Serial or parallel execution** — auto-selects per plan whether tasks should run one at a time or through a dependency graph. Parallel tasks run in isolated worktrees and integrate back one at a time with verification at each step.
+- **Dependency-aware execution** — schedules independent tasks concurrently in isolated worktrees up to configured worker concurrency, while dependencies and integration order remain explicit.
 - **Subagent isolation checks** — implementers and reviewers run from their assigned worktree; the orchestrator detects and blocks (or auto-heals) any out-of-bounds change to HEAD, the candidate diff, the main checkout, or plan artifacts.
 - **Built-in verification** — runs a configured verify command or auto-detected `test`/`typecheck`/`build` scripts, with an LLM integration review as a last resort. Precommit hooks are a hard gate and are never bypassed.
 - **Plan corpus ingestion** — the entry plan and the markdown files it links to (plus `tasks/` siblings) are ingested into the planner's corpus and distilled into per-task contracts, rather than being inlined wholesale into the implementer's context.
@@ -20,8 +20,7 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 
 ```text
 /implement                          # open the interactive action menu
-/implement path/to/plan.md          # pick serial or parallel automatically
-/implement path/to/plan.md --serial # force serial execution
+/implement path/to/plan.md          # execute with configured worker concurrency
 /implement path/to/plan.md --resume <run-id> # explicitly resume a retained run
 /implement path/to/plan.md --start-over <run-id> # explicitly discard one retained run and start again
 ```
@@ -32,11 +31,9 @@ Plan paths passed directly must not contain spaces. Use the interactive menu, a 
 
 ## Execution strategy
 
-Zero or one unchecked task short-circuits to serial. Otherwise a progressive planner decides whether the remaining tasks require serial execution or can run from a dependency graph, inspecting the repository only when needed. Invalid planner output, planner failures, invalid graphs, and explicit planner serial decisions fall back to serial execution.
+A progressive planner derives a dependency graph and worker-concurrency limit, inspecting the repository only when needed. Invalid planner output, planner failures, and invalid graphs fall back to concurrency one with a plan-order dependency chain. Set worker concurrency to one in configuration when no task overlap is wanted.
 
-Passing `--serial` forces serial execution and skips the planner entirely.
-
-Parallel execution runs independent tasks concurrently up to `maxParallel` from config, with a hard maximum of `8`. Each autonomous worker runs from its assigned task worktree as its current working directory; pi-implement owns those worktrees and validates the boundaries around them.
+Independent tasks run concurrently up to `maxParallel` from config, with a hard maximum of `8`. Each autonomous worker runs from its assigned task worktree as its current working directory; pi-implement owns those worktrees and validates the boundaries around them.
 
 ## Execution planning and compiled task contracts
 

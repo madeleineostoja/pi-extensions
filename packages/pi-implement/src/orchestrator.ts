@@ -1172,7 +1172,6 @@ async function runUnmanagedImplementation(
         title: task.title,
         taskHash: task.taskHash,
         dependsOn: task.dependsOn,
-        mode: task.mode ?? "serial",
         affectedAreas: task.affectedAreas,
         conflictHints: task.conflictHints,
         validationCommands: task.validationCommands ?? [],
@@ -3804,7 +3803,7 @@ export function buildSchedulerGraphSummary(
         ? ` dependsOn: [${node.dependsOn.join(", ")}]`
         : "";
     lines.push(
-      `- ${node.id}: ${node.title} (plan ${node.planIndex}, mode: ${node.mode}, status: ${task?.status ?? "pending"}${deps})`,
+      `- ${node.id}: ${node.title} (plan ${node.planIndex}, status: ${task?.status ?? "pending"}${deps})`,
     );
     if (task?.lastReason) {
       lines.push(`  lastReason: ${task.lastReason}`);
@@ -3957,9 +3956,7 @@ function buildGraphContext(runDir: string): string | undefined {
       node.dependsOn.length > 0
         ? ` dependsOn: [${node.dependsOn.join(", ")}]`
         : "";
-    lines.push(
-      `- ${node.id}: ${node.title} (plan ${node.planIndex}, mode: ${node.mode}${deps})`,
-    );
+    lines.push(`- ${node.id}: ${node.title} (plan ${node.planIndex}${deps})`);
   }
   return lines.join("\n");
 }

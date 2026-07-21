@@ -36,21 +36,14 @@ import { executionManifestSchema } from "./result-schemas.js";
 import { GitProcess } from "./git-process.js";
 
 export type StrategyOutcome =
-  | {
-      mode: "serial";
-      reason: string;
-      maxConcurrency: number;
-    }
+  | { mode: "serial"; reason: string; maxConcurrency: number }
   | {
       mode: "parallel";
       reason: string;
       maxConcurrency: number;
       graph: ImplementGraph;
     }
-  | {
-      mode: "blocked";
-      reason: string;
-    };
+  | { mode: "blocked"; reason: string };
 
 export type StrategyRequest = {
   plan: ParsedPlan;
@@ -67,7 +60,6 @@ export type StrategyRequest = {
   manifest?: PlanBundleManifest;
   corpus?: PlanCorpus;
   materialStore?: MaterialStore;
-  forceSerial?: boolean;
   updateState(state: StatePatch): void;
   canonicalRunStore?: RunStore;
 };
@@ -262,9 +254,10 @@ async function processExecutionPlannerResult(
     };
   }
 
-  const effectiveConcurrency = req.forceSerial
-    ? 1
-    : clampConcurrency(manifest.maxConcurrency, req.config);
+  const effectiveConcurrency = clampConcurrency(
+    manifest.maxConcurrency,
+    req.config,
+  );
 
   const graph: ImplementGraph = {
     version: 1,
@@ -278,7 +271,6 @@ async function processExecutionPlannerResult(
       title: task.title,
       taskHash: task.taskHash,
       dependsOn: task.dependsOn,
-      mode: task.mode ?? "parallel",
       affectedAreas: task.affectedAreas,
       conflictHints: task.conflictHints,
       validationCommands: task.validationCommands ?? [],
@@ -299,7 +291,6 @@ async function processExecutionPlannerResult(
       title: task.title,
       taskHash: task.taskHash,
       dependsOn: task.dependsOn,
-      mode: "serial",
       affectedAreas: task.affectedAreas,
       conflictHints: task.conflictHints,
       validationCommands: task.validationCommands ?? [],
@@ -311,7 +302,7 @@ async function processExecutionPlannerResult(
     if (!graphValidation.ok) {
       return {
         mode: "blocked",
-        reason: `Dependency graph validation failed after serial fallback: ${graphValidation.reason}.`,
+        reason: `Dependency graph validation failed after conservative fallback: ${graphValidation.reason}.`,
       };
     }
   }
@@ -330,16 +321,10 @@ async function processExecutionPlannerResult(
   writeExecutionManifest(req.paths.runDir, manifest);
   writeGraphJson(req.paths.runDir, graph);
 
-  const mode: "serial" | "parallel" =
-    req.forceSerial || effectiveConcurrency === 1 || isSerialChain(manifest)
-      ? "serial"
-      : "parallel";
-  const reason = `Planner built execution manifest: ${manifest.plannerReason ?? "(no reason given)"}${
-    req.forceSerial ? "; serial execution was forced" : ""
-  }`;
+  const reason = `Planner built execution manifest: ${manifest.plannerReason ?? "(no reason given)"}`;
 
   return {
-    mode,
+    mode: effectiveConcurrency === 1 ? "serial" : "parallel",
     reason,
     maxConcurrency: effectiveConcurrency,
     graph,
@@ -382,19 +367,23 @@ function fallbackPlannerManifest(
   req: StrategyRequest,
   reason: string,
 ): ExecutionManifest {
-  return {
-    ...generateMinimalExecutionManifest(
-      unchecked,
-      req.plan.path,
-      getManifest(req),
-    ),
-    sourcePlanHash: req.planHash,
-    sourcePlanPath: req.plan.path,
-    sourceCorpusHash: getCorpus(req)?.corpusHash,
-    plannerReason: `${reason}; using conservative serial fallback.`,
-    plannerConfidence: "low",
-    maxConcurrency: 1,
-  };
+  const manifest = generateMinimalExecutionManifest(
+    unchecked,
+    req.plan.path,
+    getManifest(req),
+  );
+  return serialManifest(
+    {
+      ...manifest,
+      sourcePlanHash: req.planHash,
+      sourcePlanPath: req.plan.path,
+      sourceCorpusHash: getCorpus(req)?.corpusHash,
+      plannerReason: `${reason}; using conservative serial fallback with a plan-order dependency chain.`,
+      plannerConfidence: "low",
+      maxConcurrency: 1,
+    },
+    reason,
+  );
 }
 
 function normalizeSourceMaterialRefs(
@@ -634,7 +623,6 @@ function serialManifest(
     maxConcurrency: 1,
     tasks: manifest.tasks.map((task, index, tasks) => ({
       ...task,
-      mode: "serial",
       dependsOn: index === 0 ? [] : [tasks[index - 1].id],
       reasons: [
         ...(task.reasons ?? []),
@@ -642,22 +630,6 @@ function serialManifest(
       ],
     })),
   };
-}
-
-function isSerialChain(manifest: ExecutionManifest): boolean {
-  if (manifest.tasks.length <= 1) {
-    return true;
-  }
-  // Check if each task (except the first) has exactly one dependency on the previous task in plan order
-  const sorted = [...manifest.tasks].sort((a, b) => a.planIndex - b.planIndex);
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = sorted[i - 1];
-    const curr = sorted[i];
-    if (curr.dependsOn.length !== 1 || curr.dependsOn[0] !== prev.id) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function clampConcurrency(

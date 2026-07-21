@@ -89,7 +89,6 @@ export type ExecutionTask = {
   taskHash: string;
   status: TaskStatus;
   dependsOn: string[];
-  mode?: "serial" | "parallel";
   affectedAreas: string[];
   conflictHints: string[];
   sourceRefs?: SourceRef[];
@@ -593,17 +592,6 @@ function parseExecutionTask(
       ? obj.taskHash.trim()
       : `planner-owned:${id}`;
 
-  if (
-    obj.mode !== undefined &&
-    obj.mode !== "serial" &&
-    obj.mode !== "parallel"
-  ) {
-    return {
-      ok: false,
-      reason: `Execution task "${id}" mode must be "serial" or "parallel", got: ${String(obj.mode)}.`,
-    };
-  }
-
   const validationCommands = parseStringArray(obj.validationCommands);
   if (
     validationCommands === undefined &&
@@ -650,7 +638,6 @@ function parseExecutionTask(
       taskHash,
       status: obj.status as TaskStatus,
       dependsOn,
-      mode: obj.mode as "serial" | "parallel" | undefined,
       affectedAreas,
       conflictHints,
       sourceRefs: sourceRefsResult.value,
