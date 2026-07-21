@@ -1,4 +1,3 @@
-import { exec, execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -10,7 +9,6 @@ import {
   renameSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { promisify } from "node:util";
 import {
   buildAnchoredTaskReviewPrompt,
   buildInitialTaskReviewPrompt,
@@ -47,6 +45,7 @@ import {
 } from "./source-checkbox.js";
 import type { ExecutionManifest } from "./execution-plan.js";
 import type { CommandResult, GitClient } from "./git.js";
+import { runCommand } from "./git-process.js";
 import {
   captureRestoreSnapshot,
   checkpointCandidate,
@@ -219,9 +218,6 @@ async function recordPapercuts(
     deps.updateState((prev) => checkpointPatch(prev, message));
   }
 }
-
-const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
 
 async function buildTaskSourceMaterialPacket(
   args: TaskSourceMaterialPacketArgs,
@@ -1434,7 +1430,11 @@ async function runParallelImplementation(
   });
 
   scheduler: for (;;) {
-    throwIfStopped(deps);
+    if (deps.shouldStop() || deps.signal?.aborted) {
+      await Promise.allSettled(runningWorkers.values());
+      await deps.git.onIdle?.();
+      throw new StoppedError();
+    }
     if (allTasksTerminal(sched)) {
       if (anyTaskFailedBlockedStopped(sched)) {
         const healProgress = await attemptSchedulerSelfHeal(
@@ -1778,8 +1778,8 @@ async function launchTaskWorker(
   let createdBranch = false;
   try {
     if (wasNeedsRework && !existing?.trustedCheckpoint) {
-      await deps.git.removeWorktree(worktreePath).catch(() => undefined);
-      await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
+      await deps.git.removeWorktree(worktreePath);
+      await deps.git.deleteTaskBranch(branchName);
     }
     const registeredWorktrees = await deps.git.listWorktrees();
     if (!registeredWorktrees.includes(worktreePath)) {
@@ -1794,14 +1794,25 @@ async function launchTaskWorker(
     }
     appendEvent(deps.paths!, { type: "task_started", taskId });
   } catch (err) {
+    let cleanupFailure: string | undefined;
     if (createdWorkspace || createdBranch) {
-      await deps.git.removeWorktree(worktreePath).catch(() => undefined);
-      await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
+      try {
+        await deps.git.removeWorktree(worktreePath);
+        await deps.git.deleteTaskBranch(branchName);
+      } catch (cleanupError) {
+        cleanupFailure =
+          cleanupError instanceof Error
+            ? cleanupError.message
+            : String(cleanupError);
+      }
     }
     const reason = err instanceof Error ? err.message : String(err);
     return {
       taskId,
-      outcome: { kind: "failed", reason: `Worktree setup failed: ${reason}` },
+      outcome: {
+        kind: "failed",
+        reason: `Worktree setup failed: ${reason}${cleanupFailure ? `; cleanup failed: ${cleanupFailure}` : ""}`,
+      },
     };
   }
 
@@ -2662,8 +2673,8 @@ async function cleanupTaskWorkspace(
   if (!task.worktreePath || !task.branchName) {
     return;
   }
-  await deps.git.removeWorktree(task.worktreePath).catch(() => undefined);
-  await deps.git.deleteTaskBranch(task.branchName).catch(() => undefined);
+  await deps.git.removeWorktree(task.worktreePath);
+  await deps.git.deleteTaskBranch(task.branchName);
 }
 
 function persistIntegrationState(
@@ -2765,15 +2776,33 @@ async function rollbackIntegration(
       currentHead: snapshot.head,
     };
   } catch (initialError) {
-    await deps.git.cherryPickAbort().catch(async () => {
-      await deps.git.resetHard(preIntegrationHead).catch(() => undefined);
-    });
-    await deps.git.resetHard(preIntegrationHead).catch(() => undefined);
-    await deps.git
-      .restoreWorktreeFromIndexExcept(planArtifacts)
-      .catch(() => undefined);
-    restorePlanArtifacts(planArtifacts, planArtifactSnapshot);
-    const currentHead = await deps.git.head().catch(() => undefined);
+    const recoveryErrors: string[] = [];
+    try {
+      await deps.git.cherryPickAbort();
+    } catch (error) {
+      recoveryErrors.push(`cherry-pick abort: ${errorMessage(error)}`);
+    }
+    try {
+      await deps.git.resetHard(preIntegrationHead);
+    } catch (error) {
+      recoveryErrors.push(`reset: ${errorMessage(error)}`);
+    }
+    try {
+      await deps.git.restoreWorktreeFromIndexExcept(planArtifacts);
+    } catch (error) {
+      recoveryErrors.push(`worktree restore: ${errorMessage(error)}`);
+    }
+    try {
+      restorePlanArtifacts(planArtifacts, planArtifactSnapshot);
+    } catch (error) {
+      recoveryErrors.push(`plan artifact restore: ${errorMessage(error)}`);
+    }
+    let currentHead: string | undefined;
+    try {
+      currentHead = await deps.git.head();
+    } catch (error) {
+      recoveryErrors.push(`HEAD verification: ${errorMessage(error)}`);
+    }
     let exactRestored = false;
     let verificationError: string | undefined;
     try {
@@ -2789,7 +2818,13 @@ async function rollbackIntegration(
       headRestored: currentHead === preIntegrationHead,
       exactRestored,
       currentHead,
-      verificationError: verificationError ?? errorMessage(initialError),
+      verificationError: [
+        errorMessage(initialError),
+        ...recoveryErrors,
+        verificationError,
+      ]
+        .filter((value): value is string => Boolean(value))
+        .join("; "),
     };
   }
 }
@@ -3957,7 +3992,14 @@ async function validateIntegratedTask(
   if (resolvedCommands.length > 0) {
     const passedGates: string[] = [];
     for (const [index, command] of resolvedCommands.entries()) {
-      const result = await runValidationCommand(command, await deps.git.root());
+      const result = await runValidationCommand(
+        command,
+        await deps.git.root(),
+        deps.signal,
+      );
+      if (result.cancelled || deps.signal?.aborted) {
+        throw new StoppedError();
+      }
       if (deps.paths) {
         persistTaskArtifact(
           deps.paths,
@@ -4000,7 +4042,12 @@ async function validateFinalParallelRun(
 ): Promise<ValidationResult> {
   const commands = await resolveValidationCommands(deps);
   for (const command of commands) {
-    const result = await runValidationCommand(command, await deps.git.root());
+    const result = await runValidationCommand(
+      command,
+      await deps.git.root(),
+      deps.signal,
+    );
+    throwIfValidationStopped(deps, result);
     if (result.exitCode !== 0) {
       return {
         ok: false,
@@ -4085,49 +4132,44 @@ function detectPackageManager(root: string): {
 async function runValidationCommand(
   command: ValidationCommand,
   cwd: string,
+  signal?: AbortSignal,
 ): Promise<CommandResult> {
-  try {
-    if (command.kind === "shell") {
-      const result = await execAsync(command.command, {
-        cwd,
-        env: process.env,
-        timeout: VALIDATION_TIMEOUT_MS,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-      return {
-        command: command.display,
-        exitCode: 0,
-        stdout: result.stdout,
-        stderr: result.stderr,
-      };
-    }
-    const result = await execFileAsync(command.file, command.args, {
-      cwd,
-      env: process.env,
-      timeout: VALIDATION_TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    return {
-      command: command.display,
-      exitCode: 0,
-      stdout: result.stdout,
-      stderr: result.stderr,
-    };
-  } catch (err) {
-    const failed = err as Error & {
-      code?: number | string;
-      stdout?: string;
-      stderr?: string;
-      signal?: string;
-    };
-    return {
-      command: command.display,
-      exitCode: typeof failed.code === "number" ? failed.code : 1,
-      stdout: failed.stdout ?? "",
-      stderr: failed.signal
-        ? `${failed.stderr ?? ""}\nTerminated by signal ${failed.signal}`
-        : (failed.stderr ?? failed.message),
-    };
+  const result =
+    command.kind === "shell"
+      ? await runCommand(command.command, [], {
+          cwd,
+          env: process.env,
+          timeout: VALIDATION_TIMEOUT_MS,
+          signal,
+          shell: true,
+        })
+      : await runCommand(command.file, command.args, {
+          cwd,
+          env: process.env,
+          timeout: VALIDATION_TIMEOUT_MS,
+          signal,
+        });
+  return {
+    command: command.display,
+    exitCode: result.exitCode,
+    signal: result.signal,
+    timedOut: result.timedOut,
+    cancelled: result.cancelled,
+    failureKind: result.failureKind,
+    cause: result.cause,
+    stdout: result.stdout,
+    stderr: result.signal
+      ? `${result.stderr}\nTerminated by signal ${result.signal}`
+      : result.stderr,
+  };
+}
+
+function throwIfValidationStopped(
+  deps: OrchestratorDeps,
+  result: CommandResult,
+): void {
+  if (result.cancelled || deps.signal?.aborted || deps.shouldStop()) {
+    throw new StoppedError();
   }
 }
 
@@ -4936,7 +4978,7 @@ async function runConvergentOverallReviewLoop(
     try {
       await deps.git.addWorktree(worktreePath, branchName);
     } catch (error) {
-      await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
+      await deps.git.deleteTaskBranch(branchName);
       throw new BlockedError(
         `Overall review worktree setup failed: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -5169,7 +5211,12 @@ async function runConvergentOverallReviewLoop(
     );
     let validationFailure: string | undefined;
     for (const command of await resolveValidationCommands(deps)) {
-      const validation = await runValidationCommand(command, worktreePath);
+      const validation = await runValidationCommand(
+        command,
+        worktreePath,
+        deps.signal,
+      );
+      throwIfValidationStopped(deps, validation);
       if (validation.exitCode !== 0) {
         validationFailure = `Validation failed: ${command.display}\n${validation.stderr || validation.stdout}`;
         break;
@@ -5275,8 +5322,8 @@ async function runConvergentOverallReviewLoop(
       overall,
     );
     if (integrated.ok) {
-      await deps.git.removeWorktree(worktreePath).catch(() => undefined);
-      await deps.git.deleteTaskBranch(branchName).catch(() => undefined);
+      await deps.git.removeWorktree(worktreePath);
+      await deps.git.deleteTaskBranch(branchName);
       deps.updateState((previous) =>
         checkpointPatch(previous, "Final overall review approved"),
       );
@@ -5435,7 +5482,12 @@ async function integrateOverallCandidate(
   const validationCommands = await resolveValidationCommands(deps);
   for (let index = 0; index < validationCommands.length; index++) {
     const command = validationCommands[index]!;
-    const result = await runValidationCommand(command, await deps.git.root());
+    const result = await runValidationCommand(
+      command,
+      await deps.git.root(),
+      deps.signal,
+    );
+    throwIfValidationStopped(deps, result);
     if (await snapshotChanged(deps.git, appliedSnapshot, planArtifacts)) {
       return fail(
         `validator:${index}`,
@@ -6004,6 +6056,7 @@ async function runTaskWorker(args: {
       return;
     }
     const trusted = candidate.trustedCheckpoint ?? candidate.candidateBaseSha;
+    const recoveryGit = taskGit.withSignal?.() ?? taskGit;
     const bundlePath = join(
       deps.paths!.tasksDir,
       taskId,
@@ -6011,7 +6064,7 @@ async function runTaskWorker(args: {
       `${Date.now()}-${attempt}`,
     );
     const bundle = await persistDiscardedBundle({
-      git: taskGit,
+      git: recoveryGit,
       destination: bundlePath,
       protectedPaths: planArtifacts,
       baseSha: trusted,
@@ -6027,13 +6080,13 @@ async function runTaskWorker(args: {
       bundlePath: bundle,
     });
     const snapshot = trustedSnapshot ?? {
-      ...(await captureRestoreSnapshot(taskGit, planArtifacts)),
+      ...(await captureRestoreSnapshot(recoveryGit, planArtifacts)),
       head: trusted,
       stagedPatch: "",
       workingPatch: "",
       untrackedArtifacts: new Map(),
     };
-    await restoreAndVerify(taskGit, snapshot, planArtifacts);
+    await restoreAndVerify(recoveryGit, snapshot, planArtifacts);
   };
   workerLoop: for (;;) {
     throwIfStopped(deps);

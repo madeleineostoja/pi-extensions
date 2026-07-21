@@ -1,6 +1,4 @@
-import { execFile } from "node:child_process";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { promisify } from "node:util";
 import type { ParsedPlan, PlanTask } from "./plan.js";
 import type { PlanBundleManifest } from "./manifest.js";
 import {
@@ -34,8 +32,7 @@ import {
   type SourceMaterialRef,
 } from "./execution-plan.js";
 import { executionManifestSchema } from "./result-schemas.js";
-
-const execFileAsync = promisify(execFile);
+import { GitProcess } from "./git-process.js";
 
 export type StrategyOutcome =
   | {
@@ -826,10 +823,9 @@ async function getFilteredGitStatus(
       .filter((path): path is string => path !== undefined),
   );
   try {
-    const result = await execFileAsync(
-      "git",
+    const result = await new GitProcess(repoRoot).run(
       ["status", "--porcelain", "--", ":/"],
-      { cwd: repoRoot, maxBuffer: 1 * 1024 * 1024 },
+      { cwd: repoRoot },
     );
     const lines = result.stdout.split("\n").filter((line) => {
       if (!line.trim()) {

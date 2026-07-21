@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import {
   mkdirSync,
   readFileSync,
@@ -12,11 +10,11 @@ import {
 } from "node:fs";
 import { rm, rmdir } from "node:fs/promises";
 
-const execFileAsync = promisify(execFile);
 import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { IntegrationLedger } from "./integration-ledger.js";
+import { GitProcess } from "./git-process.js";
 export type RunMode = "auto" | "serial" | "parallel";
 
 export const CURRENT_STATE_VERSION = 2 as const;
@@ -666,64 +664,50 @@ export async function sweepRunArtifacts(repoRoot: string): Promise<{
   let worktrees = 0;
   let branches = 0;
 
-  try {
-    const { stdout: list } = await execFileAsync(
-      "git",
-      ["worktree", "list", "--porcelain"],
-      { cwd: repoRoot, encoding: "utf-8" },
-    );
-    for (const line of list.split("\n")) {
-      if (!line.startsWith("worktree ")) {
-        continue;
-      }
-      const wtPath = safeRealpath(line.slice("worktree ".length).trim());
-      const runId = worktreeRunId(wtPath, worktreesBase);
-      if (runId === undefined || knownRunIds.has(runId)) {
-        continue;
-      }
-      try {
-        await execFileAsync("git", ["worktree", "remove", "--force", wtPath], {
-          cwd: repoRoot,
-        });
-        worktrees++;
-      } catch {
-        // ignore
-      }
+  const process = new GitProcess(repoRoot);
+  const { stdout: worktreeList } = await process.run(
+    ["worktree", "list", "--porcelain"],
+    { cwd: repoRoot, scope: "repository" },
+  );
+  for (const line of worktreeList.split("\n")) {
+    if (!line.startsWith("worktree ")) {
+      continue;
     }
-  } catch {
-    // ignore
+    const wtPath = safeRealpath(line.slice("worktree ".length).trim());
+    const runId = worktreeRunId(wtPath, worktreesBase);
+    if (runId === undefined || knownRunIds.has(runId)) {
+      continue;
+    }
+    await process.run(["worktree", "remove", "--force", wtPath], {
+      cwd: repoRoot,
+      scope: "repository",
+    });
+    worktrees++;
   }
 
-  try {
-    await execFileAsync("git", ["worktree", "prune"], { cwd: repoRoot });
-  } catch {
-    // ignore
-  }
+  await process.run(["worktree", "prune"], {
+    cwd: repoRoot,
+    scope: "repository",
+  });
 
-  try {
-    const { stdout: list } = await execFileAsync(
-      "git",
-      ["branch", "--list", "pi-implement/*"],
-      { cwd: repoRoot, encoding: "utf-8" },
-    );
-    const names = list
-      .split("\n")
-      .map((b) => b.trim().replace(/^\*\s*/, ""))
-      .filter(Boolean);
-    for (const name of names) {
-      const runId = branchRunId(name);
-      if (runId === undefined || knownRunIds.has(runId)) {
-        continue;
-      }
-      try {
-        await execFileAsync("git", ["branch", "-D", name], { cwd: repoRoot });
-        branches++;
-      } catch {
-        // ignore
-      }
+  const { stdout: branchList } = await process.run(
+    ["branch", "--list", "pi-implement/*"],
+    { cwd: repoRoot, scope: "repository" },
+  );
+  const names = branchList
+    .split("\n")
+    .map((b) => b.trim().replace(/^\*\s*/, ""))
+    .filter(Boolean);
+  for (const name of names) {
+    const runId = branchRunId(name);
+    if (runId === undefined || knownRunIds.has(runId)) {
+      continue;
     }
-  } catch {
-    // ignore
+    await process.run(["branch", "-D", name], {
+      cwd: repoRoot,
+      scope: "repository",
+    });
+    branches++;
   }
 
   return { worktrees, branches };
@@ -796,10 +780,9 @@ function safeRealpath(path: string): string {
 async function listRegisteredWorktrees(
   repoRoot: string,
 ): Promise<Array<{ worktreePath: string; branchName?: string }>> {
-  const { stdout } = await execFileAsync(
-    "git",
+  const { stdout } = await new GitProcess(repoRoot).run(
     ["worktree", "list", "--porcelain"],
-    { cwd: repoRoot, encoding: "utf-8" },
+    { cwd: repoRoot, scope: "repository" },
   );
   const worktrees: Array<{ worktreePath: string; branchName?: string }> = [];
   let worktreePath: string | undefined;
@@ -875,20 +858,18 @@ async function branchExists(
   repoRoot: string,
   branchName: string,
 ): Promise<boolean> {
-  try {
-    await execFileAsync(
-      "git",
-      ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
-      { cwd: repoRoot },
-    );
-    return true;
-  } catch {
-    return false;
-  }
+  const result = await new GitProcess(repoRoot).run(
+    ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
+    { cwd: repoRoot, allowFailure: true },
+  );
+  return result.exitCode === 0;
 }
 
 async function runGitCleanup(repoRoot: string, args: string[]): Promise<void> {
-  await execFileAsync("git", args, { cwd: repoRoot });
+  await new GitProcess(repoRoot).run(args, {
+    cwd: repoRoot,
+    scope: "repository",
+  });
 }
 
 function makeRunLock(paths: StatePaths, run: RunJson): RunLock {
