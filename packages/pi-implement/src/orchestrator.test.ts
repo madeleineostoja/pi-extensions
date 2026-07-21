@@ -2796,6 +2796,23 @@ describe("runImplementation", () => {
           readTaskJson(paths, "task-1")?.review?.skippedCount,
         ).toBeUndefined();
         expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
+        const taskPacket = JSON.parse(
+          readFileSync(
+            join(paths.tasksDir, "task-1", "rounds", "001", "task-packet.json"),
+            "utf-8",
+          ),
+        );
+        expect(taskPacket.contextId).toBe(
+          createHash("sha256")
+            .update(
+              JSON.stringify({
+                requirements: taskPacket.requirements,
+                responsibilities: taskPacket.responsibilities,
+              }),
+            )
+            .digest("hex"),
+        );
+        expect(taskPacket.requirements[0].id).toMatch(/-AC01$/);
       },
     );
 

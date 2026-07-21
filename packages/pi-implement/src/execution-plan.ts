@@ -103,6 +103,7 @@ export type ExecutionTask = {
 
 export type ExecutionManifest = {
   version: 1;
+  fallbackGenerated?: boolean;
   sourcePlanHash?: string;
   sourcePlanPath?: string;
   sourceCorpusHash?: string;
@@ -1054,6 +1055,90 @@ export function readExecutionManifest(
   }
 }
 
+export type RequirementRef = {
+  id: string;
+  taskId: string;
+  kind: "acceptance" | "scope";
+  text: string;
+  fallbackGenerated?: boolean;
+};
+
+export type TaskResponsibility = {
+  taskId: string;
+  title: string;
+  objective: string;
+  owns: string[];
+  dependsOn: string[];
+  acceptanceIds: string[];
+};
+
+export type ReviewResponsibilityContext = {
+  contextId: string;
+  requirements: RequirementRef[];
+  responsibilities: TaskResponsibility[];
+};
+
+function requirementId(
+  taskId: string,
+  kind: "AC" | "S",
+  ordinal: number,
+): string {
+  return `${taskId}-${kind}${String(ordinal).padStart(2, "0")}`;
+}
+
+export function buildReviewResponsibilityContext(
+  manifest: ExecutionManifest,
+): ReviewResponsibilityContext {
+  const requirements: RequirementRef[] = [];
+  const tasks = [...manifest.tasks].sort(
+    (left, right) => left.planIndex - right.planIndex,
+  );
+  const responsibilities = tasks.map((task) => {
+    const acceptanceIds = task.compiledContract.acceptanceCriteria.map(
+      (_criterion, index) => requirementId(task.id, "AC", index + 1),
+    );
+    requirements.push(
+      ...task.compiledContract.acceptanceCriteria.map((text, index) => ({
+        id: acceptanceIds[index]!,
+        taskId: task.id,
+        kind: "acceptance" as const,
+        text,
+        ...(manifest.fallbackGenerated ? { fallbackGenerated: true } : {}),
+      })),
+      ...task.compiledContract.inScope.map((text, index) => ({
+        id: requirementId(task.id, "S", index + 1),
+        taskId: task.id,
+        kind: "scope" as const,
+        text,
+        ...(manifest.fallbackGenerated ? { fallbackGenerated: true } : {}),
+      })),
+    );
+    return {
+      taskId: task.id,
+      title: task.title,
+      objective: task.compiledContract.objective,
+      owns: [...task.compiledContract.inScope],
+      dependsOn: [...task.dependsOn],
+      acceptanceIds,
+    };
+  });
+  const identity = JSON.stringify({ requirements, responsibilities });
+  return {
+    contextId: createHash("sha256").update(identity).digest("hex"),
+    requirements,
+    responsibilities,
+  };
+}
+
+export function requirementsForTask(
+  context: ReviewResponsibilityContext,
+  taskId: string,
+): RequirementRef[] {
+  return context.requirements.filter(
+    (requirement) => requirement.taskId === taskId,
+  );
+}
+
 export function generateMinimalExecutionManifest(
   tasks: PlanTask[],
   planPath: string,
@@ -1061,6 +1146,7 @@ export function generateMinimalExecutionManifest(
 ): ExecutionManifest {
   return {
     version: 1,
+    fallbackGenerated: true,
     tasks: tasks.map((task) => ({
       id: `t${String(task.index).padStart(3, "0")}-${task.text.toLowerCase().replace(/\s+/g, "-")}`,
       planIndex: task.index,
@@ -1092,7 +1178,10 @@ export function generateMinimalExecutionManifest(
   };
 }
 
-export function renderCompiledContract(contract: CompiledContract): string {
+export function renderCompiledContract(
+  contract: CompiledContract,
+  requirements?: RequirementRef[],
+): string {
   const parts: string[] = [
     "# Task Contract",
     "",
@@ -1106,7 +1195,14 @@ export function renderCompiledContract(contract: CompiledContract): string {
     "",
     "## Acceptance Criteria",
     "",
-    ...contract.acceptanceCriteria.map((c) => `- ${c}`),
+    ...contract.acceptanceCriteria.map((criterion, index) => {
+      const requirement = requirements?.find(
+        (candidate) =>
+          candidate.kind === "acceptance" &&
+          candidate.id.endsWith(`-AC${String(index + 1).padStart(2, "0")}`),
+      );
+      return `- ${requirement ? `${requirement.id}: ` : ""}${criterion}${requirement?.fallbackGenerated ? " (fallback-generated)" : ""}`;
+    }),
     "",
     "## Out-of-Scope Items",
     "",

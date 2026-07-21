@@ -1,4 +1,9 @@
-import type { ExecutionManifest } from "./execution-plan.js";
+import { buildReviewResponsibilityContext } from "./execution-plan.js";
+import type {
+  ExecutionManifest,
+  RequirementRef,
+  ReviewResponsibilityContext,
+} from "./execution-plan.js";
 import type { ReviewFinding } from "./review-convergence.js";
 
 export const PAPERCUT_GUIDANCE = `## Optional Papercut Candidates
@@ -7,6 +12,7 @@ If this work exposed a novel recurring project-specific failure absent from curr
 
 export function formatExecutionManifestSummary(
   manifest?: ExecutionManifest,
+  responsibilityContext?: ReviewResponsibilityContext,
 ): string {
   if (!manifest) {
     return "";
@@ -32,15 +38,38 @@ export function formatExecutionManifestSummary(
     parts.push(`- Planner confidence: ${manifest.plannerConfidence}`);
   }
 
-  parts.push("", "### Compiled Task Contracts", "");
+  const context =
+    responsibilityContext ?? buildReviewResponsibilityContext(manifest);
+  const tasks = [...manifest.tasks].sort(
+    (left, right) => left.planIndex - right.planIndex,
+  );
+  const requirementsByTask = new Map<string, RequirementRef[]>();
+  for (const requirement of context?.requirements ?? []) {
+    const requirements = requirementsByTask.get(requirement.taskId) ?? [];
+    requirements.push(requirement);
+    requirementsByTask.set(requirement.taskId, requirements);
+  }
+
+  parts.push("", "### Responsibility Map", "");
   parts.push(
-    "Each per-task implementer received only its own compiled contract. The contracts below controlled the scope of each task during execution.",
+    "Each per-task implementer received only its own detailed contract. This compact map records ownership and direct dependencies without expanding sibling scope.",
     "",
   );
-
-  for (const task of manifest.tasks) {
+  for (const task of tasks) {
+    const responsibility = context?.responsibilities.find(
+      (entry) => entry.taskId === task.id,
+    );
     parts.push(`#### ${task.id}: ${task.title}`);
     parts.push(`- Objective: ${task.compiledContract.objective}`);
+    parts.push(
+      `- Owns: ${(responsibility?.owns ?? task.compiledContract.inScope).join("; ")}`,
+    );
+    parts.push(
+      `- Direct dependencies: ${(responsibility?.dependsOn ?? task.dependsOn).join(", ") || "none"}`,
+    );
+    parts.push(
+      `- Acceptance IDs: ${(responsibility?.acceptanceIds ?? []).join(", ") || "not derived"}`,
+    );
     parts.push(`- In scope: ${task.compiledContract.inScope.join(", ")}`);
     parts.push(
       `- Acceptance criteria: ${task.compiledContract.acceptanceCriteria.join(", ")}`,
@@ -49,6 +78,20 @@ export function formatExecutionManifestSummary(
       `- Out of scope: ${task.compiledContract.outOfScope.join(", ")}`,
     );
     parts.push("");
+  }
+
+  if (context) {
+    parts.push("### Requirement References", "");
+    for (const task of tasks) {
+      parts.push(`#### ${task.id}: ${task.title}`);
+      for (const requirement of requirementsByTask.get(task.id) ?? []) {
+        parts.push(
+          `- ${requirement.id} (${requirement.kind}): ${requirement.text}${requirement.fallbackGenerated ? " (fallback-generated)" : ""}`,
+        );
+      }
+      parts.push("");
+    }
+    parts.push(`Context identity: ${context.contextId}`, "");
   }
 
   parts.push(
@@ -63,11 +106,27 @@ export function formatExecutionManifestSummary(
   return parts.join("\n");
 }
 
-function buildSiblingTasksSection(outOfScopeTasks?: string[]): string {
-  if (!outOfScopeTasks || outOfScopeTasks.length === 0) {
+function buildResponsibilitySection(args: {
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
+}): string {
+  const { responsibilityContext: context, selectedTaskId } = args;
+  if (!context || !selectedTaskId) {
     return "";
   }
-  return `\n## Out-of-Scope Sibling Tasks\n\nThe following tasks are not selected. Use them only to identify scope creep in the candidate diff.\n\n${outOfScopeTasks.join("\n")}\n`;
+  const selected = context.responsibilities.find(
+    (responsibility) => responsibility.taskId === selectedTaskId,
+  );
+  if (!selected) {
+    return "";
+  }
+  const requirements = context.requirements.filter(
+    (requirement) => requirement.taskId === selectedTaskId,
+  );
+  const siblings = context.responsibilities.filter(
+    (responsibility) => responsibility.taskId !== selectedTaskId,
+  );
+  return `## Stable Requirements\n\n${requirements.map((requirement) => `- ${requirement.id} (${requirement.kind}): ${requirement.text}${requirement.fallbackGenerated ? " (fallback-generated)" : ""}`).join("\n")}\n\n## Responsibility Context\n\nSelected task ${selected.taskId} owns: ${selected.owns.join("; ")}\nDirect dependencies: ${selected.dependsOn.join(", ") || "none"}\n\nSibling ownership is context for interface and scope boundaries, not permission to implement sibling deliverables.\n\n${siblings.map((sibling) => `- ${sibling.taskId}: ${sibling.title}\n  Objective: ${sibling.objective}\n  Owns: ${sibling.owns.join("; ")}\n  Direct dependencies: ${sibling.dependsOn.join(", ") || "none"}\n  Acceptance IDs: ${sibling.acceptanceIds.join(", ") || "none"}`).join("\n")}\n\nContext identity: ${context.contextId}`;
 }
 
 function formatSourceMaterialSection(sourceMaterial?: string): string {
@@ -81,6 +140,8 @@ export function buildImplementerPrompt(args: {
   compiledContract: string;
   worktreePath: string;
   sourceMaterial?: string;
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
   feedback?: string;
   priorSummary?: string;
 }): string {
@@ -97,7 +158,7 @@ You have been assigned a dedicated Git worktree for this task. Read and write on
 
 Do not read or write files outside the assigned worktree. Any shell command that touches project files must run from or explicitly target the assigned worktree path above.
 
-The compiled task contract plus referenced source material below is the complete task packet for this task. Sibling task contracts are intentionally omitted — they are not truncation and not your concern. They do not expand your scope.
+The compiled task contract plus referenced source material below is the complete task packet for this task. Compact sibling responsibility context may be included for interface and scope boundaries; it does not expand your scope or provide sibling contract details.
 
 **Required implementation scope:** Only the items listed in the compiled task contract. Referenced source material supplies exact details, constraints, examples, schemas, prompts, fixtures, or design context needed to satisfy that contract. Use referenced material only to satisfy the compiled contract. Do not implement sibling tasks or unrelated cleanup, even when broader context mentions them.
 
@@ -116,6 +177,8 @@ If blocked, leave the repository in a safe state and explain the blocker in the 
 ${args.compiledContract}
 
 ${formatSourceMaterialSection(args.sourceMaterial)}
+
+${buildResponsibilitySection(args)}
 
 ${PAPERCUT_GUIDANCE}
 
@@ -461,14 +524,16 @@ export function buildInitialTaskReviewPrompt(args: {
   compiledContract: string;
   worktreePath: string;
   candidateContext: string;
-  outOfScopeTasks?: string[];
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
 }): string {
   return buildInitialReviewPrompt({
     scope: "task",
     compiledContract: args.compiledContract,
     worktreePath: args.worktreePath,
     candidateContext: args.candidateContext,
-    outOfScopeTasks: args.outOfScopeTasks,
+    responsibilityContext: args.responsibilityContext,
+    selectedTaskId: args.selectedTaskId,
   });
 }
 
@@ -480,6 +545,8 @@ export function buildAnchoredTaskReviewPrompt(args: {
   previousCandidate: string;
   currentCandidate: string;
   latestDelta: string;
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
 }): string {
   return buildAnchoredReviewPrompt({ scope: "task", ...args });
 }
@@ -523,7 +590,8 @@ function buildInitialReviewPrompt(args: {
   compiledContract: string;
   worktreePath: string;
   candidateContext: string;
-  outOfScopeTasks?: string[];
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
 }): string {
   const recommendation =
     args.scope === "overall"
@@ -551,7 +619,7 @@ Use the compiled task contract and referenced source material below to verify sc
 - Small prerequisite changes needed for the selected task may be approved.
 - Request changes if the staged diff substantially implements an unselected sibling task or unrelated cleanup.
 - Completing a sibling task's own deliverable is scope creep.
-${args.scope === "task" ? buildSiblingTasksSection(args.outOfScopeTasks) : ""}
+${args.scope === "task" ? buildResponsibilitySection(args) : ""}
 If approved, submit { verdict: "approved" }. Otherwise submit { verdict: "changes_requested", findings } where every atomic finding has summary, evidence, requiredChange, and non-empty acceptanceCriteria. One independently resolvable defect belongs in each finding. Keep the required change and acceptance criteria to the minimum observable correction needed for the demonstrated defect; do not prescribe a broader redesign when a narrower correction satisfies the contract. Omit optional or non-blocking concerns from this initial result.${recommendation}
 
 ${PAPERCUT_GUIDANCE}
@@ -568,6 +636,8 @@ function buildAnchoredReviewPrompt(args: {
   previousCandidate: string;
   currentCandidate: string;
   latestDelta: string;
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
 }): string {
   return `You are conducting an anchored ${args.scope} re-review in ${args.worktreePath}. Assess every supplied finding ID exactly once. Do not report ordinary new findings during re-review.
 
@@ -576,6 +646,8 @@ function buildAnchoredReviewPrompt(args: {
 ## Contract Context
 
 ${args.compiledContract}
+
+${args.scope === "task" ? buildResponsibilitySection(args) : ""}
 
 ## Candidate Context
 

@@ -28,6 +28,7 @@ import {
   type NeedsMaterialRequest,
 } from "./needs-material.js";
 import {
+  buildReviewResponsibilityContext,
   generateMinimalExecutionManifest,
   readExecutionManifest,
   renderCompiledContract,
@@ -4421,6 +4422,17 @@ function overallPlanContext(args: {
   bundleMaterial?: string;
   corpusMaterial?: string;
 }): string {
+  const responsibilityContext = args.deps.executionManifest
+    ? buildReviewResponsibilityContext(args.deps.executionManifest)
+    : undefined;
+  if (responsibilityContext) {
+    persistOverallArtifact(
+      args.deps.paths,
+      1,
+      "responsibility-context.json",
+      `${JSON.stringify(responsibilityContext, null, 2)}\n`,
+    );
+  }
   return [
     `Plan: ${args.deps.planPath}`,
     `Run base: ${args.baseSha}`,
@@ -4432,7 +4444,10 @@ function overallPlanContext(args: {
       ? `## Referenced Plan Material\n\n${args.bundleMaterial}`
       : "",
     args.corpusMaterial ? `## Plan Corpus\n\n${args.corpusMaterial}` : "",
-    formatExecutionManifestSummary(args.deps.executionManifest),
+    formatExecutionManifestSummary(
+      args.deps.executionManifest,
+      responsibilityContext,
+    ),
     args.landedTasks.length
       ? `## Landed Tasks\n\n${args.landedTasks.map((task) => `- ${task.id}: ${task.title}${task.commitSha ? ` @ ${task.commitSha.slice(0, 7)}` : ""}`).join("\n")}`
       : "",
@@ -6084,8 +6099,14 @@ async function runTaskWorker(args: {
         `Task ${task.index} missing from execution manifest`,
       );
     }
+    const responsibilityContext = buildReviewResponsibilityContext(
+      deps.executionManifest!,
+    );
     const compiledContract = renderCompiledContract(
       compiledContractEntry.compiledContract,
+      responsibilityContext.requirements.filter(
+        (requirement) => requirement.taskId === compiledContractEntry.id,
+      ),
     );
     const effectiveWorktreePath = worktreePath ?? (await deps.git.root());
     const recordedCorpusFiles = deps.paths
@@ -6115,6 +6136,8 @@ async function runTaskWorker(args: {
       compiledContract,
       worktreePath: effectiveWorktreePath,
       sourceMaterial: sourceMaterialPacket?.section,
+      responsibilityContext,
+      selectedTaskId: compiledContractEntry.id,
       feedback: feedback ? formatFeedback(feedback) : undefined,
       priorSummary,
     });
@@ -6164,6 +6187,13 @@ async function runTaskWorker(args: {
           "task-packet.json",
           `${JSON.stringify(
             {
+              contextId: responsibilityContext.contextId,
+              selectedTaskId: compiledContractEntry.id,
+              requirements: responsibilityContext.requirements.filter(
+                (requirement) =>
+                  requirement.taskId === compiledContractEntry.id,
+              ),
+              responsibilities: responsibilityContext.responsibilities,
               resolvedMaterialRefs: sourceMaterialPacket.resolvedRefs,
               ...(sourceMaterialPacket.repair
                 ? { sourceMaterialRepair: sourceMaterialPacket.repair }
@@ -6581,13 +6611,6 @@ async function runTaskWorker(args: {
     ]
       .filter(Boolean)
       .join("\n\n");
-    const outOfScopeTasks = deps.executionManifest
-      ? deps.executionManifest.tasks
-          .filter((manifestTask) => manifestTask.planIndex !== task.index)
-          .map((manifestTask) => `- ${manifestTask.title}`)
-      : plan.tasks
-          .filter((planTask) => planTask.index !== task.index)
-          .map((planTask) => planTask.originalLine);
     reviewerPrompt = reviewState
       ? buildAnchoredTaskReviewPrompt({
           compiledContract,
@@ -6599,12 +6622,15 @@ async function runTaskWorker(args: {
           previousCandidate: previousCandidate ?? "(initial candidate)",
           currentCandidate: candidateIdentity,
           latestDelta,
+          responsibilityContext,
+          selectedTaskId: compiledContractEntry.id,
         })
       : buildInitialTaskReviewPrompt({
           compiledContract,
           worktreePath: effectiveWorktreePath,
           candidateContext,
-          outOfScopeTasks,
+          responsibilityContext,
+          selectedTaskId: compiledContractEntry.id,
         });
     if (schedulerTask) {
       schedulerTask.status = "reviewing";
