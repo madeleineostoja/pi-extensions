@@ -63,9 +63,8 @@ function resultContent(
   if (snapshot.status === "completed") {
     if (mode === "background") {
       return [
-        `Subagent ${snapshot.id} (${snapshot.type}) started in background.`,
-        `Status: ${snapshot.status}.`,
-        `Use get_subagent_result with id "${snapshot.id}" and wait:true to retrieve the final result.`,
+        `Subagent ${snapshot.id} (${snapshot.type}) completed after starting in background.`,
+        `Use get_subagent_result with id "${snapshot.id}" and wait:true when its result becomes a dependency.`,
       ].join("\n");
     }
     if (mode === "foreground" || mode === "status") {
@@ -76,9 +75,16 @@ function resultContent(
     const reason = snapshot.error ?? `${snapshot.status}.`;
     return `Subagent ${snapshot.id} (${snapshot.type}) ${snapshot.status}: ${reason}`;
   }
+  if (mode === "background") {
+    return [
+      `Subagent ${snapshot.id} (${snapshot.type}) is ${snapshot.status} in the background.`,
+      "Continue the independent work that justified background mode.",
+      `When its result becomes a dependency, use get_subagent_result with id "${snapshot.id}" and wait:true. Do not poll.`,
+    ].join("\n");
+  }
   return [
     `Subagent ${snapshot.id} (${snapshot.type}) is ${snapshot.status}.`,
-    `Use get_subagent_result with id "${snapshot.id}"${mode === "background" ? " and wait:true" : ""} to retrieve the final result.`,
+    `Use get_subagent_result with id "${snapshot.id}" to retrieve the final result.`,
   ].join("\n");
 }
 

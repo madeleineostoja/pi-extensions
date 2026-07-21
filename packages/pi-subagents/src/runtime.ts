@@ -634,9 +634,10 @@ function findModel(
 function buildExplorePrompt(params: ExploreToolParams): string {
   return [
     "You are a nested read-only Explore child. Answer the parent agent's bounded codebase exploration question.",
-    "Use only read, bash, grep, find, ls, and lsp when available. Do not edit, write, stage, commit, spawn agents, or call custom/public agent tools.",
+    "Use lsp when available for targeted language-semantic relationships that text search may miss. Use search for broad, literal, or non-semantic discovery and reads for surrounding behavior. Combine them when useful, and fall back to search and reads when LSP is unavailable or incomplete.",
+    "Do not edit, write, change repository or system state, spawn agents, or invoke explore recursively.",
     `Breadth: ${params.breadth ?? "medium"}`,
-    "Return concise findings with relevant file paths and enough context for the parent to continue with direct reads/searches.",
+    "Return concise findings with relevant file paths and enough context for the parent to continue with targeted reads.",
     "",
     `Question: ${params.question.trim()}`,
   ].join("\n");
@@ -872,7 +873,7 @@ export class SubagentRuntime {
       name: "explore",
       label: "explore",
       description:
-        "Ask a nested read-only Explore child to answer a bounded codebase discovery question synchronously. Use for locating symbols, tracing usage, or mapping unfamiliar code before direct reads/searches. The child can only read/search/list and run bash through inherited sandbox constraints; it cannot edit, write, spawn agents, or call explore again. Keep questions specific and continue with direct reads if the result is stopped, failed, timed out, or truncated.",
+        "Ask a nested read-only Explore child to answer a bounded codebase discovery question synchronously. Use it for multi-step tracing or mapping where keeping the search trail in separate context is useful, not for one targeted semantic lookup or one or two direct reads. The child combines LSP with search and source reads when useful; it cannot modify state, spawn agents, or invoke explore recursively. Continue with direct discovery if the result is stopped, failed, timed out, or truncated.",
       parameters: Type.Object({
         question: Type.String({
           description: "Specific codebase exploration question to answer.",

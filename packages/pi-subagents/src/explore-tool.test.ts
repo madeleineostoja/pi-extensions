@@ -297,7 +297,13 @@ describe("runtime-injected explore tool", () => {
       "lsp",
     ]);
     expect(child.prompt).toHaveBeenCalledWith(
-      expect.stringContaining("lsp when available"),
+      expect.stringMatching(
+        /lsp when available[\s\S]*broad, literal, or non-semantic[\s\S]*fall back to search and reads/,
+      ),
+      { source: "extension" },
+    );
+    expect(child.prompt).toHaveBeenCalledWith(
+      expect.not.stringContaining("Use only read, bash, grep, find, ls"),
       { source: "extension" },
     );
     expect(runtime.snapshots()).toEqual([parent]);

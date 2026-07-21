@@ -213,23 +213,27 @@ describe("public subagent tools", () => {
       "steer_subagent",
     ]);
     expect(tools[0].description).toContain("foreground");
+    expect(tools[0].description).toContain("concrete independent work");
     expect(tools[0].promptGuidelines).toEqual(AGENT_PROMPT_GUIDELINES);
     expect(tools[0].promptGuidelines).toEqual(
       expect.arrayContaining([
-        expect.stringContaining("subagent_type Explore"),
-        expect.stringContaining("subagent_type Review"),
-        expect.stringContaining("Do not substitute General"),
-        expect.stringMatching(
-          /Do not delegate ordinary implementation.*to General/,
-        ),
-        expect.stringContaining("materially benefits from separate context"),
+        expect.stringContaining("Use Explore for non-trivial"),
+        expect.stringContaining("Use lsp directly"),
+        expect.stringContaining("use Review as an independent second pass"),
+        expect.stringContaining("Do not self-review"),
+        expect.stringContaining("Do not use General merely"),
+        expect.stringContaining("context pruning and Pi compaction"),
+        expect.stringContaining("no worktree isolation"),
+        expect.stringContaining("immediately call get_subagent_result"),
+        expect.stringContaining("never guess available model IDs"),
       ]),
     );
     expect(tools[0].renderCall).toEqual(expect.any(Function));
     expect(tools[0].renderResult).toEqual(expect.any(Function));
+    expect(tools[1].description).toContain("result becomes a dependency");
     expect(tools[1].description).toContain("wait:true");
     expect(tools[1].description).toContain("do not poll");
-    expect(tools[2].description).toContain("wait:true");
+    expect(tools[2].description).toContain("result becomes a dependency");
     expect(collectConstStrings(tools[0].parameters)).toEqual([
       "General",
       "Explore",
@@ -251,6 +255,9 @@ describe("public subagent tools", () => {
     );
     expect(JSON.stringify(tools[0].parameters)).toContain(
       PUBLIC_AGENT_PROFILES.Review.description,
+    );
+    expect(JSON.stringify(tools[0].parameters)).toContain(
+      "do not guess available models",
     );
   });
 
@@ -306,8 +313,13 @@ describe("public subagent tools", () => {
         makeCtx(),
       );
       expect(textContent(background)).toContain("Subagent subagent-");
+      expect(textContent(background)).toContain(
+        "Continue the independent work that justified background mode",
+      );
+      expect(textContent(background)).toContain("result becomes a dependency");
       expect(textContent(background)).toContain("get_subagent_result");
       expect(textContent(background)).toContain("wait:true");
+      expect(textContent(background)).toContain("Do not poll");
       expect(background.isError).toBe(false);
       expect(background.details).toMatchObject({
         type: "Explore",
@@ -684,6 +696,12 @@ describe("public subagent tools", () => {
   });
 
   it("uses replace-mode prompt loading and pinned tools for Explore", async () => {
+    expect(EXPLORE_PROMPT).toContain("Use lsp when available");
+    expect(EXPLORE_PROMPT).toContain("broad, literal, or non-semantic");
+    expect(EXPLORE_PROMPT).toContain("fall back to search and reads");
+    expect(EXPLORE_PROMPT).not.toContain("Use the find tool");
+    expect(EXPLORE_PROMPT).not.toContain("NOT bash grep/rg");
+
     const { pi } = makePi(["read", "bash", "edit", "write", "Agent"]);
     const { session } = makeSession("explore result");
     const createSession = vi.fn(async (_options: any) => ({ session }));

@@ -99,11 +99,15 @@ const PublicAgentParameters = Type.Object({
   ),
   mode: Type.Optional(
     Type.Union([Type.Literal("foreground"), Type.Literal("background")], {
-      description: "Default foreground. Use background for long-running work.",
+      description:
+        "Default foreground. Use background only when independent work can proceed before the result is needed.",
     }),
   ),
   model: Type.Optional(
-    Type.String({ description: "Optional provider/model override." }),
+    Type.String({
+      description:
+        "Optional exact provider/model override. Use only when the ID is explicitly supplied or otherwise known; do not guess available models.",
+    }),
   ),
   thinking: Type.Optional(Thinking),
   cwd: Type.Optional(
@@ -138,7 +142,7 @@ export default function (pi: ExtensionAPI): void {
     name: "Agent",
     label: "Agent",
     description:
-      "Run a General, Explore, or Review subagent. Defaults to foreground and returns the result; for background, use get_subagent_result with wait:true to join instead of polling.",
+      "Run a General, Explore, or Review subagent. Defaults to foreground. Use background only when concrete independent work can proceed before the result is needed; otherwise use foreground.",
     promptGuidelines: AGENT_PROMPT_GUIDELINES,
     parameters: PublicAgentParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -167,7 +171,7 @@ export default function (pi: ExtensionAPI): void {
     name: "get_subagent_result",
     label: "get_subagent_result",
     description:
-      "Check a background subagent. Use wait:false for immediate status or wait:true to join; do not poll when you need the final result.",
+      "Join or inspect a background subagent. Use wait:true when its result becomes a dependency. Use wait:false only for an intentional non-blocking status check; do not poll.",
     parameters: Type.Object({
       id: Type.String({ description: "Background subagent id." }),
       wait: Type.Boolean({
@@ -187,7 +191,7 @@ export default function (pi: ExtensionAPI): void {
     name: "steer_subagent",
     label: "steer_subagent",
     description:
-      "Send guidance to a running background subagent. Fails for unknown or completed agents; use get_subagent_result wait:true to join.",
+      "Send guidance to a running background subagent. Fails for unknown or completed agents; join when its result becomes a dependency.",
     parameters: Type.Object({
       id: Type.String({ description: "Background subagent id." }),
       message: Type.String({ description: "Steering message to send." }),
