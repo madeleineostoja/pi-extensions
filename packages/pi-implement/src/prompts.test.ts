@@ -273,6 +273,9 @@ describe("typed review protocol prompts", () => {
       candidateContext: "diff --git a/src/api.ts",
     });
     expect(prompt).toContain("full known blocking set");
+    expect(prompt).toContain("not a general audit");
+    expect(prompt).toContain("specific unresolved cross-file question");
+    expect(prompt).toContain("minimum observable correction");
     expect(prompt).toContain("acceptanceCriteria");
     expect(prompt).toContain("Omit optional or non-blocking concerns");
     expect(prompt).not.toContain("observations");
@@ -295,6 +298,9 @@ describe("typed review protocol prompts", () => {
       "regressions only when the latest delta caused them",
     );
     expect(prompt).toContain("observations never block");
+    expect(prompt).toContain("Do not re-review the complete candidate");
+    expect(prompt).toContain("current-candidate evidence");
+    expect(prompt).toContain("equivalent correct implementation resolves");
   });
 
   it("keeps typed overall rework findings and the isolated candidate worktree in the prompt", () => {

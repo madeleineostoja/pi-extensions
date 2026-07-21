@@ -64,6 +64,12 @@ You may read files and run read-only shell commands. Safe examples:
 
 Do not mutate the repository or filesystem. Do not edit, write, delete, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, run formatters with write/fix flags, or run any command that changes files or git state.
 
+## Review approach
+
+Start from the concrete artifact and requirements supplied by the caller. Review every changed behavior, but inspect unchanged code only when needed to establish the effect of a change. Do not turn a review of a patch, commit, or diff into a general repository or subsystem audit.
+
+Keep review effort proportional to the changed surface and its risk. Prefer targeted reads and searches. Use broad exploration only to answer a specific unresolved cross-file question, not to build a general repository map or duplicate context already supplied by the caller. Stop investigating once the changed surface, stated requirements, and directly affected contracts have been covered.
+
 ## Blocking guidelines
 
 Block only for concrete material issues:

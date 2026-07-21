@@ -718,6 +718,9 @@ describe("public subagent tools", () => {
   });
 
   it("uses append-mode prompt loading and pinned tools for Review", async () => {
+    expect(REVIEW_PROMPT).toContain("proportional to the changed surface");
+    expect(REVIEW_PROMPT).toContain("not to build a general repository map");
+
     const { pi } = makePi(["read", "bash", "edit", "write", "Agent"]);
     const { session } = makeSession("review result");
     const createSession = vi.fn(async (_options: any) => ({ session }));

@@ -365,9 +365,11 @@ ${args.diff}
 
 ## Review Rules
 
+- Start from the plan and combined diff. Inspect unchanged code only when needed to establish a changed path's integration impact; do not turn the review into a general repository audit.
+- Keep exploration proportional to the feature and its risk. Prefer targeted reads and searches, and use broad exploration only for a specific unresolved cross-task question.
 - Approve if the feature is complete, correct, and the tasks integrate well.
 - Request changes if there are material gaps, missed edge cases, integration problems, or insufficient verification.
-- Be specific about what must change. In particular, check for planner/compiler omissions: requirements in the original plan that may have been missed because no compiled task contract covered them.
+- Be specific about what must change and keep it to the minimum observable correction. In particular, check for planner/compiler omissions: requirements in the original plan that may have been missed because no compiled task contract covered them.
 
 ${PAPERCUT_GUIDANCE}
 
@@ -543,11 +545,14 @@ Use the compiled task contract and referenced source material below to verify sc
 
 ## Scope Review Rules
 
+- Start from the supplied contract and candidate delta. Review every changed behavior, but inspect unchanged code only when needed to establish the impact of a changed path.
+- Keep review effort proportional to the candidate and its risk. A complete blocking set means the complete set within the candidate, its contract, and directly affected interfaces—not a general audit of the surrounding subsystem or repository.
+- Prefer targeted reads and searches. Use broad exploration only for a specific unresolved cross-file question, not to build a general repository map or duplicate supplied context.
 - Small prerequisite changes needed for the selected task may be approved.
 - Request changes if the staged diff substantially implements an unselected sibling task or unrelated cleanup.
 - Completing a sibling task's own deliverable is scope creep.
 ${args.scope === "task" ? buildSiblingTasksSection(args.outOfScopeTasks) : ""}
-If approved, submit { verdict: "approved" }. Otherwise submit { verdict: "changes_requested", findings } where every atomic finding has summary, evidence, requiredChange, and non-empty acceptanceCriteria. One independently resolvable defect belongs in each finding. Omit optional or non-blocking concerns from this initial result.${recommendation}
+If approved, submit { verdict: "approved" }. Otherwise submit { verdict: "changes_requested", findings } where every atomic finding has summary, evidence, requiredChange, and non-empty acceptanceCriteria. One independently resolvable defect belongs in each finding. Keep the required change and acceptance criteria to the minimum observable correction needed for the demonstrated defect; do not prescribe a broader redesign when a narrower correction satisfies the contract. Omit optional or non-blocking concerns from this initial result.${recommendation}
 
 ${PAPERCUT_GUIDANCE}
 
@@ -586,6 +591,8 @@ ${formatFindings(args.outstandingFindings)}
 ## Latest Rework Delta
 
 ${args.latestDelta}
+
+Review the latest delta and only the unchanged code needed to assess the supplied findings. Do not re-review the complete candidate, broaden the original findings, or reopen unrelated design questions. Mark a finding unresolved only with current-candidate evidence that a specific acceptance criterion remains unmet. Judge the demonstrated defect and observable acceptance criteria; an equivalent correct implementation resolves the finding even when it differs from the suggested required change.
 
 Submit assessments with each known ID exactly once and status resolved or unresolved plus evidence. You may add regressions only when the latest delta caused them: each regression must include changedPaths that intersect the latest delta and causalEvidence explaining causality. Put all other concerns in observations; observations never block. A resolved ID cannot be reopened. Do not impose a finding cap.
 
