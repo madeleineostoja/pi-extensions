@@ -53,6 +53,10 @@ import {
 } from "./canonical-state.js";
 import { SchedulerActor } from "./scheduler-actor.js";
 import {
+  approvedCandidateRef,
+  TaskWorkspaceManager,
+} from "./candidate-worker.js";
+import {
   captureRestoreSnapshot,
   checkpointCandidate,
   persistDiscardedBundle,
@@ -1257,31 +1261,35 @@ async function runUnmanagedImplementation(
     }
 
     const baseSha = await deps.git.head();
-    const worktreePath =
-      deps.mode === "parallel" && deps.paths
-        ? join(deps.paths.worktreesDir, taskId)
-        : undefined;
-
-    if (worktreePath) {
-      await deps.git.createTaskBranch(branchName, baseSha);
-      await deps.git.addWorktree(worktreePath, branchName);
-      writeTaskJson(deps.paths!, taskId, {
-        id: taskId,
-        planIndex: task.index - 1,
-        title: task.text,
-        status: "pending",
-        dependsOn: [],
-        attempts: 0,
-        integrationAttempts: 0,
-        baseSha,
-        worktreePath,
-        branchName,
-      });
+    if (!deps.paths) {
+      throw new BlockedError("task execution requires an owned run workspace");
     }
+    const worktreePath = join(deps.paths.worktreesDir, taskId);
+    const workspaceManager = new TaskWorkspaceManager(
+      deps.git,
+      deps.paths.worktreesDir,
+    );
 
-    const taskGit = worktreePath
-      ? deps.git.forWorktree(worktreePath, await deps.git.root())
-      : deps.git;
+    await workspaceManager.ensure({
+      taskId,
+      branchName,
+      worktreePath,
+      baseSha,
+    });
+    writeTaskJson(deps.paths, taskId, {
+      id: taskId,
+      planIndex: task.index - 1,
+      title: task.text,
+      status: "pending",
+      dependsOn: [],
+      attempts: 0,
+      integrationAttempts: 0,
+      baseSha,
+      worktreePath,
+      branchName,
+    });
+
+    const taskGit = deps.git.forWorktree(worktreePath, await deps.git.root());
     const unmanagedTask: SchedulerTask = {
       id: taskId,
       planIndex: task.index,
@@ -1316,9 +1324,6 @@ async function runUnmanagedImplementation(
     });
     if (!landed) {
       return;
-    }
-    if (!worktreePath) {
-      continue;
     }
     if (landed === "satisfied") {
       await cleanupTaskWorkspace(deps, unmanagedTask);
@@ -1444,7 +1449,11 @@ function linkedAbortController(
 type WorkerResult = {
   taskId: string;
   outcome:
-    | { kind: "approved"; taskCommitSha: string; commitMessage: string }
+    | {
+        kind: "approved";
+        candidate: CandidateRef;
+        commitMessage: string;
+      }
     | { kind: "satisfied" }
     | { kind: "stalled"; reason: string }
     | { kind: "failed"; reason: string }
@@ -1453,8 +1462,6 @@ type WorkerResult = {
 
 function schedulerWorkerOutcome(
   result: WorkerResult,
-  task: SchedulerTask,
-  taskId: string,
 ): import("./scheduler.js").SchedulerEvent extends infer _Event
   ? Extract<
       import("./scheduler.js").SchedulerEvent,
@@ -1467,67 +1474,15 @@ function schedulerWorkerOutcome(
     case "stopped":
       return { kind: "cancelled" };
     case "stalled":
-      return {
-        kind: "failed",
-        failureKind: "unknown",
-        reason: result.outcome.reason,
-      };
     case "failed":
       return {
         kind: "failed",
         failureKind: "unknown",
         reason: result.outcome.reason,
       };
-    case "approved": {
-      const candidate = schedulerCandidate(task, taskId, result.outcome);
-      return { kind: "candidate_ready", candidate };
-    }
+    case "approved":
+      return { kind: "candidate_ready", candidate: result.outcome.candidate };
   }
-}
-
-function schedulerCandidate(
-  task: SchedulerTask,
-  taskId: string,
-  outcome: Extract<WorkerResult["outcome"], { kind: "approved" }>,
-): CandidateRef {
-  const commitSha = task.candidateSha ?? outcome.taskCommitSha;
-  const treeSha = task.candidateTree;
-  const baseSha = task.candidateBaseSha ?? task.baseSha;
-  if (
-    !treeSha ||
-    !baseSha ||
-    !task.sourceBaseSha ||
-    !task.branchName ||
-    !task.worktreePath
-  ) {
-    throw new Error(
-      `Approved task ${taskId} is missing canonical candidate identity.`,
-    );
-  }
-  const candidateId = `candidate:${taskId}:${commitSha}`;
-  return {
-    id: candidateId,
-    sourceBaseSha: task.sourceBaseSha,
-    baseSha,
-    commitSha,
-    treeSha,
-    branchName: task.branchName,
-    worktreePath: task.worktreePath,
-    reviewReceipt: {
-      id: `review:${candidateId}`,
-      candidateId,
-      candidateCommitSha: commitSha,
-      candidateTreeSha: treeSha,
-      verdict: "approved",
-      convergence: {
-        round: 0,
-        outstandingFindingIds: [],
-        bestOutstandingCount: 0,
-        evidenceRefs: [],
-      },
-      assessedAt: new Date().toISOString(),
-    },
-  };
 }
 
 function legacyWorkerResult(
@@ -1550,7 +1505,7 @@ function legacyWorkerResult(
         taskId: completion.taskId,
         outcome: {
           kind: "approved",
-          taskCommitSha: completion.outcome.candidate.commitSha,
+          candidate: completion.outcome.candidate,
           commitMessage:
             task.approvedCommitMessage ?? `chore: implement ${task.title}`,
         },
@@ -1625,7 +1580,7 @@ async function runScheduledImplementation(
             runBaseSha,
             wasNeedsRework,
           );
-          return schedulerWorkerOutcome(result, task, taskId);
+          return schedulerWorkerOutcome(result);
         } catch (error) {
           return {
             kind: "failed",
@@ -1783,7 +1738,10 @@ async function runScheduledImplementation(
         const task = sched.tasks.get(result.taskId)!;
         if (result.outcome.kind === "approved") {
           task.status = "approved";
-          task.taskCommitSha = result.outcome.taskCommitSha;
+          task.taskCommitSha = result.outcome.candidate.commitSha;
+          task.candidateSha = result.outcome.candidate.commitSha;
+          task.candidateTree = result.outcome.candidate.treeSha;
+          task.candidateBaseSha = result.outcome.candidate.baseSha;
           task.approvedCommitMessage = result.outcome.commitMessage;
           task.activeAgentIds = [];
           task.activeAgentRefs = [];
@@ -1792,14 +1750,14 @@ async function runScheduledImplementation(
             writeTaskJson(deps.paths, result.taskId, {
               ...buildTaskJsonSnapshot(existing, task),
               status: "approved",
-              taskCommitSha: result.outcome.taskCommitSha,
+              taskCommitSha: result.outcome.candidate.commitSha,
               commitMessage: result.outcome.commitMessage,
               activeSubagentIds: [],
             });
             appendEvent(deps.paths, {
               type: "task_approved",
               taskId: result.taskId,
-              commitSha: result.outcome.taskCommitSha,
+              commitSha: result.outcome.candidate.commitSha,
             });
           }
         } else if (result.outcome.kind === "satisfied") {
@@ -2032,31 +1990,41 @@ async function launchTaskWorker(
     status: "coding",
   });
 
+  const workspaceManager = new TaskWorkspaceManager(
+    deps.git,
+    deps.paths!.worktreesDir,
+  );
   let createdWorkspace = false;
-  let createdBranch = false;
   try {
     if (wasNeedsRework && !existing?.trustedCheckpoint) {
-      await deps.git.removeWorktree(worktreePath);
-      await deps.git.deleteTaskBranch(branchName);
-    }
-    const registeredWorktrees = await deps.git.listWorktrees();
-    if (!registeredWorktrees.includes(worktreePath)) {
-      if (wasNeedsRework && existing?.trustedCheckpoint) {
-        await deps.git.addWorktree(worktreePath, branchName);
-      } else {
-        await deps.git.createTaskBranch(branchName, baseSha);
-        createdBranch = true;
-        await deps.git.addWorktree(worktreePath, branchName);
+      const registered = await deps.git.listWorktrees();
+      if (registered.includes(worktreePath)) {
+        await workspaceManager.remove({
+          taskId,
+          branchName,
+          worktreePath,
+          baseSha,
+        });
       }
-      createdWorkspace = true;
     }
+    const workspace = await workspaceManager.ensure(
+      { taskId, branchName, worktreePath, baseSha },
+      {
+        existingBranch: wasNeedsRework && Boolean(existing?.trustedCheckpoint),
+      },
+    );
+    createdWorkspace = workspace.created;
     appendEvent(deps.paths!, { type: "task_started", taskId });
   } catch (err) {
     let cleanupFailure: string | undefined;
-    if (createdWorkspace || createdBranch) {
+    if (createdWorkspace) {
       try {
-        await deps.git.removeWorktree(worktreePath);
-        await deps.git.deleteTaskBranch(branchName);
+        await workspaceManager.remove({
+          taskId,
+          branchName,
+          worktreePath,
+          baseSha,
+        });
       } catch (cleanupError) {
         cleanupFailure =
           cleanupError instanceof Error
@@ -2143,16 +2111,27 @@ async function launchTaskWorker(
       return { taskId, outcome: { kind: "satisfied" } };
     }
 
-    if (success === "changed" && worktreePath) {
-      const taskCommitSha = await taskGit.head();
+    if (success === "changed") {
       const taskJson = deps.paths
         ? readTaskJson(deps.paths, taskId)
         : undefined;
       const commitMessage =
         taskJson?.commitMessage ?? `chore: implement ${task.title}`;
+      const candidate = await approvedCandidateRef({
+        taskId,
+        git: taskGit,
+        sourceBaseSha,
+        baseSha,
+        branchName,
+        worktreePath,
+        review: taskJson?.review,
+        artifactRefs: [join(deps.paths!.tasksDir, taskId, "task.json")],
+        protectedPaths: taskPlanArtifacts,
+        assessedAt: new Date().toISOString(),
+      });
       return {
         taskId,
-        outcome: { kind: "approved", taskCommitSha, commitMessage },
+        outcome: { kind: "approved", candidate, commitMessage },
       };
     }
 
@@ -7356,17 +7335,29 @@ async function runTaskWorker(args: {
     await throwIfStoppedAndReset(deps, taskGit);
 
     if (worktreePath) {
+      const taskCommitSha = await taskGit.head();
+      if (candidate.candidateSha !== taskCommitSha) {
+        throw new BlockedError(
+          "approved candidate identity changed after review; rerun review before approval",
+        );
+      }
       const taskCommit = await taskGit.rewordInternal(approvedMessage);
       if (taskCommit.exitCode !== 0) {
         throw new BlockedError(
           `could not finalize approved checkpoint: ${taskCommit.stderr || taskCommit.stdout}`,
         );
       }
-      const taskCommitSha = await taskGit.head();
+      const finalizedCommitSha = await taskGit.head();
+      const finalizedTreeSha = await taskGit.treeAt(finalizedCommitSha);
+      if (finalizedTreeSha !== candidate.candidateTree) {
+        throw new BlockedError(
+          "finalizing an approved candidate changed its reviewed tree",
+        );
+      }
       candidate = {
         ...candidate,
-        candidateSha: taskCommitSha,
-        trustedCheckpoint: taskCommitSha,
+        candidateSha: finalizedCommitSha,
+        trustedCheckpoint: finalizedCommitSha,
       };
       persistCandidate("approved");
       if (!(await taskGit.isCleanExcept(planArtifacts))) {
@@ -7401,90 +7392,9 @@ async function runTaskWorker(args: {
       return "changed";
     }
 
-    markSourceCheckboxDone(deps, taskId, task);
-    try {
-      throwIfStopped(deps);
-    } catch (err) {
-      if (err instanceof StoppedError) {
-        markSourceCheckboxUndone(deps, taskId, task);
-        await taskGit.reset();
-      }
-      throw err;
-    }
-    const commit = await taskGit.commit(approvedMessage);
-    if (commit.exitCode === 0) {
-      if (!(await deps.git.isCleanExcept(planArtifacts))) {
-        throw new BlockedError("commit succeeded but worktree is dirty");
-      }
-      const head = await deps.git.head();
-      if (deps.paths) {
-        appendEvent(deps.paths, {
-          type: "task_approved",
-          taskId,
-          commitSha: head,
-        });
-        appendEvent(deps.paths, {
-          type: "task_landed",
-          taskId,
-          commitSha: head,
-        });
-        writeTaskJson(deps.paths, taskId, {
-          id: taskId,
-          planIndex: task.index - 1,
-          title: task.text,
-          status: "landed",
-          dependsOn: [],
-          attempts: attempt,
-          integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
-          landedCommitSha: head,
-          activeSubagentIds: [],
-          review: taskReviewMeta,
-        });
-      }
-      deps.updateState((prev) => ({
-        currentMainHead: head,
-        ...checkpointPatch(
-          prev,
-          `\u2713 Task ${task.index}/${plan.tasks.length} landed @ ${head.slice(0, 7)}`,
-        ),
-      }));
-      return "changed";
-    }
-    const headAfterFailedCommit = await deps.git.head();
-    if (headAfterFailedCommit !== reviewHeadBefore) {
-      throw new BlockedError(
-        "commit failed but HEAD changed; inspect manually",
-      );
-    }
-    markSourceCheckboxUndone(deps, taskId, task);
-    await taskGit.reset();
-    feedback = recordSystemFailure(
-      task.index,
-      systemFailures,
-      "commit-hook",
-      `Commit failed. Fix the issue and try again.\n\n${commit.stderr || commit.stdout}`,
+    throw new BlockedError(
+      "changed task execution requires an owned task worktree",
     );
-    systemFailures++;
-    attempt++;
-    if (deps.paths) {
-      writeTaskJson(deps.paths, taskId, {
-        id: taskId,
-        planIndex: task.index - 1,
-        title: task.text,
-        status: "integration_failed",
-        dependsOn: [],
-        attempts: attempt,
-        integrationAttempts: systemFailures,
-        activeSubagentIds: [],
-        lastReason: feedback.message,
-        review: currentTaskReviewMetadata(deps.paths, taskId),
-      });
-      appendEvent(deps.paths, {
-        type: "integration_failed",
-        taskId,
-        reason: feedback.message,
-      });
-    }
   }
   return false;
 }
