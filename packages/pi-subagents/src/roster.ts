@@ -94,7 +94,7 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
     status: snapshot.status,
     tool: snapshot.health?.activeTool ?? "-",
     turns: String(snapshot.health?.turns ?? "-"),
-    tokens: tokenLabel(snapshot.health?.tokensTotal),
+    context: contextUsageLabel(snapshot),
     elapsed: elapsedLabel(snapshot),
   }));
   if (rows.length === 0) {
@@ -117,9 +117,9 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
       "turns",
       rows.map((row) => row.turns),
     ),
-    tokens: maxWidth(
-      "tokens",
-      rows.map((row) => row.tokens),
+    context: maxWidth(
+      "context",
+      rows.map((row) => row.context),
     ),
     elapsed: maxWidth(
       "elapsed",
@@ -132,7 +132,7 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
       "status".padEnd(widths.status),
       "tool".padEnd(widths.tool),
       "turns".padStart(widths.turns),
-      "tokens".padStart(widths.tokens),
+      "context".padStart(widths.context),
       "elapsed".padStart(widths.elapsed),
       "description",
     ].join("  "),
@@ -142,7 +142,7 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
         row.status.padEnd(widths.status),
         row.tool.padEnd(widths.tool),
         row.turns.padStart(widths.turns),
-        row.tokens.padStart(widths.tokens),
+        row.context.padStart(widths.context),
         row.elapsed.padStart(widths.elapsed),
         row.description,
       ].join("  "),
@@ -224,7 +224,12 @@ export function elapsedLabel(snapshot: RuntimeSnapshot): string {
   return `${minutes}m ${remainder.toString().padStart(2, "0")}s`;
 }
 
-function tokenLabel(value: number | undefined): string {
+export function contextUsageLabel(snapshot: RuntimeSnapshot): string {
+  const tokens = snapshot.health?.contextUsage?.tokens;
+  return tokens === undefined || tokens === null ? "?" : tokenLabel(tokens);
+}
+
+export function tokenLabel(value: number | undefined): string {
   if (value === undefined) {
     return "-";
   }

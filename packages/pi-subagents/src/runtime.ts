@@ -69,10 +69,18 @@ export type RuntimeOwner =
       parentOwner?: RuntimeOwner;
     };
 
+export type RuntimeContextUsage = {
+  tokens: number | null;
+  contextWindow: number;
+  percent: number | null;
+};
+
 export type RuntimeHealth = {
   turns?: number;
   toolUses?: number;
   tokensTotal?: number;
+  contextUsage?: RuntimeContextUsage;
+  peakContextTokens?: number;
   activeTool?: string;
   lastActivity?: string;
   lastAssistantText?: string;
@@ -398,6 +406,26 @@ function messageText(message: unknown): string | undefined {
     .join("\n");
 }
 
+function refreshContextHealth(record: RuntimeRecord): void {
+  const usage = record.session?.getContextUsage?.();
+  if (!usage) {
+    return;
+  }
+  const peakContextTokens =
+    usage.tokens === null
+      ? record.health?.peakContextTokens
+      : Math.max(record.health?.peakContextTokens ?? 0, usage.tokens);
+  record.health = {
+    ...record.health,
+    contextUsage: {
+      tokens: usage.tokens,
+      contextWindow: usage.contextWindow,
+      percent: usage.percent,
+    },
+    ...(peakContextTokens === undefined ? {} : { peakContextTokens }),
+  };
+}
+
 function refreshHealth(record: RuntimeRecord): void {
   const session = record.session;
   if (!session) {
@@ -409,6 +437,7 @@ function refreshHealth(record: RuntimeRecord): void {
     }
     return;
   }
+  refreshContextHealth(record);
   const messages = session.messages;
   const assistantMessages = messages.filter(
     (message) => isObject(message) && message.role === "assistant",
@@ -1193,6 +1222,18 @@ export class SubagentRuntime {
               : typeof candidate?.toolName === "string"
                 ? candidate.toolName
                 : undefined;
+          if (
+            typeof candidate?.type === "string" &&
+            [
+              "message_end",
+              "turn_end",
+              "compaction_start",
+              "compaction_end",
+              "agent_end",
+            ].includes(candidate.type)
+          ) {
+            refreshContextHealth(record);
+          }
           record.health = {
             ...record.health,
             ...(toolName === undefined ? {} : { activeTool: toolName }),

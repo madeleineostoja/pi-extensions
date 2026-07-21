@@ -363,6 +363,12 @@ describe("status formatting", () => {
           status: "running",
           toolUses: 4,
           tokensTotal: 12300,
+          contextUsage: {
+            tokens: 6400,
+            contextWindow: 128000,
+            percent: 5,
+          },
+          peakContextTokens: 8000,
           compactionCount: 2,
         },
       ],
@@ -371,7 +377,8 @@ describe("status formatting", () => {
     expect(agentLine).toBeDefined();
     expect(agentLine).toContain("running");
     expect(agentLine).toContain("4 tool");
-    expect(agentLine).toContain("12.3k");
+    expect(agentLine).toContain("6.4k ctx");
+    expect(agentLine).not.toContain("12.3k");
     expect(agentLine).toContain("\u21ca2");
     expect(agentLine).toContain("/agents");
     expect(agentLine).toContain("agent-12");

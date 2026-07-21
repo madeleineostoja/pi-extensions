@@ -64,6 +64,7 @@ function makeSession(result = "done") {
     abort: vi.fn(async () => undefined),
     dispose: vi.fn(),
     getLastAssistantText: vi.fn(() => result),
+    getContextUsage: vi.fn<AgentSession["getContextUsage"]>(() => undefined),
     setActiveToolsByName: vi.fn(),
     state: {},
     messages: [] as AgentSession["messages"],
@@ -337,6 +338,11 @@ describe("SubagentRuntime", () => {
     });
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
 
+    session.getContextUsage = vi.fn<AgentSession["getContextUsage"]>(() => ({
+      tokens: 8,
+      contextWindow: 100,
+      percent: 8,
+    }));
     Object.assign(session, {
       sessionId: "session-1",
       sessionFile: "/tmp/session.jsonl",
@@ -360,6 +366,8 @@ describe("SubagentRuntime", () => {
       turns: 1,
       toolUses: 1,
       tokensTotal: 10,
+      contextUsage: { tokens: 8, contextWindow: 100, percent: 8 },
+      peakContextTokens: 8,
       activeTool: "read",
       lastActivity: "2023-11-14T22:13:21.000Z",
       lastAssistantText: "Working on it",
@@ -369,6 +377,11 @@ describe("SubagentRuntime", () => {
       },
     });
 
+    session.getContextUsage = vi.fn<AgentSession["getContextUsage"]>(() => ({
+      tokens: 20,
+      contextWindow: 100,
+      percent: 20,
+    }));
     session.messages = [
       {
         role: "assistant",
@@ -392,7 +405,19 @@ describe("SubagentRuntime", () => {
     expect(runtime.snapshots()[0]?.health).toMatchObject({
       turns: 1,
       tokensTotal: 12,
+      contextUsage: { tokens: 20, contextWindow: 100, percent: 20 },
+      peakContextTokens: 20,
       lastAssistantText: "Updated answer",
+    });
+
+    session.getContextUsage = vi.fn<AgentSession["getContextUsage"]>(() => ({
+      tokens: null,
+      contextWindow: 100,
+      percent: null,
+    }));
+    expect(runtime.snapshot(started.id)?.health).toMatchObject({
+      contextUsage: { tokens: null, contextWindow: 100, percent: null },
+      peakContextTokens: 20,
     });
 
     runtime.stop(started.id);

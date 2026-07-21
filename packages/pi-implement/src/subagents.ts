@@ -3,7 +3,11 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { getSubagentRuntime } from "pi-subagents/runtime";
-import type { RuntimeSnapshot, ThinkingLevel } from "pi-subagents/runtime";
+import type {
+  RuntimeContextUsage,
+  RuntimeSnapshot,
+  ThinkingLevel,
+} from "pi-subagents/runtime";
 import type { Static, TSchema } from "typebox";
 
 export type SubagentHandle<TResult = unknown> = string & {
@@ -70,6 +74,8 @@ export type AgentSnapshot = {
   description?: string;
   toolUses?: number;
   tokensTotal?: number;
+  contextUsage?: RuntimeContextUsage;
+  peakContextTokens?: number;
   compactionCount?: number;
   cwd?: string;
   model?: string;
@@ -253,6 +259,8 @@ function toAgentSnapshot(snapshot: RuntimeSnapshot): AgentSnapshot {
     description: snapshot.description,
     toolUses: snapshot.health?.toolUses,
     tokensTotal: snapshot.health?.tokensTotal,
+    contextUsage: snapshot.health?.contextUsage,
+    peakContextTokens: snapshot.health?.peakContextTokens,
     cwd: snapshot.cwd,
     model: snapshot.model,
     thinking: snapshot.thinking,

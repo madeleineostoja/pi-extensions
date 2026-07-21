@@ -212,7 +212,12 @@ describe("/agents dashboard", () => {
         type: "General",
         owner: { kind: "pi-implement", runId: "run", role: "implementer" },
         description: "no role words here",
-        health: { turns: 2, tokensTotal: 1200, activeTool: "read" },
+        health: {
+          turns: 2,
+          tokensTotal: 1200,
+          contextUsage: { tokens: 600, contextWindow: 1000, percent: 60 },
+          activeTool: "read",
+        },
       }),
       snapshot({
         id: "subagent-2",
@@ -220,12 +225,17 @@ describe("/agents dashboard", () => {
         type: "Review",
         owner: "public-tool",
         description: "reviewer mentioned in description only",
-        health: { turns: 1, tokensTotal: 800 },
+        health: {
+          turns: 1,
+          tokensTotal: 800,
+          contextUsage: { tokens: null, contextWindow: 1000, percent: null },
+        },
       }),
     ]);
 
     expect(rows[0]).toMatch(/^subagent-1  running\s+General\/implementer\s+/);
-    expect(rows[0]).toContain("  2/1200  read");
+    expect(rows[0]).toContain("  2/600  read");
+    expect(rows[1]).toContain("  1/?");
     expect(rows[1]).toMatch(/^subagent-2  completed\s+Review\s+/);
     expect(rows[1]).not.toContain("Review/reviewer");
   });
@@ -316,6 +326,8 @@ describe("/agents dashboard", () => {
       health: {
         turns: 1,
         tokensTotal: 10,
+        contextUsage: { tokens: 8, contextWindow: 100, percent: 8 },
+        peakContextTokens: 9,
         activeTool: "read",
         lastAssistantText: "first",
       },
@@ -342,6 +354,8 @@ describe("/agents dashboard", () => {
       activeTool: "bash",
       turns: 2,
       tokensTotal: 30,
+      contextUsage: { tokens: 20, contextWindow: 100, percent: 20 },
+      peakContextTokens: 20,
       lastAssistantText: "second",
     };
     runtime.emit("subagent-1");
@@ -349,7 +363,9 @@ describe("/agents dashboard", () => {
     expect(ui.requestRender).toHaveBeenCalled();
     const rendered = ui.component?.render(80).join("\n") ?? "";
     expect(rendered).toContain("Active tool: bash");
-    expect(rendered).toContain("Turns/tokens: 2/30");
+    expect(rendered).toContain("Turns/context: 2/20");
+    expect(rendered).toContain("Peak context: 20");
+    expect(rendered).toContain("Cumulative tokens: 30");
     expect(rendered).toContain("second");
 
     expect(ui.sendTerminalInput("\u001b")).toBe(true);

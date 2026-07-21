@@ -1,7 +1,7 @@
 import type { AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { RuntimeSnapshot } from "./runtime.js";
-import { elapsedLabel } from "./roster.js";
+import { contextUsageLabel, elapsedLabel, tokenLabel } from "./roster.js";
 import type { PublicAgentParams } from "./index.js";
 
 type AgentToolDetails = RuntimeSnapshot;
@@ -40,7 +40,7 @@ export function renderAgentResult(
   }
   const lines = [
     `${theme.fg("toolTitle", theme.bold("Agent"))} ${theme.fg("accent", snapshot.type)} ${theme.fg(statusColor(snapshot.status), snapshot.status)} ${theme.fg("muted", snapshot.id)}`,
-    `elapsed ${elapsedLabel(snapshot)} · tokens ${snapshot.health?.tokensTotal ?? "-"}`,
+    `elapsed ${elapsedLabel(snapshot)} · context ${contextUsageLabel(snapshot)} · peak ${tokenLabel(snapshot.health?.peakContextTokens)} · cumulative ${tokenLabel(snapshot.health?.tokensTotal)}`,
   ];
   const preview = previewText(
     snapshot.error ?? snapshot.result ?? snapshot.health?.resultPreview,

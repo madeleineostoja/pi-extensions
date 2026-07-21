@@ -52,6 +52,12 @@ export type AgentRuntimeSnapshot = {
   description?: string;
   toolUses?: number;
   tokensTotal?: number;
+  contextUsage?: {
+    tokens: number | null;
+    contextWindow: number;
+    percent: number | null;
+  };
+  peakContextTokens?: number;
   compactionCount?: number;
 };
 
@@ -456,8 +462,8 @@ export function formatWidgetLines(
       if (snapshot?.toolUses !== undefined) {
         line += ` \u00b7 ${snapshot.toolUses} tool`;
       }
-      if (snapshot?.tokensTotal !== undefined) {
-        line += ` \u00b7 ${formatTokenCount(snapshot.tokensTotal)} tok`;
+      if (snapshot?.contextUsage) {
+        line += ` \u00b7 ${formatContextUsage(snapshot.contextUsage)} ctx`;
       }
       if (snapshot?.compactionCount !== undefined) {
         line += ` \u00b7 \u21ca${snapshot.compactionCount}`;
@@ -480,8 +486,8 @@ export function formatWidgetLines(
       if (snapshot?.toolUses !== undefined) {
         line += ` · ${snapshot.toolUses} tool`;
       }
-      if (snapshot?.tokensTotal !== undefined) {
-        line += ` · ${formatTokenCount(snapshot.tokensTotal)} tok`;
+      if (snapshot?.contextUsage) {
+        line += ` · ${formatContextUsage(snapshot.contextUsage)} ctx`;
       }
       if (snapshot?.compactionCount !== undefined) {
         line += ` · \u21ca${snapshot.compactionCount}`;
@@ -501,6 +507,12 @@ export function formatWidgetLines(
   }
 
   return lines;
+}
+
+function formatContextUsage(
+  usage: NonNullable<AgentRuntimeSnapshot["contextUsage"]>,
+): string {
+  return usage.tokens === null ? "?" : formatTokenCount(usage.tokens);
 }
 
 function formatTokenCount(n: number): string {

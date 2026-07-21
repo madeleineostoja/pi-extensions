@@ -25,6 +25,8 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
       activeTool: "read",
       turns: 2,
       tokensTotal: 123,
+      contextUsage: { tokens: 80, contextWindow: 1000, percent: 8 },
+      peakContextTokens: 90,
     },
     ...overrides,
   };
@@ -54,7 +56,8 @@ describe("subagent roster", () => {
     expect(rows.join("\n")).toContain("running");
     expect(rows.join("\n")).toContain("read");
     expect(rows.join("\n")).toContain("2");
-    expect(rows.join("\n")).toContain("123");
+    expect(rows.join("\n")).toContain("80");
+    expect(rows.join("\n")).not.toContain("123");
     expect(rows.join("\n")).toContain("do work");
   });
 
@@ -72,24 +75,34 @@ describe("subagent roster", () => {
     expect(rows.join("\n")).not.toContain("hidden work");
   });
 
-  it("formats larger token counts compactly", () => {
+  it("formats current context counts compactly", () => {
     const rows = formatRosterRows([
-      snapshot({ health: { activeTool: "read", turns: 2, tokensTotal: 1500 } }),
       snapshot({
-        health: { activeTool: "bash", turns: 3, tokensTotal: 10000 },
+        health: {
+          activeTool: "read",
+          turns: 2,
+          contextUsage: {
+            tokens: 1420280,
+            contextWindow: 2000000,
+            percent: 71.014,
+          },
+        },
       }),
       snapshot({
-        health: { activeTool: "edit", turns: 4, tokensTotal: 110000 },
-      }),
-      snapshot({
-        health: { activeTool: "Agent", turns: 5, tokensTotal: 1420280 },
+        health: {
+          activeTool: "bash",
+          turns: 3,
+          contextUsage: {
+            tokens: null,
+            contextWindow: 110000,
+            percent: null,
+          },
+        },
       }),
     ]);
 
-    expect(rows.join("\n")).toContain("1.5k");
-    expect(rows.join("\n")).toContain("10k");
-    expect(rows.join("\n")).toContain("110k");
     expect(rows.join("\n")).toContain("1.42M");
+    expect(rows.join("\n")).toContain("?");
     expect(rows.join("\n")).not.toContain("1420.28k");
   });
 
@@ -132,7 +145,11 @@ describe("subagent roster", () => {
       vi.advanceTimersByTime(350);
       expect(tui.requestRender).toHaveBeenCalled();
       snapshots[0] = snapshot({
-        health: { activeTool: "bash", turns: 3, tokensTotal: 456 },
+        health: {
+          activeTool: "bash",
+          turns: 3,
+          contextUsage: { tokens: 456, contextWindow: 1000, percent: 45.6 },
+        },
       });
       expect(widget.render(120).join("\n")).toContain("bash");
       expect(widget.render(120).join("\n")).toContain("456");

@@ -15,7 +15,12 @@ function makeRuntime() {
         cwd: input.cwd,
         model: input.model,
         thinking: input.thinking,
-        health: { toolUses: 2, tokensTotal: 42 },
+        health: {
+          toolUses: 2,
+          tokensTotal: 42,
+          contextUsage: { tokens: 30, contextWindow: 100, percent: 30 },
+          peakContextTokens: 35,
+        },
       };
       snapshots.set(id, snapshot);
       return snapshot;
@@ -231,6 +236,8 @@ describe("RuntimeSubagentClient", () => {
         cwd: "/repo",
         toolUses: 2,
         tokensTotal: 42,
+        contextUsage: { tokens: 30, contextWindow: 100, percent: 30 },
+        peakContextTokens: 35,
       }),
     ]);
   });

@@ -17,6 +17,7 @@ import type {
   SubagentRuntime,
   SubagentRuntimeStatus,
 } from "./runtime.js";
+import { contextUsageLabel, tokenLabel } from "./roster.js";
 
 const terminalStatuses = new Set<SubagentRuntimeStatus>([
   "completed",
@@ -191,7 +192,7 @@ export function formatListRows(snapshots: RuntimeSnapshot[]): string[] {
       rows.map((row) => row.elapsed),
     ),
     usage: maxWidth(
-      "turns/tokens",
+      "turns/context",
       rows.map((row) => row.usage),
     ),
     tool: maxWidth(
@@ -399,7 +400,8 @@ class AgentInspectorOverlay implements Component {
     const { snapshot } = inspection;
     const lines = [
       this.theme.fg("dim", "[Status]"),
-      `Elapsed: ${elapsedLabel(snapshot)} · Turns/tokens: ${usageLabel(snapshot)} · Active tool: ${snapshot.health?.activeTool ?? "none"}`,
+      `Elapsed: ${elapsedLabel(snapshot)} · Turns/context: ${usageLabel(snapshot)} · Active tool: ${snapshot.health?.activeTool ?? "none"}`,
+      usageDetailLabel(snapshot),
       `Owner: ${ownerLabel(snapshot.owner)}`,
       `Last activity: ${snapshot.health?.lastActivity ?? "unknown"}`,
       transcriptLabel(snapshot),
@@ -531,9 +533,14 @@ function elapsedLabel(snapshot: RuntimeSnapshot): string {
 }
 
 function usageLabel(snapshot: RuntimeSnapshot): string {
-  const turns = snapshot.health?.turns;
-  const tokens = snapshot.health?.tokensTotal;
-  return `${turns ?? "-"}/${tokens ?? "-"}`;
+  return `${snapshot.health?.turns ?? "-"}/${contextUsageLabel(snapshot)}`;
+}
+
+function usageDetailLabel(snapshot: RuntimeSnapshot): string {
+  const health = snapshot.health;
+  const peak = tokenLabel(health?.peakContextTokens);
+  const cumulative = tokenLabel(health?.tokensTotal);
+  return `Peak context: ${peak} · Cumulative tokens: ${cumulative}`;
 }
 
 function transcriptLabel(snapshot: RuntimeSnapshot): string {
