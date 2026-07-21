@@ -637,7 +637,7 @@ function clampConcurrency(
   config: ImplementConfig,
 ): number {
   const HARD_MAX = 8;
-  const fromConfig = config.maxParallel ?? 3;
+  const fromConfig = config.workerConcurrency ?? config.maxParallel ?? 3;
   const base = Math.min(fromConfig, HARD_MAX);
   if (plannerProposed !== undefined) {
     return Math.min(plannerProposed, base);

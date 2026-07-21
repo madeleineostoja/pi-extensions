@@ -1316,7 +1316,7 @@ describe("selectStrategy - planner prompt content", () => {
 });
 
 describe("selectStrategy - concurrency clamping", () => {
-  it("clamps effective concurrency to min(config.maxParallel, 8)", async () => {
+  it("uses configured worker concurrency to constrain candidate overlap", async () => {
     const subagents = makeSubagents(
       JSON.stringify(
         makeManifest({
@@ -1335,7 +1335,7 @@ describe("selectStrategy - concurrency clamping", () => {
       planHash: "hash",
       repoRoot: "/repo",
       baseSha: "abc",
-      config: { maxParallel: 3 },
+      config: { workerConcurrency: 3 },
       roles: makeRoles(),
       subagents,
       paths: makeStatePaths(),
@@ -1348,7 +1348,7 @@ describe("selectStrategy - concurrency clamping", () => {
     }
   });
 
-  it("clamps for auto mode with planner-proposed maxConcurrency", async () => {
+  it("uses concurrency one with the same planner and manifest path", async () => {
     const subagents = makeSubagents(
       JSON.stringify(
         makeManifest({
@@ -1372,15 +1372,16 @@ describe("selectStrategy - concurrency clamping", () => {
       planHash: "hash",
       repoRoot: "/repo",
       baseSha: "abc",
-      config: { maxParallel: 2 },
+      config: { workerConcurrency: 1 },
       roles: makeRoles(),
       subagents,
       paths: makeStatePaths(),
       runId: "r1",
       updateState: () => ({}),
     });
-    if (result.mode === "parallel") {
-      expect(result.maxConcurrency).toBeLessThanOrEqual(2);
+    expect(result.mode).toBe("serial");
+    if (result.mode === "serial") {
+      expect(result.maxConcurrency).toBe(1);
     }
   });
 });

@@ -279,12 +279,6 @@ export const canonicalRunStateSchema = z
 export type CandidateRef = z.infer<typeof candidateRefSchema>;
 export type CanonicalRunState = z.infer<typeof canonicalRunStateSchema>;
 export type CanonicalTaskDefinition = z.infer<typeof taskDefinitionSchema>;
-export type LegacyRunProjection = {
-  mode: "serial" | "parallel";
-  currentPhase: CanonicalRunState["runtime"]["phase"];
-  maxConcurrency: number;
-  taskStatuses: Record<string, string>;
-};
 
 export class RunStateError extends Error {
   constructor(
@@ -446,26 +440,6 @@ export function validateCanonicalRunState(
     );
   }
   return structuredClone(state);
-}
-
-export function legacyRunProjection(
-  state: CanonicalRunState,
-): LegacyRunProjection {
-  return {
-    mode:
-      state.run.effectiveWorkerConcurrency === 1 ||
-      isPlanOrderChain(state.graph.tasks)
-        ? "serial"
-        : "parallel",
-    currentPhase: state.runtime.phase,
-    maxConcurrency: state.run.effectiveWorkerConcurrency,
-    taskStatuses: Object.fromEntries(
-      Object.entries(state.runtime.tasks).map(([taskId, task]) => [
-        taskId,
-        task.phase,
-      ]),
-    ),
-  };
 }
 
 export function canCleanupCanonicalRun(state: CanonicalRunState): boolean {
@@ -784,18 +758,6 @@ function invariantIssues(
     }
   }
   return issues;
-}
-
-function isPlanOrderChain(tasks: CanonicalTaskDefinition[]): boolean {
-  const ordered = [...tasks].sort(
-    (left, right) => left.planIndex - right.planIndex,
-  );
-  return ordered.every((task, index) =>
-    index === 0
-      ? task.dependsOn.length === 0
-      : task.dependsOn.length === 1 &&
-        task.dependsOn[0] === ordered[index - 1]?.id,
-  );
 }
 
 function hasCycle(tasks: CanonicalTaskDefinition[]): boolean {

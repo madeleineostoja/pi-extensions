@@ -12,6 +12,7 @@ export type RoleConfig = {
 export type ImplementConfig = {
   implementer?: RoleConfig;
   reviewer?: RoleConfig;
+  workerConcurrency?: number;
   maxParallel?: number;
   verifyCommand?: string;
   planner?: RoleConfig;
@@ -74,13 +75,28 @@ export function parseConfig(raw: string): {
     const object = parsed as Record<string, unknown>;
     const config: ImplementConfig = {};
     const warningParts: string[] = [];
+    const notices: string[] = [];
 
-    if (object.maxParallel !== undefined) {
-      const mp = object.maxParallel;
-      if (typeof mp === "number" && Number.isInteger(mp) && mp > 0) {
-        config.maxParallel = Math.min(mp, HARD_MAX_PARALLEL);
+    const configuredWorkerConcurrency =
+      object.workerConcurrency ?? object.maxParallel;
+    if (configuredWorkerConcurrency !== undefined) {
+      if (
+        typeof configuredWorkerConcurrency === "number" &&
+        Number.isInteger(configuredWorkerConcurrency) &&
+        configuredWorkerConcurrency > 0
+      ) {
+        config.workerConcurrency = Math.min(
+          configuredWorkerConcurrency,
+          HARD_MAX_PARALLEL,
+        );
+        if (
+          object.workerConcurrency === undefined &&
+          object.maxParallel !== undefined
+        ) {
+          notices.push("maxParallel is deprecated; use workerConcurrency");
+        }
       } else {
-        warningParts.push("maxParallel must be a positive integer");
+        warningParts.push("workerConcurrency must be a positive integer");
       }
     }
 
@@ -147,9 +163,13 @@ export function parseConfig(raw: string): {
     }
     return {
       config,
-      warning: warningParts.length
-        ? `Invalid config fields ignored: ${warningParts.join(", ")}.`
-        : undefined,
+      warning:
+        [
+          ...(warningParts.length
+            ? [`Invalid config fields ignored: ${warningParts.join(", ")}.`]
+            : []),
+          ...notices.map((notice) => `Config notice: ${notice}.`),
+        ].join(" ") || undefined,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -160,10 +180,13 @@ export function parseConfig(raw: string): {
   }
 }
 
-export function resolveMaxParallel(config: ImplementConfig): number {
-  const fromConfig = config.maxParallel ?? DEFAULT_MAX_PARALLEL;
+export function resolveWorkerConcurrency(config: ImplementConfig): number {
+  const fromConfig =
+    config.workerConcurrency ?? config.maxParallel ?? DEFAULT_MAX_PARALLEL;
   return Math.min(fromConfig, HARD_MAX_PARALLEL);
 }
+
+export const resolveMaxParallel = resolveWorkerConcurrency;
 
 export function readConfig(agentDir: string): ConfigReadResult {
   const path = getConfigPath(agentDir);
@@ -282,8 +305,8 @@ export function formatConfigStatus(
       lines.push(`Warning: ${defaultReviewerWarning}`);
     }
   }
-  if (result.config.maxParallel !== undefined) {
-    lines.push(`Max parallel: ${result.config.maxParallel}`);
+  if (result.config.workerConcurrency !== undefined) {
+    lines.push(`Worker concurrency: ${result.config.workerConcurrency}`);
   }
   if (result.config.verifyCommand) {
     lines.push(`Verify command: ${result.config.verifyCommand}`);

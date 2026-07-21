@@ -33,7 +33,7 @@ Plan paths passed directly must not contain spaces. Use the interactive menu, a 
 
 A progressive planner derives a dependency graph and worker-concurrency limit, inspecting the repository only when needed. Invalid planner output, planner failures, and invalid graphs fall back to concurrency one with a plan-order dependency chain. Set worker concurrency to one in configuration when no task overlap is wanted.
 
-Independent tasks run concurrently up to `maxParallel` from config, with a hard maximum of `8`. Each autonomous worker runs from its assigned task worktree as its current working directory; pi-implement owns those worktrees and validates the boundaries around them.
+Independent tasks run concurrently up to `workerConcurrency` from config, with a hard maximum of `8`. `maxParallel` is accepted only as a deprecated configuration alias and is never persisted. Each autonomous worker runs from its assigned task worktree as its current working directory; pi-implement owns those worktrees and validates the boundaries around them.
 
 ## Execution planning and compiled task contracts
 
@@ -64,7 +64,7 @@ If the overall reviewer requests changes, pi-implement creates an isolated cumul
 
 In parallel mode, the planner produces a dependency graph and a scheduler runs ready tasks concurrently, up to the effective concurrency limit. Each task gets its own branch and worktree, and the worker's `cwd` is that task worktree so file reads, commands, and edits target the isolated checkout.
 
-Integration is serialized and plan-ordered: approved task commits are cherry-picked onto the main checkout one at a time, validated, and committed. Parallel orchestration intentionally narrows broad reviewer/main-HEAD guards while a worker is isolated: the main checkout can advance as other tasks land, but each worker is still fenced to its task worktree and the candidate commit it is responsible for. If validation fails or integration mutates plan artifacts/the staged diff unexpectedly, the integration is rolled back and the task is sent for bounded rework (or blocked once its integration-attempt ceiling is reached). A final validation pass runs before the overall review.
+Canonical integration is serialized per run through an owned staging worktree. Approved candidates are applied, validated, and committed there while the target checkout remains unchanged. Publication is a short Git-native fast-forward after target identity, branch, cleanliness, and protected-artifact checks. Retained legacy execution paths still use the older integration behavior while the refactor is being completed. A final validation pass runs before the overall review.
 
 ## Run ownership and recovery
 
@@ -72,7 +72,7 @@ Each run owns the checkout and branch from which it starts. pi-implement rejects
 
 The durable `canonical-run-state.json` aggregate is the lifecycle authority. Events, status UI, Markdown artifacts, and source-plan checkboxes are projections and may be rebuilt; they are never used to infer task completion, a reviewed candidate, or an integration result. State is revisioned, strictly validated, atomically replaced, and rejects historical/corrupt retained runs with start-over or cleanup guidance. Required checkbox/status projection and owned-workspace cleanup are tracked as recoverable debt rather than discarding landed work.
 
-While a run is active, external mutation of that run's target checkout, target branch, or pi-owned worktrees is unsupported. Unrelated linked worktrees and branches remain usable. An ambiguous lock, ownership record, or target mutation pauses the run and retains its approved candidate.
+While a run is active, user or third-party mutation of that run's target checkout, target branch, or pi-owned refs/worktrees is unsupported. Unrelated linked worktrees and branches remain usable. Persistent locks, unexplained target changes, or ambiguous ownership pause the run with approved candidates retained. pi-implement never automatically deletes Git lock files. Old retained runs use an incompatible state format and require start-over or explicit cleanup.
 
 ## Safety boundaries
 
@@ -81,14 +81,15 @@ Implementer and reviewer prompts are self-contained contracts that instruct suba
 - Implementers may not change HEAD, dirty the main checkout outside their task worktree, or modify plan artifacts — any of these blocks the run.
 - Reviewers are read-only; benign reviewer mutations to the candidate diff are auto-healed back to the reviewed state, and unhealable changes block the run.
 - The overall reviewer must leave HEAD, the staged state, the worktree, and plan artifacts unchanged.
-- Internally owned workers run through `pi-subagents`, inherit the host extension environment, and use pi-implement-selected tool sets: implementation and self-heal roles use the host's active tools, while review and planning roles use read-oriented tools.
+- Internally owned workers run through `pi-subagents`, inherit the host extension environment, and use pi-implement-selected tool sets: implementation and self-heal roles use the host's active tools, while review and planning roles use read-oriented tools. The remaining mutating self-heal role is a legacy mechanism pending removal; canonical integration uses deterministic reconciliation.
 
 Plan checkbox updates are intentionally not part of any commit. Plan files may be gitignored or live outside the repository, as long as `/implement` is run from inside the target repository.
 
 ## Runtime integration and requirements
 
 - The current directory must be inside a git repo with a clean worktree, ignoring the source plan artifact and any validated supporting plan artifacts.
-- `pi-implement` uses the bundled first-party `pi-subagents` runtime directly. Installing the root `pi-extensions` bundle registers `pi-subagents` before `pi-implement`, so implementer, reviewer, planner, and self-heal workers run in-process without external installation or RPC setup.
+- Node.js 24 or newer is required.
+- `pi-implement` uses the bundled first-party `pi-subagents` runtime directly. Installing the root `pi-extensions` bundle registers `pi-subagents` before `pi-implement`, so implementer, reviewer, planner, and legacy self-heal workers run in-process without external installation or RPC setup.
 - Worker status is surfaced through `pi-implement` progress messages, the `/implement` action menu, and the shared `/agents` dashboard. Internally owned workers are intentionally quiet in the main transcript except for pi-implement's orchestration updates.
 
 ## Plan format and task scope
@@ -164,21 +165,21 @@ Global config lives at:
     "type": "Explore",
     "thinking": "low"
   },
+  "workerConcurrency": 3,
+  "verifyCommand": "npm test",
   "selfHeal": {
     "model": "provider/model-id",
     "type": "general-purpose",
     "thinking": "medium"
-  },
-  "maxParallel": 3,
-  "verifyCommand": "npm test"
+  }
 }
 ```
 
-pi-implement owns its role model, type, and thinking configuration separately from public `pi-subagents` defaults. If a role model is omitted, pi-implement does not pass a model override, so `pi-subagents` uses the role's subagent type default model (and then the current session model if that type has no default). If a role thinking value is omitted, the subagent session uses the current session default. If a role type is omitted, `general-purpose` is used for implementer, reviewer, and self-heal roles, and `Explore` is used for the planner. The runtime prompts are self-contained enough to work with `general-purpose`, but reviewer safety is only instruction-enforced in that mode; configure `reviewer.type` to a dedicated read-only review agent for stronger isolation.
+pi-implement owns its role model, type, and thinking configuration separately from public `pi-subagents` defaults. If a role model is omitted, pi-implement does not pass a model override, so `pi-subagents` uses the role's subagent type default model (and then the current session model if that type has no default). If a role thinking value is omitted, the subagent session uses the current session default. If a role type is omitted, `general-purpose` is used for implementer, reviewer, and legacy self-heal roles, and `Explore` is used for the planner. The runtime prompts are self-contained enough to work with `general-purpose`, but reviewer safety is only instruction-enforced in that mode; configure `reviewer.type` to a dedicated read-only review agent for stronger isolation.
 
 Implementer and reviewer workers can use injected read-only `explore` on demand for broad map-building or targeted context checks. Exploration is not configured separately in pi-implement and does not expand task scope.
 
-`maxParallel` defaults to `3` and is clamped to a hard maximum of `8`. Invalid values are ignored with a warning.
+`workerConcurrency` defaults to `3` and is clamped to a hard maximum of `8`. It controls candidate-worker overlap only; target publication remains serialized per run. Invalid values are ignored with a warning. `maxParallel` remains an input-only deprecated alias for user convenience.
 
 Per-task review is reviewer-led and triage-first. Reviewers may approve structurally low-risk actual diffs quickly; otherwise they continue into a full review. The final whole-feature overall review remains mandatory after all tasks land.
 

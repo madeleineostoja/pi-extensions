@@ -4,7 +4,7 @@ import {
   getConfigPath,
   parseConfig,
   resolveEffectiveRoles,
-  resolveMaxParallel,
+  resolveWorkerConcurrency,
   reviewerDefaultTypeWarning,
 } from "./config.js";
 
@@ -39,22 +39,24 @@ describe("config", () => {
     });
   });
 
-  it("parses maxParallel", () => {
-    expect(parseConfig(JSON.stringify({ maxParallel: 5 })).config).toEqual({
-      maxParallel: 5,
-    });
+  it("parses worker concurrency", () => {
+    expect(
+      parseConfig(JSON.stringify({ workerConcurrency: 5 })).config,
+    ).toEqual({ workerConcurrency: 5 });
   });
 
-  it("clamps maxParallel to hard maximum", () => {
-    expect(parseConfig(JSON.stringify({ maxParallel: 15 })).config).toEqual({
-      maxParallel: 8,
-    });
+  it("accepts maxParallel only as a deprecated input alias", () => {
+    const parsed = parseConfig(JSON.stringify({ maxParallel: 15 }));
+    expect(parsed.config).toEqual({ workerConcurrency: 8 });
+    expect(parsed.warning).toBe(
+      "Config notice: maxParallel is deprecated; use workerConcurrency.",
+    );
   });
 
-  it("ignores invalid maxParallel with warning", () => {
-    const parsed = parseConfig(JSON.stringify({ maxParallel: 0 }));
+  it("ignores invalid worker concurrency with warning", () => {
+    const parsed = parseConfig(JSON.stringify({ workerConcurrency: 0 }));
     expect(parsed.config).toEqual({});
-    expect(parsed.warning).toContain("maxParallel");
+    expect(parsed.warning).toContain("workerConcurrency");
   });
 
   it("parses verifyCommand", () => {
@@ -180,11 +182,11 @@ describe("config", () => {
     });
   });
 
-  it("resolves maxParallel with defaults", () => {
-    expect(resolveMaxParallel({})).toBe(3);
-    expect(resolveMaxParallel({ maxParallel: 6 })).toBe(6);
-    expect(resolveMaxParallel({ maxParallel: 2 })).toBe(2);
-    expect(resolveMaxParallel({ maxParallel: 10 })).toBe(8);
+  it("resolves worker concurrency with defaults", () => {
+    expect(resolveWorkerConcurrency({})).toBe(3);
+    expect(resolveWorkerConcurrency({ workerConcurrency: 6 })).toBe(6);
+    expect(resolveWorkerConcurrency({ workerConcurrency: 2 })).toBe(2);
+    expect(resolveWorkerConcurrency({ workerConcurrency: 10 })).toBe(8);
   });
 
   it("warns when reviewer uses the default general-purpose subagent", () => {
@@ -206,21 +208,21 @@ describe("config", () => {
     ).toBeUndefined();
   });
 
-  it("formats config status without scout lines", () => {
+  it("formats config status with worker concurrency", () => {
     const status = formatConfigStatus({
       path: "/x/config.json",
       config: {
         implementer: { thinking: "high" },
         reviewer: { thinking: "low" },
         planner: { thinking: "medium" },
-        selfHeal: { thinking: "xhigh" },
+        workerConcurrency: 2,
       },
     });
     expect(status).toContain("Config: /x/config.json");
     expect(status).toContain("Implementer thinking: high");
     expect(status).toContain("Reviewer thinking: low");
     expect(status).toContain("Planner thinking: medium");
-    expect(status).toContain("Self-heal thinking: xhigh");
+    expect(status).toContain("Worker concurrency: 2");
     expect(status).not.toContain("Scout");
     expect(status).not.toContain("Task review");
     expect(status).not.toContain("skip thresholds");

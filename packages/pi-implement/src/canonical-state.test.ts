@@ -7,7 +7,6 @@ import {
   RunStore,
   StaleRunStateRevisionError,
   canCleanupCanonicalRun,
-  legacyRunProjection,
   loadCanonicalRunState,
   type CanonicalRunState,
 } from "./canonical-state.js";
@@ -97,10 +96,6 @@ describe("RunStore", () => {
     }));
     expect(cleared.projectionDebt).toEqual([]);
     expect(canCleanupCanonicalRun(cleared)).toBe(true);
-    expect(legacyRunProjection(cleared)).toMatchObject({
-      mode: "serial",
-      maxConcurrency: 2,
-    });
   });
 
   it("serializes separate in-process stores and rejects stale revisions", async () => {

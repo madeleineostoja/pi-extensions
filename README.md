@@ -24,7 +24,7 @@ Personal extensions for the [Pi](https://github.com/earendil-works/pi) agent har
 
 ## pi-implement run safety
 
-`pi-implement` scopes each active run to its starting checkout and branch. Separate linked worktrees on separate branches may run concurrently; a second run against the same checkout is rejected. Its canonical revisioned state is authoritative for recovery, while events, UI, artifacts, and plan checkboxes are rebuildable projections. See the [pi-implement README](packages/pi-implement/README.md#run-ownership-and-recovery) for operating constraints.
+`pi-implement` requires Node.js 24+ and scopes each active run to its starting checkout and branch. Separate linked worktrees on separate branches may run concurrently; a second run against the same checkout is rejected. Candidate-worker concurrency controls overlap, while staging and publication remain serialized per run. User or third-party mutation of an active target checkout, branch, or pi-owned workspace is unsupported; persistent locks or unexplained target changes pause with approved candidates retained, and pi-implement never removes Git lock files. Its canonical revisioned state is authoritative for recovery, while events, UI, artifacts, and plan checkboxes are rebuildable projections. Old retained runs require start-over. See the [pi-implement README](packages/pi-implement/README.md#run-ownership-and-recovery) for operating constraints.
 
 ## Install
 
