@@ -94,7 +94,7 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
     status: snapshot.status,
     tool: snapshot.health?.activeTool ?? "-",
     turns: String(snapshot.health?.turns ?? "-"),
-    context: contextUsageLabel(snapshot),
+    usage: usageLabel(snapshot),
     elapsed: elapsedLabel(snapshot),
   }));
   if (rows.length === 0) {
@@ -117,9 +117,9 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
       "turns",
       rows.map((row) => row.turns),
     ),
-    context: maxWidth(
-      "context",
-      rows.map((row) => row.context),
+    usage: maxWidth(
+      "usage",
+      rows.map((row) => row.usage),
     ),
     elapsed: maxWidth(
       "elapsed",
@@ -132,7 +132,7 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
       "status".padEnd(widths.status),
       "tool".padEnd(widths.tool),
       "turns".padStart(widths.turns),
-      "context".padStart(widths.context),
+      "usage".padStart(widths.usage),
       "elapsed".padStart(widths.elapsed),
       "description",
     ].join("  "),
@@ -142,7 +142,7 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
         row.status.padEnd(widths.status),
         row.tool.padEnd(widths.tool),
         row.turns.padStart(widths.turns),
-        row.context.padStart(widths.context),
+        row.usage.padStart(widths.usage),
         row.elapsed.padStart(widths.elapsed),
         row.description,
       ].join("  "),
@@ -229,24 +229,38 @@ export function contextUsageLabel(snapshot: RuntimeSnapshot): string {
   return tokens === undefined || tokens === null ? "?" : tokenLabel(tokens);
 }
 
+export function usageLabel(snapshot: RuntimeSnapshot): string {
+  return `${costLabel(snapshot.health?.estimatedCost)} (${tokenLabel(snapshot.health?.peakContextTokens)})`;
+}
+
+export function costLabel(value: number | undefined): string {
+  return value === undefined ? "-" : `$${value.toFixed(2)}`;
+}
+
 export function tokenLabel(value: number | undefined): string {
   if (value === undefined) {
     return "-";
   }
-  if (value < 1000) {
-    return String(value);
+  const rounded = roundToTwoSignificantFigures(value);
+  if (rounded < 1000) {
+    return String(rounded);
   }
-  if (value < 1_000_000) {
-    return compactTokenLabel(value / 1000, "k");
+  if (rounded < 1_000_000) {
+    return compactTokenLabel(rounded / 1000, "k");
   }
-  return compactTokenLabel(value / 1_000_000, "M");
+  return compactTokenLabel(rounded / 1_000_000, "M");
+}
+
+function roundToTwoSignificantFigures(value: number): number {
+  if (value === 0) {
+    return 0;
+  }
+  const power = 10 ** (Math.ceil(Math.log10(Math.abs(value))) - 2);
+  return Math.round(value / power) * power;
 }
 
 function compactTokenLabel(value: number, suffix: string): string {
-  return `${value
-    .toFixed(2)
-    .replace(/\.00$/, "")
-    .replace(/(\.\d)0$/, "$1")}${suffix}`;
+  return `${value.toFixed(value >= 10 ? 0 : 1).replace(/\.0$/, "")}${suffix}`;
 }
 
 function maxWidth(label: string, values: string[]): number {

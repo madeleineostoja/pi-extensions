@@ -79,6 +79,7 @@ export type RuntimeHealth = {
   turns?: number;
   toolUses?: number;
   tokensTotal?: number;
+  estimatedCost?: number;
   contextUsage?: RuntimeContextUsage;
   peakContextTokens?: number;
   activeTool?: string;
@@ -181,6 +182,7 @@ type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
     health?: RuntimeHealth;
     unsubscribeSession?: () => void;
     retainedMessages?: readonly unknown[];
+    accountedUsage: WeakSet<object>;
     initialization?: Promise<void>;
     resolveInitialization?: () => void;
     finalization?: Promise<RuntimeSnapshot>;
@@ -367,6 +369,38 @@ function usageTokens(value: unknown): number | undefined {
   return sum > 0 ? sum : undefined;
 }
 
+function usageCost(value: unknown): number | undefined {
+  if (!isObject(value) || !isObject(value.cost)) {
+    return undefined;
+  }
+  return finiteNumber(value.cost.total);
+}
+
+function accountMessageUsage(record: RuntimeRecord, message: unknown): void {
+  if (
+    !isObject(message) ||
+    message.role !== "assistant" ||
+    record.accountedUsage.has(message)
+  ) {
+    return;
+  }
+  const tokens = usageTokens(message.usage);
+  const cost = usageCost(message.usage);
+  if (tokens === undefined && cost === undefined) {
+    return;
+  }
+  record.accountedUsage.add(message);
+  record.health = {
+    ...record.health,
+    ...(tokens === undefined
+      ? {}
+      : { tokensTotal: (record.health?.tokensTotal ?? 0) + tokens }),
+    ...(cost === undefined
+      ? {}
+      : { estimatedCost: (record.health?.estimatedCost ?? 0) + cost }),
+  };
+}
+
 function textPreview(value: unknown, max = 600): string | undefined {
   let text: string;
   if (typeof value === "string") {
@@ -446,7 +480,6 @@ function refreshHealth(record: RuntimeRecord): void {
     (message) => isObject(message) && message.role === "toolResult",
   );
   let toolUses = 0;
-  let tokensTotal = 0;
   let activeTool: string | undefined;
   let lastActivity: string | undefined;
   let lastAssistantText: string | undefined;
@@ -461,10 +494,7 @@ function refreshHealth(record: RuntimeRecord): void {
       );
     }
     if (message.role === "assistant") {
-      const usage = usageTokens(message.usage);
-      if (usage !== undefined) {
-        tokensTotal += usage;
-      }
+      accountMessageUsage(record, message);
       const preview = textPreview(messageText(message));
       if (preview) {
         lastAssistantText = preview;
@@ -488,7 +518,6 @@ function refreshHealth(record: RuntimeRecord): void {
     ...record.health,
     turns: assistantMessages.length,
     toolUses: toolUses || toolResults.length || undefined,
-    tokensTotal: tokensTotal || undefined,
     activeTool: activeTool ?? record.health?.activeTool,
     lastActivity: latestTimestamp(record.health?.lastActivity, lastActivity),
     lastAssistantText:
@@ -777,6 +806,7 @@ export class SubagentRuntime {
       queuedAt: timestamp,
       updatedAt: timestamp,
       steeringQueue: [],
+      accountedUsage: new WeakSet(),
       inspectListeners: new Set(),
     };
     this.#records.set(id, record);
@@ -1222,6 +1252,12 @@ export class SubagentRuntime {
               : typeof candidate?.toolName === "string"
                 ? candidate.toolName
                 : undefined;
+          if (
+            candidate?.type === "message_end" &&
+            isObject(candidate.message)
+          ) {
+            accountMessageUsage(record, candidate.message);
+          }
           if (
             typeof candidate?.type === "string" &&
             [

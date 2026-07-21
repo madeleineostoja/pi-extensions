@@ -74,6 +74,7 @@ export type AgentSnapshot = {
   description?: string;
   toolUses?: number;
   tokensTotal?: number;
+  estimatedCost?: number;
   contextUsage?: RuntimeContextUsage;
   peakContextTokens?: number;
   compactionCount?: number;
@@ -259,6 +260,7 @@ function toAgentSnapshot(snapshot: RuntimeSnapshot): AgentSnapshot {
     description: snapshot.description,
     toolUses: snapshot.health?.toolUses,
     tokensTotal: snapshot.health?.tokensTotal,
+    estimatedCost: snapshot.health?.estimatedCost,
     contextUsage: snapshot.health?.contextUsage,
     peakContextTokens: snapshot.health?.peakContextTokens,
     cwd: snapshot.cwd,

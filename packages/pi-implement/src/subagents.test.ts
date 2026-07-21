@@ -18,6 +18,7 @@ function makeRuntime() {
         health: {
           toolUses: 2,
           tokensTotal: 42,
+          estimatedCost: 0.12,
           contextUsage: { tokens: 30, contextWindow: 100, percent: 30 },
           peakContextTokens: 35,
         },
@@ -236,6 +237,7 @@ describe("RuntimeSubagentClient", () => {
         cwd: "/repo",
         toolUses: 2,
         tokensTotal: 42,
+        estimatedCost: 0.12,
         contextUsage: { tokens: 30, contextWindow: 100, percent: 30 },
         peakContextTokens: 35,
       }),

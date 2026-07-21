@@ -17,7 +17,7 @@ import type {
   SubagentRuntime,
   SubagentRuntimeStatus,
 } from "./runtime.js";
-import { contextUsageLabel, tokenLabel } from "./roster.js";
+import { contextUsageLabel, costLabel, tokenLabel } from "./roster.js";
 
 const terminalStatuses = new Set<SubagentRuntimeStatus>([
   "completed",
@@ -170,7 +170,7 @@ export function formatListRows(snapshots: RuntimeSnapshot[]): string[] {
     status: snapshot.status,
     type: `${snapshot.type}${roleLabel(snapshot.owner)}`,
     elapsed: elapsedLabel(snapshot),
-    usage: usageLabel(snapshot),
+    usage: turnsContextLabel(snapshot),
     tool: snapshot.health?.activeTool ?? "-",
     description: snapshot.description,
   }));
@@ -234,7 +234,8 @@ export function formatDetail(
     `CWD: ${snapshot.cwd}`,
     `Extension binding: ${snapshot.extensionBinding}`,
     `Elapsed: ${elapsedLabel(snapshot)}`,
-    `Turns/tokens: ${usageLabel(snapshot)}`,
+    `Turns/context: ${turnsContextLabel(snapshot)}`,
+    usageDetailLabel(snapshot),
     `Active tool: ${snapshot.health?.activeTool ?? "none"}`,
     `Last activity: ${snapshot.health?.lastActivity ?? "unknown"}`,
   ];
@@ -400,7 +401,7 @@ class AgentInspectorOverlay implements Component {
     const { snapshot } = inspection;
     const lines = [
       this.theme.fg("dim", "[Status]"),
-      `Elapsed: ${elapsedLabel(snapshot)} · Turns/context: ${usageLabel(snapshot)} · Active tool: ${snapshot.health?.activeTool ?? "none"}`,
+      `Elapsed: ${elapsedLabel(snapshot)} · Turns/context: ${turnsContextLabel(snapshot)} · Active tool: ${snapshot.health?.activeTool ?? "none"}`,
       usageDetailLabel(snapshot),
       `Owner: ${ownerLabel(snapshot.owner)}`,
       `Last activity: ${snapshot.health?.lastActivity ?? "unknown"}`,
@@ -532,15 +533,16 @@ function elapsedLabel(snapshot: RuntimeSnapshot): string {
   return `${minutes}m ${remainder.toString().padStart(2, "0")}s`;
 }
 
-function usageLabel(snapshot: RuntimeSnapshot): string {
+function turnsContextLabel(snapshot: RuntimeSnapshot): string {
   return `${snapshot.health?.turns ?? "-"}/${contextUsageLabel(snapshot)}`;
 }
 
 function usageDetailLabel(snapshot: RuntimeSnapshot): string {
   const health = snapshot.health;
+  const cost = costLabel(health?.estimatedCost);
   const peak = tokenLabel(health?.peakContextTokens);
   const cumulative = tokenLabel(health?.tokensTotal);
-  return `Peak context: ${peak} · Cumulative tokens: ${cumulative}`;
+  return `Estimated API cost: ${cost} · Peak context: ${peak} · Cumulative tokens: ${cumulative}`;
 }
 
 function transcriptLabel(snapshot: RuntimeSnapshot): string {

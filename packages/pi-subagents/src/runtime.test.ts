@@ -350,7 +350,12 @@ describe("SubagentRuntime", () => {
         {
           role: "assistant",
           timestamp: 1_700_000_000_000,
-          usage: { input: 2, output: 3, cacheRead: 5 },
+          usage: {
+            input: 2,
+            output: 3,
+            cacheRead: 5,
+            cost: { total: 0.25 },
+          },
           content: [
             { type: "text", text: "Working on it" },
             { type: "toolCall", name: "read" },
@@ -366,6 +371,7 @@ describe("SubagentRuntime", () => {
       turns: 1,
       toolUses: 1,
       tokensTotal: 10,
+      estimatedCost: 0.25,
       contextUsage: { tokens: 8, contextWindow: 100, percent: 8 },
       peakContextTokens: 8,
       activeTool: "read",
@@ -397,14 +403,15 @@ describe("SubagentRuntime", () => {
             output: 0,
             cacheRead: 0,
             cacheWrite: 0,
-            total: 0,
+            total: 0.5,
           },
         },
       } as AgentSession["messages"][number],
     ];
     expect(runtime.snapshots()[0]?.health).toMatchObject({
       turns: 1,
-      tokensTotal: 12,
+      tokensTotal: 22,
+      estimatedCost: 0.75,
       contextUsage: { tokens: 20, contextWindow: 100, percent: 20 },
       peakContextTokens: 20,
       lastAssistantText: "Updated answer",

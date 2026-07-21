@@ -52,6 +52,7 @@ export type AgentRuntimeSnapshot = {
   description?: string;
   toolUses?: number;
   tokensTotal?: number;
+  estimatedCost?: number;
   contextUsage?: {
     tokens: number | null;
     contextWindow: number;
@@ -462,8 +463,11 @@ export function formatWidgetLines(
       if (snapshot?.toolUses !== undefined) {
         line += ` \u00b7 ${snapshot.toolUses} tool`;
       }
-      if (snapshot?.contextUsage) {
-        line += ` \u00b7 ${formatContextUsage(snapshot.contextUsage)} ctx`;
+      if (
+        snapshot?.estimatedCost !== undefined ||
+        snapshot?.peakContextTokens !== undefined
+      ) {
+        line += ` \u00b7 ${formatUsage(snapshot)}`;
       }
       if (snapshot?.compactionCount !== undefined) {
         line += ` \u00b7 \u21ca${snapshot.compactionCount}`;
@@ -486,8 +490,11 @@ export function formatWidgetLines(
       if (snapshot?.toolUses !== undefined) {
         line += ` · ${snapshot.toolUses} tool`;
       }
-      if (snapshot?.contextUsage) {
-        line += ` · ${formatContextUsage(snapshot.contextUsage)} ctx`;
+      if (
+        snapshot?.estimatedCost !== undefined ||
+        snapshot?.peakContextTokens !== undefined
+      ) {
+        line += ` · ${formatUsage(snapshot)}`;
       }
       if (snapshot?.compactionCount !== undefined) {
         line += ` · \u21ca${snapshot.compactionCount}`;
@@ -509,17 +516,39 @@ export function formatWidgetLines(
   return lines;
 }
 
-function formatContextUsage(
-  usage: NonNullable<AgentRuntimeSnapshot["contextUsage"]>,
-): string {
-  return usage.tokens === null ? "?" : formatTokenCount(usage.tokens);
+function formatUsage(snapshot: AgentRuntimeSnapshot): string {
+  const cost =
+    snapshot.estimatedCost === undefined
+      ? "-"
+      : `$${snapshot.estimatedCost.toFixed(2)}`;
+  const peak =
+    snapshot.peakContextTokens === undefined
+      ? "-"
+      : formatTokenCount(snapshot.peakContextTokens);
+  return `${cost} (${peak})`;
 }
 
 function formatTokenCount(n: number): string {
-  if (n >= 1000) {
-    return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  const rounded = roundToTwoSignificantFigures(n);
+  if (rounded < 1000) {
+    return `${rounded}`;
   }
-  return `${n}`;
+  if (rounded < 1_000_000) {
+    return compactTokenCount(rounded / 1000, "k");
+  }
+  return compactTokenCount(rounded / 1_000_000, "M");
+}
+
+function roundToTwoSignificantFigures(value: number): number {
+  if (value === 0) {
+    return 0;
+  }
+  const power = 10 ** (Math.ceil(Math.log10(Math.abs(value))) - 2);
+  return Math.round(value / power) * power;
+}
+
+function compactTokenCount(value: number, suffix: string): string {
+  return `${value.toFixed(value >= 10 ? 0 : 1).replace(/\.0$/, "")}${suffix}`;
 }
 
 function formatDuration(ms: number): string {

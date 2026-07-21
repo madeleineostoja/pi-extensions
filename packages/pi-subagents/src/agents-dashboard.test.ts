@@ -215,6 +215,7 @@ describe("/agents dashboard", () => {
         health: {
           turns: 2,
           tokensTotal: 1200,
+          estimatedCost: 1.27,
           contextUsage: { tokens: 600, contextWindow: 1000, percent: 60 },
           activeTool: "read",
         },
@@ -326,6 +327,7 @@ describe("/agents dashboard", () => {
       health: {
         turns: 1,
         tokensTotal: 10,
+        estimatedCost: 0.1,
         contextUsage: { tokens: 8, contextWindow: 100, percent: 8 },
         peakContextTokens: 9,
         activeTool: "read",
@@ -354,6 +356,7 @@ describe("/agents dashboard", () => {
       activeTool: "bash",
       turns: 2,
       tokensTotal: 30,
+      estimatedCost: 1.27,
       contextUsage: { tokens: 20, contextWindow: 100, percent: 20 },
       peakContextTokens: 20,
       lastAssistantText: "second",
@@ -364,6 +367,7 @@ describe("/agents dashboard", () => {
     const rendered = ui.component?.render(80).join("\n") ?? "";
     expect(rendered).toContain("Active tool: bash");
     expect(rendered).toContain("Turns/context: 2/20");
+    expect(rendered).toContain("Estimated API cost: $1.27");
     expect(rendered).toContain("Peak context: 20");
     expect(rendered).toContain("Cumulative tokens: 30");
     expect(rendered).toContain("second");

@@ -25,6 +25,7 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
       activeTool: "read",
       turns: 2,
       tokensTotal: 123,
+      estimatedCost: 1.27,
       contextUsage: { tokens: 80, contextWindow: 1000, percent: 8 },
       peakContextTokens: 90,
     },
@@ -56,7 +57,8 @@ describe("subagent roster", () => {
     expect(rows.join("\n")).toContain("running");
     expect(rows.join("\n")).toContain("read");
     expect(rows.join("\n")).toContain("2");
-    expect(rows.join("\n")).toContain("80");
+    expect(rows.join("\n")).toContain("$1.27 (90)");
+    expect(rows.join("\n")).not.toContain("80");
     expect(rows.join("\n")).not.toContain("123");
     expect(rows.join("\n")).toContain("do work");
   });
@@ -75,35 +77,39 @@ describe("subagent roster", () => {
     expect(rows.join("\n")).not.toContain("hidden work");
   });
 
-  it("formats current context counts compactly", () => {
+  it("formats cost and peak context compactly", () => {
     const rows = formatRosterRows([
       snapshot({
         health: {
           activeTool: "read",
           turns: 2,
+          estimatedCost: 2.345,
           contextUsage: {
             tokens: 1420280,
             contextWindow: 2000000,
             percent: 71.014,
           },
+          peakContextTokens: 81790,
         },
       }),
       snapshot({
         health: {
           activeTool: "bash",
           turns: 3,
+          estimatedCost: 0,
           contextUsage: {
             tokens: null,
             contextWindow: 110000,
             percent: null,
           },
+          peakContextTokens: 1420280,
         },
       }),
     ]);
 
-    expect(rows.join("\n")).toContain("1.42M");
-    expect(rows.join("\n")).toContain("?");
-    expect(rows.join("\n")).not.toContain("1420.28k");
+    expect(rows.join("\n")).toContain("$2.35 (82k)");
+    expect(rows.join("\n")).toContain("$0.00 (1.4M)");
+    expect(rows.join("\n")).not.toContain("1.42M");
   });
 
   it("separates minutes and seconds in elapsed labels", () => {
@@ -148,11 +154,13 @@ describe("subagent roster", () => {
         health: {
           activeTool: "bash",
           turns: 3,
+          estimatedCost: 0.5,
           contextUsage: { tokens: 456, contextWindow: 1000, percent: 45.6 },
+          peakContextTokens: 456,
         },
       });
       expect(widget.render(120).join("\n")).toContain("bash");
-      expect(widget.render(120).join("\n")).toContain("456");
+      expect(widget.render(120).join("\n")).toContain("$0.50 (460)");
 
       snapshots[0] = snapshot({
         status: "completed",
