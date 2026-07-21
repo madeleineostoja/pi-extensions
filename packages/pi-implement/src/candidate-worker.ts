@@ -125,6 +125,7 @@ export async function approvedCandidateRef(args: {
   artifactRefs: string[];
   protectedPaths: string[];
   assessedAt: string;
+  reviewContext?: { contextId?: string; admittedFindingIds?: string[] };
 }): Promise<CandidateRef> {
   const {
     taskId,
@@ -137,6 +138,7 @@ export async function approvedCandidateRef(args: {
     artifactRefs,
     protectedPaths,
     assessedAt,
+    reviewContext,
   } = args;
   const commitSha = await git.head();
   const [treeSha, branch, clean, isDescendant] = await Promise.all([
@@ -192,6 +194,8 @@ export async function approvedCandidateRef(args: {
         outstandingFindingIds: convergence.outstandingIds,
         bestOutstandingCount: convergence.bestOutstandingCount,
         evidenceRefs: artifactRefs,
+        contextId: reviewContext?.contextId,
+        admittedFindingIds: reviewContext?.admittedFindingIds,
       },
       assessedAt,
     },

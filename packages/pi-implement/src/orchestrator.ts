@@ -47,6 +47,7 @@ import type { CommandResult, GitClient } from "./git.js";
 import { runCommand } from "./git-process.js";
 import {
   RunStore,
+  StaleRunStateRevisionError,
   type CandidateRef,
   type CanonicalRunState,
 } from "./canonical-state.js";
@@ -2431,6 +2432,14 @@ async function launchTaskWorker(
         artifactRefs: [],
         protectedPaths: taskPlanArtifacts,
         assessedAt: new Date().toISOString(),
+        reviewContext: {
+          contextId: deps.executionManifest
+            ? buildReviewResponsibilityContext(deps.executionManifest).contextId
+            : undefined,
+          admittedFindingIds: deps.canonicalRunStore
+            ?.read()
+            .reviewConvergence[taskId]?.findings.map((finding) => finding.id),
+        },
       });
       persistCanonicalTaskExecution(deps, taskId, task);
       return {
@@ -5804,21 +5813,33 @@ function removeActiveAgentPatch(prev: RunState, id: string): Partial<RunState> {
   };
 }
 
-function persistCanonicalReviewConvergence(
+async function persistCanonicalReviewConvergence(
   deps: OrchestratorDeps,
   taskId: string,
   convergence: Omit<CanonicalRunState["reviewConvergence"][string], "owner">,
-): void {
-  if (!deps.canonicalRunStore) {
+): Promise<void> {
+  const store = deps.canonicalRunStore;
+  if (!store) {
     return;
   }
-  deps.canonicalRunStore.updateSync((state) => ({
-    ...state,
-    reviewConvergence: {
-      ...state.reviewConvergence,
-      [taskId]: { owner: { kind: "task", taskId }, ...convergence },
-    },
-  }));
+  for (;;) {
+    const current = store.read();
+    try {
+      await store.update(current.revision, (state) => ({
+        ...state,
+        reviewConvergence: {
+          ...state.reviewConvergence,
+          [taskId]: { owner: { kind: "task", taskId }, ...convergence },
+        },
+      }));
+      return;
+    } catch (error) {
+      if (error instanceof StaleRunStateRevisionError) {
+        continue;
+      }
+      throw error;
+    }
+  }
 }
 
 function persistCanonicalTaskExecution(
@@ -5952,10 +5973,34 @@ async function runTaskWorker(args: {
       readTaskJson(deps.paths!, taskId)?.attempts ??
       0) + 1;
   let systemFailures = 0;
-  let convergence = currentTaskReviewMetadata(deps.paths, taskId)?.convergence;
+  const canonicalReview =
+    deps.canonicalRunStore?.read().reviewConvergence[taskId];
+  const convergence = canonicalReview
+    ? {
+        epoch: canonicalReview.epoch,
+        state:
+          canonicalReview.stage === "initial_review" &&
+          canonicalReview.findings.length === 0
+            ? undefined
+            : {
+                round: canonicalReview.round,
+                findings: canonicalReview.findings,
+                outstandingIds: canonicalReview.outstandingFindingIds,
+                bestOutstandingCount: canonicalReview.bestOutstandingCount,
+                consecutiveStalledRounds:
+                  canonicalReview.consecutiveStalledRounds,
+              },
+        previousCandidate: canonicalReview.candidate.previous,
+        previousCandidatePatch: canonicalReview.previousCandidatePatch,
+        latestEvidence: canonicalReview.latestEvidence,
+        verificationFailures: canonicalReview.verificationFailures,
+      }
+    : currentTaskReviewMetadata(deps.paths, taskId)?.convergence;
   let reviewState = convergence?.state as ReviewConvergenceState | undefined;
   let reviewEpoch = convergence?.epoch ?? 1;
-  let closedEpochs = convergence?.closedEpochs ?? [];
+  let closedEpochs =
+    currentTaskReviewMetadata(deps.paths, taskId)?.convergence?.closedEpochs ??
+    [];
   let previousCandidate = convergence?.previousCandidate;
   let previousCandidatePatch = convergence?.previousCandidatePatch;
   let latestEvidence = convergence?.latestEvidence;
@@ -6645,6 +6690,31 @@ async function runTaskWorker(args: {
         reviewerPrompt!,
       );
     }
+    await persistCanonicalReviewConvergence(deps, taskId, {
+      stage: reviewState ? "anchored_review" : "initial_review",
+      candidate: {
+        current: candidateIdentity,
+        previous: previousCandidate,
+        latestDeltaPaths: [],
+      },
+      epoch: reviewEpoch,
+      round: reviewState?.round ?? 0,
+      proposals: [],
+      admissions: [],
+      findings: reviewState?.findings ?? [],
+      outstandingFindingIds: reviewState?.outstandingIds ?? [],
+      deferredConcerns: [],
+      observationIds: [],
+      bestOutstandingCount: reviewState?.bestOutstandingCount ?? 0,
+      previousOutstandingCount: reviewState?.outstandingIds.length,
+      consecutiveStalledRounds: reviewState?.consecutiveStalledRounds ?? 0,
+      evidenceRefs: [
+        join(deps.paths!.runDir, "artifacts", taskId, "reviewer-prompt.md"),
+      ],
+      previousCandidatePatch,
+      latestEvidence,
+      verificationFailures,
+    });
 
     {
       const reviewerSnapshot = await captureRestoreSnapshot(
@@ -6891,6 +6961,28 @@ async function runTaskWorker(args: {
               )
               .join("\n") || undefined;
           if (update.outcome === "stalled") {
+            await persistCanonicalReviewConvergence(deps, taskId, {
+              stage: "stalled",
+              candidate: {
+                current: candidateIdentity,
+                previous: previousCandidate,
+                latestDeltaPaths: [],
+              },
+              epoch: reviewEpoch,
+              round: reviewState.round,
+              proposals: [],
+              admissions: [],
+              findings: reviewState.findings,
+              outstandingFindingIds: reviewState.outstandingIds,
+              deferredConcerns: [],
+              observationIds: [],
+              bestOutstandingCount: reviewState.bestOutstandingCount,
+              consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
+              evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
+              previousCandidatePatch,
+              latestEvidence,
+              verificationFailures,
+            });
             persistCandidate(
               "stalled",
               "task review stalled without a new low outstanding count",
@@ -6936,6 +7028,28 @@ async function runTaskWorker(args: {
           ),
         );
         if (outstanding.length > 0) {
+          await persistCanonicalReviewConvergence(deps, taskId, {
+            stage: "rework",
+            candidate: {
+              current: candidateIdentity,
+              previous: previousCandidate,
+              latestDeltaPaths: [],
+            },
+            epoch: reviewEpoch,
+            round: reviewState.round,
+            proposals: [],
+            admissions: [],
+            findings: reviewState.findings,
+            outstandingFindingIds: reviewState.outstandingIds,
+            deferredConcerns: [],
+            observationIds: [],
+            bestOutstandingCount: reviewState.bestOutstandingCount,
+            consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
+            evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
+            previousCandidatePatch,
+            latestEvidence,
+            verificationFailures,
+          });
           latestEvidence = assessmentEvidence(
             reviewState.findings,
             outstanding,
@@ -6970,16 +7084,26 @@ async function runTaskWorker(args: {
       ...nextTaskReviewMetadata(deps.paths, taskId),
       ...persistReview("reviewed"),
     };
-    persistCanonicalReviewConvergence(deps, taskId, {
+    await persistCanonicalReviewConvergence(deps, taskId, {
+      stage: reviewState.outstandingIds.length === 0 ? "approved" : "stalled",
+      candidate: {
+        current:
+          candidate.candidateSha ?? candidate.trustedCheckpoint ?? baseSha,
+        previous: previousCandidate,
+        latestDeltaPaths: [],
+      },
       candidateId: undefined,
       epoch: reviewEpoch,
       round: reviewState.round,
+      proposals: [],
+      admissions: [],
       findings: reviewState.findings,
       outstandingFindingIds: reviewState.outstandingIds,
+      deferredConcerns: [],
+      observationIds: [],
       bestOutstandingCount: reviewState.bestOutstandingCount,
       consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
       evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
-      previousCandidate,
       previousCandidatePatch,
       latestEvidence,
       verificationFailures,

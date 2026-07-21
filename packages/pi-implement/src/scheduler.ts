@@ -1,6 +1,7 @@
 import {
   validateCanonicalRunState,
   type CandidateRef,
+  type CanonicalReview,
   type CanonicalRunState,
 } from "./canonical-state.js";
 import type { ImplementGraph } from "./graph.js";
@@ -46,6 +47,7 @@ export type SchedulerEvent =
     }
   | { kind: "overall_candidate_ready"; candidate: CandidateRef }
   | { kind: "overall_review_completed" }
+  | { kind: "review_transition"; key: string; review: CanonicalReview }
   | {
       kind: "overall_integration_requested";
       attemptId: string;
@@ -269,6 +271,36 @@ export function transition(
           state.runtime.tasks[event.taskId] = { phase: "queued" };
           break;
       }
+      return accept();
+    }
+
+    case "review_transition": {
+      const ownerKey =
+        event.review.owner.kind === "overall"
+          ? "overall"
+          : event.review.owner.kind === "integration"
+            ? `integration:${event.review.owner.taskId}`
+            : event.review.owner.taskId;
+      if (event.key !== ownerKey) {
+        return reject("review transition key does not match its owner");
+      }
+      const prior = state.reviewConvergence[event.key];
+      if (prior) {
+        if (
+          JSON.stringify(prior.owner) !== JSON.stringify(event.review.owner) ||
+          event.review.epoch < prior.epoch ||
+          (event.review.epoch === prior.epoch &&
+            event.review.round < prior.round)
+        ) {
+          return reject(
+            "review transition moves ownership or lifecycle backward",
+          );
+        }
+        if (prior.stage === "approved" || prior.stage === "stalled") {
+          return reject("terminal review lifecycle cannot be replaced");
+        }
+      }
+      state.reviewConvergence[event.key] = event.review;
       return accept();
     }
 

@@ -17,7 +17,61 @@ const nonEmpty = z.string().min(1);
 const ownerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("task"), taskId: nonEmpty }).strict(),
   z.object({ kind: z.literal("overall") }).strict(),
+  z.object({ kind: z.literal("integration"), taskId: nonEmpty }).strict(),
 ]);
+
+const integrationOwnerSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("task"), taskId: nonEmpty }).strict(),
+  z.object({ kind: z.literal("overall") }).strict(),
+]);
+
+const reviewStageSchema = z.enum([
+  "initial_review",
+  "admission",
+  "rework",
+  "anchored_review",
+  "approved",
+  "stalled",
+]);
+
+const reviewProposalSchema = z
+  .object({
+    id: nonEmpty,
+    summary: nonEmpty,
+    evidence: nonEmpty,
+    basis: nonEmpty,
+    evidenceRef: nonEmpty.optional(),
+  })
+  .strict();
+
+const reviewAdmissionSchema = z
+  .object({
+    proposalId: nonEmpty,
+    disposition: z.enum(["admit", "defer", "demote", "reject"]),
+    rationale: nonEmpty,
+    findingId: nonEmpty.optional(),
+  })
+  .strict();
+
+const deferredConcernSchema = z
+  .object({
+    id: nonEmpty,
+    proposalId: nonEmpty,
+    summary: nonEmpty,
+    evidence: nonEmpty,
+    basis: nonEmpty,
+  })
+  .strict();
+
+const reworkCompletionSchema = z
+  .object({
+    findingId: nonEmpty,
+    status: z.enum(["addressed", "not_addressed"]),
+    evidence: nonEmpty,
+    changedPaths: z.array(nonEmpty),
+    verification: z.array(nonEmpty),
+  })
+  .strict();
 
 const reviewReceiptSchema = z
   .object({
@@ -32,6 +86,8 @@ const reviewReceiptSchema = z
         outstandingFindingIds: z.array(nonEmpty),
         bestOutstandingCount: z.number().int().nonnegative(),
         evidenceRefs: z.array(nonEmpty),
+        contextId: nonEmpty.optional(),
+        admittedFindingIds: z.array(nonEmpty).optional(),
       })
       .strict(),
     assessedAt: nonEmpty,
@@ -130,6 +186,7 @@ const workerLeaseSchema = z
 const reviewFindingSchema = z
   .object({
     id: nonEmpty,
+    proposalId: nonEmpty.optional(),
     summary: nonEmpty,
     evidence: nonEmpty,
     requiredChange: nonEmpty,
@@ -139,23 +196,39 @@ const reviewFindingSchema = z
   })
   .strict();
 
-const reviewConvergenceSchema = z
+export const canonicalReviewSchema = z
   .object({
     owner: ownerSchema,
+    stage: reviewStageSchema,
+    candidate: z
+      .object({
+        current: nonEmpty,
+        previous: nonEmpty.optional(),
+        latestDeltaPaths: z.array(nonEmpty),
+      })
+      .strict(),
     candidateId: nonEmpty.optional(),
+    contextId: nonEmpty.optional(),
     epoch: z.number().int().positive(),
     round: z.number().int().nonnegative(),
+    proposals: z.array(reviewProposalSchema),
+    admissions: z.array(reviewAdmissionSchema),
     findings: z.array(reviewFindingSchema),
     outstandingFindingIds: z.array(nonEmpty),
+    deferredConcerns: z.array(deferredConcernSchema),
+    observationIds: z.array(nonEmpty),
     bestOutstandingCount: z.number().int().nonnegative(),
+    previousOutstandingCount: z.number().int().nonnegative().optional(),
     consecutiveStalledRounds: z.number().int().nonnegative(),
+    latestRework: z.array(reworkCompletionSchema).optional(),
     evidenceRefs: z.array(nonEmpty),
-    previousCandidate: nonEmpty.optional(),
     previousCandidatePatch: z.string().optional(),
     latestEvidence: z.string().optional(),
     verificationFailures: z.array(nonEmpty),
   })
   .strict();
+
+const reviewConvergenceSchema = canonicalReviewSchema;
 
 const taskExecutionSchema = z
   .object({
@@ -176,7 +249,7 @@ const protectedArtifactHashesSchema = z.record(nonEmpty, nonEmpty);
 
 const integrationAttemptBaseSchema = {
   id: nonEmpty,
-  owner: ownerSchema,
+  owner: integrationOwnerSchema,
   candidateId: nonEmpty,
   targetBaseSha: nonEmpty,
   pipelineHash: nonEmpty,
@@ -237,7 +310,7 @@ const integrationAttemptSchema = z.union([
 const landingReceiptSchema = z
   .object({
     attemptId: nonEmpty,
-    owner: ownerSchema,
+    owner: integrationOwnerSchema,
     candidateCommitSha: nonEmpty,
     targetCheckoutId: nonEmpty,
     targetRef: nonEmpty,
@@ -256,7 +329,7 @@ const projectionDebtSchema = z
 
 export const canonicalRunStateSchema = z
   .object({
-    schemaVersion: z.literal(6),
+    schemaVersion: z.literal(7),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -312,6 +385,9 @@ export const canonicalRunStateSchema = z
 
 export type CandidateRef = z.infer<typeof candidateRefSchema>;
 export type CanonicalRunState = z.infer<typeof canonicalRunStateSchema>;
+export type CanonicalReview = z.infer<typeof canonicalReviewSchema>;
+export type ReviewOwner = CanonicalReview["owner"];
+export type ReviewStage = CanonicalReview["stage"];
 export type CanonicalTaskDefinition = z.infer<typeof taskDefinitionSchema>;
 
 export class RunStateError extends Error {
@@ -400,7 +476,7 @@ export class RunStore {
     const next = validateCanonicalRunState(
       {
         ...update(structuredClone(current)),
-        schemaVersion: 6,
+        schemaVersion: 7,
         revision: current.revision + 1,
         updatedAt: new Date().toISOString(),
       },
@@ -433,7 +509,7 @@ export class RunStore {
         const next = validateCanonicalRunState(
           {
             ...proposed,
-            schemaVersion: 6,
+            schemaVersion: 7,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -480,7 +556,7 @@ export function validateCanonicalRunState(
       (issue) => `${issue.path.join(".") || "state"}: ${issue.message}`,
     );
     const version = versionFrom(value);
-    const legacy = version === undefined || version < 6;
+    const legacy = version === undefined || version < 7;
     throw new RunStateError(
       legacy
         ? `Run state at ${path} uses unsupported legacy schema${version === undefined ? "" : ` v${version}`}; start over or clean it up explicitly.`
@@ -616,7 +692,7 @@ function invariantIssues(
   }
   for (const [key, convergence] of Object.entries(state.reviewConvergence)) {
     if (
-      convergence.owner.kind === "task" &&
+      convergence.owner.kind !== "overall" &&
       !tasks.has(convergence.owner.taskId)
     ) {
       issues.push(`review convergence ${key} references unknown task owner`);
@@ -626,13 +702,175 @@ function invariantIssues(
         `review convergence ${key} references unknown candidate ${convergence.candidateId}`,
       );
     }
-    const findingIds = new Set(
-      convergence.findings.map((finding) => finding.id),
-    );
+    const proposalIds = new Set<string>();
+    for (const proposal of convergence.proposals) {
+      if (proposalIds.has(proposal.id)) {
+        issues.push(
+          `review convergence ${key} has duplicate proposal ${proposal.id}`,
+        );
+      }
+      proposalIds.add(proposal.id);
+    }
+    const admissionIds = new Set<string>();
+    const admittedProposalIds = new Set<string>();
+    for (const admission of convergence.admissions) {
+      if (
+        !proposalIds.has(admission.proposalId) ||
+        admissionIds.has(admission.proposalId)
+      ) {
+        issues.push(`review convergence ${key} has invalid admission coverage`);
+      }
+      admissionIds.add(admission.proposalId);
+      if (admission.disposition === "admit") {
+        admittedProposalIds.add(admission.proposalId);
+        if (!admission.findingId) {
+          issues.push(
+            `review convergence ${key} admitted proposal ${admission.proposalId} has no finding`,
+          );
+        }
+      } else if (admission.findingId) {
+        issues.push(
+          `review convergence ${key} non-admitted proposal ${admission.proposalId} has a finding`,
+        );
+      }
+    }
+    if (
+      (convergence.stage !== "initial_review" ||
+        convergence.proposals.length > 0) &&
+      admissionIds.size !== proposalIds.size
+    ) {
+      issues.push(
+        `review convergence ${key} admissions do not cover every proposal`,
+      );
+    }
+    const findingIds = new Set<string>();
+    for (const finding of convergence.findings) {
+      if (findingIds.has(finding.id)) {
+        issues.push(
+          `review convergence ${key} has duplicate finding ${finding.id}`,
+        );
+      }
+      findingIds.add(finding.id);
+      if (convergence.admissions.length > 0) {
+        if (
+          !finding.proposalId ||
+          !admittedProposalIds.has(finding.proposalId)
+        ) {
+          issues.push(
+            `review convergence ${key} finding ${finding.id} is not admitted`,
+          );
+        }
+        const admission = convergence.admissions.find(
+          (entry) => entry.proposalId === finding.proposalId,
+        );
+        if (admission?.findingId !== finding.id) {
+          issues.push(
+            `review convergence ${key} finding ${finding.id} does not match its admission`,
+          );
+        }
+      }
+    }
     if (convergence.outstandingFindingIds.some((id) => !findingIds.has(id))) {
       issues.push(
         `review convergence ${key} has an unknown outstanding finding`,
       );
+    }
+    if (
+      new Set(convergence.outstandingFindingIds).size !==
+      convergence.outstandingFindingIds.length
+    ) {
+      issues.push(
+        `review convergence ${key} has duplicate outstanding findings`,
+      );
+    }
+    if (
+      convergence.stage === "approved" &&
+      convergence.outstandingFindingIds.length > 0
+    ) {
+      issues.push(
+        `approved review convergence ${key} has outstanding findings`,
+      );
+    }
+    if (
+      convergence.stage === "stalled" &&
+      convergence.outstandingFindingIds.length === 0
+    ) {
+      issues.push(
+        `stalled review convergence ${key} has no outstanding findings`,
+      );
+    }
+    if (
+      ["rework", "anchored_review"].includes(convergence.stage) &&
+      convergence.outstandingFindingIds.length === 0
+    ) {
+      issues.push(
+        `review convergence ${key} cannot ${convergence.stage} without outstanding findings`,
+      );
+    }
+    if (convergence.admissions.length > 0) {
+      for (const admission of convergence.admissions) {
+        if (
+          admission.disposition === "admit" &&
+          !convergence.findings.some(
+            (finding) => finding.id === admission.findingId,
+          )
+        ) {
+          issues.push(
+            `review convergence ${key} admission ${admission.proposalId} has no durable finding`,
+          );
+        }
+      }
+    }
+    if (convergence.latestRework) {
+      const covered = convergence.latestRework.map(
+        (completion) => completion.findingId,
+      );
+      if (
+        new Set(covered).size !== covered.length ||
+        covered.length !== convergence.outstandingFindingIds.length ||
+        covered.some((id) => !convergence.outstandingFindingIds.includes(id))
+      ) {
+        issues.push(
+          `review convergence ${key} rework does not exactly cover outstanding findings`,
+        );
+      }
+    }
+    if (previous) {
+      const prior = previous.reviewConvergence[key];
+      if (prior) {
+        const priorResolved = prior.findings
+          .map((finding) => finding.id)
+          .filter((id) => !prior.outstandingFindingIds.includes(id));
+        if (
+          priorResolved.some((id) =>
+            convergence.outstandingFindingIds.includes(id),
+          )
+        ) {
+          issues.push(`review convergence ${key} reopened a resolved finding`);
+        }
+      }
+    }
+  }
+  for (const candidate of Object.values(state.candidates)) {
+    const review = Object.values(state.reviewConvergence).find(
+      (entry) =>
+        entry.stage === "approved" && entry.candidateId === candidate.id,
+    );
+    if (review) {
+      if (
+        review.candidate.current !== candidate.commitSha ||
+        review.outstandingFindingIds.length > 0 ||
+        (review.contextId &&
+          candidate.reviewReceipt.convergence.contextId !== review.contextId) ||
+        review.evidenceRefs.some(
+          (ref) =>
+            !candidate.reviewReceipt.convergence.evidenceRefs.includes(ref),
+        )
+      ) {
+        issues.push(
+          `candidate ${candidate.id} receipt does not match its approved review`,
+        );
+      }
     }
   }
   const overall = state.runtime.overall;

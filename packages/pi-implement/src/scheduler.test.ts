@@ -12,7 +12,7 @@ function state(
   concurrency = 2,
 ): CanonicalRunState {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     revision: 0,
     run: {
       id: "run-1",
@@ -237,6 +237,35 @@ describe("scheduler reducer", () => {
       phase: "completed",
       landingAttemptId: "overall-attempt",
     });
+  });
+
+  it("persists canonical review stages through the shared reducer", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    const review = {
+      owner: { kind: "task" as const, taskId: "a" },
+      stage: "initial_review" as const,
+      candidate: { current: "candidate-commit", latestDeltaPaths: [] },
+      epoch: 1,
+      round: 0,
+      proposals: [],
+      admissions: [],
+      findings: [],
+      outstandingFindingIds: [],
+      deferredConcerns: [],
+      observationIds: [],
+      bestOutstandingCount: 0,
+      consecutiveStalledRounds: 0,
+      evidenceRefs: ["initial-review.json"],
+      verificationFailures: [],
+    };
+    const result = transition(initial, {
+      kind: "review_transition",
+      key: "a",
+      review,
+    });
+
+    expect(result.accepted).toBe(true);
+    expect(result.state.reviewConvergence.a).toEqual(review);
   });
 
   it("requires overall review completion before completing the run", () => {

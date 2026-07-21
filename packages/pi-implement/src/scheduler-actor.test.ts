@@ -7,7 +7,7 @@ import { SchedulerActor } from "./scheduler-actor.js";
 
 function state(): CanonicalRunState {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     revision: 0,
     run: {
       id: "run-1",
@@ -98,6 +98,34 @@ describe("SchedulerActor", () => {
       b: { phase: "completed", result: "satisfied" },
     });
     expect(runStore.read().workerLeases).toEqual([]);
+  });
+
+  it("persists a review transition through the actor's stale-safe dispatcher", async () => {
+    const runStore = store();
+    const actor = new SchedulerActor({
+      store: runStore,
+      executeWorker: async () => ({ kind: "satisfied" }),
+    });
+
+    await actor.transitionReview("a", {
+      owner: { kind: "task", taskId: "a" },
+      stage: "initial_review",
+      candidate: { current: "candidate", latestDeltaPaths: [] },
+      epoch: 1,
+      round: 0,
+      proposals: [],
+      admissions: [],
+      findings: [],
+      outstandingFindingIds: [],
+      deferredConcerns: [],
+      observationIds: [],
+      bestOutstandingCount: 0,
+      consecutiveStalledRounds: 0,
+      evidenceRefs: ["initial.json"],
+      verificationFailures: [],
+    });
+
+    expect(runStore.read().reviewConvergence.a?.stage).toBe("initial_review");
   });
 
   it("reconciles retained leases instead of assuming an in-memory worker survived", async () => {

@@ -13,7 +13,7 @@ import {
 
 function state(): CanonicalRunState {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     revision: 0,
     run: {
       id: "run-1",
@@ -158,6 +158,55 @@ describe("RunStore", () => {
     cyclic.graph.tasks[0]!.dependsOn = ["task-2"];
     expect(() => RunStore.create(cyclicPath, cyclic)).toThrow(
       /dependency cycle/,
+    );
+  });
+
+  it("rejects invalid review coverage and lifecycle states", () => {
+    const invalid = state();
+    invalid.reviewConvergence.a = {
+      owner: { kind: "task", taskId: "task-1" },
+      stage: "approved",
+      candidate: { current: "commit", latestDeltaPaths: [] },
+      epoch: 1,
+      round: 0,
+      proposals: [
+        {
+          id: "P1",
+          summary: "summary",
+          evidence: "evidence",
+          basis: "requirement",
+        },
+      ],
+      admissions: [
+        {
+          proposalId: "P1",
+          disposition: "admit",
+          rationale: "required",
+          findingId: "R1",
+        },
+      ],
+      findings: [
+        {
+          id: "R1",
+          proposalId: "P1",
+          summary: "summary",
+          evidence: "evidence",
+          requiredChange: "change",
+          acceptanceCriteria: ["criterion"],
+          introducedRound: 0,
+          origin: "initial",
+        },
+      ],
+      outstandingFindingIds: ["R1"],
+      deferredConcerns: [],
+      observationIds: [],
+      bestOutstandingCount: 1,
+      consecutiveStalledRounds: 0,
+      evidenceRefs: ["review.json"],
+      verificationFailures: [],
+    };
+    expect(() => RunStore.create(statePath(), invalid)).toThrow(
+      /approved review convergence.*outstanding/,
     );
   });
 
