@@ -11,7 +11,7 @@ export type SchedulerEffect =
   | { kind: "start_worker"; taskId: string; leaseId: string }
   | {
       kind: "start_integration";
-      taskId: string;
+      owner: { kind: "task"; taskId: string } | { kind: "overall" };
       attemptId: string;
       candidateId: string;
     }
@@ -43,6 +43,14 @@ export type SchedulerEvent =
       pipelineHash: string;
       now: string;
     }
+  | { kind: "overall_candidate_ready"; candidate: CandidateRef }
+  | { kind: "overall_review_completed" }
+  | {
+      kind: "overall_integration_requested";
+      attemptId: string;
+      pipelineHash: string;
+      now: string;
+    }
   | {
       kind: "integration_prepared";
       attemptId: string;
@@ -61,7 +69,16 @@ export type SchedulerEvent =
     }
   | { kind: "integration_paused"; attemptId: string }
   | { kind: "integration_resumed"; attemptId: string }
+  | {
+      kind: "cleanup_debt_recorded";
+      debt: CanonicalRunState["cleanupDebt"][number];
+    }
   | { kind: "cleanup_completed"; debtId: string }
+  | {
+      kind: "projection_debt_recorded";
+      debt: CanonicalRunState["projectionDebt"][number];
+    }
+  | { kind: "projection_completed"; debtId: string }
   | { kind: "run_stopping" }
   | { kind: "run_completed" }
   | { kind: "run_blocked"; reason: string };
@@ -249,6 +266,43 @@ export function transition(
       return accept();
     }
 
+    case "overall_review_completed":
+      if (
+        state.runtime.phase !== "running" ||
+        !allTasksCompleted(state) ||
+        state.runtime.overall.phase !== "pending"
+      ) {
+        return reject("overall review cannot complete yet");
+      }
+      state.runtime.overall = { phase: "completed" };
+      return accept();
+
+    case "overall_candidate_ready": {
+      if (
+        state.runtime.overall.phase !== "pending" &&
+        state.runtime.overall.phase !== "waiting_rework" &&
+        state.runtime.overall.phase !== "candidate_ready"
+      ) {
+        return reject("overall review is not ready for a candidate");
+      }
+      const existing = state.candidates[event.candidate.id];
+      if (
+        existing &&
+        JSON.stringify(existing) !== JSON.stringify(event.candidate)
+      ) {
+        return reject("candidate identity is immutable");
+      }
+      if (event.candidate.reviewReceipt.verdict !== "approved") {
+        return reject("candidate is not approved for integration");
+      }
+      state.candidates[event.candidate.id] = event.candidate;
+      state.runtime.overall = {
+        phase: "candidate_ready",
+        candidateId: event.candidate.id,
+      };
+      return accept();
+    }
+
     case "integration_requested": {
       if (selectIntegrationTask(state) !== event.taskId) {
         return reject("task is not eligible for integration");
@@ -287,9 +341,58 @@ export function transition(
       return accept([
         {
           kind: "start_integration",
-          taskId: event.taskId,
+          owner: { kind: "task", taskId: event.taskId },
           attemptId: event.attemptId,
           candidateId: runtime.candidateId,
+        },
+      ]);
+    }
+
+    case "overall_integration_requested": {
+      if (
+        state.runtime.phase !== "running" ||
+        !allTasksCompleted(state) ||
+        state.runtime.overall.phase !== "candidate_ready" ||
+        state.integrationAttempts.some((attempt) =>
+          ["preparing", "prepared", "publishing", "paused"].includes(
+            attempt.phase,
+          ),
+        )
+      ) {
+        return reject("overall candidate is not eligible for integration");
+      }
+      const candidateId = state.runtime.overall.candidateId;
+      const candidate = state.candidates[candidateId];
+      if (!candidate || candidate.reviewReceipt.verdict !== "approved") {
+        return reject("overall candidate is not approved for integration");
+      }
+      if (
+        state.integrationAttempts.some(
+          (attempt) => attempt.id === event.attemptId,
+        )
+      ) {
+        return reject("integration attempt already exists");
+      }
+      state.integrationAttempts.push({
+        id: event.attemptId,
+        owner: { kind: "overall" },
+        candidateId,
+        targetBaseSha: candidate.baseSha,
+        pipelineHash: event.pipelineHash,
+        startedAt: event.now,
+        phase: "preparing",
+      });
+      state.runtime.overall = {
+        phase: "integrating",
+        candidateId,
+        integrationAttemptId: event.attemptId,
+      };
+      return accept([
+        {
+          kind: "start_integration",
+          owner: { kind: "overall" },
+          attemptId: event.attemptId,
+          candidateId,
         },
       ]);
     }
@@ -334,11 +437,6 @@ export function transition(
       if (attempt?.phase !== "publishing") {
         return reject("integration is not publishing");
       }
-      if (attempt.owner.kind !== "task") {
-        return reject(
-          "overall integration is not supported by this transition",
-        );
-      }
       if (
         event.receipt.attemptId !== attempt.id ||
         JSON.stringify(event.receipt.owner) !== JSON.stringify(attempt.owner)
@@ -361,10 +459,17 @@ export function transition(
       ) {
         state.landingReceipts.push(event.receipt);
       }
-      state.runtime.tasks[attempt.owner.taskId] = {
-        phase: "completed",
-        result: "landed",
-      };
+      if (attempt.owner.kind === "task") {
+        state.runtime.tasks[attempt.owner.taskId] = {
+          phase: "completed",
+          result: "landed",
+        };
+      } else {
+        state.runtime.overall = {
+          phase: "completed",
+          landingAttemptId: attempt.id,
+        };
+      }
       const debtId = `integration:${attempt.id}`;
       if (!state.cleanupDebt.some((debt) => debt.id === debtId)) {
         state.cleanupDebt.push({
@@ -383,27 +488,31 @@ export function transition(
       const runtime =
         attempt?.owner.kind === "task"
           ? state.runtime.tasks[attempt.owner.taskId]
-          : undefined;
+          : state.runtime.overall;
       if (
         !attempt ||
         !["preparing", "prepared", "publishing"].includes(attempt.phase) ||
         attempt.candidateId !== event.candidateId ||
-        attempt.owner.kind !== "task" ||
         runtime?.phase !== "integrating" ||
         runtime.integrationAttemptId !== attempt.id ||
         runtime.candidateId !== event.candidateId
       ) {
-        return reject(
-          "integration result does not match an active task attempt",
-        );
+        return reject("integration result does not match an active attempt");
       }
       state.integrationAttempts = state.integrationAttempts.map((entry) =>
         entry.id === event.attemptId ? closeReworkAttempt(entry) : entry,
       );
-      state.runtime.tasks[attempt.owner.taskId] = {
-        phase: "waiting_rework",
-        candidateId: event.candidateId,
-      };
+      if (attempt.owner.kind === "task") {
+        state.runtime.tasks[attempt.owner.taskId] = {
+          phase: "waiting_rework",
+          candidateId: event.candidateId,
+        };
+      } else {
+        state.runtime.overall = {
+          phase: "waiting_rework",
+          candidateId: event.candidateId,
+        };
+      }
       return accept();
     }
 
@@ -438,14 +547,13 @@ export function transition(
       const attempt = state.integrationAttempts.find(
         (entry) => entry.id === event.attemptId,
       );
-      if (
-        !attempt ||
-        attempt.phase !== "paused" ||
-        attempt.owner.kind !== "task"
-      ) {
+      if (!attempt || attempt.phase !== "paused") {
         return reject("integration attempt is not resumable");
       }
-      const runtime = state.runtime.tasks[attempt.owner.taskId];
+      const runtime =
+        attempt.owner.kind === "task"
+          ? state.runtime.tasks[attempt.owner.taskId]
+          : state.runtime.overall;
       if (
         runtime?.phase !== "integrating" ||
         runtime.integrationAttemptId !== attempt.id ||
@@ -460,12 +568,33 @@ export function transition(
       return accept([
         {
           kind: "start_integration",
-          taskId: attempt.owner.taskId,
+          owner: attempt.owner,
           attemptId: attempt.id,
           candidateId: attempt.candidateId,
         },
       ]);
     }
+
+    case "projection_debt_recorded":
+      if (!state.projectionDebt.some((debt) => debt.id === event.debt.id)) {
+        state.projectionDebt.push(event.debt);
+      }
+      return accept();
+
+    case "projection_completed":
+      if (!state.projectionDebt.some((debt) => debt.id === event.debtId)) {
+        return reject("projection debt does not exist");
+      }
+      state.projectionDebt = state.projectionDebt.filter(
+        (debt) => debt.id !== event.debtId,
+      );
+      return accept();
+
+    case "cleanup_debt_recorded":
+      if (!state.cleanupDebt.some((debt) => debt.id === event.debt.id)) {
+        state.cleanupDebt.push(event.debt);
+      }
+      return accept();
 
     case "cleanup_completed":
       if (!state.cleanupDebt.some((debt) => debt.id === event.debtId)) {
@@ -489,8 +618,13 @@ export function transition(
       ]);
 
     case "run_completed":
-      if (state.runtime.phase !== "running" || !allTasksCompleted(state)) {
-        return reject("run still has incomplete tasks");
+      if (
+        state.runtime.phase !== "running" ||
+        !allTasksCompleted(state) ||
+        state.runtime.overall.phase !== "completed" ||
+        state.projectionDebt.length > 0
+      ) {
+        return reject("run still has incomplete tasks or overall review");
       }
       state.runtime.phase = "completed";
       return accept();

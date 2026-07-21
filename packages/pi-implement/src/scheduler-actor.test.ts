@@ -7,7 +7,7 @@ import { SchedulerActor } from "./scheduler-actor.js";
 
 function state(): CanonicalRunState {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     revision: 0,
     run: {
       id: "run-1",
@@ -47,6 +47,7 @@ function state(): CanonicalRunState {
     runtime: {
       phase: "preflight",
       tasks: { a: { phase: "queued" }, b: { phase: "queued" } },
+      overall: { phase: "pending" },
     },
     candidates: {},
     reviewConvergence: {},

@@ -5,9 +5,7 @@ import { TaskWorkspaceManager } from "./candidate-worker.js";
 import type { GitClient } from "./git.js";
 
 export type IntegrationAttempt =
-  CanonicalRunState["integrationAttempts"][number] & {
-    owner: { kind: "task"; taskId: string };
-  };
+  CanonicalRunState["integrationAttempts"][number];
 
 export type IntegrationValidation = (args: {
   git: GitClient;
@@ -144,7 +142,9 @@ export class IntegrationEngine {
         };
       }
       const committed = await stagingGit.checkpoint(
-        `chore: integrate ${attempt.owner.taskId}`,
+        attempt.owner.kind === "task"
+          ? `chore: integrate ${attempt.owner.taskId}`
+          : "chore: integrate overall review",
         false,
       );
       if (committed.exitCode !== 0) {
@@ -154,6 +154,15 @@ export class IntegrationEngine {
             committed.stderr ||
             committed.stdout ||
             "Could not prepare integration commit.",
+        };
+      }
+      const checkpointSha = await stagingGit.head();
+      const hooks = await stagingGit.runCheckpointHooks(checkpointSha);
+      if (hooks.exitCode !== 0) {
+        return {
+          kind: "needs_rework",
+          reason:
+            hooks.stderr || hooks.stdout || "Integration approval hook failed.",
         };
       }
       const preparedCommitSha = await stagingGit.head();

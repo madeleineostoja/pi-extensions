@@ -1559,18 +1559,29 @@ async function runScheduledImplementation(
     schedulerActor = new SchedulerActor({
       store: deps.canonicalRunStore,
       executeCleanup: async ({ debtId }) => {
-        const attemptId = debtId.replace(/^integration:/, "");
         const state = deps.canonicalRunStore!.read();
+        if (debtId.startsWith("overall-review:")) {
+          const attemptId =
+            state.runtime.overall.phase === "completed"
+              ? state.runtime.overall.landingAttemptId
+              : undefined;
+          const attempt = state.integrationAttempts.find(
+            (entry) => entry.id === attemptId && entry.owner.kind === "overall",
+          );
+          const candidate = attempt && state.candidates[attempt.candidateId];
+          if (!attempt || !candidate) {
+            throw new Error(`Cleanup debt ${debtId} has no overall candidate.`);
+          }
+          await deps.git.removeWorktree(candidate.worktreePath);
+          await deps.git.deleteTaskBranch(candidate.branchName);
+          return;
+        }
+        const attemptId = debtId.replace(/^integration:/, "");
         const attempt = state.integrationAttempts.find(
           (entry) => entry.id === attemptId,
         );
         const candidate = attempt && state.candidates[attempt.candidateId];
-        if (
-          !attempt ||
-          !candidate ||
-          attempt.phase !== "completed" ||
-          attempt.owner.kind !== "task"
-        ) {
+        if (!attempt || !candidate || attempt.phase !== "completed") {
           throw new Error(`Cleanup debt ${debtId} has no completed attempt.`);
         }
         const targetBranch = state.run.target.branchRef.replace(
@@ -1584,12 +1595,7 @@ async function runScheduledImplementation(
           targetBranch,
           protectedPaths: planArtifacts,
         });
-        const prepared = await engine.reconstructPrepared(
-          attempt as typeof attempt & {
-            owner: { kind: "task"; taskId: string };
-          },
-          candidate,
-        );
+        const prepared = await engine.reconstructPrepared(attempt, candidate);
         if (prepared.kind !== "reconstructed") {
           throw new Error(
             `Cleanup debt ${debtId} cannot reconstruct its workspace.`,
@@ -1608,14 +1614,12 @@ async function runScheduledImplementation(
           (entry) => entry.id === attemptId,
         );
         const candidate = state.candidates[candidateId];
-        if (!attempt || attempt.owner.kind !== "task" || !candidate) {
+        if (!attempt || !candidate) {
           throw new Error(
             "Integration effect has no matching durable candidate attempt.",
           );
         }
-        const taskAttempt = attempt as typeof attempt & {
-          owner: { kind: "task"; taskId: string };
-        };
+        const integrationAttempt = attempt;
         const targetBranch = state.run.target.branchRef.replace(
           /^refs\/heads\//,
           "",
@@ -1644,9 +1648,9 @@ async function runScheduledImplementation(
           },
         });
         const preparation =
-          taskAttempt.phase === "preparing"
-            ? await engine.prepare(taskAttempt, candidate, signal)
-            : await engine.reconstructPrepared(taskAttempt, candidate);
+          integrationAttempt.phase === "preparing"
+            ? await engine.prepare(integrationAttempt, candidate, signal)
+            : await engine.reconstructPrepared(integrationAttempt, candidate);
         if (
           preparation.kind !== "prepared" &&
           preparation.kind !== "reconstructed"
@@ -1666,18 +1670,18 @@ async function runScheduledImplementation(
           return;
         }
         const prepared = preparation.prepared;
-        if (taskAttempt.phase === "preparing") {
+        if (integrationAttempt.phase === "preparing") {
           await dispatch({
             kind: "integration_prepared",
             attemptId,
             preparedCommitSha: prepared.preparedCommitSha,
           });
           await dispatch({ kind: "integration_publishing", attemptId });
-        } else if (taskAttempt.phase === "prepared") {
+        } else if (integrationAttempt.phase === "prepared") {
           await dispatch({ kind: "integration_publishing", attemptId });
         }
         const published = await engine.publish(
-          taskAttempt,
+          integrationAttempt,
           prepared,
           candidate,
           signal,
@@ -1907,13 +1911,18 @@ async function runScheduledImplementation(
           ? await schedulerActor.nextCompletion()
           : undefined;
         if (completion?.kind === "integration") {
-          const task = sched.tasks.get(completion.taskId)!;
+          if (completion.owner.kind === "overall") {
+            continue;
+          }
+          const task = sched.tasks.get(completion.owner.taskId)!;
           if (completion.phase === "completed") {
             task.status = "landed";
-            sched.landedOrder.push(completion.taskId);
+            sched.landedOrder.push(completion.owner.taskId);
           } else {
             const runtime =
-              deps.canonicalRunStore!.read().runtime.tasks[completion.taskId];
+              deps.canonicalRunStore!.read().runtime.tasks[
+                completion.owner.taskId
+              ];
             task.status =
               runtime?.phase === "waiting_rework" ? "needs_rework" : "stalled";
             task.lastReason =
@@ -2061,8 +2070,17 @@ async function runScheduledImplementation(
         initialPlan,
         planArtifacts,
         graph.baseSha,
+        schedulerActor,
       );
-      markCompletedScheduledSourceCheckboxes(deps, sched, plan);
+      await projectCompletedScheduledSourceCheckboxes(
+        deps,
+        sched,
+        plan,
+        schedulerActor,
+      );
+      if (schedulerActor) {
+        await schedulerActor.completeRun();
+      }
     }
 
     const landedCount = [...sched.tasks.values()].filter(
@@ -4865,6 +4883,45 @@ type OverallReviewState = {
   integrationLedger?: ReturnType<typeof createIntegrationLedger>;
 };
 
+async function overallCandidateRef(args: {
+  overall: OverallReviewState;
+  runId: string;
+  assessedAt: string;
+  evidenceRefs: string[];
+}): Promise<CandidateRef> {
+  const commitSha = args.overall.candidate.trustedCheckpoint;
+  const treeSha = args.overall.candidate.candidateTree;
+  if (!commitSha || !treeSha) {
+    throw new BlockedError(
+      "approved overall candidate has no trusted checkpoint",
+    );
+  }
+  const candidateId = `overall:${args.runId}:${commitSha}`;
+  return {
+    id: candidateId,
+    sourceBaseSha: args.overall.candidate.sourceBaseSha,
+    baseSha: args.overall.baseSha,
+    commitSha,
+    treeSha,
+    branchName: args.overall.branchName,
+    worktreePath: args.overall.worktreePath,
+    reviewReceipt: {
+      id: `overall-review:${candidateId}`,
+      candidateId,
+      candidateCommitSha: commitSha,
+      candidateTreeSha: treeSha,
+      verdict: "approved",
+      convergence: {
+        round: args.overall.convergence.round,
+        outstandingFindingIds: [...args.overall.convergence.outstandingIds],
+        bestOutstandingCount: args.overall.convergence.bestOutstandingCount,
+        evidenceRefs: args.evidenceRefs,
+      },
+      assessedAt: args.assessedAt,
+    },
+  };
+}
+
 function overallPlanContext(args: {
   deps: OrchestratorDeps;
   planContent: string;
@@ -5315,8 +5372,30 @@ async function runConvergentOverallReviewLoop(
   plan: ReturnType<typeof parsePlanFile>,
   planArtifacts: string[],
   runBaseSha: string,
+  schedulerActor?: SchedulerActor,
 ): Promise<void> {
   throwIfStopped(deps);
+  if (
+    schedulerActor &&
+    deps.canonicalRunStore?.read().runtime.overall.phase === "integrating"
+  ) {
+    let completion = await schedulerActor.nextCompletion();
+    while (
+      completion.kind !== "integration" ||
+      completion.owner.kind !== "overall"
+    ) {
+      completion = await schedulerActor.nextCompletion();
+    }
+    const overall = deps.canonicalRunStore.read().runtime.overall;
+    if (overall.phase === "completed") {
+      return;
+    }
+    if (overall.phase !== "waiting_rework") {
+      throw new BlockedError(
+        "Overall integration is paused; the approved candidate is retained for recovery.",
+      );
+    }
+  }
   if (!(await deps.git.isCleanExcept(planArtifacts))) {
     throw new BlockedError("dirty worktree before final review");
   }
@@ -5325,6 +5404,15 @@ async function runConvergentOverallReviewLoop(
     ? readRunJson(deps.paths)?.overallReview
     : undefined;
   if (mainHead === runBaseSha && !retainedOverall) {
+    if (schedulerActor) {
+      await schedulerActor.completeOverallReview();
+    }
+    return;
+  }
+  if (
+    schedulerActor &&
+    deps.canonicalRunStore?.read().runtime.overall.phase === "completed"
+  ) {
     return;
   }
   const planContent = readFileSync(deps.planPath, "utf-8");
@@ -5406,6 +5494,9 @@ async function runConvergentOverallReviewLoop(
       deps.updateState((previous) =>
         checkpointPatch(previous, "Final overall review approved"),
       );
+      if (schedulerActor) {
+        await schedulerActor.completeOverallReview();
+      }
       if (deps.paths) {
         appendEvent(deps.paths, { type: "overall_review_approved" });
       }
@@ -5462,6 +5553,52 @@ async function runConvergentOverallReviewLoop(
   let attempt = overall.convergence.round;
   let systemFailures = 0;
   for (;;) {
+    const targetHead = await deps.git.head();
+    if (targetHead !== overall.baseSha) {
+      const candidateSha = overall.candidate.trustedCheckpoint;
+      if (!candidateSha) {
+        throw new BlockedError("overall candidate has no trusted checkpoint");
+      }
+      const transplantPatch = await candidateGit.diffRange(
+        overall.baseSha,
+        candidateSha,
+      );
+      await candidateGit.resetHard(targetHead);
+      const transplanted = await candidateGit.applyPatch(transplantPatch);
+      if (transplanted.exitCode !== 0) {
+        throw new BlockedError(
+          transplanted.stderr ||
+            transplanted.stdout ||
+            "could not transplant overall candidate onto the moved target",
+        );
+      }
+      overall.baseSha = targetHead;
+      const checkpoint = await checkpointCandidate(candidateGit, {
+        ...overall.candidate,
+        candidateBaseSha: targetHead,
+        candidateSha: targetHead,
+        candidateTree: await candidateGit.treeAt(targetHead),
+        trustedCheckpoint: targetHead,
+      });
+      if (checkpoint.result && checkpoint.result.exitCode !== 0) {
+        throw new BlockedError(
+          checkpoint.result.stderr ||
+            checkpoint.result.stdout ||
+            "could not checkpoint transplanted overall candidate",
+        );
+      }
+      overall.candidate = checkpoint.candidate;
+      overall.previousCandidate = undefined;
+      overall.previousCandidatePatch = undefined;
+      overall.latestEvidence =
+        "Target moved; overall candidate was transplanted and requires regression review.";
+      persistOverallReviewState(
+        deps,
+        overall,
+        "needs_rework",
+        overall.latestEvidence,
+      );
+    }
     attempt++;
     const outstanding = overall.convergence.findings.filter((finding) =>
       overall.convergence.outstandingIds.includes(finding.id),
@@ -5757,35 +5894,88 @@ async function runConvergentOverallReviewLoop(
       epoch: overall.epoch,
       findings: overall.convergence.findings,
     });
-    const integrated = await integrateOverallCandidate(
-      deps,
-      planArtifacts,
+    if (!schedulerActor) {
+      throw new BlockedError(
+        "overall candidate integration requires the managed scheduler",
+      );
+    }
+    const canonicalCandidate = await overallCandidateRef({
       overall,
-    );
-    if (integrated.ok) {
+      runId: deps.runId ?? "overall",
+      assessedAt: new Date().toISOString(),
+      evidenceRefs: [
+        join(
+          deps.paths?.runDir ?? dirname(worktreePath),
+          "overall-review",
+          "rounds",
+          String(Math.max(1, attempt)).padStart(3, "0"),
+          "finding-transition.json",
+        ),
+      ],
+    });
+    await schedulerActor.recordOverallCandidate(canonicalCandidate);
+    const started = await schedulerActor.requestOverallIntegration({
+      attemptId: `integration:${deps.runId ?? "overall"}:overall:${Date.now()}`,
+      pipelineHash: integrationPipelineHash(
+        await resolveValidationCommands(deps),
+      ),
+    });
+    if (!started) {
+      throw new BlockedError("overall candidate integration was not scheduled");
+    }
+    let completion = await schedulerActor.nextCompletion();
+    while (
+      completion.kind !== "integration" ||
+      completion.owner.kind !== "overall"
+    ) {
+      completion = await schedulerActor.nextCompletion();
+    }
+    const overallRuntime = deps.canonicalRunStore?.read().runtime.overall;
+    if (overallRuntime?.phase === "waiting_rework") {
+      overall.latestEvidence =
+        "Overall integration requires rework; the approved candidate was retained.";
+      persistOverallReviewState(
+        deps,
+        overall,
+        "needs_rework",
+        overall.latestEvidence,
+      );
+      continue;
+    }
+    if (
+      completion.phase !== "completed" ||
+      overallRuntime?.phase !== "completed"
+    ) {
+      overall.latestEvidence =
+        "Overall integration paused; the approved candidate was retained for recovery.";
+      persistOverallReviewState(
+        deps,
+        overall,
+        "blocked",
+        overall.latestEvidence,
+      );
+      throw new BlockedError(overall.latestEvidence);
+    }
+    const overallCleanupDebt = {
+      id: `overall-review:${canonicalCandidate.id}`,
+      kind: "overall-review-worktree",
+      reason: "overall candidate landed; owned workspace cleanup is pending",
+    };
+    await schedulerActor.recordCleanupDebt(overallCleanupDebt);
+    try {
       await deps.git.removeWorktree(worktreePath);
       await deps.git.deleteTaskBranch(branchName);
-      deps.updateState((previous) =>
-        checkpointPatch(previous, "Final overall review approved"),
-      );
-      if (deps.paths) {
-        appendEvent(deps.paths, { type: "overall_review_approved" });
-      }
-      return;
+      await schedulerActor.completeCleanup(overallCleanupDebt.id);
+    } catch {
+      // Canonical cleanup debt retains ownership for the next resume.
     }
-    overall.latestEvidence = integrated.reason;
-    persistOverallReviewState(
-      deps,
-      overall,
-      integrated.stalled || integrated.hardBlocked ? "blocked" : "needs_rework",
-      integrated.reason,
+    deps.updateState((previous) =>
+      checkpointPatch(previous, "Final overall review approved"),
     );
-    if (integrated.hardBlocked) {
-      throw new BlockedError(integrated.reason);
+    if (deps.paths) {
+      appendEvent(deps.paths, { type: "overall_review_approved" });
     }
-    if (integrated.stalled) {
-      break;
-    }
+    return;
   }
   persistOverallReviewState(
     deps,
@@ -5812,217 +6002,6 @@ async function runConvergentOverallReviewLoop(
     artifactPath,
     `Overall review stalled: ${overall.convergence.outstandingIds.join(", ")}`,
   );
-}
-
-async function integrateOverallCandidate(
-  deps: OrchestratorDeps,
-  planArtifacts: string[],
-  overall: OverallReviewState,
-): Promise<
-  | { ok: true }
-  | { ok: false; reason: string; stalled?: boolean; hardBlocked?: boolean }
-> {
-  const mainRoot = await deps.git.root();
-  const candidateGit = deps.git.forWorktree(overall.worktreePath, mainRoot);
-  const candidatePlanArtifacts = overallWorktreePlanArtifacts(
-    overall.worktreePath,
-    mainRoot,
-    planArtifacts,
-  );
-  const candidateSha = overall.candidate.trustedCheckpoint!;
-  const candidateDelta = await candidateGit.diffRange(
-    overall.baseSha,
-    candidateSha,
-  );
-  const gates: IntegrationGate[] = [
-    { key: "apply", kind: "apply", label: "Apply overall candidate delta" },
-    ...(await resolveValidationCommands(deps)).map((command, index) => ({
-      key: `validator:${index}`,
-      kind: "validator" as const,
-      label: `Validator: ${command.display}`,
-    })),
-    { key: "hook", kind: "hook", label: "Approval hook" },
-    ...((await resolveValidationCommands(deps)).length === 0
-      ? [
-          {
-            key: "fallback",
-            kind: "fallback" as const,
-            label: "Typed overall review approval",
-          },
-        ]
-      : []),
-  ];
-  const mainBase = await deps.git.head();
-  if (
-    mainBase !== overall.baseSha ||
-    !(await deps.git.isCleanExcept(planArtifacts))
-  ) {
-    return {
-      ok: false,
-      reason: "main checkout changed before overall integration",
-    };
-  }
-  if (!sameIntegrationPipeline(overall.integrationLedger, mainBase, gates)) {
-    overall.integrationLedger = createIntegrationLedger({
-      epoch: (overall.integrationLedger?.epoch ?? 0) + 1,
-      mainBaseSha: mainBase,
-      gates,
-      idPrefix: "OI",
-    });
-  }
-  const snapshot = await captureRestoreSnapshot(deps.git, planArtifacts);
-  persistOverallReviewState(deps, overall, "integrating");
-  const fail = async (key: string, reason: string) => {
-    const update = reassessIntegrationGate({
-      ledger: overall.integrationLedger!,
-      key,
-      passed: false,
-      evidence: reason,
-    });
-    const completed = completeIntegrationRound(update.ledger);
-    overall.integrationLedger = completed.ledger;
-    persistOverallReviewState(
-      deps,
-      overall,
-      completed.outcome === "stalled" ? "stalled" : "needs_rework",
-      reason,
-    );
-    try {
-      await restoreAndVerify(deps.git, snapshot, planArtifacts);
-    } catch (error) {
-      return {
-        ok: false as const,
-        hardBlocked: true,
-        reason: `${reason}\nRollback failed: ${error instanceof Error ? error.message : String(error)}`,
-      };
-    }
-    return {
-      ok: false as const,
-      reason:
-        completed.outcome === "stalled"
-          ? `${reason}\nOverall integration stalled without a new low outstanding count.`
-          : reason,
-      stalled: completed.outcome === "stalled",
-    };
-  };
-  const apply = await deps.git.applyPatch(candidateDelta);
-  if (apply.exitCode !== 0) {
-    return fail(
-      "apply",
-      apply.stderr || apply.stdout || "could not apply overall candidate",
-    );
-  }
-  overall.integrationLedger = reassessIntegrationGate({
-    ledger: overall.integrationLedger!,
-    key: "apply",
-    passed: true,
-    evidence: "Overall candidate delta applied.",
-  }).ledger;
-  persistOverallReviewState(deps, overall, "integrating");
-  const appliedSnapshot = await captureRestoreSnapshot(deps.git, planArtifacts);
-  const validationCommands = await resolveValidationCommands(deps);
-  for (let index = 0; index < validationCommands.length; index++) {
-    const command = validationCommands[index]!;
-    const result = await runValidationCommand(
-      command,
-      await deps.git.root(),
-      deps.signal,
-    );
-    throwIfValidationStopped(deps, result);
-    if (await snapshotChanged(deps.git, appliedSnapshot, planArtifacts)) {
-      return fail(
-        `validator:${index}`,
-        `Validator changed the integration candidate: ${command.display}`,
-      );
-    }
-    if (result.exitCode !== 0) {
-      return fail(
-        `validator:${index}`,
-        result.stderr ||
-          result.stdout ||
-          `Validation failed: ${command.display}`,
-      );
-    }
-    overall.integrationLedger = reassessIntegrationGate({
-      ledger: overall.integrationLedger!,
-      key: `validator:${index}`,
-      passed: true,
-      evidence: "Validator passed.",
-    }).ledger;
-  }
-  if (validationCommands.length === 0) {
-    overall.integrationLedger = reassessIntegrationGate({
-      ledger: overall.integrationLedger!,
-      key: "fallback",
-      passed: true,
-      evidence: "Typed overall review approved the candidate.",
-    }).ledger;
-  }
-  const beforeHook = await captureRestoreSnapshot(
-    candidateGit,
-    candidatePlanArtifacts,
-  );
-  const approvedTree = await candidateGit.treeAt(candidateSha);
-  const hook = await candidateGit.runCheckpointHooks(candidateSha);
-  const hookTree = await candidateGit.tree();
-  const hookMutated = await snapshotChanged(
-    candidateGit,
-    beforeHook,
-    candidatePlanArtifacts,
-    { ignoreHead: true },
-  );
-  try {
-    await restoreAndVerify(candidateGit, beforeHook, candidatePlanArtifacts);
-  } catch (error) {
-    const rollback = await restoreSnapshots(
-      [[candidateGit, beforeHook, candidatePlanArtifacts]],
-      [[deps.git, snapshot, planArtifacts]],
-    );
-    return {
-      ok: false,
-      hardBlocked: true,
-      reason: `Approval hook state could not be restored: ${error instanceof Error ? error.message : String(error)}${rollback.length > 0 ? `; main rollback also failed: ${rollback.join("; ")}` : ""}`,
-    };
-  }
-  if (hookMutated || hookTree !== approvedTree) {
-    return fail(
-      "hook",
-      "Approval hook changed the reviewed overall candidate.",
-    );
-  }
-  if (hook.exitCode !== 0) {
-    return fail("hook", hook.stderr || hook.stdout || "Approval hook failed");
-  }
-  const commit = await deps.git.commit("fix: address overall review");
-  if (commit.exitCode !== 0) {
-    return fail(
-      "hook",
-      commit.stderr || commit.stdout || "Overall integration commit failed",
-    );
-  }
-  overall.integrationLedger = reassessIntegrationGate({
-    ledger: overall.integrationLedger!,
-    key: "hook",
-    passed: true,
-    evidence: "Approval hook passed.",
-  }).ledger;
-  const landedHead = await deps.git.head();
-  if (
-    landedHead === mainBase ||
-    (await deps.git.treeAt(landedHead)) !== approvedTree ||
-    !(await deps.git.isCleanExcept(planArtifacts)) ||
-    (await deps.git.activeOperation())
-  ) {
-    return fail(
-      "hook",
-      "Overall integration did not leave an exact clean commit.",
-    );
-  }
-  persistOverallReviewState(deps, overall, "approved");
-  if (overall.integrationLedger.outstandingIds.length > 0) {
-    return fail("hook", "Overall integration ledger remains outstanding.");
-  }
-  return { ok: true };
 }
 
 function safeArtifactName(value: string): string {
@@ -7605,22 +7584,57 @@ async function runTaskWorker(args: {
   return false;
 }
 
+async function projectCompletedScheduledSourceCheckboxes(
+  deps: OrchestratorDeps,
+  sched: SchedulerRun,
+  plan: ReturnType<typeof parsePlanFile>,
+  schedulerActor?: SchedulerActor,
+): Promise<void> {
+  const projectionDebt = {
+    id: "source-checkboxes",
+    kind: "source-checkboxes",
+    reason: "completed task source checkboxes need projection",
+  };
+  if (schedulerActor) {
+    await schedulerActor.recordProjectionDebt(projectionDebt);
+  }
+  try {
+    markCompletedScheduledSourceCheckboxes(deps, sched, plan);
+    if (schedulerActor) {
+      await schedulerActor.completeProjection(projectionDebt.id);
+    }
+  } catch (error) {
+    if (!schedulerActor) {
+      throw error;
+    }
+    throw new BlockedError(
+      `Source checkbox projection failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 function markCompletedScheduledSourceCheckboxes(
   deps: OrchestratorDeps,
   sched: SchedulerRun,
   plan: ReturnType<typeof parsePlanFile>,
 ): void {
-  for (const task of [...sched.tasks.values()].sort(
-    (a, b) => a.planIndex - b.planIndex,
-  )) {
-    if (task.status !== "landed" && task.status !== "satisfied") {
-      continue;
+  const canonical = deps.canonicalRunStore?.read();
+  const completed = canonical
+    ? canonical.graph.tasks
+        .filter(
+          (task) => canonical.runtime.tasks[task.id]?.phase === "completed",
+        )
+        .map((task) => ({ id: task.id, planIndex: task.planIndex }))
+    : [...sched.tasks.values()]
+        .filter(
+          (task) => task.status === "landed" || task.status === "satisfied",
+        )
+        .map((task) => ({ id: task.id, planIndex: task.planIndex }));
+  for (const task of completed.sort((a, b) => a.planIndex - b.planIndex)) {
+    const planTask = plan.tasks.find((entry) => entry.index === task.planIndex);
+    if (planTask) {
+      markSourceCheckboxDone(deps, task.id, planTask);
     }
-    const planTask = plan.tasks.find((t) => t.index === task.planIndex);
-    if (!planTask) {
-      continue;
-    }
-    markSourceCheckboxDone(deps, task.id, planTask);
   }
 }
 
@@ -7737,12 +7751,9 @@ function markSourceCheckboxDone(
         fallbackPath: deps.planPath,
         allowedPaths: deps.planArtifacts,
       });
-      if (!result.ok && deps.paths) {
-        persistTaskArtifact(
-          deps.paths,
-          taskId,
-          "source-checkbox.md",
-          `# Source checkbox update skipped\n\n${result.reason}\n`,
+      if (!result.ok) {
+        throw new BlockedError(
+          `Source checkbox update skipped: ${result.reason}`,
         );
       }
     } else {
@@ -7753,12 +7764,9 @@ function markSourceCheckboxDone(
         fallbackPath: deps.planPath,
         allowedPaths: deps.planArtifacts,
       });
-      if (!result.ok && deps.paths) {
-        persistTaskArtifact(
-          deps.paths,
-          taskId,
-          "source-checkbox.md",
-          `# Source checkbox update skipped\n\n${result.reason}\n`,
+      if (!result.ok) {
+        throw new BlockedError(
+          `Source checkbox update skipped: ${result.reason}`,
         );
       }
     }
@@ -7767,16 +7775,10 @@ function markSourceCheckboxDone(
 
   try {
     markTaskDone(deps.planPath, planTask);
-  } catch (err) {
-    if (deps.paths) {
-      const reason = err instanceof Error ? err.message : String(err);
-      persistTaskArtifact(
-        deps.paths,
-        taskId,
-        "source-checkbox.md",
-        `# Source checkbox update failed\n\n${reason}\n`,
-      );
-    }
+  } catch (error) {
+    throw new BlockedError(
+      `Source checkbox update failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 

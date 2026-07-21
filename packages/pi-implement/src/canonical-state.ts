@@ -95,6 +95,29 @@ const taskRuntimeSchema = z.discriminatedUnion("phase", [
   z.object({ phase: z.literal("blocked"), reason: nonEmpty }).strict(),
 ]);
 
+const overallRuntimeSchema = z.discriminatedUnion("phase", [
+  z.object({ phase: z.literal("pending") }).strict(),
+  z
+    .object({ phase: z.literal("candidate_ready"), candidateId: nonEmpty })
+    .strict(),
+  z
+    .object({ phase: z.literal("waiting_rework"), candidateId: nonEmpty })
+    .strict(),
+  z
+    .object({
+      phase: z.literal("integrating"),
+      candidateId: nonEmpty,
+      integrationAttemptId: nonEmpty,
+    })
+    .strict(),
+  z
+    .object({
+      phase: z.literal("completed"),
+      landingAttemptId: nonEmpty.optional(),
+    })
+    .strict(),
+]);
+
 const workerLeaseSchema = z
   .object({
     id: nonEmpty,
@@ -201,7 +224,7 @@ const projectionDebtSchema = z
 
 export const canonicalRunStateSchema = z
   .object({
-    schemaVersion: z.literal(4),
+    schemaVersion: z.literal(5),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -238,6 +261,7 @@ export const canonicalRunStateSchema = z
         ]),
         terminalReason: nonEmpty.optional(),
         tasks: z.record(z.string(), taskRuntimeSchema),
+        overall: overallRuntimeSchema,
       })
       .strict(),
     candidates: z.record(z.string(), candidateRefSchema),
@@ -356,7 +380,7 @@ export class RunStore {
         const next = validateCanonicalRunState(
           {
             ...proposed,
-            schemaVersion: 4,
+            schemaVersion: 5,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -403,7 +427,7 @@ export function validateCanonicalRunState(
       (issue) => `${issue.path.join(".") || "state"}: ${issue.message}`,
     );
     const version = versionFrom(value);
-    const legacy = version === undefined || version < 4;
+    const legacy = version === undefined || version < 5;
     throw new RunStateError(
       legacy
         ? `Run state at ${path} uses unsupported legacy schema${version === undefined ? "" : ` v${version}`}; start over or clean it up explicitly.`
@@ -558,6 +582,38 @@ function invariantIssues(
       );
     }
   }
+  const overall = state.runtime.overall;
+  if (
+    (overall.phase === "candidate_ready" ||
+      overall.phase === "waiting_rework" ||
+      overall.phase === "integrating") &&
+    !state.candidates[overall.candidateId]
+  ) {
+    issues.push(
+      `overall runtime references unknown candidate ${overall.candidateId}`,
+    );
+  }
+  if (
+    overall.phase === "integrating" &&
+    !state.integrationAttempts.some(
+      (attempt) =>
+        attempt.id === overall.integrationAttemptId &&
+        attempt.owner.kind === "overall" &&
+        attempt.candidateId === overall.candidateId,
+    )
+  ) {
+    issues.push("overall runtime has no matching integration attempt");
+  }
+  if (
+    overall.phase === "completed" &&
+    overall.landingAttemptId &&
+    !state.landingReceipts.some(
+      (receipt) => receipt.attemptId === overall.landingAttemptId,
+    )
+  ) {
+    issues.push("completed overall runtime has no matching landing receipt");
+  }
+
   for (const [taskId, runtime] of Object.entries(state.runtime.tasks)) {
     if (
       runtime.phase === "executing" &&
@@ -671,6 +727,20 @@ function invariantIssues(
         `landing receipt ${receipt.attemptId} does not match its integration attempt and candidate`,
       );
     }
+  }
+  const completedOverall =
+    state.runtime.overall.phase === "completed"
+      ? state.runtime.overall
+      : undefined;
+  if (
+    completedOverall?.landingAttemptId &&
+    !state.landingReceipts.some(
+      (receipt) =>
+        receipt.attemptId === completedOverall.landingAttemptId &&
+        receipt.owner.kind === "overall",
+    )
+  ) {
+    issues.push("completed overall runtime is missing its landing receipt");
   }
   for (const task of state.graph.tasks) {
     const runtime = state.runtime.tasks[task.id];

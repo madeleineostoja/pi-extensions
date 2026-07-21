@@ -21,7 +21,7 @@ export type WorkerExecution = (args: {
 }) => Promise<WorkerOutcome>;
 
 export type IntegrationExecution = (args: {
-  taskId: string;
+  owner: { kind: "task"; taskId: string } | { kind: "overall" };
   attemptId: string;
   candidateId: string;
   signal: AbortSignal;
@@ -39,7 +39,7 @@ type ActorCompletion =
     }
   | {
       kind: "integration";
-      taskId: string;
+      owner: { kind: "task"; taskId: string } | { kind: "overall" };
       attemptId: string;
       phase: "completed" | "paused";
     };
@@ -184,6 +184,57 @@ export class SchedulerActor {
     return effects.some((effect) => effect.kind === "start_integration");
   }
 
+  async requestOverallIntegration(args: {
+    attemptId: string;
+    pipelineHash: string;
+  }): Promise<boolean> {
+    const effects = await this.dispatch({
+      kind: "overall_integration_requested",
+      ...args,
+      now: this.now(),
+    });
+    for (const effect of effects) {
+      if (effect.kind === "start_integration") {
+        this.startIntegration(effect);
+      }
+    }
+    return effects.some((effect) => effect.kind === "start_integration");
+  }
+
+  async recordOverallCandidate(
+    candidate: CanonicalRunState["candidates"][string],
+  ): Promise<void> {
+    await this.dispatch({ kind: "overall_candidate_ready", candidate });
+  }
+
+  async completeOverallReview(): Promise<void> {
+    await this.dispatch({ kind: "overall_review_completed" });
+  }
+
+  async completeRun(): Promise<void> {
+    await this.dispatch({ kind: "run_completed" });
+  }
+
+  async recordCleanupDebt(
+    debt: CanonicalRunState["cleanupDebt"][number],
+  ): Promise<void> {
+    await this.dispatch({ kind: "cleanup_debt_recorded", debt });
+  }
+
+  async recordProjectionDebt(
+    debt: CanonicalRunState["projectionDebt"][number],
+  ): Promise<void> {
+    await this.dispatch({ kind: "projection_debt_recorded", debt });
+  }
+
+  async completeProjection(debtId: string): Promise<void> {
+    await this.dispatch({ kind: "projection_completed", debtId });
+  }
+
+  async completeCleanup(debtId: string): Promise<void> {
+    await this.dispatch({ kind: "cleanup_completed", debtId });
+  }
+
   private startIntegration(
     effect: Extract<SchedulerEffect, { kind: "start_integration" }>,
   ): void {
@@ -221,7 +272,7 @@ export class SchedulerActor {
         if (attempt?.phase === "completed" || attempt?.phase === "paused") {
           this.completions.push({
             kind: "integration",
-            taskId: effect.taskId,
+            owner: effect.owner,
             attemptId: effect.attemptId,
             phase: attempt.phase,
           });

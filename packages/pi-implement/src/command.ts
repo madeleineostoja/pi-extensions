@@ -1377,7 +1377,7 @@ function initialCanonicalRunState(args: {
   now: string;
 }): CanonicalRunState {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     revision: 0,
     run: {
       id: args.runId,
@@ -1397,7 +1397,7 @@ function initialCanonicalRunState(args: {
       effectiveWorkerConcurrency: args.maxConcurrency,
     },
     graph: { tasks: [] },
-    runtime: { phase: "preflight", tasks: {} },
+    runtime: { phase: "preflight", tasks: {}, overall: { phase: "pending" } },
     candidates: {},
     reviewConvergence: {},
     workerLeases: [],

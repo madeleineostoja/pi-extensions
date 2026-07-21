@@ -12,7 +12,7 @@ function state(
   concurrency = 2,
 ): CanonicalRunState {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     revision: 0,
     run: {
       id: "run-1",
@@ -45,6 +45,7 @@ function state(
       tasks: Object.fromEntries(
         tasks.map((task) => [task.id, { phase: "queued" }]),
       ),
+      overall: { phase: "pending" },
     },
     candidates: {},
     reviewConvergence: {},
@@ -177,6 +178,77 @@ describe("scheduler reducer", () => {
     expect(result.state).toEqual(started);
   });
 
+  it("lands an approved overall candidate through the shared integration lifecycle", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.runtime.tasks.a = { phase: "completed", result: "satisfied" };
+    const approved = candidate("overall");
+    const ready = transition(initial, {
+      kind: "overall_candidate_ready",
+      candidate: approved,
+    }).state;
+    const requested = transition(ready, {
+      kind: "overall_integration_requested",
+      attemptId: "overall-attempt",
+      pipelineHash: "pipeline",
+      now: "now",
+    });
+
+    expect(requested.accepted).toBe(true);
+    expect(requested.effects).toEqual([
+      {
+        kind: "start_integration",
+        owner: { kind: "overall" },
+        attemptId: "overall-attempt",
+        candidateId: approved.id,
+      },
+    ]);
+    const prepared = transition(requested.state, {
+      kind: "integration_prepared",
+      attemptId: "overall-attempt",
+      preparedCommitSha: "prepared",
+    }).state;
+    const publishing = transition(prepared, {
+      kind: "integration_publishing",
+      attemptId: "overall-attempt",
+    }).state;
+    const landed = transition(publishing, {
+      kind: "integration_landed",
+      attemptId: "overall-attempt",
+      receipt: {
+        attemptId: "overall-attempt",
+        owner: { kind: "overall" },
+        candidateCommitSha: approved.commitSha,
+        targetCheckoutId: "checkout",
+        targetRef: "main",
+        targetBaseSha: approved.baseSha,
+        integrationCommitSha: "prepared",
+        treeSha: approved.treeSha,
+        pipelineHash: "pipeline",
+        publishedAt: "now",
+      },
+    });
+
+    expect(landed.accepted).toBe(true);
+    expect(landed.state.runtime.overall).toEqual({
+      phase: "completed",
+      landingAttemptId: "overall-attempt",
+    });
+  });
+
+  it("requires overall review completion before completing the run", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.runtime.tasks.a = { phase: "completed", result: "satisfied" };
+
+    expect(transition(initial, { kind: "run_completed" }).accepted).toBe(false);
+    const overallCompleted = transition(initial, {
+      kind: "overall_review_completed",
+    }).state;
+    expect(
+      transition(overallCompleted, { kind: "run_completed" }).state.runtime
+        .phase,
+    ).toBe("completed");
+  });
+
   it("returns an integration rework task to worker selection", () => {
     const initial = state([{ id: "a", planIndex: 0 }]);
     initial.candidates = { first: candidate("first") };
@@ -291,7 +363,7 @@ describe("scheduler reducer", () => {
     expect(resumed.effects).toEqual([
       {
         kind: "start_integration",
-        taskId: "a",
+        owner: { kind: "task", taskId: "a" },
         attemptId: "attempt-a",
         candidateId: "first",
       },

@@ -61,6 +61,18 @@ async function candidate(root: string): Promise<CandidateRef> {
   };
 }
 
+function overallAttempt(candidateId: string, targetBaseSha: string) {
+  return {
+    id: "integration:overall",
+    owner: { kind: "overall" as const },
+    candidateId,
+    targetBaseSha,
+    pipelineHash: "pipeline",
+    startedAt: "now",
+    phase: "preparing" as const,
+  } satisfies CanonicalRunState["integrationAttempts"][number];
+}
+
 function attempt(candidateId: string, targetBaseSha: string) {
   return {
     id: "integration:a",
@@ -107,6 +119,40 @@ describe("IntegrationEngine", () => {
     }
     expect(await gitClient.head()).toBe(prepared.prepared.preparedCommitSha);
     expect(await gitClient.tree()).toBe(approved.treeSha);
+    await engine.cleanup(prepared.prepared);
+  });
+
+  it("uses the same staging preparation and publication contract for overall candidates", async () => {
+    const root = repository();
+    const gitClient = new ExecGitClient(root);
+    const approved = await candidate(root);
+    const targetHead = await gitClient.head();
+    const engine = new IntegrationEngine({
+      git: gitClient,
+      worktreesRoot: join(root, ".pi", "integrations"),
+      targetCheckoutId: await gitClient.checkoutIdentity(),
+      targetBranch: await gitClient.currentBranch(),
+      protectedPaths: [],
+    });
+
+    const prepared = await engine.prepare(
+      overallAttempt(approved.id, targetHead),
+      approved,
+    );
+    if (prepared.kind !== "prepared") {
+      throw new Error(JSON.stringify(prepared));
+    }
+    expect(await gitClient.head()).toBe(targetHead);
+    const published = await engine.publish(
+      overallAttempt(approved.id, targetHead),
+      prepared.prepared,
+      approved,
+    );
+
+    expect(published).toMatchObject({
+      kind: "landed",
+      receipt: { owner: { kind: "overall" } },
+    });
     await engine.cleanup(prepared.prepared);
   });
 

@@ -14,7 +14,7 @@ import {
 
 function state(): CanonicalRunState {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     revision: 0,
     run: {
       id: "run-1",
@@ -54,6 +54,7 @@ function state(): CanonicalRunState {
     runtime: {
       phase: "running",
       tasks: { "task-1": { phase: "queued" }, "task-2": { phase: "queued" } },
+      overall: { phase: "pending" },
     },
     candidates: {},
     reviewConvergence: {},
