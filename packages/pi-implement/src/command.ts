@@ -1377,7 +1377,7 @@ function initialCanonicalRunState(args: {
   now: string;
 }): CanonicalRunState {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     revision: 0,
     run: {
       id: args.runId,

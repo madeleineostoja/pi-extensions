@@ -110,6 +110,77 @@ describe("IntegrationEngine", () => {
     await engine.cleanup(prepared.prepared);
   });
 
+  it("recreates a missing integration worktree when its owned branch exists", async () => {
+    const root = repository();
+    const gitClient = new ExecGitClient(root);
+    const approved = await candidate(root);
+    const targetHead = await gitClient.head();
+    const engine = new IntegrationEngine({
+      git: gitClient,
+      worktreesRoot: join(root, ".pi", "integrations"),
+      targetCheckoutId: await gitClient.checkoutIdentity(),
+      targetBranch: await gitClient.currentBranch(),
+      protectedPaths: [],
+    });
+    const integrationAttempt = attempt(approved.id, targetHead);
+    const branchName = "pi-implement/integration/integration-a";
+    await gitClient.createTaskBranch(branchName, targetHead);
+
+    const result = await engine.prepare(integrationAttempt, approved);
+
+    expect(result).toMatchObject({ kind: "prepared" });
+  });
+
+  it("reconciles a publication that succeeded before its receipt was persisted", async () => {
+    const root = repository();
+    const gitClient = new ExecGitClient(root);
+    const approved = await candidate(root);
+    const targetHead = await gitClient.head();
+    const engine = new IntegrationEngine({
+      git: gitClient,
+      worktreesRoot: join(root, ".pi", "integrations"),
+      targetCheckoutId: await gitClient.checkoutIdentity(),
+      targetBranch: await gitClient.currentBranch(),
+      protectedPaths: [],
+    });
+    const integrationAttempt = attempt(approved.id, targetHead);
+    const preparedOutcome = await engine.prepare(integrationAttempt, approved);
+    if (preparedOutcome.kind !== "prepared") {
+      throw new Error(JSON.stringify(preparedOutcome));
+    }
+    const prepared = preparedOutcome.prepared;
+    const published = await engine.publish(
+      integrationAttempt,
+      prepared,
+      approved,
+    );
+    if (published.kind !== "landed") {
+      throw new Error(JSON.stringify(published));
+    }
+
+    const reconstructed = await engine.reconstructPrepared(
+      {
+        ...integrationAttempt,
+        phase: "prepared",
+        preparedCommitSha: prepared.preparedCommitSha,
+      },
+      approved,
+    );
+    if (reconstructed.kind !== "reconstructed") {
+      throw new Error(JSON.stringify(reconstructed));
+    }
+    const recovered = await engine.publish(
+      integrationAttempt,
+      reconstructed.prepared,
+      approved,
+    );
+
+    expect(recovered).toMatchObject({
+      kind: "landed",
+      receipt: { integrationCommitSha: prepared.preparedCommitSha },
+    });
+  });
+
   it("preserves a candidate when the target has moved before preparation", async () => {
     const root = repository();
     const gitClient = new ExecGitClient(root);

@@ -138,7 +138,7 @@ const integrationAttemptBaseSchema = {
   startedAt: nonEmpty,
 };
 
-const integrationAttemptSchema = z.discriminatedUnion("phase", [
+const integrationAttemptSchema = z.union([
   z
     .object({ ...integrationAttemptBaseSchema, phase: z.literal("preparing") })
     .strict(),
@@ -157,7 +157,19 @@ const integrationAttemptSchema = z.discriminatedUnion("phase", [
     })
     .strict(),
   z
-    .object({ ...integrationAttemptBaseSchema, phase: z.literal("paused") })
+    .object({
+      ...integrationAttemptBaseSchema,
+      phase: z.literal("paused"),
+      resumePhase: z.literal("preparing"),
+    })
+    .strict(),
+  z
+    .object({
+      ...integrationAttemptBaseSchema,
+      phase: z.literal("paused"),
+      resumePhase: z.enum(["prepared", "publishing"]),
+      preparedCommitSha: nonEmpty,
+    })
     .strict(),
   z
     .object({
@@ -189,7 +201,7 @@ const projectionDebtSchema = z
 
 export const canonicalRunStateSchema = z
   .object({
-    schemaVersion: z.literal(3),
+    schemaVersion: z.literal(4),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -344,7 +356,7 @@ export class RunStore {
         const next = validateCanonicalRunState(
           {
             ...proposed,
-            schemaVersion: 3,
+            schemaVersion: 4,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -391,7 +403,7 @@ export function validateCanonicalRunState(
       (issue) => `${issue.path.join(".") || "state"}: ${issue.message}`,
     );
     const version = versionFrom(value);
-    const legacy = version === undefined || version < 3;
+    const legacy = version === undefined || version < 4;
     throw new RunStateError(
       legacy
         ? `Run state at ${path} uses unsupported legacy schema${version === undefined ? "" : ` v${version}`}; start over or clean it up explicitly.`
@@ -604,6 +616,15 @@ function invariantIssues(
     }
     if (attempt.owner.kind === "task") {
       const runtime = state.runtime.tasks[attempt.owner.taskId];
+      if (
+        attempt.phase === "completed" &&
+        runtime?.phase !== "completed" &&
+        !state.landingReceipts.some(
+          (receipt) => receipt.attemptId === attempt.id,
+        )
+      ) {
+        continue;
+      }
       if (!runtime) {
         issues.push(
           `integration attempt ${attempt.id} has an unknown task owner`,

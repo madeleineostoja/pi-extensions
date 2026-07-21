@@ -28,6 +28,8 @@ export type IntegrationExecution = (args: {
   dispatch: (event: SchedulerEvent) => Promise<void>;
 }) => Promise<void>;
 
+export type CleanupExecution = (args: { debtId: string }) => Promise<void>;
+
 type ActorCompletion =
   | {
       kind: "worker";
@@ -46,6 +48,7 @@ export type SchedulerActorOptions = {
   store: RunStore;
   executeWorker: WorkerExecution;
   executeIntegration?: IntegrationExecution;
+  executeCleanup?: CleanupExecution;
   onTransition?: (state: CanonicalRunState, event: SchedulerEvent) => void;
   awaitOwnedProcesses?: () => Promise<void>;
   now?: () => string;
@@ -107,6 +110,8 @@ export class SchedulerActor {
       await this.dispatch({ kind: "run_started" });
     }
     await this.reconcileRetainedLeases();
+    await this.resumeRetainedIntegrations();
+    await this.reconcileCleanupDebt();
     await this.schedule();
   }
 
@@ -350,6 +355,37 @@ export class SchedulerActor {
           kind: "integration_paused",
           attemptId: attempt.id,
         });
+      }
+    }
+  }
+
+  private async resumeRetainedIntegrations(): Promise<void> {
+    for (const attempt of this.snapshot().integrationAttempts) {
+      if (attempt.phase !== "paused") {
+        continue;
+      }
+      const effects = await this.dispatch({
+        kind: "integration_resumed",
+        attemptId: attempt.id,
+      });
+      for (const effect of effects) {
+        if (effect.kind === "start_integration") {
+          this.startIntegration(effect);
+        }
+      }
+    }
+  }
+
+  private async reconcileCleanupDebt(): Promise<void> {
+    if (!this.options.executeCleanup) {
+      return;
+    }
+    for (const debt of this.snapshot().cleanupDebt) {
+      try {
+        await this.options.executeCleanup({ debtId: debt.id });
+        await this.dispatch({ kind: "cleanup_completed", debtId: debt.id });
+      } catch {
+        // Retain cleanup debt until ownership can be proved on a later resume.
       }
     }
   }

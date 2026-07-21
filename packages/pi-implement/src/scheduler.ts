@@ -60,6 +60,7 @@ export type SchedulerEvent =
       candidateId: string;
     }
   | { kind: "integration_paused"; attemptId: string }
+  | { kind: "integration_resumed"; attemptId: string }
   | { kind: "cleanup_completed"; debtId: string }
   | { kind: "run_stopping" }
   | { kind: "run_completed" }
@@ -105,7 +106,8 @@ export function selectIntegrationTask(
       (attempt) =>
         attempt.phase === "preparing" ||
         attempt.phase === "prepared" ||
-        attempt.phase === "publishing",
+        attempt.phase === "publishing" ||
+        attempt.phase === "paused",
     )
   ) {
     return undefined;
@@ -396,7 +398,7 @@ export function transition(
         );
       }
       state.integrationAttempts = state.integrationAttempts.map((entry) =>
-        entry.id === event.attemptId ? { ...entry, phase: "paused" } : entry,
+        entry.id === event.attemptId ? closeReworkAttempt(entry) : entry,
       );
       state.runtime.tasks[attempt.owner.taskId] = {
         phase: "waiting_rework",
@@ -409,13 +411,60 @@ export function transition(
       const attempt = state.integrationAttempts.find(
         (entry) => entry.id === event.attemptId,
       );
-      if (!attempt || attempt.phase === "completed") {
+      if (
+        !attempt ||
+        !["preparing", "prepared", "publishing"].includes(attempt.phase)
+      ) {
         return reject("integration attempt is not active");
       }
       state.integrationAttempts = state.integrationAttempts.map((entry) =>
-        entry.id === event.attemptId ? { ...entry, phase: "paused" } : entry,
+        entry.id === event.attemptId
+          ? attempt.phase === "preparing"
+            ? { ...attempt, phase: "paused", resumePhase: "preparing" }
+            : attempt.phase === "prepared" || attempt.phase === "publishing"
+              ? {
+                  ...attempt,
+                  phase: "paused",
+                  resumePhase: attempt.phase,
+                  preparedCommitSha: attempt.preparedCommitSha,
+                }
+              : entry
+          : entry,
       );
       return accept();
+    }
+
+    case "integration_resumed": {
+      const attempt = state.integrationAttempts.find(
+        (entry) => entry.id === event.attemptId,
+      );
+      if (
+        !attempt ||
+        attempt.phase !== "paused" ||
+        attempt.owner.kind !== "task"
+      ) {
+        return reject("integration attempt is not resumable");
+      }
+      const runtime = state.runtime.tasks[attempt.owner.taskId];
+      if (
+        runtime?.phase !== "integrating" ||
+        runtime.integrationAttemptId !== attempt.id ||
+        runtime.candidateId !== attempt.candidateId ||
+        (attempt.resumePhase !== "preparing" && !attempt.preparedCommitSha)
+      ) {
+        return reject("integration task no longer owns the paused attempt");
+      }
+      state.integrationAttempts = state.integrationAttempts.map((entry) =>
+        entry.id === attempt.id ? resumeIntegrationAttempt(attempt) : entry,
+      );
+      return accept([
+        {
+          kind: "start_integration",
+          taskId: attempt.owner.taskId,
+          attemptId: attempt.id,
+          candidateId: attempt.candidateId,
+        },
+      ]);
     }
 
     case "cleanup_completed":
@@ -454,6 +503,45 @@ export function transition(
 }
 
 export const reduceRunEvent = transition;
+
+function closeReworkAttempt(
+  attempt: CanonicalRunState["integrationAttempts"][number],
+): CanonicalRunState["integrationAttempts"][number] {
+  if (attempt.phase === "preparing") {
+    const { phase: _, ...base } = attempt;
+    return { ...base, phase: "completed", preparedCommitSha: "rework" };
+  }
+  if (attempt.phase === "paused") {
+    const { resumePhase: _, ...base } = attempt;
+    return {
+      ...base,
+      phase: "completed",
+      preparedCommitSha:
+        attempt.resumePhase === "preparing"
+          ? "rework"
+          : attempt.preparedCommitSha,
+    };
+  }
+  return { ...attempt, phase: "completed" };
+}
+
+function resumeIntegrationAttempt(
+  attempt: Extract<
+    CanonicalRunState["integrationAttempts"][number],
+    { phase: "paused" }
+  >,
+): CanonicalRunState["integrationAttempts"][number] {
+  if (attempt.resumePhase === "preparing") {
+    const { resumePhase: _, ...base } = attempt;
+    return { ...base, phase: "preparing" };
+  }
+  const { resumePhase: _, ...base } = attempt;
+  return {
+    ...base,
+    phase: attempt.resumePhase,
+    preparedCommitSha: attempt.preparedCommitSha,
+  };
+}
 
 function updateIntegration(
   state: CanonicalRunState,

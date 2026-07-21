@@ -1558,6 +1558,45 @@ async function runScheduledImplementation(
   if (deps.canonicalRunStore) {
     schedulerActor = new SchedulerActor({
       store: deps.canonicalRunStore,
+      executeCleanup: async ({ debtId }) => {
+        const attemptId = debtId.replace(/^integration:/, "");
+        const state = deps.canonicalRunStore!.read();
+        const attempt = state.integrationAttempts.find(
+          (entry) => entry.id === attemptId,
+        );
+        const candidate = attempt && state.candidates[attempt.candidateId];
+        if (
+          !attempt ||
+          !candidate ||
+          attempt.phase !== "completed" ||
+          attempt.owner.kind !== "task"
+        ) {
+          throw new Error(`Cleanup debt ${debtId} has no completed attempt.`);
+        }
+        const targetBranch = state.run.target.branchRef.replace(
+          /^refs\/heads\//,
+          "",
+        );
+        const engine = new IntegrationEngine({
+          git: deps.git,
+          worktreesRoot: join(deps.paths!.worktreesDir, "integrations"),
+          targetCheckoutId: state.run.target.gitDir,
+          targetBranch,
+          protectedPaths: planArtifacts,
+        });
+        const prepared = await engine.reconstructPrepared(
+          attempt as typeof attempt & {
+            owner: { kind: "task"; taskId: string };
+          },
+          candidate,
+        );
+        if (prepared.kind !== "reconstructed") {
+          throw new Error(
+            `Cleanup debt ${debtId} cannot reconstruct its workspace.`,
+          );
+        }
+        await engine.cleanup(prepared.prepared);
+      },
       executeIntegration: async ({
         attemptId,
         candidateId,
@@ -1604,40 +1643,17 @@ async function runScheduledImplementation(
             return { ok: true };
           },
         });
-        const prepared = await engine.prepare(taskAttempt, candidate, signal);
-        if (prepared.kind === "prepared") {
-          await dispatch({
-            kind: "integration_prepared",
-            attemptId,
-            preparedCommitSha: prepared.prepared.preparedCommitSha,
-          });
-          await dispatch({ kind: "integration_publishing", attemptId });
-          const published = await engine.publish(
-            taskAttempt,
-            prepared.prepared,
-            candidate,
-            signal,
-          );
-          if (published.kind === "landed") {
-            await dispatch({
-              kind: "integration_landed",
-              attemptId,
-              receipt: published.receipt,
-            });
-            try {
-              await engine.cleanup(prepared.prepared);
-              await dispatch({
-                kind: "cleanup_completed",
-                debtId: `integration:${attemptId}`,
-              });
-            } catch {
-              // Cleanup debt remains durable until a later idempotent cleanup succeeds.
-            }
-            return;
-          }
+        const preparation =
+          taskAttempt.phase === "preparing"
+            ? await engine.prepare(taskAttempt, candidate, signal)
+            : await engine.reconstructPrepared(taskAttempt, candidate);
+        if (
+          preparation.kind !== "prepared" &&
+          preparation.kind !== "reconstructed"
+        ) {
           if (
-            published.kind === "needs_rework" ||
-            published.kind === "target_moved"
+            preparation.kind === "needs_rework" ||
+            preparation.kind === "target_moved"
           ) {
             await dispatch({
               kind: "integration_needs_rework",
@@ -1649,9 +1665,43 @@ async function runScheduledImplementation(
           await dispatch({ kind: "integration_paused", attemptId });
           return;
         }
+        const prepared = preparation.prepared;
+        if (taskAttempt.phase === "preparing") {
+          await dispatch({
+            kind: "integration_prepared",
+            attemptId,
+            preparedCommitSha: prepared.preparedCommitSha,
+          });
+          await dispatch({ kind: "integration_publishing", attemptId });
+        } else if (taskAttempt.phase === "prepared") {
+          await dispatch({ kind: "integration_publishing", attemptId });
+        }
+        const published = await engine.publish(
+          taskAttempt,
+          prepared,
+          candidate,
+          signal,
+        );
+        if (published.kind === "landed") {
+          await dispatch({
+            kind: "integration_landed",
+            attemptId,
+            receipt: published.receipt,
+          });
+          try {
+            await engine.cleanup(prepared);
+            await dispatch({
+              kind: "cleanup_completed",
+              debtId: `integration:${attemptId}`,
+            });
+          } catch {
+            // Cleanup debt remains durable until a later idempotent cleanup succeeds.
+          }
+          return;
+        }
         if (
-          prepared.kind === "needs_rework" ||
-          prepared.kind === "target_moved"
+          published.kind === "needs_rework" ||
+          published.kind === "target_moved"
         ) {
           await dispatch({
             kind: "integration_needs_rework",

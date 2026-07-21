@@ -12,7 +12,7 @@ function state(
   concurrency = 2,
 ): CanonicalRunState {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     revision: 0,
     run: {
       id: "run-1",
@@ -220,6 +220,82 @@ describe("scheduler reducer", () => {
         candidateId: "first",
       }).accepted,
     ).toBe(false);
+  });
+
+  it("resumes a retained preparing integration without creating another attempt", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.candidates = { first: candidate("first") };
+    initial.runtime.tasks.a = {
+      phase: "integrating",
+      candidateId: "first",
+      integrationAttemptId: "attempt-a",
+    };
+    initial.integrationAttempts = [
+      {
+        id: "attempt-a",
+        owner: { kind: "task", taskId: "a" },
+        candidateId: "first",
+        targetBaseSha: "base",
+        pipelineHash: "pipeline",
+        startedAt: "now",
+        phase: "paused",
+        resumePhase: "preparing",
+      },
+    ];
+
+    const resumed = transition(initial, {
+      kind: "integration_resumed",
+      attemptId: "attempt-a",
+    });
+
+    expect(resumed.accepted).toBe(true);
+    expect(resumed.state.integrationAttempts).toEqual([
+      expect.objectContaining({ phase: "preparing" }),
+    ]);
+  });
+
+  it("resumes a retained prepared integration without creating another attempt", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.candidates = { first: candidate("first") };
+    initial.runtime.tasks.a = {
+      phase: "integrating",
+      candidateId: "first",
+      integrationAttemptId: "attempt-a",
+    };
+    initial.integrationAttempts = [
+      {
+        id: "attempt-a",
+        owner: { kind: "task", taskId: "a" },
+        candidateId: "first",
+        targetBaseSha: "base",
+        pipelineHash: "pipeline",
+        startedAt: "now",
+        phase: "paused",
+        resumePhase: "prepared",
+        preparedCommitSha: "prepared",
+      },
+    ];
+
+    const resumed = transition(initial, {
+      kind: "integration_resumed",
+      attemptId: "attempt-a",
+    });
+
+    expect(resumed.accepted).toBe(true);
+    expect(resumed.state.integrationAttempts).toEqual([
+      expect.objectContaining({
+        phase: "prepared",
+        preparedCommitSha: "prepared",
+      }),
+    ]);
+    expect(resumed.effects).toEqual([
+      {
+        kind: "start_integration",
+        taskId: "a",
+        attemptId: "attempt-a",
+        candidateId: "first",
+      },
+    ]);
   });
 
   it("records cleanup debt before requesting cleanup", () => {

@@ -35,6 +35,7 @@ export type PreparedIntegration = {
 
 export type IntegrationOutcome =
   | { kind: "prepared"; prepared: PreparedIntegration }
+  | { kind: "reconstructed"; prepared: PreparedIntegration }
   | { kind: "landed"; receipt: CanonicalRunState["landingReceipts"][number] }
   | { kind: "target_moved"; expected: string; actual: string }
   | { kind: "needs_rework"; reason: string }
@@ -79,12 +80,20 @@ export class IntegrationEngine {
     const worktreePath = resolve(this.options.worktreesRoot, attempt.id);
     const branchName = `pi-implement/integration/${safeGitRefPart(attempt.id)}`;
     try {
-      await this.workspaceManager.ensure({
-        taskId: attempt.id,
-        branchName,
-        worktreePath,
-        baseSha: targetHead,
-      });
+      const existingBranch = (
+        await this.options.git.listBranchesMatching(branchName)
+      )
+        .map((branch) => branch.replace(/^\*\s*/, ""))
+        .includes(branchName);
+      await this.workspaceManager.ensure(
+        {
+          taskId: attempt.id,
+          branchName,
+          worktreePath,
+          baseSha: targetHead,
+        },
+        { existingBranch },
+      );
       const stagingGit = this.options.git.forWorktree(worktreePath);
       if ((await stagingGit.head()) !== targetHead) {
         return {
@@ -178,6 +187,54 @@ export class IntegrationEngine {
     }
   }
 
+  async reconstructPrepared(
+    attempt: IntegrationAttempt,
+    candidate: CandidateRef,
+  ): Promise<IntegrationOutcome> {
+    const preparedCommitSha =
+      attempt.phase === "prepared" ||
+      attempt.phase === "publishing" ||
+      attempt.phase === "completed" ||
+      (attempt.phase === "paused" && attempt.resumePhase !== "preparing")
+        ? attempt.preparedCommitSha
+        : undefined;
+    if (!preparedCommitSha) {
+      return {
+        kind: "blocked",
+        reason: "Integration attempt has no durable prepared commit.",
+      };
+    }
+    try {
+      const [parent, treeSha] = await Promise.all([
+        this.options.git.parent(preparedCommitSha),
+        this.options.git.treeAt(preparedCommitSha),
+      ]);
+      if (parent !== attempt.targetBaseSha || treeSha !== candidate.treeSha) {
+        return {
+          kind: "blocked",
+          reason:
+            "Prepared integration commit does not preserve its target parent and candidate tree.",
+        };
+      }
+      return {
+        kind: "reconstructed",
+        prepared: {
+          attemptId: attempt.id,
+          worktreePath: resolve(this.options.worktreesRoot, attempt.id),
+          branchName: `pi-implement/integration/${safeGitRefPart(attempt.id)}`,
+          targetBaseSha: attempt.targetBaseSha,
+          preparedCommitSha,
+          treeSha,
+        },
+      };
+    } catch (error) {
+      return {
+        kind: "retryable_infrastructure",
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   async publish(
     attempt: IntegrationAttempt,
     prepared: PreparedIntegration,
@@ -202,13 +259,6 @@ export class IntegrationEngine {
       if (branch !== this.options.targetBranch) {
         return { kind: "blocked", reason: "Target checkout branch changed." };
       }
-      if (head !== prepared.targetBaseSha) {
-        return {
-          kind: "target_moved",
-          expected: prepared.targetBaseSha,
-          actual: head,
-        };
-      }
       if (operation) {
         return {
           kind: "blocked",
@@ -219,6 +269,25 @@ export class IntegrationEngine {
         return {
           kind: "blocked",
           reason: "Target checkout is dirty outside protected artifacts.",
+        };
+      }
+      if (head === prepared.preparedCommitSha) {
+        if ((await this.options.git.tree()) !== prepared.treeSha) {
+          return {
+            kind: "blocked",
+            reason: "Published target tree does not match the prepared commit.",
+          };
+        }
+        return {
+          kind: "landed",
+          receipt: this.landingReceipt(attempt, prepared, candidate),
+        };
+      }
+      if (head !== prepared.targetBaseSha) {
+        return {
+          kind: "target_moved",
+          expected: prepared.targetBaseSha,
+          actual: head,
         };
       }
       if (
@@ -265,18 +334,7 @@ export class IntegrationEngine {
       }
       return {
         kind: "landed",
-        receipt: {
-          attemptId: attempt.id,
-          owner: attempt.owner,
-          candidateCommitSha: candidate.commitSha,
-          targetCheckoutId: this.options.targetCheckoutId,
-          targetRef: this.options.targetBranch,
-          targetBaseSha: prepared.targetBaseSha,
-          integrationCommitSha: prepared.preparedCommitSha,
-          treeSha: prepared.treeSha,
-          pipelineHash: attempt.pipelineHash,
-          publishedAt: new Date().toISOString(),
-        },
+        receipt: this.landingReceipt(attempt, prepared, candidate),
       };
     } catch (error) {
       return {
@@ -296,6 +354,25 @@ export class IntegrationEngine {
       },
       prepared.preparedCommitSha,
     );
+  }
+
+  private landingReceipt(
+    attempt: IntegrationAttempt,
+    prepared: PreparedIntegration,
+    candidate: CandidateRef,
+  ): CanonicalRunState["landingReceipts"][number] {
+    return {
+      attemptId: attempt.id,
+      owner: attempt.owner,
+      candidateCommitSha: candidate.commitSha,
+      targetCheckoutId: this.options.targetCheckoutId,
+      targetRef: this.options.targetBranch,
+      targetBaseSha: prepared.targetBaseSha,
+      integrationCommitSha: prepared.preparedCommitSha,
+      treeSha: prepared.treeSha,
+      pipelineHash: attempt.pipelineHash,
+      publishedAt: new Date().toISOString(),
+    };
   }
 
   private async protectedArtifactSnapshot(): Promise<
