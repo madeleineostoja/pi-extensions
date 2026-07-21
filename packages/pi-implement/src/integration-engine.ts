@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import type { CandidateRef, CanonicalRunState } from "./canonical-state.js";
@@ -93,10 +94,35 @@ export class IntegrationEngine {
         { existingBranch },
       );
       const stagingGit = this.options.git.forWorktree(worktreePath);
-      if ((await stagingGit.head()) !== targetHead) {
+      const stagingHead = await stagingGit.head();
+      if (stagingHead !== targetHead) {
+        const [parent, treeSha] = await Promise.all([
+          stagingGit.parent(stagingHead),
+          stagingGit.treeAt(stagingHead),
+        ]);
+        if (parent === targetHead && treeSha === candidate.treeSha) {
+          return {
+            kind: "reconstructed",
+            prepared: {
+              attemptId: attempt.id,
+              worktreePath,
+              branchName,
+              targetBaseSha: targetHead,
+              preparedCommitSha: stagingHead,
+              treeSha,
+            },
+          };
+        }
         return {
           kind: "blocked",
-          reason: `Integration workspace ${worktreePath} is not at expected target HEAD.`,
+          reason: `Integration workspace ${worktreePath} has an unrecorded commit.`,
+        };
+      }
+      await stagingGit.restoreWorktreeFromIndexExcept([]);
+      if (!(await stagingGit.isClean())) {
+        return {
+          kind: "blocked",
+          reason: `Integration workspace ${worktreePath} could not be reconciled to the expected target base.`,
         };
       }
       const patch = await this.options.git.diffRange(
@@ -249,12 +275,23 @@ export class IntegrationEngine {
     prepared: PreparedIntegration,
     candidate: CandidateRef,
     signal?: AbortSignal,
+    expectedArtifactHashes?: Record<string, string>,
   ): Promise<IntegrationOutcome> {
     if (signal?.aborted) {
       return { kind: "cancelled" };
     }
     try {
-      const protectedBefore = await this.protectedArtifactSnapshot();
+      const protectedBefore = await this.protectedArtifactHashes();
+      const expectedProtectedArtifacts =
+        expectedArtifactHashes ??
+        this.expectedProtectedArtifactHashes(attempt) ??
+        protectedBefore;
+      if (!sameArtifactHashes(protectedBefore, expectedProtectedArtifacts)) {
+        return {
+          kind: "blocked",
+          reason: "Protected artifacts changed before integration publication.",
+        };
+      }
       const [checkoutId, branch, head, operation, clean] = await Promise.all([
         this.options.git.checkoutIdentity(),
         this.options.git.currentBranch(),
@@ -281,15 +318,28 @@ export class IntegrationEngine {
         };
       }
       if (head === prepared.preparedCommitSha) {
-        if ((await this.options.git.tree()) !== prepared.treeSha) {
+        const [treeSha, protectedAfter] = await Promise.all([
+          this.options.git.tree(),
+          this.protectedArtifactHashes(),
+        ]);
+        if (
+          treeSha !== prepared.treeSha ||
+          !sameArtifactHashes(protectedAfter, expectedProtectedArtifacts)
+        ) {
           return {
             kind: "blocked",
-            reason: "Published target tree does not match the prepared commit.",
+            reason:
+              "Published target checks could not prove the receipt-missing landing.",
           };
         }
         return {
           kind: "landed",
-          receipt: this.landingReceipt(attempt, prepared, candidate),
+          receipt: this.landingReceipt(
+            attempt,
+            prepared,
+            candidate,
+            expectedProtectedArtifacts,
+          ),
         };
       }
       if (head !== prepared.targetBaseSha) {
@@ -327,13 +377,13 @@ export class IntegrationEngine {
           this.options.git.head(),
           this.options.git.tree(),
           this.options.git.isCleanExcept(this.options.protectedPaths),
-          this.protectedArtifactSnapshot(),
+          this.protectedArtifactHashes(),
         ]);
       if (
         publishedHead !== prepared.preparedCommitSha ||
         publishedTree !== prepared.treeSha ||
         !cleanAfter ||
-        JSON.stringify(protectedBefore) !== JSON.stringify(protectedAfter)
+        !sameArtifactHashes(protectedAfter, expectedProtectedArtifacts)
       ) {
         return {
           kind: "blocked",
@@ -343,7 +393,12 @@ export class IntegrationEngine {
       }
       return {
         kind: "landed",
-        receipt: this.landingReceipt(attempt, prepared, candidate),
+        receipt: this.landingReceipt(
+          attempt,
+          prepared,
+          candidate,
+          expectedProtectedArtifacts,
+        ),
       };
     } catch (error) {
       return {
@@ -365,10 +420,35 @@ export class IntegrationEngine {
     );
   }
 
+  async protectedArtifactHashes(): Promise<Record<string, string>> {
+    const snapshot = await this.protectedArtifactSnapshot();
+    return Object.fromEntries(
+      Object.entries(snapshot)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([path, content]) => [
+          path,
+          createHash("sha256")
+            .update(content === undefined ? "missing\0" : `content\0${content}`)
+            .digest("hex"),
+        ]),
+    );
+  }
+
+  private expectedProtectedArtifactHashes(
+    attempt: IntegrationAttempt,
+  ): Record<string, string> | undefined {
+    return attempt.phase === "publishing" ||
+      (attempt.phase === "paused" && attempt.resumePhase === "publishing") ||
+      attempt.phase === "completed"
+      ? attempt.protectedArtifactHashes
+      : undefined;
+  }
+
   private landingReceipt(
     attempt: IntegrationAttempt,
     prepared: PreparedIntegration,
     candidate: CandidateRef,
+    protectedArtifactHashes: Record<string, string>,
   ): CanonicalRunState["landingReceipts"][number] {
     return {
       attemptId: attempt.id,
@@ -380,6 +460,7 @@ export class IntegrationEngine {
       integrationCommitSha: prepared.preparedCommitSha,
       treeSha: prepared.treeSha,
       pipelineHash: attempt.pipelineHash,
+      protectedArtifactHashes,
       publishedAt: new Date().toISOString(),
     };
   }
@@ -408,4 +489,15 @@ export class IntegrationEngine {
     );
     return Object.fromEntries(snapshots);
   }
+}
+
+function sameArtifactHashes(
+  left: Record<string, string>,
+  right: Record<string, string>,
+): boolean {
+  const paths = Object.keys(left);
+  return (
+    paths.length === Object.keys(right).length &&
+    paths.every((path) => left[path] === right[path])
+  );
 }

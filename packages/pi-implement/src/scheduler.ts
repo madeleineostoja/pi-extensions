@@ -41,6 +41,7 @@ export type SchedulerEvent =
       taskId: string;
       attemptId: string;
       pipelineHash: string;
+      protectedArtifactHashes?: Record<string, string>;
       now: string;
     }
   | { kind: "overall_candidate_ready"; candidate: CandidateRef }
@@ -49,6 +50,7 @@ export type SchedulerEvent =
       kind: "overall_integration_requested";
       attemptId: string;
       pipelineHash: string;
+      protectedArtifactHashes?: Record<string, string>;
       now: string;
     }
   | {
@@ -56,7 +58,11 @@ export type SchedulerEvent =
       attemptId: string;
       preparedCommitSha: string;
     }
-  | { kind: "integration_publishing"; attemptId: string }
+  | {
+      kind: "integration_publishing";
+      attemptId: string;
+      protectedArtifactHashes: Record<string, string>;
+    }
   | {
       kind: "integration_landed";
       attemptId: string;
@@ -331,6 +337,7 @@ export function transition(
         targetBaseSha: state.candidates[runtime.candidateId]!.baseSha,
         pipelineHash: event.pipelineHash,
         startedAt: event.now,
+        protectedArtifactHashes: event.protectedArtifactHashes,
         phase: "preparing",
       });
       state.runtime.tasks[event.taskId] = {
@@ -380,6 +387,7 @@ export function transition(
         targetBaseSha: candidate.baseSha,
         pipelineHash: event.pipelineHash,
         startedAt: event.now,
+        protectedArtifactHashes: event.protectedArtifactHashes,
         phase: "preparing",
       });
       state.runtime.overall = {
@@ -424,6 +432,7 @@ export function transition(
               ...attempt,
               phase: "publishing",
               preparedCommitSha: attempt.preparedCommitSha,
+              protectedArtifactHashes: event.protectedArtifactHashes,
             }
           : entry,
       );
@@ -439,7 +448,11 @@ export function transition(
       }
       if (
         event.receipt.attemptId !== attempt.id ||
-        JSON.stringify(event.receipt.owner) !== JSON.stringify(attempt.owner)
+        JSON.stringify(event.receipt.owner) !== JSON.stringify(attempt.owner) ||
+        !sameArtifactHashes(
+          event.receipt.protectedArtifactHashes,
+          attempt.protectedArtifactHashes ?? {},
+        )
       ) {
         return reject("landing receipt does not match integration attempt");
       }
@@ -449,6 +462,7 @@ export function transition(
               ...entry,
               phase: "completed",
               preparedCommitSha: attempt.preparedCommitSha,
+              protectedArtifactHashes: attempt.protectedArtifactHashes,
             }
           : entry,
       );
@@ -502,6 +516,15 @@ export function transition(
       state.integrationAttempts = state.integrationAttempts.map((entry) =>
         entry.id === event.attemptId ? closeReworkAttempt(entry) : entry,
       );
+      const debtId = `integration:${attempt.id}`;
+      if (!state.cleanupDebt.some((debt) => debt.id === debtId)) {
+        state.cleanupDebt.push({
+          id: debtId,
+          kind: "integration-worktree",
+          reason:
+            "integration rework retained candidate; staging workspace cleanup is pending",
+        });
+      }
       if (attempt.owner.kind === "task") {
         state.runtime.tasks[attempt.owner.taskId] = {
           phase: "waiting_rework",
@@ -530,14 +553,22 @@ export function transition(
         entry.id === event.attemptId
           ? attempt.phase === "preparing"
             ? { ...attempt, phase: "paused", resumePhase: "preparing" }
-            : attempt.phase === "prepared" || attempt.phase === "publishing"
+            : attempt.phase === "prepared"
               ? {
                   ...attempt,
                   phase: "paused",
-                  resumePhase: attempt.phase,
+                  resumePhase: "prepared",
                   preparedCommitSha: attempt.preparedCommitSha,
                 }
-              : entry
+              : attempt.phase === "publishing"
+                ? {
+                    ...attempt,
+                    phase: "paused",
+                    resumePhase: "publishing",
+                    preparedCommitSha: attempt.preparedCommitSha,
+                    protectedArtifactHashes: attempt.protectedArtifactHashes,
+                  }
+                : entry
           : entry,
       );
       return accept();
@@ -643,10 +674,23 @@ function closeReworkAttempt(
 ): CanonicalRunState["integrationAttempts"][number] {
   if (attempt.phase === "preparing") {
     const { phase: _, ...base } = attempt;
-    return { ...base, phase: "completed", preparedCommitSha: "rework" };
+    return {
+      ...base,
+      phase: "completed",
+      preparedCommitSha: "rework",
+      protectedArtifactHashes: {},
+    };
   }
   if (attempt.phase === "paused") {
     const { resumePhase: _, ...base } = attempt;
+    if (attempt.resumePhase === "publishing") {
+      return {
+        ...base,
+        phase: "completed",
+        preparedCommitSha: attempt.preparedCommitSha,
+        protectedArtifactHashes: attempt.protectedArtifactHashes,
+      };
+    }
     return {
       ...base,
       phase: "completed",
@@ -654,9 +698,17 @@ function closeReworkAttempt(
         attempt.resumePhase === "preparing"
           ? "rework"
           : attempt.preparedCommitSha,
+      protectedArtifactHashes: {},
     };
   }
-  return { ...attempt, phase: "completed" };
+  if (attempt.phase === "publishing") {
+    return {
+      ...attempt,
+      phase: "completed",
+      protectedArtifactHashes: attempt.protectedArtifactHashes,
+    };
+  }
+  return { ...attempt, phase: "completed", protectedArtifactHashes: {} };
 }
 
 function resumeIntegrationAttempt(
@@ -670,9 +722,17 @@ function resumeIntegrationAttempt(
     return { ...base, phase: "preparing" };
   }
   const { resumePhase: _, ...base } = attempt;
+  if (attempt.resumePhase === "publishing") {
+    return {
+      ...base,
+      phase: "publishing",
+      preparedCommitSha: attempt.preparedCommitSha,
+      protectedArtifactHashes: attempt.protectedArtifactHashes,
+    };
+  }
   return {
     ...base,
-    phase: attempt.resumePhase,
+    phase: "prepared",
     preparedCommitSha: attempt.preparedCommitSha,
   };
 }
@@ -717,6 +777,17 @@ function updateIntegration(
       : entry,
   );
   return accept();
+}
+
+function sameArtifactHashes(
+  left: Record<string, string>,
+  right: Record<string, string>,
+): boolean {
+  const paths = Object.keys(left);
+  return (
+    paths.length === Object.keys(right).length &&
+    paths.every((path) => left[path] === right[path])
+  );
 }
 
 function isDependencyComplete(

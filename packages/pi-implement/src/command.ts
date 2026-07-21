@@ -1377,7 +1377,7 @@ function initialCanonicalRunState(args: {
   now: string;
 }): CanonicalRunState {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     revision: 0,
     run: {
       id: args.runId,
@@ -1399,6 +1399,8 @@ function initialCanonicalRunState(args: {
     graph: { tasks: [] },
     runtime: { phase: "preflight", tasks: {}, overall: { phase: "pending" } },
     candidates: {},
+    taskExecution: {},
+    taskMetadata: {},
     reviewConvergence: {},
     workerLeases: [],
     integrationAttempts: [],

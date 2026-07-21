@@ -7,7 +7,7 @@ import { SchedulerActor } from "./scheduler-actor.js";
 
 function state(): CanonicalRunState {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     revision: 0,
     run: {
       id: "run-1",
@@ -50,6 +50,8 @@ function state(): CanonicalRunState {
       overall: { phase: "pending" },
     },
     candidates: {},
+    taskExecution: {},
+    taskMetadata: {},
     reviewConvergence: {},
     workerLeases: [],
     integrationAttempts: [],
@@ -203,6 +205,79 @@ describe("SchedulerActor", () => {
       phase: "paused",
       resumePhase: "prepared",
       preparedCommitSha: "prepared",
+    });
+  });
+
+  it("reports integration rework as needs_rework rather than a landing", async () => {
+    const runStore = store();
+    const current = runStore.read();
+    await runStore.update(current.revision, (state) => ({
+      ...state,
+      runtime: {
+        ...state.runtime,
+        phase: "running",
+        tasks: {
+          ...state.runtime.tasks,
+          a: {
+            phase: "integrating",
+            candidateId: "candidate:a",
+            integrationAttemptId: "attempt-a",
+          },
+        },
+      },
+      candidates: {
+        "candidate:a": {
+          id: "candidate:a",
+          sourceBaseSha: "base",
+          baseSha: "base",
+          commitSha: "candidate",
+          treeSha: "tree",
+          branchName: "branch/a",
+          worktreePath: "/worktrees/a",
+          reviewReceipt: {
+            id: "review:a",
+            candidateId: "candidate:a",
+            candidateCommitSha: "candidate",
+            candidateTreeSha: "tree",
+            verdict: "approved",
+            convergence: {
+              round: 1,
+              outstandingFindingIds: [],
+              bestOutstandingCount: 0,
+              evidenceRefs: [],
+            },
+            assessedAt: "now",
+          },
+        },
+      },
+      integrationAttempts: [
+        {
+          id: "attempt-a",
+          owner: { kind: "task", taskId: "a" },
+          candidateId: "candidate:a",
+          targetBaseSha: "base",
+          pipelineHash: "pipeline",
+          startedAt: "now",
+          phase: "preparing",
+        },
+      ],
+    }));
+    const actor = new SchedulerActor({
+      store: runStore,
+      executeWorker: async () => ({ kind: "satisfied" }),
+      executeIntegration: async ({ attemptId, candidateId, dispatch }) => {
+        await dispatch({
+          kind: "integration_needs_rework",
+          attemptId,
+          candidateId,
+        });
+      },
+    });
+
+    await actor.start();
+    await expect(actor.nextCompletion()).resolves.toMatchObject({
+      kind: "integration",
+      outcome: "needs_rework",
     });
   });
 

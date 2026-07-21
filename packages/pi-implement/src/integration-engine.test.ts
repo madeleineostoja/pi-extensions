@@ -156,6 +156,34 @@ describe("IntegrationEngine", () => {
     await engine.cleanup(prepared.prepared);
   });
 
+  it("reconciles a retained preparing workspace to its target base before replaying preparation", async () => {
+    const root = repository();
+    const gitClient = new ExecGitClient(root);
+    const approved = await candidate(root);
+    const targetHead = await gitClient.head();
+    const engine = new IntegrationEngine({
+      git: gitClient,
+      worktreesRoot: join(root, ".pi", "integrations"),
+      targetCheckoutId: await gitClient.checkoutIdentity(),
+      targetBranch: await gitClient.currentBranch(),
+      protectedPaths: [],
+    });
+    const integrationAttempt = attempt(approved.id, targetHead);
+    const initial = await engine.prepare(integrationAttempt, approved);
+    if (initial.kind !== "prepared") {
+      throw new Error(JSON.stringify(initial));
+    }
+    writeFileSync(join(initial.prepared.worktreePath, "file.txt"), "stale\n");
+
+    const recovered = await engine.prepare(integrationAttempt, approved);
+
+    expect(recovered).toMatchObject({
+      kind: "reconstructed",
+      prepared: { treeSha: approved.treeSha },
+    });
+    expect(await gitClient.head()).toBe(targetHead);
+  });
+
   it("recreates a missing integration worktree when its owned branch exists", async () => {
     const root = repository();
     const gitClient = new ExecGitClient(root);
@@ -224,6 +252,57 @@ describe("IntegrationEngine", () => {
     expect(recovered).toMatchObject({
       kind: "landed",
       receipt: { integrationCommitSha: prepared.preparedCommitSha },
+    });
+  });
+
+  it("requires persisted protected artifact hashes when reconciling a missing receipt", async () => {
+    const root = repository();
+    const gitClient = new ExecGitClient(root);
+    const approved = await candidate(root);
+    const targetHead = await gitClient.head();
+    writeFileSync(join(root, "plan.md"), "protected\n");
+    const engine = new IntegrationEngine({
+      git: gitClient,
+      worktreesRoot: join(root, ".pi", "integrations"),
+      targetCheckoutId: await gitClient.checkoutIdentity(),
+      targetBranch: await gitClient.currentBranch(),
+      protectedPaths: ["plan.md"],
+    });
+    const integrationAttempt = attempt(approved.id, targetHead);
+    const preparedOutcome = await engine.prepare(integrationAttempt, approved);
+    if (preparedOutcome.kind !== "prepared") {
+      throw new Error(JSON.stringify(preparedOutcome));
+    }
+    const protectedArtifactHashes = await engine.protectedArtifactHashes();
+    const published = await engine.publish(
+      integrationAttempt,
+      preparedOutcome.prepared,
+      approved,
+      undefined,
+      protectedArtifactHashes,
+    );
+    if (published.kind !== "landed") {
+      throw new Error(JSON.stringify(published));
+    }
+    expect(published.receipt.protectedArtifactHashes).toEqual(
+      protectedArtifactHashes,
+    );
+    writeFileSync(join(root, "plan.md"), "changed\n");
+
+    const recovered = await engine.publish(
+      {
+        ...integrationAttempt,
+        phase: "publishing",
+        preparedCommitSha: preparedOutcome.prepared.preparedCommitSha,
+        protectedArtifactHashes,
+      },
+      preparedOutcome.prepared,
+      approved,
+    );
+
+    expect(recovered).toMatchObject({
+      kind: "blocked",
+      reason: expect.stringMatching(/Protected artifacts|receipt-missing/),
     });
   });
 

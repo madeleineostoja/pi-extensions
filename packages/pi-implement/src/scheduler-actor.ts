@@ -41,7 +41,7 @@ type ActorCompletion =
       kind: "integration";
       owner: { kind: "task"; taskId: string } | { kind: "overall" };
       attemptId: string;
-      phase: "completed" | "paused";
+      outcome: "landed" | "needs_rework" | "paused";
     };
 
 export type SchedulerActorOptions = {
@@ -170,6 +170,7 @@ export class SchedulerActor {
     taskId: string;
     attemptId: string;
     pipelineHash: string;
+    protectedArtifactHashes?: Record<string, string>;
   }): Promise<boolean> {
     const effects = await this.dispatch({
       kind: "integration_requested",
@@ -187,6 +188,7 @@ export class SchedulerActor {
   async requestOverallIntegration(args: {
     attemptId: string;
     pipelineHash: string;
+    protectedArtifactHashes?: Record<string, string>;
   }): Promise<boolean> {
     const effects = await this.dispatch({
       kind: "overall_integration_requested",
@@ -242,6 +244,7 @@ export class SchedulerActor {
       throw new SchedulerActorError("Scheduler has no integration executor.");
     }
     const controller = linkedAbortController(this.abortController.signal);
+    let integrationOutcome: "landed" | "needs_rework" | "paused" | undefined;
     this.integrationControllers.set(effect.attemptId, controller);
     const integration = this.options
       .executeIntegration({
@@ -249,6 +252,13 @@ export class SchedulerActor {
         signal: controller.signal,
         dispatch: async (event) => {
           await this.dispatch(event);
+          if (event.kind === "integration_landed") {
+            integrationOutcome = "landed";
+          } else if (event.kind === "integration_needs_rework") {
+            integrationOutcome = "needs_rework";
+          } else if (event.kind === "integration_paused") {
+            integrationOutcome = "paused";
+          }
         },
       })
       .catch(async (error: unknown) => {
@@ -266,15 +276,26 @@ export class SchedulerActor {
         throw error;
       })
       .finally(() => {
-        const attempt = this.snapshot().integrationAttempts.find(
+        const snapshot = this.options.store.refresh();
+        const attempt = snapshot.integrationAttempts.find(
           (entry) => entry.id === effect.attemptId,
         );
         if (attempt?.phase === "completed" || attempt?.phase === "paused") {
+          const runtime =
+            effect.owner.kind === "task"
+              ? snapshot.runtime.tasks[effect.owner.taskId]
+              : snapshot.runtime.overall;
           this.completions.push({
             kind: "integration",
             owner: effect.owner,
             attemptId: effect.attemptId,
-            phase: attempt.phase,
+            outcome:
+              integrationOutcome ??
+              (runtime?.phase === "waiting_rework"
+                ? "needs_rework"
+                : attempt.phase === "paused"
+                  ? "paused"
+                  : "landed"),
           });
           this.completionWaiter?.();
           this.completionWaiter = undefined;

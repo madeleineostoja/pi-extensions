@@ -141,7 +141,8 @@ const reviewFindingSchema = z
 
 const reviewConvergenceSchema = z
   .object({
-    candidateId: nonEmpty,
+    owner: ownerSchema,
+    candidateId: nonEmpty.optional(),
     epoch: z.number().int().positive(),
     round: z.number().int().nonnegative(),
     findings: z.array(reviewFindingSchema),
@@ -149,8 +150,29 @@ const reviewConvergenceSchema = z
     bestOutstandingCount: z.number().int().nonnegative(),
     consecutiveStalledRounds: z.number().int().nonnegative(),
     evidenceRefs: z.array(nonEmpty),
+    previousCandidate: nonEmpty.optional(),
+    previousCandidatePatch: z.string().optional(),
+    latestEvidence: z.string().optional(),
+    verificationFailures: z.array(nonEmpty),
   })
   .strict();
+
+const taskExecutionSchema = z
+  .object({
+    sourceBaseSha: nonEmpty.optional(),
+    candidateBaseSha: nonEmpty.optional(),
+    candidateSha: nonEmpty.optional(),
+    candidateTree: nonEmpty.optional(),
+    trustedCheckpoint: nonEmpty.optional(),
+    discardedBundles: z.array(nonEmpty),
+    worktreePath: nonEmpty.optional(),
+    branchName: nonEmpty.optional(),
+    implementationRound: z.number().int().nonnegative(),
+    lastReason: z.string().optional(),
+  })
+  .strict();
+
+const protectedArtifactHashesSchema = z.record(nonEmpty, nonEmpty);
 
 const integrationAttemptBaseSchema = {
   id: nonEmpty,
@@ -159,6 +181,7 @@ const integrationAttemptBaseSchema = {
   targetBaseSha: nonEmpty,
   pipelineHash: nonEmpty,
   startedAt: nonEmpty,
+  protectedArtifactHashes: protectedArtifactHashesSchema.optional(),
 };
 
 const integrationAttemptSchema = z.union([
@@ -190,7 +213,15 @@ const integrationAttemptSchema = z.union([
     .object({
       ...integrationAttemptBaseSchema,
       phase: z.literal("paused"),
-      resumePhase: z.enum(["prepared", "publishing"]),
+      resumePhase: z.literal("prepared"),
+      preparedCommitSha: nonEmpty,
+    })
+    .strict(),
+  z
+    .object({
+      ...integrationAttemptBaseSchema,
+      phase: z.literal("paused"),
+      resumePhase: z.literal("publishing"),
       preparedCommitSha: nonEmpty,
     })
     .strict(),
@@ -214,6 +245,7 @@ const landingReceiptSchema = z
     integrationCommitSha: nonEmpty,
     treeSha: nonEmpty,
     pipelineHash: nonEmpty,
+    protectedArtifactHashes: protectedArtifactHashesSchema,
     publishedAt: nonEmpty,
   })
   .strict();
@@ -224,7 +256,7 @@ const projectionDebtSchema = z
 
 export const canonicalRunStateSchema = z
   .object({
-    schemaVersion: z.literal(5),
+    schemaVersion: z.literal(6),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -265,6 +297,8 @@ export const canonicalRunStateSchema = z
       })
       .strict(),
     candidates: z.record(z.string(), candidateRefSchema),
+    taskExecution: z.record(z.string(), taskExecutionSchema),
+    taskMetadata: z.record(z.string(), z.unknown()),
     reviewConvergence: z.record(z.string(), reviewConvergenceSchema),
     workerLeases: z.array(workerLeaseSchema),
     integrationAttempts: z.array(integrationAttemptSchema),
@@ -354,6 +388,30 @@ export class RunStore {
     return structuredClone(this.snapshot);
   }
 
+  refresh(): CanonicalRunState {
+    this.snapshot = loadCanonicalRunState(this.path);
+    return this.read();
+  }
+
+  updateSync(
+    update: (current: CanonicalRunState) => CanonicalRunState,
+  ): CanonicalRunState {
+    const current = loadCanonicalRunState(this.path);
+    const next = validateCanonicalRunState(
+      {
+        ...update(structuredClone(current)),
+        schemaVersion: 6,
+        revision: current.revision + 1,
+        updatedAt: new Date().toISOString(),
+      },
+      this.path,
+      current,
+    );
+    writeCanonicalAtomically(this.path, next, this.hooks);
+    this.snapshot = next;
+    return this.read();
+  }
+
   async update(
     expectedRevision: number,
     update: (current: CanonicalRunState) => CanonicalRunState,
@@ -364,6 +422,7 @@ export class RunStore {
       .then(() => {
         const current = loadCanonicalRunState(this.path);
         if (expectedRevision !== current.revision) {
+          this.snapshot = current;
           throw new StaleRunStateRevisionError(
             this.path,
             expectedRevision,
@@ -374,7 +433,7 @@ export class RunStore {
         const next = validateCanonicalRunState(
           {
             ...proposed,
-            schemaVersion: 5,
+            schemaVersion: 6,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -421,7 +480,7 @@ export function validateCanonicalRunState(
       (issue) => `${issue.path.join(".") || "state"}: ${issue.message}`,
     );
     const version = versionFrom(value);
-    const legacy = version === undefined || version < 5;
+    const legacy = version === undefined || version < 6;
     throw new RunStateError(
       legacy
         ? `Run state at ${path} uses unsupported legacy schema${version === undefined ? "" : ` v${version}`}; start over or clean it up explicitly.`
@@ -541,8 +600,28 @@ function invariantIssues(
       );
     }
   }
+  for (const [taskId, execution] of Object.entries(state.taskExecution)) {
+    if (!tasks.has(taskId)) {
+      issues.push(`task execution ${taskId} references an unknown task`);
+    }
+    if (
+      execution.candidateSha &&
+      execution.trustedCheckpoint &&
+      execution.candidateSha !== execution.trustedCheckpoint
+    ) {
+      issues.push(
+        `task execution ${taskId} candidate is not its trusted checkpoint`,
+      );
+    }
+  }
   for (const [key, convergence] of Object.entries(state.reviewConvergence)) {
-    if (!state.candidates[convergence.candidateId]) {
+    if (
+      convergence.owner.kind === "task" &&
+      !tasks.has(convergence.owner.taskId)
+    ) {
+      issues.push(`review convergence ${key} references unknown task owner`);
+    }
+    if (convergence.candidateId && !state.candidates[convergence.candidateId]) {
       issues.push(
         `review convergence ${key} references unknown candidate ${convergence.candidateId}`,
       );
@@ -695,7 +774,11 @@ function invariantIssues(
       candidate.treeSha !== receipt.treeSha ||
       attempt.targetBaseSha !== receipt.targetBaseSha ||
       attempt.pipelineHash !== receipt.pipelineHash ||
-      attempt.preparedCommitSha !== receipt.integrationCommitSha
+      attempt.preparedCommitSha !== receipt.integrationCommitSha ||
+      !sameArtifactHashes(
+        attempt.protectedArtifactHashes ?? {},
+        receipt.protectedArtifactHashes,
+      )
     ) {
       issues.push(
         `landing receipt ${receipt.attemptId} does not match its integration attempt and candidate`,
@@ -778,6 +861,17 @@ function hasCycle(tasks: CanonicalTaskDefinition[]): boolean {
     return cycle;
   };
   return tasks.some((task) => visit(task.id));
+}
+
+function sameArtifactHashes(
+  left: Record<string, string>,
+  right: Record<string, string>,
+): boolean {
+  const paths = Object.keys(left);
+  return (
+    paths.length === Object.keys(right).length &&
+    paths.every((path) => left[path] === right[path])
+  );
 }
 
 function writeCanonicalAtomically(

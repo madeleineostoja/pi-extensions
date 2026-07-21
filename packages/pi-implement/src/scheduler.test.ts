@@ -12,7 +12,7 @@ function state(
   concurrency = 2,
 ): CanonicalRunState {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     revision: 0,
     run: {
       id: "run-1",
@@ -48,6 +48,8 @@ function state(
       overall: { phase: "pending" },
     },
     candidates: {},
+    taskExecution: {},
+    taskMetadata: {},
     reviewConvergence: {},
     workerLeases: [],
     integrationAttempts: [],
@@ -210,6 +212,7 @@ describe("scheduler reducer", () => {
     const publishing = transition(prepared, {
       kind: "integration_publishing",
       attemptId: "overall-attempt",
+      protectedArtifactHashes: {},
     }).state;
     const landed = transition(publishing, {
       kind: "integration_landed",
@@ -224,6 +227,7 @@ describe("scheduler reducer", () => {
         integrationCommitSha: "prepared",
         treeSha: approved.treeSha,
         pipelineHash: "pipeline",
+        protectedArtifactHashes: {},
         publishedAt: "now",
       },
     });
@@ -392,6 +396,7 @@ describe("scheduler reducer", () => {
     const publishing = transition(prepared, {
       kind: "integration_publishing",
       attemptId: "attempt-a",
+      protectedArtifactHashes: {},
     }).state;
     const landed = transition(publishing, {
       kind: "integration_landed",
@@ -406,6 +411,7 @@ describe("scheduler reducer", () => {
         integrationCommitSha: "prepared",
         treeSha: "first-tree",
         pipelineHash: "pipeline",
+        protectedArtifactHashes: {},
         publishedAt: "now",
       },
     });
@@ -416,6 +422,59 @@ describe("scheduler reducer", () => {
     expect(landed.effects).toEqual([
       { kind: "cleanup", debtId: "integration:attempt-a" },
     ]);
+  });
+
+  it("persists protected artifact hashes from publication through the receipt", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.candidates = { first: candidate("first") };
+    initial.runtime.tasks.a = {
+      phase: "candidate_ready",
+      candidateId: "first",
+    };
+    const requested = transition(initial, {
+      kind: "integration_requested",
+      taskId: "a",
+      attemptId: "attempt-a",
+      pipelineHash: "pipeline",
+      now: "now",
+    }).state;
+    const prepared = transition(requested, {
+      kind: "integration_prepared",
+      attemptId: "attempt-a",
+      preparedCommitSha: "prepared",
+    }).state;
+    const hashes = { "plan.md": "sha256" };
+    const publishing = transition(prepared, {
+      kind: "integration_publishing",
+      attemptId: "attempt-a",
+      protectedArtifactHashes: hashes,
+    }).state;
+    const landed = transition(publishing, {
+      kind: "integration_landed",
+      attemptId: "attempt-a",
+      receipt: {
+        attemptId: "attempt-a",
+        owner: { kind: "task", taskId: "a" },
+        candidateCommitSha: "first-commit",
+        targetCheckoutId: "/repo/.git",
+        targetRef: "refs/heads/main",
+        targetBaseSha: "base",
+        integrationCommitSha: "prepared",
+        treeSha: "first-tree",
+        pipelineHash: "pipeline",
+        protectedArtifactHashes: hashes,
+        publishedAt: "now",
+      },
+    });
+
+    expect(landed.accepted).toBe(true);
+    expect(landed.state.integrationAttempts[0]).toMatchObject({
+      phase: "completed",
+      protectedArtifactHashes: hashes,
+    });
+    expect(landed.state.landingReceipts[0]?.protectedArtifactHashes).toEqual(
+      hashes,
+    );
   });
 
   it("keeps integration independently serialized", () => {

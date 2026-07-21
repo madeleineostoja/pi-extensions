@@ -13,7 +13,7 @@ import {
 
 function state(): CanonicalRunState {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     revision: 0,
     run: {
       id: "run-1",
@@ -56,6 +56,8 @@ function state(): CanonicalRunState {
       overall: { phase: "pending" },
     },
     candidates: {},
+    taskExecution: {},
+    taskMetadata: {},
     reviewConvergence: {},
     workerLeases: [],
     integrationAttempts: [],
