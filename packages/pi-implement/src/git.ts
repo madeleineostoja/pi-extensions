@@ -348,11 +348,9 @@ export class ExecGitClient implements GitClient {
   }
 
   async stagedFingerprint(): Promise<string> {
-    const [tree, nameStatus, diff] = await Promise.all([
-      this.run(["write-tree"]),
-      this.stagedNameStatus(),
-      this.stagedDiff(),
-    ]);
+    const tree = await this.run(["write-tree"]);
+    const nameStatus = await this.stagedNameStatus();
+    const diff = await this.stagedDiff();
     return createHash("sha256")
       .update(tree.stdout.trim())
       .update("\0")
@@ -364,10 +362,13 @@ export class ExecGitClient implements GitClient {
 
   async worktreeFingerprintExcept(paths: string[]): Promise<string> {
     const pathspecs = await this.protectedPathspecs(paths);
-    const [status, diff] = await Promise.all([
-      this.run(["status", "--porcelain", "--", ...pathspecs]),
-      this.run(["diff", "--", ...pathspecs]),
+    const status = await this.run([
+      "status",
+      "--porcelain",
+      "--",
+      ...pathspecs,
     ]);
+    const diff = await this.run(["diff", "--", ...pathspecs]);
     return createHash("sha256")
       .update(status.stdout)
       .update("\0")

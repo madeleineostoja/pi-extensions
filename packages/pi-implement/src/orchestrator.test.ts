@@ -4808,6 +4808,226 @@ describe("runImplementation", () => {
       });
     }
 
+    it("serializes index-writing candidate snapshot operations", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      singleTaskGraph(paths, planPath);
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const originalTree = git.tree.bind(git);
+      const originalStagedFingerprint = git.stagedFingerprint.bind(git);
+      let treeInFlight = false;
+      git.tree = async () => {
+        treeInFlight = true;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        try {
+          return await originalTree();
+        } finally {
+          treeInFlight = false;
+        }
+      };
+      git.stagedFingerprint = async () => {
+        if (treeInFlight) {
+          throw new Error("fatal: Unable to create '.git/index.lock'");
+        }
+        return originalStagedFingerprint();
+      };
+
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      expect(git.commits).toEqual(["feat: do thing"]);
+      expect(readTaskJson(paths, "task-1")?.status).toBe("landed");
+    });
+
+    it("retries an approved candidate after a transient index lock clears", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      singleTaskGraph(paths, planPath);
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const originalApplyPatch = git.applyPatch.bind(git);
+      const originalTree = git.tree.bind(git);
+      const originalStagedFingerprint = git.stagedFingerprint.bind(git);
+      let lockActive = false;
+      let lockInjected = false;
+      let fingerprintFailures = 0;
+      git.applyPatch = async (patch) => {
+        const result = await originalApplyPatch(patch);
+        if (!lockInjected) {
+          lockInjected = true;
+          lockActive = true;
+        }
+        return result;
+      };
+      git.tree = async () => {
+        if (lockActive) {
+          throw new Error(
+            "fatal: Unable to create '/app/.git/index.lock': File exists.",
+          );
+        }
+        return originalTree();
+      };
+      git.stagedFingerprint = async () => {
+        if (lockActive) {
+          fingerprintFailures++;
+          if (fingerprintFailures === 2) {
+            lockActive = false;
+          }
+          throw new Error(
+            "fatal: Unable to create '/app/.git/index.lock': File exists.",
+          );
+        }
+        return originalStagedFingerprint();
+      };
+
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+        {
+          status: "completed",
+          result: makeSchedulerSelfHealResult({
+            repaired: true,
+            retryScheduler: true,
+            summary: "Verified that the transient index lock cleared.",
+            commands: ["git write-tree"],
+          }),
+        },
+        { status: "completed", result: GOOD_OVERALL_REVIEW },
+      ];
+
+      await runImplementation({
+        git,
+        subagents,
+        planPath,
+        mode: "parallel",
+        runId: "r1",
+        paths,
+        verifyCommand: "echo ok",
+        roles: {
+          implementer: { model: "p/m", type: "general-purpose" },
+          reviewer: { model: "p/m", type: "general-purpose" },
+          planner: { model: "p/m", type: "Explore" },
+          selfHeal: { model: "p/m", type: "general-purpose" },
+        },
+        updateState: () => {},
+        shouldStop: () => false,
+      });
+
+      expect(git.commits).toEqual(["feat: do thing"]);
+      expect(readTaskJson(paths, "task-1")).toMatchObject({
+        status: "landed",
+        integrationAttempts: 1,
+      });
+      expect(
+        readEvents(paths).some(
+          (event) =>
+            event.type === "task_self_heal_requeued" &&
+            event.taskId === "task-1",
+        ),
+      ).toBe(true);
+    });
+
+    it("reports failed exact proof without claiming restored HEAD is wrong", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
+      const planPath = join(dir, "plan.md");
+      writeFileSync(
+        planPath,
+        "# Plan\n\n## Tasks\n\n- [ ] Do thing\n",
+        "utf-8",
+      );
+      const paths = makePaths(dir);
+      singleTaskGraph(paths, planPath);
+
+      const git = new FakeGit();
+      git.rootValue = dir;
+      const originalCommit = git.commit.bind(git);
+      const originalStagedFingerprint = git.stagedFingerprint.bind(git);
+      git.commit = async (message: string) => {
+        const result = await originalCommit(message);
+        git.statusText = "?? junk.txt";
+        return result;
+      };
+      git.stagedFingerprint = async () => {
+        if (git.commits.length > 0) {
+          throw new Error(
+            "fatal: Unable to create '/app/.git/index.lock': File exists.",
+          );
+        }
+        return originalStagedFingerprint();
+      };
+
+      const subagents = new FakeSubagents();
+      subagents.results = [
+        { status: "completed", result: GOOD_IMPL },
+        { status: "completed", result: GOOD_REVIEW },
+      ];
+
+      await expect(
+        runImplementation({
+          git,
+          subagents,
+          planPath,
+          mode: "parallel",
+          runId: "r1",
+          paths,
+          verifyCommand: "echo ok",
+          roles: {
+            implementer: { model: "p/m", type: "general-purpose" },
+            reviewer: { model: "p/m", type: "general-purpose" },
+            planner: { model: "p/m", type: "Explore" },
+            selfHeal: { model: "p/m", type: "general-purpose" },
+          },
+          updateState: () => {},
+          shouldStop: () => false,
+        }),
+      ).rejects.toThrow(BlockedError);
+
+      const lastReason = readTaskJson(paths, "task-1")?.lastReason;
+      expect(lastReason).toContain("rollback restored HEAD to h1");
+      expect(lastReason).toContain("exact index/worktree restoration");
+      expect(lastReason).toContain("index.lock");
+      expect(lastReason).not.toContain("rollback did not restore HEAD");
+      expect(git.headValue).toBe("h1");
+    });
+
     it("flags a stuck integration commit when rollback cannot restore HEAD", async () => {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
       const planPath = join(dir, "plan.md");

@@ -2747,6 +2747,7 @@ type RollbackOutcome = {
   headRestored: boolean;
   exactRestored: boolean;
   currentHead?: string;
+  verificationError?: string;
 };
 
 async function rollbackIntegration(
@@ -2763,7 +2764,7 @@ async function rollbackIntegration(
       exactRestored: true,
       currentHead: snapshot.head,
     };
-  } catch {
+  } catch (initialError) {
     await deps.git.cherryPickAbort().catch(async () => {
       await deps.git.resetHard(preIntegrationHead).catch(() => undefined);
     });
@@ -2773,17 +2774,22 @@ async function rollbackIntegration(
       .catch(() => undefined);
     restorePlanArtifacts(planArtifacts, planArtifactSnapshot);
     const currentHead = await deps.git.head().catch(() => undefined);
-    const exactRestored = await snapshotChanged(
-      deps.git,
-      snapshot,
-      planArtifacts,
-    )
-      .then((changed) => !changed)
-      .catch(() => false);
+    let exactRestored = false;
+    let verificationError: string | undefined;
+    try {
+      exactRestored = !(await snapshotChanged(
+        deps.git,
+        snapshot,
+        planArtifacts,
+      ));
+    } catch (error) {
+      verificationError = errorMessage(error);
+    }
     return {
-      headRestored: currentHead === preIntegrationHead && exactRestored,
+      headRestored: currentHead === preIntegrationHead,
       exactRestored,
       currentHead,
+      verificationError: verificationError ?? errorMessage(initialError),
     };
   }
 }
@@ -2796,10 +2802,20 @@ function annotateRollbackReason(
   if (rollback.exactRestored) {
     return reason;
   }
+  const verificationError = rollback.verificationError
+    ? ` Verification error: ${rollback.verificationError}`
+    : "";
+  if (rollback.headRestored) {
+    return `${reason}\n\nWARNING: rollback restored HEAD to ${preIntegrationHead.slice(0, 12)}, but exact index/worktree restoration could not be proved.${verificationError}`;
+  }
   const at = rollback.currentHead
     ? ` HEAD is at ${rollback.currentHead.slice(0, 12)}.`
     : "";
-  return `${reason}\n\nWARNING: rollback did not restore HEAD to ${preIntegrationHead.slice(0, 12)}; an integration commit may still be present on the branch.${at}`;
+  return `${reason}\n\nWARNING: rollback did not restore HEAD to ${preIntegrationHead.slice(0, 12)}; an integration commit may still be present on the branch.${at}${verificationError}`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 type IntegrationCandidateSnapshot = {
@@ -2814,14 +2830,12 @@ async function snapshotIntegrationCandidate(
   deps: OrchestratorDeps,
   planArtifacts: string[],
 ): Promise<IntegrationCandidateSnapshot> {
-  const [head, tree, stagedFingerprint, worktreeFingerprint, stagedNameStatus] =
-    await Promise.all([
-      deps.git.head(),
-      deps.git.tree(),
-      deps.git.stagedFingerprint(),
-      deps.git.worktreeFingerprintExcept(planArtifacts),
-      deps.git.stagedNameStatus(),
-    ]);
+  const tree = await deps.git.tree();
+  const head = await deps.git.head();
+  const stagedFingerprint = await deps.git.stagedFingerprint();
+  const worktreeFingerprint =
+    await deps.git.worktreeFingerprintExcept(planArtifacts);
+  const stagedNameStatus = await deps.git.stagedNameStatus();
   const stagedPaths = parseNameStatusPaths(stagedNameStatus);
   return { head, tree, stagedFingerprint, worktreeFingerprint, stagedPaths };
 }
@@ -3424,6 +3438,26 @@ export async function checkSchedulerSelfHealProgress(
     return { hasProgress: false, revivedTaskIds };
   }
 
+  const transientLockFailures = [...sched.tasks.values()].filter(
+    (task) =>
+      task.status === "integration_failed" &&
+      task.taskCommitSha !== undefined &&
+      isTransientGitLockFailure(task.lastReason) &&
+      task.dependsOn.every((depId) => {
+        const dep = sched.tasks.get(depId);
+        return dep?.status === "landed" || dep?.status === "satisfied";
+      }),
+  );
+  if (currentClean && transientLockFailures.length > 0) {
+    const indexUsable = await deps.git
+      .tree()
+      .then(() => true)
+      .catch(() => false);
+    if (indexUsable) {
+      revivedTaskIds.push(...transientLockFailures.map((task) => task.id));
+    }
+  }
+
   // Observable progress: retryable setup-blocked task became clean.
   if (!baseline.wasClean && currentClean) {
     for (const task of sched.tasks.values()) {
@@ -3638,6 +3672,12 @@ function isMainCheckoutDirtySetupFailure(reason: string | undefined): boolean {
   return /Main checkout dirty before integration/i.test(reason ?? "");
 }
 
+function isTransientGitLockFailure(reason: string | undefined): boolean {
+  return /(?:index\.lock|Unable to create ['"].*\.lock['"]|Another git process seems to be running)/i.test(
+    reason ?? "",
+  );
+}
+
 function isSetupFailureReason(reason: string | undefined): boolean {
   if (!reason) {
     return false;
@@ -3664,7 +3704,8 @@ function reviveTaskForSchedulerRetry(
   const retryIntegration =
     task.status === "integration_failed" &&
     task.taskCommitSha !== undefined &&
-    isMainCheckoutDirtySetupFailure(task.lastReason);
+    (isMainCheckoutDirtySetupFailure(task.lastReason) ||
+      isTransientGitLockFailure(task.lastReason));
   task.status = retryIntegration ? "approved" : "needs_rework";
   task.activeAgentIds = [];
   task.activeAgentRefs = [];
