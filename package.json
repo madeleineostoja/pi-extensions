@@ -9,7 +9,7 @@
     "lib"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "keywords": [
     "pi-package",
@@ -49,6 +49,7 @@
     "@prettier/plugin-oxc": "^0.1.4",
     "@types/node": "^22.0.0",
     "@types/picomatch": "^4.0.0",
+    "fast-check": "^4.9.0",
     "husky": "^9.1.7",
     "lint-staged": "^15.2.10",
     "oxlint": "^0.15.0",

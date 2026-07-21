@@ -7,15 +7,14 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
-export type GraphNodeMode = "serial" | "parallel";
-
 export type ImplementGraphNode = {
   id: string;
   planIndex: number;
   title: string;
   taskHash: string;
   dependsOn: string[];
-  mode: GraphNodeMode;
+  /** @deprecated Compatibility input ignored by the execution graph. */
+  mode?: "serial" | "parallel";
   affectedAreas: string[];
   conflictHints: string[];
   /**
@@ -50,6 +49,7 @@ export type GraphValidationResult =
   | { ok: true }
   | { ok: false; reason: string };
 
+/** @deprecated Planner decisions are superseded by execution manifests. */
 export function parseStrategyDecision(
   text: string,
 ): { ok: true; value: StrategyDecision } | { ok: false; reason: string } {
@@ -57,85 +57,57 @@ export function parseStrategyDecision(
   if (!candidate.ok) {
     return candidate;
   }
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(candidate.text);
   } catch {
+    return { ok: false, reason: "Planner output is not valid JSON." };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, reason: "Planner JSON must be an object." };
+  }
+  const value = parsed as Record<string, unknown>;
+  if (value.mode !== "serial" && value.mode !== "parallel") {
     return {
       ok: false,
-      reason: "Planner output is not valid JSON.",
+      reason: "Planner JSON mode must be serial or parallel.",
     };
   }
-  try {
+  if (!["high", "medium", "low"].includes(String(value.confidence))) {
+    return { ok: false, reason: "Planner JSON confidence is invalid." };
+  }
+  if (typeof value.reason !== "string" || !value.reason.trim()) {
+    return {
+      ok: false,
+      reason: "Planner JSON must include a non-empty reason string.",
+    };
+  }
+  const decision: StrategyDecision = {
+    mode: value.mode,
+    reason: value.reason.trim(),
+    confidence: value.confidence as StrategyDecision["confidence"],
+  };
+  if (value.maxConcurrency !== undefined) {
     if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      Array.isArray(parsed)
-    ) {
-      return { ok: false, reason: "Planner JSON must be an object." };
-    }
-    const obj = parsed as Record<string, unknown>;
-
-    if (obj.mode !== "serial" && obj.mode !== "parallel") {
-      return {
-        ok: false,
-        reason: `Planner JSON mode must be "serial" or "parallel", got: ${String(obj.mode)}.`,
-      };
-    }
-    if (
-      obj.confidence !== "high" &&
-      obj.confidence !== "medium" &&
-      obj.confidence !== "low"
-    ) {
-      return {
-        ok: false,
-        reason: `Planner JSON confidence must be "high", "medium", or "low", got: ${String(obj.confidence)}.`,
-      };
-    }
-    if (typeof obj.reason !== "string" || obj.reason.trim().length === 0) {
-      return {
-        ok: false,
-        reason: "Planner JSON must include a non-empty reason string.",
-      };
-    }
-    if (
-      obj.maxConcurrency !== undefined &&
-      !(
-        typeof obj.maxConcurrency === "number" &&
-        Number.isInteger(obj.maxConcurrency) &&
-        obj.maxConcurrency > 0
-      )
+      typeof value.maxConcurrency !== "number" ||
+      !Number.isInteger(value.maxConcurrency) ||
+      value.maxConcurrency <= 0
     ) {
       return {
         ok: false,
         reason: "Planner JSON maxConcurrency must be a positive integer.",
       };
     }
-
-    const decision: StrategyDecision = {
-      mode: obj.mode,
-      reason: obj.reason.trim(),
-      confidence: obj.confidence,
-    };
-    if (typeof obj.maxConcurrency === "number") {
-      decision.maxConcurrency = obj.maxConcurrency;
-    }
-    if (obj.graph !== undefined) {
-      const graphResult = parseImplementGraph(obj.graph);
-      if (!graphResult.ok) {
-        return graphResult;
-      }
-      decision.graph = graphResult.value;
-    }
-    return { ok: true, value: decision };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      reason: `Could not parse planner JSON: ${message}`,
-    };
+    decision.maxConcurrency = value.maxConcurrency;
   }
+  if (value.graph !== undefined) {
+    const graph = parseLegacyGraph(value.graph);
+    if (!graph.ok) {
+      return graph;
+    }
+    decision.graph = graph.value;
+  }
+  return { ok: true, value: decision };
 }
 
 export function extractJsonObject(
@@ -172,6 +144,28 @@ export function extractJsonObject(
     };
   }
   return { ok: true, text: trimmed };
+}
+
+function parseLegacyGraph(
+  value: unknown,
+): { ok: true; value: ImplementGraph } | { ok: false; reason: string } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, reason: "Planner graph must be an object." };
+  }
+  const graph = value as Record<string, unknown>;
+  if (graph.version !== 1) {
+    return {
+      ok: false,
+      reason: `Graph version must be 1, got: ${String(graph.version)}.`,
+    };
+  }
+  if (!Array.isArray(graph.nodes)) {
+    return { ok: false, reason: "Graph must include a nodes array." };
+  }
+  return {
+    ok: true,
+    value: stripGraphReview(graph as unknown as ImplementGraph),
+  };
 }
 
 function isJson(text: string): boolean {
@@ -216,132 +210,6 @@ function findMatchingBrace(text: string, start: number): number | undefined {
   }
 
   return undefined;
-}
-
-function parseImplementGraph(
-  value: unknown,
-): { ok: true; value: ImplementGraph } | { ok: false; reason: string } {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return { ok: false, reason: "Planner graph must be an object." };
-  }
-  const obj = value as Record<string, unknown>;
-  if (obj.version !== 1) {
-    return {
-      ok: false,
-      reason: `Graph version must be 1, got: ${String(obj.version)}.`,
-    };
-  }
-  if (!Array.isArray(obj.nodes)) {
-    return { ok: false, reason: "Graph must include a nodes array." };
-  }
-  const nodes: ImplementGraphNode[] = [];
-  for (const rawNode of obj.nodes) {
-    const nodeResult = parseGraphNode(rawNode);
-    if (!nodeResult.ok) {
-      return nodeResult;
-    }
-    nodes.push(nodeResult.value);
-  }
-  return {
-    ok: true,
-    value: {
-      version: 1,
-      runId: typeof obj.runId === "string" ? obj.runId : "",
-      baseSha: typeof obj.baseSha === "string" ? obj.baseSha : "",
-      planPath: typeof obj.planPath === "string" ? obj.planPath : "",
-      planHash: typeof obj.planHash === "string" ? obj.planHash : "",
-      nodes,
-    },
-  };
-}
-
-function parseGraphNode(
-  value: unknown,
-): { ok: true; value: ImplementGraphNode } | { ok: false; reason: string } {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return { ok: false, reason: "Graph node must be an object." };
-  }
-  const obj = value as Record<string, unknown>;
-  if (typeof obj.id !== "string" || obj.id.trim().length === 0) {
-    return { ok: false, reason: "Graph node must have a non-empty string id." };
-  }
-  if (
-    typeof obj.planIndex !== "number" ||
-    !Number.isInteger(obj.planIndex) ||
-    obj.planIndex < 1
-  ) {
-    return {
-      ok: false,
-      reason: `Graph node "${obj.id}" must have a positive integer planIndex.`,
-    };
-  }
-  if (typeof obj.title !== "string") {
-    return {
-      ok: false,
-      reason: `Graph node "${obj.id}" must have a string title.`,
-    };
-  }
-  if (typeof obj.taskHash !== "string") {
-    return {
-      ok: false,
-      reason: `Graph node "${obj.id}" must have a string taskHash.`,
-    };
-  }
-  if (obj.mode !== "serial" && obj.mode !== "parallel") {
-    return {
-      ok: false,
-      reason: `Graph node "${obj.id}" mode must be "serial" or "parallel".`,
-    };
-  }
-  if (
-    obj.confidence !== "high" &&
-    obj.confidence !== "medium" &&
-    obj.confidence !== "low"
-  ) {
-    return {
-      ok: false,
-      reason: `Graph node "${obj.id}" confidence must be "high", "medium", or "low".`,
-    };
-  }
-  const dependsOn = parseStringArray(obj.dependsOn);
-  if (dependsOn === undefined) {
-    return {
-      ok: false,
-      reason: `Graph node "${obj.id}" dependsOn must be an array of strings.`,
-    };
-  }
-  const affectedAreas = parseStringArray(obj.affectedAreas) ?? [];
-  const conflictHints = parseStringArray(obj.conflictHints) ?? [];
-  const validationCommands = parseStringArray(obj.validationCommands) ?? [];
-  const reasons = parseStringArray(obj.reasons) ?? [];
-  const evidencePaths = parseStringArray(obj.evidencePaths) ?? [];
-  return {
-    ok: true,
-    value: {
-      id: obj.id.trim(),
-      planIndex: obj.planIndex,
-      title: obj.title,
-      taskHash: obj.taskHash,
-      dependsOn,
-      mode: obj.mode,
-      affectedAreas,
-      conflictHints,
-      validationCommands,
-      confidence: obj.confidence,
-      reasons,
-      evidencePaths,
-    },
-  };
-}
-
-function parseStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  if (!value.every((item) => typeof item === "string")) {
-    return undefined;
-  }
-  return value as string[];
 }
 
 export function validateGraph(

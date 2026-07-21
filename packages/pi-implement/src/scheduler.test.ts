@@ -1,202 +1,562 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import type { ImplementGraph } from "./graph.js";
+import type { CandidateRef, CanonicalRunState } from "./canonical-state.js";
 import {
-  createSchedulerRun,
-  computeReadyTasks,
-  canStartTask,
-  startTask,
-  nextTaskToLand,
-  countActiveCodingReviewing,
-  anyActiveSerialTask,
-  allTasksTerminal,
-  anyTaskFailedBlockedStopped,
-  getBlockedReason,
+  selectIntegrationTask,
+  selectWorkerTasks,
+  transition,
 } from "./scheduler.js";
 
-function makeGraph(nodes: ImplementGraph["nodes"]): ImplementGraph {
+function state(
+  tasks: Array<{ id: string; planIndex: number; dependsOn?: string[] }>,
+  concurrency = 2,
+): CanonicalRunState {
   return {
-    version: 1,
-    runId: "r1",
-    baseSha: "abc",
-    planPath: "/plan.md",
-    planHash: "hash",
-    nodes,
+    schemaVersion: 6,
+    revision: 0,
+    run: {
+      id: "run-1",
+      target: {
+        checkoutRoot: "/repo",
+        gitDir: "/repo/.git",
+        commonGitDir: "/repo/.git",
+        branchRef: "refs/heads/main",
+        startHead: "base",
+      },
+      plan: {
+        path: "/repo/plan.md",
+        hash: "plan",
+        indexConvention: "zero-based",
+      },
+      configuredWorkerConcurrency: concurrency,
+      effectiveWorkerConcurrency: concurrency,
+    },
+    graph: {
+      tasks: tasks.map((task) => ({
+        id: task.id,
+        planIndex: task.planIndex,
+        title: task.id,
+        taskHash: `${task.id}-hash`,
+        dependsOn: task.dependsOn ?? [],
+      })),
+    },
+    runtime: {
+      phase: "running",
+      tasks: Object.fromEntries(
+        tasks.map((task) => [task.id, { phase: "queued" }]),
+      ),
+      overall: { phase: "pending" },
+    },
+    candidates: {},
+    taskExecution: {},
+    taskMetadata: {},
+    reviewConvergence: {},
+    workerLeases: [],
+    integrationAttempts: [],
+    landingReceipts: [],
+    projectionDebt: [],
+    cleanupDebt: [],
+    createdAt: "now",
+    updatedAt: "now",
   };
 }
 
-function makeNode(
-  id: string,
-  planIndex: number,
-  dependsOn: string[] = [],
-  mode: "serial" | "parallel" = "parallel",
-): ImplementGraph["nodes"][number] {
+function candidate(id = "candidate-1"): CandidateRef {
   return {
     id,
-    planIndex,
-    title: `Task ${id}`,
-    taskHash: "h",
-    dependsOn,
-    mode,
-    affectedAreas: [],
-    conflictHints: [],
-    validationCommands: [],
-    confidence: "high",
-    reasons: [],
-    evidencePaths: [],
+    sourceBaseSha: "source-base",
+    baseSha: "base",
+    commitSha: `${id}-commit`,
+    treeSha: `${id}-tree`,
+    branchName: `branch/${id}`,
+    worktreePath: `/worktrees/${id}`,
+    reviewReceipt: {
+      id: `receipt-${id}`,
+      candidateId: id,
+      candidateCommitSha: `${id}-commit`,
+      candidateTreeSha: `${id}-tree`,
+      verdict: "approved",
+      convergence: {
+        round: 0,
+        outstandingFindingIds: [],
+        bestOutstandingCount: 0,
+        evidenceRefs: [],
+      },
+      assessedAt: "now",
+    },
   };
 }
 
-describe("scheduler readiness", () => {
-  it("pending task with all dependencies landed becomes ready", () => {
-    const graph = makeGraph([makeNode("a", 1), makeNode("b", 2, ["a"])]);
-    const run = createSchedulerRun(graph, 2);
-    run.tasks.get("a")!.status = "landed";
-    expect(computeReadyTasks(run)).toEqual(["b"]);
-    expect(canStartTask(run, "b")).toBe(true);
-  });
+describe("scheduler reducer", () => {
+  it("reserves worker capacity atomically in one scheduling tick", () => {
+    const initial = state(
+      [
+        { id: "a", planIndex: 0 },
+        { id: "b", planIndex: 1 },
+      ],
+      1,
+    );
 
-  it("pending task with satisfied dependencies becomes ready", () => {
-    const graph = makeGraph([makeNode("a", 1), makeNode("b", 2, ["a"])]);
-    const run = createSchedulerRun(graph, 2);
-    run.tasks.get("a")!.status = "satisfied";
-    expect(computeReadyTasks(run)).toEqual(["b"]);
-    expect(canStartTask(run, "b")).toBe(true);
-  });
+    const result = transition(initial, {
+      kind: "workers_selected",
+      now: "now",
+    });
 
-  it("pending task with unlanded dependency remains blocked", () => {
-    const graph = makeGraph([makeNode("a", 1), makeNode("b", 2, ["a"])]);
-    const run = createSchedulerRun(graph, 2);
-    expect(computeReadyTasks(run)).toEqual(["a"]);
-    expect(canStartTask(run, "b")).toBe(false);
-    expect(getBlockedReason(run.tasks.get("b")!, run)).toBe("waiting for a");
-  });
-
-  it("no more than maxConcurrency tasks are coding/reviewing", () => {
-    const graph = makeGraph([
-      makeNode("a", 1),
-      makeNode("b", 2),
-      makeNode("c", 3),
+    expect(result.accepted).toBe(true);
+    expect(result.effects).toEqual([
+      { kind: "start_worker", taskId: "a", leaseId: "worker:run-1:1:0" },
     ]);
-    const run = createSchedulerRun(graph, 2);
-    startTask(run, "a");
-    startTask(run, "b");
-    expect(countActiveCodingReviewing(run)).toBe(2);
-    expect(canStartTask(run, "c")).toBe(false);
-    expect(getBlockedReason(run.tasks.get("c")!, run)).toBe(
-      "concurrency limit",
+    expect(result.state.workerLeases).toHaveLength(1);
+    expect(result.state.runtime.tasks).toMatchObject({
+      a: { phase: "executing" },
+      b: { phase: "queued" },
+    });
+    expect(initial.runtime.tasks.a).toEqual({ phase: "queued" });
+  });
+
+  it("never schedules a task before its dependencies complete", () => {
+    const initial = state([
+      { id: "a", planIndex: 0 },
+      { id: "b", planIndex: 1, dependsOn: ["a"] },
+    ]);
+
+    expect(selectWorkerTasks(initial)).toEqual(["a"]);
+    initial.runtime.tasks.a = { phase: "completed", result: "satisfied" };
+    expect(selectWorkerTasks(initial)).toEqual(["b"]);
+  });
+
+  it("rejects stale worker completion without changing state", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    const result = transition(initial, {
+      kind: "worker_finished",
+      taskId: "a",
+      leaseId: "missing",
+      outcome: { kind: "satisfied" },
+    });
+
+    expect(result).toMatchObject({ accepted: false, state: initial });
+  });
+
+  it("preserves candidate identity after a worker result is replayed", () => {
+    const started = transition(state([{ id: "a", planIndex: 0 }]), {
+      kind: "workers_selected",
+      now: "now",
+    }).state;
+    const leaseId = started.workerLeases[0]!.id;
+    const complete = transition(started, {
+      kind: "worker_finished",
+      taskId: "a",
+      leaseId,
+      outcome: { kind: "candidate_ready", candidate: candidate() },
+    });
+    const replay = transition(complete.state, {
+      kind: "worker_finished",
+      taskId: "a",
+      leaseId,
+      outcome: { kind: "candidate_ready", candidate: candidate("other") },
+    });
+
+    expect(complete.accepted).toBe(true);
+    expect(replay.accepted).toBe(false);
+    expect(replay.state).toEqual(complete.state);
+  });
+
+  it("rejects candidates without an approved review receipt", () => {
+    const started = transition(state([{ id: "a", planIndex: 0 }]), {
+      kind: "workers_selected",
+      now: "now",
+    }).state;
+    const unapproved = candidate();
+    unapproved.reviewReceipt.verdict = "changes_requested";
+
+    const result = transition(started, {
+      kind: "worker_finished",
+      taskId: "a",
+      leaseId: started.workerLeases[0]!.id,
+      outcome: { kind: "candidate_ready", candidate: unapproved },
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.state).toEqual(started);
+  });
+
+  it("lands an approved overall candidate through the shared integration lifecycle", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.runtime.tasks.a = { phase: "completed", result: "satisfied" };
+    const approved = candidate("overall");
+    const ready = transition(initial, {
+      kind: "overall_candidate_ready",
+      candidate: approved,
+    }).state;
+    const requested = transition(ready, {
+      kind: "overall_integration_requested",
+      attemptId: "overall-attempt",
+      pipelineHash: "pipeline",
+      now: "now",
+    });
+
+    expect(requested.accepted).toBe(true);
+    expect(requested.effects).toEqual([
+      {
+        kind: "start_integration",
+        owner: { kind: "overall" },
+        attemptId: "overall-attempt",
+        candidateId: approved.id,
+      },
+    ]);
+    const prepared = transition(requested.state, {
+      kind: "integration_prepared",
+      attemptId: "overall-attempt",
+      preparedCommitSha: "prepared",
+    }).state;
+    const publishing = transition(prepared, {
+      kind: "integration_publishing",
+      attemptId: "overall-attempt",
+      protectedArtifactHashes: {},
+    }).state;
+    const landed = transition(publishing, {
+      kind: "integration_landed",
+      attemptId: "overall-attempt",
+      receipt: {
+        attemptId: "overall-attempt",
+        owner: { kind: "overall" },
+        candidateCommitSha: approved.commitSha,
+        targetCheckoutId: "checkout",
+        targetRef: "main",
+        targetBaseSha: approved.baseSha,
+        integrationCommitSha: "prepared",
+        treeSha: approved.treeSha,
+        pipelineHash: "pipeline",
+        protectedArtifactHashes: {},
+        publishedAt: "now",
+      },
+    });
+
+    expect(landed.accepted).toBe(true);
+    expect(landed.state.runtime.overall).toEqual({
+      phase: "completed",
+      landingAttemptId: "overall-attempt",
+    });
+  });
+
+  it("requires overall review completion before completing the run", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.runtime.tasks.a = { phase: "completed", result: "satisfied" };
+
+    expect(transition(initial, { kind: "run_completed" }).accepted).toBe(false);
+    const overallCompleted = transition(initial, {
+      kind: "overall_review_completed",
+    }).state;
+    expect(
+      transition(overallCompleted, { kind: "run_completed" }).state.runtime
+        .phase,
+    ).toBe("completed");
+  });
+
+  it("returns an integration rework task to worker selection", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.candidates = { first: candidate("first") };
+    initial.runtime.tasks.a = {
+      phase: "candidate_ready",
+      candidateId: "first",
+    };
+    const integrating = transition(initial, {
+      kind: "integration_requested",
+      taskId: "a",
+      attemptId: "attempt-a",
+      pipelineHash: "pipeline",
+      now: "now",
+    }).state;
+
+    const rework = transition(integrating, {
+      kind: "integration_needs_rework",
+      attemptId: "attempt-a",
+      candidateId: "first",
+    });
+
+    expect(rework.accepted).toBe(true);
+    expect(selectWorkerTasks(rework.state)).toEqual(["a"]);
+    expect(selectIntegrationTask(rework.state)).toBeUndefined();
+    const worked = transition(rework.state, {
+      kind: "workers_selected",
+      now: "later",
+    }).state;
+    const nextCandidate = candidate("second");
+    const ready = transition(worked, {
+      kind: "worker_finished",
+      taskId: "a",
+      leaseId: worked.workerLeases[0]!.id,
+      outcome: { kind: "candidate_ready", candidate: nextCandidate },
+    }).state;
+    expect(selectIntegrationTask(ready)).toBe("a");
+    expect(
+      transition(ready, {
+        kind: "integration_needs_rework",
+        attemptId: "attempt-a",
+        candidateId: "first",
+      }).accepted,
+    ).toBe(false);
+  });
+
+  it("resumes a retained preparing integration without creating another attempt", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.candidates = { first: candidate("first") };
+    initial.runtime.tasks.a = {
+      phase: "integrating",
+      candidateId: "first",
+      integrationAttemptId: "attempt-a",
+    };
+    initial.integrationAttempts = [
+      {
+        id: "attempt-a",
+        owner: { kind: "task", taskId: "a" },
+        candidateId: "first",
+        targetBaseSha: "base",
+        pipelineHash: "pipeline",
+        startedAt: "now",
+        phase: "paused",
+        resumePhase: "preparing",
+      },
+    ];
+
+    const resumed = transition(initial, {
+      kind: "integration_resumed",
+      attemptId: "attempt-a",
+    });
+
+    expect(resumed.accepted).toBe(true);
+    expect(resumed.state.integrationAttempts).toEqual([
+      expect.objectContaining({ phase: "preparing" }),
+    ]);
+  });
+
+  it("resumes a retained prepared integration without creating another attempt", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.candidates = { first: candidate("first") };
+    initial.runtime.tasks.a = {
+      phase: "integrating",
+      candidateId: "first",
+      integrationAttemptId: "attempt-a",
+    };
+    initial.integrationAttempts = [
+      {
+        id: "attempt-a",
+        owner: { kind: "task", taskId: "a" },
+        candidateId: "first",
+        targetBaseSha: "base",
+        pipelineHash: "pipeline",
+        startedAt: "now",
+        phase: "paused",
+        resumePhase: "prepared",
+        preparedCommitSha: "prepared",
+      },
+    ];
+
+    const resumed = transition(initial, {
+      kind: "integration_resumed",
+      attemptId: "attempt-a",
+    });
+
+    expect(resumed.accepted).toBe(true);
+    expect(resumed.state.integrationAttempts).toEqual([
+      expect.objectContaining({
+        phase: "prepared",
+        preparedCommitSha: "prepared",
+      }),
+    ]);
+    expect(resumed.effects).toEqual([
+      {
+        kind: "start_integration",
+        owner: { kind: "task", taskId: "a" },
+        attemptId: "attempt-a",
+        candidateId: "first",
+      },
+    ]);
+  });
+
+  it("records cleanup debt before requesting cleanup", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.candidates = { first: candidate("first") };
+    initial.runtime.tasks.a = {
+      phase: "candidate_ready",
+      candidateId: "first",
+    };
+    const requested = transition(initial, {
+      kind: "integration_requested",
+      taskId: "a",
+      attemptId: "attempt-a",
+      pipelineHash: "pipeline",
+      now: "now",
+    }).state;
+    const prepared = transition(requested, {
+      kind: "integration_prepared",
+      attemptId: "attempt-a",
+      preparedCommitSha: "prepared",
+    }).state;
+    const publishing = transition(prepared, {
+      kind: "integration_publishing",
+      attemptId: "attempt-a",
+      protectedArtifactHashes: {},
+    }).state;
+    const landed = transition(publishing, {
+      kind: "integration_landed",
+      attemptId: "attempt-a",
+      receipt: {
+        attemptId: "attempt-a",
+        owner: { kind: "task", taskId: "a" },
+        candidateCommitSha: "first-commit",
+        targetCheckoutId: "/repo/.git",
+        targetRef: "refs/heads/main",
+        targetBaseSha: "base",
+        integrationCommitSha: "prepared",
+        treeSha: "first-tree",
+        pipelineHash: "pipeline",
+        protectedArtifactHashes: {},
+        publishedAt: "now",
+      },
+    });
+
+    expect(landed.state.cleanupDebt).toEqual([
+      expect.objectContaining({ id: "integration:attempt-a" }),
+    ]);
+    expect(landed.effects).toEqual([
+      { kind: "cleanup", debtId: "integration:attempt-a" },
+    ]);
+  });
+
+  it("persists protected artifact hashes from publication through the receipt", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.candidates = { first: candidate("first") };
+    initial.runtime.tasks.a = {
+      phase: "candidate_ready",
+      candidateId: "first",
+    };
+    const requested = transition(initial, {
+      kind: "integration_requested",
+      taskId: "a",
+      attemptId: "attempt-a",
+      pipelineHash: "pipeline",
+      now: "now",
+    }).state;
+    const prepared = transition(requested, {
+      kind: "integration_prepared",
+      attemptId: "attempt-a",
+      preparedCommitSha: "prepared",
+    }).state;
+    const hashes = { "plan.md": "sha256" };
+    const publishing = transition(prepared, {
+      kind: "integration_publishing",
+      attemptId: "attempt-a",
+      protectedArtifactHashes: hashes,
+    }).state;
+    const landed = transition(publishing, {
+      kind: "integration_landed",
+      attemptId: "attempt-a",
+      receipt: {
+        attemptId: "attempt-a",
+        owner: { kind: "task", taskId: "a" },
+        candidateCommitSha: "first-commit",
+        targetCheckoutId: "/repo/.git",
+        targetRef: "refs/heads/main",
+        targetBaseSha: "base",
+        integrationCommitSha: "prepared",
+        treeSha: "first-tree",
+        pipelineHash: "pipeline",
+        protectedArtifactHashes: hashes,
+        publishedAt: "now",
+      },
+    });
+
+    expect(landed.accepted).toBe(true);
+    expect(landed.state.integrationAttempts[0]).toMatchObject({
+      phase: "completed",
+      protectedArtifactHashes: hashes,
+    });
+    expect(landed.state.landingReceipts[0]?.protectedArtifactHashes).toEqual(
+      hashes,
     );
   });
 
-  it("serial tasks do not run concurrently with other active tasks", () => {
-    const graph = makeGraph([makeNode("a", 1, [], "serial"), makeNode("b", 2)]);
-    const run = createSchedulerRun(graph, 3);
-    startTask(run, "a");
-    expect(anyActiveSerialTask(run)).toBe(true);
-    expect(canStartTask(run, "b")).toBe(false);
-    expect(getBlockedReason(run.tasks.get("b")!, run)).toBe(
-      "waiting for serial task",
+  it("keeps integration independently serialized", () => {
+    const initial = state([
+      { id: "a", planIndex: 0 },
+      { id: "b", planIndex: 1 },
+    ]);
+    initial.candidates = {
+      first: candidate("first"),
+      second: candidate("second"),
+    };
+    initial.runtime.tasks.a = {
+      phase: "candidate_ready",
+      candidateId: "first",
+    };
+    initial.runtime.tasks.b = {
+      phase: "candidate_ready",
+      candidateId: "second",
+    };
+
+    const requested = transition(initial, {
+      kind: "integration_requested",
+      taskId: "a",
+      attemptId: "attempt-a",
+      pipelineHash: "pipeline",
+      now: "now",
+    });
+
+    expect(requested.accepted).toBe(true);
+    expect(selectIntegrationTask(requested.state)).toBeUndefined();
+    expect(
+      transition(requested.state, {
+        kind: "integration_requested",
+        taskId: "b",
+        attemptId: "attempt-b",
+        pipelineHash: "pipeline",
+        now: "now",
+      }).accepted,
+    ).toBe(false);
+  });
+
+  it("keeps generated DAG selections within capacity and dependency constraints", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 8 }),
+        fc.integer({ min: 1, max: 4 }),
+        fc.array(fc.boolean(), { minLength: 0, maxLength: 7 }),
+        (count, concurrency, completed) => {
+          const tasks = Array.from({ length: count }, (_, planIndex) => ({
+            id: `t${planIndex}`,
+            planIndex,
+            dependsOn: planIndex === 0 ? [] : [`t${planIndex - 1}`],
+          }));
+          const generated = state(tasks, concurrency);
+          for (
+            let index = 0;
+            index < Math.min(completed.length, count);
+            index++
+          ) {
+            if (completed[index]) {
+              generated.runtime.tasks[`t${index}`] = {
+                phase: "completed",
+                result: "satisfied",
+              };
+            }
+          }
+          const selected = selectWorkerTasks(generated);
+          expect(selected.length).toBeLessThanOrEqual(concurrency);
+          for (const taskId of selected) {
+            const task = generated.graph.tasks.find(
+              (entry) => entry.id === taskId,
+            )!;
+            expect(
+              task.dependsOn.every(
+                (dependency) =>
+                  generated.runtime.tasks[dependency]?.phase === "completed",
+              ),
+            ).toBe(true);
+          }
+        },
+      ),
+      { seed: 20260314, numRuns: 100 },
     );
-  });
-
-  it("parallel tasks wait when a serial task is active", () => {
-    const graph = makeGraph([
-      makeNode("a", 1, [], "parallel"),
-      makeNode("b", 2, [], "serial"),
-    ]);
-    const run = createSchedulerRun(graph, 3);
-    startTask(run, "a");
-    expect(canStartTask(run, "b")).toBe(false);
-  });
-
-  it("ready tasks sorted by plan index", () => {
-    const graph = makeGraph([
-      makeNode("c", 3),
-      makeNode("a", 1),
-      makeNode("b", 2),
-    ]);
-    const run = createSchedulerRun(graph, 3);
-    expect(computeReadyTasks(run)).toEqual(["a", "b", "c"]);
-  });
-});
-
-describe("landing queue", () => {
-  it("offers approved tasks in plan order", () => {
-    const graph = makeGraph([
-      makeNode("a", 1),
-      makeNode("b", 2),
-      makeNode("c", 3),
-    ]);
-    const run = createSchedulerRun(graph, 3);
-    run.tasks.get("a")!.status = "approved";
-    run.tasks.get("b")!.status = "approved";
-    expect(nextTaskToLand(run)).toBe("a");
-  });
-
-  it("lands an approved task when its dependencies are landed even if an earlier-index task is not", () => {
-    const graph = makeGraph([makeNode("a", 1), makeNode("b", 2)]);
-    const run = createSchedulerRun(graph, 3);
-    run.tasks.get("b")!.status = "approved";
-    expect(nextTaskToLand(run)).toBe("b");
-  });
-
-  it("waits when an approved task's own dependency is unlanded", () => {
-    const graph = makeGraph([makeNode("a", 1), makeNode("b", 2, ["a"])]);
-    const run = createSchedulerRun(graph, 3);
-    run.tasks.get("b")!.status = "approved";
-    expect(nextTaskToLand(run)).toBe(undefined);
-  });
-
-  it("returns undefined when no approved tasks", () => {
-    const graph = makeGraph([makeNode("a", 1)]);
-    const run = createSchedulerRun(graph, 3);
-    expect(nextTaskToLand(run)).toBe(undefined);
-  });
-
-  it("skips already integrating task and returns next approved", () => {
-    const graph = makeGraph([makeNode("a", 1), makeNode("b", 2)]);
-    const run = createSchedulerRun(graph, 3);
-    run.tasks.get("a")!.status = "integrating";
-    run.tasks.get("b")!.status = "approved";
-    expect(nextTaskToLand(run)).toBe(undefined);
-  });
-});
-
-describe("terminal detection", () => {
-  it("allTasksTerminal true when all landed", () => {
-    const graph = makeGraph([makeNode("a", 1), makeNode("b", 2)]);
-    const run = createSchedulerRun(graph, 3);
-    run.tasks.get("a")!.status = "landed";
-    run.tasks.get("b")!.status = "landed";
-    expect(allTasksTerminal(run)).toBe(true);
-  });
-
-  it("allTasksTerminal false when coding in progress", () => {
-    const graph = makeGraph([makeNode("a", 1)]);
-    const run = createSchedulerRun(graph, 3);
-    run.tasks.get("a")!.status = "coding";
-    expect(allTasksTerminal(run)).toBe(false);
-  });
-
-  it("anyTaskFailedBlockedStopped detects failures", () => {
-    const graph = makeGraph([makeNode("a", 1), makeNode("b", 2)]);
-    const run = createSchedulerRun(graph, 3);
-    run.tasks.get("a")!.status = "failed";
-    run.tasks.get("b")!.status = "landed";
-    expect(anyTaskFailedBlockedStopped(run)).toBe(true);
-  });
-
-  it("anyTaskFailedBlockedStopped false for clean completion", () => {
-    const graph = makeGraph([makeNode("a", 1)]);
-    const run = createSchedulerRun(graph, 3);
-    run.tasks.get("a")!.status = "landed";
-    expect(anyTaskFailedBlockedStopped(run)).toBe(false);
-  });
-
-  it("satisfied tasks are terminal clean completions", () => {
-    const graph = makeGraph([makeNode("a", 1)]);
-    const run = createSchedulerRun(graph, 3);
-    run.tasks.get("a")!.status = "satisfied";
-    expect(allTasksTerminal(run)).toBe(true);
-    expect(anyTaskFailedBlockedStopped(run)).toBe(false);
   });
 });

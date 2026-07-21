@@ -33,8 +33,8 @@ const STATUS_NOTE: Partial<
  * Derive user-facing progress notes from a state transition. Pure: emits a
  * line only when `next` represents a meaningful change from `prev`, so the
  * many no-op updateState calls (e.g. activeSubagentId churn) produce nothing.
- * `taskTitles` is the plan's task text indexed 0-based; only needed for serial
- * runs, since parallel task state already carries its own title.
+ * `taskTitles` is the plan's task text indexed 0-based; only needed when task
+ * state has not yet been projected, since scheduled task state carries titles.
  */
 export function diffProgress(
   prev: RunState,
@@ -46,7 +46,7 @@ export function diffProgress(
   lines.push(...strategyNotes(prev, next));
 
   if (next.tasks) {
-    lines.push(...parallelNotes(prev, next));
+    lines.push(...scheduledTaskNotes(prev, next));
   } else {
     lines.push(...serialNotes(prev, next, taskTitles));
   }
@@ -63,11 +63,10 @@ function strategyNotes(prev: RunState, next: RunState): string[] {
   if (!next.mode) {
     return [];
   }
-  const modeLabel =
-    next.mode === "parallel"
-      ? `parallel implementation (max ${next.maxConcurrency ?? "?"})`
-      : "serial implementation";
-  return [`✓ selected ${modeLabel}${reasonSuffix(next.lastReason)}`];
+  const concurrency = next.maxConcurrency ?? "?";
+  return [
+    `✓ selected implementation (effective concurrency ${concurrency})${reasonSuffix(next.lastReason)}`,
+  ];
 }
 
 function checkpointNotes(prev: RunState, next: RunState): string[] {
@@ -119,7 +118,7 @@ function serialNotes(
   return lines;
 }
 
-function parallelNotes(prev: RunState, next: RunState): string[] {
+function scheduledTaskNotes(prev: RunState, next: RunState): string[] {
   const lines: string[] = [];
   const total = next.totalCount;
   const prevById = new Map((prev.tasks ?? []).map((t) => [t.id, t]));

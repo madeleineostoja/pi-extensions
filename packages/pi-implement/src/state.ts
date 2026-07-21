@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import {
   mkdirSync,
   readFileSync,
@@ -12,11 +10,12 @@ import {
 } from "node:fs";
 import { rm, rmdir } from "node:fs/promises";
 
-const execFileAsync = promisify(execFile);
 import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { IntegrationLedger } from "./integration-ledger.js";
+import { GitProcess } from "./git-process.js";
+import { loadCanonicalRunState, RunStore } from "./canonical-state.js";
 export type RunMode = "auto" | "serial" | "parallel";
 
 export const CURRENT_STATE_VERSION = 2 as const;
@@ -270,6 +269,7 @@ export type StatePaths = {
   baseDir: string;
   runDir: string;
   runJson: string;
+  canonicalRunState?: string;
   eventsJsonl: string;
   planSnapshot: string;
   corpusJson: string;
@@ -308,6 +308,7 @@ export function getStatePaths(
     baseDir,
     runDir,
     runJson: join(runDir, "run.json"),
+    canonicalRunState: join(runDir, "canonical-run-state.json"),
     eventsJsonl: join(runDir, "events.jsonl"),
     planSnapshot: join(runDir, "plan.snapshot.md"),
     corpusJson: join(runDir, "corpus.json"),
@@ -320,8 +321,8 @@ export function getStatePaths(
 
 export function makeRunId(now = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  const base = `r${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  return base;
+  const timestamp = `r${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `${timestamp}-${randomBytes(8).toString("hex")}`;
 }
 
 export function makeRunIdWithSuffix(
@@ -354,9 +355,11 @@ export function createRunState(
   planContent: string,
 ): void {
   mkdirSync(dirname(paths.runDir), { recursive: true });
-  mkdirSync(paths.runDir);
-  mkdirSync(paths.tasksDir, { recursive: true });
+  mkdirSync(paths.runDir, { recursive: true });
   mkdirSync(getLocksDir(paths), { recursive: true });
+  if (!existsSync(canonicalRunStatePath(paths))) {
+    mkdirSync(paths.tasksDir, { recursive: true });
+  }
   mkdirSync(paths.worktreesDir, { recursive: true });
   writeAtomic(paths.runJson, JSON.stringify(run, null, 2));
   if (!existsSync(paths.lockFile)) {
@@ -379,7 +382,7 @@ export function acquireRunLock(
   for (;;) {
     try {
       writeLockFile(paths.lockFile, lock, "wx");
-      return { ok: true, staleRemoved };
+      break;
     } catch (err) {
       const nodeError = err as NodeJS.ErrnoException;
       if (nodeError.code !== "EEXIST") {
@@ -401,6 +404,27 @@ export function acquireRunLock(
       lock: existing.lock,
     };
   }
+
+  try {
+    if (
+      existsSync(canonicalRunStatePath(paths)) ||
+      reserveRunDirectory(paths)
+    ) {
+      return { ok: true, staleRemoved };
+    }
+  } catch (error) {
+    rmSync(paths.lockFile, { force: true });
+    const reason = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      reason: `Could not reserve pi-implement run state: ${reason}`,
+    };
+  }
+  rmSync(paths.lockFile, { force: true });
+  return {
+    ok: false,
+    reason: `Run state for ${run.runId} is already being initialized or retained.`,
+  };
 }
 
 export function checkRunLock(paths: StatePaths): LockCheckResult {
@@ -415,7 +439,7 @@ export function checkRunLocks(paths: StatePaths): CheckRunLocksResult {
   const active: Array<{ reason: string; lock?: Partial<RunLock> }> = [];
   const staleRemoved: string[] = [];
   for (const dirent of readdirSync(locksDir, { withFileTypes: true })) {
-    if (!dirent.isFile() || !dirent.name.endsWith(".lock")) {
+    if (!dirent.name.endsWith(".lock")) {
       continue;
     }
     const lockFile = join(locksDir, dirent.name);
@@ -438,17 +462,24 @@ function checkRunLockFile(
   }
 
   const lockPaths = { ...paths, lockFile };
-  const staleReason = staleRunLockReason(lockPaths);
+  const inspected = inspectRunLock(lockPaths);
+  if (!inspected.lock) {
+    return {
+      active: true,
+      reason: `${inspected.reason} at ${lockFile}`,
+    };
+  }
+
+  const staleReason = staleRunLockReason(inspected.lock);
   if (staleReason) {
     rmSync(lockFile, { force: true });
     return { active: false, staleRemoved: staleReason };
   }
 
-  const lock = readRunLock(lockPaths);
   return {
     active: true,
-    reason: formatRunLockReason(lock, lockFile),
-    lock,
+    reason: formatRunLockReason(inspected.lock, lockFile),
+    lock: inspected.lock,
   };
 }
 
@@ -500,9 +531,8 @@ export function writeTaskJson(
   taskId: string,
   task: TaskJson,
 ): void {
-  const path = join(paths.tasksDir, taskId, "task.json");
   const existing = readTaskJson(paths, taskId);
-  const persisted = {
+  const persisted: TaskJson = {
     ...existing,
     ...task,
     sourceBaseSha: existing?.sourceBaseSha ?? task.sourceBaseSha,
@@ -521,6 +551,16 @@ export function writeTaskJson(
     lastTransition: task.lastTransition ?? existing?.lastTransition,
     runtimeHealth: task.runtimeHealth ?? existing?.runtimeHealth,
   };
+  const canonicalPath = canonicalRunStatePath(paths);
+  if (existsSync(canonicalPath)) {
+    const store = RunStore.open(canonicalPath);
+    store.updateSync((state) => ({
+      ...state,
+      taskMetadata: { ...state.taskMetadata, [taskId]: persisted },
+    }));
+    return;
+  }
+  const path = join(paths.tasksDir, taskId, "task.json");
   mkdirSync(dirname(path), { recursive: true });
   writeAtomic(path, JSON.stringify(persisted, null, 2));
 }
@@ -566,6 +606,16 @@ export function readTaskJson(
   paths: StatePaths,
   taskId: string,
 ): TaskJson | undefined {
+  const canonicalPath = canonicalRunStatePath(paths);
+  if (existsSync(canonicalPath)) {
+    try {
+      return loadCanonicalRunState(canonicalPath).taskMetadata[taskId] as
+        | TaskJson
+        | undefined;
+    } catch {
+      return undefined;
+    }
+  }
   const path = join(paths.tasksDir, taskId, "task.json");
   if (!existsSync(path)) {
     return undefined;
@@ -580,45 +630,36 @@ export function readTaskJson(
 export async function cleanupRun(paths: StatePaths): Promise<void> {
   const run = readRunJson(paths);
   const runId = run?.runId ?? basename(paths.runDir);
-  const cleanupEntries = [
-    ...readTaskCleanupEntries(paths),
-    ...(run?.overallReview
-      ? [
-          {
-            worktreePath: run.overallReview.worktreePath,
-            branchName: run.overallReview.branchName,
-          },
-        ]
-      : []),
-  ];
-  if (run?.repoRoot && cleanupEntries.length > 0) {
-    const registeredWorktrees = await listRegisteredWorktrees(run.repoRoot);
-    const ownedEntries = uniqueCleanupEntries(
-      cleanupEntries.map((entry) =>
-        verifiedCleanupEntry(entry, paths.worktreesDir, runId),
-      ),
+  if (!run?.repoRoot || !paths.canonicalRunState) {
+    throw new Error(
+      "cleanup requires canonical run state and repository identity",
     );
-    for (const entry of ownedEntries) {
-      if (
-        registeredWorktrees.some(
-          (registered) =>
-            registered.worktreePath === entry.worktreePath &&
-            registered.branchName === entry.branchName,
-        )
-      ) {
-        await runGitCleanup(run.repoRoot, [
-          "worktree",
-          "remove",
-          "--force",
-          entry.worktreePath,
-        ]);
-      }
+  }
+  const state = loadCanonicalRunState(paths.canonicalRunState);
+  const entries = Object.values(state.candidates).map((candidate) => ({
+    worktreePath: candidate.worktreePath,
+    branchName: candidate.branchName,
+    expectedHeads: [candidate.commitSha],
+  }));
+  const registeredWorktrees = await listRegisteredWorktrees(run.repoRoot);
+  for (const entry of uniqueCanonicalCleanupEntries(entries)) {
+    const owned = verifiedCleanupEntry(entry, paths.worktreesDir, runId);
+    if (
+      !registeredWorktrees.some(
+        (registered) =>
+          registered.worktreePath === owned.worktreePath &&
+          registered.branchName === owned.branchName,
+      )
+    ) {
+      continue;
     }
-    for (const entry of ownedEntries) {
-      if (await branchExists(run.repoRoot, entry.branchName)) {
-        await runGitCleanup(run.repoRoot, ["branch", "-D", entry.branchName]);
-      }
-    }
+    await verifyCleanupOwnership(run.repoRoot, owned, entry.expectedHeads);
+    await runGitCleanup(run.repoRoot, [
+      "worktree",
+      "remove",
+      owned.worktreePath,
+    ]);
+    await runGitCleanup(run.repoRoot, ["branch", "-d", owned.branchName]);
   }
   if (existsSync(paths.worktreesDir)) {
     await rmdir(paths.worktreesDir);
@@ -666,64 +707,50 @@ export async function sweepRunArtifacts(repoRoot: string): Promise<{
   let worktrees = 0;
   let branches = 0;
 
-  try {
-    const { stdout: list } = await execFileAsync(
-      "git",
-      ["worktree", "list", "--porcelain"],
-      { cwd: repoRoot, encoding: "utf-8" },
-    );
-    for (const line of list.split("\n")) {
-      if (!line.startsWith("worktree ")) {
-        continue;
-      }
-      const wtPath = safeRealpath(line.slice("worktree ".length).trim());
-      const runId = worktreeRunId(wtPath, worktreesBase);
-      if (runId === undefined || knownRunIds.has(runId)) {
-        continue;
-      }
-      try {
-        await execFileAsync("git", ["worktree", "remove", "--force", wtPath], {
-          cwd: repoRoot,
-        });
-        worktrees++;
-      } catch {
-        // ignore
-      }
+  const process = new GitProcess(repoRoot);
+  const { stdout: worktreeList } = await process.run(
+    ["worktree", "list", "--porcelain"],
+    { cwd: repoRoot, scope: "repository" },
+  );
+  for (const line of worktreeList.split("\n")) {
+    if (!line.startsWith("worktree ")) {
+      continue;
     }
-  } catch {
-    // ignore
+    const wtPath = safeRealpath(line.slice("worktree ".length).trim());
+    const runId = worktreeRunId(wtPath, worktreesBase);
+    if (runId === undefined || knownRunIds.has(runId)) {
+      continue;
+    }
+    await process.run(["worktree", "remove", "--force", wtPath], {
+      cwd: repoRoot,
+      scope: "repository",
+    });
+    worktrees++;
   }
 
-  try {
-    await execFileAsync("git", ["worktree", "prune"], { cwd: repoRoot });
-  } catch {
-    // ignore
-  }
+  await process.run(["worktree", "prune"], {
+    cwd: repoRoot,
+    scope: "repository",
+  });
 
-  try {
-    const { stdout: list } = await execFileAsync(
-      "git",
-      ["branch", "--list", "pi-implement/*"],
-      { cwd: repoRoot, encoding: "utf-8" },
-    );
-    const names = list
-      .split("\n")
-      .map((b) => b.trim().replace(/^\*\s*/, ""))
-      .filter(Boolean);
-    for (const name of names) {
-      const runId = branchRunId(name);
-      if (runId === undefined || knownRunIds.has(runId)) {
-        continue;
-      }
-      try {
-        await execFileAsync("git", ["branch", "-D", name], { cwd: repoRoot });
-        branches++;
-      } catch {
-        // ignore
-      }
+  const { stdout: branchList } = await process.run(
+    ["branch", "--list", "pi-implement/*"],
+    { cwd: repoRoot, scope: "repository" },
+  );
+  const names = branchList
+    .split("\n")
+    .map((b) => b.trim().replace(/^\*\s*/, ""))
+    .filter(Boolean);
+  for (const name of names) {
+    const runId = branchRunId(name);
+    if (runId === undefined || knownRunIds.has(runId)) {
+      continue;
     }
-  } catch {
-    // ignore
+    await process.run(["branch", "-D", name], {
+      cwd: repoRoot,
+      scope: "repository",
+    });
+    branches++;
   }
 
   return { worktrees, branches };
@@ -753,6 +780,12 @@ function branchRunId(branchName: string): string | undefined {
     : undefined;
 }
 
+function canonicalRunStatePath(paths: StatePaths): string {
+  return (
+    paths.canonicalRunState ?? join(paths.runDir, "canonical-run-state.json")
+  );
+}
+
 export function listRunIds(repoRoot: string): string[] {
   const runsDir = join(getBaseDir(repoRoot), "runs");
   if (!existsSync(runsDir)) {
@@ -767,28 +800,6 @@ export function listRunIds(repoRoot: string): string[] {
   }
 }
 
-function readTaskCleanupEntries(
-  paths: StatePaths,
-): Array<{ worktreePath?: string; branchName?: string }> {
-  if (!existsSync(paths.tasksDir)) {
-    return [];
-  }
-  const entries: Array<{ worktreePath?: string; branchName?: string }> = [];
-  for (const dirent of readdirSync(paths.tasksDir, { withFileTypes: true })) {
-    if (!dirent.isDirectory()) {
-      continue;
-    }
-    const task = readTaskJson(paths, dirent.name);
-    if (task?.worktreePath || task?.branchName) {
-      entries.push({
-        worktreePath: task.worktreePath,
-        branchName: task.branchName,
-      });
-    }
-  }
-  return entries;
-}
-
 function safeRealpath(path: string): string {
   return existsSync(path) ? realpathSync(path) : path;
 }
@@ -796,10 +807,9 @@ function safeRealpath(path: string): string {
 async function listRegisteredWorktrees(
   repoRoot: string,
 ): Promise<Array<{ worktreePath: string; branchName?: string }>> {
-  const { stdout } = await execFileAsync(
-    "git",
+  const { stdout } = await new GitProcess(repoRoot).run(
     ["worktree", "list", "--porcelain"],
-    { cwd: repoRoot, encoding: "utf-8" },
+    { cwd: repoRoot, scope: "repository" },
   );
   const worktrees: Array<{ worktreePath: string; branchName?: string }> = [];
   let worktreePath: string | undefined;
@@ -857,38 +867,72 @@ function isPathWithin(path: string, parent: string): boolean {
   );
 }
 
-function uniqueCleanupEntries(
-  entries: Array<{ worktreePath: string; branchName: string }>,
-): Array<{ worktreePath: string; branchName: string }> {
-  const seen = new Set<string>();
-  return entries.filter((entry) => {
+function uniqueCanonicalCleanupEntries(
+  entries: Array<{
+    worktreePath: string;
+    branchName: string;
+    expectedHeads: string[];
+  }>,
+): Array<{
+  worktreePath: string;
+  branchName: string;
+  expectedHeads: string[];
+}> {
+  const byWorkspace = new Map<
+    string,
+    { worktreePath: string; branchName: string; expectedHeads: string[] }
+  >();
+  for (const entry of entries) {
     const key = `${entry.worktreePath}\0${entry.branchName}`;
-    if (seen.has(key)) {
-      return false;
+    const current = byWorkspace.get(key);
+    if (current) {
+      current.expectedHeads.push(...entry.expectedHeads);
+    } else {
+      byWorkspace.set(key, { ...entry });
     }
-    seen.add(key);
-    return true;
-  });
+  }
+  return [...byWorkspace.values()];
 }
 
-async function branchExists(
+async function verifyCleanupOwnership(
   repoRoot: string,
-  branchName: string,
-): Promise<boolean> {
-  try {
-    await execFileAsync(
-      "git",
-      ["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`],
-      { cwd: repoRoot },
+  entry: { worktreePath: string; branchName: string },
+  expectedHeads: string[],
+): Promise<void> {
+  const git = new GitProcess(entry.worktreePath);
+  const [{ stdout: branch }, { stdout: head }, { stdout: status }] =
+    await Promise.all([
+      git.run(["branch", "--show-current"], { cwd: entry.worktreePath }),
+      git.run(["rev-parse", "HEAD"], { cwd: entry.worktreePath }),
+      git.run(["status", "--porcelain"], { cwd: entry.worktreePath }),
+    ]);
+  if (branch.trim() !== entry.branchName) {
+    throw new Error(
+      `refusing to clean unexpected branch: ${entry.worktreePath}`,
     );
-    return true;
-  } catch {
-    return false;
+  }
+  if (!expectedHeads.includes(head.trim())) {
+    throw new Error(
+      `refusing to clean workspace with an unrecorded commit: ${entry.worktreePath}`,
+    );
+  }
+  if (status.trim()) {
+    throw new Error(`refusing to clean dirty workspace: ${entry.worktreePath}`);
+  }
+  const branchHead = await new GitProcess(repoRoot).run(
+    ["rev-parse", `refs/heads/${entry.branchName}`],
+    { cwd: repoRoot },
+  );
+  if (branchHead.stdout.trim() !== head.trim()) {
+    throw new Error(`refusing to clean moved branch: ${entry.branchName}`);
   }
 }
 
 async function runGitCleanup(repoRoot: string, args: string[]): Promise<void> {
-  await execFileAsync("git", args, { cwd: repoRoot });
+  await new GitProcess(repoRoot).run(args, {
+    cwd: repoRoot,
+    scope: "repository",
+  });
 }
 
 function makeRunLock(paths: StatePaths, run: RunJson): RunLock {
@@ -911,18 +955,59 @@ function writeLockFile(path: string, lock: RunLock, flag: "w" | "wx"): void {
 }
 
 function readRunLock(paths: StatePaths): Partial<RunLock> | undefined {
+  return inspectRunLock(paths).lock;
+}
+
+function inspectRunLock(paths: StatePaths): {
+  lock?: RunLock;
+  reason: string;
+} {
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(readFileSync(paths.lockFile, "utf-8")) as unknown;
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      Array.isArray(parsed)
-    ) {
-      return undefined;
+    parsed = JSON.parse(readFileSync(paths.lockFile, "utf-8"));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { reason: `unreadable lock file (${reason})` };
+  }
+  if (!isRunLock(parsed)) {
+    return { reason: "malformed lock file" };
+  }
+  return { lock: parsed, reason: "valid lock file" };
+}
+
+function isRunLock(value: unknown): value is RunLock {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const lock = value as Record<string, unknown>;
+  return (
+    lock.version === 1 &&
+    typeof lock.runId === "string" &&
+    lock.runId.length > 0 &&
+    typeof lock.runDir === "string" &&
+    lock.runDir.length > 0 &&
+    typeof lock.startedAt === "string" &&
+    lock.startedAt.length > 0 &&
+    typeof lock.pid === "number" &&
+    Number.isInteger(lock.pid) &&
+    lock.pid > 0 &&
+    typeof lock.hostname === "string" &&
+    lock.hostname.length > 0 &&
+    (lock.checkoutRoot === undefined || typeof lock.checkoutRoot === "string")
+  );
+}
+
+function reserveRunDirectory(paths: StatePaths): boolean {
+  mkdirSync(dirname(paths.runDir), { recursive: true });
+  try {
+    mkdirSync(paths.runDir);
+    return true;
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "EEXIST") {
+      return false;
     }
-    return parsed as Partial<RunLock>;
-  } catch {
-    return undefined;
+    throw error;
   }
 }
 
@@ -966,19 +1051,8 @@ function getLocksDir(paths: StatePaths): string {
   return paths.locksDir ?? dirname(paths.lockFile);
 }
 
-function staleRunLockReason(paths: StatePaths): string | undefined {
-  const lock = readRunLock(paths);
-  if (!lock) {
-    return "invalid lock file";
-  }
-  if (
-    typeof lock.pid !== "number" ||
-    !Number.isInteger(lock.pid) ||
-    lock.pid <= 0
-  ) {
-    return "lock file does not include a valid pid";
-  }
-  if (lock.hostname && lock.hostname !== hostname()) {
+function staleRunLockReason(lock: RunLock): string | undefined {
+  if (lock.hostname !== hostname()) {
     return undefined;
   }
   if (!processIsRunning(lock.pid)) {

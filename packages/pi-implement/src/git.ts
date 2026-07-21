@@ -1,24 +1,27 @@
-import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { ensureGitInfoExclude } from "@pi-extensions/lib";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative } from "node:path";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { GitProcess, type ProcessFailureKind } from "./git-process.js";
 
 export type CommandResult = {
   stdout: string;
   stderr: string;
   exitCode: number;
   command: string;
+  signal?: string;
+  timedOut?: boolean;
+  cancelled?: boolean;
+  failureKind?: ProcessFailureKind;
+  cause?: unknown;
 };
 
 export type GitClient = {
@@ -28,6 +31,7 @@ export type GitClient = {
   currentBranch(): Promise<string>;
   activeOperation(): Promise<string | undefined>;
   head(): Promise<string>;
+  parent(commit: string): Promise<string>;
   tree(): Promise<string>;
   treeAt(commit: string): Promise<string>;
   isAncestor(ancestor: string, descendant: string): Promise<boolean>;
@@ -65,6 +69,7 @@ export type GitClient = {
   rewordInternal(message: string): Promise<CommandResult>;
   commit(message: string): Promise<CommandResult>;
   reword(message: string): Promise<CommandResult>;
+  mergeFastForward(commitSha: string): Promise<CommandResult>;
   reset(): Promise<void>;
   resetHard(commitSha: string): Promise<void>;
   aheadOfBase(branchName: string, baseSha: string): Promise<boolean>;
@@ -85,13 +90,20 @@ export type GitClient = {
   listWorktrees(): Promise<string[]>;
   ensureInfoExclude(pattern: string): Promise<void>;
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient;
+  withSignal?(signal?: AbortSignal): GitClient;
+  onIdle?(): Promise<void>;
 };
 
 export class ExecGitClient implements GitClient {
+  private readonly process: GitProcess;
+
   constructor(
     private readonly cwd: string,
     private readonly mainRepoRoot?: string,
-  ) {}
+    private readonly signal?: AbortSignal,
+  ) {
+    this.process = new GitProcess(cwd);
+  }
 
   async root(): Promise<string> {
     return (await this.run(["rev-parse", "--show-toplevel"])).stdout.trim();
@@ -151,8 +163,14 @@ export class ExecGitClient implements GitClient {
     return (await this.run(["rev-parse", "HEAD"])).stdout.trim();
   }
 
+  async parent(commit: string): Promise<string> {
+    return (await this.run(["rev-parse", `${commit}^`])).stdout.trim();
+  }
+
   async tree(): Promise<string> {
-    return (await this.run(["write-tree"])).stdout.trim();
+    return (
+      await this.run(["write-tree"], false, undefined, "checkout", "idempotent")
+    ).stdout.trim();
   }
 
   async treeAt(commit: string): Promise<string> {
@@ -477,12 +495,16 @@ export class ExecGitClient implements GitClient {
     return this.run(["commit", "--amend", "-m", message], true);
   }
 
+  async mergeFastForward(commitSha: string): Promise<CommandResult> {
+    return this.run(["merge", "--ff-only", commitSha], true);
+  }
+
   async reset(): Promise<void> {
     await this.run(["reset"]);
   }
 
   async resetHard(commitSha: string): Promise<void> {
-    await this.run(["reset", "--hard", commitSha], true);
+    await this.run(["reset", "--hard", commitSha]);
   }
 
   async aheadOfBase(branchName: string, baseSha: string): Promise<boolean> {
@@ -516,23 +538,43 @@ export class ExecGitClient implements GitClient {
   }
 
   async cherryPickAbort(): Promise<void> {
-    await this.run(["cherry-pick", "--abort"], true);
+    await this.run(["cherry-pick", "--abort"]);
   }
 
   async createTaskBranch(branchName: string, baseSha: string): Promise<void> {
-    await this.run(["branch", branchName, baseSha]);
+    await this.run(
+      ["branch", branchName, baseSha],
+      false,
+      undefined,
+      "repository",
+    );
   }
 
   async addWorktree(worktreePath: string, branchName: string): Promise<void> {
-    await this.run(["worktree", "add", worktreePath, branchName]);
+    await this.run(
+      ["worktree", "add", worktreePath, branchName],
+      false,
+      undefined,
+      "repository",
+    );
   }
 
   async removeWorktree(worktreePath: string): Promise<void> {
-    await this.run(["worktree", "remove", "--force", worktreePath], true);
+    await this.run(
+      ["worktree", "remove", "--force", worktreePath],
+      false,
+      undefined,
+      "repository",
+    );
   }
 
   async deleteTaskBranch(branchName: string): Promise<void> {
-    await this.run(["branch", "-D", branchName], true);
+    await this.run(
+      ["branch", "-D", branchName],
+      false,
+      undefined,
+      "repository",
+    );
   }
 
   async diffRange(baseSha: string, headSha: string): Promise<string> {
@@ -581,13 +623,38 @@ export class ExecGitClient implements GitClient {
   }
 
   async ensureInfoExclude(pattern: string): Promise<void> {
-    await ensureGitInfoExclude(this.cwd, pattern);
+    await this.process.inRepository((commonGitDir) => {
+      const infoDir = join(commonGitDir, "info");
+      const excludePath = join(infoDir, "exclude");
+      if (!existsSync(excludePath)) {
+        mkdirSync(infoDir, { recursive: true });
+        writeFileSync(excludePath, `${pattern}\n`, "utf-8");
+        return;
+      }
+      const content = readFileSync(excludePath, "utf-8");
+      if (!content.split("\n").includes(pattern)) {
+        writeFileSync(
+          excludePath,
+          `${content.endsWith("\n") ? content : `${content}\n`}${pattern}\n`,
+          "utf-8",
+        );
+      }
+    });
+  }
+
+  withSignal(signal?: AbortSignal): GitClient {
+    return new ExecGitClient(this.cwd, this.mainRepoRoot, signal);
+  }
+
+  onIdle(): Promise<void> {
+    return this.process.onIdle();
   }
 
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient {
     return new ExecGitClient(
       worktreePath,
       mainRepoRoot ?? this.mainRepoRoot ?? this.cwd,
+      this.signal,
     );
   }
 
@@ -648,39 +715,17 @@ export class ExecGitClient implements GitClient {
     args: string[],
     allowFailure = false,
     env?: NodeJS.ProcessEnv,
+    scope: "checkout" | "repository" = "checkout",
+    retry?: "idempotent",
   ): Promise<CommandResult> {
-    try {
-      const result = await execFileAsync("git", args, {
-        cwd: this.cwd,
-        maxBuffer: 20 * 1024 * 1024,
-        env: env ? { ...process.env, ...env } : undefined,
-      });
-      return {
-        stdout: result.stdout,
-        stderr: result.stderr,
-        exitCode: 0,
-        command: `git ${args.join(" ")}`,
-      };
-    } catch (err) {
-      const error = err as {
-        stdout?: string;
-        stderr?: string;
-        code?: number;
-        message?: string;
-      };
-      const result = {
-        stdout: error.stdout ?? "",
-        stderr: error.stderr ?? error.message ?? "",
-        exitCode: typeof error.code === "number" ? error.code : 1,
-        command: `git ${args.join(" ")}`,
-      };
-      if (allowFailure) {
-        return result;
-      }
-      throw new Error(
-        `${result.command} failed: ${result.stderr || result.stdout}`,
-      );
-    }
+    return this.process.run(args, {
+      cwd: this.cwd,
+      env,
+      signal: this.signal,
+      allowFailure,
+      scope,
+      retry,
+    });
   }
 }
 

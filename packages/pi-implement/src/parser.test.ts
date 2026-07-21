@@ -6,18 +6,18 @@ describe("parseCommand", () => {
     const result = parseCommand("path/to/plan.md");
     expect(result).toEqual({
       kind: "execution",
-      mode: { kind: "auto", planPath: "path/to/plan.md", forceSerial: false },
+      mode: { kind: "auto", planPath: "path/to/plan.md" },
     });
   });
 
   it("treats operational words as plan paths", () => {
     expect(parseCommand("status")).toEqual({
       kind: "execution",
-      mode: { kind: "auto", planPath: "status", forceSerial: false },
+      mode: { kind: "auto", planPath: "status" },
     });
     expect(parseCommand("cleanup")).toEqual({
       kind: "execution",
-      mode: { kind: "auto", planPath: "cleanup", forceSerial: false },
+      mode: { kind: "auto", planPath: "cleanup" },
     });
   });
 
@@ -47,7 +47,7 @@ describe("parseCommand", () => {
   it("treats bare 'agents' as plan path", () => {
     expect(parseCommand("agents")).toEqual({
       kind: "execution",
-      mode: { kind: "auto", planPath: "agents", forceSerial: false },
+      mode: { kind: "auto", planPath: "agents" },
     });
   });
 
@@ -88,16 +88,14 @@ describe("parseCommand", () => {
       mode: {
         kind: "auto",
         planPath: "plan.md",
-        forceSerial: false,
         recovery: { kind: "resume", runId: "r20240115-120000" },
       },
     });
-    expect(parseCommand("plan.md --serial --start-over run-2")).toEqual({
+    expect(parseCommand("plan.md --start-over run-2")).toEqual({
       kind: "execution",
       mode: {
         kind: "auto",
         planPath: "plan.md",
-        forceSerial: true,
         recovery: { kind: "start-over", runId: "run-2" },
       },
     });
@@ -108,7 +106,7 @@ describe("parseCommand", () => {
       "plan.md --resume",
       "plan.md --start-over",
       "plan.md --resume one --start-over two",
-      "plan.md --serial --serial",
+      "plan.md --serial",
     ]) {
       expect(parseCommand(input).kind).toBe("error");
     }

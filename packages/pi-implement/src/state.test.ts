@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { RunStore } from "./canonical-state.js";
 import {
   getStatePaths,
   getBaseDir,
@@ -37,6 +38,77 @@ function tempRepo(): string {
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" });
+}
+
+function createCanonicalState(
+  paths: ReturnType<typeof getStatePaths>,
+  run: {
+    runId: string;
+    repoRoot: string;
+    baseSha: string;
+    maxConcurrency: number;
+  },
+  candidates: Array<{
+    id: string;
+    branchName: string;
+    worktreePath: string;
+    commitSha: string;
+  }> = [],
+): void {
+  RunStore.create(paths.canonicalRunState!, {
+    schemaVersion: 6,
+    revision: 0,
+    run: {
+      id: run.runId,
+      target: {
+        checkoutRoot: run.repoRoot,
+        gitDir: "git-dir",
+        commonGitDir: "common-git-dir",
+        branchRef: "main",
+        startHead: run.baseSha,
+      },
+      plan: { path: "plan.md", hash: "hash", indexConvention: "zero-based" },
+      configuredWorkerConcurrency: run.maxConcurrency,
+      effectiveWorkerConcurrency: run.maxConcurrency,
+    },
+    graph: { tasks: [] },
+    runtime: { phase: "completed", tasks: {}, overall: { phase: "completed" } },
+    candidates: Object.fromEntries(
+      candidates.map((candidate) => [
+        candidate.id,
+        {
+          ...candidate,
+          sourceBaseSha: run.baseSha,
+          baseSha: run.baseSha,
+          treeSha: "tree",
+          reviewReceipt: {
+            id: `review:${candidate.id}`,
+            candidateId: candidate.id,
+            candidateCommitSha: candidate.commitSha,
+            candidateTreeSha: "tree",
+            verdict: "approved" as const,
+            convergence: {
+              round: 0,
+              outstandingFindingIds: [],
+              bestOutstandingCount: 0,
+              evidenceRefs: [],
+            },
+            assessedAt: "2024-01-15T12:00:00Z",
+          },
+        },
+      ]),
+    ),
+    taskExecution: {},
+    taskMetadata: {},
+    reviewConvergence: {},
+    workerLeases: [],
+    integrationAttempts: [],
+    landingReceipts: [],
+    projectionDebt: [],
+    cleanupDebt: [],
+    createdAt: "2024-01-15T12:00:00Z",
+    updatedAt: "2024-01-15T12:00:00Z",
+  });
 }
 
 function escapeRegExp(value: string): string {
@@ -78,9 +150,15 @@ describe("state paths", () => {
 });
 
 describe("run IDs", () => {
-  it("generates RFC-shaped run IDs", () => {
+  it("generates readable collision-resistant run IDs", () => {
     const id = makeRunId(new Date("2024-01-15T09:30:45"));
-    expect(id).toBe("r20240115-093045");
+    expect(id).toMatch(/^r20240115-093045-[a-f0-9]{16}$/);
+  });
+
+  it("does not repeat IDs generated in the same second", () => {
+    const now = new Date("2024-01-15T09:30:45");
+    const ids = new Set(Array.from({ length: 100 }, () => makeRunId(now)));
+    expect(ids).toHaveLength(100);
   });
 
   it("adds suffix on collision", () => {
@@ -199,7 +277,7 @@ describe("run locks", () => {
     expect(existsSync(paths.lockFile)).toBe(false);
   });
 
-  it("treats legacy pid-less locks as stale", () => {
+  it("blocks on malformed locks without deleting them", () => {
     const repo = tempRepo();
     const paths = getStatePaths(repo, "r20240115-120000");
     mkdirSync(join(paths.baseDir, "locks"), { recursive: true });
@@ -209,8 +287,39 @@ describe("run locks", () => {
       "utf-8",
     );
 
-    expect(checkRunLock(paths)).toMatchObject({ active: false });
-    expect(existsSync(paths.lockFile)).toBe(false);
+    expect(checkRunLock(paths)).toMatchObject({
+      active: true,
+      reason: expect.stringContaining("malformed lock file"),
+    });
+    expect(existsSync(paths.lockFile)).toBe(true);
+  });
+
+  it("blocks on unreadable lock content without deleting it", () => {
+    const repo = tempRepo();
+    const paths = getStatePaths(repo, "r20240115-120000");
+    mkdirSync(join(paths.baseDir, "locks"), { recursive: true });
+    writeFileSync(paths.lockFile, "not json", "utf-8");
+
+    expect(checkRunLock(paths)).toMatchObject({
+      active: true,
+      reason: expect.stringContaining("unreadable lock file"),
+    });
+    expect(existsSync(paths.lockFile)).toBe(true);
+  });
+
+  it("atomically reserves a run ID across linked checkouts", () => {
+    const repo = tempRepo();
+    const checkoutA = join(repo, "checkout-a");
+    const checkoutB = join(repo, "checkout-b");
+    const runId = "r20240115-120000-deadbeefdeadbeef";
+    const pathsA = getStatePaths(repo, runId, checkoutA);
+    const pathsB = getStatePaths(repo, runId, checkoutB);
+    const runA = { ...makeRun(repo, runId), checkoutRoot: checkoutA };
+    const runB = { ...makeRun(repo, runId), checkoutRoot: checkoutB };
+
+    expect(acquireRunLock(pathsA, runA)).toMatchObject({ ok: true });
+    expect(acquireRunLock(pathsB, runB)).toMatchObject({ ok: false });
+    expect(existsSync(pathsB.lockFile)).toBe(false);
   });
 });
 
@@ -597,31 +706,14 @@ describe("run state lifecycle", () => {
     expect(events[0].timestamp).toBeDefined();
   });
 
-  it("cleans up run directory", async () => {
+  it("refuses legacy cleanup without canonical ownership", async () => {
     const repo = tempRepo();
     const paths = getStatePaths(repo, "r20240115-120000");
-    const run = {
-      version: 1 as const,
-      runId: "r20240115-120000",
-      mode: "auto" as const,
-      strategyReason: "Auto mode selected; effective max concurrency 3.",
-      repoRoot: repo,
-      planPath: "/repo/plan.md",
-      planHash: "abc123",
-      baseSha: "def456",
-      currentPhase: "preflight",
-      maxConcurrency: 3,
-      startedAt: "2024-01-15T12:00:00Z",
-      updatedAt: "2024-01-15T12:00:00Z",
-    };
-
+    const run = makeRun(repo);
     createRunState(paths, run, "# Plan\n");
-    expect(existsSync(paths.runDir)).toBe(true);
-    expect(existsSync(paths.lockFile)).toBe(true);
 
-    await cleanupRun(paths);
-    expect(existsSync(paths.runDir)).toBe(false);
-    expect(existsSync(paths.lockFile)).toBe(false);
+    await expect(cleanupRun(paths)).rejects.toThrow(/canonical run state/i);
+    expect(existsSync(paths.runDir)).toBe(true);
   });
 
   it(
@@ -656,18 +748,14 @@ describe("run state lifecycle", () => {
       const worktreePath = join(paths.worktreesDir, "t001-test");
       git(repo, "branch", branchName, run.baseSha);
       git(repo, "worktree", "add", "-q", worktreePath, branchName);
-      writeTaskJson(paths, "t001-test", {
-        id: "t001-test",
-        planIndex: 0,
-        title: "Test",
-        status: "approved",
-        dependsOn: [],
-        attempts: 1,
-        integrationAttempts: 0,
-        baseSha: run.baseSha,
-        worktreePath,
-        branchName,
-      });
+      createCanonicalState(paths, run, [
+        {
+          id: "candidate:t001-test",
+          branchName,
+          worktreePath,
+          commitSha: run.baseSha,
+        },
+      ]);
 
       expect(git(repo, "worktree", "list", "--porcelain")).toContain(
         worktreePath,
@@ -705,15 +793,14 @@ describe("run state lifecycle", () => {
       const worktreePath = join(paths.worktreesDir, "overall-review");
       git(repo, "branch", branchName, "HEAD");
       git(repo, "worktree", "add", "-q", worktreePath, branchName);
-      writeRunJson(paths, {
-        ...run,
-        overallReview: {
-          baseSha: git(repo, "rev-parse", "HEAD").trim(),
+      createCanonicalState(paths, run, [
+        {
+          id: "candidate:overall",
           branchName,
           worktreePath,
-          status: "stalled",
+          commitSha: git(repo, "rev-parse", "HEAD").trim(),
         },
-      });
+      ]);
 
       await cleanupRun(paths);
 

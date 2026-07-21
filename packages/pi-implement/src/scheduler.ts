@@ -1,6 +1,806 @@
+import {
+  validateCanonicalRunState,
+  type CandidateRef,
+  type CanonicalRunState,
+} from "./canonical-state.js";
 import type { ImplementGraph } from "./graph.js";
 import type { IntegrationLedger } from "./integration-ledger.js";
 import type { AgentDisplayRef } from "./status.js";
+
+export type SchedulerEffect =
+  | { kind: "start_worker"; taskId: string; leaseId: string }
+  | {
+      kind: "start_integration";
+      owner: { kind: "task"; taskId: string } | { kind: "overall" };
+      attemptId: string;
+      candidateId: string;
+    }
+  | { kind: "stop_workers"; leaseIds: string[] }
+  | { kind: "cleanup"; debtId: string };
+
+export type SchedulerEvent =
+  | { kind: "run_started" }
+  | { kind: "workers_selected"; now: string }
+  | {
+      kind: "worker_finished";
+      taskId: string;
+      leaseId: string;
+      outcome:
+        | { kind: "candidate_ready"; candidate: CandidateRef }
+        | { kind: "satisfied" }
+        | { kind: "waiting_rework"; candidateId: string }
+        | {
+            kind: "failed";
+            reason: string;
+            failureKind: "spawn" | "wait" | "timeout" | "safety" | "unknown";
+          }
+        | { kind: "cancelled" };
+    }
+  | {
+      kind: "integration_requested";
+      taskId: string;
+      attemptId: string;
+      pipelineHash: string;
+      protectedArtifactHashes?: Record<string, string>;
+      now: string;
+    }
+  | { kind: "overall_candidate_ready"; candidate: CandidateRef }
+  | { kind: "overall_review_completed" }
+  | {
+      kind: "overall_integration_requested";
+      attemptId: string;
+      pipelineHash: string;
+      protectedArtifactHashes?: Record<string, string>;
+      now: string;
+    }
+  | {
+      kind: "integration_prepared";
+      attemptId: string;
+      preparedCommitSha: string;
+    }
+  | {
+      kind: "integration_publishing";
+      attemptId: string;
+      protectedArtifactHashes: Record<string, string>;
+    }
+  | {
+      kind: "integration_landed";
+      attemptId: string;
+      receipt: CanonicalRunState["landingReceipts"][number];
+    }
+  | {
+      kind: "integration_needs_rework";
+      attemptId: string;
+      candidateId: string;
+    }
+  | { kind: "integration_paused"; attemptId: string }
+  | { kind: "integration_resumed"; attemptId: string }
+  | {
+      kind: "cleanup_debt_recorded";
+      debt: CanonicalRunState["cleanupDebt"][number];
+    }
+  | { kind: "cleanup_completed"; debtId: string }
+  | {
+      kind: "projection_debt_recorded";
+      debt: CanonicalRunState["projectionDebt"][number];
+    }
+  | { kind: "projection_completed"; debtId: string }
+  | { kind: "run_stopping" }
+  | { kind: "run_completed" }
+  | { kind: "run_blocked"; reason: string };
+
+export type SchedulerTransition = {
+  state: CanonicalRunState;
+  effects: SchedulerEffect[];
+  accepted: boolean;
+  error?: string;
+};
+
+const executablePhases = new Set(["queued", "waiting_rework"]);
+
+export function selectWorkerTasks(state: CanonicalRunState): string[] {
+  const capacity =
+    state.run.effectiveWorkerConcurrency - state.workerLeases.length;
+  if (capacity <= 0 || state.runtime.phase !== "running") {
+    return [];
+  }
+
+  return [...state.graph.tasks]
+    .sort((left, right) => left.planIndex - right.planIndex)
+    .filter((task) => {
+      const runtime = state.runtime.tasks[task.id];
+      return (
+        executablePhases.has(runtime?.phase ?? "") &&
+        task.dependsOn.every((dependency) =>
+          isDependencyComplete(state.runtime.tasks[dependency]),
+        )
+      );
+    })
+    .slice(0, capacity)
+    .map((task) => task.id);
+}
+
+export function selectIntegrationTask(
+  state: CanonicalRunState,
+): string | undefined {
+  if (
+    state.runtime.phase !== "running" ||
+    state.integrationAttempts.some(
+      (attempt) =>
+        attempt.phase === "preparing" ||
+        attempt.phase === "prepared" ||
+        attempt.phase === "publishing" ||
+        attempt.phase === "paused",
+    )
+  ) {
+    return undefined;
+  }
+
+  return [...state.graph.tasks]
+    .sort((left, right) => left.planIndex - right.planIndex)
+    .find((task) => {
+      const runtime = state.runtime.tasks[task.id];
+      return (
+        runtime?.phase === "candidate_ready" &&
+        task.dependsOn.every((dependency) =>
+          isDependencyComplete(state.runtime.tasks[dependency]),
+        )
+      );
+    })?.id;
+}
+
+export function transition(
+  input: CanonicalRunState,
+  event: SchedulerEvent,
+): SchedulerTransition {
+  const state = structuredClone(input);
+  const reject = (error: string): SchedulerTransition => ({
+    state: input,
+    effects: [],
+    accepted: false,
+    error,
+  });
+  const accept = (effects: SchedulerEffect[] = []): SchedulerTransition => {
+    try {
+      return {
+        state: validateCanonicalRunState(state, "<scheduler reducer>", input),
+        effects,
+        accepted: true,
+      };
+    } catch (error) {
+      return reject(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  switch (event.kind) {
+    case "run_started":
+      if (state.runtime.phase !== "preflight") {
+        return reject("run is not in preflight");
+      }
+      state.runtime.phase = "running";
+      return accept();
+
+    case "workers_selected": {
+      const selected = selectWorkerTasks(state);
+      if (selected.length === 0) {
+        return accept();
+      }
+      const effects: SchedulerEffect[] = [];
+      for (const [index, taskId] of selected.entries()) {
+        const leaseId = `worker:${state.run.id}:${state.revision + 1}:${index}`;
+        const attempts = state.workerLeases.filter(
+          (lease) => lease.taskId === taskId,
+        ).length;
+        state.workerLeases.push({
+          id: leaseId,
+          taskId,
+          attempt: attempts + 1,
+          acquiredAt: event.now,
+        });
+        state.runtime.tasks[taskId] = {
+          phase: "executing",
+          workerLeaseId: leaseId,
+        };
+        effects.push({ kind: "start_worker", taskId, leaseId });
+      }
+      return accept(effects);
+    }
+
+    case "worker_finished": {
+      const runtime = state.runtime.tasks[event.taskId];
+      const lease = state.workerLeases.find(
+        (entry) => entry.id === event.leaseId,
+      );
+      if (
+        runtime?.phase !== "executing" ||
+        runtime.workerLeaseId !== event.leaseId ||
+        lease?.taskId !== event.taskId
+      ) {
+        return reject("worker result does not own the active task lease");
+      }
+      state.workerLeases = state.workerLeases.filter(
+        (entry) => entry.id !== event.leaseId,
+      );
+      switch (event.outcome.kind) {
+        case "candidate_ready": {
+          const existing = state.candidates[event.outcome.candidate.id];
+          if (
+            existing &&
+            JSON.stringify(existing) !== JSON.stringify(event.outcome.candidate)
+          ) {
+            return reject("candidate identity is immutable");
+          }
+          if (event.outcome.candidate.reviewReceipt.verdict !== "approved") {
+            return reject("candidate is not approved for integration");
+          }
+          if (!existing) {
+            state.candidates[event.outcome.candidate.id] =
+              event.outcome.candidate;
+          }
+          state.runtime.tasks[event.taskId] = {
+            phase: "candidate_ready",
+            candidateId: event.outcome.candidate.id,
+          };
+          break;
+        }
+        case "satisfied":
+          state.runtime.tasks[event.taskId] = {
+            phase: "completed",
+            result: "satisfied",
+          };
+          break;
+        case "waiting_rework":
+          if (!state.candidates[event.outcome.candidateId]) {
+            return reject("rework references an unknown candidate");
+          }
+          state.runtime.tasks[event.taskId] = {
+            phase: "waiting_rework",
+            candidateId: event.outcome.candidateId,
+          };
+          break;
+        case "failed":
+          state.runtime.tasks[event.taskId] = {
+            phase: "failed",
+            reason: event.outcome.reason,
+            failureKind: event.outcome.failureKind,
+          };
+          break;
+        case "cancelled":
+          state.runtime.tasks[event.taskId] = { phase: "queued" };
+          break;
+      }
+      return accept();
+    }
+
+    case "overall_review_completed":
+      if (
+        state.runtime.phase !== "running" ||
+        !allTasksCompleted(state) ||
+        state.runtime.overall.phase !== "pending"
+      ) {
+        return reject("overall review cannot complete yet");
+      }
+      state.runtime.overall = { phase: "completed" };
+      return accept();
+
+    case "overall_candidate_ready": {
+      if (
+        state.runtime.overall.phase !== "pending" &&
+        state.runtime.overall.phase !== "waiting_rework" &&
+        state.runtime.overall.phase !== "candidate_ready"
+      ) {
+        return reject("overall review is not ready for a candidate");
+      }
+      const existing = state.candidates[event.candidate.id];
+      if (
+        existing &&
+        JSON.stringify(existing) !== JSON.stringify(event.candidate)
+      ) {
+        return reject("candidate identity is immutable");
+      }
+      if (event.candidate.reviewReceipt.verdict !== "approved") {
+        return reject("candidate is not approved for integration");
+      }
+      state.candidates[event.candidate.id] = event.candidate;
+      state.runtime.overall = {
+        phase: "candidate_ready",
+        candidateId: event.candidate.id,
+      };
+      return accept();
+    }
+
+    case "integration_requested": {
+      if (selectIntegrationTask(state) !== event.taskId) {
+        return reject("task is not eligible for integration");
+      }
+      const runtime = state.runtime.tasks[event.taskId];
+      if (runtime?.phase !== "candidate_ready") {
+        return reject("task has no candidate ready for integration");
+      }
+      if (
+        state.candidates[runtime.candidateId]?.reviewReceipt.verdict !==
+        "approved"
+      ) {
+        return reject("candidate is not approved for integration");
+      }
+      if (
+        state.integrationAttempts.some(
+          (attempt) => attempt.id === event.attemptId,
+        )
+      ) {
+        return reject("integration attempt already exists");
+      }
+      state.integrationAttempts.push({
+        id: event.attemptId,
+        owner: { kind: "task", taskId: event.taskId },
+        candidateId: runtime.candidateId,
+        targetBaseSha: state.candidates[runtime.candidateId]!.baseSha,
+        pipelineHash: event.pipelineHash,
+        startedAt: event.now,
+        protectedArtifactHashes: event.protectedArtifactHashes,
+        phase: "preparing",
+      });
+      state.runtime.tasks[event.taskId] = {
+        phase: "integrating",
+        candidateId: runtime.candidateId,
+        integrationAttemptId: event.attemptId,
+      };
+      return accept([
+        {
+          kind: "start_integration",
+          owner: { kind: "task", taskId: event.taskId },
+          attemptId: event.attemptId,
+          candidateId: runtime.candidateId,
+        },
+      ]);
+    }
+
+    case "overall_integration_requested": {
+      if (
+        state.runtime.phase !== "running" ||
+        !allTasksCompleted(state) ||
+        state.runtime.overall.phase !== "candidate_ready" ||
+        state.integrationAttempts.some((attempt) =>
+          ["preparing", "prepared", "publishing", "paused"].includes(
+            attempt.phase,
+          ),
+        )
+      ) {
+        return reject("overall candidate is not eligible for integration");
+      }
+      const candidateId = state.runtime.overall.candidateId;
+      const candidate = state.candidates[candidateId];
+      if (!candidate || candidate.reviewReceipt.verdict !== "approved") {
+        return reject("overall candidate is not approved for integration");
+      }
+      if (
+        state.integrationAttempts.some(
+          (attempt) => attempt.id === event.attemptId,
+        )
+      ) {
+        return reject("integration attempt already exists");
+      }
+      state.integrationAttempts.push({
+        id: event.attemptId,
+        owner: { kind: "overall" },
+        candidateId,
+        targetBaseSha: candidate.baseSha,
+        pipelineHash: event.pipelineHash,
+        startedAt: event.now,
+        protectedArtifactHashes: event.protectedArtifactHashes,
+        phase: "preparing",
+      });
+      state.runtime.overall = {
+        phase: "integrating",
+        candidateId,
+        integrationAttemptId: event.attemptId,
+      };
+      return accept([
+        {
+          kind: "start_integration",
+          owner: { kind: "overall" },
+          attemptId: event.attemptId,
+          candidateId,
+        },
+      ]);
+    }
+
+    case "integration_prepared":
+      return updateIntegration(
+        state,
+        event.attemptId,
+        "preparing",
+        (attempt) => ({
+          ...attempt,
+          phase: "prepared",
+          preparedCommitSha: event.preparedCommitSha,
+        }),
+        accept,
+        reject,
+      );
+
+    case "integration_publishing": {
+      const attempt = state.integrationAttempts.find(
+        (entry) => entry.id === event.attemptId,
+      );
+      if (attempt?.phase !== "prepared") {
+        return reject("integration is not prepared");
+      }
+      state.integrationAttempts = state.integrationAttempts.map((entry) =>
+        entry.id === attempt.id
+          ? {
+              ...attempt,
+              phase: "publishing",
+              preparedCommitSha: attempt.preparedCommitSha,
+              protectedArtifactHashes: event.protectedArtifactHashes,
+            }
+          : entry,
+      );
+      return accept();
+    }
+
+    case "integration_landed": {
+      const attempt = state.integrationAttempts.find(
+        (entry) => entry.id === event.attemptId,
+      );
+      if (attempt?.phase !== "publishing") {
+        return reject("integration is not publishing");
+      }
+      if (
+        event.receipt.attemptId !== attempt.id ||
+        JSON.stringify(event.receipt.owner) !== JSON.stringify(attempt.owner) ||
+        !sameArtifactHashes(
+          event.receipt.protectedArtifactHashes,
+          attempt.protectedArtifactHashes ?? {},
+        )
+      ) {
+        return reject("landing receipt does not match integration attempt");
+      }
+      state.integrationAttempts = state.integrationAttempts.map((entry) =>
+        entry.id === attempt.id
+          ? {
+              ...entry,
+              phase: "completed",
+              preparedCommitSha: attempt.preparedCommitSha,
+              protectedArtifactHashes: attempt.protectedArtifactHashes,
+            }
+          : entry,
+      );
+      if (
+        !state.landingReceipts.some(
+          (receipt) => receipt.attemptId === event.receipt.attemptId,
+        )
+      ) {
+        state.landingReceipts.push(event.receipt);
+      }
+      if (attempt.owner.kind === "task") {
+        state.runtime.tasks[attempt.owner.taskId] = {
+          phase: "completed",
+          result: "landed",
+        };
+      } else {
+        state.runtime.overall = {
+          phase: "completed",
+          landingAttemptId: attempt.id,
+        };
+      }
+      const debtId = `integration:${attempt.id}`;
+      if (!state.cleanupDebt.some((debt) => debt.id === debtId)) {
+        state.cleanupDebt.push({
+          id: debtId,
+          kind: "integration-worktree",
+          reason: "integration landed; owned workspace cleanup is pending",
+        });
+      }
+      return accept([{ kind: "cleanup", debtId }]);
+    }
+
+    case "integration_needs_rework": {
+      const attempt = state.integrationAttempts.find(
+        (entry) => entry.id === event.attemptId,
+      );
+      const runtime =
+        attempt?.owner.kind === "task"
+          ? state.runtime.tasks[attempt.owner.taskId]
+          : state.runtime.overall;
+      if (
+        !attempt ||
+        !["preparing", "prepared", "publishing"].includes(attempt.phase) ||
+        attempt.candidateId !== event.candidateId ||
+        runtime?.phase !== "integrating" ||
+        runtime.integrationAttemptId !== attempt.id ||
+        runtime.candidateId !== event.candidateId
+      ) {
+        return reject("integration result does not match an active attempt");
+      }
+      state.integrationAttempts = state.integrationAttempts.map((entry) =>
+        entry.id === event.attemptId ? closeReworkAttempt(entry) : entry,
+      );
+      const debtId = `integration:${attempt.id}`;
+      if (!state.cleanupDebt.some((debt) => debt.id === debtId)) {
+        state.cleanupDebt.push({
+          id: debtId,
+          kind: "integration-worktree",
+          reason:
+            "integration rework retained candidate; staging workspace cleanup is pending",
+        });
+      }
+      if (attempt.owner.kind === "task") {
+        state.runtime.tasks[attempt.owner.taskId] = {
+          phase: "waiting_rework",
+          candidateId: event.candidateId,
+        };
+      } else {
+        state.runtime.overall = {
+          phase: "waiting_rework",
+          candidateId: event.candidateId,
+        };
+      }
+      return accept();
+    }
+
+    case "integration_paused": {
+      const attempt = state.integrationAttempts.find(
+        (entry) => entry.id === event.attemptId,
+      );
+      if (
+        !attempt ||
+        !["preparing", "prepared", "publishing"].includes(attempt.phase)
+      ) {
+        return reject("integration attempt is not active");
+      }
+      state.integrationAttempts = state.integrationAttempts.map((entry) =>
+        entry.id === event.attemptId
+          ? attempt.phase === "preparing"
+            ? { ...attempt, phase: "paused", resumePhase: "preparing" }
+            : attempt.phase === "prepared"
+              ? {
+                  ...attempt,
+                  phase: "paused",
+                  resumePhase: "prepared",
+                  preparedCommitSha: attempt.preparedCommitSha,
+                }
+              : attempt.phase === "publishing"
+                ? {
+                    ...attempt,
+                    phase: "paused",
+                    resumePhase: "publishing",
+                    preparedCommitSha: attempt.preparedCommitSha,
+                    protectedArtifactHashes: attempt.protectedArtifactHashes,
+                  }
+                : entry
+          : entry,
+      );
+      return accept();
+    }
+
+    case "integration_resumed": {
+      const attempt = state.integrationAttempts.find(
+        (entry) => entry.id === event.attemptId,
+      );
+      if (!attempt || attempt.phase !== "paused") {
+        return reject("integration attempt is not resumable");
+      }
+      const runtime =
+        attempt.owner.kind === "task"
+          ? state.runtime.tasks[attempt.owner.taskId]
+          : state.runtime.overall;
+      if (
+        runtime?.phase !== "integrating" ||
+        runtime.integrationAttemptId !== attempt.id ||
+        runtime.candidateId !== attempt.candidateId ||
+        (attempt.resumePhase !== "preparing" && !attempt.preparedCommitSha)
+      ) {
+        return reject("integration task no longer owns the paused attempt");
+      }
+      state.integrationAttempts = state.integrationAttempts.map((entry) =>
+        entry.id === attempt.id ? resumeIntegrationAttempt(attempt) : entry,
+      );
+      return accept([
+        {
+          kind: "start_integration",
+          owner: attempt.owner,
+          attemptId: attempt.id,
+          candidateId: attempt.candidateId,
+        },
+      ]);
+    }
+
+    case "projection_debt_recorded":
+      if (!state.projectionDebt.some((debt) => debt.id === event.debt.id)) {
+        state.projectionDebt.push(event.debt);
+      }
+      return accept();
+
+    case "projection_completed":
+      if (!state.projectionDebt.some((debt) => debt.id === event.debtId)) {
+        return reject("projection debt does not exist");
+      }
+      state.projectionDebt = state.projectionDebt.filter(
+        (debt) => debt.id !== event.debtId,
+      );
+      return accept();
+
+    case "cleanup_debt_recorded":
+      if (!state.cleanupDebt.some((debt) => debt.id === event.debt.id)) {
+        state.cleanupDebt.push(event.debt);
+      }
+      return accept();
+
+    case "cleanup_completed":
+      if (!state.cleanupDebt.some((debt) => debt.id === event.debtId)) {
+        return reject("cleanup debt does not exist");
+      }
+      state.cleanupDebt = state.cleanupDebt.filter(
+        (debt) => debt.id !== event.debtId,
+      );
+      return accept();
+
+    case "run_stopping":
+      if (state.runtime.phase !== "running") {
+        return reject("only a running run can stop");
+      }
+      state.runtime.phase = "stopping";
+      return accept([
+        {
+          kind: "stop_workers",
+          leaseIds: state.workerLeases.map((lease) => lease.id),
+        },
+      ]);
+
+    case "run_completed":
+      if (
+        state.runtime.phase !== "running" ||
+        !allTasksCompleted(state) ||
+        state.runtime.overall.phase !== "completed" ||
+        state.projectionDebt.length > 0
+      ) {
+        return reject("run still has incomplete tasks or overall review");
+      }
+      state.runtime.phase = "completed";
+      return accept();
+
+    case "run_blocked":
+      state.runtime.phase = "blocked";
+      state.runtime.terminalReason = event.reason;
+      return accept();
+  }
+}
+
+export const reduceRunEvent = transition;
+
+function closeReworkAttempt(
+  attempt: CanonicalRunState["integrationAttempts"][number],
+): CanonicalRunState["integrationAttempts"][number] {
+  if (attempt.phase === "preparing") {
+    const { phase: _, ...base } = attempt;
+    return {
+      ...base,
+      phase: "completed",
+      preparedCommitSha: "rework",
+      protectedArtifactHashes: {},
+    };
+  }
+  if (attempt.phase === "paused") {
+    const { resumePhase: _, ...base } = attempt;
+    if (attempt.resumePhase === "publishing") {
+      return {
+        ...base,
+        phase: "completed",
+        preparedCommitSha: attempt.preparedCommitSha,
+        protectedArtifactHashes: attempt.protectedArtifactHashes,
+      };
+    }
+    return {
+      ...base,
+      phase: "completed",
+      preparedCommitSha:
+        attempt.resumePhase === "preparing"
+          ? "rework"
+          : attempt.preparedCommitSha,
+      protectedArtifactHashes: {},
+    };
+  }
+  if (attempt.phase === "publishing") {
+    return {
+      ...attempt,
+      phase: "completed",
+      protectedArtifactHashes: attempt.protectedArtifactHashes,
+    };
+  }
+  return { ...attempt, phase: "completed", protectedArtifactHashes: {} };
+}
+
+function resumeIntegrationAttempt(
+  attempt: Extract<
+    CanonicalRunState["integrationAttempts"][number],
+    { phase: "paused" }
+  >,
+): CanonicalRunState["integrationAttempts"][number] {
+  if (attempt.resumePhase === "preparing") {
+    const { resumePhase: _, ...base } = attempt;
+    return { ...base, phase: "preparing" };
+  }
+  const { resumePhase: _, ...base } = attempt;
+  if (attempt.resumePhase === "publishing") {
+    return {
+      ...base,
+      phase: "publishing",
+      preparedCommitSha: attempt.preparedCommitSha,
+      protectedArtifactHashes: attempt.protectedArtifactHashes,
+    };
+  }
+  return {
+    ...base,
+    phase: "prepared",
+    preparedCommitSha: attempt.preparedCommitSha,
+  };
+}
+
+function updateIntegration(
+  state: CanonicalRunState,
+  attemptId: string,
+  expectedPhase: "preparing" | "prepared",
+  update: (
+    attempt:
+      | Extract<
+          CanonicalRunState["integrationAttempts"][number],
+          { phase: "preparing" }
+        >
+      | Extract<
+          CanonicalRunState["integrationAttempts"][number],
+          { phase: "prepared" }
+        >,
+  ) => CanonicalRunState["integrationAttempts"][number],
+  accept: (effects?: SchedulerEffect[]) => SchedulerTransition,
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
+  const attempt = state.integrationAttempts.find(
+    (entry) => entry.id === attemptId,
+  );
+  if (attempt?.phase !== expectedPhase) {
+    return reject(`integration is not ${expectedPhase}`);
+  }
+  state.integrationAttempts = state.integrationAttempts.map((entry) =>
+    entry.id === attemptId
+      ? update(
+          attempt as
+            | Extract<
+                CanonicalRunState["integrationAttempts"][number],
+                { phase: "preparing" }
+              >
+            | Extract<
+                CanonicalRunState["integrationAttempts"][number],
+                { phase: "prepared" }
+              >,
+        )
+      : entry,
+  );
+  return accept();
+}
+
+function sameArtifactHashes(
+  left: Record<string, string>,
+  right: Record<string, string>,
+): boolean {
+  const paths = Object.keys(left);
+  return (
+    paths.length === Object.keys(right).length &&
+    paths.every((path) => left[path] === right[path])
+  );
+}
+
+function isDependencyComplete(
+  runtime: CanonicalRunState["runtime"]["tasks"][string] | undefined,
+): boolean {
+  return runtime?.phase === "completed";
+}
+
+function allTasksCompleted(state: CanonicalRunState): boolean {
+  return Object.values(state.runtime.tasks).every(
+    (task) => task.phase === "completed",
+  );
+}
 
 export type SchedulerTaskStatus =
   | "pending"
@@ -24,7 +824,7 @@ export type SchedulerTask = {
   title: string;
   status: SchedulerTaskStatus;
   dependsOn: string[];
-  mode: "serial" | "parallel";
+  mode?: "serial" | "parallel";
   sourceBaseSha?: string;
   baseSha?: string;
   candidateBaseSha?: string;
@@ -63,114 +863,69 @@ export function createSchedulerRun(
   graph: ImplementGraph,
   maxConcurrency: number,
 ): SchedulerRun {
-  const tasks = new Map<string, SchedulerTask>();
-  for (const node of graph.nodes) {
-    tasks.set(node.id, {
-      id: node.id,
-      planIndex: node.planIndex,
-      title: node.title,
-      status: "pending",
-      dependsOn: [...node.dependsOn],
-      mode: node.mode,
-      activeAgentIds: [],
-      activeAgentRefs: [],
-      discardedBundles: [],
-      integrationAttempts: 0,
-      selfHealAttempts: 0,
-    });
-  }
   return {
     runId: graph.runId,
     maxConcurrency,
-    tasks,
+    tasks: new Map(
+      graph.nodes.map((node) => [
+        node.id,
+        {
+          id: node.id,
+          planIndex: node.planIndex,
+          title: node.title,
+          status: "pending",
+          dependsOn: [...node.dependsOn],
+          activeAgentIds: [],
+          activeAgentRefs: [],
+          discardedBundles: [],
+          integrationAttempts: 0,
+          selfHealAttempts: 0,
+        },
+      ]),
+    ),
     landedOrder: [],
     phase: "scheduling",
   };
 }
 
 export function computeReadyTasks(run: SchedulerRun): string[] {
-  const ready: string[] = [];
-  for (const task of run.tasks.values()) {
-    if (
-      task.status !== "pending" &&
-      task.status !== "blocked" &&
-      task.status !== "needs_rework"
-    ) {
-      continue;
-    }
-    const allDepsComplete = task.dependsOn.every((depId) =>
-      isDependencyComplete(run.tasks.get(depId)?.status),
-    );
-    if (allDepsComplete) {
-      ready.push(task.id);
-    }
-  }
-  ready.sort((a, b) => {
-    const ta = run.tasks.get(a)!;
-    const tb = run.tasks.get(b)!;
-    return ta.planIndex - tb.planIndex;
-  });
-  return ready;
+  return [...run.tasks.values()]
+    .filter(
+      (task) =>
+        ["pending", "blocked", "needs_rework"].includes(task.status) &&
+        task.dependsOn.every((id) =>
+          legacyDependencyComplete(run.tasks.get(id)?.status),
+        ),
+    )
+    .sort((left, right) => left.planIndex - right.planIndex)
+    .map((task) => task.id);
+}
+
+export function anyActiveSerialTask(_run: SchedulerRun): boolean {
+  return false;
 }
 
 export function countActiveCodingReviewing(run: SchedulerRun): number {
-  let count = 0;
-  for (const task of run.tasks.values()) {
-    if (task.status === "coding" || task.status === "reviewing") {
-      count++;
-    }
-  }
-  return count;
-}
-
-export function anyActiveSerialTask(run: SchedulerRun): boolean {
-  for (const task of run.tasks.values()) {
-    if (
-      task.mode === "serial" &&
-      (task.status === "coding" ||
-        task.status === "reviewing" ||
-        task.status === "integrating")
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return [...run.tasks.values()].filter(
+    (task) => task.status === "coding" || task.status === "reviewing",
+  ).length;
 }
 
 export function canStartTask(run: SchedulerRun, taskId: string): boolean {
   const task = run.tasks.get(taskId);
-  if (!task) {
-    return false;
-  }
-  if (
-    task.status !== "pending" &&
-    task.status !== "blocked" &&
-    task.status !== "ready" &&
-    task.status !== "needs_rework"
-  ) {
-    return false;
-  }
-
-  const activeCodingReviewing = countActiveCodingReviewing(run);
-  if (activeCodingReviewing >= run.maxConcurrency) {
-    return false;
-  }
-
-  if (task.mode === "serial" && activeCodingReviewing > 0) {
-    return false;
-  }
-  if (task.mode === "parallel" && anyActiveSerialTask(run)) {
-    return false;
-  }
-
-  return task.dependsOn.every((depId) =>
-    isDependencyComplete(run.tasks.get(depId)?.status),
+  return Boolean(
+    task &&
+    ["pending", "blocked", "ready", "needs_rework"].includes(task.status) &&
+    countActiveCodingReviewing(run) < run.maxConcurrency &&
+    task.dependsOn.every((id) =>
+      legacyDependencyComplete(run.tasks.get(id)?.status),
+    ),
   );
 }
 
 export function startTask(run: SchedulerRun, taskId: string): void {
   const task = run.tasks.get(taskId);
-  if (!task) {
+  if (!task || !canStartTask(run, taskId)) {
     return;
   }
   task.status = "coding";
@@ -178,83 +933,46 @@ export function startTask(run: SchedulerRun, taskId: string): void {
   task.activeAgentRefs = [];
 }
 
-function depsComplete(run: SchedulerRun, task: SchedulerTask): boolean {
-  return task.dependsOn.every((depId) =>
-    isDependencyComplete(run.tasks.get(depId)?.status),
-  );
-}
-
-function isDependencyComplete(
-  status: SchedulerTaskStatus | undefined,
-): boolean {
-  return status === "landed" || status === "satisfied";
-}
-
 export function nextTaskToLand(run: SchedulerRun): string | undefined {
-  // Landing cherry-picks onto the shared main HEAD, so it must stay
-  // serialized: never select a new task while one is mid-integration.
-  for (const task of run.tasks.values()) {
-    if (task.status === "integrating") {
-      return undefined;
-    }
+  if ([...run.tasks.values()].some((task) => task.status === "integrating")) {
+    return undefined;
   }
-  const candidates = [...run.tasks.values()]
-    .filter((task) => task.status === "approved")
-    .sort((a, b) => a.planIndex - b.planIndex);
-  for (const task of candidates) {
-    if (depsComplete(run, task)) {
-      return task.id;
-    }
-  }
-  return undefined;
+  return [...run.tasks.values()]
+    .filter(
+      (task) =>
+        task.status === "approved" &&
+        task.dependsOn.every((id) =>
+          legacyDependencyComplete(run.tasks.get(id)?.status),
+        ),
+    )
+    .sort((left, right) => left.planIndex - right.planIndex)[0]?.id;
 }
 
 export function hasAnyTaskInFlight(run: SchedulerRun): boolean {
-  for (const task of run.tasks.values()) {
-    if (
-      task.status === "coding" ||
-      task.status === "reviewing" ||
-      task.status === "integrating"
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return [...run.tasks.values()].some((task) =>
+    ["coding", "reviewing", "integrating"].includes(task.status),
+  );
 }
 
 export function allTasksTerminal(run: SchedulerRun): boolean {
-  for (const task of run.tasks.values()) {
-    if (!isTerminalStatus(task.status)) {
-      return false;
-    }
-  }
-  return true;
+  return [...run.tasks.values()].every((task) =>
+    [
+      "landed",
+      "satisfied",
+      "failed",
+      "blocked",
+      "stopped",
+      "integration_failed",
+      "stalled",
+    ].includes(task.status),
+  );
 }
 
 export function anyTaskFailedBlockedStopped(run: SchedulerRun): boolean {
-  for (const task of run.tasks.values()) {
-    if (
-      task.status === "failed" ||
-      task.status === "blocked" ||
-      task.status === "stopped" ||
-      task.status === "integration_failed" ||
-      task.status === "stalled"
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function isTerminalStatus(status: SchedulerTaskStatus): boolean {
-  return (
-    status === "landed" ||
-    status === "satisfied" ||
-    status === "failed" ||
-    status === "blocked" ||
-    status === "stopped" ||
-    status === "integration_failed" ||
-    status === "stalled"
+  return [...run.tasks.values()].some((task) =>
+    ["failed", "blocked", "stopped", "integration_failed", "stalled"].includes(
+      task.status,
+    ),
   );
 }
 
@@ -262,29 +980,22 @@ export function getBlockedReason(
   task: SchedulerTask,
   run: SchedulerRun,
 ): string | undefined {
-  if (
-    task.status !== "pending" &&
-    task.status !== "blocked" &&
-    task.status !== "ready" &&
-    task.status !== "needs_rework"
-  ) {
+  if (!["pending", "blocked", "ready", "needs_rework"].includes(task.status)) {
     return undefined;
   }
-  const unlandedDeps = task.dependsOn.filter(
-    (depId) => !isDependencyComplete(run.tasks.get(depId)?.status),
+  const waiting = task.dependsOn.filter(
+    (id) => !legacyDependencyComplete(run.tasks.get(id)?.status),
   );
-  if (unlandedDeps.length > 0) {
-    return `waiting for ${unlandedDeps.join(", ")}`;
+  if (waiting.length) {
+    return `waiting for ${waiting.join(", ")}`;
   }
-  const activeCodingReviewing = countActiveCodingReviewing(run);
-  if (activeCodingReviewing >= run.maxConcurrency) {
-    return "concurrency limit";
-  }
-  if (task.mode === "serial" && activeCodingReviewing > 0) {
-    return "serial task waiting for active tasks";
-  }
-  if (task.mode === "parallel" && anyActiveSerialTask(run)) {
-    return "waiting for serial task";
-  }
-  return undefined;
+  return countActiveCodingReviewing(run) >= run.maxConcurrency
+    ? "concurrency limit"
+    : undefined;
+}
+
+function legacyDependencyComplete(
+  status: SchedulerTaskStatus | undefined,
+): boolean {
+  return status === "landed" || status === "satisfied";
 }

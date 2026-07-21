@@ -1,6 +1,4 @@
-import { execFile } from "node:child_process";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { promisify } from "node:util";
 import type { ParsedPlan, PlanTask } from "./plan.js";
 import type { PlanBundleManifest } from "./manifest.js";
 import {
@@ -20,6 +18,7 @@ import { resolveMaxParallel } from "./config.js";
 import type { SubagentClient } from "./subagents.js";
 import type { EffectiveRoles } from "./config.js";
 import type { StatePaths } from "./state.js";
+import { RunStore, type CanonicalRunState } from "./canonical-state.js";
 import type { AgentDisplayRef, RunState, StatePatch } from "./status.js";
 import { validateGraph, writeGraphJson } from "./graph.js";
 import type { ImplementGraph } from "./graph.js";
@@ -34,25 +33,17 @@ import {
   type SourceMaterialRef,
 } from "./execution-plan.js";
 import { executionManifestSchema } from "./result-schemas.js";
-
-const execFileAsync = promisify(execFile);
+import { GitProcess } from "./git-process.js";
 
 export type StrategyOutcome =
-  | {
-      mode: "serial";
-      reason: string;
-      maxConcurrency: number;
-    }
+  | { mode: "serial"; reason: string; maxConcurrency: number }
   | {
       mode: "parallel";
       reason: string;
       maxConcurrency: number;
       graph: ImplementGraph;
     }
-  | {
-      mode: "blocked";
-      reason: string;
-    };
+  | { mode: "blocked"; reason: string };
 
 export type StrategyRequest = {
   plan: ParsedPlan;
@@ -69,8 +60,8 @@ export type StrategyRequest = {
   manifest?: PlanBundleManifest;
   corpus?: PlanCorpus;
   materialStore?: MaterialStore;
-  forceSerial?: boolean;
   updateState(state: StatePatch): void;
+  canonicalRunStore?: RunStore;
 };
 
 export async function selectStrategy(
@@ -215,12 +206,12 @@ async function runExecutionPlanner(
   );
 }
 
-function processExecutionPlannerResult(
+async function processExecutionPlannerResult(
   rawResult: unknown,
   req: StrategyRequest,
   unchecked: PlanTask[],
   _maxConcurrency: number,
-): StrategyOutcome {
+): Promise<StrategyOutcome> {
   const parsed = parseExecutionPlanValue(rawResult);
   let manifest = parsed.ok
     ? normalizePlannerManifest(parsed.value, unchecked, req)
@@ -263,9 +254,10 @@ function processExecutionPlannerResult(
     };
   }
 
-  const effectiveConcurrency = req.forceSerial
-    ? 1
-    : clampConcurrency(manifest.maxConcurrency, req.config);
+  const effectiveConcurrency = clampConcurrency(
+    manifest.maxConcurrency,
+    req.config,
+  );
 
   const graph: ImplementGraph = {
     version: 1,
@@ -279,7 +271,6 @@ function processExecutionPlannerResult(
       title: task.title,
       taskHash: task.taskHash,
       dependsOn: task.dependsOn,
-      mode: task.mode ?? "parallel",
       affectedAreas: task.affectedAreas,
       conflictHints: task.conflictHints,
       validationCommands: task.validationCommands ?? [],
@@ -300,7 +291,6 @@ function processExecutionPlannerResult(
       title: task.title,
       taskHash: task.taskHash,
       dependsOn: task.dependsOn,
-      mode: "serial",
       affectedAreas: task.affectedAreas,
       conflictHints: task.conflictHints,
       validationCommands: task.validationCommands ?? [],
@@ -312,27 +302,63 @@ function processExecutionPlannerResult(
     if (!graphValidation.ok) {
       return {
         mode: "blocked",
-        reason: `Dependency graph validation failed after serial fallback: ${graphValidation.reason}.`,
+        reason: `Dependency graph validation failed after conservative fallback: ${graphValidation.reason}.`,
       };
     }
+  }
+
+  if (req.canonicalRunStore) {
+    const snapshot = req.canonicalRunStore.read();
+    const canonical = canonicalStateFromManifest(
+      snapshot,
+      manifest,
+      graph,
+      effectiveConcurrency,
+    );
+    await req.canonicalRunStore.update(snapshot.revision, () => canonical);
   }
 
   writeExecutionManifest(req.paths.runDir, manifest);
   writeGraphJson(req.paths.runDir, graph);
 
-  const mode: "serial" | "parallel" =
-    req.forceSerial || effectiveConcurrency === 1 || isSerialChain(manifest)
-      ? "serial"
-      : "parallel";
-  const reason = `Planner built execution manifest: ${manifest.plannerReason ?? "(no reason given)"}${
-    req.forceSerial ? "; serial execution was forced" : ""
-  }`;
+  const reason = `Planner built execution manifest: ${manifest.plannerReason ?? "(no reason given)"}`;
 
   return {
-    mode,
+    mode: effectiveConcurrency === 1 ? "serial" : "parallel",
     reason,
     maxConcurrency: effectiveConcurrency,
     graph,
+  };
+}
+
+function canonicalStateFromManifest(
+  current: CanonicalRunState,
+  manifest: ExecutionManifest,
+  graph: ImplementGraph,
+  effectiveWorkerConcurrency: number,
+): CanonicalRunState {
+  return {
+    ...current,
+    run: {
+      ...current.run,
+      effectiveWorkerConcurrency,
+    },
+    graph: {
+      tasks: graph.nodes.map((node) => ({
+        id: node.id,
+        planIndex: node.planIndex,
+        title: node.title,
+        taskHash: node.taskHash,
+        dependsOn: node.dependsOn,
+      })),
+    },
+    runtime: {
+      ...current.runtime,
+      phase: "preflight",
+      tasks: Object.fromEntries(
+        manifest.tasks.map((task) => [task.id, { phase: "queued" as const }]),
+      ),
+    },
   };
 }
 
@@ -341,19 +367,23 @@ function fallbackPlannerManifest(
   req: StrategyRequest,
   reason: string,
 ): ExecutionManifest {
-  return {
-    ...generateMinimalExecutionManifest(
-      unchecked,
-      req.plan.path,
-      getManifest(req),
-    ),
-    sourcePlanHash: req.planHash,
-    sourcePlanPath: req.plan.path,
-    sourceCorpusHash: getCorpus(req)?.corpusHash,
-    plannerReason: `${reason}; using conservative serial fallback.`,
-    plannerConfidence: "low",
-    maxConcurrency: 1,
-  };
+  const manifest = generateMinimalExecutionManifest(
+    unchecked,
+    req.plan.path,
+    getManifest(req),
+  );
+  return serialManifest(
+    {
+      ...manifest,
+      sourcePlanHash: req.planHash,
+      sourcePlanPath: req.plan.path,
+      sourceCorpusHash: getCorpus(req)?.corpusHash,
+      plannerReason: `${reason}; using conservative serial fallback with a plan-order dependency chain.`,
+      plannerConfidence: "low",
+      maxConcurrency: 1,
+    },
+    reason,
+  );
 }
 
 function normalizeSourceMaterialRefs(
@@ -593,7 +623,6 @@ function serialManifest(
     maxConcurrency: 1,
     tasks: manifest.tasks.map((task, index, tasks) => ({
       ...task,
-      mode: "serial",
       dependsOn: index === 0 ? [] : [tasks[index - 1].id],
       reasons: [
         ...(task.reasons ?? []),
@@ -603,28 +632,12 @@ function serialManifest(
   };
 }
 
-function isSerialChain(manifest: ExecutionManifest): boolean {
-  if (manifest.tasks.length <= 1) {
-    return true;
-  }
-  // Check if each task (except the first) has exactly one dependency on the previous task in plan order
-  const sorted = [...manifest.tasks].sort((a, b) => a.planIndex - b.planIndex);
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = sorted[i - 1];
-    const curr = sorted[i];
-    if (curr.dependsOn.length !== 1 || curr.dependsOn[0] !== prev.id) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function clampConcurrency(
   plannerProposed: number | undefined,
   config: ImplementConfig,
 ): number {
   const HARD_MAX = 8;
-  const fromConfig = config.maxParallel ?? 3;
+  const fromConfig = config.workerConcurrency ?? config.maxParallel ?? 3;
   const base = Math.min(fromConfig, HARD_MAX);
   if (plannerProposed !== undefined) {
     return Math.min(plannerProposed, base);
@@ -826,10 +839,9 @@ async function getFilteredGitStatus(
       .filter((path): path is string => path !== undefined),
   );
   try {
-    const result = await execFileAsync(
-      "git",
+    const result = await new GitProcess(repoRoot).run(
       ["status", "--porcelain", "--", ":/"],
-      { cwd: repoRoot, maxBuffer: 1 * 1024 * 1024 },
+      { cwd: repoRoot },
     );
     const lines = result.stdout.split("\n").filter((line) => {
       if (!line.trim()) {

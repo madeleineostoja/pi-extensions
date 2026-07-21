@@ -62,7 +62,7 @@ export type AgentRuntimeSnapshot = {
   compactionCount?: number;
 };
 
-export type ParallelTaskState = {
+export type ScheduledTaskState = {
   id: string;
   planIndex: number;
   title: string;
@@ -111,7 +111,7 @@ export type RunState = {
   baseSha?: string;
   currentMainHead?: string;
   maxConcurrency?: number;
-  tasks?: ParallelTaskState[];
+  tasks?: ScheduledTaskState[];
   landedCount?: number;
   satisfiedCount?: number;
   totalCount?: number;
