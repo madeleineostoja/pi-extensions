@@ -46,6 +46,7 @@ import {
 import type { ExecutionManifest } from "./execution-plan.js";
 import type { CommandResult, GitClient } from "./git.js";
 import { runCommand } from "./git-process.js";
+import { RunStore, type CanonicalRunState } from "./canonical-state.js";
 import {
   captureRestoreSnapshot,
   checkpointCandidate,
@@ -1050,6 +1051,7 @@ export type OrchestratorDeps = {
   maxConcurrency?: number;
   runId?: string;
   paths?: StatePaths;
+  canonicalRunStore?: RunStore;
   updateState(state: StatePatch): void;
   shouldStop(): boolean;
   signal?: AbortSignal;
@@ -1057,7 +1059,27 @@ export type OrchestratorDeps = {
   papercutStoreFactory?: PapercutStoreFactory;
 };
 
+async function updateCanonicalRunPhase(
+  store: RunStore | undefined,
+  phase: CanonicalRunState["runtime"]["phase"],
+  terminalReason?: string,
+): Promise<void> {
+  if (!store) {
+    return;
+  }
+  const current = store.read();
+  await store.update(current.revision, (state) => ({
+    ...state,
+    runtime: {
+      ...state.runtime,
+      phase,
+      ...(terminalReason ? { terminalReason } : {}),
+    },
+  }));
+}
+
 export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
+  await updateCanonicalRunPhase(deps.canonicalRunStore, "preflight");
   deps.updateState({
     phase: "preflight",
     planPath: deps.planPath,
@@ -1093,9 +1115,11 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
     throw new BlockedError("dirty worktree");
   }
 
-  const runBaseSha = deps.paths
-    ? (readRunJson(deps.paths)?.baseSha ?? (await deps.git.head()))
-    : await deps.git.head();
+  const runBaseSha = deps.canonicalRunStore
+    ? deps.canonicalRunStore.read().run.target.startHead
+    : deps.paths
+      ? (readRunJson(deps.paths)?.baseSha ?? (await deps.git.head()))
+      : await deps.git.head();
 
   let executionManifest = deps.executionManifest;
   if (!executionManifest && deps.paths) {

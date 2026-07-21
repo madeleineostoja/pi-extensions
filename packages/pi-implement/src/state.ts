@@ -268,6 +268,7 @@ export type StatePaths = {
   baseDir: string;
   runDir: string;
   runJson: string;
+  canonicalRunState?: string;
   eventsJsonl: string;
   planSnapshot: string;
   corpusJson: string;
@@ -306,6 +307,7 @@ export function getStatePaths(
     baseDir,
     runDir,
     runJson: join(runDir, "run.json"),
+    canonicalRunState: join(runDir, "canonical-run-state.json"),
     eventsJsonl: join(runDir, "events.jsonl"),
     planSnapshot: join(runDir, "plan.snapshot.md"),
     corpusJson: join(runDir, "corpus.json"),
@@ -352,7 +354,7 @@ export function createRunState(
   planContent: string,
 ): void {
   mkdirSync(dirname(paths.runDir), { recursive: true });
-  mkdirSync(paths.runDir);
+  mkdirSync(paths.runDir, { recursive: true });
   mkdirSync(paths.tasksDir, { recursive: true });
   mkdirSync(getLocksDir(paths), { recursive: true });
   mkdirSync(paths.worktreesDir, { recursive: true });

@@ -19,7 +19,8 @@
     "execa": "^10.0.0",
     "p-queue": "^9.3.2",
     "pi-papercuts": "*",
-    "pi-subagents": "*"
+    "pi-subagents": "*",
+    "zod": "^4.4.3"
   },
   "pi": {
     "extensions": [

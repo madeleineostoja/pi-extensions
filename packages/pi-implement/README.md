@@ -13,7 +13,7 @@ Each task is handled by an implementer subagent and then judged by a reviewer su
 - **Subagent isolation checks** — implementers and reviewers run from their assigned worktree; the orchestrator detects and blocks (or auto-heals) any out-of-bounds change to HEAD, the candidate diff, the main checkout, or plan artifacts.
 - **Built-in verification** — runs a configured verify command or auto-detected `test`/`typecheck`/`build` scripts, with an LLM integration review as a last resort. Precommit hooks are a hard gate and are never bypassed.
 - **Plan corpus ingestion** — the entry plan and the markdown files it links to (plus `tasks/` siblings) are ingested into the planner's corpus and distilled into per-task contracts, rather than being inlined wholesale into the implementer's context.
-- **Durable retained state** — per-run state, round artifacts, candidate identities, review ledgers, and worktrees are persisted under `<repo>/.pi/implement/`; successful runs auto-clean, while stalled candidates remain inspectable and explicitly cleanable.
+- **Durable retained state** — a strict, revisioned canonical run aggregate plus round artifacts, candidate identities, review ledgers, and worktrees are persisted under `<repo>/.pi/implement/`; successful runs auto-clean, while stalled candidates remain inspectable and explicitly cleanable.
 - **Live progress** — a TUI status footer and per-agent widget (tokens, tool uses, compactions) plus progress messages streamed into the session.
 
 ## Usage
@@ -68,6 +68,14 @@ If the overall reviewer requests changes, pi-implement creates an isolated cumul
 In parallel mode, the planner produces a dependency graph and a scheduler runs ready tasks concurrently, up to the effective concurrency limit. Each task gets its own branch and worktree, and the worker's `cwd` is that task worktree so file reads, commands, and edits target the isolated checkout.
 
 Integration is serialized and plan-ordered: approved task commits are cherry-picked onto the main checkout one at a time, validated, and committed. Parallel orchestration intentionally narrows broad reviewer/main-HEAD guards while a worker is isolated: the main checkout can advance as other tasks land, but each worker is still fenced to its task worktree and the candidate commit it is responsible for. If validation fails or integration mutates plan artifacts/the staged diff unexpectedly, the integration is rolled back and the task is sent for bounded rework (or blocked once its integration-attempt ceiling is reached). A final validation pass runs before the overall review.
+
+## Run ownership and recovery
+
+Each run owns the checkout and branch from which it starts. pi-implement rejects a second active run in that same checkout, but supports simultaneous runs from distinct linked worktrees on distinct branches in the same repository. Each run has a target-scoped lock, state directory, index, and owned-workspace namespace.
+
+The durable `canonical-run-state.json` aggregate is the lifecycle authority. Events, status UI, Markdown artifacts, and source-plan checkboxes are projections and may be rebuilt; they are never used to infer task completion, a reviewed candidate, or an integration result. State is revisioned, strictly validated, atomically replaced, and rejects historical/corrupt retained runs with start-over or cleanup guidance. Required checkbox/status projection and owned-workspace cleanup are tracked as recoverable debt rather than discarding landed work.
+
+While a run is active, external mutation of that run's target checkout, target branch, or pi-owned worktrees is unsupported. Unrelated linked worktrees and branches remain usable. An ambiguous lock, ownership record, or target mutation pauses the run and retains its approved candidate.
 
 ## Safety boundaries
 

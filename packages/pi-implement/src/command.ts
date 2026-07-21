@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import type {
   ExtensionAPI,
@@ -15,6 +15,7 @@ import {
   reviewerDefaultTypeWarning,
 } from "./config.js";
 import { ExecGitClient } from "./git.js";
+import { GitProcess } from "./git-process.js";
 import {
   RuntimeSubagentClient,
   hasLiveManagedRunAgents,
@@ -40,6 +41,11 @@ import {
 } from "./status.js";
 import { parseCommand, usage, type ParsedCommand } from "./parser.js";
 import { selectStrategy } from "./strategy.js";
+import {
+  RunStore,
+  canCleanupCanonicalRun,
+  type CanonicalRunState,
+} from "./canonical-state.js";
 import { nextUncheckedTask, parsePlanFile } from "./plan.js";
 import {
   buildPlanBundleManifest,
@@ -551,6 +557,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             run: NonNullable<ReturnType<typeof readRunJson>>;
           }
         | undefined;
+      let canonicalRunStore: RunStore | undefined;
       try {
         git = new ExecGitClient(ctx.cwd);
         repoRoot = await git.mainRoot();
@@ -664,6 +671,26 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
                 `pi-implement blocked: retained run ${selected.runId} uses historical state v${selected.run!.version}; inspect or start over explicitly.`,
                 "warning",
               );
+              return;
+            }
+            try {
+              canonicalRunStore = RunStore.open(
+                canonicalRunStatePath(selected.paths),
+                canonicalRunIdentity({
+                  runId: selected.runId,
+                  checkoutRoot,
+                  gitDir: checkoutIdentity,
+                  commonGitDir: await gitCommonDirectory(git),
+                  branchRef: await git.currentBranch(),
+                  baseSha: selected.run!.baseSha,
+                  planPath,
+                  planHash,
+                }),
+              );
+            } catch (error) {
+              const reason =
+                error instanceof Error ? error.message : String(error);
+              ctx.ui.notify(`pi-implement blocked: ${reason}`, "warning");
               return;
             }
             const lockCheck = checkRunLocks(
@@ -797,6 +824,21 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           );
         }
         try {
+          canonicalRunStore = RunStore.create(
+            canonicalRunStatePath(paths),
+            initialCanonicalRunState({
+              runId,
+              checkoutRoot,
+              gitDir: checkoutIdentity,
+              commonGitDir: await gitCommonDirectory(git),
+              branchRef: await git.currentBranch(),
+              baseSha,
+              planPath,
+              planHash,
+              maxConcurrency,
+              now,
+            }),
+          );
           createRunState(paths, runJson, planContent);
           writeFileSync(
             paths.corpusJson,
@@ -951,6 +993,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
               updateState,
               materialStore,
               forceSerial,
+              canonicalRunStore,
             });
         if (strategy.mode === "blocked") {
           throw new BlockedError(strategy.reason);
@@ -992,6 +1035,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           maxConcurrency: strategy.maxConcurrency,
           runId,
           paths,
+          canonicalRunStore,
           updateState,
           shouldStop: () =>
             !isCurrentRun() ||
@@ -1019,9 +1063,21 @@ Stay idle until the run ends or the user asks you something directly. Do not res
           }
           // Auto-clean successful runs
           if (paths) {
+            if (canonicalRunStore) {
+              const current = canonicalRunStore.read();
+              await canonicalRunStore.update(current.revision, (state) => ({
+                ...state,
+                runtime: { ...state.runtime, phase: "completed" },
+              }));
+            }
             appendEvent(paths, { type: "run_done" });
             try {
-              await cleanupRun(paths);
+              if (
+                !canonicalRunStore ||
+                canCleanupCanonicalRun(canonicalRunStore.read())
+              ) {
+                await cleanupRun(paths);
+              }
             } catch (err) {
               const reason = err instanceof Error ? err.message : String(err);
               appendEvent(paths, { type: "cleanup_failed", reason });
@@ -1039,6 +1095,11 @@ Stay idle until the run ends or the user asks you something directly. Do not res
             return;
           }
           if (err instanceof StoppedError) {
+            await updateCanonicalTerminalState(
+              canonicalRunStore,
+              "stopping",
+              "Stopped by user.",
+            );
             const stoppedState: RunState = {
               ...active.state,
               phase: "stopped",
@@ -1058,6 +1119,11 @@ Stay idle until the run ends or the user asks you something directly. Do not res
               releaseRunLock(paths, runId);
             }
           } else if (err instanceof OverallReviewFollowupError) {
+            await updateCanonicalTerminalState(
+              canonicalRunStore,
+              "blocked",
+              err.message,
+            );
             const followupState: RunState = {
               ...active.state,
               phase: "stalled",
@@ -1092,6 +1158,11 @@ Stay idle until the run ends or the user asks you something directly. Do not res
               err instanceof BlockedError || err instanceof Error
                 ? err.message
                 : String(err);
+            await updateCanonicalTerminalState(
+              canonicalRunStore,
+              "blocked",
+              reason,
+            );
             const blockedState: RunState = {
               ...active.state,
               phase: "blocked",
@@ -1244,6 +1315,111 @@ function hashPlanContent(content: string): string {
 
 function normalizePlanCheckboxes(content: string): string {
   return content.replace(/^(\s*[-*+]\s+\[)[ xX](\]\s+)/gm, "$1 $2");
+}
+
+async function updateCanonicalTerminalState(
+  store: RunStore | undefined,
+  phase: CanonicalRunState["runtime"]["phase"],
+  terminalReason: string,
+): Promise<void> {
+  if (!store) {
+    return;
+  }
+  const current = store.read();
+  await store.update(current.revision, (state) => ({
+    ...state,
+    runtime: { ...state.runtime, phase, terminalReason },
+  }));
+}
+
+function canonicalRunIdentity(args: {
+  runId: string;
+  checkoutRoot: string;
+  gitDir: string;
+  commonGitDir: string;
+  branchRef: string;
+  baseSha: string;
+  planPath: string;
+  planHash: string;
+}): Pick<CanonicalRunState["run"], "id" | "target" | "plan"> {
+  return {
+    id: args.runId,
+    target: {
+      checkoutRoot: args.checkoutRoot,
+      gitDir: args.gitDir,
+      commonGitDir: args.commonGitDir,
+      branchRef: args.branchRef,
+      startHead: args.baseSha,
+    },
+    plan: {
+      path: args.planPath,
+      hash: args.planHash,
+      indexConvention: "zero-based",
+    },
+  };
+}
+
+function initialCanonicalRunState(args: {
+  runId: string;
+  checkoutRoot: string;
+  gitDir: string;
+  commonGitDir: string;
+  branchRef: string;
+  baseSha: string;
+  planPath: string;
+  planHash: string;
+  maxConcurrency: number;
+  now: string;
+}): CanonicalRunState {
+  return {
+    schemaVersion: 3,
+    revision: 0,
+    run: {
+      id: args.runId,
+      target: {
+        checkoutRoot: args.checkoutRoot,
+        gitDir: args.gitDir,
+        commonGitDir: args.commonGitDir,
+        branchRef: args.branchRef,
+        startHead: args.baseSha,
+      },
+      plan: {
+        path: args.planPath,
+        hash: args.planHash,
+        indexConvention: "zero-based",
+      },
+      configuredWorkerConcurrency: args.maxConcurrency,
+      effectiveWorkerConcurrency: args.maxConcurrency,
+    },
+    graph: { tasks: [] },
+    runtime: { phase: "preflight", tasks: {} },
+    candidates: {},
+    reviewConvergence: {},
+    workerLeases: [],
+    integrationAttempts: [],
+    landingReceipts: [],
+    projectionDebt: [],
+    cleanupDebt: [],
+    createdAt: args.now,
+    updatedAt: args.now,
+  };
+}
+
+async function gitCommonDirectory(git: ExecGitClient): Promise<string> {
+  return (
+    await new GitProcess(await git.root()).run(
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+      { cwd: await git.root() },
+    )
+  ).stdout.trim();
+}
+
+function canonicalRunStatePath(
+  paths: ReturnType<typeof getStatePaths>,
+): string {
+  return (
+    paths.canonicalRunState ?? join(paths.runDir, "canonical-run-state.json")
+  );
 }
 
 function retainedRunMatchesCurrentPlan(

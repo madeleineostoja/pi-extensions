@@ -18,6 +18,7 @@ import { resolveMaxParallel } from "./config.js";
 import type { SubagentClient } from "./subagents.js";
 import type { EffectiveRoles } from "./config.js";
 import type { StatePaths } from "./state.js";
+import { RunStore, type CanonicalRunState } from "./canonical-state.js";
 import type { AgentDisplayRef, RunState, StatePatch } from "./status.js";
 import { validateGraph, writeGraphJson } from "./graph.js";
 import type { ImplementGraph } from "./graph.js";
@@ -68,6 +69,7 @@ export type StrategyRequest = {
   materialStore?: MaterialStore;
   forceSerial?: boolean;
   updateState(state: StatePatch): void;
+  canonicalRunStore?: RunStore;
 };
 
 export async function selectStrategy(
@@ -212,12 +214,12 @@ async function runExecutionPlanner(
   );
 }
 
-function processExecutionPlannerResult(
+async function processExecutionPlannerResult(
   rawResult: unknown,
   req: StrategyRequest,
   unchecked: PlanTask[],
   _maxConcurrency: number,
-): StrategyOutcome {
+): Promise<StrategyOutcome> {
   const parsed = parseExecutionPlanValue(rawResult);
   let manifest = parsed.ok
     ? normalizePlannerManifest(parsed.value, unchecked, req)
@@ -314,6 +316,17 @@ function processExecutionPlannerResult(
     }
   }
 
+  if (req.canonicalRunStore) {
+    const snapshot = req.canonicalRunStore.read();
+    const canonical = canonicalStateFromManifest(
+      snapshot,
+      manifest,
+      graph,
+      effectiveConcurrency,
+    );
+    await req.canonicalRunStore.update(snapshot.revision, () => canonical);
+  }
+
   writeExecutionManifest(req.paths.runDir, manifest);
   writeGraphJson(req.paths.runDir, graph);
 
@@ -330,6 +343,37 @@ function processExecutionPlannerResult(
     reason,
     maxConcurrency: effectiveConcurrency,
     graph,
+  };
+}
+
+function canonicalStateFromManifest(
+  current: CanonicalRunState,
+  manifest: ExecutionManifest,
+  graph: ImplementGraph,
+  effectiveWorkerConcurrency: number,
+): CanonicalRunState {
+  return {
+    ...current,
+    run: {
+      ...current.run,
+      effectiveWorkerConcurrency,
+    },
+    graph: {
+      tasks: graph.nodes.map((node) => ({
+        id: node.id,
+        planIndex: node.planIndex,
+        title: node.title,
+        taskHash: node.taskHash,
+        dependsOn: node.dependsOn,
+      })),
+    },
+    runtime: {
+      ...current.runtime,
+      phase: "preflight",
+      tasks: Object.fromEntries(
+        manifest.tasks.map((task) => [task.id, { phase: "queued" as const }]),
+      ),
+    },
   };
 }
 
