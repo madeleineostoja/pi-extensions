@@ -57,7 +57,7 @@ describe("subagent roster", () => {
     expect(rows.join("\n")).toContain("running");
     expect(rows.join("\n")).toContain("read");
     expect(rows.join("\n")).toContain("2");
-    expect(rows.join("\n")).toContain("$1.27 (90)");
+    expect(rows.join("\n")).toMatch(/\$1\.27\s+90/);
     expect(rows.join("\n")).not.toContain("80");
     expect(rows.join("\n")).not.toContain("123");
     expect(rows.join("\n")).toContain("do work");
@@ -107,8 +107,8 @@ describe("subagent roster", () => {
       }),
     ]);
 
-    expect(rows.join("\n")).toContain("$2.35 (82k)");
-    expect(rows.join("\n")).toContain("$0.00 (1.4M)");
+    expect(rows.join("\n")).toMatch(/\$2\.35\s+82k/);
+    expect(rows.join("\n")).toMatch(/\$0\.00\s+1\.4M/);
     expect(rows.join("\n")).not.toContain("1.42M");
   });
 
@@ -160,7 +160,7 @@ describe("subagent roster", () => {
         },
       });
       expect(widget.render(120).join("\n")).toContain("bash");
-      expect(widget.render(120).join("\n")).toContain("$0.50 (460)");
+      expect(widget.render(120).join("\n")).toMatch(/\$0\.50\s+460/);
 
       snapshots[0] = snapshot({
         status: "completed",

@@ -94,7 +94,8 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
     status: snapshot.status,
     tool: snapshot.health?.activeTool ?? "-",
     turns: String(snapshot.health?.turns ?? "-"),
-    usage: usageLabel(snapshot),
+    cost: costLabel(snapshot.health?.estimatedCost),
+    tokens: tokenLabel(snapshot.health?.peakContextTokens),
     elapsed: elapsedLabel(snapshot),
   }));
   if (rows.length === 0) {
@@ -117,9 +118,13 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
       "turns",
       rows.map((row) => row.turns),
     ),
-    usage: maxWidth(
-      "usage",
-      rows.map((row) => row.usage),
+    cost: maxWidth(
+      "cost",
+      rows.map((row) => row.cost),
+    ),
+    tokens: maxWidth(
+      "tokens",
+      rows.map((row) => row.tokens),
     ),
     elapsed: maxWidth(
       "elapsed",
@@ -132,7 +137,8 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
       "status".padEnd(widths.status),
       "tool".padEnd(widths.tool),
       "turns".padStart(widths.turns),
-      "usage".padStart(widths.usage),
+      "cost".padStart(widths.cost),
+      "tokens".padStart(widths.tokens),
       "elapsed".padStart(widths.elapsed),
       "description",
     ].join("  "),
@@ -142,7 +148,8 @@ export function formatRosterRows(snapshots: RuntimeSnapshot[]): string[] {
         row.status.padEnd(widths.status),
         row.tool.padEnd(widths.tool),
         row.turns.padStart(widths.turns),
-        row.usage.padStart(widths.usage),
+        row.cost.padStart(widths.cost),
+        row.tokens.padStart(widths.tokens),
         row.elapsed.padStart(widths.elapsed),
         row.description,
       ].join("  "),
@@ -227,10 +234,6 @@ export function elapsedLabel(snapshot: RuntimeSnapshot): string {
 export function contextUsageLabel(snapshot: RuntimeSnapshot): string {
   const tokens = snapshot.health?.contextUsage?.tokens;
   return tokens === undefined || tokens === null ? "?" : tokenLabel(tokens);
-}
-
-export function usageLabel(snapshot: RuntimeSnapshot): string {
-  return `${costLabel(snapshot.health?.estimatedCost)} (${tokenLabel(snapshot.health?.peakContextTokens)})`;
 }
 
 export function costLabel(value: number | undefined): string {
