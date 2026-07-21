@@ -29,7 +29,11 @@ export type SchedulerEvent =
         | { kind: "candidate_ready"; candidate: CandidateRef }
         | { kind: "satisfied" }
         | { kind: "waiting_rework"; candidateId: string }
-        | { kind: "failed"; reason: string }
+        | {
+            kind: "failed";
+            reason: string;
+            failureKind: "spawn" | "wait" | "timeout" | "safety" | "unknown";
+          }
         | { kind: "cancelled" };
     }
   | {
@@ -233,6 +237,7 @@ export function transition(
           state.runtime.tasks[event.taskId] = {
             phase: "failed",
             reason: event.outcome.reason,
+            failureKind: event.outcome.failureKind,
           };
           break;
         case "cancelled":

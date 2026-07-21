@@ -46,7 +46,12 @@ import {
 import type { ExecutionManifest } from "./execution-plan.js";
 import type { CommandResult, GitClient } from "./git.js";
 import { runCommand } from "./git-process.js";
-import { RunStore, type CanonicalRunState } from "./canonical-state.js";
+import {
+  RunStore,
+  type CandidateRef,
+  type CanonicalRunState,
+} from "./canonical-state.js";
+import { SchedulerActor } from "./scheduler-actor.js";
 import {
   captureRestoreSnapshot,
   checkpointCandidate,
@@ -65,7 +70,7 @@ import {
 } from "./papercuts.js";
 import type {
   RunState,
-  ParallelTaskState,
+  ScheduledTaskState,
   AgentDisplayRef,
   StatePatch,
 } from "./status.js";
@@ -1150,7 +1155,13 @@ export async function runImplementation(deps: OrchestratorDeps): Promise<void> {
     await runUnmanagedImplementation(deps, plan, planArtifacts, runBaseSha);
     return;
   }
-  await runParallelImplementation(deps, graph, plan, planArtifacts, runBaseSha);
+  await runScheduledImplementation(
+    deps,
+    graph,
+    plan,
+    planArtifacts,
+    runBaseSha,
+  );
 }
 
 async function runUnmanagedImplementation(
@@ -1181,7 +1192,7 @@ async function runUnmanagedImplementation(
       })),
     };
     if (graph.nodes.length > 0) {
-      await runParallelImplementation(
+      await runScheduledImplementation(
         deps,
         graph,
         initialPlan,
@@ -1413,7 +1424,22 @@ function completedPlanTaskIndex(
   return plan.tasks.length > 0 ? plan.tasks.length : undefined;
 }
 
-// ── Parallel scheduler ──────────────────────────────────────────────────────
+function linkedAbortController(
+  parent: AbortSignal | undefined,
+): AbortController {
+  const controller = new AbortController();
+  if (!parent) {
+    return controller;
+  }
+  if (parent.aborted) {
+    controller.abort();
+    return controller;
+  }
+  parent.addEventListener("abort", () => controller.abort(), { once: true });
+  return controller;
+}
+
+// ── Managed scheduler ───────────────────────────────────────────────────────
 
 type WorkerResult = {
   taskId: string;
@@ -1425,13 +1451,142 @@ type WorkerResult = {
     | { kind: "stopped" };
 };
 
-async function runParallelImplementation(
+function schedulerWorkerOutcome(
+  result: WorkerResult,
+  task: SchedulerTask,
+  taskId: string,
+): import("./scheduler.js").SchedulerEvent extends infer _Event
+  ? Extract<
+      import("./scheduler.js").SchedulerEvent,
+      { kind: "worker_finished" }
+    >["outcome"]
+  : never {
+  switch (result.outcome.kind) {
+    case "satisfied":
+      return { kind: "satisfied" };
+    case "stopped":
+      return { kind: "cancelled" };
+    case "stalled":
+      return {
+        kind: "failed",
+        failureKind: "unknown",
+        reason: result.outcome.reason,
+      };
+    case "failed":
+      return {
+        kind: "failed",
+        failureKind: "unknown",
+        reason: result.outcome.reason,
+      };
+    case "approved": {
+      const candidate = schedulerCandidate(task, taskId, result.outcome);
+      return { kind: "candidate_ready", candidate };
+    }
+  }
+}
+
+function schedulerCandidate(
+  task: SchedulerTask,
+  taskId: string,
+  outcome: Extract<WorkerResult["outcome"], { kind: "approved" }>,
+): CandidateRef {
+  const commitSha = task.candidateSha ?? outcome.taskCommitSha;
+  const treeSha = task.candidateTree;
+  const baseSha = task.candidateBaseSha ?? task.baseSha;
+  if (
+    !treeSha ||
+    !baseSha ||
+    !task.sourceBaseSha ||
+    !task.branchName ||
+    !task.worktreePath
+  ) {
+    throw new Error(
+      `Approved task ${taskId} is missing canonical candidate identity.`,
+    );
+  }
+  const candidateId = `candidate:${taskId}:${commitSha}`;
+  return {
+    id: candidateId,
+    sourceBaseSha: task.sourceBaseSha,
+    baseSha,
+    commitSha,
+    treeSha,
+    branchName: task.branchName,
+    worktreePath: task.worktreePath,
+    reviewReceipt: {
+      id: `review:${candidateId}`,
+      candidateId,
+      candidateCommitSha: commitSha,
+      candidateTreeSha: treeSha,
+      verdict: "approved",
+      convergence: {
+        round: 0,
+        outstandingFindingIds: [],
+        bestOutstandingCount: 0,
+        evidenceRefs: [],
+      },
+      assessedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function legacyWorkerResult(
+  completion: {
+    taskId: string;
+    leaseId: string;
+    outcome: import("./scheduler.js").SchedulerEvent extends infer _Event
+      ? Extract<
+          import("./scheduler.js").SchedulerEvent,
+          { kind: "worker_finished" }
+        >["outcome"]
+      : never;
+  },
+  taskFor: (taskId: string) => SchedulerTask | undefined,
+): WorkerResult {
+  switch (completion.outcome.kind) {
+    case "candidate_ready": {
+      const task = taskFor(completion.taskId)!;
+      return {
+        taskId: completion.taskId,
+        outcome: {
+          kind: "approved",
+          taskCommitSha: completion.outcome.candidate.commitSha,
+          commitMessage:
+            task.approvedCommitMessage ?? `chore: implement ${task.title}`,
+        },
+      };
+    }
+    case "satisfied":
+      return { taskId: completion.taskId, outcome: { kind: "satisfied" } };
+    case "cancelled":
+      return { taskId: completion.taskId, outcome: { kind: "stopped" } };
+    case "waiting_rework":
+      return {
+        taskId: completion.taskId,
+        outcome: { kind: "stalled", reason: "Worker requested rework." },
+      };
+    case "failed":
+      return {
+        taskId: completion.taskId,
+        outcome: { kind: "failed", reason: completion.outcome.reason },
+      };
+  }
+}
+
+async function runScheduledImplementation(
   deps: OrchestratorDeps,
   graph: ImplementGraph,
   initialPlan: ReturnType<typeof parsePlanFile>,
   planArtifacts: string[],
   runBaseSha: string,
 ): Promise<void> {
+  const schedulerAbort = linkedAbortController(deps.signal);
+  const outerShouldStop = deps.shouldStop;
+  deps = {
+    ...deps,
+    signal: schedulerAbort.signal,
+    shouldStop: () => outerShouldStop() || schedulerAbort.signal.aborted,
+  };
   const sched = deps.paths
     ? hydrateSchedulerRun(graph, deps.maxConcurrency ?? 1, deps.paths)
     : createSchedulerRun(graph, deps.maxConcurrency ?? 1);
@@ -1441,6 +1596,48 @@ async function runParallelImplementation(
   let schedulerSelfHealAttempts = 0;
   let schedulerSelfHealFailed = false;
   let schedulerSelfHealRemainingBlocker: string | undefined;
+  let workerSafetyError: Error | undefined;
+  let schedulerActor: SchedulerActor | undefined;
+  if (deps.canonicalRunStore) {
+    schedulerActor = new SchedulerActor({
+      store: deps.canonicalRunStore,
+      executeWorker: async ({ taskId, signal }) => {
+        const task = sched.tasks.get(taskId)!;
+        const planTask = plan.tasks.find(
+          (entry) => entry.index === task.planIndex,
+        );
+        if (!planTask) {
+          return {
+            kind: "failed",
+            failureKind: "spawn",
+            reason: `Plan task ${task.planIndex} not found`,
+          };
+        }
+        const wasNeedsRework = task.status === "needs_rework";
+        startTask(sched, taskId);
+        try {
+          const result = await launchTaskWorker(
+            { ...deps, signal },
+            sched,
+            taskId,
+            planTask,
+            planArtifacts,
+            runBaseSha,
+            wasNeedsRework,
+          );
+          return schedulerWorkerOutcome(result, task, taskId);
+        } catch (error) {
+          return {
+            kind: "failed",
+            failureKind:
+              error instanceof IntegrationSafetyError ? "safety" : "unknown",
+            reason: error instanceof Error ? error.message : String(error),
+          };
+        }
+      },
+      awaitOwnedProcesses: () => deps.git.onIdle?.() ?? Promise.resolve(),
+    });
+  }
 
   deps.updateState({
     phase: "scheduling",
@@ -1452,14 +1649,224 @@ async function runParallelImplementation(
     landedCount: 0,
   });
 
-  scheduler: for (;;) {
-    if (deps.shouldStop() || deps.signal?.aborted) {
-      await Promise.allSettled(runningWorkers.values());
-      await deps.git.onIdle?.();
-      throw new StoppedError();
-    }
-    if (allTasksTerminal(sched)) {
-      if (anyTaskFailedBlockedStopped(sched)) {
+  try {
+    await schedulerActor?.start();
+    scheduler: for (;;) {
+      if (workerSafetyError) {
+        await Promise.allSettled(runningWorkers.values());
+        await deps.git.onIdle?.();
+        throw new BlockedError(workerSafetyError.message);
+      }
+      if (outerShouldStop() || deps.signal?.aborted) {
+        await updateCanonicalRunPhase(deps.canonicalRunStore, "stopping");
+        schedulerAbort.abort();
+        await Promise.allSettled(runningWorkers.values());
+        await deps.git.onIdle?.();
+        throw new StoppedError();
+      }
+      if (allTasksTerminal(sched)) {
+        if (anyTaskFailedBlockedStopped(sched)) {
+          const healProgress = await attemptSchedulerSelfHeal(
+            deps,
+            sched,
+            graph,
+            plan,
+            planArtifacts,
+            schedulerSelfHealAttempts,
+          );
+          schedulerSelfHealAttempts = healProgress.attempts;
+          schedulerSelfHealRemainingBlocker = healProgress.remainingBlocker;
+          if (healProgress.hasProgress) {
+            continue scheduler;
+          }
+          if (healProgress.attempted) {
+            schedulerSelfHealFailed = true;
+          }
+        }
+        break;
+      }
+
+      plan = parsePlanFile(deps.planPath);
+      validateRecordedPlanCorpus(deps);
+      await schedulerActor?.schedule();
+
+      // ── Start ready tasks ──
+      const ready = schedulerActor
+        ? []
+        : computeReadyTasks(sched).filter((id) => canStartTask(sched, id));
+      for (const taskId of ready) {
+        if (runningWorkers.has(taskId)) {
+          continue;
+        }
+        const wasNeedsRework =
+          sched.tasks.get(taskId)?.status === "needs_rework";
+        if (wasNeedsRework) {
+          reworkTaskIds.add(taskId);
+        }
+        startTask(sched, taskId);
+
+        const taskNode = graph.nodes.find((n) => n.id === taskId)!;
+        const planTask = plan.tasks.find((t) => t.index === taskNode.planIndex);
+        if (!planTask) {
+          const task = sched.tasks.get(taskId)!;
+          task.status = "failed";
+          task.lastReason = `Plan task ${taskNode.planIndex} not found`;
+          continue;
+        }
+
+        const promise = launchTaskWorker(
+          deps,
+          sched,
+          taskId,
+          planTask,
+          planArtifacts,
+          runBaseSha,
+          wasNeedsRework,
+        ).catch((error: unknown): WorkerResult => {
+          if (error instanceof IntegrationSafetyError) {
+            workerSafetyError = error;
+            schedulerAbort.abort();
+            return {
+              taskId,
+              outcome: { kind: "failed", reason: error.message },
+            };
+          }
+          return {
+            taskId,
+            outcome: {
+              kind: "failed",
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          };
+        });
+        runningWorkers.set(taskId, promise);
+      }
+
+      updateSchedulerState(deps, sched);
+
+      const hasActiveRework = [...reworkTaskIds].some((id) =>
+        runningWorkers.has(id),
+      );
+
+      // ── Try landing (serialized, plan-ordered) ──
+      const toLand = nextTaskToLand(sched);
+      if (toLand && !hasActiveRework) {
+        const landResult = await landApprovedTask(
+          deps,
+          sched,
+          toLand,
+          plan,
+          planArtifacts,
+        );
+        if (landResult === "landed") {
+          continue; // Keep looping to possibly land more
+        } else if (landResult === "needs_rework") {
+          // The task status is already set to needs_rework; it will restart
+          continue;
+        }
+        // integration_failed stays as is; loop continues
+      }
+
+      // ── Wait for next worker or integration event ──
+      if (schedulerActor || runningWorkers.size > 0) {
+        // An actor settles a durable lease before reporting completion; legacy runs
+        // retain this adapter until integration moves to the canonical engine.
+        const result = schedulerActor
+          ? legacyWorkerResult(
+              await schedulerActor.nextCompletion(),
+              sched.tasks.get.bind(sched.tasks),
+            )
+          : await Promise.race(runningWorkers.values());
+        runningWorkers.delete(result.taskId);
+        reworkTaskIds.delete(result.taskId);
+
+        const task = sched.tasks.get(result.taskId)!;
+        if (result.outcome.kind === "approved") {
+          task.status = "approved";
+          task.taskCommitSha = result.outcome.taskCommitSha;
+          task.approvedCommitMessage = result.outcome.commitMessage;
+          task.activeAgentIds = [];
+          task.activeAgentRefs = [];
+          if (deps.paths) {
+            const existing = readTaskJson(deps.paths, result.taskId);
+            writeTaskJson(deps.paths, result.taskId, {
+              ...buildTaskJsonSnapshot(existing, task),
+              status: "approved",
+              taskCommitSha: result.outcome.taskCommitSha,
+              commitMessage: result.outcome.commitMessage,
+              activeSubagentIds: [],
+            });
+            appendEvent(deps.paths, {
+              type: "task_approved",
+              taskId: result.taskId,
+              commitSha: result.outcome.taskCommitSha,
+            });
+          }
+        } else if (result.outcome.kind === "satisfied") {
+          task.status = "satisfied";
+          task.activeAgentIds = [];
+          task.activeAgentRefs = [];
+          sched.landedOrder.push(result.taskId);
+          if (deps.paths) {
+            const existing = readTaskJson(deps.paths, result.taskId);
+            writeTaskJson(deps.paths, result.taskId, {
+              ...buildTaskJsonSnapshot(existing, task),
+              status: "satisfied",
+              activeSubagentIds: [],
+            });
+            appendEvent(deps.paths, {
+              type: "task_satisfied",
+              taskId: result.taskId,
+            });
+          }
+        } else if (result.outcome.kind === "stalled") {
+          task.status = "stalled";
+          task.lastReason = result.outcome.reason;
+          task.activeAgentIds = [];
+          task.activeAgentRefs = [];
+          if (deps.paths) {
+            const existing = readTaskJson(deps.paths, result.taskId);
+            writeTaskJson(deps.paths, result.taskId, {
+              ...buildTaskJsonSnapshot(existing, task),
+              status: "stalled",
+              activeSubagentIds: [],
+              lastReason: result.outcome.reason,
+            });
+          }
+        } else if (result.outcome.kind === "failed") {
+          task.status = "failed";
+          task.lastReason = result.outcome.reason;
+          task.activeAgentIds = [];
+          task.activeAgentRefs = [];
+          if (deps.paths) {
+            const existing = readTaskJson(deps.paths, result.taskId);
+            writeTaskJson(deps.paths, result.taskId, {
+              ...buildTaskJsonSnapshot(existing, task),
+              status: "failed",
+              activeSubagentIds: [],
+              lastReason: result.outcome.reason,
+            });
+          }
+        } else {
+          // stopped
+          task.status = "stopped";
+          task.activeAgentIds = [];
+          task.activeAgentRefs = [];
+          if (deps.paths) {
+            const existing = readTaskJson(deps.paths, result.taskId);
+            writeTaskJson(deps.paths, result.taskId, {
+              ...buildTaskJsonSnapshot(existing, task),
+              status: "stopped",
+              activeSubagentIds: [],
+            });
+          }
+        }
+        continue;
+      }
+
+      // Nothing running and nothing to land
+      if (!toLand && !hasActiveRework) {
+        throwIfStopped(deps);
         const healProgress = await attemptSchedulerSelfHeal(
           deps,
           sched,
@@ -1471,250 +1878,78 @@ async function runParallelImplementation(
         schedulerSelfHealAttempts = healProgress.attempts;
         schedulerSelfHealRemainingBlocker = healProgress.remainingBlocker;
         if (healProgress.hasProgress) {
-          continue scheduler;
+          continue;
         }
-        if (healProgress.attempted) {
-          schedulerSelfHealFailed = true;
-        }
+        schedulerSelfHealFailed = true;
+        sched.phase = "blocked";
+        break;
       }
-      break;
     }
 
-    plan = parsePlanFile(deps.planPath);
-    validateRecordedPlanCorpus(deps);
-
-    // ── Start ready tasks ──
-    const ready = computeReadyTasks(sched).filter((id) =>
-      canStartTask(sched, id),
-    );
-    for (const taskId of ready) {
-      if (runningWorkers.has(taskId)) {
-        continue;
-      }
-      const wasNeedsRework = sched.tasks.get(taskId)?.status === "needs_rework";
-      if (wasNeedsRework) {
-        reworkTaskIds.add(taskId);
-      }
-      startTask(sched, taskId);
-
-      const taskNode = graph.nodes.find((n) => n.id === taskId)!;
-      const planTask = plan.tasks.find((t) => t.index === taskNode.planIndex);
-      if (!planTask) {
-        const task = sched.tasks.get(taskId)!;
-        task.status = "failed";
-        task.lastReason = `Plan task ${taskNode.planIndex} not found`;
-        continue;
-      }
-
-      const promise = launchTaskWorker(
-        deps,
-        sched,
-        taskId,
-        planTask,
-        planArtifacts,
-        runBaseSha,
-        wasNeedsRework,
-      );
-      runningWorkers.set(taskId, promise);
-    }
-
-    updateParallelState(deps, sched);
-
-    const hasActiveRework = [...reworkTaskIds].some((id) =>
-      runningWorkers.has(id),
-    );
-
-    // ── Try landing (serialized, plan-ordered) ──
-    const toLand = nextTaskToLand(sched);
-    if (toLand && !hasActiveRework) {
-      const landResult = await landApprovedTask(
-        deps,
-        sched,
-        toLand,
-        plan,
-        planArtifacts,
-      );
-      if (landResult === "landed") {
-        continue; // Keep looping to possibly land more
-      } else if (landResult === "needs_rework") {
-        // The task status is already set to needs_rework; it will restart
-        continue;
-      }
-      // integration_failed stays as is; loop continues
-    }
-
-    // ── Wait for next worker or integration event ──
-    if (runningWorkers.size > 0) {
-      // Race all running workers for the next completion
-      const result = await Promise.race(runningWorkers.values());
-      runningWorkers.delete(result.taskId);
-      reworkTaskIds.delete(result.taskId);
-
-      const task = sched.tasks.get(result.taskId)!;
-      if (result.outcome.kind === "approved") {
-        task.status = "approved";
-        task.taskCommitSha = result.outcome.taskCommitSha;
-        task.approvedCommitMessage = result.outcome.commitMessage;
-        task.activeAgentIds = [];
-        task.activeAgentRefs = [];
-        if (deps.paths) {
-          const existing = readTaskJson(deps.paths, result.taskId);
-          writeTaskJson(deps.paths, result.taskId, {
-            ...buildTaskJsonSnapshot(existing, task),
-            status: "approved",
-            taskCommitSha: result.outcome.taskCommitSha,
-            commitMessage: result.outcome.commitMessage,
-            activeSubagentIds: [],
-          });
-          appendEvent(deps.paths, {
-            type: "task_approved",
-            taskId: result.taskId,
-            commitSha: result.outcome.taskCommitSha,
-          });
-        }
-      } else if (result.outcome.kind === "satisfied") {
-        task.status = "satisfied";
-        task.activeAgentIds = [];
-        task.activeAgentRefs = [];
-        sched.landedOrder.push(result.taskId);
-        if (deps.paths) {
-          const existing = readTaskJson(deps.paths, result.taskId);
-          writeTaskJson(deps.paths, result.taskId, {
-            ...buildTaskJsonSnapshot(existing, task),
-            status: "satisfied",
-            activeSubagentIds: [],
-          });
-          appendEvent(deps.paths, {
-            type: "task_satisfied",
-            taskId: result.taskId,
-          });
-        }
-      } else if (result.outcome.kind === "stalled") {
-        task.status = "stalled";
-        task.lastReason = result.outcome.reason;
-        task.activeAgentIds = [];
-        task.activeAgentRefs = [];
-        if (deps.paths) {
-          const existing = readTaskJson(deps.paths, result.taskId);
-          writeTaskJson(deps.paths, result.taskId, {
-            ...buildTaskJsonSnapshot(existing, task),
-            status: "stalled",
-            activeSubagentIds: [],
-            lastReason: result.outcome.reason,
-          });
-        }
-      } else if (result.outcome.kind === "failed") {
-        task.status = "failed";
-        task.lastReason = result.outcome.reason;
-        task.activeAgentIds = [];
-        task.activeAgentRefs = [];
-        if (deps.paths) {
-          const existing = readTaskJson(deps.paths, result.taskId);
-          writeTaskJson(deps.paths, result.taskId, {
-            ...buildTaskJsonSnapshot(existing, task),
-            status: "failed",
-            activeSubagentIds: [],
-            lastReason: result.outcome.reason,
-          });
-        }
-      } else {
-        // stopped
-        task.status = "stopped";
-        task.activeAgentIds = [];
-        task.activeAgentRefs = [];
-        if (deps.paths) {
-          const existing = readTaskJson(deps.paths, result.taskId);
-          writeTaskJson(deps.paths, result.taskId, {
-            ...buildTaskJsonSnapshot(existing, task),
-            status: "stopped",
-            activeSubagentIds: [],
-          });
-        }
-      }
-      continue;
-    }
-
-    // Nothing running and nothing to land
-    if (!toLand && !hasActiveRework) {
-      throwIfStopped(deps);
-      const healProgress = await attemptSchedulerSelfHeal(
-        deps,
-        sched,
-        graph,
-        plan,
-        planArtifacts,
-        schedulerSelfHealAttempts,
-      );
-      schedulerSelfHealAttempts = healProgress.attempts;
-      schedulerSelfHealRemainingBlocker = healProgress.remainingBlocker;
-      if (healProgress.hasProgress) {
-        continue;
-      }
-      schedulerSelfHealFailed = true;
-      sched.phase = "blocked";
-      break;
-    }
-  }
-
-  if (!allTasksTerminal(sched)) {
-    const reason = stalledSchedulerReason(
-      sched,
-      schedulerSelfHealFailed,
-      schedulerSelfHealRemainingBlocker,
-    );
-    deps.updateState({ phase: "blocked", lastReason: reason });
-    throw new BlockedError(reason);
-  }
-
-  if (!anyTaskFailedBlockedStopped(sched)) {
-    const finalValidation = await validateFinalParallelRun(deps);
-    if (!finalValidation.ok) {
-      sched.phase = "blocked";
-      deps.updateState({
-        phase: "blocked",
-        lastReason: finalValidation.reason,
-      });
-      throw new BlockedError(finalValidation.reason);
-    }
-    await runConvergentOverallReviewLoop(
-      deps,
-      initialPlan,
-      planArtifacts,
-      graph.baseSha,
-    );
-    markCompletedParallelSourceCheckboxes(deps, sched, plan);
-  }
-
-  const landedCount = [...sched.tasks.values()].filter(
-    (t) => t.status === "landed",
-  ).length;
-  const satisfiedCount = [...sched.tasks.values()].filter(
-    (t) => t.status === "satisfied",
-  ).length;
-  const hasFailure = anyTaskFailedBlockedStopped(sched);
-  const failureReason = hasFailure
-    ? stalledSchedulerReason(
+    if (!allTasksTerminal(sched)) {
+      const reason = stalledSchedulerReason(
         sched,
         schedulerSelfHealFailed,
         schedulerSelfHealRemainingBlocker,
-      )
-    : undefined;
-  deps.updateState({
-    phase: hasFailure
-      ? "blocked"
-      : sched.phase === "done" || allTasksTerminal(sched)
-        ? "done"
-        : (sched.phase as RunState["phase"]),
-    landedCount,
-    satisfiedCount,
-    activeSubagentId: undefined,
-    activeSubagentIds: [],
-    activeAgentRefs: [],
-    ...(failureReason ? { lastReason: failureReason } : {}),
-  });
+      );
+      deps.updateState({ phase: "blocked", lastReason: reason });
+      throw new BlockedError(reason);
+    }
 
-  if (failureReason) {
-    throw new BlockedError(failureReason);
+    if (!anyTaskFailedBlockedStopped(sched)) {
+      const finalValidation = await validateFinalScheduledRun(deps);
+      if (!finalValidation.ok) {
+        sched.phase = "blocked";
+        deps.updateState({
+          phase: "blocked",
+          lastReason: finalValidation.reason,
+        });
+        throw new BlockedError(finalValidation.reason);
+      }
+      await runConvergentOverallReviewLoop(
+        deps,
+        initialPlan,
+        planArtifacts,
+        graph.baseSha,
+      );
+      markCompletedScheduledSourceCheckboxes(deps, sched, plan);
+    }
+
+    const landedCount = [...sched.tasks.values()].filter(
+      (t) => t.status === "landed",
+    ).length;
+    const satisfiedCount = [...sched.tasks.values()].filter(
+      (t) => t.status === "satisfied",
+    ).length;
+    const hasFailure = anyTaskFailedBlockedStopped(sched);
+    const failureReason = hasFailure
+      ? stalledSchedulerReason(
+          sched,
+          schedulerSelfHealFailed,
+          schedulerSelfHealRemainingBlocker,
+        )
+      : undefined;
+    deps.updateState({
+      phase: hasFailure
+        ? "blocked"
+        : sched.phase === "done" || allTasksTerminal(sched)
+          ? "done"
+          : (sched.phase as RunState["phase"]),
+      landedCount,
+      satisfiedCount,
+      activeSubagentId: undefined,
+      activeSubagentIds: [],
+      activeAgentRefs: [],
+      ...(failureReason ? { lastReason: failureReason } : {}),
+    });
+
+    if (failureReason) {
+      throw new BlockedError(failureReason);
+    }
+  } finally {
+    schedulerAbort.abort();
+    await Promise.allSettled(runningWorkers.values());
+    await deps.git.onIdle?.();
   }
 }
 
@@ -4058,7 +4293,7 @@ async function validateIntegratedTask(
   return { ok: true };
 }
 
-async function validateFinalParallelRun(
+async function validateFinalScheduledRun(
   deps: OrchestratorDeps,
 ): Promise<ValidationResult> {
   const commands = await resolveValidationCommands(deps);
@@ -5618,7 +5853,7 @@ export function stalledSchedulerReason(
   remainingBlocker?: string,
 ): string {
   const lines: string[] = [];
-  lines.push("Parallel scheduler blocked:");
+  lines.push("Scheduler blocked:");
 
   const allTasks = [...sched.tasks.values()].sort(
     (a, b) => a.planIndex - b.planIndex,
@@ -5760,11 +5995,11 @@ function validateRecordedPlanCorpus(deps: OrchestratorDeps): void {
   }
 }
 
-function updateParallelState(
+function updateSchedulerState(
   deps: OrchestratorDeps,
   sched: SchedulerRun,
 ): void {
-  const tasks: ParallelTaskState[] = [];
+  const tasks: ScheduledTaskState[] = [];
   const activeAgentIds: string[] = [];
   let landedCount = 0;
   let satisfiedCount = 0;
@@ -5781,7 +6016,7 @@ function updateParallelState(
       id: task.id,
       planIndex: task.planIndex - 1,
       title: task.title,
-      status: task.status as ParallelTaskState["status"],
+      status: task.status as ScheduledTaskState["status"],
       blockedReason: getBlockedReason(task, sched),
       worktreePath: task.worktreePath,
       landedCommitSha: task.landedCommitSha,
@@ -7254,7 +7489,7 @@ async function runTaskWorker(args: {
   return false;
 }
 
-function markCompletedParallelSourceCheckboxes(
+function markCompletedScheduledSourceCheckboxes(
   deps: OrchestratorDeps,
   sched: SchedulerRun,
   plan: ReturnType<typeof parsePlanFile>,

@@ -83,7 +83,15 @@ const taskRuntimeSchema = z.discriminatedUnion("phase", [
       result: z.enum(["landed", "satisfied"]),
     })
     .strict(),
-  z.object({ phase: z.literal("failed"), reason: nonEmpty }).strict(),
+  z
+    .object({
+      phase: z.literal("failed"),
+      reason: nonEmpty,
+      failureKind: z
+        .enum(["spawn", "wait", "timeout", "safety", "unknown"])
+        .optional(),
+    })
+    .strict(),
   z.object({ phase: z.literal("blocked"), reason: nonEmpty }).strict(),
 ]);
 

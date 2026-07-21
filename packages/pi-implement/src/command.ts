@@ -86,6 +86,7 @@ type ActiveRun = {
   runDir?: string;
   abortController?: AbortController;
   activeSubagentIds?: string[];
+  settle?: () => Promise<void>;
 };
 
 const ACTIVE_PHASES = new Set<RunState["phase"]>([
@@ -177,6 +178,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         // Best-effort: session is shutting down anyway.
       }
     }
+    await active.settle?.();
     stopWidgetTick();
     if (ctx.mode === "tui") {
       ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -275,6 +277,8 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
               }
             }
           }
+
+          await active.settle?.();
 
           const newState: RunState = {
             ...active.state,
@@ -970,7 +974,7 @@ Stay idle until the run ends or the user asks you something directly. Do not res
         }
       };
 
-      void (async () => {
+      const execution = (async () => {
         const strategy = retainedResume
           ? {
               mode: retainedResume.run.mode,
@@ -1186,6 +1190,9 @@ Stay idle until the run ends or the user asks you something directly. Do not res
             ctx.ui.setWidget(WIDGET_KEY, undefined);
           }
         });
+      active.settle = async () => {
+        await execution;
+      };
     },
   };
 

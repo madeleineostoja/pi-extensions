@@ -1287,7 +1287,7 @@ describe("runImplementation", () => {
         updateState: () => {},
         shouldStop: () => false,
       }),
-    ).rejects.toThrow("Parallel scheduler blocked:");
+    ).rejects.toThrow("Scheduler blocked:");
   });
 
   it("includes rich diagnostics when scheduler stalls with failed, approved, and pending tasks", async () => {
@@ -1414,7 +1414,7 @@ describe("runImplementation", () => {
     // Only the genuinely-failed task remains in the blocked report.
     expect(blockedError).toBeDefined();
     const message = blockedError!.message;
-    expect(message).toContain("Parallel scheduler blocked:");
+    expect(message).toContain("Scheduler blocked:");
     expect(message).toContain("first: failed");
     expect(message).toContain("Worktree setup failed");
     expect(message).not.toContain("cannot land");
@@ -2644,7 +2644,7 @@ describe("runImplementation", () => {
 
     expect(caught).toBeDefined();
     const message = caught!.message;
-    expect(message).toContain("Parallel scheduler blocked:");
+    expect(message).toContain("Scheduler blocked:");
     expect(message).toContain("first: failed");
     expect(message).toContain("second: pending, waiting for first");
     expect(message).toContain(
@@ -2745,7 +2745,7 @@ describe("runImplementation", () => {
 
     expect(caught).toBeDefined();
     const message = caught!.message;
-    expect(message).toContain("Parallel scheduler blocked:");
+    expect(message).toContain("Scheduler blocked:");
     expect(message).toContain("first: failed: Worktree setup failed");
     expect(message).toContain(
       "remaining blocker: branch cleanup requires manual intervention",
