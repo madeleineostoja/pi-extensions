@@ -70,6 +70,9 @@ class FakeGit implements GitClient {
   async head() {
     return this.headValue;
   }
+  async parent(_commit: string) {
+    return "h1";
+  }
   async tree() {
     return `tree-${this.diffText}`;
   }
@@ -187,6 +190,15 @@ class FakeGit implements GitClient {
     this.headValue = `${this.headValue}-reword-${this.commits.length}`;
     return {
       command: "git commit --amend",
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    };
+  }
+  async mergeFastForward(commitSha: string): Promise<CommandResult> {
+    this.headValue = commitSha;
+    return {
+      command: "git merge --ff-only",
       exitCode: 0,
       stdout: "",
       stderr: "",

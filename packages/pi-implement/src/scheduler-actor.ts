@@ -20,9 +20,32 @@ export type WorkerExecution = (args: {
   signal: AbortSignal;
 }) => Promise<WorkerOutcome>;
 
+export type IntegrationExecution = (args: {
+  taskId: string;
+  attemptId: string;
+  candidateId: string;
+  signal: AbortSignal;
+  dispatch: (event: SchedulerEvent) => Promise<void>;
+}) => Promise<void>;
+
+type ActorCompletion =
+  | {
+      kind: "worker";
+      taskId: string;
+      leaseId: string;
+      outcome: WorkerOutcome;
+    }
+  | {
+      kind: "integration";
+      taskId: string;
+      attemptId: string;
+      phase: "completed" | "paused";
+    };
+
 export type SchedulerActorOptions = {
   store: RunStore;
   executeWorker: WorkerExecution;
+  executeIntegration?: IntegrationExecution;
   onTransition?: (state: CanonicalRunState, event: SchedulerEvent) => void;
   awaitOwnedProcesses?: () => Promise<void>;
   now?: () => string;
@@ -32,11 +55,9 @@ export class SchedulerActor {
   private readonly abortController = new AbortController();
   private readonly workers = new Map<string, Promise<void>>();
   private readonly workerControllers = new Map<string, AbortController>();
-  private readonly completions: Array<{
-    taskId: string;
-    leaseId: string;
-    outcome: WorkerOutcome;
-  }> = [];
+  private readonly integrations = new Map<string, Promise<void>>();
+  private readonly integrationControllers = new Map<string, AbortController>();
+  private readonly completions: ActorCompletion[] = [];
   private completionWaiter?: () => void;
   private readonly now: () => string;
   private stopping = false;
@@ -64,14 +85,18 @@ export class SchedulerActor {
       .filter((taskId): taskId is string => Boolean(taskId));
   }
 
-  async nextCompletion(): Promise<{
-    taskId: string;
-    leaseId: string;
-    outcome: WorkerOutcome;
-  }> {
+  async nextCompletion(): Promise<ActorCompletion> {
     while (this.completions.length === 0) {
+      if (this.abortController.signal.aborted) {
+        throw new SchedulerActorError(
+          "Scheduler stopped while awaiting completion.",
+        );
+      }
       await new Promise<void>((resolve) => {
         this.completionWaiter = resolve;
+        this.abortController.signal.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
       });
     }
     return this.completions.shift()!;
@@ -110,7 +135,11 @@ export class SchedulerActor {
       }
     }
 
+    for (const controller of this.integrationControllers.values()) {
+      controller.abort();
+    }
     await this.awaitWorkers();
+    await this.awaitIntegrations();
     await this.options.awaitOwnedProcesses?.();
   }
 
@@ -130,6 +159,74 @@ export class SchedulerActor {
       this.startWorker(effect);
     }
     return workerEffects.length > 0;
+  }
+
+  async requestIntegration(args: {
+    taskId: string;
+    attemptId: string;
+    pipelineHash: string;
+  }): Promise<boolean> {
+    const effects = await this.dispatch({
+      kind: "integration_requested",
+      ...args,
+      now: this.now(),
+    });
+    for (const effect of effects) {
+      if (effect.kind === "start_integration") {
+        this.startIntegration(effect);
+      }
+    }
+    return effects.some((effect) => effect.kind === "start_integration");
+  }
+
+  private startIntegration(
+    effect: Extract<SchedulerEffect, { kind: "start_integration" }>,
+  ): void {
+    if (!this.options.executeIntegration) {
+      throw new SchedulerActorError("Scheduler has no integration executor.");
+    }
+    const controller = linkedAbortController(this.abortController.signal);
+    this.integrationControllers.set(effect.attemptId, controller);
+    const integration = this.options
+      .executeIntegration({
+        ...effect,
+        signal: controller.signal,
+        dispatch: async (event) => {
+          await this.dispatch(event);
+        },
+      })
+      .catch(async (error: unknown) => {
+        if (controller.signal.aborted) {
+          await this.dispatch({
+            kind: "integration_paused",
+            attemptId: effect.attemptId,
+          });
+          return;
+        }
+        await this.dispatch({
+          kind: "integration_paused",
+          attemptId: effect.attemptId,
+        });
+        throw error;
+      })
+      .finally(() => {
+        const attempt = this.snapshot().integrationAttempts.find(
+          (entry) => entry.id === effect.attemptId,
+        );
+        if (attempt?.phase === "completed" || attempt?.phase === "paused") {
+          this.completions.push({
+            kind: "integration",
+            taskId: effect.taskId,
+            attemptId: effect.attemptId,
+            phase: attempt.phase,
+          });
+          this.completionWaiter?.();
+          this.completionWaiter = undefined;
+        }
+        this.integrations.delete(effect.attemptId);
+        this.integrationControllers.delete(effect.attemptId);
+      });
+    this.integrations.set(effect.attemptId, integration);
   }
 
   private startWorker(
@@ -182,7 +279,12 @@ export class SchedulerActor {
       leaseId: effect.leaseId,
       outcome,
     });
-    this.completions.push({ ...effect, outcome });
+    this.completions.push({
+      kind: "worker",
+      taskId: effect.taskId,
+      leaseId: effect.leaseId,
+      outcome,
+    });
     this.completionWaiter?.();
     this.completionWaiter = undefined;
     if (outcome.kind === "failed" && outcome.failureKind === "safety") {
@@ -241,6 +343,25 @@ export class SchedulerActor {
         leaseId: lease.id,
         outcome: { kind: "cancelled" },
       });
+    }
+    for (const attempt of this.snapshot().integrationAttempts) {
+      if (["preparing", "prepared", "publishing"].includes(attempt.phase)) {
+        await this.dispatch({
+          kind: "integration_paused",
+          attemptId: attempt.id,
+        });
+      }
+    }
+  }
+
+  private async awaitIntegrations(): Promise<void> {
+    const outcomes = await Promise.allSettled(this.integrations.values());
+    const failed = outcomes.find(
+      (outcome): outcome is PromiseRejectedResult =>
+        outcome.status === "rejected",
+    );
+    if (failed) {
+      throw failed.reason;
     }
   }
 

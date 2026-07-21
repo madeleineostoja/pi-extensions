@@ -52,6 +52,7 @@ import {
   type CanonicalRunState,
 } from "./canonical-state.js";
 import { SchedulerActor } from "./scheduler-actor.js";
+import { IntegrationEngine } from "./integration-engine.js";
 import {
   approvedCandidateRef,
   TaskWorkspaceManager,
@@ -140,6 +141,7 @@ import {
   canStartTask,
   startTask,
   nextTaskToLand,
+  selectIntegrationTask,
   allTasksTerminal,
   anyTaskFailedBlockedStopped,
   getBlockedReason,
@@ -1556,6 +1558,110 @@ async function runScheduledImplementation(
   if (deps.canonicalRunStore) {
     schedulerActor = new SchedulerActor({
       store: deps.canonicalRunStore,
+      executeIntegration: async ({
+        attemptId,
+        candidateId,
+        signal,
+        dispatch,
+      }) => {
+        const state = deps.canonicalRunStore!.read();
+        const attempt = state.integrationAttempts.find(
+          (entry) => entry.id === attemptId,
+        );
+        const candidate = state.candidates[candidateId];
+        if (!attempt || attempt.owner.kind !== "task" || !candidate) {
+          throw new Error(
+            "Integration effect has no matching durable candidate attempt.",
+          );
+        }
+        const taskAttempt = attempt as typeof attempt & {
+          owner: { kind: "task"; taskId: string };
+        };
+        const targetBranch = state.run.target.branchRef.replace(
+          /^refs\/heads\//,
+          "",
+        );
+        const engine = new IntegrationEngine({
+          git: deps.git.withSignal?.(signal) ?? deps.git,
+          worktreesRoot: join(deps.paths!.worktreesDir, "integrations"),
+          targetCheckoutId: state.run.target.gitDir,
+          targetBranch,
+          protectedPaths: planArtifacts,
+          validate: async ({ worktreePath, signal: validationSignal }) => {
+            for (const command of await resolveValidationCommands(deps)) {
+              const result = await runValidationCommand(
+                command,
+                worktreePath,
+                validationSignal,
+              );
+              if (result.exitCode !== 0) {
+                return {
+                  ok: false,
+                  reason: `${command.display}: ${result.stderr || result.stdout}`,
+                };
+              }
+            }
+            return { ok: true };
+          },
+        });
+        const prepared = await engine.prepare(taskAttempt, candidate, signal);
+        if (prepared.kind === "prepared") {
+          await dispatch({
+            kind: "integration_prepared",
+            attemptId,
+            preparedCommitSha: prepared.prepared.preparedCommitSha,
+          });
+          await dispatch({ kind: "integration_publishing", attemptId });
+          const published = await engine.publish(
+            taskAttempt,
+            prepared.prepared,
+            candidate,
+            signal,
+          );
+          if (published.kind === "landed") {
+            await dispatch({
+              kind: "integration_landed",
+              attemptId,
+              receipt: published.receipt,
+            });
+            try {
+              await engine.cleanup(prepared.prepared);
+              await dispatch({
+                kind: "cleanup_completed",
+                debtId: `integration:${attemptId}`,
+              });
+            } catch {
+              // Cleanup debt remains durable until a later idempotent cleanup succeeds.
+            }
+            return;
+          }
+          if (
+            published.kind === "needs_rework" ||
+            published.kind === "target_moved"
+          ) {
+            await dispatch({
+              kind: "integration_needs_rework",
+              attemptId,
+              candidateId,
+            });
+            return;
+          }
+          await dispatch({ kind: "integration_paused", attemptId });
+          return;
+        }
+        if (
+          prepared.kind === "needs_rework" ||
+          prepared.kind === "target_moved"
+        ) {
+          await dispatch({
+            kind: "integration_needs_rework",
+            attemptId,
+            candidateId,
+          });
+          return;
+        }
+        await dispatch({ kind: "integration_paused", attemptId });
+      },
       executeWorker: async ({ taskId, signal }) => {
         const task = sched.tasks.get(taskId)!;
         const planTask = plan.tasks.find(
@@ -1592,6 +1698,13 @@ async function runScheduledImplementation(
       },
       awaitOwnedProcesses: () => deps.git.onIdle?.() ?? Promise.resolve(),
     });
+    deps.signal?.addEventListener(
+      "abort",
+      () => {
+        void schedulerActor?.stop();
+      },
+      { once: true },
+    );
   }
 
   deps.updateState({
@@ -1613,6 +1726,7 @@ async function runScheduledImplementation(
         throw new BlockedError(workerSafetyError.message);
       }
       if (outerShouldStop() || deps.signal?.aborted) {
+        await schedulerActor?.stop();
         await updateCanonicalRunPhase(deps.canonicalRunStore, "stopping");
         schedulerAbort.abort();
         await Promise.allSettled(runningWorkers.values());
@@ -1644,6 +1758,19 @@ async function runScheduledImplementation(
       plan = parsePlanFile(deps.planPath);
       validateRecordedPlanCorpus(deps);
       await schedulerActor?.schedule();
+      if (schedulerActor) {
+        const canonical = deps.canonicalRunStore!.read();
+        const taskId = selectIntegrationTask(canonical);
+        if (taskId) {
+          await schedulerActor.requestIntegration({
+            taskId,
+            attemptId: `integration:${canonical.run.id}:${canonical.revision + 1}`,
+            pipelineHash: integrationPipelineHash(
+              await resolveValidationCommands(deps),
+            ),
+          });
+        }
+      }
 
       // ── Start ready tasks ──
       const ready = schedulerActor
@@ -1704,7 +1831,7 @@ async function runScheduledImplementation(
       );
 
       // ── Try landing (serialized, plan-ordered) ──
-      const toLand = nextTaskToLand(sched);
+      const toLand = schedulerActor ? undefined : nextTaskToLand(sched);
       if (toLand && !hasActiveRework) {
         const landResult = await landApprovedTask(
           deps,
@@ -1726,11 +1853,26 @@ async function runScheduledImplementation(
       if (schedulerActor || runningWorkers.size > 0) {
         // An actor settles a durable lease before reporting completion; legacy runs
         // retain this adapter until integration moves to the canonical engine.
+        const completion = schedulerActor
+          ? await schedulerActor.nextCompletion()
+          : undefined;
+        if (completion?.kind === "integration") {
+          const task = sched.tasks.get(completion.taskId)!;
+          if (completion.phase === "completed") {
+            task.status = "landed";
+            sched.landedOrder.push(completion.taskId);
+          } else {
+            const runtime =
+              deps.canonicalRunStore!.read().runtime.tasks[completion.taskId];
+            task.status =
+              runtime?.phase === "waiting_rework" ? "needs_rework" : "stalled";
+            task.lastReason =
+              "Integration paused; candidate is retained for deterministic recovery.";
+          }
+          continue;
+        }
         const result = schedulerActor
-          ? legacyWorkerResult(
-              await schedulerActor.nextCompletion(),
-              sched.tasks.get.bind(sched.tasks),
-            )
+          ? legacyWorkerResult(completion!, sched.tasks.get.bind(sched.tasks))
           : await Promise.race(runningWorkers.values());
         runningWorkers.delete(result.taskId);
         reworkTaskIds.delete(result.taskId);
@@ -1905,6 +2047,16 @@ async function runScheduledImplementation(
       throw new BlockedError(failureReason);
     }
   } finally {
+    const canonical = deps.canonicalRunStore?.read();
+    if (
+      schedulerActor &&
+      canonical?.runtime.phase === "running" &&
+      Object.values(canonical.runtime.tasks).some(
+        (task) => task.phase !== "completed",
+      )
+    ) {
+      await schedulerActor.stop();
+    }
     schedulerAbort.abort();
     await Promise.allSettled(runningWorkers.values());
     await deps.git.onIdle?.();
@@ -4348,6 +4500,10 @@ async function resolveValidationCommands(
     });
   }
   return commands;
+}
+
+function integrationPipelineHash(commands: ValidationCommand[]): string {
+  return createHash("sha256").update(JSON.stringify(commands)).digest("hex");
 }
 
 function detectPackageManager(root: string): {

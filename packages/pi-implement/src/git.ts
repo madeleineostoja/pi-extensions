@@ -31,6 +31,7 @@ export type GitClient = {
   currentBranch(): Promise<string>;
   activeOperation(): Promise<string | undefined>;
   head(): Promise<string>;
+  parent(commit: string): Promise<string>;
   tree(): Promise<string>;
   treeAt(commit: string): Promise<string>;
   isAncestor(ancestor: string, descendant: string): Promise<boolean>;
@@ -68,6 +69,7 @@ export type GitClient = {
   rewordInternal(message: string): Promise<CommandResult>;
   commit(message: string): Promise<CommandResult>;
   reword(message: string): Promise<CommandResult>;
+  mergeFastForward(commitSha: string): Promise<CommandResult>;
   reset(): Promise<void>;
   resetHard(commitSha: string): Promise<void>;
   aheadOfBase(branchName: string, baseSha: string): Promise<boolean>;
@@ -159,6 +161,10 @@ export class ExecGitClient implements GitClient {
 
   async head(): Promise<string> {
     return (await this.run(["rev-parse", "HEAD"])).stdout.trim();
+  }
+
+  async parent(commit: string): Promise<string> {
+    return (await this.run(["rev-parse", `${commit}^`])).stdout.trim();
   }
 
   async tree(): Promise<string> {
@@ -487,6 +493,10 @@ export class ExecGitClient implements GitClient {
 
   async reword(message: string): Promise<CommandResult> {
     return this.run(["commit", "--amend", "-m", message], true);
+  }
+
+  async mergeFastForward(commitSha: string): Promise<CommandResult> {
+    return this.run(["merge", "--ff-only", commitSha], true);
   }
 
   async reset(): Promise<void> {
