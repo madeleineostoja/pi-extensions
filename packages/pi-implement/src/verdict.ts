@@ -1,6 +1,7 @@
 import type {
   FindingAdmissionBatch,
   FindingAssessment,
+  FindingReworkCompletion,
   RegressionFindingDraft,
   ReviewFindingDraft,
   ReviewFindingProposal,
@@ -15,18 +16,24 @@ export type VerificationStep = {
   rationale: string;
 };
 
+export type ParsedFindingReworkCompletion = FindingReworkCompletion & {
+  verification: VerificationStep[];
+};
+
 export type ParsedImplementerResult =
   | {
       outcome: "changed";
       summary: string;
       verification: VerificationStep[];
       commitMessage: string;
+      findingCompletions?: ParsedFindingReworkCompletion[];
     }
   | {
       outcome: "already_satisfied";
       summary: string;
       verification: VerificationStep[];
       commitMessage?: string;
+      findingCompletions?: ParsedFindingReworkCompletion[];
     };
 
 export type InitialReviewResult =
@@ -72,22 +79,25 @@ export type SchedulerSelfHealResult = {
 export type OverallReworkResult = {
   summary: string;
   verification: VerificationStep[];
+  findingCompletions?: ParsedFindingReworkCompletion[];
   commitMessage?: string;
 };
 
 export function parseImplementerResult(
   value: unknown,
+  options?: { expectedFindingIds?: readonly string[] },
 ):
   | { ok: true; result: ParsedImplementerResult }
   | { ok: false; reason: string } {
   if (!isRecord(value)) {
     return { ok: false, reason: "Implementer completion must be an object." };
   }
-  return parseImplementerResultValue(value);
+  return parseImplementerResultValue(value, options);
 }
 
 function parseImplementerResultValue(
   value: Record<string, unknown>,
+  options?: { expectedFindingIds?: readonly string[] },
 ):
   | { ok: true; result: ParsedImplementerResult }
   | { ok: false; reason: string } {
@@ -145,6 +155,14 @@ function parseImplementerResultValue(
     });
   }
 
+  const findingCompletions = parseFindingReworkCompletions(
+    value.findingCompletions,
+    options?.expectedFindingIds,
+  );
+  if (!findingCompletions.ok) {
+    return findingCompletions;
+  }
+
   if (outcome === "changed") {
     if (!isNonEmptyString(commitMessage)) {
       return {
@@ -159,6 +177,9 @@ function parseImplementerResultValue(
         summary,
         verification: steps,
         commitMessage: commitMessage.trim(),
+        ...(findingCompletions.result.length > 0
+          ? { findingCompletions: findingCompletions.result }
+          : {}),
       },
     };
   }
@@ -172,6 +193,9 @@ function parseImplementerResultValue(
       verification: steps,
       commitMessage:
         typeof commitMessage === "string" ? commitMessage.trim() : undefined,
+      ...(findingCompletions.result.length > 0
+        ? { findingCompletions: findingCompletions.result }
+        : {}),
     },
   };
 }
@@ -690,6 +714,7 @@ export function parseIntegrationSelfHealResult(
 
 export function parseOverallReworkResult(
   value: unknown,
+  options?: { expectedFindingIds?: readonly string[] },
 ): { ok: true; result: OverallReworkResult } | { ok: false; reason: string } {
   if (!isRecord(value)) {
     return {
@@ -736,6 +761,13 @@ export function parseOverallReworkResult(
     });
   }
 
+  const findingCompletions = parseFindingReworkCompletions(
+    value.findingCompletions,
+    options?.expectedFindingIds,
+  );
+  if (!findingCompletions.ok) {
+    return findingCompletions;
+  }
   return {
     ok: true,
     result: {
@@ -743,6 +775,9 @@ export function parseOverallReworkResult(
       verification: steps,
       commitMessage:
         typeof commitMessage === "string" ? commitMessage.trim() : undefined,
+      ...(findingCompletions.result.length > 0
+        ? { findingCompletions: findingCompletions.result }
+        : {}),
     },
   };
 }
@@ -779,6 +814,129 @@ export function parseSchedulerSelfHealResult(
           : undefined,
     },
   };
+}
+
+export function validateFindingCoverage(
+  expectedIds: readonly string[],
+  completions: readonly { id: string }[],
+  stage: string,
+): void {
+  const expected = new Set(expectedIds);
+  const seen = new Set<string>();
+  for (const completion of completions) {
+    if (!expected.has(completion.id)) {
+      throw new Error(`${stage} includes unknown finding ID: ${completion.id}`);
+    }
+    if (seen.has(completion.id)) {
+      throw new Error(
+        `${stage} includes finding ID more than once: ${completion.id}`,
+      );
+    }
+    seen.add(completion.id);
+  }
+  const missing = expectedIds.filter((id) => !seen.has(id));
+  if (missing.length > 0) {
+    throw new Error(`${stage} omitted finding IDs: ${missing.join(", ")}`);
+  }
+}
+
+function parseFindingReworkCompletions(
+  value: unknown,
+  expectedIds: readonly string[] | undefined,
+):
+  | { ok: true; result: ParsedFindingReworkCompletion[] }
+  | { ok: false; reason: string } {
+  if (expectedIds === undefined && value === undefined) {
+    return { ok: true, result: [] };
+  }
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      reason:
+        "Rework JSON must include findingCompletions for every outstanding finding.",
+    };
+  }
+  const completions: ParsedFindingReworkCompletion[] = [];
+  for (const completion of value) {
+    if (
+      !isRecord(completion) ||
+      !isNonEmptyString(completion.id) ||
+      (completion.status !== "addressed" &&
+        completion.status !== "not_addressed") ||
+      !isNonEmptyString(completion.evidence) ||
+      !Array.isArray(completion.changedPaths) ||
+      !completion.changedPaths.every(isNonEmptyString) ||
+      !Array.isArray(completion.verification) ||
+      completion.verification.length === 0
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each finding completion requires an ID, status, evidence, changedPaths, and verification.",
+      };
+    }
+    const verification = parseVerificationSteps(completion.verification);
+    if (!verification.ok) {
+      return verification;
+    }
+    if (
+      completion.status === "addressed" &&
+      completion.changedPaths.length === 0 &&
+      !/\b(no (source )?change|no code change|existing (behavior|implementation)|already (satisfied|correct)|verification only)\b/i.test(
+        completion.evidence,
+      )
+    ) {
+      return {
+        ok: false,
+        reason:
+          "An addressed completion without changedPaths must explain why no source change was necessary.",
+      };
+    }
+    completions.push({
+      id: completion.id.trim(),
+      status: completion.status,
+      evidence: completion.evidence.trim(),
+      changedPaths: completion.changedPaths.map((path) => path.trim()),
+      verification: verification.result,
+    });
+  }
+  if (expectedIds !== undefined) {
+    try {
+      validateFindingCoverage(expectedIds, completions, "Rework completion");
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+  return { ok: true, result: completions };
+}
+
+function parseVerificationSteps(
+  value: unknown[],
+): { ok: true; result: VerificationStep[] } | { ok: false; reason: string } {
+  const steps: VerificationStep[] = [];
+  for (const step of value) {
+    if (
+      !isRecord(step) ||
+      !isNonEmptyString(step.command) ||
+      !isNonEmptyString(step.result) ||
+      !isNonEmptyString(step.rationale)
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each verification entry must include command, result, and rationale strings.",
+      };
+    }
+    steps.push({
+      command: step.command.trim(),
+      result: step.result.trim(),
+      rationale: step.rationale.trim(),
+    });
+  }
+  return { ok: true, result: steps };
 }
 
 function parseRetryMode(

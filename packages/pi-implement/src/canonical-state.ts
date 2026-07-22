@@ -94,7 +94,15 @@ const reworkCompletionSchema = z
     status: z.enum(["addressed", "not_addressed"]),
     evidence: nonEmpty,
     changedPaths: z.array(nonEmpty),
-    verification: z.array(nonEmpty),
+    verification: z.array(
+      z
+        .object({
+          command: nonEmpty,
+          result: nonEmpty,
+          rationale: nonEmpty,
+        })
+        .strict(),
+    ),
   })
   .strict();
 
@@ -212,6 +220,7 @@ const reviewFindingSchema = z
   .object({
     id: nonEmpty,
     proposalId: nonEmpty.optional(),
+    basis: reviewProposalBasisSchema.optional(),
     summary: nonEmpty,
     evidence: nonEmpty,
     requiredChange: nonEmpty,
@@ -248,6 +257,7 @@ export const canonicalReviewSchema = z
     previousOutstandingCount: z.number().int().nonnegative().optional(),
     consecutiveStalledRounds: z.number().int().nonnegative(),
     latestRework: z.array(reworkCompletionSchema).optional(),
+    reworkObligationIds: z.array(nonEmpty).optional(),
     evidenceRefs: z.array(nonEmpty),
     previousCandidatePatch: z.string().optional(),
     latestEvidence: z.string().optional(),
@@ -853,8 +863,16 @@ function invariantIssues(
       );
       if (
         new Set(covered).size !== covered.length ||
-        covered.length !== convergence.outstandingFindingIds.length ||
-        covered.some((id) => !convergence.outstandingFindingIds.includes(id))
+        covered.length !==
+          (convergence.reworkObligationIds ?? convergence.outstandingFindingIds)
+            .length ||
+        covered.some(
+          (id) =>
+            !(
+              convergence.reworkObligationIds ??
+              convergence.outstandingFindingIds
+            ).includes(id),
+        )
       ) {
         issues.push(
           `review convergence ${key} rework does not exactly cover outstanding findings`,

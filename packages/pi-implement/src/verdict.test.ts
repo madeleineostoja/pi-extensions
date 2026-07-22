@@ -5,6 +5,7 @@ import {
   parseInitialReviewResult,
   parseAdmissionResult,
   parseIntegrationSelfHealResult,
+  parseOverallReworkResult,
 } from "./verdict.js";
 
 describe("typed result validators", () => {
@@ -115,6 +116,71 @@ describe("typed result validators", () => {
         ["R1"],
       ),
     ).toMatchObject({ ok: false, reason: expect.stringContaining("unknown") });
+  });
+
+  it("requires exact finding coverage for task and overall rework", () => {
+    const completion = {
+      id: "R1",
+      status: "addressed",
+      evidence: "validator rejects empty input",
+      changedPaths: ["src/input.ts"],
+      verification: [
+        { command: "npm test", result: "passed", rationale: "covers input" },
+      ],
+    };
+    expect(
+      parseImplementerResult(
+        {
+          outcome: "changed",
+          summary: "Added validation.",
+          verification: completion.verification,
+          findingCompletions: [completion],
+          commitMessage: "fix: validate input",
+        },
+        { expectedFindingIds: ["R1"] },
+      ),
+    ).toMatchObject({ ok: true });
+    expect(
+      parseImplementerResult(
+        {
+          outcome: "changed",
+          summary: "Added validation.",
+          verification: completion.verification,
+          findingCompletions: [completion, completion],
+          commitMessage: "fix: validate input",
+        },
+        { expectedFindingIds: ["R1"] },
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("more than once"),
+    });
+    expect(
+      parseOverallReworkResult(
+        { summary: "Fixed it.", verification: completion.verification },
+        { expectedFindingIds: ["O1"] },
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("findingCompletions"),
+    });
+    expect(
+      parseImplementerResult(
+        {
+          outcome: "changed",
+          summary: "Verified existing behavior.",
+          verification: completion.verification,
+          findingCompletions: [
+            { ...completion, changedPaths: [], evidence: "It is fixed." },
+          ],
+          commitMessage: "fix: validate input",
+        },
+        { expectedFindingIds: ["R1"] },
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("no source change"),
+    });
   });
 
   it("normalizes proposal IDs and parses explicit admission certainty", () => {

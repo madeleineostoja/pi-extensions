@@ -7,6 +7,16 @@ const verificationStepSchema = Type.Object({
   result: nonEmptyString(),
   rationale: nonEmptyString(),
 });
+const findingReworkCompletionSchema = Type.Object({
+  id: nonEmptyString(),
+  status: Type.Union([
+    Type.Literal("addressed"),
+    Type.Literal("not_addressed"),
+  ]),
+  evidence: nonEmptyString(),
+  changedPaths: Type.Array(nonEmptyString()),
+  verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+});
 const papercutCandidatesSchema = Type.Optional(
   Type.Array(Type.Unknown(), {
     description:
@@ -127,12 +137,18 @@ export const implementerResultSchema = Type.Union([
     outcome: Type.Literal("changed"),
     summary: nonEmptyString(),
     verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+    findingCompletions: Type.Optional(
+      Type.Array(findingReworkCompletionSchema),
+    ),
     commitMessage: nonEmptyString(),
   }),
   withPapercuts({
     outcome: Type.Literal("already_satisfied"),
     summary: nonEmptyString(),
     verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+    findingCompletions: Type.Optional(
+      Type.Array(findingReworkCompletionSchema),
+    ),
     commitMessage: Type.Optional(nonEmptyString()),
   }),
 ]);
@@ -290,6 +306,7 @@ export const schedulerSelfHealSchema = withPapercuts({
 export const overallReworkSchema = withPapercuts({
   summary: nonEmptyString(),
   verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+  findingCompletions: Type.Optional(Type.Array(findingReworkCompletionSchema)),
   commitMessage: Type.Optional(nonEmptyString()),
 });
 
@@ -301,6 +318,9 @@ export type SourceMaterialRepairCompletion = Static<
 >;
 export type NeedsMaterialCompletion = Static<
   typeof needsMaterialResponseSchema
+>;
+export type FindingReworkCompletion = Static<
+  typeof findingReworkCompletionSchema
 >;
 export type ImplementerCompletion = Static<typeof implementerResultSchema>;
 export type ReviewFindingDraft = Static<typeof reviewFindingDraftSchema>;

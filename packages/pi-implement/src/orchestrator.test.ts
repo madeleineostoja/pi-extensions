@@ -479,6 +479,17 @@ const GOOD_REWORK = {
   verification: [
     { command: "tests", result: "passed", rationale: "covers change" },
   ],
+  findingCompletions: [
+    {
+      id: "O1",
+      status: "addressed",
+      evidence: "Added the requested integration test.",
+      changedPaths: ["test/integration.test.ts"],
+      verification: [
+        { command: "tests", result: "passed", rationale: "covers change" },
+      ],
+    },
+  ],
   commitMessage: "fix: address overall review",
 };
 
@@ -2654,7 +2665,21 @@ describe("runImplementation", () => {
       subagents.results = [
         { status: "completed", result: GOOD_IMPL },
         { status: "completed", result: args.reviewerResult ?? GOOD_REVIEW },
-        { status: "completed", result: GOOD_IMPL },
+        {
+          status: "completed",
+          result: {
+            ...GOOD_IMPL,
+            findingCompletions: [
+              {
+                id: "R1",
+                status: "addressed",
+                evidence: "Applied the requested correction.",
+                changedPaths: ["file.ts"],
+                verification: GOOD_IMPL.verification,
+              },
+            ],
+          },
+        },
         {
           status: "completed",
           result: args.reworkReviewerResult ?? GOOD_REVIEW,

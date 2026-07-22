@@ -144,10 +144,22 @@ export function buildImplementerPrompt(args: {
   selectedTaskId?: string;
   feedback?: string;
   priorSummary?: string;
+  findingCompletions?: Array<{
+    id: string;
+    sourceScope: "task_review" | "integration_fallback";
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+    basis?: unknown;
+  }>;
 }): string {
-  const retry = args.feedback
-    ? `\n## Retry Context\n\nPrevious attempt summary:\n${args.priorSummary ?? "(none)"}\n\nFeedback to address:\n${args.feedback}\n`
+  const reworkProtocol = args.findingCompletions?.length
+    ? `\n## Rework Completion Protocol\n\nFor every supplied finding, return findingCompletions with each ID exactly once as addressed or not_addressed. Each completion requires concrete evidence, changedPaths, and finding-level verification. An addressed completion with no changed paths must explain why no source change was necessary. Your declaration is evidence for anchored review; it does not resolve a finding itself.\n\n${args.findingCompletions.map((finding) => `- ${finding.id} [${finding.sourceScope}]\n  Demonstrated defect: ${finding.evidence}\n  Requirement / acceptance basis: ${finding.acceptanceCriteria.join("; ")}\n  Requirement reference: ${JSON.stringify(finding.basis ?? "not recorded")}\n  Minimum observable correction: ${finding.requiredChange}`).join("\n")}`
     : "";
+  const retry = args.feedback
+    ? `\n## Retry Context\n\nPrevious attempt summary:\n${args.priorSummary ?? "(none)"}\n\nFeedback to address:\n${args.feedback}${reworkProtocol}\n`
+    : reworkProtocol;
   const intro = `You are the pi-implement implementer for exactly one task. This prompt is the complete task packet and must work even if your subagent definition is generic.
 
 Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification, never ask how to proceed, and never wait for input. Make reasonable decisions yourself and finish with the result block.
@@ -202,6 +214,16 @@ export function buildIntegrationReviewerPrompt(args: {
     requiredChange: string;
     acceptanceCriteria: string[];
   }>;
+  previousCandidate?: string;
+  currentCandidate?: string;
+  latestDelta?: string;
+  reworkCompletions?: Array<{
+    id: string;
+    status: "addressed" | "not_addressed";
+    evidence: string;
+    changedPaths: string[];
+    verification: Array<{ command: string; result: string; rationale: string }>;
+  }>;
 }): string {
   const anchored = args.outstandingFindings
     ? `\n## Outstanding Integration Findings\n\n${args.outstandingFindings.map((finding) => `- ${finding.id}: ${finding.summary}\n  Evidence: ${finding.evidence}\n  Required change: ${finding.requiredChange}\n  Acceptance: ${finding.acceptanceCriteria.join("; ")}`).join("\n")}\n`
@@ -209,8 +231,11 @@ export function buildIntegrationReviewerPrompt(args: {
   const deferred = args.deferredConcerns?.length
     ? `\n## Deferred Concerns\n\n${args.deferredConcerns.map((concern) => `- ${concern.id}: ${concern.summary}\n  Evidence: ${concern.evidence}\n  Basis: ${JSON.stringify(concern.basis)}`).join("\n")}\n`
     : "";
+  const anchoredContext = args.outstandingFindings
+    ? `\n## Anchored Candidate Context\n\nPrevious candidate: ${args.previousCandidate ?? "unknown"}\nCurrent candidate: ${args.currentCandidate ?? "unknown"}\n\nExact previous→current delta:\n\`\`\`diff\n${args.latestDelta ?? args.diff}\n\`\`\`\n\n## Owner Rework Declarations\n\n${args.reworkCompletions?.map((completion) => `- ${completion.id}: ${completion.status}\n  Evidence: ${completion.evidence}\n  Changed paths: ${completion.changedPaths.join(", ") || "none"}\n  Verification: ${completion.verification.map((step) => `${step.command}: ${step.result}`).join("; ")}`).join("\n") || "No matching declarations were recorded."}\n`
+    : "";
   const resultProtocol = args.outstandingFindings
-    ? "Return an anchored assessment for every outstanding ID exactly once, attributable regression proposals caused by the staged delta, and optional observations."
+    ? "Return an anchored assessment for every outstanding ID exactly once, attributable regression proposals caused by the exact latest delta, and optional observations."
     : "Return approved or changes_requested with atomic proposal findings. Each proposal needs summary, evidence, requiredChange, acceptanceCriteria, and a grounded basis: requirement, candidate_regression, or correctness_invariant. Findings are proposals until separately admitted.";
   return `Review this integrated task diff on the main checkout.
 
@@ -219,7 +244,7 @@ No command validation is configured or auto-detected. Decide whether the integra
 Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, or run any command that changes files or git state. Use read-only commands only.
 
 Plan artifacts are not part of the implementation commit and should be ignored: ${args.planArtifacts.join(", ")}
-${anchored}${deferred}
+${anchored}${deferred}${anchoredContext}
 ## Staged Diff
 
 \`\`\`diff
@@ -464,6 +489,15 @@ export function buildOverallReworkPrompt(args: {
   recommendationMarkdown?: string;
   priorAttemptFailures?: string[];
   executionManifest?: ExecutionManifest;
+  findingCompletions?: Array<{
+    id: string;
+    sourceScope: "task_review" | "integration_fallback";
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+    basis?: unknown;
+  }>;
 }): string {
   const runSection = args.runId ? `\nRun ID: ${args.runId}\n` : "\n";
   const taskSection =
@@ -490,6 +524,9 @@ export function buildOverallReworkPrompt(args: {
   const manifestSection = formatExecutionManifestSummary(
     args.executionManifest,
   );
+  const reworkProtocol = args.findingCompletions?.length
+    ? `\n## Rework Completion Protocol\n\nReturn findingCompletions with every supplied ID exactly once as addressed or not_addressed. Each completion requires concrete evidence, changedPaths, and finding-level verification. An addressed completion with no changed paths must explain why no source change was necessary. Declarations are anchored-review evidence, not self-resolution.\n\n${args.findingCompletions.map((finding) => `- ${finding.id} [${finding.sourceScope}]\n  Demonstrated defect: ${finding.evidence}\n  Requirement / acceptance basis: ${finding.acceptanceCriteria.join("; ")}\n  Requirement reference: ${JSON.stringify(finding.basis ?? "not recorded")}\n  Minimum observable correction: ${finding.requiredChange}`).join("\n")}`
+    : "";
 
   return `You are the pi-implement overall rework implementer. Your job is to address the overall review feedback for the completed feature.
 
@@ -520,7 +557,7 @@ ${args.diff}
 ## Required Changes
 
 ${requiredChanges.map((c) => `- ${c}`).join("\n")}
-${recommendationSection}${priorFailuresSection}
+${reworkProtocol}${recommendationSection}${priorFailuresSection}
 ${PAPERCUT_GUIDANCE}
 
 Submit the overall rework result through the injected completion tool as your final action.
@@ -627,6 +664,13 @@ export function buildAnchoredTaskReviewPrompt(args: {
   previousCandidate: string;
   currentCandidate: string;
   latestDelta: string;
+  reworkCompletions?: Array<{
+    id: string;
+    status: "addressed" | "not_addressed";
+    evidence: string;
+    changedPaths: string[];
+    verification: Array<{ command: string; result: string; rationale: string }>;
+  }>;
   responsibilityContext?: ReviewResponsibilityContext;
   selectedTaskId?: string;
 }): string {
@@ -666,6 +710,13 @@ export function buildAnchoredOverallReviewPrompt(args: {
   previousCandidate: string;
   currentCandidate: string;
   latestDelta: string;
+  reworkCompletions?: Array<{
+    id: string;
+    status: "addressed" | "not_addressed";
+    evidence: string;
+    changedPaths: string[];
+    verification: Array<{ command: string; result: string; rationale: string }>;
+  }>;
   worktreePath?: string;
 }): string {
   return `${buildAnchoredReviewPrompt({
@@ -729,6 +780,13 @@ function buildAnchoredReviewPrompt(args: {
   previousCandidate: string;
   currentCandidate: string;
   latestDelta: string;
+  reworkCompletions?: Array<{
+    id: string;
+    status: "addressed" | "not_addressed";
+    evidence: string;
+    changedPaths: string[];
+    verification: Array<{ command: string; result: string; rationale: string }>;
+  }>;
   responsibilityContext?: ReviewResponsibilityContext;
   selectedTaskId?: string;
 }): string {
@@ -748,6 +806,8 @@ Previous candidate: ${args.previousCandidate}
 Current candidate: ${args.currentCandidate}
 
 ${args.candidateContext}
+
+${args.reworkCompletions?.length ? `## Implementer Rework Declarations\n\n${args.reworkCompletions.map((completion) => `- ${completion.id}: ${completion.status}\n  Evidence: ${completion.evidence}\n  Changed paths: ${completion.changedPaths.join(", ") || "none"}\n  Verification: ${completion.verification.map((step) => `${step.command}: ${step.result}`).join("; ") || "none"}`).join("\n")}` : "## Implementer Rework Declarations\n\nNo rework declarations were supplied."}
 
 ## Prior Required Changes
 

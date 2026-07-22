@@ -137,6 +137,7 @@ export function evaluateFindingAdmission(args: {
           evidence: proposal.evidence,
           requiredChange: proposal.requiredChange,
           acceptanceCriteria: proposal.acceptanceCriteria,
+          basis: proposal.basis,
         };
       }),
     deferredConcerns: admissions

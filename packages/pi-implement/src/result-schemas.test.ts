@@ -6,6 +6,8 @@ import {
   initialOverallReviewSchema,
   findingAdmissionBatchSchema,
   sourceMaterialRepairSchema,
+  implementerResultSchema,
+  overallReworkSchema,
 } from "./result-schemas.js";
 
 describe("managed completion schemas", () => {
@@ -111,6 +113,38 @@ describe("managed completion schemas", () => {
       Value.Check(findingAdmissionBatchSchema, {
         proposalBatchId: "batch",
         dispositions: [{ proposalId: "P1", disposition: "admit" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("requires structured per-finding rework completions when supplied", () => {
+    const completion = {
+      id: "R1",
+      status: "addressed",
+      evidence: "The input validator now rejects empty values.",
+      changedPaths: ["src/input.ts"],
+      verification: [
+        {
+          command: "npm test",
+          result: "passed",
+          rationale: "Covers invalid input.",
+        },
+      ],
+    };
+    expect(
+      Value.Check(implementerResultSchema, {
+        outcome: "changed",
+        summary: "Added validation.",
+        verification: completion.verification,
+        findingCompletions: [completion],
+        commitMessage: "fix: validate input",
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(overallReworkSchema, {
+        summary: "Added validation.",
+        verification: completion.verification,
+        findingCompletions: [{ ...completion, status: "unknown" }],
       }),
     ).toBe(false);
   });

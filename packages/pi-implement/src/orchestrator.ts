@@ -2486,7 +2486,22 @@ async function launchTaskWorker(
         branchName,
         worktreePath,
         review: taskJson?.review,
-        artifactRefs: [],
+        artifactRefs: deps.paths
+          ? [
+              join(
+                deps.paths.runDir,
+                "artifacts",
+                taskId,
+                "implementer-result.json",
+              ),
+              join(
+                deps.paths.runDir,
+                "artifacts",
+                taskId,
+                "reviewer-result.json",
+              ),
+            ]
+          : [],
         protectedPaths: taskPlanArtifacts,
         assessedAt: new Date().toISOString(),
         reviewContext: {
@@ -4310,10 +4325,37 @@ async function runIntegrationReviewFallback(
         fallbackState.outstandingIds.includes(finding.id),
       )
     : undefined;
+  const candidateFingerprint = await deps.git.stagedFingerprint();
+  const previousPatch =
+    schedulerTask?.integrationLedger?.fallbackCandidatePatch;
+  const anchoredDelta =
+    fallbackState && previousPatch !== undefined
+      ? await deps.git.stagedDeltaFromPatch(previousPatch)
+      : undefined;
+  const latestDeltaPaths = anchoredDelta
+    ? parseNameStatusPaths(anchoredDelta.nameStatus)
+    : [];
+  const ownerRework = deps.canonicalRunStore
+    ?.read()
+    .reviewConvergence[taskId]?.latestRework?.filter((completion) =>
+      outstanding?.some((finding) => finding.id === completion.findingId),
+    )
+    .map((completion) => ({
+      id: completion.findingId,
+      status: completion.status,
+      evidence: completion.evidence,
+      changedPaths: completion.changedPaths,
+      verification: completion.verification,
+    }));
   const prompt = buildIntegrationReviewerPrompt({
     diff,
     planArtifacts,
     outstandingFindings: outstanding,
+    previousCandidate:
+      schedulerTask?.integrationLedger?.fallbackCandidateFingerprint,
+    currentCandidate: candidateFingerprint,
+    latestDelta: anchoredDelta?.diff,
+    reworkCompletions: ownerRework,
   });
 
   const id = await deps.subagents.spawn({
@@ -4401,7 +4443,6 @@ async function runIntegrationReviewFallback(
         reason: "Integration fallback ledger is unavailable.",
       };
     }
-    const candidateFingerprint = await deps.git.stagedFingerprint();
     const candidatePatch = await deps.git.stagedDiff();
     if (!fallbackState) {
       const parsed = parseInitialReviewResult(result.result, {
@@ -4485,11 +4526,6 @@ async function runIntegrationReviewFallback(
       );
     }
     try {
-      const previousPatch =
-        schedulerTask.integrationLedger.fallbackCandidatePatch ?? "";
-      const latestDeltaPaths = parseNameStatusPaths(
-        (await deps.git.stagedDeltaFromPatch(previousPatch)).nameStatus,
-      );
       const regressionProposals = parsed.result.regressions.map(
         (regression, index) => ({
           ...regression,
@@ -4589,6 +4625,13 @@ export function nextOverallReviewArtifactPath(planPath: string): string {
 
 type OverallReviewState = {
   baseSha: string;
+  latestRework?: Array<{
+    findingId: string;
+    status: "addressed" | "not_addressed";
+    evidence: string;
+    changedPaths: string[];
+    verification: Array<{ command: string; result: string; rationale: string }>;
+  }>;
   branchName: string;
   worktreePath: string;
   candidate: CandidateMetadata;
@@ -4804,6 +4847,7 @@ function persistOverallReviewState(
         previousCandidate: overall.previousCandidate,
         previousCandidatePatch: overall.previousCandidatePatch,
         latestEvidence: overall.latestEvidence,
+        latestRework: overall.latestRework,
       },
       integrationLedger: overall.integrationLedger,
       status,
@@ -4983,6 +5027,13 @@ async function reviewOverallCandidate(args: {
         previousCandidate: state.previousCandidate ?? state.baseSha,
         currentCandidate: candidate,
         latestDelta: args.latestDelta,
+        reworkCompletions: state.latestRework?.map((completion) => ({
+          id: completion.findingId,
+          status: completion.status,
+          evidence: completion.evidence,
+          changedPaths: completion.changedPaths,
+          verification: completion.verification,
+        })),
         worktreePath: state.worktreePath,
       });
   persistOverallArtifact(
@@ -5294,6 +5345,7 @@ async function runConvergentOverallReviewLoop(
       previousCandidate: retained.convergence.previousCandidate,
       previousCandidatePatch: retained.convergence.previousCandidatePatch,
       latestEvidence: retained.convergence.latestEvidence,
+      latestRework: retained.convergence.latestRework,
       integrationLedger: retained.integrationLedger,
     };
   } else {
@@ -5449,6 +5501,10 @@ async function runConvergentOverallReviewLoop(
         ? [overall.latestEvidence]
         : undefined,
       executionManifest: deps.executionManifest,
+      findingCompletions: outstanding.map((finding) => ({
+        ...finding,
+        sourceScope: "task_review" as const,
+      })),
     });
     deps.updateState({ phase: "final_rework", activeSubagentId: undefined });
     persistOverallArtifact(
@@ -5488,7 +5544,9 @@ async function runConvergentOverallReviewLoop(
     );
     const parsedRework =
       result.status === "completed"
-        ? parseOverallReworkResult(result.result)
+        ? parseOverallReworkResult(result.result, {
+            expectedFindingIds: outstanding.map((finding) => finding.id),
+          })
         : undefined;
     if (result.status !== "completed" || !parsedRework?.ok) {
       const reason =
@@ -5545,6 +5603,29 @@ async function runConvergentOverallReviewLoop(
       );
     }
     await recordPapercuts(deps, parsedRework, "overall-rework");
+    (
+      overall as OverallReviewState & {
+        latestRework?: Array<{
+          findingId: string;
+          status: "addressed" | "not_addressed";
+          evidence: string;
+          changedPaths: string[];
+          verification: Array<{
+            command: string;
+            result: string;
+            rationale: string;
+          }>;
+        }>;
+      }
+    ).latestRework = parsedRework.result.findingCompletions?.map(
+      (completion) => ({
+        findingId: completion.id,
+        status: completion.status,
+        evidence: completion.evidence,
+        changedPaths: completion.changedPaths,
+        verification: completion.verification,
+      }),
+    );
     await candidateGit.stageAllExcept(candidatePlanArtifacts);
     const checkpoint = await checkpointCandidate(
       candidateGit,
@@ -5724,14 +5805,18 @@ async function runConvergentOverallReviewLoop(
       runId: deps.runId ?? "overall",
       assessedAt: new Date().toISOString(),
       evidenceRefs: [
+        "implementer-result.json",
+        "reviewer-result.json",
+        "finding-transition.json",
+      ].map((filename) =>
         join(
           deps.paths?.runDir ?? dirname(worktreePath),
           "overall-review",
           "rounds",
           String(Math.max(1, attempt)).padStart(3, "0"),
-          "finding-transition.json",
+          filename,
         ),
-      ],
+      ),
     });
     await schedulerActor.recordOverallCandidate(canonicalCandidate);
     const started = await schedulerActor.requestOverallIntegration({
@@ -6234,13 +6319,27 @@ async function persistCanonicalReviewConvergence(
   for (;;) {
     const current = store.read();
     try {
-      await store.update(current.revision, (state) => ({
-        ...state,
-        reviewConvergence: {
-          ...state.reviewConvergence,
-          [taskId]: { owner: { kind: "task", taskId }, ...convergence },
-        },
-      }));
+      await store.update(current.revision, (state) => {
+        const previous = state.reviewConvergence[taskId];
+        return {
+          ...state,
+          reviewConvergence: {
+            ...state.reviewConvergence,
+            [taskId]: {
+              owner: { kind: "task", taskId },
+              ...convergence,
+              ...(convergence.latestRework === undefined &&
+              previous?.latestRework
+                ? { latestRework: previous.latestRework }
+                : {}),
+              ...(convergence.reworkObligationIds === undefined &&
+              previous?.reworkObligationIds
+                ? { reworkObligationIds: previous.reworkObligationIds }
+                : {}),
+            },
+          },
+        };
+      });
       return;
     } catch (error) {
       if (error instanceof StaleRunStateRevisionError) {
@@ -6623,6 +6722,30 @@ async function runTaskWorker(args: {
       updateState: deps.updateState,
       signal: deps.signal,
     });
+    const taskReworkFindings = reviewState
+      ? reviewState.findings.filter((finding) =>
+          reviewState!.outstandingIds.includes(finding.id),
+        )
+      : [];
+    const integrationReworkFindings = schedulerTask?.integrationLedger
+      ?.fallbackReview
+      ? schedulerTask.integrationLedger.fallbackReview.findings.filter(
+          (finding) =>
+            schedulerTask.integrationLedger!.fallbackReview!.outstandingIds.includes(
+              finding.id,
+            ),
+        )
+      : [];
+    const reworkObligationPacket = [
+      ...taskReworkFindings.map((finding) => ({
+        ...finding,
+        sourceScope: "task_review" as const,
+      })),
+      ...integrationReworkFindings.map((finding) => ({
+        ...finding,
+        sourceScope: "integration_fallback" as const,
+      })),
+    ];
     const implementerPrompt = buildImplementerPrompt({
       compiledContract,
       worktreePath: effectiveWorktreePath,
@@ -6631,6 +6754,7 @@ async function runTaskWorker(args: {
       selectedTaskId: compiledContractEntry.id,
       feedback: feedback ? formatFeedback(feedback) : undefined,
       priorSummary,
+      findingCompletions: reworkObligationPacket,
     });
     deps.updateState({
       phase: "coding",
@@ -6868,7 +6992,16 @@ async function runTaskWorker(args: {
       throw new BlockedError("implementer changed task worktree HEAD");
     }
 
-    let parsed = parseImplementerResult(implementation.result);
+    let parsed = parseImplementerResult(
+      implementation.result,
+      reworkObligationPacket.length > 0
+        ? {
+            expectedFindingIds: reworkObligationPacket.map(
+              (finding) => finding.id,
+            ),
+          }
+        : {},
+    );
     if (!parsed.ok) {
       await quarantineAndRestore("implementer returned an invalid completion");
     }
@@ -6935,6 +7068,7 @@ async function runTaskWorker(args: {
           commitMessage: isValidCommitMessage(parsed.result.commitMessage ?? "")
             ? parsed.result.commitMessage!.trim()
             : fallbackCommitMessage(task.text),
+          findingCompletions: parsed.result.findingCompletions,
         },
       };
     }
@@ -6948,6 +7082,15 @@ async function runTaskWorker(args: {
     let latestDeltaPaths: string[] = [];
     let latestDelta = "(no candidate delta)";
     let semanticNoop = false;
+    const latestRework = parsed.ok
+      ? parsed.result.findingCompletions?.map((completion) => ({
+          findingId: completion.id,
+          status: completion.status,
+          evidence: completion.evidence,
+          changedPaths: completion.changedPaths,
+          verification: completion.verification,
+        }))
+      : undefined;
 
     if (hasStaged) {
       fingerprintBefore = await taskGit.stagedFingerprint();
@@ -7113,6 +7256,9 @@ async function runTaskWorker(args: {
           previousCandidate: previousCandidate ?? "(initial candidate)",
           currentCandidate: candidateIdentity,
           latestDelta,
+          reworkCompletions: parsed.result.findingCompletions?.filter(
+            (completion) => reviewState!.outstandingIds.includes(completion.id),
+          ),
           responsibilityContext,
           selectedTaskId: compiledContractEntry.id,
         })
@@ -7163,6 +7309,8 @@ async function runTaskWorker(args: {
       previousCandidatePatch,
       latestEvidence,
       verificationFailures,
+      latestRework,
+      reworkObligationIds: reworkObligationPacket.map((finding) => finding.id),
     });
 
     {
@@ -7365,10 +7513,40 @@ async function runTaskWorker(args: {
           }
           let update;
           try {
+            const regressionProposals = parsedReview.result.regressions.map(
+              (regression, index) => ({
+                ...regression,
+                proposalId: `R${index + 1}`,
+                basis: {
+                  kind: "candidate_regression" as const,
+                  changedPaths: regression.changedPaths,
+                  causalEvidence: regression.causalEvidence,
+                },
+              }),
+            );
+            const regressionAdmission = regressionProposals.length
+              ? await admitReviewProposals({
+                  deps,
+                  scope: "task",
+                  taskId,
+                  compiledContract,
+                  candidateIdentity,
+                  latestDeltaPaths,
+                  proposals: regressionProposals,
+                })
+              : undefined;
+            const admittedProposalIds = new Set(
+              regressionAdmission?.admittedDrafts.map(
+                (draft) => draft.proposalId,
+              ) ?? [],
+            );
+            const admittedRegressions = parsedReview.result.regressions.filter(
+              (_regression, index) => admittedProposalIds.has(`R${index + 1}`),
+            );
             if (anchoredReviewState.outstandingIds.length === 0) {
               const regressionEpoch = openRegressionReviewEpoch({
                 closedState: anchoredReviewState,
-                regressions: parsedReview.result.regressions,
+                regressions: admittedRegressions,
                 latestDeltaPaths,
               });
               reviewEpoch++;
@@ -7387,7 +7565,10 @@ async function runTaskWorker(args: {
             } else {
               update = applyAnchoredReview({
                 state: anchoredReviewState,
-                review: parsedReview.result,
+                review: {
+                  ...parsedReview.result,
+                  regressions: admittedRegressions,
+                },
                 latestDeltaPaths,
               });
             }

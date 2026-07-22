@@ -2,11 +2,13 @@ import type {
   FindingAssessment,
   RegressionFindingDraft,
   ReviewFindingDraft,
+  ReviewFindingProposal,
   ReviewObservation,
 } from "./result-schemas.js";
 
 export type ReviewFinding = ReviewFindingDraft & {
   proposalId?: string;
+  basis?: ReviewFindingProposal["basis"];
   id: string;
   introducedRound: number;
   origin: "initial" | "regression";
