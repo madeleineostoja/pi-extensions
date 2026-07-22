@@ -157,6 +157,7 @@ export type RunManagedAgentInput<
   owner?: RuntimeOwner;
   tools?: string[];
   excludeTools?: string[];
+  noTools?: boolean;
   systemPrompt?: string;
   systemPromptMode?: PromptMode;
   rosterVisibility?: RosterVisibility;
@@ -1299,7 +1300,12 @@ export class SubagentRuntime {
         return record.finalization ?? projectSnapshot(record);
       }
       record.extensionBinding = "bound";
-      this.#inheritActiveTools(record, initializedSession, input.tools);
+      this.#inheritActiveTools(
+        record,
+        initializedSession,
+        input.tools,
+        input.noTools,
+      );
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         return record.finalization ?? projectSnapshot(record);
       }
@@ -1420,7 +1426,14 @@ export class SubagentRuntime {
     record: RuntimeRecord,
     session: AgentSession,
     explicitTools?: string[],
+    noTools?: boolean,
   ): void {
+    if (noTools) {
+      session.setActiveToolsByName(
+        record.completion ? [MANAGED_COMPLETION_TOOL_NAME] : [],
+      );
+      return;
+    }
     const getActiveTools = this.pi.getActiveTools?.bind(this.pi);
     const registered = getActiveTools?.();
     const allowExplore =

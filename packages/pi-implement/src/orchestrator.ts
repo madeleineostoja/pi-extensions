@@ -11,6 +11,9 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   buildAnchoredTaskReviewPrompt,
   buildInitialTaskReviewPrompt,
+  buildTaskFindingAdmissionPrompt,
+  buildFindingAdmissionPrompt,
+  FINDING_ADMISSION_SYSTEM_PROMPT,
   buildImplementerPrompt,
   buildIntegrationReviewerPrompt,
   buildIntegrationSelfHealPrompt,
@@ -28,6 +31,7 @@ import {
   type NeedsMaterialRequest,
 } from "./needs-material.js";
 import {
+  buildReviewResponsibilityContext,
   generateMinimalExecutionManifest,
   readExecutionManifest,
   renderCompiledContract,
@@ -46,6 +50,7 @@ import type { CommandResult, GitClient } from "./git.js";
 import { runCommand } from "./git-process.js";
 import {
   RunStore,
+  StaleRunStateRevisionError,
   type CandidateRef,
   type CanonicalRunState,
 } from "./canonical-state.js";
@@ -65,7 +70,7 @@ import {
   type CandidateMetadata,
   type RestoreSnapshot,
 } from "./candidate.js";
-import type { SubagentClient } from "./subagents.js";
+import type { SubagentClient, SubagentResult } from "./subagents.js";
 import type { EffectiveRoles } from "./config.js";
 import {
   persistPapercutCandidates,
@@ -76,6 +81,7 @@ import type {
   ScheduledTaskState,
   AgentDisplayRef,
   StatePatch,
+  ReviewProgress,
 } from "./status.js";
 import {
   fallbackCommitMessage,
@@ -83,11 +89,13 @@ import {
   parseAnchoredReviewResult,
   parseImplementerResult,
   parseInitialReviewResult,
+  parseAdmissionResult,
   parseIntegrationSelfHealResult,
   parseOverallReworkResult,
 } from "./verdict.js";
 import type { IntegrationSelfHealResult } from "./verdict.js";
 import type { OverallReviewJson, StatePaths, TaskJson } from "./state.js";
+import type { IntegrationLedger } from "./integration-ledger.js";
 import {
   writeTaskJson,
   appendEvent,
@@ -103,6 +111,7 @@ import {
   anchoredReviewSchema,
   implementerResultSchema,
   initialTaskReviewSchema,
+  findingAdmissionBatchSchema,
   integrationAnchoredReviewSchema,
   integrationInitialReviewSchema,
   integrationSelfHealSchema,
@@ -111,6 +120,10 @@ import {
   sourceMaterialRepairSchema,
 } from "./result-schemas.js";
 import type { ImplementGraph } from "./graph.js";
+import {
+  createProposalBatchId,
+  evaluateFindingAdmission,
+} from "./finding-admission.js";
 import {
   applyAnchoredReview,
   applyNoopReview,
@@ -1661,7 +1674,8 @@ async function runScheduledImplementation(
           targetBranch,
           protectedPaths: planArtifacts,
           validate: async ({ worktreePath, signal: validationSignal }) => {
-            for (const command of await resolveValidationCommands(deps)) {
+            const commands = await resolveValidationCommands(deps);
+            for (const command of commands) {
               const result = await runValidationCommand(
                 command,
                 worktreePath,
@@ -1674,7 +1688,45 @@ async function runScheduledImplementation(
                 };
               }
             }
-            return { ok: true };
+            if (commands.length > 0 || attempt.owner.kind !== "task") {
+              return { ok: true };
+            }
+            const stagingGit = (
+              deps.git.withSignal?.(validationSignal) ?? deps.git
+            ).forWorktree(worktreePath, await deps.git.root());
+            const stagingPlanArtifacts = overallWorktreePlanArtifacts(
+              worktreePath,
+              await deps.git.root(),
+              planArtifacts,
+            );
+            const schedulerTask = sched.tasks.get(attempt.owner.taskId);
+            if (!schedulerTask) {
+              return {
+                ok: false,
+                reason: "Canonical fallback review has no scheduler task.",
+              };
+            }
+            if (!schedulerTask.integrationLedger) {
+              schedulerTask.integrationLedger = createIntegrationLedger({
+                mainBaseSha: integrationAttempt.targetBaseSha,
+                gates: [
+                  {
+                    key: "fallback",
+                    kind: "fallback",
+                    label: "Fallback integration review",
+                  },
+                ],
+              });
+            }
+            const verdict = await runIntegrationReviewFallback(
+              { ...deps, git: stagingGit },
+              attempt.owner.taskId,
+              stagingPlanArtifacts,
+              schedulerTask,
+            );
+            return verdict.ok
+              ? { ok: true }
+              : { ok: false, reason: verdict.reason };
           },
         });
         const preparation =
@@ -2185,6 +2237,24 @@ function schedulerRunFromCanonical(
     if (execution) {
       Object.assign(task, execution);
     }
+    const canonicalFallback =
+      canonical.reviewConvergence[`integration:${task.id}`];
+    if (canonicalFallback) {
+      const fallbackReview: ReviewConvergenceState = {
+        round: canonicalFallback.round,
+        findings: canonicalFallback.findings,
+        outstandingIds: canonicalFallback.outstandingFindingIds,
+        bestOutstandingCount: canonicalFallback.bestOutstandingCount,
+        consecutiveStalledRounds: canonicalFallback.consecutiveStalledRounds,
+      };
+      task.integrationLedger = {
+        ...(task.integrationLedger ??
+          recoveredIntegrationLedger(canonicalFallback.candidate.current)),
+        fallbackReview,
+        fallbackCandidateFingerprint: canonicalFallback.candidate.current,
+        fallbackCandidatePatch: canonicalFallback.previousCandidatePatch,
+      };
+    }
     if (runtime?.phase === "completed") {
       task.status = runtime.result === "landed" ? "landed" : "satisfied";
       sched.landedOrder.push(task.id);
@@ -2383,6 +2453,15 @@ async function launchTaskWorker(
   }
 
   const plan = parsePlanFile(deps.planPath);
+  const fallbackFindings = task.integrationLedger?.fallbackReview;
+  if (wasNeedsRework && fallbackFindings?.outstandingIds.length) {
+    task.lastReason = typedReviewerFeedback(
+      fallbackFindings.findings,
+      fallbackFindings.outstandingIds,
+      "Integration fallback review requested changes.",
+      [],
+    ).message;
+  }
 
   try {
     const success = await runTaskWorker({
@@ -2427,9 +2506,32 @@ async function launchTaskWorker(
         branchName,
         worktreePath,
         review: taskJson?.review,
-        artifactRefs: [],
+        artifactRefs: deps.paths
+          ? [
+              join(
+                deps.paths.runDir,
+                "artifacts",
+                taskId,
+                "implementer-result.json",
+              ),
+              join(
+                deps.paths.runDir,
+                "artifacts",
+                taskId,
+                "reviewer-result.json",
+              ),
+            ]
+          : [],
         protectedPaths: taskPlanArtifacts,
         assessedAt: new Date().toISOString(),
+        reviewContext: {
+          contextId: deps.executionManifest
+            ? buildReviewResponsibilityContext(deps.executionManifest).contextId
+            : undefined,
+          admittedFindingIds: deps.canonicalRunStore
+            ?.read()
+            .reviewConvergence[taskId]?.findings.map((finding) => finding.id),
+        },
       });
       persistCanonicalTaskExecution(deps, taskId, task);
       return {
@@ -4121,6 +4223,116 @@ function throwIfValidationStopped(
   }
 }
 
+async function admitReviewProposals(args: {
+  deps: OrchestratorDeps;
+  scope: "task" | "overall" | "integration";
+  taskId: string;
+  compiledContract: string;
+  candidateIdentity: string;
+  latestDeltaPaths: string[];
+  proposals: Array<{
+    proposalId: string;
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+    basis:
+      | { kind: "requirement"; requirementIds: string[] }
+      | {
+          kind: "candidate_regression";
+          changedPaths: string[];
+          causalEvidence: string;
+        }
+      | { kind: "correctness_invariant"; invariant: string };
+  }>;
+}): Promise<ReturnType<typeof evaluateFindingAdmission>> {
+  const requirements = args.deps.executionManifest
+    ? buildReviewResponsibilityContext(args.deps.executionManifest).requirements
+    : [];
+  const proposalBatchId = createProposalBatchId({
+    scope: args.scope,
+    contextId: args.compiledContract,
+    candidateIdentity: args.candidateIdentity,
+    latestDeltaPaths: args.latestDeltaPaths,
+    proposals: args.proposals,
+  });
+  const prompt = buildFindingAdmissionPrompt({
+    scope: args.scope,
+    compiledContract: args.compiledContract,
+    requirementIds: requirements,
+    candidateIdentity: args.candidateIdentity,
+    latestDeltaPaths: args.latestDeltaPaths,
+    proposalBatchId,
+    proposals: args.proposals,
+  });
+  let result: SubagentResult;
+  try {
+    const id = await args.deps.subagents.spawn({
+      type: args.deps.roles.reviewer.type,
+      ownerRole: "admission",
+      prompt,
+      description: `admit ${args.scope} review findings`,
+      model: args.deps.roles.reviewer.model,
+      thinking: "low",
+      role: "admission",
+      stage:
+        args.scope === "overall"
+          ? "overall_admission"
+          : args.scope === "integration"
+            ? "integration_admission"
+            : "task_admission",
+      taskId: args.taskId,
+      cwd: await args.deps.git.root(),
+      systemPrompt: FINDING_ADMISSION_SYSTEM_PROMPT,
+      systemPromptMode: "replace",
+      noTools: true,
+      excludeTools: [
+        "read",
+        "bash",
+        "grep",
+        "find",
+        "ls",
+        "explore",
+        "lsp",
+        "edit",
+        "write",
+        "Agent",
+        "get_subagent_result",
+        "steer_subagent",
+        "propose_papercut",
+      ],
+      completion: {
+        description: "Submit finding admission dispositions.",
+        schema: findingAdmissionBatchSchema,
+      },
+    });
+    result = await args.deps.subagents.waitFor(id, args.deps.signal);
+  } catch (error) {
+    result = {
+      status: "failed",
+      error: `Adjudicator unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  const parsed =
+    result.status === "completed"
+      ? parseAdmissionResult(result.result)
+      : undefined;
+  return evaluateFindingAdmission({
+    scope: args.scope,
+    proposalBatchId,
+    proposals: args.proposals,
+    knownRequirementIds: requirements.map((requirement) => requirement.id),
+    ...(parsed?.ok
+      ? { adjudication: parsed.result }
+      : {
+          failureReason:
+            result.status === "completed"
+              ? `Adjudication completion was malformed: ${parsed?.reason ?? "unknown error"}`
+              : `Adjudication ${result.status}: ${result.error}`,
+        }),
+  });
+}
+
 async function runIntegrationReviewFallback(
   deps: OrchestratorDeps,
   taskId: string,
@@ -4139,10 +4351,38 @@ async function runIntegrationReviewFallback(
         fallbackState.outstandingIds.includes(finding.id),
       )
     : undefined;
+  const candidateFingerprint = await deps.git.stagedFingerprint();
+  const previousCandidateFingerprint =
+    schedulerTask?.integrationLedger?.fallbackCandidateFingerprint;
+  const previousPatch =
+    schedulerTask?.integrationLedger?.fallbackCandidatePatch;
+  const anchoredDelta =
+    fallbackState && previousPatch !== undefined
+      ? await deps.git.stagedDeltaFromPatch(previousPatch)
+      : undefined;
+  const latestDeltaPaths = anchoredDelta
+    ? parseNameStatusPaths(anchoredDelta.nameStatus)
+    : [];
+  const ownerRework = deps.canonicalRunStore
+    ?.read()
+    .reviewConvergence[taskId]?.latestRework?.filter((completion) =>
+      outstanding?.some((finding) => finding.id === completion.findingId),
+    )
+    .map((completion) => ({
+      id: completion.findingId,
+      status: completion.status,
+      evidence: completion.evidence,
+      changedPaths: completion.changedPaths,
+      verification: completion.verification,
+    }));
   const prompt = buildIntegrationReviewerPrompt({
     diff,
     planArtifacts,
     outstandingFindings: outstanding,
+    previousCandidate: previousCandidateFingerprint,
+    currentCandidate: candidateFingerprint,
+    latestDelta: anchoredDelta?.diff,
+    reworkCompletions: ownerRework,
   });
 
   const id = await deps.subagents.spawn({
@@ -4152,6 +4392,7 @@ async function runIntegrationReviewFallback(
     model: deps.roles.reviewer.model,
     thinking: deps.roles.reviewer.thinking,
     role: "reviewer",
+    stage: "integration_review",
     taskId,
     cwd: await deps.git.root(),
     readOnly: true,
@@ -4230,10 +4471,11 @@ async function runIntegrationReviewFallback(
         reason: "Integration fallback ledger is unavailable.",
       };
     }
-    const candidateFingerprint = await deps.git.stagedFingerprint();
     const candidatePatch = await deps.git.stagedDiff();
     if (!fallbackState) {
-      const parsed = parseInitialReviewResult(result.result);
+      const parsed = parseInitialReviewResult(result.result, {
+        requireProposalBasis: true,
+      });
       if (!parsed.ok) {
         recordSystemFailure(
           schedulerTask.planIndex,
@@ -4250,22 +4492,82 @@ async function runIntegrationReviewFallback(
           reviewerSystemFailures,
         );
       }
+      const integrationEpoch = schedulerTask.integrationLedger.epoch;
       if (parsed.result.verdict === "approved") {
+        const approvedState = createReviewConvergenceState({
+          drafts: [],
+          idPrefix: "IF",
+        });
+        const proposalBatchId = createProposalBatchId({
+          scope: "integration",
+          contextId: `Integration fallback review for ${taskId}.`,
+          candidateIdentity: candidateFingerprint,
+          latestDeltaPaths: [],
+          proposals: [],
+        });
+        const admission = evaluateFindingAdmission({
+          scope: "integration",
+          proposalBatchId,
+          proposals: [],
+          knownRequirementIds: [],
+          adjudication: { proposalBatchId, dispositions: [] },
+        });
+        await persistCanonicalIntegrationAdmission({
+          deps,
+          taskId,
+          epoch: integrationEpoch,
+          candidateIdentity: candidateFingerprint,
+          latestDeltaPaths: [],
+          previousCandidatePatch: candidatePatch,
+          proposals: [],
+          admission,
+          state: approvedState,
+        });
         return { ok: true };
       }
+      const initialProposals = parsed.result.findings.map(
+        (proposal, index) => ({
+          ...proposal,
+          proposalId: `E${integrationEpoch}P${index + 1}`,
+        }),
+      );
+      const admission = await admitReviewProposals({
+        deps,
+        scope: "integration",
+        taskId,
+        compiledContract: `Integration fallback review for ${taskId}.`,
+        candidateIdentity: candidateFingerprint,
+        latestDeltaPaths: [],
+        proposals: initialProposals,
+      });
       schedulerTask.integrationLedger = {
         ...schedulerTask.integrationLedger,
         fallbackReview: createReviewConvergenceState({
-          drafts: parsed.result.findings,
+          drafts: admission.admittedDrafts,
           idPrefix: "IF",
         }),
         fallbackCandidateFingerprint: candidateFingerprint,
         fallbackCandidatePatch: candidatePatch,
       };
       persistIntegrationState(deps, taskId, schedulerTask);
+      persistCanonicalTaskExecution(deps, taskId, schedulerTask);
+      await persistCanonicalIntegrationAdmission({
+        deps,
+        taskId,
+        candidateIdentity: candidateFingerprint,
+        latestDeltaPaths: [],
+        previousCandidatePatch: candidatePatch,
+        epoch: integrationEpoch,
+        proposals: initialProposals,
+        admission,
+        state: schedulerTask.integrationLedger.fallbackReview!,
+      });
+      if (admission.admittedDrafts.length === 0) {
+        return { ok: true };
+      }
       return {
         ok: false,
-        reason: parsed.result.findings
+        reason: admission.admittedDrafts
           .map((finding) => finding.requiredChange)
           .join("\n"),
         failedGate: "fallback",
@@ -4292,14 +4594,37 @@ async function runIntegrationReviewFallback(
       );
     }
     try {
-      const previousPatch =
-        schedulerTask.integrationLedger.fallbackCandidatePatch ?? "";
-      const latestDeltaPaths = parseNameStatusPaths(
-        (await deps.git.stagedDeltaFromPatch(previousPatch)).nameStatus,
+      const regressionProposals = parsed.result.regressions.map(
+        (regression, index) => ({
+          ...regression,
+          proposalId: `E${schedulerTask.integrationLedger!.epoch}R${fallbackState.round + 1}P${index + 1}`,
+          basis: {
+            kind: "candidate_regression" as const,
+            changedPaths: regression.changedPaths,
+            causalEvidence: regression.causalEvidence,
+          },
+        }),
+      );
+      const admission = await admitReviewProposals({
+        deps,
+        scope: "integration",
+        taskId,
+        compiledContract: `Integration fallback review for ${taskId}.`,
+        candidateIdentity: candidateFingerprint,
+        latestDeltaPaths,
+        proposals: regressionProposals,
+      });
+      const admittedRegressionIds = new Set(
+        admission.admittedDrafts.map((draft) => draft.proposalId),
       );
       const update = applyAnchoredReview({
         state: fallbackState,
-        review: parsed.result,
+        review: {
+          ...parsed.result,
+          regressions: regressionProposals.filter((proposal) =>
+            admittedRegressionIds.has(proposal.proposalId),
+          ),
+        },
         latestDeltaPaths,
         idPrefix: "IF",
       });
@@ -4310,6 +4635,19 @@ async function runIntegrationReviewFallback(
         fallbackCandidatePatch: candidatePatch,
       };
       persistIntegrationState(deps, taskId, schedulerTask);
+      persistCanonicalTaskExecution(deps, taskId, schedulerTask);
+      await persistCanonicalIntegrationAdmission({
+        deps,
+        taskId,
+        epoch: schedulerTask.integrationLedger.epoch,
+        candidateIdentity: candidateFingerprint,
+        previousCandidate: previousCandidateFingerprint,
+        latestDeltaPaths,
+        previousCandidatePatch: candidatePatch,
+        proposals: regressionProposals,
+        admission,
+        state: update.state,
+      });
       if (update.outcome === "approved") {
         return { ok: true };
       }
@@ -4360,6 +4698,13 @@ export function nextOverallReviewArtifactPath(planPath: string): string {
 
 type OverallReviewState = {
   baseSha: string;
+  latestRework?: Array<{
+    findingId: string;
+    status: "addressed" | "not_addressed";
+    evidence: string;
+    changedPaths: string[];
+    verification: Array<{ command: string; result: string; rationale: string }>;
+  }>;
   branchName: string;
   worktreePath: string;
   candidate: CandidateMetadata;
@@ -4411,6 +4756,27 @@ async function overallCandidateRef(args: {
   };
 }
 
+function deferredConcernsForOverall(deps: OrchestratorDeps): Array<{
+  id: string;
+  summary: string;
+  evidence: string;
+  basis: unknown;
+  sourceScope?: "task" | "integration";
+  sourceCandidate?: string;
+  rationale?: string;
+}> {
+  if (!deps.canonicalRunStore) {
+    return [];
+  }
+  return Object.values(deps.canonicalRunStore.read().reviewConvergence)
+    .flatMap((review) => review.deferredConcerns)
+    .filter(
+      (concern) =>
+        concern.sourceScope !== "integration" ||
+        Boolean(concern.sourceCandidate),
+    );
+}
+
 function overallPlanContext(args: {
   deps: OrchestratorDeps;
   planContent: string;
@@ -4421,6 +4787,17 @@ function overallPlanContext(args: {
   bundleMaterial?: string;
   corpusMaterial?: string;
 }): string {
+  const responsibilityContext = args.deps.executionManifest
+    ? buildReviewResponsibilityContext(args.deps.executionManifest)
+    : undefined;
+  if (responsibilityContext) {
+    persistOverallArtifact(
+      args.deps.paths,
+      1,
+      "responsibility-context.json",
+      `${JSON.stringify(responsibilityContext, null, 2)}\n`,
+    );
+  }
   return [
     `Plan: ${args.deps.planPath}`,
     `Run base: ${args.baseSha}`,
@@ -4432,9 +4809,22 @@ function overallPlanContext(args: {
       ? `## Referenced Plan Material\n\n${args.bundleMaterial}`
       : "",
     args.corpusMaterial ? `## Plan Corpus\n\n${args.corpusMaterial}` : "",
-    formatExecutionManifestSummary(args.deps.executionManifest),
+    formatExecutionManifestSummary(
+      args.deps.executionManifest,
+      responsibilityContext,
+    ),
     args.landedTasks.length
       ? `## Landed Tasks\n\n${args.landedTasks.map((task) => `- ${task.id}: ${task.title}${task.commitSha ? ` @ ${task.commitSha.slice(0, 7)}` : ""}`).join("\n")}`
+      : "",
+    deferredConcernsForOverall(args.deps).length
+      ? `## Deferred Review Concerns (Advisory)\n\n${deferredConcernsForOverall(
+          args.deps,
+        )
+          .map(
+            (concern) =>
+              `- ${concern.id} [${concern.sourceScope ?? "task"}]${concern.sourceCandidate ? ` @ ${concern.sourceCandidate}` : ""}: ${concern.summary}\n  Evidence: ${concern.evidence}\n  Rationale: ${concern.rationale ?? "Deferred for whole-feature review."}`,
+          )
+          .join("\n")}`
       : "",
     "## Full Feature Diff",
     `\`\`\`diff\n${args.fullDiff}\n\`\`\``,
@@ -4501,6 +4891,62 @@ function persistOverallArtifact(
   writeFileSync(alternate, content, "utf-8");
 }
 
+function persistCanonicalOverallReview(
+  deps: OrchestratorDeps,
+  overall: OverallReviewState,
+  status: OverallReviewJson["status"],
+): void {
+  if (!deps.canonicalRunStore) {
+    return;
+  }
+  const stage =
+    status === "approved" || status === "integrating"
+      ? "approved"
+      : status === "stalled" || status === "blocked"
+        ? "stalled"
+        : status === "needs_rework"
+          ? "rework"
+          : "initial_review";
+  if (stage === "stalled" && overall.convergence.outstandingIds.length === 0) {
+    return;
+  }
+  if (stage === "rework" && overall.convergence.outstandingIds.length === 0) {
+    return;
+  }
+  const review: CanonicalRunState["reviewConvergence"][string] = {
+    owner: { kind: "overall" },
+    stage,
+    candidate: {
+      current:
+        overall.candidate.trustedCheckpoint ??
+        overall.candidate.candidateSha ??
+        overall.baseSha,
+      previous: overall.previousCandidate,
+      latestDeltaPaths: [],
+    },
+    epoch: overall.epoch,
+    round: overall.convergence.round,
+    proposals: [],
+    admissions: [],
+    findings: overall.convergence.findings,
+    outstandingFindingIds: overall.convergence.outstandingIds,
+    deferredConcerns: [],
+    observationIds: [],
+    bestOutstandingCount: overall.convergence.bestOutstandingCount,
+    consecutiveStalledRounds: overall.convergence.consecutiveStalledRounds,
+    latestRework: overall.latestRework,
+    evidenceRefs: [],
+    previousCandidatePatch: overall.previousCandidatePatch,
+    latestEvidence: overall.latestEvidence,
+    verificationFailures: [],
+  };
+  deps.canonicalRunStore.updateSync((state) => ({
+    ...state,
+    reviewConvergence: { ...state.reviewConvergence, overall: review },
+  }));
+  projectReviewProgress(deps, review);
+}
+
 function persistOverallReviewState(
   deps: OrchestratorDeps,
   overall: OverallReviewState,
@@ -4530,6 +4976,7 @@ function persistOverallReviewState(
         previousCandidate: overall.previousCandidate,
         previousCandidatePatch: overall.previousCandidatePatch,
         latestEvidence: overall.latestEvidence,
+        latestRework: overall.latestRework,
       },
       integrationLedger: overall.integrationLedger,
       status,
@@ -4542,6 +4989,7 @@ function persistOverallReviewState(
       lastReason,
     },
   });
+  persistCanonicalOverallReview(deps, overall, status);
 }
 
 async function restoreSnapshots(
@@ -4572,10 +5020,12 @@ async function runInitialOverallReview(args: {
 > {
   const { deps, planArtifacts } = args;
   const snapshot = await captureRestoreSnapshot(deps.git, planArtifacts);
+  const deferredConcerns = deferredConcernsForOverall(deps);
   const prompt = buildInitialOverallReviewPrompt({
     planContext: args.planContext,
     candidateContext: `Candidate identity: ${args.candidate}\n\n${args.fullDiff}`,
     worktreePath: await deps.git.root(),
+    deferredConcerns,
   });
   persistOverallArtifact(deps.paths, 1, "reviewer-prompt.md", prompt);
   const id = await deps.subagents.spawn({
@@ -4585,6 +5035,7 @@ async function runInitialOverallReview(args: {
     model: deps.roles.reviewer.model,
     thinking: deps.roles.reviewer.thinking,
     role: "reviewer",
+    stage: "initial_overall_review",
     cwd: await deps.git.root(),
     readOnly: true,
     completion: {
@@ -4634,6 +5085,7 @@ async function runInitialOverallReview(args: {
   }
   const parsed = parseInitialReviewResult(result.result, {
     allowRecommendationMarkdown: true,
+    deferredConcernIds: deferredConcerns.map((concern) => concern.id),
   });
   if (!parsed.ok) {
     return {
@@ -4642,13 +5094,23 @@ async function runInitialOverallReview(args: {
     };
   }
   await recordPapercuts(deps, result.result, "overall-reviewer");
+  const proposals =
+    parsed.result.verdict === "changes_requested" ? parsed.result.findings : [];
+  const admission = proposals.length
+    ? await admitReviewProposals({
+        deps,
+        scope: "overall",
+        taskId: "overall-review",
+        compiledContract: args.planContext,
+        candidateIdentity: args.candidate,
+        latestDeltaPaths: [],
+        proposals,
+      })
+    : undefined;
   return {
     ok: true,
     convergence: createReviewConvergenceState({
-      drafts:
-        parsed.result.verdict === "changes_requested"
-          ? parsed.result.findings
-          : [],
+      drafts: admission?.admittedDrafts ?? [],
       idPrefix: "O",
     }),
   };
@@ -4685,6 +5147,7 @@ async function reviewOverallCandidate(args: {
         planContext: args.planContext,
         candidateContext: `Candidate identity: ${candidate}\n\n${args.latestDelta}`,
         worktreePath: state.worktreePath,
+        deferredConcerns: deferredConcernsForOverall(deps),
       })
     : buildAnchoredOverallReviewPrompt({
         planContext: args.planContext,
@@ -4695,6 +5158,13 @@ async function reviewOverallCandidate(args: {
         previousCandidate: state.previousCandidate ?? state.baseSha,
         currentCandidate: candidate,
         latestDelta: args.latestDelta,
+        reworkCompletions: state.latestRework?.map((completion) => ({
+          id: completion.findingId,
+          status: completion.status,
+          evidence: completion.evidence,
+          changedPaths: completion.changedPaths,
+          verification: completion.verification,
+        })),
         worktreePath: state.worktreePath,
       });
   persistOverallArtifact(
@@ -4710,6 +5180,7 @@ async function reviewOverallCandidate(args: {
     model: deps.roles.reviewer.model,
     thinking: deps.roles.reviewer.thinking,
     role: "reviewer",
+    stage: args.initial ? "initial_overall_review" : "anchored_overall_review",
     cwd: state.worktreePath,
     readOnly: true,
     completion: {
@@ -4777,6 +5248,9 @@ async function reviewOverallCandidate(args: {
   if (args.initial) {
     const parsed = parseInitialReviewResult(result.result, {
       allowRecommendationMarkdown: true,
+      deferredConcernIds: deferredConcernsForOverall(deps).map(
+        (concern) => concern.id,
+      ),
     });
     if (!parsed.ok) {
       return {
@@ -4784,11 +5258,23 @@ async function reviewOverallCandidate(args: {
         reason: `Invalid initial overall review: ${parsed.reason}`,
       };
     }
+    const proposals =
+      parsed.result.verdict === "changes_requested"
+        ? parsed.result.findings
+        : [];
+    const admission = proposals.length
+      ? await admitReviewProposals({
+          deps,
+          scope: "overall",
+          taskId: "overall-review",
+          compiledContract: args.planContext,
+          candidateIdentity: candidate,
+          latestDeltaPaths: args.latestDeltaPaths,
+          proposals,
+        })
+      : undefined;
     state.convergence = createReviewConvergenceState({
-      drafts:
-        parsed.result.verdict === "changes_requested"
-          ? parsed.result.findings
-          : [],
+      drafts: admission?.admittedDrafts ?? [],
       idPrefix: "O",
     });
     return {
@@ -4808,17 +5294,45 @@ async function reviewOverallCandidate(args: {
     };
   }
   try {
+    const regressionProposals = parsed.result.regressions.map(
+      (regression, index) => ({
+        ...regression,
+        proposalId: `E${state.epoch}R${state.convergence.round + 1}P${index + 1}`,
+        basis: {
+          kind: "candidate_regression" as const,
+          changedPaths: regression.changedPaths,
+          causalEvidence: regression.causalEvidence,
+        },
+      }),
+    );
+    const admission = regressionProposals.length
+      ? await admitReviewProposals({
+          deps,
+          scope: "overall",
+          taskId: "overall-review",
+          compiledContract: args.planContext,
+          candidateIdentity: candidate,
+          latestDeltaPaths: args.latestDeltaPaths,
+          proposals: regressionProposals,
+        })
+      : undefined;
+    const admittedRegressionIds = new Set(
+      admission?.admittedDrafts.map((draft) => draft.proposalId) ?? [],
+    );
+    const admittedRegressions = regressionProposals.filter((proposal) =>
+      admittedRegressionIds.has(proposal.proposalId),
+    );
     const update =
       state.convergence.outstandingIds.length === 0
         ? openRegressionReviewEpoch({
             closedState: state.convergence,
-            regressions: parsed.result.regressions,
+            regressions: admittedRegressions,
             latestDeltaPaths: args.latestDeltaPaths,
             idPrefix: "O",
           })
         : applyAnchoredReview({
             state: state.convergence,
-            review: parsed.result,
+            review: { ...parsed.result, regressions: admittedRegressions },
             latestDeltaPaths: args.latestDeltaPaths,
             idPrefix: "O",
           });
@@ -4963,6 +5477,7 @@ async function runConvergentOverallReviewLoop(
       previousCandidate: retained.convergence.previousCandidate,
       previousCandidatePatch: retained.convergence.previousCandidatePatch,
       latestEvidence: retained.convergence.latestEvidence,
+      latestRework: retained.convergence.latestRework,
       integrationLedger: retained.integrationLedger,
     };
   } else {
@@ -4980,6 +5495,25 @@ async function runConvergentOverallReviewLoop(
       throw new BlockedError(initial.reason);
     }
     if (initial.convergence.outstandingIds.length === 0) {
+      const approvedOverall: OverallReviewState = {
+        baseSha: mainHead,
+        branchName: "main",
+        worktreePath: mainRoot,
+        candidate: {
+          sourceBaseSha: mainHead,
+          candidateBaseSha: mainHead,
+          branchName: "main",
+          candidateSha: mainHead,
+          trustedCheckpoint: mainHead,
+          candidateTree: await deps.git.treeAt(mainHead),
+          discardedBundles: [],
+        },
+        convergence: initial.convergence,
+        closedEpochs: [],
+        epoch: 1,
+        latestEvidence: "initial overall review approved",
+      };
+      persistCanonicalOverallReview(deps, approvedOverall, "approved");
       deps.updateState((previous) =>
         checkpointPatch(previous, "Final overall review approved"),
       );
@@ -5118,6 +5652,10 @@ async function runConvergentOverallReviewLoop(
         ? [overall.latestEvidence]
         : undefined,
       executionManifest: deps.executionManifest,
+      findingCompletions: outstanding.map((finding) => ({
+        ...finding,
+        sourceScope: "task_review" as const,
+      })),
     });
     deps.updateState({ phase: "final_rework", activeSubagentId: undefined });
     persistOverallArtifact(
@@ -5133,6 +5671,7 @@ async function runConvergentOverallReviewLoop(
       model: deps.roles.implementer.model,
       thinking: deps.roles.implementer.thinking,
       role: "implementer",
+      stage: "overall_rework",
       cwd: worktreePath,
       completion: {
         description: "Submit the overall rework result.",
@@ -5157,7 +5696,9 @@ async function runConvergentOverallReviewLoop(
     );
     const parsedRework =
       result.status === "completed"
-        ? parseOverallReworkResult(result.result)
+        ? parseOverallReworkResult(result.result, {
+            expectedFindingIds: outstanding.map((finding) => finding.id),
+          })
         : undefined;
     if (result.status !== "completed" || !parsedRework?.ok) {
       const reason =
@@ -5214,6 +5755,29 @@ async function runConvergentOverallReviewLoop(
       );
     }
     await recordPapercuts(deps, parsedRework, "overall-rework");
+    (
+      overall as OverallReviewState & {
+        latestRework?: Array<{
+          findingId: string;
+          status: "addressed" | "not_addressed";
+          evidence: string;
+          changedPaths: string[];
+          verification: Array<{
+            command: string;
+            result: string;
+            rationale: string;
+          }>;
+        }>;
+      }
+    ).latestRework = parsedRework.result.findingCompletions?.map(
+      (completion) => ({
+        findingId: completion.id,
+        status: completion.status,
+        evidence: completion.evidence,
+        changedPaths: completion.changedPaths,
+        verification: completion.verification,
+      }),
+    );
     await candidateGit.stageAllExcept(candidatePlanArtifacts);
     const checkpoint = await checkpointCandidate(
       candidateGit,
@@ -5393,14 +5957,18 @@ async function runConvergentOverallReviewLoop(
       runId: deps.runId ?? "overall",
       assessedAt: new Date().toISOString(),
       evidenceRefs: [
+        "implementer-result.json",
+        "reviewer-result.json",
+        "finding-transition.json",
+      ].map((filename) =>
         join(
           deps.paths?.runDir ?? dirname(worktreePath),
           "overall-review",
           "rounds",
           String(Math.max(1, attempt)).padStart(3, "0"),
-          "finding-transition.json",
+          filename,
         ),
-      ],
+      ),
     });
     await schedulerActor.recordOverallCandidate(canonicalCandidate);
     const started = await schedulerActor.requestOverallIntegration({
@@ -5679,6 +6247,7 @@ function updateSchedulerState(
 ): void {
   const tasks: ScheduledTaskState[] = [];
   const activeAgentIds: string[] = [];
+  const reviews = deps.canonicalRunStore?.read().reviewConvergence ?? {};
   let landedCount = 0;
   let satisfiedCount = 0;
 
@@ -5703,6 +6272,10 @@ function updateSchedulerState(
       activeAgentIds: task.activeAgentIds,
       activeAgentRefs: task.activeAgentRefs,
       review: taskMeta?.review,
+      reviewProgress: reviewProgressFor(reviews[task.id]),
+      integrationReviewProgress: reviewProgressFor(
+        reviews[`integration:${task.id}`],
+      ),
     });
     for (const id of task.activeAgentIds) {
       activeAgentIds.push(id);
@@ -5721,7 +6294,76 @@ function updateSchedulerState(
     landedCount,
     satisfiedCount,
     totalCount: sched.tasks.size,
+    overallReviewProgress: reviewProgressFor(
+      Object.values(reviews).find((review) => review.owner.kind === "overall"),
+    ),
   });
+}
+
+function reviewProgressFor(
+  review: CanonicalRunState["reviewConvergence"][string] | undefined,
+): ReviewProgress | undefined {
+  if (!review) {
+    return undefined;
+  }
+  const findingIds = new Map(
+    review.findings.map((finding) => [finding.proposalId, finding.id]),
+  );
+  const admissions = review.admissions;
+  const admittedIds = admissions.flatMap((admission) =>
+    admission.disposition === "admit"
+      ? [admission.findingId ?? findingIds.get(admission.proposalId)].filter(
+          (id): id is string => Boolean(id),
+        )
+      : [],
+  );
+  const rework = review.latestRework ?? [];
+  const resolvedIds = review.findings
+    .filter(
+      (finding) =>
+        finding.origin === "initial" &&
+        !review.outstandingFindingIds.includes(finding.id),
+    )
+    .map((finding) => finding.id);
+  return {
+    scope: review.owner.kind,
+    stage: review.stage,
+    epoch: review.epoch,
+    round: review.round,
+    previousCandidate: review.candidate.previous,
+    currentCandidate: review.candidate.current,
+    admittedIds,
+    resolvedIds,
+    deferredIds: admissions
+      .filter((admission) => admission.disposition === "defer")
+      .map((admission) => admission.proposalId),
+    rejectedIds: admissions
+      .filter(
+        (admission) =>
+          admission.disposition === "reject" ||
+          admission.disposition === "demote",
+      )
+      .map((admission) => admission.proposalId),
+    addressedIds: rework
+      .filter((completion) => completion.status === "addressed")
+      .map((completion) => completion.findingId),
+    notAddressedIds: rework
+      .filter((completion) => completion.status === "not_addressed")
+      .map((completion) => completion.findingId),
+    unresolvedIds: review.outstandingFindingIds,
+    newRegressionIds: review.findings
+      .filter(
+        (finding) =>
+          finding.origin === "regression" &&
+          finding.introducedRound === review.round,
+      )
+      .map((finding) => finding.id),
+    previousOutstandingCount: review.previousOutstandingCount,
+    currentOutstandingCount: review.outstandingFindingIds.length,
+    bestOutstandingCount: review.bestOutstandingCount,
+    consecutiveStalledRounds: review.consecutiveStalledRounds,
+    latestEvidence: review.latestEvidence ?? review.evidenceRefs.at(-1),
+  };
 }
 
 function setSchedulerActiveAgent(
@@ -5789,21 +6431,211 @@ function removeActiveAgentPatch(prev: RunState, id: string): Partial<RunState> {
   };
 }
 
-function persistCanonicalReviewConvergence(
+function projectReviewProgress(
+  deps: OrchestratorDeps,
+  review: CanonicalRunState["reviewConvergence"][string],
+): void {
+  const progress = reviewProgressFor(review);
+  if (!progress) {
+    return;
+  }
+  deps.updateState((prev) => {
+    if (review.owner.kind === "overall") {
+      return { overallReviewProgress: progress };
+    }
+    const taskId = review.owner.taskId;
+    return {
+      tasks: prev.tasks?.map((task) =>
+        task.id !== taskId
+          ? task
+          : review.owner.kind === "integration"
+            ? { ...task, integrationReviewProgress: progress }
+            : { ...task, reviewProgress: progress },
+      ),
+    };
+  });
+}
+
+async function persistCanonicalIntegrationAdmission(args: {
+  deps: OrchestratorDeps;
+  taskId: string;
+  epoch: number;
+  candidateIdentity: string;
+  previousCandidate?: string;
+  latestDeltaPaths: string[];
+  previousCandidatePatch?: string;
+  proposals: Array<{
+    proposalId: string;
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+    basis:
+      | { kind: "requirement"; requirementIds: string[] }
+      | {
+          kind: "candidate_regression";
+          changedPaths: string[];
+          causalEvidence: string;
+        }
+      | { kind: "correctness_invariant"; invariant: string };
+  }>;
+  admission: ReturnType<typeof evaluateFindingAdmission>;
+  state: ReviewConvergenceState;
+}): Promise<void> {
+  const store = args.deps.canonicalRunStore;
+  if (!store) {
+    return;
+  }
+  for (;;) {
+    const current = store.read();
+    let persisted: CanonicalRunState["reviewConvergence"][string] | undefined;
+    try {
+      await store.update(current.revision, (run) => {
+        const prior = run.reviewConvergence[`integration:${args.taskId}`];
+        const sameEpochPrior = prior?.epoch === args.epoch ? prior : undefined;
+        const proposalRecords = args.proposals.map((proposal) => ({
+          id: proposal.proposalId,
+          summary: proposal.summary,
+          evidence: proposal.evidence,
+          basis: proposal.basis,
+          requiredChange: proposal.requiredChange,
+          acceptanceCriteria: proposal.acceptanceCriteria,
+        }));
+        const findingIds = new Map(
+          args.state.findings.map((finding) => [
+            finding.proposalId,
+            finding.id,
+          ]),
+        );
+        const admissionRecords = args.admission.admissions.map((entry) => ({
+          proposalId: entry.proposalId,
+          disposition: entry.disposition,
+          certainty: entry.certainty,
+          rationale: entry.rationale,
+          ...(entry.disposition === "admit"
+            ? { findingId: findingIds.get(entry.proposalId) }
+            : {}),
+        }));
+        persisted = {
+          owner: { kind: "integration", taskId: args.taskId },
+          stage: args.state.outstandingIds.length > 0 ? "rework" : "approved",
+          candidate: {
+            current: args.candidateIdentity,
+            previous: args.previousCandidate,
+            latestDeltaPaths: args.latestDeltaPaths,
+          },
+          proposalBatchId: args.admission.proposalBatchId,
+          epoch: args.epoch,
+          round: args.state.round,
+          proposals: [...(sameEpochPrior?.proposals ?? []), ...proposalRecords],
+          admissions: [
+            ...(sameEpochPrior?.admissions ?? []),
+            ...admissionRecords,
+          ],
+          findings: args.state.findings,
+          outstandingFindingIds: args.state.outstandingIds,
+          deferredConcerns: [
+            ...(sameEpochPrior?.deferredConcerns ?? []),
+            ...args.admission.deferredConcerns.map((proposal) => ({
+              id: `integration:${args.taskId}:D-${proposal.proposalId}`,
+              proposalId: proposal.proposalId,
+              summary: proposal.summary,
+              evidence: proposal.evidence,
+              basis: proposal.basis,
+              sourceScope: "integration" as const,
+              sourceCandidate: args.candidateIdentity,
+              rationale: args.admission.admissions.find(
+                (entry) => entry.proposalId === proposal.proposalId,
+              )?.rationale,
+            })),
+          ],
+          observationIds: [
+            ...(sameEpochPrior?.observationIds ?? []),
+            ...args.admission.observations.map(
+              (_observation, index) => `IO-${args.state.round}-${index + 1}`,
+            ),
+          ],
+          bestOutstandingCount: args.state.bestOutstandingCount,
+          consecutiveStalledRounds: args.state.consecutiveStalledRounds,
+          evidenceRefs: sameEpochPrior?.evidenceRefs ?? [],
+          previousCandidatePatch: args.previousCandidatePatch,
+          verificationFailures: [],
+        };
+        return {
+          ...run,
+          reviewConvergence: {
+            ...run.reviewConvergence,
+            [`integration:${args.taskId}`]: persisted,
+          },
+        };
+      });
+      projectReviewProgress(args.deps, persisted!);
+      return;
+    } catch (error) {
+      if (error instanceof StaleRunStateRevisionError) {
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+async function persistCanonicalReviewConvergence(
   deps: OrchestratorDeps,
   taskId: string,
   convergence: Omit<CanonicalRunState["reviewConvergence"][string], "owner">,
-): void {
-  if (!deps.canonicalRunStore) {
+): Promise<void> {
+  const store = deps.canonicalRunStore;
+  if (!store) {
     return;
   }
-  deps.canonicalRunStore.updateSync((state) => ({
-    ...state,
-    reviewConvergence: {
-      ...state.reviewConvergence,
-      [taskId]: { owner: { kind: "task", taskId }, ...convergence },
-    },
-  }));
+  for (;;) {
+    const current = store.read();
+    let persisted: CanonicalRunState["reviewConvergence"][string] | undefined;
+    try {
+      await store.update(current.revision, (state) => {
+        const previous = state.reviewConvergence[taskId];
+        persisted = {
+          owner: { kind: "task", taskId },
+          ...convergence,
+          ...(convergence.latestRework === undefined && previous?.latestRework
+            ? { latestRework: previous.latestRework }
+            : {}),
+          ...(convergence.reworkObligationIds === undefined &&
+          previous?.reworkObligationIds
+            ? { reworkObligationIds: previous.reworkObligationIds }
+            : {}),
+        };
+        return {
+          ...state,
+          reviewConvergence: {
+            ...state.reviewConvergence,
+            [taskId]: persisted,
+          },
+        };
+      });
+      projectReviewProgress(deps, persisted!);
+      return;
+    } catch (error) {
+      if (error instanceof StaleRunStateRevisionError) {
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+function recoveredIntegrationLedger(mainBaseSha: string): IntegrationLedger {
+  return createIntegrationLedger({
+    mainBaseSha,
+    gates: [
+      {
+        key: "fallback",
+        kind: "fallback",
+        label: "Fallback integration review",
+      },
+    ],
+  });
 }
 
 function persistCanonicalTaskExecution(
@@ -5827,6 +6659,7 @@ function persistCanonicalTaskExecution(
         discardedBundles: task.discardedBundles,
         worktreePath: task.worktreePath,
         branchName: task.branchName,
+        integrationLedger: task.integrationLedger,
         implementationRound: 0,
         lastReason: task.lastReason,
       },
@@ -5937,14 +6770,75 @@ async function runTaskWorker(args: {
       readTaskJson(deps.paths!, taskId)?.attempts ??
       0) + 1;
   let systemFailures = 0;
-  let convergence = currentTaskReviewMetadata(deps.paths, taskId)?.convergence;
-  let reviewState = convergence?.state as ReviewConvergenceState | undefined;
+  const canonicalReview =
+    deps.canonicalRunStore?.read().reviewConvergence[taskId];
+  const convergence = canonicalReview
+    ? {
+        epoch: canonicalReview.epoch,
+        state:
+          canonicalReview.stage === "initial_review" &&
+          canonicalReview.findings.length === 0
+            ? undefined
+            : {
+                round: canonicalReview.round,
+                findings: canonicalReview.findings,
+                outstandingIds: canonicalReview.outstandingFindingIds,
+                bestOutstandingCount: canonicalReview.bestOutstandingCount,
+                consecutiveStalledRounds:
+                  canonicalReview.consecutiveStalledRounds,
+              },
+        previousCandidate: canonicalReview.candidate.previous,
+        previousCandidatePatch: canonicalReview.previousCandidatePatch,
+        latestEvidence: canonicalReview.latestEvidence,
+        verificationFailures: canonicalReview.verificationFailures,
+      }
+    : currentTaskReviewMetadata(deps.paths, taskId)?.convergence;
+  const recoveringAdmission = canonicalReview?.stage === "admission";
+  let reviewState = recoveringAdmission
+    ? createReviewConvergenceState({
+        drafts: (canonicalReview?.proposals ?? []).map((proposal) => ({
+          proposalId: proposal.id,
+          summary: proposal.summary,
+          evidence: proposal.evidence,
+          requiredChange: proposal.requiredChange ?? proposal.summary,
+          acceptanceCriteria: proposal.acceptanceCriteria ?? [proposal.summary],
+        })),
+      })
+    : (convergence?.state as ReviewConvergenceState | undefined);
+  let reviewProposals = canonicalReview?.proposals ?? [];
+  let reviewAdmissions = recoveringAdmission
+    ? reviewState!.findings.map((finding) => ({
+        proposalId: finding.proposalId!,
+        disposition: "admit" as const,
+        certainty: "uncertain" as const,
+        rationale: "Recovered incomplete admission conservatively.",
+        findingId: finding.id,
+      }))
+    : (canonicalReview?.admissions ?? []);
+  let deferredConcerns = canonicalReview?.deferredConcerns ?? [];
+  let reviewObservationIds = canonicalReview?.observationIds ?? [];
+  let reviewProposalBatchId = canonicalReview?.proposalBatchId;
+  let reviewContextId = canonicalReview?.contextId;
+  let rawAdjudication = canonicalReview?.rawAdjudication;
   let reviewEpoch = convergence?.epoch ?? 1;
-  let closedEpochs = convergence?.closedEpochs ?? [];
-  let previousCandidate = convergence?.previousCandidate;
+  let closedEpochs =
+    currentTaskReviewMetadata(deps.paths, taskId)?.convergence?.closedEpochs ??
+    [];
+  let previousCandidate = recoveringAdmission
+    ? canonicalReview?.candidate.current
+    : convergence?.previousCandidate;
   let previousCandidatePatch = convergence?.previousCandidatePatch;
   let latestEvidence = convergence?.latestEvidence;
   let verificationFailures = convergence?.verificationFailures ?? [];
+  if (recoveringAdmission && reviewState) {
+    const recoveredReviewState = reviewState;
+    feedback ??= typedReviewerFeedback(
+      recoveredReviewState.findings,
+      recoveredReviewState.outstandingIds,
+      "Recovered incomplete finding admission conservatively.",
+      verificationFailures,
+    );
+  }
   let candidate: CandidateMetadata = {
     sourceBaseSha: schedulerTask?.sourceBaseSha ?? baseSha,
     candidateBaseSha: schedulerTask?.candidateBaseSha ?? baseSha,
@@ -6084,8 +6978,14 @@ async function runTaskWorker(args: {
         `Task ${task.index} missing from execution manifest`,
       );
     }
+    const responsibilityContext = buildReviewResponsibilityContext(
+      deps.executionManifest!,
+    );
     const compiledContract = renderCompiledContract(
       compiledContractEntry.compiledContract,
+      responsibilityContext.requirements.filter(
+        (requirement) => requirement.taskId === compiledContractEntry.id,
+      ),
     );
     const effectiveWorktreePath = worktreePath ?? (await deps.git.root());
     const recordedCorpusFiles = deps.paths
@@ -6111,12 +7011,39 @@ async function runTaskWorker(args: {
       updateState: deps.updateState,
       signal: deps.signal,
     });
+    const taskReworkFindings = reviewState
+      ? reviewState.findings.filter((finding) =>
+          reviewState!.outstandingIds.includes(finding.id),
+        )
+      : [];
+    const integrationReworkFindings = schedulerTask?.integrationLedger
+      ?.fallbackReview
+      ? schedulerTask.integrationLedger.fallbackReview.findings.filter(
+          (finding) =>
+            schedulerTask.integrationLedger!.fallbackReview!.outstandingIds.includes(
+              finding.id,
+            ),
+        )
+      : [];
+    const reworkObligationPacket = [
+      ...taskReworkFindings.map((finding) => ({
+        ...finding,
+        sourceScope: "task_review" as const,
+      })),
+      ...integrationReworkFindings.map((finding) => ({
+        ...finding,
+        sourceScope: "integration_fallback" as const,
+      })),
+    ];
     const implementerPrompt = buildImplementerPrompt({
       compiledContract,
       worktreePath: effectiveWorktreePath,
       sourceMaterial: sourceMaterialPacket?.section,
+      responsibilityContext,
+      selectedTaskId: compiledContractEntry.id,
       feedback: feedback ? formatFeedback(feedback) : undefined,
       priorSummary,
+      findingCompletions: reworkObligationPacket,
     });
     deps.updateState({
       phase: "coding",
@@ -6164,6 +7091,13 @@ async function runTaskWorker(args: {
           "task-packet.json",
           `${JSON.stringify(
             {
+              contextId: responsibilityContext.contextId,
+              selectedTaskId: compiledContractEntry.id,
+              requirements: responsibilityContext.requirements.filter(
+                (requirement) =>
+                  requirement.taskId === compiledContractEntry.id,
+              ),
+              responsibilities: responsibilityContext.responsibilities,
               resolvedMaterialRefs: sourceMaterialPacket.resolvedRefs,
               ...(sourceMaterialPacket.repair
                 ? { sourceMaterialRepair: sourceMaterialPacket.repair }
@@ -6183,6 +7117,7 @@ async function runTaskWorker(args: {
       model: deps.roles.implementer.model,
       thinking: deps.roles.implementer.thinking,
       role: "implementer",
+      stage: reviewState ? "task_rework" : "implementation",
       taskId,
       cwd: effectiveWorktreePath,
       completion: {
@@ -6347,7 +7282,16 @@ async function runTaskWorker(args: {
       throw new BlockedError("implementer changed task worktree HEAD");
     }
 
-    let parsed = parseImplementerResult(implementation.result);
+    let parsed = parseImplementerResult(
+      implementation.result,
+      reworkObligationPacket.length > 0
+        ? {
+            expectedFindingIds: reworkObligationPacket.map(
+              (finding) => finding.id,
+            ),
+          }
+        : {},
+    );
     if (!parsed.ok) {
       await quarantineAndRestore("implementer returned an invalid completion");
     }
@@ -6414,6 +7358,7 @@ async function runTaskWorker(args: {
           commitMessage: isValidCommitMessage(parsed.result.commitMessage ?? "")
             ? parsed.result.commitMessage!.trim()
             : fallbackCommitMessage(task.text),
+          findingCompletions: parsed.result.findingCompletions,
         },
       };
     }
@@ -6427,6 +7372,15 @@ async function runTaskWorker(args: {
     let latestDeltaPaths: string[] = [];
     let latestDelta = "(no candidate delta)";
     let semanticNoop = false;
+    const latestRework = parsed.ok
+      ? parsed.result.findingCompletions?.map((completion) => ({
+          findingId: completion.id,
+          status: completion.status,
+          evidence: completion.evidence,
+          changedPaths: completion.changedPaths,
+          verification: completion.verification,
+        }))
+      : undefined;
 
     if (hasStaged) {
       fingerprintBefore = await taskGit.stagedFingerprint();
@@ -6581,13 +7535,6 @@ async function runTaskWorker(args: {
     ]
       .filter(Boolean)
       .join("\n\n");
-    const outOfScopeTasks = deps.executionManifest
-      ? deps.executionManifest.tasks
-          .filter((manifestTask) => manifestTask.planIndex !== task.index)
-          .map((manifestTask) => `- ${manifestTask.title}`)
-      : plan.tasks
-          .filter((planTask) => planTask.index !== task.index)
-          .map((planTask) => planTask.originalLine);
     reviewerPrompt = reviewState
       ? buildAnchoredTaskReviewPrompt({
           compiledContract,
@@ -6599,12 +7546,18 @@ async function runTaskWorker(args: {
           previousCandidate: previousCandidate ?? "(initial candidate)",
           currentCandidate: candidateIdentity,
           latestDelta,
+          reworkCompletions: parsed.result.findingCompletions?.filter(
+            (completion) => reviewState!.outstandingIds.includes(completion.id),
+          ),
+          responsibilityContext,
+          selectedTaskId: compiledContractEntry.id,
         })
       : buildInitialTaskReviewPrompt({
           compiledContract,
           worktreePath: effectiveWorktreePath,
           candidateContext,
-          outOfScopeTasks,
+          responsibilityContext,
+          selectedTaskId: compiledContractEntry.id,
         });
     if (schedulerTask) {
       schedulerTask.status = "reviewing";
@@ -6619,6 +7572,36 @@ async function runTaskWorker(args: {
         reviewerPrompt!,
       );
     }
+    await persistCanonicalReviewConvergence(deps, taskId, {
+      stage: reviewState ? "anchored_review" : "initial_review",
+      candidate: {
+        current: candidateIdentity,
+        previous: previousCandidate,
+        latestDeltaPaths: [],
+      },
+      contextId: reviewContextId,
+      proposalBatchId: reviewProposalBatchId,
+      rawAdjudication,
+      epoch: reviewEpoch,
+      round: reviewState?.round ?? 0,
+      proposals: reviewProposals,
+      admissions: reviewAdmissions,
+      findings: reviewState?.findings ?? [],
+      outstandingFindingIds: reviewState?.outstandingIds ?? [],
+      deferredConcerns,
+      observationIds: reviewObservationIds,
+      bestOutstandingCount: reviewState?.bestOutstandingCount ?? 0,
+      previousOutstandingCount: reviewState?.outstandingIds.length,
+      consecutiveStalledRounds: reviewState?.consecutiveStalledRounds ?? 0,
+      evidenceRefs: [
+        join(deps.paths!.runDir, "artifacts", taskId, "reviewer-prompt.md"),
+      ],
+      previousCandidatePatch,
+      latestEvidence,
+      verificationFailures,
+      latestRework,
+      reworkObligationIds: reworkObligationPacket.map((finding) => finding.id),
+    });
 
     {
       const reviewerSnapshot = await captureRestoreSnapshot(
@@ -6634,6 +7617,7 @@ async function runTaskWorker(args: {
           model: deps.roles.reviewer.model,
           thinking: deps.roles.reviewer.thinking,
           role: "reviewer",
+          stage: reviewState ? "anchored_task_review" : "initial_task_review",
           taskId,
           cwd: effectiveWorktreePath,
           readOnly: true,
@@ -6820,10 +7804,40 @@ async function runTaskWorker(args: {
           }
           let update;
           try {
+            const regressionProposals = parsedReview.result.regressions.map(
+              (regression, index) => ({
+                ...regression,
+                proposalId: `E${reviewEpoch}R${anchoredReviewState.round + 1}P${index + 1}`,
+                basis: {
+                  kind: "candidate_regression" as const,
+                  changedPaths: regression.changedPaths,
+                  causalEvidence: regression.causalEvidence,
+                },
+              }),
+            );
+            const regressionAdmission = regressionProposals.length
+              ? await admitReviewProposals({
+                  deps,
+                  scope: "task",
+                  taskId,
+                  compiledContract,
+                  candidateIdentity,
+                  latestDeltaPaths,
+                  proposals: regressionProposals,
+                })
+              : undefined;
+            const admittedProposalIds = new Set(
+              regressionAdmission?.admittedDrafts.map(
+                (draft) => draft.proposalId,
+              ) ?? [],
+            );
+            const admittedRegressions = regressionProposals.filter((proposal) =>
+              admittedProposalIds.has(proposal.proposalId),
+            );
             if (anchoredReviewState.outstandingIds.length === 0) {
               const regressionEpoch = openRegressionReviewEpoch({
                 closedState: anchoredReviewState,
-                regressions: parsedReview.result.regressions,
+                regressions: admittedRegressions,
                 latestDeltaPaths,
               });
               reviewEpoch++;
@@ -6842,9 +7856,66 @@ async function runTaskWorker(args: {
             } else {
               update = applyAnchoredReview({
                 state: anchoredReviewState,
-                review: parsedReview.result,
+                review: {
+                  ...parsedReview.result,
+                  regressions: admittedRegressions,
+                },
                 latestDeltaPaths,
               });
+            }
+            if (regressionAdmission) {
+              const findingIds = new Map(
+                update.state.findings.map((finding) => [
+                  finding.proposalId,
+                  finding.id,
+                ]),
+              );
+              reviewProposals = [
+                ...reviewProposals,
+                ...regressionProposals.map((proposal) => ({
+                  id: proposal.proposalId,
+                  summary: proposal.summary,
+                  evidence: proposal.evidence,
+                  basis: proposal.basis,
+                  requiredChange: proposal.requiredChange,
+                  acceptanceCriteria: proposal.acceptanceCriteria,
+                })),
+              ];
+              reviewAdmissions = [
+                ...reviewAdmissions,
+                ...regressionAdmission.admissions.map((entry) => ({
+                  proposalId: entry.proposalId,
+                  disposition: entry.disposition,
+                  certainty: entry.certainty,
+                  rationale: entry.rationale,
+                  ...(entry.disposition === "admit"
+                    ? { findingId: findingIds.get(entry.proposalId)! }
+                    : {}),
+                })),
+              ];
+              deferredConcerns = [
+                ...deferredConcerns,
+                ...regressionAdmission.deferredConcerns.map((proposal) => ({
+                  id: `${taskId}:D-${proposal.proposalId}`,
+                  proposalId: proposal.proposalId,
+                  summary: proposal.summary,
+                  evidence: proposal.evidence,
+                  basis: proposal.basis,
+                  sourceScope: "task" as const,
+                  sourceCandidate: candidateIdentity,
+                  rationale: regressionAdmission.admissions.find(
+                    (entry) => entry.proposalId === proposal.proposalId,
+                  )?.rationale,
+                })),
+              ];
+              reviewObservationIds = [
+                ...reviewObservationIds,
+                ...regressionAdmission.observations.map(
+                  (_observation, index) =>
+                    `O-${anchoredReviewState.round + 1}-${index + 1}`,
+                ),
+              ];
+              reviewProposalBatchId = regressionAdmission.proposalBatchId;
             }
           } catch (error) {
             recordSystemFailure(
@@ -6865,6 +7936,31 @@ async function runTaskWorker(args: {
               )
               .join("\n") || undefined;
           if (update.outcome === "stalled") {
+            await persistCanonicalReviewConvergence(deps, taskId, {
+              stage: "stalled",
+              candidate: {
+                current: candidateIdentity,
+                previous: previousCandidate,
+                latestDeltaPaths: [],
+              },
+              contextId: reviewContextId,
+              proposalBatchId: reviewProposalBatchId,
+              rawAdjudication,
+              epoch: reviewEpoch,
+              round: reviewState.round,
+              proposals: reviewProposals,
+              admissions: reviewAdmissions,
+              findings: reviewState.findings,
+              outstandingFindingIds: reviewState.outstandingIds,
+              deferredConcerns,
+              observationIds: reviewObservationIds,
+              bestOutstandingCount: reviewState.bestOutstandingCount,
+              consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
+              evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
+              previousCandidatePatch,
+              latestEvidence,
+              verificationFailures,
+            });
             persistCandidate(
               "stalled",
               "task review stalled without a new low outstanding count",
@@ -6874,7 +7970,9 @@ async function runTaskWorker(args: {
             );
           }
         } else {
-          const parsedReview = parseInitialReviewResult(review.result);
+          const parsedReview = parseInitialReviewResult(review.result, {
+            requireProposalBasis: true,
+          });
           if (!parsedReview.ok) {
             recordSystemFailure(
               task.index,
@@ -6885,12 +7983,258 @@ async function runTaskWorker(args: {
             reviewerSystemFailures++;
             continue reviewerLoop;
           }
-          reviewState = createReviewConvergenceState({
-            drafts:
-              parsedReview.result.verdict === "changes_requested"
-                ? parsedReview.result.findings
-                : [],
-          });
+          const proposals =
+            parsedReview.result.verdict === "changes_requested"
+              ? parsedReview.result.findings
+              : [];
+          if (proposals.length === 0) {
+            reviewProposals = [];
+            reviewAdmissions = [];
+            reviewState = createReviewConvergenceState({ drafts: [] });
+          } else {
+            const proposalBatchId = createProposalBatchId({
+              scope: "task",
+              contextId: responsibilityContext.contextId,
+              candidateIdentity,
+              latestDeltaPaths,
+              proposals,
+            });
+            reviewProposals = proposals.map((proposal) => ({
+              id: proposal.proposalId,
+              summary: proposal.summary,
+              evidence: proposal.evidence,
+              basis: proposal.basis,
+              requiredChange: proposal.requiredChange,
+              acceptanceCriteria: proposal.acceptanceCriteria,
+            }));
+            reviewProposalBatchId = proposalBatchId;
+            reviewContextId = responsibilityContext.contextId;
+            rawAdjudication = undefined;
+            if (deps.paths) {
+              persistTaskArtifact(
+                deps.paths,
+                taskId,
+                "proposal-batch.json",
+                JSON.stringify(
+                  {
+                    proposalBatchId,
+                    contextId: responsibilityContext.contextId,
+                    candidateIdentity,
+                    latestDeltaPaths,
+                    proposals,
+                  },
+                  null,
+                  2,
+                ),
+              );
+            }
+            await persistCanonicalReviewConvergence(deps, taskId, {
+              stage: "admission",
+              candidate: {
+                current: candidateIdentity,
+                previous: previousCandidate,
+                latestDeltaPaths,
+              },
+              contextId: responsibilityContext.contextId,
+              proposalBatchId,
+              rawAdjudication,
+              epoch: reviewEpoch,
+              round: 0,
+              proposals: reviewProposals,
+              admissions: [],
+              findings: [],
+              outstandingFindingIds: [],
+              deferredConcerns: [],
+              observationIds: [],
+              bestOutstandingCount: 0,
+              consecutiveStalledRounds: 0,
+              evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
+              previousCandidatePatch,
+              latestEvidence,
+              verificationFailures,
+            });
+            const admissionPrompt = buildTaskFindingAdmissionPrompt({
+              compiledContract,
+              responsibilityContext,
+              selectedTaskId: compiledContractEntry.id,
+              candidateIdentity,
+              latestDeltaPaths,
+              proposalBatchId,
+              proposals,
+            });
+            if (deps.paths) {
+              persistTaskArtifact(
+                deps.paths,
+                taskId,
+                "adjudicator-prompt.md",
+                admissionPrompt,
+              );
+            }
+            let admissionResult: SubagentResult;
+            let admissionId: string | undefined;
+            try {
+              admissionId = await deps.subagents.spawn({
+                type: deps.roles.reviewer.type,
+                ownerRole: "admission",
+                prompt: admissionPrompt,
+                description: `admit task ${task.index}/${plan.tasks.length} findings: ${shortTask(task.text)}`,
+                model: deps.roles.reviewer.model,
+                thinking: "low",
+                role: "admission",
+                stage: "task_admission",
+                taskId,
+                cwd: effectiveWorktreePath,
+                systemPrompt: FINDING_ADMISSION_SYSTEM_PROMPT,
+                systemPromptMode: "replace",
+                noTools: true,
+                excludeTools: [
+                  "read",
+                  "bash",
+                  "grep",
+                  "find",
+                  "ls",
+                  "explore",
+                  "lsp",
+                  "edit",
+                  "write",
+                  "Agent",
+                  "get_subagent_result",
+                  "steer_subagent",
+                  "propose_papercut",
+                ],
+                completion: {
+                  description: "Submit finding admission dispositions.",
+                  schema: findingAdmissionBatchSchema,
+                },
+              });
+              const admissionRef: AgentDisplayRef = {
+                id: admissionId,
+                role: "admission",
+                label: `Task ${task.index}/${plan.tasks.length} finding admission · ${shortTask(task.text)}`,
+                startedAt: new Date().toISOString(),
+                taskId,
+                taskIndex: task.index,
+                taskTotal: plan.tasks.length,
+                taskTitle: shortTask(task.text),
+              };
+              setSchedulerActiveAgent(schedulerTask, admissionRef);
+              deps.updateState((prev) =>
+                addActiveAgentPatch(prev, admissionRef),
+              );
+              admissionResult = await deps.subagents.waitFor(
+                admissionId,
+                deps.signal,
+              );
+            } catch (error) {
+              admissionResult = {
+                status: "failed",
+                error: `Adjudicator unavailable: ${error instanceof Error ? error.message : String(error)}`,
+              };
+            } finally {
+              if (admissionId) {
+                clearSchedulerActiveAgent(schedulerTask, admissionId);
+                deps.updateState((prev) =>
+                  removeActiveAgentPatch(prev, admissionId!),
+                );
+              }
+            }
+            if (deps.paths) {
+              persistTaskArtifact(
+                deps.paths,
+                taskId,
+                "adjudicator-result.json",
+                JSON.stringify(admissionResult, null, 2),
+              );
+            }
+            const parsedAdmission =
+              admissionResult.status === "completed"
+                ? parseAdmissionResult(admissionResult.result)
+                : undefined;
+            rawAdjudication = admissionResult;
+            const admission = evaluateFindingAdmission({
+              scope: "task",
+              proposalBatchId,
+              proposals,
+              knownRequirementIds: responsibilityContext.requirements.map(
+                (requirement) => requirement.id,
+              ),
+              ...(parsedAdmission?.ok
+                ? { adjudication: parsedAdmission.result }
+                : {
+                    failureReason:
+                      admissionResult.status === "completed"
+                        ? `Adjudication completion was malformed: ${parsedAdmission?.reason ?? "unknown error"}`
+                        : `Adjudication ${admissionResult.status}: ${admissionResult.error}`,
+                  }),
+            });
+            reviewState = createReviewConvergenceState({
+              drafts: admission.admittedDrafts,
+            });
+            const findingIds = new Map(
+              reviewState.findings.map((finding) => [
+                finding.proposalId,
+                finding.id,
+              ]),
+            );
+            reviewAdmissions = admission.admissions.map((entry) => ({
+              proposalId: entry.proposalId,
+              disposition: entry.disposition,
+              certainty: entry.certainty,
+              rationale: entry.rationale,
+              ...(entry.disposition === "admit"
+                ? { findingId: findingIds.get(entry.proposalId)! }
+                : {}),
+            }));
+            deferredConcerns = admission.deferredConcerns.map((proposal) => ({
+              id: `${taskId}:D-${proposal.proposalId}`,
+              proposalId: proposal.proposalId,
+              summary: proposal.summary,
+              evidence: proposal.evidence,
+              basis: proposal.basis,
+              sourceScope: "task",
+              sourceCandidate: candidateIdentity,
+              rationale: reviewAdmissions.find(
+                (admission) => admission.proposalId === proposal.proposalId,
+              )?.rationale,
+            }));
+            reviewObservationIds = admission.observations.map(
+              (_observation, index) => `O-${index + 1}`,
+            );
+            await persistCanonicalReviewConvergence(deps, taskId, {
+              stage:
+                reviewState.outstandingIds.length > 0 ? "rework" : "approved",
+              candidate: {
+                current: candidateIdentity,
+                previous: previousCandidate,
+                latestDeltaPaths,
+              },
+              contextId: responsibilityContext.contextId,
+              proposalBatchId,
+              rawAdjudication,
+              epoch: reviewEpoch,
+              round: reviewState.round,
+              proposals: reviewProposals,
+              admissions: reviewAdmissions,
+              findings: reviewState.findings,
+              outstandingFindingIds: reviewState.outstandingIds,
+              deferredConcerns,
+              observationIds: reviewObservationIds,
+              bestOutstandingCount: reviewState.bestOutstandingCount,
+              consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
+              evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
+              previousCandidatePatch,
+              latestEvidence,
+              verificationFailures,
+            });
+            if (deps.paths) {
+              persistTaskArtifact(
+                deps.paths,
+                taskId,
+                "admission-transition.json",
+                JSON.stringify({ rawAdjudication, admission }, null, 2),
+              );
+            }
+          }
         }
         await recordPapercuts(deps, review.result, "reviewer", taskId);
 
@@ -6910,6 +8254,31 @@ async function runTaskWorker(args: {
           ),
         );
         if (outstanding.length > 0) {
+          await persistCanonicalReviewConvergence(deps, taskId, {
+            stage: "rework",
+            candidate: {
+              current: candidateIdentity,
+              previous: previousCandidate,
+              latestDeltaPaths: [],
+            },
+            contextId: reviewContextId,
+            proposalBatchId: reviewProposalBatchId,
+            rawAdjudication,
+            epoch: reviewEpoch,
+            round: reviewState.round,
+            proposals: reviewProposals,
+            admissions: reviewAdmissions,
+            findings: reviewState.findings,
+            outstandingFindingIds: reviewState.outstandingIds,
+            deferredConcerns,
+            observationIds: reviewObservationIds,
+            bestOutstandingCount: reviewState.bestOutstandingCount,
+            consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
+            evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
+            previousCandidatePatch,
+            latestEvidence,
+            verificationFailures,
+          });
           latestEvidence = assessmentEvidence(
             reviewState.findings,
             outstanding,
@@ -6944,16 +8313,29 @@ async function runTaskWorker(args: {
       ...nextTaskReviewMetadata(deps.paths, taskId),
       ...persistReview("reviewed"),
     };
-    persistCanonicalReviewConvergence(deps, taskId, {
+    await persistCanonicalReviewConvergence(deps, taskId, {
+      stage: reviewState.outstandingIds.length === 0 ? "approved" : "stalled",
+      candidate: {
+        current:
+          candidate.candidateSha ?? candidate.trustedCheckpoint ?? baseSha,
+        previous: previousCandidate,
+        latestDeltaPaths: [],
+      },
       candidateId: undefined,
+      contextId: reviewContextId,
+      proposalBatchId: reviewProposalBatchId,
+      rawAdjudication,
       epoch: reviewEpoch,
       round: reviewState.round,
+      proposals: reviewProposals,
+      admissions: reviewAdmissions,
       findings: reviewState.findings,
       outstandingFindingIds: reviewState.outstandingIds,
+      deferredConcerns,
+      observationIds: reviewObservationIds,
       bestOutstandingCount: reviewState.bestOutstandingCount,
       consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
       evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
-      previousCandidate,
       previousCandidatePatch,
       latestEvidence,
       verificationFailures,

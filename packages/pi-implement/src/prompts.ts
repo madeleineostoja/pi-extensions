@@ -1,4 +1,9 @@
-import type { ExecutionManifest } from "./execution-plan.js";
+import { buildReviewResponsibilityContext } from "./execution-plan.js";
+import type {
+  ExecutionManifest,
+  RequirementRef,
+  ReviewResponsibilityContext,
+} from "./execution-plan.js";
 import type { ReviewFinding } from "./review-convergence.js";
 
 export const PAPERCUT_GUIDANCE = `## Optional Papercut Candidates
@@ -7,6 +12,7 @@ If this work exposed a novel recurring project-specific failure absent from curr
 
 export function formatExecutionManifestSummary(
   manifest?: ExecutionManifest,
+  responsibilityContext?: ReviewResponsibilityContext,
 ): string {
   if (!manifest) {
     return "";
@@ -32,15 +38,38 @@ export function formatExecutionManifestSummary(
     parts.push(`- Planner confidence: ${manifest.plannerConfidence}`);
   }
 
-  parts.push("", "### Compiled Task Contracts", "");
+  const context =
+    responsibilityContext ?? buildReviewResponsibilityContext(manifest);
+  const tasks = [...manifest.tasks].sort(
+    (left, right) => left.planIndex - right.planIndex,
+  );
+  const requirementsByTask = new Map<string, RequirementRef[]>();
+  for (const requirement of context?.requirements ?? []) {
+    const requirements = requirementsByTask.get(requirement.taskId) ?? [];
+    requirements.push(requirement);
+    requirementsByTask.set(requirement.taskId, requirements);
+  }
+
+  parts.push("", "### Responsibility Map", "");
   parts.push(
-    "Each per-task implementer received only its own compiled contract. The contracts below controlled the scope of each task during execution.",
+    "Each per-task implementer received only its own detailed contract. This compact map records ownership and direct dependencies without expanding sibling scope.",
     "",
   );
-
-  for (const task of manifest.tasks) {
+  for (const task of tasks) {
+    const responsibility = context?.responsibilities.find(
+      (entry) => entry.taskId === task.id,
+    );
     parts.push(`#### ${task.id}: ${task.title}`);
     parts.push(`- Objective: ${task.compiledContract.objective}`);
+    parts.push(
+      `- Owns: ${(responsibility?.owns ?? task.compiledContract.inScope).join("; ")}`,
+    );
+    parts.push(
+      `- Direct dependencies: ${(responsibility?.dependsOn ?? task.dependsOn).join(", ") || "none"}`,
+    );
+    parts.push(
+      `- Acceptance IDs: ${(responsibility?.acceptanceIds ?? []).join(", ") || "not derived"}`,
+    );
     parts.push(`- In scope: ${task.compiledContract.inScope.join(", ")}`);
     parts.push(
       `- Acceptance criteria: ${task.compiledContract.acceptanceCriteria.join(", ")}`,
@@ -49,6 +78,20 @@ export function formatExecutionManifestSummary(
       `- Out of scope: ${task.compiledContract.outOfScope.join(", ")}`,
     );
     parts.push("");
+  }
+
+  if (context) {
+    parts.push("### Requirement References", "");
+    for (const task of tasks) {
+      parts.push(`#### ${task.id}: ${task.title}`);
+      for (const requirement of requirementsByTask.get(task.id) ?? []) {
+        parts.push(
+          `- ${requirement.id} (${requirement.kind}): ${requirement.text}${requirement.fallbackGenerated ? " (fallback-generated)" : ""}`,
+        );
+      }
+      parts.push("");
+    }
+    parts.push(`Context identity: ${context.contextId}`, "");
   }
 
   parts.push(
@@ -63,11 +106,27 @@ export function formatExecutionManifestSummary(
   return parts.join("\n");
 }
 
-function buildSiblingTasksSection(outOfScopeTasks?: string[]): string {
-  if (!outOfScopeTasks || outOfScopeTasks.length === 0) {
+function buildResponsibilitySection(args: {
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
+}): string {
+  const { responsibilityContext: context, selectedTaskId } = args;
+  if (!context || !selectedTaskId) {
     return "";
   }
-  return `\n## Out-of-Scope Sibling Tasks\n\nThe following tasks are not selected. Use them only to identify scope creep in the candidate diff.\n\n${outOfScopeTasks.join("\n")}\n`;
+  const selected = context.responsibilities.find(
+    (responsibility) => responsibility.taskId === selectedTaskId,
+  );
+  if (!selected) {
+    return "";
+  }
+  const requirements = context.requirements.filter(
+    (requirement) => requirement.taskId === selectedTaskId,
+  );
+  const siblings = context.responsibilities.filter(
+    (responsibility) => responsibility.taskId !== selectedTaskId,
+  );
+  return `## Stable Requirements\n\n${requirements.map((requirement) => `- ${requirement.id} (${requirement.kind}): ${requirement.text}${requirement.fallbackGenerated ? " (fallback-generated)" : ""}`).join("\n")}\n\n## Responsibility Context\n\nSelected task ${selected.taskId} owns: ${selected.owns.join("; ")}\nDirect dependencies: ${selected.dependsOn.join(", ") || "none"}\n\nSibling ownership is context for interface and scope boundaries, not permission to implement sibling deliverables.\n\n${siblings.map((sibling) => `- ${sibling.taskId}: ${sibling.title}\n  Objective: ${sibling.objective}\n  Owns: ${sibling.owns.join("; ")}\n  Direct dependencies: ${sibling.dependsOn.join(", ") || "none"}\n  Acceptance IDs: ${sibling.acceptanceIds.join(", ") || "none"}`).join("\n")}\n\nContext identity: ${context.contextId}`;
 }
 
 function formatSourceMaterialSection(sourceMaterial?: string): string {
@@ -81,12 +140,26 @@ export function buildImplementerPrompt(args: {
   compiledContract: string;
   worktreePath: string;
   sourceMaterial?: string;
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
   feedback?: string;
   priorSummary?: string;
+  findingCompletions?: Array<{
+    id: string;
+    sourceScope: "task_review" | "integration_fallback";
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+    basis?: unknown;
+  }>;
 }): string {
-  const retry = args.feedback
-    ? `\n## Retry Context\n\nPrevious attempt summary:\n${args.priorSummary ?? "(none)"}\n\nFeedback to address:\n${args.feedback}\n`
+  const reworkProtocol = args.findingCompletions?.length
+    ? `\n## Rework Completion Protocol\n\nFor every supplied finding, return findingCompletions with each ID exactly once as addressed or not_addressed. Each completion requires concrete evidence, changedPaths, and finding-level verification. An addressed completion with no changed paths must explain why no source change was necessary. Your declaration is evidence for anchored review; it does not resolve a finding itself.\n\n${args.findingCompletions.map((finding) => `- ${finding.id} [${finding.sourceScope}]\n  Demonstrated defect: ${finding.evidence}\n  Requirement / acceptance basis: ${finding.acceptanceCriteria.join("; ")}\n  Requirement reference: ${JSON.stringify(finding.basis ?? "not recorded")}\n  Minimum observable correction: ${finding.requiredChange}`).join("\n")}`
     : "";
+  const retry = args.feedback
+    ? `\n## Retry Context\n\nPrevious attempt summary:\n${args.priorSummary ?? "(none)"}\n\nFeedback to address:\n${args.feedback}${reworkProtocol}\n`
+    : reworkProtocol;
   const intro = `You are the pi-implement implementer for exactly one task. This prompt is the complete task packet and must work even if your subagent definition is generic.
 
 Run non-interactively. No human will see your intermediate messages or answer questions. Never ask for clarification, never ask how to proceed, and never wait for input. Make reasonable decisions yourself and finish with the result block.
@@ -97,7 +170,7 @@ You have been assigned a dedicated Git worktree for this task. Read and write on
 
 Do not read or write files outside the assigned worktree. Any shell command that touches project files must run from or explicitly target the assigned worktree path above.
 
-The compiled task contract plus referenced source material below is the complete task packet for this task. Sibling task contracts are intentionally omitted — they are not truncation and not your concern. They do not expand your scope.
+The compiled task contract plus referenced source material below is the complete task packet for this task. Compact sibling responsibility context may be included for interface and scope boundaries; it does not expand your scope or provide sibling contract details.
 
 **Required implementation scope:** Only the items listed in the compiled task contract. Referenced source material supplies exact details, constraints, examples, schemas, prompts, fixtures, or design context needed to satisfy that contract. Use referenced material only to satisfy the compiled contract. Do not implement sibling tasks or unrelated cleanup, even when broader context mentions them.
 
@@ -117,6 +190,8 @@ ${args.compiledContract}
 
 ${formatSourceMaterialSection(args.sourceMaterial)}
 
+${buildResponsibilitySection(args)}
+
 ${PAPERCUT_GUIDANCE}
 
 Submit the result through the injected completion tool as your final action.
@@ -126,6 +201,12 @@ Submit the result through the injected completion tool as your final action.
 export function buildIntegrationReviewerPrompt(args: {
   diff: string;
   planArtifacts: string[];
+  deferredConcerns?: Array<{
+    id: string;
+    summary: string;
+    evidence: string;
+    basis: unknown;
+  }>;
   outstandingFindings?: Array<{
     id: string;
     summary: string;
@@ -133,13 +214,29 @@ export function buildIntegrationReviewerPrompt(args: {
     requiredChange: string;
     acceptanceCriteria: string[];
   }>;
+  previousCandidate?: string;
+  currentCandidate?: string;
+  latestDelta?: string;
+  reworkCompletions?: Array<{
+    id: string;
+    status: "addressed" | "not_addressed";
+    evidence: string;
+    changedPaths: string[];
+    verification: Array<{ command: string; result: string; rationale: string }>;
+  }>;
 }): string {
   const anchored = args.outstandingFindings
     ? `\n## Outstanding Integration Findings\n\n${args.outstandingFindings.map((finding) => `- ${finding.id}: ${finding.summary}\n  Evidence: ${finding.evidence}\n  Required change: ${finding.requiredChange}\n  Acceptance: ${finding.acceptanceCriteria.join("; ")}`).join("\n")}\n`
     : "";
+  const deferred = args.deferredConcerns?.length
+    ? `\n## Deferred Concerns\n\n${args.deferredConcerns.map((concern) => `- ${concern.id}: ${concern.summary}\n  Evidence: ${concern.evidence}\n  Basis: ${JSON.stringify(concern.basis)}`).join("\n")}\n`
+    : "";
+  const anchoredContext = args.outstandingFindings
+    ? `\n## Anchored Candidate Context\n\nPrevious candidate: ${args.previousCandidate ?? "unknown"}\nCurrent candidate: ${args.currentCandidate ?? "unknown"}\n\nExact previous→current delta:\n\`\`\`diff\n${args.latestDelta ?? args.diff}\n\`\`\`\n\n## Owner Rework Declarations\n\n${args.reworkCompletions?.map((completion) => `- ${completion.id}: ${completion.status}\n  Evidence: ${completion.evidence}\n  Changed paths: ${completion.changedPaths.join(", ") || "none"}\n  Verification: ${completion.verification.map((step) => `${step.command}: ${step.result}`).join("; ")}`).join("\n") || "No matching declarations were recorded."}\n`
+    : "";
   const resultProtocol = args.outstandingFindings
-    ? "Return an anchored assessment for every outstanding ID exactly once, attributable regressions caused by the staged delta, and optional observations."
-    : "Return approved or changes_requested with atomic typed findings.";
+    ? "Return an anchored assessment for every outstanding ID exactly once, attributable regression proposals caused by the exact latest delta, and optional observations."
+    : "Return approved or changes_requested with atomic proposal findings. Each proposal needs summary, evidence, requiredChange, acceptanceCriteria, and a grounded basis: requirement, candidate_regression, or correctness_invariant. Findings are proposals until separately admitted.";
   return `Review this integrated task diff on the main checkout.
 
 No command validation is configured or auto-detected. Decide whether the integrated diff is safe to commit.
@@ -147,7 +244,7 @@ No command validation is configured or auto-detected. Decide whether the integra
 Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, or run any command that changes files or git state. Use read-only commands only.
 
 Plan artifacts are not part of the implementation commit and should be ignored: ${args.planArtifacts.join(", ")}
-${anchored}
+${anchored}${deferred}${anchoredContext}
 ## Staged Diff
 
 \`\`\`diff
@@ -392,6 +489,15 @@ export function buildOverallReworkPrompt(args: {
   recommendationMarkdown?: string;
   priorAttemptFailures?: string[];
   executionManifest?: ExecutionManifest;
+  findingCompletions?: Array<{
+    id: string;
+    sourceScope: "task_review" | "integration_fallback";
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+    basis?: unknown;
+  }>;
 }): string {
   const runSection = args.runId ? `\nRun ID: ${args.runId}\n` : "\n";
   const taskSection =
@@ -418,6 +524,9 @@ export function buildOverallReworkPrompt(args: {
   const manifestSection = formatExecutionManifestSummary(
     args.executionManifest,
   );
+  const reworkProtocol = args.findingCompletions?.length
+    ? `\n## Rework Completion Protocol\n\nReturn findingCompletions with every supplied ID exactly once as addressed or not_addressed. Each completion requires concrete evidence, changedPaths, and finding-level verification. An addressed completion with no changed paths must explain why no source change was necessary. Declarations are anchored-review evidence, not self-resolution.\n\n${args.findingCompletions.map((finding) => `- ${finding.id} [${finding.sourceScope}]\n  Demonstrated defect: ${finding.evidence}\n  Requirement / acceptance basis: ${finding.acceptanceCriteria.join("; ")}\n  Requirement reference: ${JSON.stringify(finding.basis ?? "not recorded")}\n  Minimum observable correction: ${finding.requiredChange}`).join("\n")}`
+    : "";
 
   return `You are the pi-implement overall rework implementer. Your job is to address the overall review feedback for the completed feature.
 
@@ -448,7 +557,7 @@ ${args.diff}
 ## Required Changes
 
 ${requiredChanges.map((c) => `- ${c}`).join("\n")}
-${recommendationSection}${priorFailuresSection}
+${reworkProtocol}${recommendationSection}${priorFailuresSection}
 ${PAPERCUT_GUIDANCE}
 
 Submit the overall rework result through the injected completion tool as your final action.
@@ -461,14 +570,89 @@ export function buildInitialTaskReviewPrompt(args: {
   compiledContract: string;
   worktreePath: string;
   candidateContext: string;
-  outOfScopeTasks?: string[];
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
 }): string {
   return buildInitialReviewPrompt({
     scope: "task",
     compiledContract: args.compiledContract,
     worktreePath: args.worktreePath,
     candidateContext: args.candidateContext,
-    outOfScopeTasks: args.outOfScopeTasks,
+    responsibilityContext: args.responsibilityContext,
+    selectedTaskId: args.selectedTaskId,
+  });
+}
+
+export const FINDING_ADMISSION_SYSTEM_PROMPT = `You classify only the supplied review proposals. Do not inspect the repository, use tools, discover findings, rewrite proposals, choose an implementation design, or reject a proposal when uncertain. Return exactly one disposition for each supplied proposal ID and echo the supplied proposalBatchId. Mark uncertainty explicitly as uncertain.`;
+
+export function buildFindingAdmissionPrompt(args: {
+  scope: "task" | "overall" | "integration";
+  compiledContract: string;
+  requirementIds: Array<{ id: string; text: string }>;
+  candidateIdentity: string;
+  latestDeltaPaths: readonly string[];
+  proposalBatchId: string;
+  proposals: readonly {
+    proposalId: string;
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+    basis: unknown;
+  }[];
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
+}): string {
+  return `Classify the supplied ${args.scope}-review proposals against the supplied evidence only. Return the exact proposalBatchId and one certain or uncertain disposition (admit, defer, demote, or reject) for every proposal. Do not add proposals. If uncertain, use certainty: uncertain; uncertainty is never a reason to reject.${args.scope === "overall" ? " Overall concerns cannot be deferred; use admit instead." : ""}
+
+## Proposal Batch
+
+proposalBatchId: ${args.proposalBatchId}
+Candidate identity: ${args.candidateIdentity}
+Latest delta paths: ${args.latestDeltaPaths.join(", ") || "none"}
+
+## Contract
+
+${args.compiledContract}
+
+## Requirement IDs
+
+${args.requirementIds.map((requirement) => `- ${requirement.id}: ${requirement.text}`).join("\n") || "No stable requirement IDs are available; classify only against supplied invariants and candidate regressions."}
+
+${args.responsibilityContext ? `## Responsibility Context\n\n${buildResponsibilitySection({ responsibilityContext: args.responsibilityContext, selectedTaskId: args.selectedTaskId })}\n` : ""}
+## Proposals
+
+${args.proposals.map((proposal) => `### ${proposal.proposalId}\nSummary: ${proposal.summary}\nEvidence: ${proposal.evidence}\nRequired change: ${proposal.requiredChange}\nAcceptance: ${proposal.acceptanceCriteria.join("; ")}\nBasis: ${JSON.stringify(proposal.basis)}`).join("\n\n")}`;
+}
+
+export function buildTaskFindingAdmissionPrompt(args: {
+  compiledContract: string;
+  responsibilityContext: ReviewResponsibilityContext;
+  selectedTaskId: string;
+  candidateIdentity: string;
+  latestDeltaPaths: readonly string[];
+  proposalBatchId: string;
+  proposals: readonly {
+    proposalId: string;
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+    basis: unknown;
+  }[];
+}): string {
+  return buildFindingAdmissionPrompt({
+    scope: "task",
+    compiledContract: args.compiledContract,
+    requirementIds: args.responsibilityContext.requirements.filter(
+      (requirement) => requirement.taskId === args.selectedTaskId,
+    ),
+    candidateIdentity: args.candidateIdentity,
+    latestDeltaPaths: args.latestDeltaPaths,
+    proposalBatchId: args.proposalBatchId,
+    proposals: args.proposals,
+    responsibilityContext: args.responsibilityContext,
+    selectedTaskId: args.selectedTaskId,
   });
 }
 
@@ -480,6 +664,15 @@ export function buildAnchoredTaskReviewPrompt(args: {
   previousCandidate: string;
   currentCandidate: string;
   latestDelta: string;
+  reworkCompletions?: Array<{
+    id: string;
+    status: "addressed" | "not_addressed";
+    evidence: string;
+    changedPaths: string[];
+    verification: Array<{ command: string; result: string; rationale: string }>;
+  }>;
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
 }): string {
   return buildAnchoredReviewPrompt({ scope: "task", ...args });
 }
@@ -488,6 +681,15 @@ export function buildInitialOverallReviewPrompt(args: {
   planContext: string;
   candidateContext: string;
   worktreePath?: string;
+  deferredConcerns?: Array<{
+    id: string;
+    summary: string;
+    evidence: string;
+    basis: unknown;
+    sourceScope?: string;
+    sourceCandidate?: string;
+    rationale?: string;
+  }>;
 }): string {
   return `${buildInitialReviewPrompt({
     scope: "overall",
@@ -495,6 +697,8 @@ export function buildInitialOverallReviewPrompt(args: {
     worktreePath: args.worktreePath ?? "the main checkout",
     candidateContext: args.candidateContext,
   })}
+
+${args.deferredConcerns?.length ? `## Deferred Concerns to Assess\n\nThese are advisory leads, not blockers by themselves. Assess every supplied ID exactly once as not_reproducible, covered_by_proposal (link a proposal from this completion), or observed_non_blocking.\n\n${args.deferredConcerns.map((concern) => `- ${concern.id} [${concern.sourceScope ?? "task"}]${concern.sourceCandidate ? ` @ ${concern.sourceCandidate}` : ""}: ${concern.summary}\n  Evidence: ${concern.evidence}\n  Rationale: ${concern.rationale ?? "Deferred for whole-feature review."}`).join("\n")}` : ""}
 
 Review the complete feature against the original human plan, corpus, execution manifest, landed tasks, and full feature diff. This is review only: do not edit files, change Git state, install dependencies, or run write-producing commands.`;
 }
@@ -506,6 +710,13 @@ export function buildAnchoredOverallReviewPrompt(args: {
   previousCandidate: string;
   currentCandidate: string;
   latestDelta: string;
+  reworkCompletions?: Array<{
+    id: string;
+    status: "addressed" | "not_addressed";
+    evidence: string;
+    changedPaths: string[];
+    verification: Array<{ command: string; result: string; rationale: string }>;
+  }>;
   worktreePath?: string;
 }): string {
   return `${buildAnchoredReviewPrompt({
@@ -523,7 +734,8 @@ function buildInitialReviewPrompt(args: {
   compiledContract: string;
   worktreePath: string;
   candidateContext: string;
-  outOfScopeTasks?: string[];
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
 }): string {
   const recommendation =
     args.scope === "overall"
@@ -551,8 +763,8 @@ Use the compiled task contract and referenced source material below to verify sc
 - Small prerequisite changes needed for the selected task may be approved.
 - Request changes if the staged diff substantially implements an unselected sibling task or unrelated cleanup.
 - Completing a sibling task's own deliverable is scope creep.
-${args.scope === "task" ? buildSiblingTasksSection(args.outOfScopeTasks) : ""}
-If approved, submit { verdict: "approved" }. Otherwise submit { verdict: "changes_requested", findings } where every atomic finding has summary, evidence, requiredChange, and non-empty acceptanceCriteria. One independently resolvable defect belongs in each finding. Keep the required change and acceptance criteria to the minimum observable correction needed for the demonstrated defect; do not prescribe a broader redesign when a narrower correction satisfies the contract. Omit optional or non-blocking concerns from this initial result.${recommendation}
+${args.scope === "task" ? buildResponsibilitySection(args) : ""}
+If approved, submit { verdict: "approved" }. Otherwise submit { verdict: "changes_requested", findings } where every atomic finding is a proposal with summary, evidence, requiredChange, non-empty acceptanceCriteria, and basis. basis must be either { kind: "requirement", requirementIds }, { kind: "candidate_regression", changedPaths, causalEvidence }, or { kind: "correctness_invariant", invariant }. Requirement IDs must come from the supplied contract. One independently resolvable defect belongs in each proposal. Keep the required change and acceptance criteria to the minimum observable correction needed for the demonstrated defect; do not prescribe a broader redesign when a narrower correction satisfies the contract. Omit optional or non-blocking concerns from this initial result.${recommendation}
 
 ${PAPERCUT_GUIDANCE}
 
@@ -568,6 +780,15 @@ function buildAnchoredReviewPrompt(args: {
   previousCandidate: string;
   currentCandidate: string;
   latestDelta: string;
+  reworkCompletions?: Array<{
+    id: string;
+    status: "addressed" | "not_addressed";
+    evidence: string;
+    changedPaths: string[];
+    verification: Array<{ command: string; result: string; rationale: string }>;
+  }>;
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
 }): string {
   return `You are conducting an anchored ${args.scope} re-review in ${args.worktreePath}. Assess every supplied finding ID exactly once. Do not report ordinary new findings during re-review.
 
@@ -577,12 +798,16 @@ function buildAnchoredReviewPrompt(args: {
 
 ${args.compiledContract}
 
+${args.scope === "task" ? buildResponsibilitySection(args) : ""}
+
 ## Candidate Context
 
 Previous candidate: ${args.previousCandidate}
 Current candidate: ${args.currentCandidate}
 
 ${args.candidateContext}
+
+${args.reworkCompletions?.length ? `## Implementer Rework Declarations\n\n${args.reworkCompletions.map((completion) => `- ${completion.id}: ${completion.status}\n  Evidence: ${completion.evidence}\n  Changed paths: ${completion.changedPaths.join(", ") || "none"}\n  Verification: ${completion.verification.map((step) => `${step.command}: ${step.result}`).join("; ") || "none"}`).join("\n")}` : "## Implementer Rework Declarations\n\nNo rework declarations were supplied."}
 
 ## Prior Required Changes
 

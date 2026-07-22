@@ -1,4 +1,4 @@
-import type { Phase, RunState, TaskStatus } from "./status.js";
+import type { Phase, ReviewProgress, RunState, TaskStatus } from "./status.js";
 
 const PHASE_LABEL: Partial<Record<Phase, string>> = {
   coding: "implementing",
@@ -47,10 +47,12 @@ export function diffProgress(
 
   if (next.tasks) {
     lines.push(...scheduledTaskNotes(prev, next));
+    lines.push(...reviewProgressNotes(prev, next));
   } else {
     lines.push(...serialNotes(prev, next, taskTitles));
   }
 
+  lines.push(...overallReviewProgressNotes(prev, next));
   lines.push(...runLevelNotes(prev, next));
   lines.push(...checkpointNotes(prev, next));
   return lines;
@@ -143,6 +145,111 @@ function scheduledTaskNotes(prev: RunState, next: RunState): string[] {
     lines.push(line);
   }
   return lines;
+}
+
+function reviewProgressNotes(prev: RunState, next: RunState): string[] {
+  const previous = new Map((prev.tasks ?? []).map((task) => [task.id, task]));
+  return (next.tasks ?? []).flatMap((task) => {
+    const before = previous.get(task.id);
+    const tag = `Task ${task.planIndex + 1}${next.totalCount ? `/${next.totalCount}` : ""}`;
+    return [
+      formatReviewProgressNote(
+        tag,
+        before?.reviewProgress,
+        task.reviewProgress,
+      ),
+      formatReviewProgressNote(
+        tag,
+        before?.integrationReviewProgress,
+        task.integrationReviewProgress,
+      ),
+    ].filter((line): line is string => Boolean(line));
+  });
+}
+
+function overallReviewProgressNotes(prev: RunState, next: RunState): string[] {
+  const note = formatReviewProgressNote(
+    "Overall",
+    prev.overallReviewProgress,
+    next.overallReviewProgress,
+  );
+  return note ? [note] : [];
+}
+
+function formatReviewProgressNote(
+  label: string,
+  prev: ReviewProgress | undefined,
+  next: ReviewProgress | undefined,
+): string | undefined {
+  if (!next || reviewProgressEqual(prev, next)) {
+    return undefined;
+  }
+  const scope =
+    next.scope === "integration" ? " integration review" : " review";
+  const candidate = next.previousCandidate
+    ? ` candidate ${next.previousCandidate.slice(0, 7)}→${next.currentCandidate.slice(0, 7)}`
+    : "";
+  const counts = `outstanding ${next.currentOutstandingCount}${next.previousOutstandingCount === undefined ? "" : ` (previous ${next.previousOutstandingCount}`}${next.previousOutstandingCount === undefined ? "" : ")"}, best ${next.bestOutstandingCount}`;
+  if (next.retryKind) {
+    return `↻ ${label}${scope} ${next.retryKind} retry`;
+  }
+  if (next.stage === "stalled") {
+    return `⚠ ${label}${scope} stalled: ${counts}`;
+  }
+  if (next.stage === "approved") {
+    return `✓ ${label}${scope} approved${candidate ? ` at ${next.currentCandidate.slice(0, 7)}` : ""}`;
+  }
+  const changes = [
+    next.admittedIds.length ? `admitted ${next.admittedIds.join(", ")}` : "",
+    next.resolvedIds.length ? `resolved ${next.resolvedIds.join(", ")}` : "",
+    next.deferredIds.length ? `deferred ${next.deferredIds.join(", ")}` : "",
+    next.rejectedIds.length ? `rejected ${next.rejectedIds.join(", ")}` : "",
+    next.addressedIds.length ? `addressed ${next.addressedIds.join(", ")}` : "",
+    next.notAddressedIds.length
+      ? `not addressed ${next.notAddressedIds.join(", ")}`
+      : "",
+    next.unresolvedIds.length
+      ? `unresolved ${next.unresolvedIds.join(", ")}`
+      : "",
+    next.newRegressionIds.length
+      ? `admitted regression ${next.newRegressionIds.join(", ")}`
+      : "",
+  ].filter(Boolean);
+  return `· ${label}${scope}${candidate}${changes.length ? `: ${changes.join("; ")}; ` : ": "}${counts}`;
+}
+
+function reviewProgressEqual(
+  prev: ReviewProgress | undefined,
+  next: ReviewProgress,
+): boolean {
+  if (!prev) {
+    return false;
+  }
+  return (
+    formatReviewProgressComparable(prev) ===
+    formatReviewProgressComparable(next)
+  );
+}
+
+function formatReviewProgressComparable(progress: ReviewProgress): string {
+  return [
+    progress.scope,
+    progress.stage,
+    progress.previousCandidate,
+    progress.currentCandidate,
+    progress.admittedIds.join(","),
+    progress.resolvedIds.join(","),
+    progress.deferredIds.join(","),
+    progress.rejectedIds.join(","),
+    progress.addressedIds.join(","),
+    progress.notAddressedIds.join(","),
+    progress.unresolvedIds.join(","),
+    progress.newRegressionIds.join(","),
+    progress.previousOutstandingCount,
+    progress.currentOutstandingCount,
+    progress.bestOutstandingCount,
+    progress.retryKind,
+  ].join("|");
 }
 
 function runLevelNotes(prev: RunState, next: RunState): string[] {

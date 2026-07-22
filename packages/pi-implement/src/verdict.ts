@@ -1,8 +1,12 @@
 import type {
+  FindingAdmissionBatch,
   FindingAssessment,
+  FindingReworkCompletion,
   RegressionFindingDraft,
   ReviewFindingDraft,
+  ReviewFindingProposal,
   ReviewObservation,
+  DeferredConcernAssessment,
 } from "./result-schemas.js";
 import { validateAssessmentCoverage } from "./review-convergence.js";
 
@@ -12,27 +16,40 @@ export type VerificationStep = {
   rationale: string;
 };
 
+export type ParsedFindingReworkCompletion = FindingReworkCompletion & {
+  verification: VerificationStep[];
+};
+
 export type ParsedImplementerResult =
   | {
       outcome: "changed";
       summary: string;
       verification: VerificationStep[];
       commitMessage: string;
+      findingCompletions?: ParsedFindingReworkCompletion[];
     }
   | {
       outcome: "already_satisfied";
       summary: string;
       verification: VerificationStep[];
       commitMessage?: string;
+      findingCompletions?: ParsedFindingReworkCompletion[];
     };
 
 export type InitialReviewResult =
   | { verdict: "approved" }
   | {
       verdict: "changes_requested";
-      findings: ReviewFindingDraft[];
+      findings: Array<ReviewFindingProposal & { proposalId: string }>;
       recommendationMarkdown?: string;
+      deferredConcernAssessments?: DeferredConcernAssessment[];
+    }
+  | {
+      verdict: "approved";
+      deferredConcernAssessments?: DeferredConcernAssessment[];
     };
+
+export type AdmissionResult = FindingAdmissionBatch;
 
 export type AnchoredReviewResult = {
   assessments: FindingAssessment[];
@@ -62,22 +79,25 @@ export type SchedulerSelfHealResult = {
 export type OverallReworkResult = {
   summary: string;
   verification: VerificationStep[];
+  findingCompletions?: ParsedFindingReworkCompletion[];
   commitMessage?: string;
 };
 
 export function parseImplementerResult(
   value: unknown,
+  options?: { expectedFindingIds?: readonly string[] },
 ):
   | { ok: true; result: ParsedImplementerResult }
   | { ok: false; reason: string } {
   if (!isRecord(value)) {
     return { ok: false, reason: "Implementer completion must be an object." };
   }
-  return parseImplementerResultValue(value);
+  return parseImplementerResultValue(value, options);
 }
 
 function parseImplementerResultValue(
   value: Record<string, unknown>,
+  options?: { expectedFindingIds?: readonly string[] },
 ):
   | { ok: true; result: ParsedImplementerResult }
   | { ok: false; reason: string } {
@@ -135,6 +155,14 @@ function parseImplementerResultValue(
     });
   }
 
+  const findingCompletions = parseFindingReworkCompletions(
+    value.findingCompletions,
+    options?.expectedFindingIds,
+  );
+  if (!findingCompletions.ok) {
+    return findingCompletions;
+  }
+
   if (outcome === "changed") {
     if (!isNonEmptyString(commitMessage)) {
       return {
@@ -149,6 +177,9 @@ function parseImplementerResultValue(
         summary,
         verification: steps,
         commitMessage: commitMessage.trim(),
+        ...(findingCompletions.result.length > 0
+          ? { findingCompletions: findingCompletions.result }
+          : {}),
       },
     };
   }
@@ -162,13 +193,20 @@ function parseImplementerResultValue(
       verification: steps,
       commitMessage:
         typeof commitMessage === "string" ? commitMessage.trim() : undefined,
+      ...(findingCompletions.result.length > 0
+        ? { findingCompletions: findingCompletions.result }
+        : {}),
     },
   };
 }
 
 export function parseInitialReviewResult(
   value: unknown,
-  options?: { allowRecommendationMarkdown?: boolean },
+  options?: {
+    allowRecommendationMarkdown?: boolean;
+    requireProposalBasis?: boolean;
+    deferredConcernIds?: readonly string[];
+  },
 ): { ok: true; result: InitialReviewResult } | { ok: false; reason: string } {
   if (!isRecord(value)) {
     return {
@@ -187,7 +225,22 @@ export function parseInitialReviewResult(
           "Initial approved review cannot include findings or recommendationMarkdown.",
       };
     }
-    return { ok: true, result: { verdict: "approved" } };
+    const deferredConcernAssessments = parseDeferredConcernAssessments(
+      value.deferredConcernAssessments,
+      options?.deferredConcernIds,
+    );
+    if (!deferredConcernAssessments.ok) {
+      return deferredConcernAssessments;
+    }
+    return {
+      ok: true,
+      result: {
+        verdict: "approved",
+        ...(deferredConcernAssessments.result.length > 0
+          ? { deferredConcernAssessments: deferredConcernAssessments.result }
+          : {}),
+      },
+    };
   }
   if (value.verdict !== "changes_requested") {
     return {
@@ -202,17 +255,26 @@ export function parseInitialReviewResult(
         "Initial changes_requested review must include non-empty findings.",
     };
   }
-  const findings: ReviewFindingDraft[] = [];
-  for (const finding of value.findings) {
-    const parsed = parseFindingDraft(finding);
+  const findings: Array<ReviewFindingProposal & { proposalId: string }> = [];
+  const usedProposalIds = new Set<string>();
+  for (const [index, finding] of value.findings.entries()) {
+    const parsed = parseFindingProposal(finding, options?.requireProposalBasis);
     if (!parsed) {
       return {
         ok: false,
         reason:
-          "Each initial finding requires non-empty summary, evidence, requiredChange, and acceptanceCriteria.",
+          "Each initial finding requires non-empty summary, evidence, requiredChange, acceptanceCriteria, and a grounded basis.",
       };
     }
-    findings.push(parsed);
+    let proposalId = parsed.proposalId;
+    if (!proposalId || usedProposalIds.has(proposalId)) {
+      let ordinal = index + 1;
+      do {
+        proposalId = `P${ordinal++}`;
+      } while (usedProposalIds.has(proposalId));
+    }
+    usedProposalIds.add(proposalId);
+    findings.push({ ...parsed, proposalId: proposalId! });
   }
   let recommendationMarkdown: string | undefined;
   if (Object.hasOwn(value, "recommendationMarkdown")) {
@@ -230,9 +292,156 @@ export function parseInitialReviewResult(
     }
     recommendationMarkdown = value.recommendationMarkdown.trim();
   }
+  const deferredConcernAssessments = parseDeferredConcernAssessments(
+    value.deferredConcernAssessments,
+    options?.deferredConcernIds,
+    findings.map((finding) => finding.proposalId),
+  );
+  if (!deferredConcernAssessments.ok) {
+    return deferredConcernAssessments;
+  }
   return {
     ok: true,
-    result: { verdict: "changes_requested", findings, recommendationMarkdown },
+    result: {
+      verdict: "changes_requested",
+      findings,
+      recommendationMarkdown,
+      ...(deferredConcernAssessments.result.length > 0
+        ? { deferredConcernAssessments: deferredConcernAssessments.result }
+        : {}),
+    },
+  };
+}
+
+function parseDeferredConcernAssessments(
+  value: unknown,
+  expectedIds: readonly string[] | undefined,
+  proposalIds: readonly string[] = [],
+):
+  | { ok: true; result: DeferredConcernAssessment[] }
+  | { ok: false; reason: string } {
+  if (expectedIds === undefined) {
+    if (value !== undefined) {
+      return {
+        ok: false,
+        reason: "Deferred concern assessments are not allowed for this review.",
+      };
+    }
+    return { ok: true, result: [] };
+  }
+  if (!Array.isArray(value)) {
+    return expectedIds.length === 0
+      ? { ok: true, result: [] }
+      : {
+          ok: false,
+          reason: "Overall review must assess every supplied deferred concern.",
+        };
+  }
+  const expected = new Set(expectedIds);
+  const seen = new Set<string>();
+  const assessments: DeferredConcernAssessment[] = [];
+  for (const assessment of value) {
+    if (
+      !isRecord(assessment) ||
+      !isNonEmptyString(assessment.id) ||
+      ![
+        "not_reproducible",
+        "covered_by_proposal",
+        "observed_non_blocking",
+      ].includes(String(assessment.status)) ||
+      !isNonEmptyString(assessment.evidence)
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each deferred concern assessment requires an ID, status, and evidence.",
+      };
+    }
+    const id = assessment.id.trim();
+    if (!expected.has(id) || seen.has(id)) {
+      return {
+        ok: false,
+        reason: `Overall review deferred concern coverage includes unknown or duplicate ID: ${id}`,
+      };
+    }
+    const proposalId = isNonEmptyString(assessment.proposalId)
+      ? assessment.proposalId.trim()
+      : undefined;
+    if (assessment.status === "covered_by_proposal") {
+      if (!proposalId || !proposalIds.includes(proposalId)) {
+        return {
+          ok: false,
+          reason: `Deferred concern ${id} must link to a proposal in this completion.`,
+        };
+      }
+    } else if (proposalId) {
+      return {
+        ok: false,
+        reason: `Deferred concern ${id} may link a proposal only when covered_by_proposal.`,
+      };
+    }
+    seen.add(id);
+    assessments.push({
+      id,
+      status: assessment.status as DeferredConcernAssessment["status"],
+      ...(proposalId ? { proposalId } : {}),
+      evidence: assessment.evidence.trim(),
+    });
+  }
+  const missing = expectedIds.filter((id) => !seen.has(id));
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: `Overall review omitted deferred concern IDs: ${missing.join(", ")}`,
+    };
+  }
+  return { ok: true, result: assessments };
+}
+
+export function parseAdmissionResult(
+  value: unknown,
+): { ok: true; result: AdmissionResult } | { ok: false; reason: string } {
+  if (!isRecord(value) || !isNonEmptyString(value.proposalBatchId)) {
+    return {
+      ok: false,
+      reason: "Admission completion must include proposalBatchId.",
+    };
+  }
+  if (!Array.isArray(value.dispositions)) {
+    return {
+      ok: false,
+      reason: "Admission completion must include dispositions.",
+    };
+  }
+  const dispositions: AdmissionResult["dispositions"] = [];
+  for (const disposition of value.dispositions) {
+    if (
+      !isRecord(disposition) ||
+      !isNonEmptyString(disposition.proposalId) ||
+      !["admit", "defer", "demote", "reject"].includes(
+        String(disposition.disposition),
+      ) ||
+      !["certain", "uncertain"].includes(String(disposition.certainty)) ||
+      !isNonEmptyString(disposition.rationale)
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each admission disposition requires proposalId, disposition, certainty, and rationale.",
+      };
+    }
+    dispositions.push({
+      proposalId: disposition.proposalId.trim(),
+      disposition:
+        disposition.disposition as AdmissionResult["dispositions"][number]["disposition"],
+      certainty:
+        disposition.certainty as AdmissionResult["dispositions"][number]["certainty"],
+      rationale: disposition.rationale.trim(),
+    });
+  }
+  return {
+    ok: true,
+    result: { proposalBatchId: value.proposalBatchId.trim(), dispositions },
   };
 }
 
@@ -322,6 +531,77 @@ export function parseAnchoredReviewResult(
       observations: observations as ReviewObservation[] | undefined,
     },
   };
+}
+
+function parseFindingProposal(
+  value: unknown,
+  requireBasis = false,
+): ReviewFindingProposal | undefined {
+  const draft = parseFindingDraft(value);
+  if (!draft || !isRecord(value)) {
+    return undefined;
+  }
+  if (!isRecord(value.basis)) {
+    return requireBasis
+      ? undefined
+      : {
+          ...draft,
+          basis: {
+            kind: "correctness_invariant",
+            invariant:
+              "Legacy initial review finding without a structured basis.",
+          },
+        };
+  }
+  const proposalId = isNonEmptyString(value.proposalId)
+    ? value.proposalId.trim()
+    : undefined;
+  if (
+    value.basis.kind === "requirement" &&
+    Array.isArray(value.basis.requirementIds) &&
+    value.basis.requirementIds.length > 0 &&
+    value.basis.requirementIds.every(isNonEmptyString)
+  ) {
+    return {
+      ...draft,
+      proposalId,
+      basis: {
+        kind: "requirement",
+        requirementIds: value.basis.requirementIds.map((id) => id.trim()),
+      },
+    };
+  }
+  if (
+    value.basis.kind === "candidate_regression" &&
+    Array.isArray(value.basis.changedPaths) &&
+    value.basis.changedPaths.length > 0 &&
+    value.basis.changedPaths.every(isNonEmptyString) &&
+    isNonEmptyString(value.basis.causalEvidence)
+  ) {
+    return {
+      ...draft,
+      proposalId,
+      basis: {
+        kind: "candidate_regression",
+        changedPaths: value.basis.changedPaths.map((path) => path.trim()),
+        causalEvidence: value.basis.causalEvidence.trim(),
+      },
+    };
+  }
+  if (
+    value.basis.kind === "correctness_invariant" &&
+    isNonEmptyString(value.basis.invariant)
+  ) {
+    return {
+      ...draft,
+      proposalId,
+      basis: {
+        kind: "correctness_invariant",
+        invariant: value.basis.invariant.trim(),
+      },
+    };
+  }
+  return undefined;
 }
 
 function parseFindingDraft(value: unknown): ReviewFindingDraft | undefined {
@@ -434,6 +714,7 @@ export function parseIntegrationSelfHealResult(
 
 export function parseOverallReworkResult(
   value: unknown,
+  options?: { expectedFindingIds?: readonly string[] },
 ): { ok: true; result: OverallReworkResult } | { ok: false; reason: string } {
   if (!isRecord(value)) {
     return {
@@ -480,6 +761,13 @@ export function parseOverallReworkResult(
     });
   }
 
+  const findingCompletions = parseFindingReworkCompletions(
+    value.findingCompletions,
+    options?.expectedFindingIds,
+  );
+  if (!findingCompletions.ok) {
+    return findingCompletions;
+  }
   return {
     ok: true,
     result: {
@@ -487,6 +775,9 @@ export function parseOverallReworkResult(
       verification: steps,
       commitMessage:
         typeof commitMessage === "string" ? commitMessage.trim() : undefined,
+      ...(findingCompletions.result.length > 0
+        ? { findingCompletions: findingCompletions.result }
+        : {}),
     },
   };
 }
@@ -523,6 +814,129 @@ export function parseSchedulerSelfHealResult(
           : undefined,
     },
   };
+}
+
+export function validateFindingCoverage(
+  expectedIds: readonly string[],
+  completions: readonly { id: string }[],
+  stage: string,
+): void {
+  const expected = new Set(expectedIds);
+  const seen = new Set<string>();
+  for (const completion of completions) {
+    if (!expected.has(completion.id)) {
+      throw new Error(`${stage} includes unknown finding ID: ${completion.id}`);
+    }
+    if (seen.has(completion.id)) {
+      throw new Error(
+        `${stage} includes finding ID more than once: ${completion.id}`,
+      );
+    }
+    seen.add(completion.id);
+  }
+  const missing = expectedIds.filter((id) => !seen.has(id));
+  if (missing.length > 0) {
+    throw new Error(`${stage} omitted finding IDs: ${missing.join(", ")}`);
+  }
+}
+
+function parseFindingReworkCompletions(
+  value: unknown,
+  expectedIds: readonly string[] | undefined,
+):
+  | { ok: true; result: ParsedFindingReworkCompletion[] }
+  | { ok: false; reason: string } {
+  if (expectedIds === undefined && value === undefined) {
+    return { ok: true, result: [] };
+  }
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      reason:
+        "Rework JSON must include findingCompletions for every outstanding finding.",
+    };
+  }
+  const completions: ParsedFindingReworkCompletion[] = [];
+  for (const completion of value) {
+    if (
+      !isRecord(completion) ||
+      !isNonEmptyString(completion.id) ||
+      (completion.status !== "addressed" &&
+        completion.status !== "not_addressed") ||
+      !isNonEmptyString(completion.evidence) ||
+      !Array.isArray(completion.changedPaths) ||
+      !completion.changedPaths.every(isNonEmptyString) ||
+      !Array.isArray(completion.verification) ||
+      completion.verification.length === 0
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each finding completion requires an ID, status, evidence, changedPaths, and verification.",
+      };
+    }
+    const verification = parseVerificationSteps(completion.verification);
+    if (!verification.ok) {
+      return verification;
+    }
+    if (
+      completion.status === "addressed" &&
+      completion.changedPaths.length === 0 &&
+      !/\b(no (source )?change|no code change|existing (behavior|implementation)|already (satisfied|correct)|verification only)\b/i.test(
+        completion.evidence,
+      )
+    ) {
+      return {
+        ok: false,
+        reason:
+          "An addressed completion without changedPaths must explain why no source change was necessary.",
+      };
+    }
+    completions.push({
+      id: completion.id.trim(),
+      status: completion.status,
+      evidence: completion.evidence.trim(),
+      changedPaths: completion.changedPaths.map((path) => path.trim()),
+      verification: verification.result,
+    });
+  }
+  if (expectedIds !== undefined) {
+    try {
+      validateFindingCoverage(expectedIds, completions, "Rework completion");
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+  return { ok: true, result: completions };
+}
+
+function parseVerificationSteps(
+  value: unknown[],
+): { ok: true; result: VerificationStep[] } | { ok: false; reason: string } {
+  const steps: VerificationStep[] = [];
+  for (const step of value) {
+    if (
+      !isRecord(step) ||
+      !isNonEmptyString(step.command) ||
+      !isNonEmptyString(step.result) ||
+      !isNonEmptyString(step.rationale)
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each verification entry must include command, result, and rationale strings.",
+      };
+    }
+    steps.push({
+      command: step.command.trim(),
+      result: step.result.trim(),
+      rationale: step.rationale.trim(),
+    });
+  }
+  return { ok: true, result: steps };
 }
 
 function parseRetryMode(

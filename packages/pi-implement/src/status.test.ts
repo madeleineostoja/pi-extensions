@@ -142,6 +142,71 @@ describe("status formatting", () => {
     );
   });
 
+  it("shows structured review progress and evidence in detailed status", () => {
+    const status = formatRunStatus({
+      phase: "reviewing",
+      tasks: [
+        {
+          id: "t1",
+          planIndex: 0,
+          title: "Task",
+          status: "reviewing",
+          reviewProgress: {
+            scope: "task",
+            stage: "anchored_review",
+            epoch: 1,
+            round: 2,
+            previousCandidate: "abcdef123456",
+            currentCandidate: "defabc654321",
+            admittedIds: ["R1"],
+            resolvedIds: [],
+            deferredIds: ["P2"],
+            rejectedIds: ["P3"],
+            addressedIds: ["R1"],
+            notAddressedIds: ["R2"],
+            unresolvedIds: ["R2"],
+            newRegressionIds: ["R3"],
+            previousOutstandingCount: 2,
+            currentOutstandingCount: 1,
+            bestOutstandingCount: 1,
+            consecutiveStalledRounds: 0,
+            latestEvidence: "rounds/002/anchored-review-result.json",
+          },
+        },
+      ],
+      overallReviewProgress: {
+        scope: "overall",
+        stage: "rework",
+        epoch: 1,
+        round: 1,
+        currentCandidate: "123456789",
+        admittedIds: [],
+        resolvedIds: [],
+        deferredIds: [],
+        rejectedIds: [],
+        addressedIds: [],
+        notAddressedIds: [],
+        unresolvedIds: ["OR1"],
+        newRegressionIds: [],
+        currentOutstandingCount: 1,
+        bestOutstandingCount: 1,
+        consecutiveStalledRounds: 0,
+      },
+    });
+
+    expect(status).toContain("task review anchored_review");
+    expect(status).toContain("candidate abcdef1→defabc6");
+    expect(status).toContain("admitted R1");
+    expect(status).toContain("deferred P2");
+    expect(status).toContain("rejected P3");
+    expect(status).toContain("addressed R1");
+    expect(status).toContain("not addressed R2");
+    expect(status).toContain("unresolved R2");
+    expect(status).toContain("regressions R3");
+    expect(status).toContain("evidence rounds/002/anchored-review-result.json");
+    expect(status).toContain("Overall review · overall review rework");
+  });
+
   it("formats pretty agent labels for implementer/reviewer/task roles", () => {
     const implementer = makeAgentLabel({
       id: "a1",

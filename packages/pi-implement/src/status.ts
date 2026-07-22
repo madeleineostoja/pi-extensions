@@ -33,7 +33,12 @@ export type TaskStatus =
   | "failed"
   | "stopped";
 
-export type AgentRole = "implementer" | "reviewer" | "planner" | "triage";
+export type AgentRole =
+  | "implementer"
+  | "reviewer"
+  | "planner"
+  | "triage"
+  | "admission";
 
 export type AgentDisplayRef = {
   id: string;
@@ -62,6 +67,39 @@ export type AgentRuntimeSnapshot = {
   compactionCount?: number;
 };
 
+export type ReviewScope = "task" | "integration" | "overall";
+
+export type ReviewStage =
+  | "initial_review"
+  | "admission"
+  | "rework"
+  | "anchored_review"
+  | "approved"
+  | "stalled";
+
+export type ReviewProgress = {
+  scope: ReviewScope;
+  stage: ReviewStage;
+  epoch: number;
+  round: number;
+  previousCandidate?: string;
+  currentCandidate: string;
+  admittedIds: string[];
+  resolvedIds: string[];
+  deferredIds: string[];
+  rejectedIds: string[];
+  addressedIds: string[];
+  notAddressedIds: string[];
+  unresolvedIds: string[];
+  newRegressionIds: string[];
+  previousOutstandingCount?: number;
+  currentOutstandingCount: number;
+  bestOutstandingCount: number;
+  consecutiveStalledRounds: number;
+  latestEvidence?: string;
+  retryKind?: "provider" | "protocol";
+};
+
 export type ScheduledTaskState = {
   id: string;
   planIndex: number;
@@ -87,6 +125,8 @@ export type ScheduledTaskState = {
       };
     };
   };
+  reviewProgress?: ReviewProgress;
+  integrationReviewProgress?: ReviewProgress;
 };
 
 export type StatePatch =
@@ -117,6 +157,7 @@ export type RunState = {
   totalCount?: number;
   checkpointQueue?: string[];
   checkpointSequence?: number;
+  overallReviewProgress?: ReviewProgress;
 };
 
 export const idleState: RunState = { phase: "idle" };
@@ -263,6 +304,12 @@ export function formatRunStatus(state: RunState, nowMs = Date.now()): string {
           line += ` · stalled rounds ${state.consecutiveStalledRounds}`;
         }
       }
+      if (task.reviewProgress) {
+        line += formatReviewProgress(task.reviewProgress);
+      }
+      if (task.integrationReviewProgress) {
+        line += formatReviewProgress(task.integrationReviewProgress);
+      }
       if (task.lastTransition) {
         line += ` · last transition ${task.lastTransition.phase}`;
       }
@@ -270,6 +317,12 @@ export function formatRunStatus(state: RunState, nowMs = Date.now()): string {
     }
   } else if (state.taskIndex && state.totalTasks) {
     lines.push(`Task: ${state.taskIndex}/${state.totalTasks}`);
+  }
+
+  if (state.overallReviewProgress) {
+    lines.push(
+      `Overall review${formatReviewProgress(state.overallReviewProgress)}`,
+    );
   }
 
   if (state.attempt) {
@@ -307,6 +360,44 @@ export function formatRunStatus(state: RunState, nowMs = Date.now()): string {
   }
 
   return lines.join("\n");
+}
+
+function formatReviewProgress(progress: ReviewProgress): string {
+  const candidate = progress.previousCandidate
+    ? ` · candidate ${shortenSha(progress.previousCandidate)}→${shortenSha(progress.currentCandidate)}`
+    : ` · candidate ${shortenSha(progress.currentCandidate)}`;
+  const ids = [
+    progress.admittedIds.length
+      ? `admitted ${progress.admittedIds.join(", ")}`
+      : "",
+    progress.resolvedIds.length
+      ? `resolved ${progress.resolvedIds.join(", ")}`
+      : "",
+    progress.deferredIds.length
+      ? `deferred ${progress.deferredIds.join(", ")}`
+      : "",
+    progress.rejectedIds.length
+      ? `rejected ${progress.rejectedIds.join(", ")}`
+      : "",
+    progress.addressedIds.length
+      ? `addressed ${progress.addressedIds.join(", ")}`
+      : "",
+    progress.notAddressedIds.length
+      ? `not addressed ${progress.notAddressedIds.join(", ")}`
+      : "",
+    progress.unresolvedIds.length
+      ? `unresolved ${progress.unresolvedIds.join(", ")}`
+      : "",
+    progress.newRegressionIds.length
+      ? `regressions ${progress.newRegressionIds.join(", ")}`
+      : "",
+  ].filter(Boolean);
+  const counts = `outstanding ${progress.currentOutstandingCount}${progress.previousOutstandingCount === undefined ? "" : ` (previous ${progress.previousOutstandingCount}`}${progress.previousOutstandingCount === undefined ? "" : ")"} · best ${progress.bestOutstandingCount}`;
+  const retry = progress.retryKind ? ` · ${progress.retryKind} retry` : "";
+  const evidence = progress.latestEvidence
+    ? ` · evidence ${shorten(progress.latestEvidence, 80)}`
+    : "";
+  return ` · ${progress.scope} review ${progress.stage}${candidate} · ${counts}${ids.length ? ` · ${ids.join("; ")}` : ""}${retry}${evidence}`;
 }
 
 function footerStatusParts(

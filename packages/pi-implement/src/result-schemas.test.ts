@@ -4,7 +4,10 @@ import {
   executionManifestSchema,
   initialTaskReviewSchema,
   initialOverallReviewSchema,
+  findingAdmissionBatchSchema,
   sourceMaterialRepairSchema,
+  implementerResultSchema,
+  overallReworkSchema,
 } from "./result-schemas.js";
 
 describe("managed completion schemas", () => {
@@ -30,6 +33,7 @@ describe("managed completion schemas", () => {
       evidence: "src/api.ts accepts invalid input",
       requiredChange: "Validate the input",
       acceptanceCriteria: ["Invalid input is rejected"],
+      basis: { kind: "requirement", requirementIds: ["T001-AC01"] },
     };
     expect(
       Value.Check(initialTaskReviewSchema, {
@@ -51,6 +55,7 @@ describe("managed completion schemas", () => {
       evidence: "src/api.ts accepts invalid input",
       requiredChange: "Validate the input",
       acceptanceCriteria: ["Invalid input is rejected"],
+      basis: { kind: "requirement", requirementIds: ["T001-AC01"] },
     };
     expect(
       Value.Check(initialTaskReviewSchema, {
@@ -72,6 +77,76 @@ describe("managed completion schemas", () => {
         recommendationMarkdown: "Advice",
       }),
     ).toBe(true);
+  });
+
+  it("requires proposal bases for initial overall and integration review findings", () => {
+    const finding = {
+      summary: "Missing validation",
+      evidence: "src/api.ts accepts invalid input",
+      requiredChange: "Validate the input",
+      acceptanceCriteria: ["Invalid input is rejected"],
+      basis: { kind: "requirement", requirementIds: ["T001-AC01"] },
+    };
+    expect(
+      Value.Check(initialOverallReviewSchema, {
+        verdict: "changes_requested",
+        findings: [finding],
+      }),
+    ).toBe(true);
+  });
+
+  it("requires complete, certain-or-uncertain admission dispositions", () => {
+    expect(
+      Value.Check(findingAdmissionBatchSchema, {
+        proposalBatchId: "batch",
+        dispositions: [
+          {
+            proposalId: "P1",
+            disposition: "admit",
+            certainty: "certain",
+            rationale: "The requirement is unmet.",
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(findingAdmissionBatchSchema, {
+        proposalBatchId: "batch",
+        dispositions: [{ proposalId: "P1", disposition: "admit" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("requires structured per-finding rework completions when supplied", () => {
+    const completion = {
+      id: "R1",
+      status: "addressed",
+      evidence: "The input validator now rejects empty values.",
+      changedPaths: ["src/input.ts"],
+      verification: [
+        {
+          command: "npm test",
+          result: "passed",
+          rationale: "Covers invalid input.",
+        },
+      ],
+    };
+    expect(
+      Value.Check(implementerResultSchema, {
+        outcome: "changed",
+        summary: "Added validation.",
+        verification: completion.verification,
+        findingCompletions: [completion],
+        commitMessage: "fix: validate input",
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(overallReworkSchema, {
+        summary: "Added validation.",
+        verification: completion.verification,
+        findingCompletions: [{ ...completion, status: "unknown" }],
+      }),
+    ).toBe(false);
   });
 
   it("keeps planner and material-selection schemas free of papercut fields", () => {

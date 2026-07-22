@@ -12,7 +12,7 @@ function state(
   concurrency = 2,
 ): CanonicalRunState {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     revision: 0,
     run: {
       id: "run-1",
@@ -161,6 +161,47 @@ describe("scheduler reducer", () => {
     expect(replay.state).toEqual(complete.state);
   });
 
+  it("binds approved task review state to the immutable candidate", () => {
+    const started = transition(state([{ id: "a", planIndex: 0 }]), {
+      kind: "workers_selected",
+      now: "now",
+    }).state;
+    started.reviewConvergence.a = {
+      owner: { kind: "task", taskId: "a" },
+      stage: "approved",
+      candidate: { current: "wip-commit", latestDeltaPaths: [] },
+      epoch: 1,
+      round: 0,
+      proposals: [],
+      admissions: [],
+      findings: [],
+      outstandingFindingIds: [],
+      deferredConcerns: [],
+      observationIds: [],
+      bestOutstandingCount: 0,
+      consecutiveStalledRounds: 0,
+      evidenceRefs: ["old-evidence"],
+      verificationFailures: [],
+    };
+    const approved = candidate();
+    approved.reviewReceipt.convergence.evidenceRefs = ["final-evidence"];
+
+    const result = transition(started, {
+      kind: "worker_finished",
+      taskId: "a",
+      leaseId: started.workerLeases[0]!.id,
+      outcome: { kind: "candidate_ready", candidate: approved },
+    });
+
+    expect(result.accepted).toBe(true);
+    expect(result.state.reviewConvergence.a).toMatchObject({
+      stage: "approved",
+      candidate: { current: approved.commitSha },
+      candidateId: approved.id,
+      evidenceRefs: ["final-evidence"],
+    });
+  });
+
   it("rejects candidates without an approved review receipt", () => {
     const started = transition(state([{ id: "a", planIndex: 0 }]), {
       kind: "workers_selected",
@@ -237,6 +278,35 @@ describe("scheduler reducer", () => {
       phase: "completed",
       landingAttemptId: "overall-attempt",
     });
+  });
+
+  it("persists canonical review stages through the shared reducer", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    const review = {
+      owner: { kind: "task" as const, taskId: "a" },
+      stage: "initial_review" as const,
+      candidate: { current: "candidate-commit", latestDeltaPaths: [] },
+      epoch: 1,
+      round: 0,
+      proposals: [],
+      admissions: [],
+      findings: [],
+      outstandingFindingIds: [],
+      deferredConcerns: [],
+      observationIds: [],
+      bestOutstandingCount: 0,
+      consecutiveStalledRounds: 0,
+      evidenceRefs: ["initial-review.json"],
+      verificationFailures: [],
+    };
+    const result = transition(initial, {
+      kind: "review_transition",
+      key: "a",
+      review,
+    });
+
+    expect(result.accepted).toBe(true);
+    expect(result.state.reviewConvergence.a).toEqual(review);
   });
 
   it("requires overall review completion before completing the run", () => {

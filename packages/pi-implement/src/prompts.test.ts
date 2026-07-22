@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { ExecutionManifest } from "./execution-plan.js";
+import {
+  buildReviewResponsibilityContext,
+  type ExecutionManifest,
+} from "./execution-plan.js";
 import {
   buildImplementerPrompt,
   buildIntegrationReviewerPrompt,
@@ -11,10 +14,52 @@ import {
   buildAnchoredOverallReviewPrompt,
   buildOverallReviewerPrompt,
   buildSchedulerSelfHealPrompt,
+  buildTaskFindingAdmissionPrompt,
+  FINDING_ADMISSION_SYSTEM_PROMPT,
   PAPERCUT_GUIDANCE,
 } from "./prompts.js";
 
 const WORKTREE_PATH = "/repo/.pi/implement/worktrees/r1/t001-my-task";
+
+const RESPONSIBILITY_CONTEXT = buildReviewResponsibilityContext({
+  version: 1,
+  tasks: [
+    {
+      id: "T004",
+      planIndex: 1,
+      title: "Selected task",
+      taskHash: "selected",
+      status: "todo",
+      dependsOn: ["T003"],
+      affectedAreas: [],
+      conflictHints: [],
+      sourceReferences: [],
+      compiledContract: {
+        objective: "Do the thing.",
+        inScope: ["Implement selected behavior."],
+        acceptanceCriteria: ["Criterion 1"],
+        outOfScope: ["Sibling task"],
+      },
+    },
+    {
+      id: "T003",
+      planIndex: 2,
+      title: "Dependency task",
+      taskHash: "dependency",
+      status: "todo",
+      dependsOn: [],
+      affectedAreas: [],
+      conflictHints: [],
+      sourceReferences: [],
+      compiledContract: {
+        objective: "Prepare dependency.",
+        inScope: ["Own the shared interface."],
+        acceptanceCriteria: ["Dependency is ready"],
+        outOfScope: ["Selected task"],
+      },
+    },
+  ],
+});
 
 const COMPILED_CONTRACT = `# Task Contract
 
@@ -228,6 +273,61 @@ Reason: Selected task checkbox line and task block.
     expect(prompt).toContain(COMPILED_CONTRACT.trim());
   });
 
+  it("renders stable requirements and compact sibling responsibility context", () => {
+    const prompt = buildImplementerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+      responsibilityContext: RESPONSIBILITY_CONTEXT,
+      selectedTaskId: "T004",
+    });
+
+    expect(prompt).toContain("T004-AC01 (acceptance): Criterion 1");
+    expect(prompt).toContain("T004-S01 (scope): Implement selected behavior.");
+    expect(prompt).toContain("T003: Dependency task");
+    expect(prompt).toContain("Acceptance IDs: T003-AC01");
+    expect(prompt).not.toContain("Dependency is ready");
+    expect(prompt).toContain(
+      "not permission to implement sibling deliverables",
+    );
+  });
+
+  it("labels fallback-generated requirements in overall responsibility context", () => {
+    const prompt = buildOverallReviewerPrompt({
+      planContent: "# Plan",
+      planPath: "/repo/plan.md",
+      baseSha: "abc",
+      headSha: "def",
+      diff: "diff",
+      executionManifest: {
+        version: 1,
+        fallbackGenerated: true,
+        tasks: [
+          {
+            id: "T001",
+            planIndex: 1,
+            title: "Fallback task",
+            taskHash: "task",
+            status: "todo",
+            dependsOn: [],
+            affectedAreas: [],
+            conflictHints: [],
+            sourceReferences: [],
+            compiledContract: {
+              objective: "Fallback objective",
+              inScope: ["Fallback scope"],
+              acceptanceCriteria: ["Task is complete and verified"],
+              outOfScope: ["Other tasks"],
+            },
+          },
+        ],
+      },
+    });
+
+    expect(prompt).toContain(
+      "T001-AC01 (acceptance): Task is complete and verified (fallback-generated)",
+    );
+  });
+
   it("includes retry context when reviewer feedback is supplied", () => {
     const prompt = buildImplementerPrompt({
       compiledContract: COMPILED_CONTRACT,
@@ -256,6 +356,38 @@ Reason: Selected task checkbox line and task block.
 });
 
 describe("typed review protocol prompts", () => {
+  it("grounds task proposals and isolates no-tools admission", () => {
+    const review = buildInitialTaskReviewPrompt({
+      compiledContract: "contract",
+      worktreePath: WORKTREE_PATH,
+      candidateContext: "candidate",
+      responsibilityContext: RESPONSIBILITY_CONTEXT,
+      selectedTaskId: "T004",
+    });
+    const admission = buildTaskFindingAdmissionPrompt({
+      compiledContract: "contract",
+      responsibilityContext: RESPONSIBILITY_CONTEXT,
+      selectedTaskId: "T004",
+      candidateIdentity: "candidate",
+      latestDeltaPaths: ["src/file.ts"],
+      proposalBatchId: "batch",
+      proposals: [
+        {
+          proposalId: "P1",
+          summary: "summary",
+          evidence: "evidence",
+          requiredChange: "change",
+          acceptanceCriteria: ["criterion"],
+          basis: { kind: "requirement", requirementIds: ["T004-AC01"] },
+        },
+      ],
+    });
+    expect(review).toContain("candidate_regression");
+    expect(admission).toContain("proposalBatchId: batch");
+    expect(FINDING_ADMISSION_SYSTEM_PROMPT).toContain(
+      "Do not inspect the repository",
+    );
+  });
   const outstandingFinding = {
     id: "R1",
     summary: "Missing validation",
@@ -335,6 +467,23 @@ describe("typed review protocol prompts", () => {
         candidateContext: "combined diff",
       }),
     ).toContain("advisory recommendationMarkdown");
+    expect(
+      buildInitialOverallReviewPrompt({
+        planContext: "# Plan",
+        candidateContext: "combined diff",
+        deferredConcerns: [
+          {
+            id: "D-P1",
+            summary: "Cross-task concern",
+            evidence: "task evidence",
+            basis: { kind: "correctness_invariant", invariant: "safe" },
+            sourceScope: "task",
+            sourceCandidate: "candidate-a",
+            rationale: "Needs full feature context",
+          },
+        ],
+      }),
+    ).toContain("Assess every supplied ID exactly once");
     expect(
       buildAnchoredOverallReviewPrompt({
         planContext: "# Plan",
@@ -522,7 +671,7 @@ describe("buildOverallReviewerPrompt with executionManifest", () => {
     expect(prompt).toContain("Source plan hash: abc1234");
     expect(prompt).toContain("Planner reason: Independent tasks");
     expect(prompt).toContain("Planner confidence: high");
-    expect(prompt).toContain("### Compiled Task Contracts");
+    expect(prompt).toContain("### Responsibility Map");
     expect(prompt).toContain("#### t1: Task 1");
     expect(prompt).toContain("Objective: Implement feature A");
     expect(prompt).toContain("In scope: Add A");

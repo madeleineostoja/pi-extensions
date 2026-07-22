@@ -45,11 +45,25 @@ export function hasLiveManagedRunAgents(
 
 export type ProbeResult = { ok: true; version?: number } | { ok: false };
 
+export type PiImplementWorkerStage =
+  | "implementation"
+  | "initial_task_review"
+  | "task_admission"
+  | "task_rework"
+  | "anchored_task_review"
+  | "initial_overall_review"
+  | "overall_admission"
+  | "overall_rework"
+  | "anchored_overall_review"
+  | "integration_review"
+  | "integration_admission";
+
 export type PiImplementWorkerRole =
   | "implementer"
   | "reviewer"
   | "planner"
-  | "selfHeal";
+  | "selfHeal"
+  | "admission";
 
 export type SpawnArgs<TSchemaValue extends TSchema = TSchema> = {
   type: string;
@@ -59,8 +73,15 @@ export type SpawnArgs<TSchemaValue extends TSchema = TSchema> = {
   thinking?: ThinkingLevel;
   cwd?: string;
   role?: PiImplementWorkerRole;
+  ownerRole?: PiImplementWorkerRole;
+  stage?: PiImplementWorkerStage;
+  noTools?: boolean;
   taskId?: string;
   readOnly?: boolean;
+  systemPrompt?: string;
+  systemPromptMode?: "append" | "replace";
+  tools?: string[];
+  excludeTools?: string[];
   completion?: {
     description: string;
     schema: TSchemaValue;
@@ -126,7 +147,7 @@ export class RuntimeSubagentClient implements SubagentClient {
     args: SpawnArgs<TSchemaValue>,
   ): Promise<SubagentHandle<Static<TSchemaValue>>> {
     const cwd = args.cwd ?? this.ctx.cwd;
-    const role = args.role ?? "implementer";
+    const role = args.ownerRole ?? args.role ?? "implementer";
     const snapshot = await this.runtime.runManagedAgent({
       owner: {
         kind: "pi-implement",
@@ -144,15 +165,21 @@ export class RuntimeSubagentClient implements SubagentClient {
       ctx: this.ctx,
       rosterVisibility: "hide",
       completion: args.completion as never,
-      ...(args.readOnly || role === "reviewer" || role === "planner"
-        ? {
-            tools: READ_ONLY_TOOLS.filter(
-              (name) =>
-                this.pi.getActiveTools?.().includes(name) ?? name !== "lsp",
-            ),
-            excludeTools: MUTATING_TOOLS,
-          }
-        : { excludeTools: ["propose_papercut"] }),
+      systemPrompt: args.systemPrompt,
+      systemPromptMode: args.systemPromptMode,
+      ...(args.noTools
+        ? { noTools: true, excludeTools: args.excludeTools ?? [] }
+        : args.tools
+          ? { tools: args.tools, excludeTools: args.excludeTools ?? [] }
+          : args.readOnly || role === "reviewer" || role === "planner"
+            ? {
+                tools: READ_ONLY_TOOLS.filter(
+                  (name) =>
+                    this.pi.getActiveTools?.().includes(name) ?? name !== "lsp",
+                ),
+                excludeTools: args.excludeTools ?? MUTATING_TOOLS,
+              }
+            : { excludeTools: args.excludeTools ?? ["propose_papercut"] }),
     });
     return snapshot.id as SubagentHandle<Static<TSchemaValue>>;
   }
@@ -241,6 +268,11 @@ function registerPiImplementDefinitions(
       title: "pi-implement planner",
       description:
         "Internal read-only execution manifest planner for pi-implement.",
+    },
+    {
+      type: "pi-implement:admission",
+      title: "pi-implement finding admission",
+      description: "Internal no-tools finding-admission adjudicator.",
     },
     {
       type: "pi-implement:self-heal",

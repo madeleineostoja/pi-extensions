@@ -290,8 +290,16 @@ class FakeGit implements GitClient {
 class FakeSubagents implements SubagentClient {
   spawns: SpawnArgs[] = [];
   results: SubagentResult[] = [];
+  resultsByStage = new Map<string, SubagentResult[]>();
   resultsByDescription: { match: string | RegExp; result: SubagentResult }[] =
     [];
+
+  queueStage(
+    stage: NonNullable<SpawnArgs["stage"]>,
+    ...results: SubagentResult[]
+  ) {
+    this.resultsByStage.set(stage, results);
+  }
 
   async probe() {
     return { ok: true as const };
@@ -311,7 +319,15 @@ class FakeSubagents implements SubagentClient {
             : r.match.test(args.description),
         )
       : undefined;
-    const result = routed?.result ?? this.results.shift();
+    const staged = args?.stage
+      ? this.resultsByStage.get(args.stage)?.shift()
+      : undefined;
+    const result =
+      staged ??
+      routed?.result ??
+      (args?.description.includes("admit task")
+        ? { status: "failed" as const, error: "adjudicator unavailable" }
+        : this.results.shift());
     if (routed && this.results[0] === routed.result) {
       this.results.shift();
     }
@@ -474,6 +490,17 @@ const GOOD_REWORK = {
   summary: "fixed",
   verification: [
     { command: "tests", result: "passed", rationale: "covers change" },
+  ],
+  findingCompletions: [
+    {
+      id: "O1",
+      status: "addressed",
+      evidence: "Added the requested integration test.",
+      changedPaths: ["test/integration.test.ts"],
+      verification: [
+        { command: "tests", result: "passed", rationale: "covers change" },
+      ],
+    },
   ],
   commitMessage: "fix: address overall review",
 };
@@ -1109,6 +1136,10 @@ describe("runImplementation", () => {
     subagents.results = [
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
+      {
+        status: "completed",
+        result: { proposalBatchId: "stale", dispositions: [] },
+      },
       { status: "completed", result: GOOD_REWORK },
       { status: "completed", result: UNRESOLVED_OVERALL_REVIEW },
       { status: "completed", result: GOOD_REWORK },
@@ -2646,7 +2677,21 @@ describe("runImplementation", () => {
       subagents.results = [
         { status: "completed", result: GOOD_IMPL },
         { status: "completed", result: args.reviewerResult ?? GOOD_REVIEW },
-        { status: "completed", result: GOOD_IMPL },
+        {
+          status: "completed",
+          result: {
+            ...GOOD_IMPL,
+            findingCompletions: [
+              {
+                id: "R1",
+                status: "addressed",
+                evidence: "Applied the requested correction.",
+                changedPaths: ["file.ts"],
+                verification: GOOD_IMPL.verification,
+              },
+            ],
+          },
+        },
         {
           status: "completed",
           result: args.reworkReviewerResult ?? GOOD_REVIEW,
@@ -2796,6 +2841,23 @@ describe("runImplementation", () => {
           readTaskJson(paths, "task-1")?.review?.skippedCount,
         ).toBeUndefined();
         expect(readFileSync(planPath, "utf-8")).toContain("- [x] Do thing");
+        const taskPacket = JSON.parse(
+          readFileSync(
+            join(paths.tasksDir, "task-1", "rounds", "001", "task-packet.json"),
+            "utf-8",
+          ),
+        );
+        expect(taskPacket.contextId).toBe(
+          createHash("sha256")
+            .update(
+              JSON.stringify({
+                requirements: taskPacket.requirements,
+                responsibilities: taskPacket.responsibilities,
+              }),
+            )
+            .digest("hex"),
+        );
+        expect(taskPacket.requirements[0].id).toMatch(/-AC01$/);
       },
     );
 
@@ -2814,6 +2876,10 @@ describe("runImplementation", () => {
                 evidence: "The initial candidate is incomplete.",
                 requiredChange: "Complete the candidate.",
                 acceptanceCriteria: ["The candidate is complete."],
+                basis: {
+                  kind: "requirement",
+                  requirementIds: ["t001-do-thing-AC01"],
+                },
               },
             ],
           },
@@ -2875,6 +2941,10 @@ describe("runImplementation", () => {
               evidence: "The initial candidate is incomplete.",
               requiredChange: "Complete the candidate.",
               acceptanceCriteria: ["The candidate is complete."],
+              basis: {
+                kind: "requirement",
+                requirementIds: ["t001-do-thing-AC01"],
+              },
             },
           ],
         },

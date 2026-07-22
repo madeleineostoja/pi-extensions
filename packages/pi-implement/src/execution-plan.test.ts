@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildDeterministicSourceMaterialRefs,
+  buildReviewResponsibilityContext,
   buildTaskAnchorSourceMaterialRef,
   generateMinimalExecutionManifest,
   parseExecutionPlan,
@@ -153,7 +154,104 @@ describe("buildDeterministicSourceMaterialRefs", () => {
   });
 });
 
+describe("buildReviewResponsibilityContext", () => {
+  it("derives stable acceptance and scope requirement IDs in plan order", () => {
+    const manifest = makeManifest([
+      makeTask({
+        id: "T004",
+        planIndex: 2,
+        dependsOn: ["T003"],
+        compiledContract: makeContract({
+          inScope: ["Implement API", "Document API"],
+          acceptanceCriteria: ["Returns a response", "Rejects invalid input"],
+        }),
+      }),
+      makeTask({ id: "T003", planIndex: 1 }),
+    ]);
+    manifest.tasks.reverse();
+
+    const first = buildReviewResponsibilityContext(manifest);
+    const second = buildReviewResponsibilityContext(manifest);
+
+    expect(first).toEqual(second);
+    expect(first.requirements).toEqual([
+      {
+        id: "T003-AC01",
+        taskId: "T003",
+        kind: "acceptance",
+        text: "Criterion one",
+      },
+      { id: "T003-S01", taskId: "T003", kind: "scope", text: "Item one" },
+      {
+        id: "T004-AC01",
+        taskId: "T004",
+        kind: "acceptance",
+        text: "Returns a response",
+      },
+      {
+        id: "T004-AC02",
+        taskId: "T004",
+        kind: "acceptance",
+        text: "Rejects invalid input",
+      },
+      { id: "T004-S01", taskId: "T004", kind: "scope", text: "Implement API" },
+      { id: "T004-S02", taskId: "T004", kind: "scope", text: "Document API" },
+    ]);
+    expect(first.responsibilities[0]).toEqual({
+      taskId: "T003",
+      title: "Task title",
+      objective: "Do the thing",
+      owns: ["Item one"],
+      dependsOn: [],
+      acceptanceIds: ["T003-AC01"],
+    });
+  });
+});
+
+describe("renderCompiledContract", () => {
+  it("uses criterion position when acceptance text is duplicated", () => {
+    const contract = makeContract({
+      acceptanceCriteria: ["Same criterion", "Same criterion"],
+    });
+    const manifest = makeManifest([
+      makeTask({ id: "T004", compiledContract: contract }),
+    ]);
+
+    expect(
+      renderCompiledContract(
+        contract,
+        buildReviewResponsibilityContext(manifest).requirements,
+      ),
+    ).toContain("- T004-AC01: Same criterion\n- T004-AC02: Same criterion");
+  });
+});
+
 describe("generateMinimalExecutionManifest", () => {
+  it("preserves the generic criterion and marks fallback requirements", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-minimal-fallback-"));
+    const planPath = join(dir, "plan.md");
+    writeFileSync(
+      planPath,
+      "# Plan\n\n## Tasks\n\n- [ ] First task\n",
+      "utf-8",
+    );
+
+    const manifest = generateMinimalExecutionManifest(
+      parsePlanFile(planPath).tasks,
+      planPath,
+    );
+
+    expect(manifest.tasks[0]?.compiledContract.acceptanceCriteria).toEqual([
+      "Task is complete and verified",
+    ]);
+    expect(
+      buildReviewResponsibilityContext(manifest).requirements[0],
+    ).toMatchObject({
+      id: "t001-first-task-AC01",
+      fallbackGenerated: true,
+    });
+  });
+
   it("adds task-anchor source material refs to fallback manifest tasks", () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-minimal-anchor-"));
     const planPath = join(dir, "plan.md");
@@ -166,6 +264,9 @@ describe("generateMinimalExecutionManifest", () => {
 
     const manifest = generateMinimalExecutionManifest(plan.tasks, planPath);
 
+    expect(manifest.tasks[0]?.compiledContract.acceptanceCriteria).toEqual([
+      "Task is complete and verified",
+    ]);
     expect(manifest.tasks[0]?.sourceMaterialRefs).toEqual([
       {
         origin: "task-anchor",

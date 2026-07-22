@@ -83,6 +83,17 @@ export type OverallReviewJson = {
     previousCandidate?: string;
     previousCandidatePatch?: string;
     latestEvidence?: string;
+    latestRework?: Array<{
+      findingId: string;
+      status: "addressed" | "not_addressed";
+      evidence: string;
+      changedPaths: string[];
+      verification: Array<{
+        command: string;
+        result: string;
+        rationale: string;
+      }>;
+    }>;
   };
   integrationLedger?: IntegrationLedger;
   status:

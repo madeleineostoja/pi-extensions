@@ -2,10 +2,13 @@ import type {
   FindingAssessment,
   RegressionFindingDraft,
   ReviewFindingDraft,
+  ReviewFindingProposal,
   ReviewObservation,
 } from "./result-schemas.js";
 
 export type ReviewFinding = ReviewFindingDraft & {
+  proposalId?: string;
+  basis?: ReviewFindingProposal["basis"];
   id: string;
   introducedRound: number;
   origin: "initial" | "regression";
@@ -21,9 +24,14 @@ export type ReviewConvergenceState = {
 
 export type ReviewConvergenceOutcome = "approved" | "continue" | "stalled";
 
+export type RegressionFindingProposalDraft = RegressionFindingDraft & {
+  proposalId?: string;
+  basis?: ReviewFindingProposal["basis"];
+};
+
 export type AnchoredReviewInput = {
   assessments: FindingAssessment[];
-  regressions: RegressionFindingDraft[];
+  regressions: RegressionFindingProposalDraft[];
   observations?: ReviewObservation[];
 };
 
@@ -49,7 +57,7 @@ export function applyNoopReview(state: ReviewConvergenceState): {
 }
 
 export function createReviewConvergenceState(args: {
-  drafts: ReviewFindingDraft[];
+  drafts: Array<ReviewFindingDraft & { proposalId?: string }>;
   idPrefix?: string;
 }): ReviewConvergenceState {
   const findings = allocateFindings({
@@ -69,7 +77,7 @@ export function createReviewConvergenceState(args: {
 
 export function openRegressionReviewEpoch(args: {
   closedState: ReviewConvergenceState;
-  regressions: RegressionFindingDraft[];
+  regressions: RegressionFindingProposalDraft[];
   latestDeltaPaths: readonly string[];
   idPrefix?: string;
 }): { state: ReviewConvergenceState; observations: ReviewObservation[] } {
@@ -168,10 +176,10 @@ export function applyAnchoredReview(args: {
 }
 
 function qualifyRegressions(
-  regressions: readonly RegressionFindingDraft[],
+  regressions: readonly RegressionFindingProposalDraft[],
   latestDeltaPaths: readonly string[],
 ): {
-  qualifyingRegressions: RegressionFindingDraft[];
+  qualifyingRegressions: RegressionFindingProposalDraft[];
   demotedObservations: ReviewObservation[];
 } {
   const qualifyingRegressions = regressions.filter((regression) =>
@@ -213,7 +221,12 @@ export function validateAssessmentCoverage(
 }
 
 function allocateFindings(args: {
-  drafts: ReviewFindingDraft[];
+  drafts: Array<
+    ReviewFindingDraft & {
+      proposalId?: string;
+      basis?: ReviewFindingProposal["basis"];
+    }
+  >;
   idPrefix?: string;
   introducedRound: number;
   origin: ReviewFinding["origin"];

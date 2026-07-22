@@ -3,7 +3,9 @@ import {
   parseImplementerResult,
   parseAnchoredReviewResult,
   parseInitialReviewResult,
+  parseAdmissionResult,
   parseIntegrationSelfHealResult,
+  parseOverallReworkResult,
 } from "./verdict.js";
 
 describe("typed result validators", () => {
@@ -56,6 +58,7 @@ describe("typed result validators", () => {
       evidence: "src/api.ts accepts invalid input",
       requiredChange: "Validate the input",
       acceptanceCriteria: ["Invalid input is rejected"],
+      basis: { kind: "requirement", requirementIds: ["T001-AC01"] },
     };
     expect(
       parseInitialReviewResult({
@@ -113,6 +116,146 @@ describe("typed result validators", () => {
         ["R1"],
       ),
     ).toMatchObject({ ok: false, reason: expect.stringContaining("unknown") });
+  });
+
+  it("requires exact finding coverage for task and overall rework", () => {
+    const completion = {
+      id: "R1",
+      status: "addressed",
+      evidence: "validator rejects empty input",
+      changedPaths: ["src/input.ts"],
+      verification: [
+        { command: "npm test", result: "passed", rationale: "covers input" },
+      ],
+    };
+    expect(
+      parseImplementerResult(
+        {
+          outcome: "changed",
+          summary: "Added validation.",
+          verification: completion.verification,
+          findingCompletions: [completion],
+          commitMessage: "fix: validate input",
+        },
+        { expectedFindingIds: ["R1"] },
+      ),
+    ).toMatchObject({ ok: true });
+    expect(
+      parseImplementerResult(
+        {
+          outcome: "changed",
+          summary: "Added validation.",
+          verification: completion.verification,
+          findingCompletions: [completion, completion],
+          commitMessage: "fix: validate input",
+        },
+        { expectedFindingIds: ["R1"] },
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("more than once"),
+    });
+    expect(
+      parseOverallReworkResult(
+        { summary: "Fixed it.", verification: completion.verification },
+        { expectedFindingIds: ["O1"] },
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("findingCompletions"),
+    });
+    expect(
+      parseImplementerResult(
+        {
+          outcome: "changed",
+          summary: "Verified existing behavior.",
+          verification: completion.verification,
+          findingCompletions: [
+            { ...completion, changedPaths: [], evidence: "It is fixed." },
+          ],
+          commitMessage: "fix: validate input",
+        },
+        { expectedFindingIds: ["R1"] },
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("no source change"),
+    });
+  });
+
+  it("normalizes proposal IDs and parses explicit admission certainty", () => {
+    const result = parseInitialReviewResult(
+      {
+        verdict: "changes_requested",
+        findings: [
+          {
+            summary: "Missing validation",
+            evidence: "input is accepted",
+            requiredChange: "validate input",
+            acceptanceCriteria: ["input is rejected"],
+            basis: {
+              kind: "correctness_invariant",
+              invariant: "untrusted input must be validated",
+            },
+          },
+          {
+            proposalId: "P1",
+            summary: "Missing error response",
+            evidence: "errors escape",
+            requiredChange: "handle errors",
+            acceptanceCriteria: ["errors are handled"],
+            basis: { kind: "requirement", requirementIds: ["T001-AC01"] },
+          },
+        ],
+      },
+      { requireProposalBasis: true },
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      result: { findings: [{ proposalId: "P1" }, { proposalId: "P2" }] },
+    });
+    expect(
+      parseInitialReviewResult(
+        {
+          verdict: "changes_requested",
+          findings: [
+            {
+              proposalId: "P2",
+              summary: "first",
+              evidence: "evidence",
+              requiredChange: "change",
+              acceptanceCriteria: ["criterion"],
+              basis: { kind: "correctness_invariant", invariant: "safe" },
+            },
+            {
+              proposalId: "P2",
+              summary: "second",
+              evidence: "evidence",
+              requiredChange: "change",
+              acceptanceCriteria: ["criterion"],
+              basis: { kind: "correctness_invariant", invariant: "safe" },
+            },
+          ],
+        },
+        { requireProposalBasis: true },
+      ),
+    ).toMatchObject({
+      ok: true,
+      result: { findings: [{ proposalId: "P2" }, { proposalId: "P3" }] },
+    });
+    expect(
+      parseAdmissionResult({
+        proposalBatchId: "batch",
+        dispositions: [
+          {
+            proposalId: "P1",
+            disposition: "admit",
+            certainty: "uncertain",
+            rationale: "Need more evidence",
+          },
+        ],
+      }),
+    ).toMatchObject({ ok: true, result: { proposalBatchId: "batch" } });
   });
 
   it("rejects unsafe retry decisions without a retry mode", () => {

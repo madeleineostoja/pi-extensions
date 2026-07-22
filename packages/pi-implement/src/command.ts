@@ -44,6 +44,7 @@ import { selectStrategy } from "./strategy.js";
 import {
   RunStore,
   canCleanupCanonicalRun,
+  loadCanonicalRunState,
   type CanonicalRunState,
 } from "./canonical-state.js";
 import { nextUncheckedTask, parsePlanFile } from "./plan.js";
@@ -378,6 +379,30 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             lines.push(
               `Last transition: ${run.lastTransition.phase} at ${run.lastTransition.at}`,
             );
+          }
+          const canonical =
+            paths.canonicalRunState && existsSync(paths.canonicalRunState)
+              ? loadCanonicalRunState(paths.canonicalRunState)
+              : undefined;
+          if (canonical) {
+            lines.push("Canonical review progress:");
+            for (const review of Object.values(canonical.reviewConvergence)) {
+              const owner =
+                review.owner.kind === "overall"
+                  ? "overall"
+                  : `${review.owner.kind}:${review.owner.taskId}`;
+              const candidate = review.candidate.previous
+                ? `${review.candidate.previous.slice(0, 7)}→${review.candidate.current.slice(0, 7)}`
+                : review.candidate.current.slice(0, 7);
+              lines.push(
+                `  ${owner} · ${review.stage} · candidate ${candidate} · outstanding ${review.outstandingFindingIds.join(", ") || "none"} (${review.outstandingFindingIds.length}) · best ${review.bestOutstandingCount}`,
+              );
+              if (review.latestEvidence ?? review.evidenceRefs.at(-1)) {
+                lines.push(
+                  `    evidence: ${review.latestEvidence ?? review.evidenceRefs.at(-1)}`,
+                );
+              }
+            }
           }
           if (run.overallReview) {
             const convergence = run.overallReview.convergence?.state;
@@ -1377,7 +1402,7 @@ function initialCanonicalRunState(args: {
   now: string;
 }): CanonicalRunState {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     revision: 0,
     run: {
       id: args.runId,

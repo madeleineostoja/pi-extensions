@@ -1,4 +1,5 @@
 import {
+  type CanonicalReview,
   type CanonicalRunState,
   type RunStore,
   StaleRunStateRevisionError,
@@ -211,6 +212,10 @@ export class SchedulerActor {
 
   async completeOverallReview(): Promise<void> {
     await this.dispatch({ kind: "overall_review_completed" });
+  }
+
+  async transitionReview(key: string, review: CanonicalReview): Promise<void> {
+    await this.dispatch({ kind: "review_transition", key, review });
   }
 
   async completeRun(): Promise<void> {

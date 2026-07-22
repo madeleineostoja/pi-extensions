@@ -76,6 +76,37 @@ describe("review convergence", () => {
     ]);
   });
 
+  it("preserves admitted regression proposal provenance", () => {
+    const state = createReviewConvergenceState({
+      drafts: [{ ...finding("initial"), proposalId: "P1" }],
+    });
+    const result = applyAnchoredReview({
+      state,
+      review: {
+        assessments: [assessment("R1", "resolved")],
+        regressions: [
+          {
+            ...regression("qualified", ["src/changed.ts"]),
+            proposalId: "E1R1P1",
+            basis: {
+              kind: "candidate_regression",
+              changedPaths: ["src/changed.ts"],
+              causalEvidence: "The latest edit caused this behavior.",
+            },
+          },
+        ],
+      },
+      latestDeltaPaths: ["src/changed.ts"],
+    });
+
+    expect(result.state.findings.at(-1)).toMatchObject({
+      id: "R2",
+      proposalId: "E1R1P1",
+      basis: { kind: "candidate_regression" },
+      origin: "regression",
+    });
+  });
+
   it("approves at zero and stalls after two rounds without a new low", () => {
     const state = createReviewConvergenceState({
       drafts: [finding("initial")],

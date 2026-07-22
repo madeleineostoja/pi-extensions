@@ -7,6 +7,16 @@ const verificationStepSchema = Type.Object({
   result: nonEmptyString(),
   rationale: nonEmptyString(),
 });
+const findingReworkCompletionSchema = Type.Object({
+  id: nonEmptyString(),
+  status: Type.Union([
+    Type.Literal("addressed"),
+    Type.Literal("not_addressed"),
+  ]),
+  evidence: nonEmptyString(),
+  changedPaths: Type.Array(nonEmptyString()),
+  verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+});
 const papercutCandidatesSchema = Type.Optional(
   Type.Array(Type.Unknown(), {
     description:
@@ -127,12 +137,18 @@ export const implementerResultSchema = Type.Union([
     outcome: Type.Literal("changed"),
     summary: nonEmptyString(),
     verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+    findingCompletions: Type.Optional(
+      Type.Array(findingReworkCompletionSchema),
+    ),
     commitMessage: nonEmptyString(),
   }),
   withPapercuts({
     outcome: Type.Literal("already_satisfied"),
     summary: nonEmptyString(),
     verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+    findingCompletions: Type.Optional(
+      Type.Array(findingReworkCompletionSchema),
+    ),
     commitMessage: Type.Optional(nonEmptyString()),
   }),
 ]);
@@ -142,6 +158,47 @@ export const reviewFindingDraftSchema = Type.Object({
   evidence: nonEmptyString(),
   requiredChange: nonEmptyString(),
   acceptanceCriteria: Type.Array(nonEmptyString(), { minItems: 1 }),
+});
+
+const reviewFindingProposalBasisSchema = Type.Union([
+  Type.Object({
+    kind: Type.Literal("requirement"),
+    requirementIds: Type.Array(nonEmptyString(), { minItems: 1 }),
+  }),
+  Type.Object({
+    kind: Type.Literal("candidate_regression"),
+    changedPaths: Type.Array(nonEmptyString(), { minItems: 1 }),
+    causalEvidence: nonEmptyString(),
+  }),
+  Type.Object({
+    kind: Type.Literal("correctness_invariant"),
+    invariant: nonEmptyString(),
+  }),
+]);
+
+export const reviewFindingProposalSchema = Type.Intersect([
+  reviewFindingDraftSchema,
+  Type.Object({
+    proposalId: Type.Optional(nonEmptyString()),
+    basis: reviewFindingProposalBasisSchema,
+  }),
+]);
+
+const findingAdmissionDispositionSchema = Type.Object({
+  proposalId: nonEmptyString(),
+  disposition: Type.Union([
+    Type.Literal("admit"),
+    Type.Literal("defer"),
+    Type.Literal("demote"),
+    Type.Literal("reject"),
+  ]),
+  certainty: Type.Union([Type.Literal("certain"), Type.Literal("uncertain")]),
+  rationale: nonEmptyString(),
+});
+
+export const findingAdmissionBatchSchema = closedWithPapercuts({
+  proposalBatchId: nonEmptyString(),
+  dispositions: Type.Array(findingAdmissionDispositionSchema),
 });
 
 export const regressionFindingDraftSchema = Type.Intersect([
@@ -163,19 +220,50 @@ export const findingAssessmentSchema = Type.Object({
   evidence: nonEmptyString(),
 });
 
+export const deferredConcernAssessmentSchema = Type.Object({
+  id: nonEmptyString(),
+  status: Type.Union([
+    Type.Literal("not_reproducible"),
+    Type.Literal("covered_by_proposal"),
+    Type.Literal("observed_non_blocking"),
+  ]),
+  proposalId: Type.Optional(nonEmptyString()),
+  evidence: nonEmptyString(),
+});
+
 const initialReviewSchema = (allowRecommendationMarkdown: boolean) =>
   Type.Union([
-    closedWithPapercuts({ verdict: Type.Literal("approved") }),
+    closedWithPapercuts({
+      verdict: Type.Literal("approved"),
+      ...(allowRecommendationMarkdown
+        ? {
+            deferredConcernAssessments: Type.Optional(
+              Type.Array(deferredConcernAssessmentSchema),
+            ),
+          }
+        : {}),
+    }),
     closedWithPapercuts({
       verdict: Type.Literal("changes_requested"),
-      findings: Type.Array(reviewFindingDraftSchema, { minItems: 1 }),
+      findings: Type.Array(reviewFindingProposalSchema, { minItems: 1 }),
       ...(allowRecommendationMarkdown
-        ? { recommendationMarkdown: Type.Optional(nonEmptyString()) }
+        ? {
+            recommendationMarkdown: Type.Optional(nonEmptyString()),
+            deferredConcernAssessments: Type.Optional(
+              Type.Array(deferredConcernAssessmentSchema),
+            ),
+          }
         : {}),
     }),
   ]);
 
-export const initialTaskReviewSchema = initialReviewSchema(false);
+export const initialTaskReviewSchema = Type.Union([
+  closedWithPapercuts({ verdict: Type.Literal("approved") }),
+  closedWithPapercuts({
+    verdict: Type.Literal("changes_requested"),
+    findings: Type.Array(reviewFindingProposalSchema, { minItems: 1 }),
+  }),
+]);
 export const initialOverallReviewSchema = initialReviewSchema(true);
 export const anchoredReviewSchema = withPapercuts({
   assessments: Type.Array(findingAssessmentSchema),
@@ -218,6 +306,7 @@ export const schedulerSelfHealSchema = withPapercuts({
 export const overallReworkSchema = withPapercuts({
   summary: nonEmptyString(),
   verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+  findingCompletions: Type.Optional(Type.Array(findingReworkCompletionSchema)),
   commitMessage: Type.Optional(nonEmptyString()),
 });
 
@@ -230,13 +319,21 @@ export type SourceMaterialRepairCompletion = Static<
 export type NeedsMaterialCompletion = Static<
   typeof needsMaterialResponseSchema
 >;
+export type FindingReworkCompletion = Static<
+  typeof findingReworkCompletionSchema
+>;
 export type ImplementerCompletion = Static<typeof implementerResultSchema>;
 export type ReviewFindingDraft = Static<typeof reviewFindingDraftSchema>;
+export type ReviewFindingProposal = Static<typeof reviewFindingProposalSchema>;
+export type FindingAdmissionBatch = Static<typeof findingAdmissionBatchSchema>;
 export type RegressionFindingDraft = Static<
   typeof regressionFindingDraftSchema
 >;
 export type ReviewObservation = Static<typeof reviewObservationSchema>;
 export type FindingAssessment = Static<typeof findingAssessmentSchema>;
+export type DeferredConcernAssessment = Static<
+  typeof deferredConcernAssessmentSchema
+>;
 export type InitialTaskReviewCompletion = Static<
   typeof initialTaskReviewSchema
 >;

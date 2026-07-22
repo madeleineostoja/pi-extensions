@@ -56,7 +56,7 @@ function createCanonicalState(
   }> = [],
 ): void {
   RunStore.create(paths.canonicalRunState!, {
-    schemaVersion: 6,
+    schemaVersion: 7,
     revision: 0,
     run: {
       id: run.runId,
