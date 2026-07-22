@@ -95,6 +95,7 @@ import {
 } from "./verdict.js";
 import type { IntegrationSelfHealResult } from "./verdict.js";
 import type { OverallReviewJson, StatePaths, TaskJson } from "./state.js";
+import type { IntegrationLedger } from "./integration-ledger.js";
 import {
   writeTaskJson,
   appendEvent,
@@ -2236,6 +2237,24 @@ function schedulerRunFromCanonical(
     if (execution) {
       Object.assign(task, execution);
     }
+    const canonicalFallback =
+      canonical.reviewConvergence[`integration:${task.id}`];
+    if (canonicalFallback) {
+      const fallbackReview: ReviewConvergenceState = {
+        round: canonicalFallback.round,
+        findings: canonicalFallback.findings,
+        outstandingIds: canonicalFallback.outstandingFindingIds,
+        bestOutstandingCount: canonicalFallback.bestOutstandingCount,
+        consecutiveStalledRounds: canonicalFallback.consecutiveStalledRounds,
+      };
+      task.integrationLedger = {
+        ...(task.integrationLedger ??
+          recoveredIntegrationLedger(canonicalFallback.candidate.current)),
+        fallbackReview,
+        fallbackCandidateFingerprint: canonicalFallback.candidate.current,
+        fallbackCandidatePatch: canonicalFallback.previousCandidatePatch,
+      };
+    }
     if (runtime?.phase === "completed") {
       task.status = runtime.result === "landed" ? "landed" : "satisfied";
       sched.landedOrder.push(task.id);
@@ -4333,6 +4352,8 @@ async function runIntegrationReviewFallback(
       )
     : undefined;
   const candidateFingerprint = await deps.git.stagedFingerprint();
+  const previousCandidateFingerprint =
+    schedulerTask?.integrationLedger?.fallbackCandidateFingerprint;
   const previousPatch =
     schedulerTask?.integrationLedger?.fallbackCandidatePatch;
   const anchoredDelta =
@@ -4358,8 +4379,7 @@ async function runIntegrationReviewFallback(
     diff,
     planArtifacts,
     outstandingFindings: outstanding,
-    previousCandidate:
-      schedulerTask?.integrationLedger?.fallbackCandidateFingerprint,
+    previousCandidate: previousCandidateFingerprint,
     currentCandidate: candidateFingerprint,
     latestDelta: anchoredDelta?.diff,
     reworkCompletions: ownerRework,
@@ -4472,9 +4492,45 @@ async function runIntegrationReviewFallback(
           reviewerSystemFailures,
         );
       }
+      const integrationEpoch = schedulerTask.integrationLedger.epoch;
       if (parsed.result.verdict === "approved") {
+        const approvedState = createReviewConvergenceState({
+          drafts: [],
+          idPrefix: "IF",
+        });
+        const proposalBatchId = createProposalBatchId({
+          scope: "integration",
+          contextId: `Integration fallback review for ${taskId}.`,
+          candidateIdentity: candidateFingerprint,
+          latestDeltaPaths: [],
+          proposals: [],
+        });
+        const admission = evaluateFindingAdmission({
+          scope: "integration",
+          proposalBatchId,
+          proposals: [],
+          knownRequirementIds: [],
+          adjudication: { proposalBatchId, dispositions: [] },
+        });
+        await persistCanonicalIntegrationAdmission({
+          deps,
+          taskId,
+          epoch: integrationEpoch,
+          candidateIdentity: candidateFingerprint,
+          latestDeltaPaths: [],
+          previousCandidatePatch: candidatePatch,
+          proposals: [],
+          admission,
+          state: approvedState,
+        });
         return { ok: true };
       }
+      const initialProposals = parsed.result.findings.map(
+        (proposal, index) => ({
+          ...proposal,
+          proposalId: `E${integrationEpoch}P${index + 1}`,
+        }),
+      );
       const admission = await admitReviewProposals({
         deps,
         scope: "integration",
@@ -4482,7 +4538,7 @@ async function runIntegrationReviewFallback(
         compiledContract: `Integration fallback review for ${taskId}.`,
         candidateIdentity: candidateFingerprint,
         latestDeltaPaths: [],
-        proposals: parsed.result.findings,
+        proposals: initialProposals,
       });
       schedulerTask.integrationLedger = {
         ...schedulerTask.integrationLedger,
@@ -4494,11 +4550,15 @@ async function runIntegrationReviewFallback(
         fallbackCandidatePatch: candidatePatch,
       };
       persistIntegrationState(deps, taskId, schedulerTask);
+      persistCanonicalTaskExecution(deps, taskId, schedulerTask);
       await persistCanonicalIntegrationAdmission({
         deps,
         taskId,
         candidateIdentity: candidateFingerprint,
-        proposals: parsed.result.findings,
+        latestDeltaPaths: [],
+        previousCandidatePatch: candidatePatch,
+        epoch: integrationEpoch,
+        proposals: initialProposals,
         admission,
         state: schedulerTask.integrationLedger.fallbackReview!,
       });
@@ -4537,7 +4597,7 @@ async function runIntegrationReviewFallback(
       const regressionProposals = parsed.result.regressions.map(
         (regression, index) => ({
           ...regression,
-          proposalId: `R${index + 1}`,
+          proposalId: `E${schedulerTask.integrationLedger!.epoch}R${fallbackState.round + 1}P${index + 1}`,
           basis: {
             kind: "candidate_regression" as const,
             changedPaths: regression.changedPaths,
@@ -4561,8 +4621,8 @@ async function runIntegrationReviewFallback(
         state: fallbackState,
         review: {
           ...parsed.result,
-          regressions: parsed.result.regressions.filter((_regression, index) =>
-            admittedRegressionIds.has(`R${index + 1}`),
+          regressions: regressionProposals.filter((proposal) =>
+            admittedRegressionIds.has(proposal.proposalId),
           ),
         },
         latestDeltaPaths,
@@ -4575,10 +4635,15 @@ async function runIntegrationReviewFallback(
         fallbackCandidatePatch: candidatePatch,
       };
       persistIntegrationState(deps, taskId, schedulerTask);
+      persistCanonicalTaskExecution(deps, taskId, schedulerTask);
       await persistCanonicalIntegrationAdmission({
         deps,
         taskId,
+        epoch: schedulerTask.integrationLedger.epoch,
         candidateIdentity: candidateFingerprint,
+        previousCandidate: previousCandidateFingerprint,
+        latestDeltaPaths,
+        previousCandidatePatch: candidatePatch,
         proposals: regressionProposals,
         admission,
         state: update.state,
@@ -5232,7 +5297,7 @@ async function reviewOverallCandidate(args: {
     const regressionProposals = parsed.result.regressions.map(
       (regression, index) => ({
         ...regression,
-        proposalId: `R${index + 1}`,
+        proposalId: `E${state.epoch}R${state.convergence.round + 1}P${index + 1}`,
         basis: {
           kind: "candidate_regression" as const,
           changedPaths: regression.changedPaths,
@@ -5254,8 +5319,8 @@ async function reviewOverallCandidate(args: {
     const admittedRegressionIds = new Set(
       admission?.admittedDrafts.map((draft) => draft.proposalId) ?? [],
     );
-    const admittedRegressions = parsed.result.regressions.filter(
-      (_regression, index) => admittedRegressionIds.has(`R${index + 1}`),
+    const admittedRegressions = regressionProposals.filter((proposal) =>
+      admittedRegressionIds.has(proposal.proposalId),
     );
     const update =
       state.convergence.outstandingIds.length === 0
@@ -6394,7 +6459,11 @@ function projectReviewProgress(
 async function persistCanonicalIntegrationAdmission(args: {
   deps: OrchestratorDeps;
   taskId: string;
+  epoch: number;
   candidateIdentity: string;
+  previousCandidate?: string;
+  latestDeltaPaths: string[];
+  previousCandidatePatch?: string;
   proposals: Array<{
     proposalId: string;
     summary: string;
@@ -6421,69 +6490,85 @@ async function persistCanonicalIntegrationAdmission(args: {
     const current = store.read();
     let persisted: CanonicalRunState["reviewConvergence"][string] | undefined;
     try {
-      await store.update(current.revision, (run) => ({
-        ...run,
-        reviewConvergence: {
-          ...run.reviewConvergence,
-          [`integration:${args.taskId}`]: (persisted = {
-            owner: { kind: "integration", taskId: args.taskId },
-            stage: args.state.outstandingIds.length > 0 ? "rework" : "approved",
-            candidate: {
-              current: args.candidateIdentity,
-              latestDeltaPaths: [],
-            },
-            proposalBatchId: args.admission.proposalBatchId,
-            epoch: 1,
-            round: args.state.round,
-            proposals: args.proposals.map((proposal) => ({
-              id: proposal.proposalId,
+      await store.update(current.revision, (run) => {
+        const prior = run.reviewConvergence[`integration:${args.taskId}`];
+        const sameEpochPrior = prior?.epoch === args.epoch ? prior : undefined;
+        const proposalRecords = args.proposals.map((proposal) => ({
+          id: proposal.proposalId,
+          summary: proposal.summary,
+          evidence: proposal.evidence,
+          basis: proposal.basis,
+          requiredChange: proposal.requiredChange,
+          acceptanceCriteria: proposal.acceptanceCriteria,
+        }));
+        const findingIds = new Map(
+          args.state.findings.map((finding) => [
+            finding.proposalId,
+            finding.id,
+          ]),
+        );
+        const admissionRecords = args.admission.admissions.map((entry) => ({
+          proposalId: entry.proposalId,
+          disposition: entry.disposition,
+          certainty: entry.certainty,
+          rationale: entry.rationale,
+          ...(entry.disposition === "admit"
+            ? { findingId: findingIds.get(entry.proposalId) }
+            : {}),
+        }));
+        persisted = {
+          owner: { kind: "integration", taskId: args.taskId },
+          stage: args.state.outstandingIds.length > 0 ? "rework" : "approved",
+          candidate: {
+            current: args.candidateIdentity,
+            previous: args.previousCandidate,
+            latestDeltaPaths: args.latestDeltaPaths,
+          },
+          proposalBatchId: args.admission.proposalBatchId,
+          epoch: args.epoch,
+          round: args.state.round,
+          proposals: [...(sameEpochPrior?.proposals ?? []), ...proposalRecords],
+          admissions: [
+            ...(sameEpochPrior?.admissions ?? []),
+            ...admissionRecords,
+          ],
+          findings: args.state.findings,
+          outstandingFindingIds: args.state.outstandingIds,
+          deferredConcerns: [
+            ...(sameEpochPrior?.deferredConcerns ?? []),
+            ...args.admission.deferredConcerns.map((proposal) => ({
+              id: `integration:${args.taskId}:D-${proposal.proposalId}`,
+              proposalId: proposal.proposalId,
               summary: proposal.summary,
               evidence: proposal.evidence,
               basis: proposal.basis,
-              requiredChange: proposal.requiredChange,
-              acceptanceCriteria: proposal.acceptanceCriteria,
+              sourceScope: "integration" as const,
+              sourceCandidate: args.candidateIdentity,
+              rationale: args.admission.admissions.find(
+                (entry) => entry.proposalId === proposal.proposalId,
+              )?.rationale,
             })),
-            admissions: args.admission.admissions.map((entry) => ({
-              proposalId: entry.proposalId,
-              disposition: entry.disposition,
-              certainty: entry.certainty,
-              rationale: entry.rationale,
-              ...(entry.disposition === "admit"
-                ? {
-                    findingId: args.state.findings.find(
-                      (finding) => finding.proposalId === entry.proposalId,
-                    )?.id,
-                  }
-                : {}),
-            })),
-            findings: args.state.findings,
-            outstandingFindingIds: args.state.outstandingIds,
-            deferredConcerns: [
-              ...(run.reviewConvergence[`integration:${args.taskId}`]
-                ?.deferredConcerns ?? []),
-              ...args.admission.deferredConcerns.map((proposal) => ({
-                id: `integration:${args.taskId}:D-${proposal.proposalId}`,
-                proposalId: proposal.proposalId,
-                summary: proposal.summary,
-                evidence: proposal.evidence,
-                basis: proposal.basis,
-                sourceScope: "integration" as const,
-                sourceCandidate: args.candidateIdentity,
-                rationale: args.admission.admissions.find(
-                  (entry) => entry.proposalId === proposal.proposalId,
-                )?.rationale,
-              })),
-            ],
-            observationIds: args.admission.observations.map(
-              (_observation, index) => `IO-${index + 1}`,
+          ],
+          observationIds: [
+            ...(sameEpochPrior?.observationIds ?? []),
+            ...args.admission.observations.map(
+              (_observation, index) => `IO-${args.state.round}-${index + 1}`,
             ),
-            bestOutstandingCount: args.state.bestOutstandingCount,
-            consecutiveStalledRounds: args.state.consecutiveStalledRounds,
-            evidenceRefs: [],
-            verificationFailures: [],
-          }),
-        },
-      }));
+          ],
+          bestOutstandingCount: args.state.bestOutstandingCount,
+          consecutiveStalledRounds: args.state.consecutiveStalledRounds,
+          evidenceRefs: sameEpochPrior?.evidenceRefs ?? [],
+          previousCandidatePatch: args.previousCandidatePatch,
+          verificationFailures: [],
+        };
+        return {
+          ...run,
+          reviewConvergence: {
+            ...run.reviewConvergence,
+            [`integration:${args.taskId}`]: persisted,
+          },
+        };
+      });
       projectReviewProgress(args.deps, persisted!);
       return;
     } catch (error) {
@@ -6540,6 +6625,19 @@ async function persistCanonicalReviewConvergence(
   }
 }
 
+function recoveredIntegrationLedger(mainBaseSha: string): IntegrationLedger {
+  return createIntegrationLedger({
+    mainBaseSha,
+    gates: [
+      {
+        key: "fallback",
+        kind: "fallback",
+        label: "Fallback integration review",
+      },
+    ],
+  });
+}
+
 function persistCanonicalTaskExecution(
   deps: OrchestratorDeps,
   taskId: string,
@@ -6561,6 +6659,7 @@ function persistCanonicalTaskExecution(
         discardedBundles: task.discardedBundles,
         worktreePath: task.worktreePath,
         branchName: task.branchName,
+        integrationLedger: task.integrationLedger,
         implementationRound: 0,
         lastReason: task.lastReason,
       },
@@ -7708,7 +7807,7 @@ async function runTaskWorker(args: {
             const regressionProposals = parsedReview.result.regressions.map(
               (regression, index) => ({
                 ...regression,
-                proposalId: `R${index + 1}`,
+                proposalId: `E${reviewEpoch}R${anchoredReviewState.round + 1}P${index + 1}`,
                 basis: {
                   kind: "candidate_regression" as const,
                   changedPaths: regression.changedPaths,
@@ -7732,8 +7831,8 @@ async function runTaskWorker(args: {
                 (draft) => draft.proposalId,
               ) ?? [],
             );
-            const admittedRegressions = parsedReview.result.regressions.filter(
-              (_regression, index) => admittedProposalIds.has(`R${index + 1}`),
+            const admittedRegressions = regressionProposals.filter((proposal) =>
+              admittedProposalIds.has(proposal.proposalId),
             );
             if (anchoredReviewState.outstandingIds.length === 0) {
               const regressionEpoch = openRegressionReviewEpoch({
@@ -7763,6 +7862,60 @@ async function runTaskWorker(args: {
                 },
                 latestDeltaPaths,
               });
+            }
+            if (regressionAdmission) {
+              const findingIds = new Map(
+                update.state.findings.map((finding) => [
+                  finding.proposalId,
+                  finding.id,
+                ]),
+              );
+              reviewProposals = [
+                ...reviewProposals,
+                ...regressionProposals.map((proposal) => ({
+                  id: proposal.proposalId,
+                  summary: proposal.summary,
+                  evidence: proposal.evidence,
+                  basis: proposal.basis,
+                  requiredChange: proposal.requiredChange,
+                  acceptanceCriteria: proposal.acceptanceCriteria,
+                })),
+              ];
+              reviewAdmissions = [
+                ...reviewAdmissions,
+                ...regressionAdmission.admissions.map((entry) => ({
+                  proposalId: entry.proposalId,
+                  disposition: entry.disposition,
+                  certainty: entry.certainty,
+                  rationale: entry.rationale,
+                  ...(entry.disposition === "admit"
+                    ? { findingId: findingIds.get(entry.proposalId)! }
+                    : {}),
+                })),
+              ];
+              deferredConcerns = [
+                ...deferredConcerns,
+                ...regressionAdmission.deferredConcerns.map((proposal) => ({
+                  id: `${taskId}:D-${proposal.proposalId}`,
+                  proposalId: proposal.proposalId,
+                  summary: proposal.summary,
+                  evidence: proposal.evidence,
+                  basis: proposal.basis,
+                  sourceScope: "task" as const,
+                  sourceCandidate: candidateIdentity,
+                  rationale: regressionAdmission.admissions.find(
+                    (entry) => entry.proposalId === proposal.proposalId,
+                  )?.rationale,
+                })),
+              ];
+              reviewObservationIds = [
+                ...reviewObservationIds,
+                ...regressionAdmission.observations.map(
+                  (_observation, index) =>
+                    `O-${anchoredReviewState.round + 1}-${index + 1}`,
+                ),
+              ];
+              reviewProposalBatchId = regressionAdmission.proposalBatchId;
             }
           } catch (error) {
             recordSystemFailure(

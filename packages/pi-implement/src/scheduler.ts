@@ -239,6 +239,21 @@ export function transition(
             state.candidates[event.outcome.candidate.id] =
               event.outcome.candidate;
           }
+          const approvedReview = state.reviewConvergence[event.taskId];
+          if (approvedReview?.stage === "approved") {
+            state.reviewConvergence[event.taskId] = {
+              ...approvedReview,
+              candidate: {
+                ...approvedReview.candidate,
+                current: event.outcome.candidate.commitSha,
+              },
+              candidateId: event.outcome.candidate.id,
+              evidenceRefs: [
+                ...event.outcome.candidate.reviewReceipt.convergence
+                  .evidenceRefs,
+              ],
+            };
+          }
           state.runtime.tasks[event.taskId] = {
             phase: "candidate_ready",
             candidateId: event.outcome.candidate.id,

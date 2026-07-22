@@ -267,6 +267,42 @@ export const canonicalReviewSchema = z
 
 const reviewConvergenceSchema = canonicalReviewSchema;
 
+const reviewConvergenceStateSchema = z
+  .object({
+    round: z.number().int().nonnegative(),
+    findings: z.array(reviewFindingSchema),
+    outstandingIds: z.array(nonEmpty),
+    bestOutstandingCount: z.number().int().nonnegative(),
+    consecutiveStalledRounds: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const integrationLedgerSchema = z
+  .object({
+    idPrefix: nonEmpty,
+    epoch: z.number().int().positive(),
+    mainBaseSha: nonEmpty,
+    gateSet: z.array(z.string()),
+    gates: z.array(
+      z
+        .object({
+          key: nonEmpty,
+          kind: z.enum(["apply", "validator", "hook", "fallback"]),
+          label: nonEmpty,
+        })
+        .strict(),
+    ),
+    findings: z.array(reviewFindingSchema),
+    outstandingIds: z.array(nonEmpty),
+    gateFindingIds: z.record(nonEmpty, z.array(nonEmpty)),
+    bestOutstandingCount: z.number().int().nonnegative(),
+    consecutiveStalledRounds: z.number().int().nonnegative(),
+    fallbackReview: reviewConvergenceStateSchema.optional(),
+    fallbackCandidateFingerprint: nonEmpty.optional(),
+    fallbackCandidatePatch: z.string().optional(),
+  })
+  .strict();
+
 const taskExecutionSchema = z
   .object({
     sourceBaseSha: nonEmpty.optional(),
@@ -277,6 +313,7 @@ const taskExecutionSchema = z
     discardedBundles: z.array(nonEmpty),
     worktreePath: nonEmpty.optional(),
     branchName: nonEmpty.optional(),
+    integrationLedger: integrationLedgerSchema.optional(),
     implementationRound: z.number().int().nonnegative(),
     lastReason: z.string().optional(),
   })
@@ -825,6 +862,16 @@ function invariantIssues(
     ) {
       issues.push(
         `approved review convergence ${key} has outstanding findings`,
+      );
+    }
+    if (
+      convergence.stage === "approved" &&
+      convergence.owner.kind === "task" &&
+      state.runtime.tasks[convergence.owner.taskId]?.phase !== "executing" &&
+      !convergence.candidateId
+    ) {
+      issues.push(
+        `approved review convergence ${key} is not bound to a candidate`,
       );
     }
     if (
