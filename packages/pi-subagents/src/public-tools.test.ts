@@ -138,6 +138,17 @@ function textContent(result: {
   return result.content.find((part) => part.type === "text")?.text;
 }
 
+function renderedText(component: unknown) {
+  return (component as { render: (width: number) => string[] })
+    .render(120)
+    .join("\n");
+}
+
+const mockTheme = {
+  bold: (text: string) => text,
+  fg: (_color: string, text: string) => text,
+} as any;
+
 function makeSession(result = "done") {
   const calls: string[] = [];
   const extensionRunner = {
@@ -347,10 +358,11 @@ describe("public subagent tools", () => {
       cwd: "/workspace",
     });
     runtime.start(completed.id);
-    runtime.complete(
-      completed.id,
+    const deliverable = [
       "complete final deliverable with retrieval-only content avoided",
-    );
+      "expanded-only detail ".repeat(20),
+    ].join("\n");
+    runtime.complete(completed.id, deliverable);
 
     const completedResult = await getResult!.execute(
       "call-1",
@@ -359,15 +371,37 @@ describe("public subagent tools", () => {
       undefined,
       makeCtx(),
     );
-    expect(textContent(completedResult)).toBe(
-      "complete final deliverable with retrieval-only content avoided",
-    );
+    expect(textContent(completedResult)).toBe(deliverable);
     expect(completedResult.isError).toBe(false);
     expect(completedResult.details).toMatchObject({
       id: completed.id,
       status: "completed",
-      result: "complete final deliverable with retrieval-only content avoided",
+      result: deliverable,
     });
+
+    const collapsed = renderedText(
+      getResult!.renderResult!(
+        completedResult,
+        { expanded: false, isPartial: false },
+        mockTheme,
+      ),
+    );
+    const expanded = renderedText(
+      getResult!.renderResult!(
+        completedResult,
+        { expanded: true, isPartial: false },
+        mockTheme,
+      ),
+    );
+    expect(collapsed).toContain(
+      "complete final deliverable with retrieval-only content avoided",
+    );
+    expect(collapsed).toContain("…");
+    expect(expanded).not.toContain("…");
+    expect(expanded.split("\n").length).toBeGreaterThan(
+      collapsed.split("\n").length,
+    );
+    expect(expanded).toContain("expanded-only detail expanded-only detail");
 
     const failed = runtime.queue({
       owner: "test",

@@ -1,4 +1,8 @@
-import type { AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentToolResult,
+  Theme,
+  ToolRenderResultOptions,
+} from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { RuntimeSnapshot } from "./runtime.js";
 import {
@@ -36,7 +40,7 @@ export function renderAgentCall(args: PublicAgentParams, theme: Theme): Text {
 
 export function renderAgentResult(
   result: AgentToolResult<AgentToolDetails>,
-  _options: unknown,
+  options: ToolRenderResultOptions,
   theme: Theme,
 ): Text {
   const snapshot = result.details;
@@ -47,11 +51,13 @@ export function renderAgentResult(
     `${theme.fg("toolTitle", theme.bold("Agent"))} ${theme.fg("accent", snapshot.type)} ${theme.fg(statusColor(snapshot.status), snapshot.status)} ${theme.fg("muted", snapshot.id)}`,
     `elapsed ${elapsedLabel(snapshot)} · context ${contextUsageLabel(snapshot)} · estimated API cost ${costLabel(snapshot.health?.estimatedCost)} · peak ${tokenLabel(snapshot.health?.peakContextTokens)} · cumulative ${tokenLabel(snapshot.health?.tokensTotal)}`,
   ];
-  const preview = previewText(
-    snapshot.error ?? snapshot.result ?? snapshot.health?.resultPreview,
-  );
-  if (preview) {
-    lines.push(theme.fg("dim", preview));
+  const output = options.expanded
+    ? firstText(result)
+    : previewText(
+        snapshot.error ?? snapshot.result ?? snapshot.health?.resultPreview,
+      );
+  if (output) {
+    lines.push(theme.fg(options.expanded ? "toolOutput" : "dim", output));
   }
   return new Text(lines.join("\n"), 0, 0);
 }
