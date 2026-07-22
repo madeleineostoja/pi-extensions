@@ -45,6 +45,19 @@ export function hasLiveManagedRunAgents(
 
 export type ProbeResult = { ok: true; version?: number } | { ok: false };
 
+export type PiImplementWorkerStage =
+  | "implementation"
+  | "initial_task_review"
+  | "task_admission"
+  | "task_rework"
+  | "anchored_task_review"
+  | "initial_overall_review"
+  | "overall_admission"
+  | "overall_rework"
+  | "anchored_overall_review"
+  | "integration_review"
+  | "integration_admission";
+
 export type PiImplementWorkerRole =
   | "implementer"
   | "reviewer"
@@ -61,6 +74,7 @@ export type SpawnArgs<TSchemaValue extends TSchema = TSchema> = {
   cwd?: string;
   role?: PiImplementWorkerRole;
   ownerRole?: PiImplementWorkerRole;
+  stage?: PiImplementWorkerStage;
   noTools?: boolean;
   taskId?: string;
   readOnly?: boolean;

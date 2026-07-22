@@ -290,8 +290,16 @@ class FakeGit implements GitClient {
 class FakeSubagents implements SubagentClient {
   spawns: SpawnArgs[] = [];
   results: SubagentResult[] = [];
+  resultsByStage = new Map<string, SubagentResult[]>();
   resultsByDescription: { match: string | RegExp; result: SubagentResult }[] =
     [];
+
+  queueStage(
+    stage: NonNullable<SpawnArgs["stage"]>,
+    ...results: SubagentResult[]
+  ) {
+    this.resultsByStage.set(stage, results);
+  }
 
   async probe() {
     return { ok: true as const };
@@ -311,7 +319,11 @@ class FakeSubagents implements SubagentClient {
             : r.match.test(args.description),
         )
       : undefined;
+    const staged = args?.stage
+      ? this.resultsByStage.get(args.stage)?.shift()
+      : undefined;
     const result =
+      staged ??
       routed?.result ??
       (args?.description.includes("admit task")
         ? { status: "failed" as const, error: "adjudicator unavailable" }

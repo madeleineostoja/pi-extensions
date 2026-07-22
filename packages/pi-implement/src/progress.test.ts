@@ -195,6 +195,167 @@ describe("diffProgress", () => {
     ]);
   });
 
+  it("reports structured admission, rework, and anchored-review progress", () => {
+    const task = {
+      id: "t1",
+      planIndex: 0,
+      title: "A",
+      status: "reviewing" as const,
+    };
+    const base: RunState = {
+      phase: "reviewing",
+      totalCount: 1,
+      tasks: [task],
+    };
+    const admitted: RunState = {
+      ...base,
+      tasks: [
+        {
+          ...task,
+          reviewProgress: {
+            scope: "task",
+            stage: "rework",
+            epoch: 1,
+            round: 0,
+            currentCandidate: "aaaaaaaa",
+            admittedIds: ["R1"],
+            resolvedIds: [],
+            deferredIds: ["P2"],
+            rejectedIds: ["P3"],
+            addressedIds: [],
+            notAddressedIds: [],
+            unresolvedIds: ["R1"],
+            newRegressionIds: [],
+            currentOutstandingCount: 1,
+            bestOutstandingCount: 1,
+            consecutiveStalledRounds: 0,
+          },
+        },
+      ],
+    };
+    expect(diffProgress(base, admitted, [])).toContain(
+      "· Task 1/1 review: admitted R1; deferred P2; rejected P3; unresolved R1; outstanding 1, best 1",
+    );
+
+    const anchored: RunState = {
+      ...admitted,
+      tasks: [
+        {
+          ...admitted.tasks![0],
+          reviewProgress: {
+            ...admitted.tasks![0].reviewProgress!,
+            stage: "anchored_review",
+            previousCandidate: "aaaaaaaa",
+            currentCandidate: "bbbbbbbb",
+            round: 1,
+            addressedIds: ["R1"],
+            unresolvedIds: ["R2"],
+            newRegressionIds: ["R2"],
+            previousOutstandingCount: 1,
+            currentOutstandingCount: 1,
+          },
+        },
+      ],
+    };
+    expect(diffProgress(admitted, anchored, [])).toContain(
+      "· Task 1/1 review candidate aaaaaaa→bbbbbbb: admitted R1; deferred P2; rejected P3; addressed R1; unresolved R2; admitted regression R2; outstanding 1 (previous 1), best 1",
+    );
+  });
+
+  it("does not emit duplicate progress for identical review projections", () => {
+    const state: RunState = {
+      phase: "reviewing",
+      totalCount: 1,
+      tasks: [
+        {
+          id: "t1",
+          planIndex: 0,
+          title: "A",
+          status: "reviewing",
+          reviewProgress: {
+            scope: "task",
+            stage: "rework",
+            epoch: 1,
+            round: 0,
+            currentCandidate: "aaaaaaaa",
+            admittedIds: ["R1"],
+            resolvedIds: [],
+            deferredIds: [],
+            rejectedIds: [],
+            addressedIds: [],
+            notAddressedIds: [],
+            unresolvedIds: ["R1"],
+            newRegressionIds: [],
+            currentOutstandingCount: 1,
+            bestOutstandingCount: 1,
+            consecutiveStalledRounds: 0,
+          },
+        },
+      ],
+    };
+    expect(
+      diffProgress(state, { ...state, activeSubagentId: "agent-1" }, []),
+    ).toEqual([]);
+  });
+
+  it("reports semantic stalls separately from provider retries", () => {
+    const task = {
+      id: "t1",
+      planIndex: 0,
+      title: "A",
+      status: "reviewing" as const,
+    };
+    const state: RunState = {
+      phase: "reviewing",
+      totalCount: 1,
+      tasks: [task],
+    };
+    const stalled = {
+      ...state,
+      tasks: [
+        {
+          ...task,
+          reviewProgress: {
+            scope: "task" as const,
+            stage: "stalled" as const,
+            epoch: 1,
+            round: 2,
+            currentCandidate: "aaaaaaaa",
+            admittedIds: [],
+            resolvedIds: [],
+            deferredIds: [],
+            rejectedIds: [],
+            addressedIds: [],
+            notAddressedIds: [],
+            unresolvedIds: ["R1"],
+            newRegressionIds: [],
+            currentOutstandingCount: 1,
+            bestOutstandingCount: 1,
+            consecutiveStalledRounds: 2,
+          },
+        },
+      ],
+    };
+    expect(diffProgress(state, stalled, [])).toContain(
+      "⚠ Task 1/1 review stalled: outstanding 1, best 1",
+    );
+    const retry = {
+      ...stalled,
+      tasks: [
+        {
+          ...stalled.tasks[0],
+          reviewProgress: {
+            ...stalled.tasks[0].reviewProgress,
+            retryKind: "provider" as const,
+          },
+        },
+      ],
+    };
+    expect(diffProgress(stalled, retry, [])).toContain(
+      "↻ Task 1/1 review provider retry",
+    );
+  });
+
   it("reports effective concurrency without exposing an execution mode", () => {
     const prev: RunState = { phase: "strategy" };
     const next: RunState = {
