@@ -1,7 +1,9 @@
 import type {
+  FindingAdmissionBatch,
   FindingAssessment,
   RegressionFindingDraft,
   ReviewFindingDraft,
+  ReviewFindingProposal,
   ReviewObservation,
 } from "./result-schemas.js";
 import { validateAssessmentCoverage } from "./review-convergence.js";
@@ -30,9 +32,11 @@ export type InitialReviewResult =
   | { verdict: "approved" }
   | {
       verdict: "changes_requested";
-      findings: ReviewFindingDraft[];
+      findings: Array<ReviewFindingProposal & { proposalId: string }>;
       recommendationMarkdown?: string;
     };
+
+export type AdmissionResult = FindingAdmissionBatch;
 
 export type AnchoredReviewResult = {
   assessments: FindingAssessment[];
@@ -168,7 +172,10 @@ function parseImplementerResultValue(
 
 export function parseInitialReviewResult(
   value: unknown,
-  options?: { allowRecommendationMarkdown?: boolean },
+  options?: {
+    allowRecommendationMarkdown?: boolean;
+    requireProposalBasis?: boolean;
+  },
 ): { ok: true; result: InitialReviewResult } | { ok: false; reason: string } {
   if (!isRecord(value)) {
     return {
@@ -202,17 +209,26 @@ export function parseInitialReviewResult(
         "Initial changes_requested review must include non-empty findings.",
     };
   }
-  const findings: ReviewFindingDraft[] = [];
-  for (const finding of value.findings) {
-    const parsed = parseFindingDraft(finding);
+  const findings: Array<ReviewFindingProposal & { proposalId: string }> = [];
+  const usedProposalIds = new Set<string>();
+  for (const [index, finding] of value.findings.entries()) {
+    const parsed = parseFindingProposal(finding, options?.requireProposalBasis);
     if (!parsed) {
       return {
         ok: false,
         reason:
-          "Each initial finding requires non-empty summary, evidence, requiredChange, and acceptanceCriteria.",
+          "Each initial finding requires non-empty summary, evidence, requiredChange, acceptanceCriteria, and a grounded basis.",
       };
     }
-    findings.push(parsed);
+    let proposalId = parsed.proposalId;
+    if (!proposalId || usedProposalIds.has(proposalId)) {
+      let ordinal = index + 1;
+      do {
+        proposalId = `P${ordinal++}`;
+      } while (usedProposalIds.has(proposalId));
+    }
+    usedProposalIds.add(proposalId);
+    findings.push({ ...parsed, proposalId: proposalId! });
   }
   let recommendationMarkdown: string | undefined;
   if (Object.hasOwn(value, "recommendationMarkdown")) {
@@ -233,6 +249,53 @@ export function parseInitialReviewResult(
   return {
     ok: true,
     result: { verdict: "changes_requested", findings, recommendationMarkdown },
+  };
+}
+
+export function parseAdmissionResult(
+  value: unknown,
+): { ok: true; result: AdmissionResult } | { ok: false; reason: string } {
+  if (!isRecord(value) || !isNonEmptyString(value.proposalBatchId)) {
+    return {
+      ok: false,
+      reason: "Admission completion must include proposalBatchId.",
+    };
+  }
+  if (!Array.isArray(value.dispositions)) {
+    return {
+      ok: false,
+      reason: "Admission completion must include dispositions.",
+    };
+  }
+  const dispositions: AdmissionResult["dispositions"] = [];
+  for (const disposition of value.dispositions) {
+    if (
+      !isRecord(disposition) ||
+      !isNonEmptyString(disposition.proposalId) ||
+      !["admit", "defer", "demote", "reject"].includes(
+        String(disposition.disposition),
+      ) ||
+      !["certain", "uncertain"].includes(String(disposition.certainty)) ||
+      !isNonEmptyString(disposition.rationale)
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each admission disposition requires proposalId, disposition, certainty, and rationale.",
+      };
+    }
+    dispositions.push({
+      proposalId: disposition.proposalId.trim(),
+      disposition:
+        disposition.disposition as AdmissionResult["dispositions"][number]["disposition"],
+      certainty:
+        disposition.certainty as AdmissionResult["dispositions"][number]["certainty"],
+      rationale: disposition.rationale.trim(),
+    });
+  }
+  return {
+    ok: true,
+    result: { proposalBatchId: value.proposalBatchId.trim(), dispositions },
   };
 }
 
@@ -322,6 +385,77 @@ export function parseAnchoredReviewResult(
       observations: observations as ReviewObservation[] | undefined,
     },
   };
+}
+
+function parseFindingProposal(
+  value: unknown,
+  requireBasis = false,
+): ReviewFindingProposal | undefined {
+  const draft = parseFindingDraft(value);
+  if (!draft || !isRecord(value)) {
+    return undefined;
+  }
+  if (!isRecord(value.basis)) {
+    return requireBasis
+      ? undefined
+      : {
+          ...draft,
+          basis: {
+            kind: "correctness_invariant",
+            invariant:
+              "Legacy initial review finding without a structured basis.",
+          },
+        };
+  }
+  const proposalId = isNonEmptyString(value.proposalId)
+    ? value.proposalId.trim()
+    : undefined;
+  if (
+    value.basis.kind === "requirement" &&
+    Array.isArray(value.basis.requirementIds) &&
+    value.basis.requirementIds.length > 0 &&
+    value.basis.requirementIds.every(isNonEmptyString)
+  ) {
+    return {
+      ...draft,
+      proposalId,
+      basis: {
+        kind: "requirement",
+        requirementIds: value.basis.requirementIds.map((id) => id.trim()),
+      },
+    };
+  }
+  if (
+    value.basis.kind === "candidate_regression" &&
+    Array.isArray(value.basis.changedPaths) &&
+    value.basis.changedPaths.length > 0 &&
+    value.basis.changedPaths.every(isNonEmptyString) &&
+    isNonEmptyString(value.basis.causalEvidence)
+  ) {
+    return {
+      ...draft,
+      proposalId,
+      basis: {
+        kind: "candidate_regression",
+        changedPaths: value.basis.changedPaths.map((path) => path.trim()),
+        causalEvidence: value.basis.causalEvidence.trim(),
+      },
+    };
+  }
+  if (
+    value.basis.kind === "correctness_invariant" &&
+    isNonEmptyString(value.basis.invariant)
+  ) {
+    return {
+      ...draft,
+      proposalId,
+      basis: {
+        kind: "correctness_invariant",
+        invariant: value.basis.invariant.trim(),
+      },
+    };
+  }
+  return undefined;
 }
 
 function parseFindingDraft(value: unknown): ReviewFindingDraft | undefined {

@@ -311,7 +311,11 @@ class FakeSubagents implements SubagentClient {
             : r.match.test(args.description),
         )
       : undefined;
-    const result = routed?.result ?? this.results.shift();
+    const result =
+      routed?.result ??
+      (args?.description.includes("admit task")
+        ? { status: "failed" as const, error: "adjudicator unavailable" }
+        : this.results.shift());
     if (routed && this.results[0] === routed.result) {
       this.results.shift();
     }
@@ -2831,6 +2835,10 @@ describe("runImplementation", () => {
                 evidence: "The initial candidate is incomplete.",
                 requiredChange: "Complete the candidate.",
                 acceptanceCriteria: ["The candidate is complete."],
+                basis: {
+                  kind: "requirement",
+                  requirementIds: ["t001-do-thing-AC01"],
+                },
               },
             ],
           },
@@ -2892,6 +2900,10 @@ describe("runImplementation", () => {
               evidence: "The initial candidate is incomplete.",
               requiredChange: "Complete the candidate.",
               acceptanceCriteria: ["The candidate is complete."],
+              basis: {
+                kind: "requirement",
+                requirementIds: ["t001-do-thing-AC01"],
+              },
             },
           ],
         },

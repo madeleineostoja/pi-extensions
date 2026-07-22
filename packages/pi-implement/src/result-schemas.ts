@@ -144,6 +144,47 @@ export const reviewFindingDraftSchema = Type.Object({
   acceptanceCriteria: Type.Array(nonEmptyString(), { minItems: 1 }),
 });
 
+const reviewFindingProposalBasisSchema = Type.Union([
+  Type.Object({
+    kind: Type.Literal("requirement"),
+    requirementIds: Type.Array(nonEmptyString(), { minItems: 1 }),
+  }),
+  Type.Object({
+    kind: Type.Literal("candidate_regression"),
+    changedPaths: Type.Array(nonEmptyString(), { minItems: 1 }),
+    causalEvidence: nonEmptyString(),
+  }),
+  Type.Object({
+    kind: Type.Literal("correctness_invariant"),
+    invariant: nonEmptyString(),
+  }),
+]);
+
+export const reviewFindingProposalSchema = Type.Intersect([
+  reviewFindingDraftSchema,
+  Type.Object({
+    proposalId: Type.Optional(nonEmptyString()),
+    basis: reviewFindingProposalBasisSchema,
+  }),
+]);
+
+const findingAdmissionDispositionSchema = Type.Object({
+  proposalId: nonEmptyString(),
+  disposition: Type.Union([
+    Type.Literal("admit"),
+    Type.Literal("defer"),
+    Type.Literal("demote"),
+    Type.Literal("reject"),
+  ]),
+  certainty: Type.Union([Type.Literal("certain"), Type.Literal("uncertain")]),
+  rationale: nonEmptyString(),
+});
+
+export const findingAdmissionBatchSchema = closedWithPapercuts({
+  proposalBatchId: nonEmptyString(),
+  dispositions: Type.Array(findingAdmissionDispositionSchema),
+});
+
 export const regressionFindingDraftSchema = Type.Intersect([
   reviewFindingDraftSchema,
   Type.Object({
@@ -175,7 +216,13 @@ const initialReviewSchema = (allowRecommendationMarkdown: boolean) =>
     }),
   ]);
 
-export const initialTaskReviewSchema = initialReviewSchema(false);
+export const initialTaskReviewSchema = Type.Union([
+  closedWithPapercuts({ verdict: Type.Literal("approved") }),
+  closedWithPapercuts({
+    verdict: Type.Literal("changes_requested"),
+    findings: Type.Array(reviewFindingProposalSchema, { minItems: 1 }),
+  }),
+]);
 export const initialOverallReviewSchema = initialReviewSchema(true);
 export const anchoredReviewSchema = withPapercuts({
   assessments: Type.Array(findingAssessmentSchema),
@@ -232,6 +279,8 @@ export type NeedsMaterialCompletion = Static<
 >;
 export type ImplementerCompletion = Static<typeof implementerResultSchema>;
 export type ReviewFindingDraft = Static<typeof reviewFindingDraftSchema>;
+export type ReviewFindingProposal = Static<typeof reviewFindingProposalSchema>;
+export type FindingAdmissionBatch = Static<typeof findingAdmissionBatchSchema>;
 export type RegressionFindingDraft = Static<
   typeof regressionFindingDraftSchema
 >;

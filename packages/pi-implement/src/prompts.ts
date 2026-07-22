@@ -537,6 +537,52 @@ export function buildInitialTaskReviewPrompt(args: {
   });
 }
 
+export const FINDING_ADMISSION_SYSTEM_PROMPT = `You classify only the supplied review proposals. Do not inspect the repository, use tools, discover findings, rewrite proposals, choose an implementation design, or reject a proposal when uncertain. Return exactly one disposition for each supplied proposal ID and echo the supplied proposalBatchId. Mark uncertainty explicitly as uncertain.`;
+
+export function buildTaskFindingAdmissionPrompt(args: {
+  compiledContract: string;
+  responsibilityContext: ReviewResponsibilityContext;
+  selectedTaskId: string;
+  candidateIdentity: string;
+  latestDeltaPaths: readonly string[];
+  proposalBatchId: string;
+  proposals: readonly {
+    proposalId: string;
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+    basis: unknown;
+  }[];
+}): string {
+  const requirements = args.responsibilityContext.requirements.filter(
+    (requirement) => requirement.taskId === args.selectedTaskId,
+  );
+  return `Classify the supplied task-review proposals against the supplied evidence only. Return the exact proposalBatchId and one certain or uncertain disposition (admit, defer, demote, or reject) for every proposal. Do not add proposals. If uncertain, use certainty: uncertain; uncertainty is never a reason to reject.
+
+## Proposal Batch
+
+proposalBatchId: ${args.proposalBatchId}
+Candidate identity: ${args.candidateIdentity}
+Latest delta paths: ${args.latestDeltaPaths.join(", ") || "none"}
+
+## Contract
+
+${args.compiledContract}
+
+## Requirement IDs
+
+${requirements.map((requirement) => `- ${requirement.id}: ${requirement.text}`).join("\n")}
+
+## Responsibility Context
+
+${buildResponsibilitySection({ responsibilityContext: args.responsibilityContext, selectedTaskId: args.selectedTaskId })}
+
+## Proposals
+
+${args.proposals.map((proposal) => `### ${proposal.proposalId}\nSummary: ${proposal.summary}\nEvidence: ${proposal.evidence}\nRequired change: ${proposal.requiredChange}\nAcceptance: ${proposal.acceptanceCriteria.join("; ")}\nBasis: ${JSON.stringify(proposal.basis)}`).join("\n\n")}`;
+}
+
 export function buildAnchoredTaskReviewPrompt(args: {
   compiledContract: string;
   worktreePath: string;
@@ -620,7 +666,7 @@ Use the compiled task contract and referenced source material below to verify sc
 - Request changes if the staged diff substantially implements an unselected sibling task or unrelated cleanup.
 - Completing a sibling task's own deliverable is scope creep.
 ${args.scope === "task" ? buildResponsibilitySection(args) : ""}
-If approved, submit { verdict: "approved" }. Otherwise submit { verdict: "changes_requested", findings } where every atomic finding has summary, evidence, requiredChange, and non-empty acceptanceCriteria. One independently resolvable defect belongs in each finding. Keep the required change and acceptance criteria to the minimum observable correction needed for the demonstrated defect; do not prescribe a broader redesign when a narrower correction satisfies the contract. Omit optional or non-blocking concerns from this initial result.${recommendation}
+If approved, submit { verdict: "approved" }. Otherwise submit { verdict: "changes_requested", findings } where every atomic finding is a proposal with summary, evidence, requiredChange, non-empty acceptanceCriteria, and basis. basis must be either { kind: "requirement", requirementIds }, { kind: "candidate_regression", changedPaths, causalEvidence }, or { kind: "correctness_invariant", invariant }. Requirement IDs must come from the supplied contract. One independently resolvable defect belongs in each proposal. Keep the required change and acceptance criteria to the minimum observable correction needed for the demonstrated defect; do not prescribe a broader redesign when a narrower correction satisfies the contract. Omit optional or non-blocking concerns from this initial result.${recommendation}
 
 ${PAPERCUT_GUIDANCE}
 

@@ -6,6 +6,7 @@ import type {
 } from "./result-schemas.js";
 
 export type ReviewFinding = ReviewFindingDraft & {
+  proposalId?: string;
   id: string;
   introducedRound: number;
   origin: "initial" | "regression";
@@ -49,7 +50,7 @@ export function applyNoopReview(state: ReviewConvergenceState): {
 }
 
 export function createReviewConvergenceState(args: {
-  drafts: ReviewFindingDraft[];
+  drafts: Array<ReviewFindingDraft & { proposalId?: string }>;
   idPrefix?: string;
 }): ReviewConvergenceState {
   const findings = allocateFindings({

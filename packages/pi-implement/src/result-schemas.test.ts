@@ -4,6 +4,7 @@ import {
   executionManifestSchema,
   initialTaskReviewSchema,
   initialOverallReviewSchema,
+  findingAdmissionBatchSchema,
   sourceMaterialRepairSchema,
 } from "./result-schemas.js";
 
@@ -30,6 +31,7 @@ describe("managed completion schemas", () => {
       evidence: "src/api.ts accepts invalid input",
       requiredChange: "Validate the input",
       acceptanceCriteria: ["Invalid input is rejected"],
+      basis: { kind: "requirement", requirementIds: ["T001-AC01"] },
     };
     expect(
       Value.Check(initialTaskReviewSchema, {
@@ -51,6 +53,7 @@ describe("managed completion schemas", () => {
       evidence: "src/api.ts accepts invalid input",
       requiredChange: "Validate the input",
       acceptanceCriteria: ["Invalid input is rejected"],
+      basis: { kind: "requirement", requirementIds: ["T001-AC01"] },
     };
     expect(
       Value.Check(initialTaskReviewSchema, {
@@ -72,6 +75,28 @@ describe("managed completion schemas", () => {
         recommendationMarkdown: "Advice",
       }),
     ).toBe(true);
+  });
+
+  it("requires complete, certain-or-uncertain admission dispositions", () => {
+    expect(
+      Value.Check(findingAdmissionBatchSchema, {
+        proposalBatchId: "batch",
+        dispositions: [
+          {
+            proposalId: "P1",
+            disposition: "admit",
+            certainty: "certain",
+            rationale: "The requirement is unmet.",
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(findingAdmissionBatchSchema, {
+        proposalBatchId: "batch",
+        dispositions: [{ proposalId: "P1", disposition: "admit" }],
+      }),
+    ).toBe(false);
   });
 
   it("keeps planner and material-selection schemas free of papercut fields", () => {

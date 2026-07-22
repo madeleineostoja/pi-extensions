@@ -174,13 +174,14 @@ describe("RunStore", () => {
           id: "P1",
           summary: "summary",
           evidence: "evidence",
-          basis: "requirement",
+          basis: { kind: "requirement", requirementIds: ["task-1-AC01"] },
         },
       ],
       admissions: [
         {
           proposalId: "P1",
           disposition: "admit",
+          certainty: "certain",
           rationale: "required",
           findingId: "R1",
         },

@@ -33,7 +33,12 @@ export type TaskStatus =
   | "failed"
   | "stopped";
 
-export type AgentRole = "implementer" | "reviewer" | "planner" | "triage";
+export type AgentRole =
+  | "implementer"
+  | "reviewer"
+  | "planner"
+  | "triage"
+  | "admission";
 
 export type AgentDisplayRef = {
   id: string;

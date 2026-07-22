@@ -14,6 +14,8 @@ import {
   buildAnchoredOverallReviewPrompt,
   buildOverallReviewerPrompt,
   buildSchedulerSelfHealPrompt,
+  buildTaskFindingAdmissionPrompt,
+  FINDING_ADMISSION_SYSTEM_PROMPT,
   PAPERCUT_GUIDANCE,
 } from "./prompts.js";
 
@@ -354,6 +356,38 @@ Reason: Selected task checkbox line and task block.
 });
 
 describe("typed review protocol prompts", () => {
+  it("grounds task proposals and isolates no-tools admission", () => {
+    const review = buildInitialTaskReviewPrompt({
+      compiledContract: "contract",
+      worktreePath: WORKTREE_PATH,
+      candidateContext: "candidate",
+      responsibilityContext: RESPONSIBILITY_CONTEXT,
+      selectedTaskId: "T004",
+    });
+    const admission = buildTaskFindingAdmissionPrompt({
+      compiledContract: "contract",
+      responsibilityContext: RESPONSIBILITY_CONTEXT,
+      selectedTaskId: "T004",
+      candidateIdentity: "candidate",
+      latestDeltaPaths: ["src/file.ts"],
+      proposalBatchId: "batch",
+      proposals: [
+        {
+          proposalId: "P1",
+          summary: "summary",
+          evidence: "evidence",
+          requiredChange: "change",
+          acceptanceCriteria: ["criterion"],
+          basis: { kind: "requirement", requirementIds: ["T004-AC01"] },
+        },
+      ],
+    });
+    expect(review).toContain("candidate_regression");
+    expect(admission).toContain("proposalBatchId: batch");
+    expect(FINDING_ADMISSION_SYSTEM_PROMPT).toContain(
+      "Do not inspect the repository",
+    );
+  });
   const outstandingFinding = {
     id: "R1",
     summary: "Missing validation",

@@ -34,12 +34,33 @@ const reviewStageSchema = z.enum([
   "stalled",
 ]);
 
+const reviewProposalBasisSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("requirement"),
+      requirementIds: z.array(nonEmpty).min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("candidate_regression"),
+      changedPaths: z.array(nonEmpty).min(1),
+      causalEvidence: nonEmpty,
+    })
+    .strict(),
+  z
+    .object({ kind: z.literal("correctness_invariant"), invariant: nonEmpty })
+    .strict(),
+]);
+
 const reviewProposalSchema = z
   .object({
     id: nonEmpty,
     summary: nonEmpty,
     evidence: nonEmpty,
-    basis: nonEmpty,
+    basis: reviewProposalBasisSchema,
+    requiredChange: nonEmpty.optional(),
+    acceptanceCriteria: z.array(nonEmpty).optional(),
     evidenceRef: nonEmpty.optional(),
   })
   .strict();
@@ -48,6 +69,7 @@ const reviewAdmissionSchema = z
   .object({
     proposalId: nonEmpty,
     disposition: z.enum(["admit", "defer", "demote", "reject"]),
+    certainty: z.enum(["certain", "uncertain"]),
     rationale: nonEmpty,
     findingId: nonEmpty.optional(),
   })
@@ -59,7 +81,7 @@ const deferredConcernSchema = z
     proposalId: nonEmpty,
     summary: nonEmpty,
     evidence: nonEmpty,
-    basis: nonEmpty,
+    basis: reviewProposalBasisSchema,
   })
   .strict();
 
@@ -209,6 +231,8 @@ export const canonicalReviewSchema = z
       .strict(),
     candidateId: nonEmpty.optional(),
     contextId: nonEmpty.optional(),
+    proposalBatchId: nonEmpty.optional(),
+    rawAdjudication: z.unknown().optional(),
     epoch: z.number().int().positive(),
     round: z.number().int().nonnegative(),
     proposals: z.array(reviewProposalSchema),
@@ -735,8 +759,7 @@ function invariantIssues(
       }
     }
     if (
-      (convergence.stage !== "initial_review" ||
-        convergence.proposals.length > 0) &&
+      !["initial_review", "admission"].includes(convergence.stage) &&
       admissionIds.size !== proposalIds.size
     ) {
       issues.push(

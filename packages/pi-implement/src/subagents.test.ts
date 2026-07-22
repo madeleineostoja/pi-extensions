@@ -120,6 +120,43 @@ describe("RuntimeSubagentClient", () => {
     expect(call.excludeTools).toContain("propose_papercut");
   });
 
+  it("forwards replacement prompts and an explicit no-tools admission policy", async () => {
+    const runtime = makeRuntime();
+    const pi = { __runtime: runtime };
+    const ctx = { cwd: "/repo", modelRegistry: { find: vi.fn() } };
+    const client = new RuntimeSubagentClient(
+      pi as never,
+      ctx as never,
+      "run-1",
+    );
+
+    await client.spawn({
+      type: "reviewer-model",
+      prompt: "admit",
+      description: "finding admission",
+      model: "reviewer/model",
+      thinking: "low",
+      role: "admission",
+      systemPrompt: "classify only",
+      systemPromptMode: "replace",
+      noTools: true,
+      excludeTools: ["read", "bash", "edit"],
+    });
+
+    expect(runtime.runManagedAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: expect.objectContaining({ role: "admission" }),
+        type: "reviewer-model",
+        model: "reviewer/model",
+        thinking: "low",
+        systemPrompt: "classify only",
+        systemPromptMode: "replace",
+        noTools: true,
+        excludeTools: ["read", "bash", "edit"],
+      }),
+    );
+  });
+
   it("keeps propose_papercut unavailable to write-capable managed workers", async () => {
     const runtime = makeRuntime();
     const pi = { __runtime: runtime };

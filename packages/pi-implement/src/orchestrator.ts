@@ -11,6 +11,8 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   buildAnchoredTaskReviewPrompt,
   buildInitialTaskReviewPrompt,
+  buildTaskFindingAdmissionPrompt,
+  FINDING_ADMISSION_SYSTEM_PROMPT,
   buildImplementerPrompt,
   buildIntegrationReviewerPrompt,
   buildIntegrationSelfHealPrompt,
@@ -67,7 +69,7 @@ import {
   type CandidateMetadata,
   type RestoreSnapshot,
 } from "./candidate.js";
-import type { SubagentClient } from "./subagents.js";
+import type { SubagentClient, SubagentResult } from "./subagents.js";
 import type { EffectiveRoles } from "./config.js";
 import {
   persistPapercutCandidates,
@@ -85,6 +87,7 @@ import {
   parseAnchoredReviewResult,
   parseImplementerResult,
   parseInitialReviewResult,
+  parseAdmissionResult,
   parseIntegrationSelfHealResult,
   parseOverallReworkResult,
 } from "./verdict.js";
@@ -105,6 +108,7 @@ import {
   anchoredReviewSchema,
   implementerResultSchema,
   initialTaskReviewSchema,
+  findingAdmissionBatchSchema,
   integrationAnchoredReviewSchema,
   integrationInitialReviewSchema,
   integrationSelfHealSchema,
@@ -113,6 +117,10 @@ import {
   sourceMaterialRepairSchema,
 } from "./result-schemas.js";
 import type { ImplementGraph } from "./graph.js";
+import {
+  createProposalBatchId,
+  evaluateFindingAdmission,
+} from "./finding-admission.js";
 import {
   applyAnchoredReview,
   applyNoopReview,
@@ -5996,15 +6004,52 @@ async function runTaskWorker(args: {
         verificationFailures: canonicalReview.verificationFailures,
       }
     : currentTaskReviewMetadata(deps.paths, taskId)?.convergence;
-  let reviewState = convergence?.state as ReviewConvergenceState | undefined;
+  const recoveringAdmission = canonicalReview?.stage === "admission";
+  let reviewState = recoveringAdmission
+    ? createReviewConvergenceState({
+        drafts: (canonicalReview?.proposals ?? []).map((proposal) => ({
+          proposalId: proposal.id,
+          summary: proposal.summary,
+          evidence: proposal.evidence,
+          requiredChange: proposal.requiredChange ?? proposal.summary,
+          acceptanceCriteria: proposal.acceptanceCriteria ?? [proposal.summary],
+        })),
+      })
+    : (convergence?.state as ReviewConvergenceState | undefined);
+  let reviewProposals = canonicalReview?.proposals ?? [];
+  let reviewAdmissions = recoveringAdmission
+    ? reviewState!.findings.map((finding) => ({
+        proposalId: finding.proposalId!,
+        disposition: "admit" as const,
+        certainty: "uncertain" as const,
+        rationale: "Recovered incomplete admission conservatively.",
+        findingId: finding.id,
+      }))
+    : (canonicalReview?.admissions ?? []);
+  let deferredConcerns = canonicalReview?.deferredConcerns ?? [];
+  let reviewObservationIds = canonicalReview?.observationIds ?? [];
+  let reviewProposalBatchId = canonicalReview?.proposalBatchId;
+  let reviewContextId = canonicalReview?.contextId;
+  let rawAdjudication = canonicalReview?.rawAdjudication;
   let reviewEpoch = convergence?.epoch ?? 1;
   let closedEpochs =
     currentTaskReviewMetadata(deps.paths, taskId)?.convergence?.closedEpochs ??
     [];
-  let previousCandidate = convergence?.previousCandidate;
+  let previousCandidate = recoveringAdmission
+    ? canonicalReview?.candidate.current
+    : convergence?.previousCandidate;
   let previousCandidatePatch = convergence?.previousCandidatePatch;
   let latestEvidence = convergence?.latestEvidence;
   let verificationFailures = convergence?.verificationFailures ?? [];
+  if (recoveringAdmission && reviewState) {
+    const recoveredReviewState = reviewState;
+    feedback ??= typedReviewerFeedback(
+      recoveredReviewState.findings,
+      recoveredReviewState.outstandingIds,
+      "Recovered incomplete finding admission conservatively.",
+      verificationFailures,
+    );
+  }
   let candidate: CandidateMetadata = {
     sourceBaseSha: schedulerTask?.sourceBaseSha ?? baseSha,
     candidateBaseSha: schedulerTask?.candidateBaseSha ?? baseSha,
@@ -6697,14 +6742,17 @@ async function runTaskWorker(args: {
         previous: previousCandidate,
         latestDeltaPaths: [],
       },
+      contextId: reviewContextId,
+      proposalBatchId: reviewProposalBatchId,
+      rawAdjudication,
       epoch: reviewEpoch,
       round: reviewState?.round ?? 0,
-      proposals: [],
-      admissions: [],
+      proposals: reviewProposals,
+      admissions: reviewAdmissions,
       findings: reviewState?.findings ?? [],
       outstandingFindingIds: reviewState?.outstandingIds ?? [],
-      deferredConcerns: [],
-      observationIds: [],
+      deferredConcerns,
+      observationIds: reviewObservationIds,
       bestOutstandingCount: reviewState?.bestOutstandingCount ?? 0,
       previousOutstandingCount: reviewState?.outstandingIds.length,
       consecutiveStalledRounds: reviewState?.consecutiveStalledRounds ?? 0,
@@ -6968,14 +7016,17 @@ async function runTaskWorker(args: {
                 previous: previousCandidate,
                 latestDeltaPaths: [],
               },
+              contextId: reviewContextId,
+              proposalBatchId: reviewProposalBatchId,
+              rawAdjudication,
               epoch: reviewEpoch,
               round: reviewState.round,
-              proposals: [],
-              admissions: [],
+              proposals: reviewProposals,
+              admissions: reviewAdmissions,
               findings: reviewState.findings,
               outstandingFindingIds: reviewState.outstandingIds,
-              deferredConcerns: [],
-              observationIds: [],
+              deferredConcerns,
+              observationIds: reviewObservationIds,
               bestOutstandingCount: reviewState.bestOutstandingCount,
               consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
               evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
@@ -6992,7 +7043,9 @@ async function runTaskWorker(args: {
             );
           }
         } else {
-          const parsedReview = parseInitialReviewResult(review.result);
+          const parsedReview = parseInitialReviewResult(review.result, {
+            requireProposalBasis: true,
+          });
           if (!parsedReview.ok) {
             recordSystemFailure(
               task.index,
@@ -7003,12 +7056,252 @@ async function runTaskWorker(args: {
             reviewerSystemFailures++;
             continue reviewerLoop;
           }
-          reviewState = createReviewConvergenceState({
-            drafts:
-              parsedReview.result.verdict === "changes_requested"
-                ? parsedReview.result.findings
-                : [],
-          });
+          const proposals =
+            parsedReview.result.verdict === "changes_requested"
+              ? parsedReview.result.findings
+              : [];
+          if (proposals.length === 0) {
+            reviewProposals = [];
+            reviewAdmissions = [];
+            reviewState = createReviewConvergenceState({ drafts: [] });
+          } else {
+            const proposalBatchId = createProposalBatchId({
+              scope: "task",
+              contextId: responsibilityContext.contextId,
+              candidateIdentity,
+              latestDeltaPaths,
+              proposals,
+            });
+            reviewProposals = proposals.map((proposal) => ({
+              id: proposal.proposalId,
+              summary: proposal.summary,
+              evidence: proposal.evidence,
+              basis: proposal.basis,
+              requiredChange: proposal.requiredChange,
+              acceptanceCriteria: proposal.acceptanceCriteria,
+            }));
+            reviewProposalBatchId = proposalBatchId;
+            reviewContextId = responsibilityContext.contextId;
+            rawAdjudication = undefined;
+            if (deps.paths) {
+              persistTaskArtifact(
+                deps.paths,
+                taskId,
+                "proposal-batch.json",
+                JSON.stringify(
+                  {
+                    proposalBatchId,
+                    contextId: responsibilityContext.contextId,
+                    candidateIdentity,
+                    latestDeltaPaths,
+                    proposals,
+                  },
+                  null,
+                  2,
+                ),
+              );
+            }
+            await persistCanonicalReviewConvergence(deps, taskId, {
+              stage: "admission",
+              candidate: {
+                current: candidateIdentity,
+                previous: previousCandidate,
+                latestDeltaPaths,
+              },
+              contextId: responsibilityContext.contextId,
+              proposalBatchId,
+              rawAdjudication,
+              epoch: reviewEpoch,
+              round: 0,
+              proposals: reviewProposals,
+              admissions: [],
+              findings: [],
+              outstandingFindingIds: [],
+              deferredConcerns: [],
+              observationIds: [],
+              bestOutstandingCount: 0,
+              consecutiveStalledRounds: 0,
+              evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
+              previousCandidatePatch,
+              latestEvidence,
+              verificationFailures,
+            });
+            const admissionPrompt = buildTaskFindingAdmissionPrompt({
+              compiledContract,
+              responsibilityContext,
+              selectedTaskId: compiledContractEntry.id,
+              candidateIdentity,
+              latestDeltaPaths,
+              proposalBatchId,
+              proposals,
+            });
+            if (deps.paths) {
+              persistTaskArtifact(
+                deps.paths,
+                taskId,
+                "adjudicator-prompt.md",
+                admissionPrompt,
+              );
+            }
+            let admissionResult: SubagentResult;
+            let admissionId: string | undefined;
+            try {
+              admissionId = await deps.subagents.spawn({
+                type: deps.roles.reviewer.type,
+                ownerRole: "admission",
+                prompt: admissionPrompt,
+                description: `admit task ${task.index}/${plan.tasks.length} findings: ${shortTask(task.text)}`,
+                model: deps.roles.reviewer.model,
+                thinking: "low",
+                role: "admission",
+                taskId,
+                cwd: effectiveWorktreePath,
+                systemPrompt: FINDING_ADMISSION_SYSTEM_PROMPT,
+                systemPromptMode: "replace",
+                noTools: true,
+                excludeTools: [
+                  "read",
+                  "bash",
+                  "grep",
+                  "find",
+                  "ls",
+                  "explore",
+                  "lsp",
+                  "edit",
+                  "write",
+                  "Agent",
+                  "get_subagent_result",
+                  "steer_subagent",
+                  "propose_papercut",
+                ],
+                completion: {
+                  description: "Submit finding admission dispositions.",
+                  schema: findingAdmissionBatchSchema,
+                },
+              });
+              const admissionRef: AgentDisplayRef = {
+                id: admissionId,
+                role: "admission",
+                label: `Task ${task.index}/${plan.tasks.length} finding admission · ${shortTask(task.text)}`,
+                startedAt: new Date().toISOString(),
+                taskId,
+                taskIndex: task.index,
+                taskTotal: plan.tasks.length,
+                taskTitle: shortTask(task.text),
+              };
+              setSchedulerActiveAgent(schedulerTask, admissionRef);
+              deps.updateState((prev) =>
+                addActiveAgentPatch(prev, admissionRef),
+              );
+              admissionResult = await deps.subagents.waitFor(
+                admissionId,
+                deps.signal,
+              );
+            } catch (error) {
+              admissionResult = {
+                status: "failed",
+                error: `Adjudicator unavailable: ${error instanceof Error ? error.message : String(error)}`,
+              };
+            } finally {
+              if (admissionId) {
+                clearSchedulerActiveAgent(schedulerTask, admissionId);
+                deps.updateState((prev) =>
+                  removeActiveAgentPatch(prev, admissionId!),
+                );
+              }
+            }
+            if (deps.paths) {
+              persistTaskArtifact(
+                deps.paths,
+                taskId,
+                "adjudicator-result.json",
+                JSON.stringify(admissionResult, null, 2),
+              );
+            }
+            const parsedAdmission =
+              admissionResult.status === "completed"
+                ? parseAdmissionResult(admissionResult.result)
+                : undefined;
+            rawAdjudication = admissionResult;
+            const admission = evaluateFindingAdmission({
+              scope: "task",
+              proposalBatchId,
+              proposals,
+              knownRequirementIds: responsibilityContext.requirements.map(
+                (requirement) => requirement.id,
+              ),
+              ...(parsedAdmission?.ok
+                ? { adjudication: parsedAdmission.result }
+                : {
+                    failureReason:
+                      admissionResult.status === "completed"
+                        ? `Adjudication completion was malformed: ${parsedAdmission?.reason ?? "unknown error"}`
+                        : `Adjudication ${admissionResult.status}: ${admissionResult.error}`,
+                  }),
+            });
+            reviewState = createReviewConvergenceState({
+              drafts: admission.admittedDrafts,
+            });
+            const findingIds = new Map(
+              reviewState.findings.map((finding) => [
+                finding.proposalId,
+                finding.id,
+              ]),
+            );
+            reviewAdmissions = admission.admissions.map((entry) => ({
+              proposalId: entry.proposalId,
+              disposition: entry.disposition,
+              certainty: entry.certainty,
+              rationale: entry.rationale,
+              ...(entry.disposition === "admit"
+                ? { findingId: findingIds.get(entry.proposalId)! }
+                : {}),
+            }));
+            deferredConcerns = admission.deferredConcerns.map((proposal) => ({
+              id: `D-${proposal.proposalId}`,
+              proposalId: proposal.proposalId,
+              summary: proposal.summary,
+              evidence: proposal.evidence,
+              basis: proposal.basis,
+            }));
+            reviewObservationIds = admission.observations.map(
+              (_observation, index) => `O-${index + 1}`,
+            );
+            await persistCanonicalReviewConvergence(deps, taskId, {
+              stage:
+                reviewState.outstandingIds.length > 0 ? "rework" : "approved",
+              candidate: {
+                current: candidateIdentity,
+                previous: previousCandidate,
+                latestDeltaPaths,
+              },
+              contextId: responsibilityContext.contextId,
+              proposalBatchId,
+              rawAdjudication,
+              epoch: reviewEpoch,
+              round: reviewState.round,
+              proposals: reviewProposals,
+              admissions: reviewAdmissions,
+              findings: reviewState.findings,
+              outstandingFindingIds: reviewState.outstandingIds,
+              deferredConcerns,
+              observationIds: reviewObservationIds,
+              bestOutstandingCount: reviewState.bestOutstandingCount,
+              consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
+              evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
+              previousCandidatePatch,
+              latestEvidence,
+              verificationFailures,
+            });
+            if (deps.paths) {
+              persistTaskArtifact(
+                deps.paths,
+                taskId,
+                "admission-transition.json",
+                JSON.stringify({ rawAdjudication, admission }, null, 2),
+              );
+            }
+          }
         }
         await recordPapercuts(deps, review.result, "reviewer", taskId);
 
@@ -7035,14 +7328,17 @@ async function runTaskWorker(args: {
               previous: previousCandidate,
               latestDeltaPaths: [],
             },
+            contextId: reviewContextId,
+            proposalBatchId: reviewProposalBatchId,
+            rawAdjudication,
             epoch: reviewEpoch,
             round: reviewState.round,
-            proposals: [],
-            admissions: [],
+            proposals: reviewProposals,
+            admissions: reviewAdmissions,
             findings: reviewState.findings,
             outstandingFindingIds: reviewState.outstandingIds,
-            deferredConcerns: [],
-            observationIds: [],
+            deferredConcerns,
+            observationIds: reviewObservationIds,
             bestOutstandingCount: reviewState.bestOutstandingCount,
             consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
             evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
@@ -7093,14 +7389,17 @@ async function runTaskWorker(args: {
         latestDeltaPaths: [],
       },
       candidateId: undefined,
+      contextId: reviewContextId,
+      proposalBatchId: reviewProposalBatchId,
+      rawAdjudication,
       epoch: reviewEpoch,
       round: reviewState.round,
-      proposals: [],
-      admissions: [],
+      proposals: reviewProposals,
+      admissions: reviewAdmissions,
       findings: reviewState.findings,
       outstandingFindingIds: reviewState.outstandingIds,
-      deferredConcerns: [],
-      observationIds: [],
+      deferredConcerns,
+      observationIds: reviewObservationIds,
       bestOutstandingCount: reviewState.bestOutstandingCount,
       consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
       evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
