@@ -5,6 +5,7 @@ import type {
   ReviewFindingDraft,
   ReviewFindingProposal,
   ReviewObservation,
+  DeferredConcernAssessment,
 } from "./result-schemas.js";
 import { validateAssessmentCoverage } from "./review-convergence.js";
 
@@ -34,6 +35,11 @@ export type InitialReviewResult =
       verdict: "changes_requested";
       findings: Array<ReviewFindingProposal & { proposalId: string }>;
       recommendationMarkdown?: string;
+      deferredConcernAssessments?: DeferredConcernAssessment[];
+    }
+  | {
+      verdict: "approved";
+      deferredConcernAssessments?: DeferredConcernAssessment[];
     };
 
 export type AdmissionResult = FindingAdmissionBatch;
@@ -175,6 +181,7 @@ export function parseInitialReviewResult(
   options?: {
     allowRecommendationMarkdown?: boolean;
     requireProposalBasis?: boolean;
+    deferredConcernIds?: readonly string[];
   },
 ): { ok: true; result: InitialReviewResult } | { ok: false; reason: string } {
   if (!isRecord(value)) {
@@ -194,7 +201,22 @@ export function parseInitialReviewResult(
           "Initial approved review cannot include findings or recommendationMarkdown.",
       };
     }
-    return { ok: true, result: { verdict: "approved" } };
+    const deferredConcernAssessments = parseDeferredConcernAssessments(
+      value.deferredConcernAssessments,
+      options?.deferredConcernIds,
+    );
+    if (!deferredConcernAssessments.ok) {
+      return deferredConcernAssessments;
+    }
+    return {
+      ok: true,
+      result: {
+        verdict: "approved",
+        ...(deferredConcernAssessments.result.length > 0
+          ? { deferredConcernAssessments: deferredConcernAssessments.result }
+          : {}),
+      },
+    };
   }
   if (value.verdict !== "changes_requested") {
     return {
@@ -246,10 +268,110 @@ export function parseInitialReviewResult(
     }
     recommendationMarkdown = value.recommendationMarkdown.trim();
   }
+  const deferredConcernAssessments = parseDeferredConcernAssessments(
+    value.deferredConcernAssessments,
+    options?.deferredConcernIds,
+    findings.map((finding) => finding.proposalId),
+  );
+  if (!deferredConcernAssessments.ok) {
+    return deferredConcernAssessments;
+  }
   return {
     ok: true,
-    result: { verdict: "changes_requested", findings, recommendationMarkdown },
+    result: {
+      verdict: "changes_requested",
+      findings,
+      recommendationMarkdown,
+      ...(deferredConcernAssessments.result.length > 0
+        ? { deferredConcernAssessments: deferredConcernAssessments.result }
+        : {}),
+    },
   };
+}
+
+function parseDeferredConcernAssessments(
+  value: unknown,
+  expectedIds: readonly string[] | undefined,
+  proposalIds: readonly string[] = [],
+):
+  | { ok: true; result: DeferredConcernAssessment[] }
+  | { ok: false; reason: string } {
+  if (expectedIds === undefined) {
+    if (value !== undefined) {
+      return {
+        ok: false,
+        reason: "Deferred concern assessments are not allowed for this review.",
+      };
+    }
+    return { ok: true, result: [] };
+  }
+  if (!Array.isArray(value)) {
+    return expectedIds.length === 0
+      ? { ok: true, result: [] }
+      : {
+          ok: false,
+          reason: "Overall review must assess every supplied deferred concern.",
+        };
+  }
+  const expected = new Set(expectedIds);
+  const seen = new Set<string>();
+  const assessments: DeferredConcernAssessment[] = [];
+  for (const assessment of value) {
+    if (
+      !isRecord(assessment) ||
+      !isNonEmptyString(assessment.id) ||
+      ![
+        "not_reproducible",
+        "covered_by_proposal",
+        "observed_non_blocking",
+      ].includes(String(assessment.status)) ||
+      !isNonEmptyString(assessment.evidence)
+    ) {
+      return {
+        ok: false,
+        reason:
+          "Each deferred concern assessment requires an ID, status, and evidence.",
+      };
+    }
+    const id = assessment.id.trim();
+    if (!expected.has(id) || seen.has(id)) {
+      return {
+        ok: false,
+        reason: `Overall review deferred concern coverage includes unknown or duplicate ID: ${id}`,
+      };
+    }
+    const proposalId = isNonEmptyString(assessment.proposalId)
+      ? assessment.proposalId.trim()
+      : undefined;
+    if (assessment.status === "covered_by_proposal") {
+      if (!proposalId || !proposalIds.includes(proposalId)) {
+        return {
+          ok: false,
+          reason: `Deferred concern ${id} must link to a proposal in this completion.`,
+        };
+      }
+    } else if (proposalId) {
+      return {
+        ok: false,
+        reason: `Deferred concern ${id} may link a proposal only when covered_by_proposal.`,
+      };
+    }
+    seen.add(id);
+    assessments.push({
+      id,
+      status: assessment.status as DeferredConcernAssessment["status"],
+      ...(proposalId ? { proposalId } : {}),
+      evidence: assessment.evidence.trim(),
+    });
+  }
+  const missing = expectedIds.filter((id) => !seen.has(id));
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: `Overall review omitted deferred concern IDs: ${missing.join(", ")}`,
+    };
+  }
+  return { ok: true, result: assessments };
 }
 
 export function parseAdmissionResult(

@@ -204,14 +204,39 @@ export const findingAssessmentSchema = Type.Object({
   evidence: nonEmptyString(),
 });
 
+export const deferredConcernAssessmentSchema = Type.Object({
+  id: nonEmptyString(),
+  status: Type.Union([
+    Type.Literal("not_reproducible"),
+    Type.Literal("covered_by_proposal"),
+    Type.Literal("observed_non_blocking"),
+  ]),
+  proposalId: Type.Optional(nonEmptyString()),
+  evidence: nonEmptyString(),
+});
+
 const initialReviewSchema = (allowRecommendationMarkdown: boolean) =>
   Type.Union([
-    closedWithPapercuts({ verdict: Type.Literal("approved") }),
+    closedWithPapercuts({
+      verdict: Type.Literal("approved"),
+      ...(allowRecommendationMarkdown
+        ? {
+            deferredConcernAssessments: Type.Optional(
+              Type.Array(deferredConcernAssessmentSchema),
+            ),
+          }
+        : {}),
+    }),
     closedWithPapercuts({
       verdict: Type.Literal("changes_requested"),
-      findings: Type.Array(reviewFindingDraftSchema, { minItems: 1 }),
+      findings: Type.Array(reviewFindingProposalSchema, { minItems: 1 }),
       ...(allowRecommendationMarkdown
-        ? { recommendationMarkdown: Type.Optional(nonEmptyString()) }
+        ? {
+            recommendationMarkdown: Type.Optional(nonEmptyString()),
+            deferredConcernAssessments: Type.Optional(
+              Type.Array(deferredConcernAssessmentSchema),
+            ),
+          }
         : {}),
     }),
   ]);
@@ -286,6 +311,9 @@ export type RegressionFindingDraft = Static<
 >;
 export type ReviewObservation = Static<typeof reviewObservationSchema>;
 export type FindingAssessment = Static<typeof findingAssessmentSchema>;
+export type DeferredConcernAssessment = Static<
+  typeof deferredConcernAssessmentSchema
+>;
 export type InitialTaskReviewCompletion = Static<
   typeof initialTaskReviewSchema
 >;

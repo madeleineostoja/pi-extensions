@@ -189,6 +189,12 @@ Submit the result through the injected completion tool as your final action.
 export function buildIntegrationReviewerPrompt(args: {
   diff: string;
   planArtifacts: string[];
+  deferredConcerns?: Array<{
+    id: string;
+    summary: string;
+    evidence: string;
+    basis: unknown;
+  }>;
   outstandingFindings?: Array<{
     id: string;
     summary: string;
@@ -200,9 +206,12 @@ export function buildIntegrationReviewerPrompt(args: {
   const anchored = args.outstandingFindings
     ? `\n## Outstanding Integration Findings\n\n${args.outstandingFindings.map((finding) => `- ${finding.id}: ${finding.summary}\n  Evidence: ${finding.evidence}\n  Required change: ${finding.requiredChange}\n  Acceptance: ${finding.acceptanceCriteria.join("; ")}`).join("\n")}\n`
     : "";
+  const deferred = args.deferredConcerns?.length
+    ? `\n## Deferred Concerns\n\n${args.deferredConcerns.map((concern) => `- ${concern.id}: ${concern.summary}\n  Evidence: ${concern.evidence}\n  Basis: ${JSON.stringify(concern.basis)}`).join("\n")}\n`
+    : "";
   const resultProtocol = args.outstandingFindings
-    ? "Return an anchored assessment for every outstanding ID exactly once, attributable regressions caused by the staged delta, and optional observations."
-    : "Return approved or changes_requested with atomic typed findings.";
+    ? "Return an anchored assessment for every outstanding ID exactly once, attributable regression proposals caused by the staged delta, and optional observations."
+    : "Return approved or changes_requested with atomic proposal findings. Each proposal needs summary, evidence, requiredChange, acceptanceCriteria, and a grounded basis: requirement, candidate_regression, or correctness_invariant. Findings are proposals until separately admitted.";
   return `Review this integrated task diff on the main checkout.
 
 No command validation is configured or auto-detected. Decide whether the integrated diff is safe to commit.
@@ -210,7 +219,7 @@ No command validation is configured or auto-detected. Decide whether the integra
 Do not edit files, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, or run any command that changes files or git state. Use read-only commands only.
 
 Plan artifacts are not part of the implementation commit and should be ignored: ${args.planArtifacts.join(", ")}
-${anchored}
+${anchored}${deferred}
 ## Staged Diff
 
 \`\`\`diff
@@ -539,6 +548,46 @@ export function buildInitialTaskReviewPrompt(args: {
 
 export const FINDING_ADMISSION_SYSTEM_PROMPT = `You classify only the supplied review proposals. Do not inspect the repository, use tools, discover findings, rewrite proposals, choose an implementation design, or reject a proposal when uncertain. Return exactly one disposition for each supplied proposal ID and echo the supplied proposalBatchId. Mark uncertainty explicitly as uncertain.`;
 
+export function buildFindingAdmissionPrompt(args: {
+  scope: "task" | "overall" | "integration";
+  compiledContract: string;
+  requirementIds: Array<{ id: string; text: string }>;
+  candidateIdentity: string;
+  latestDeltaPaths: readonly string[];
+  proposalBatchId: string;
+  proposals: readonly {
+    proposalId: string;
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+    basis: unknown;
+  }[];
+  responsibilityContext?: ReviewResponsibilityContext;
+  selectedTaskId?: string;
+}): string {
+  return `Classify the supplied ${args.scope}-review proposals against the supplied evidence only. Return the exact proposalBatchId and one certain or uncertain disposition (admit, defer, demote, or reject) for every proposal. Do not add proposals. If uncertain, use certainty: uncertain; uncertainty is never a reason to reject.${args.scope === "overall" ? " Overall concerns cannot be deferred; use admit instead." : ""}
+
+## Proposal Batch
+
+proposalBatchId: ${args.proposalBatchId}
+Candidate identity: ${args.candidateIdentity}
+Latest delta paths: ${args.latestDeltaPaths.join(", ") || "none"}
+
+## Contract
+
+${args.compiledContract}
+
+## Requirement IDs
+
+${args.requirementIds.map((requirement) => `- ${requirement.id}: ${requirement.text}`).join("\n") || "No stable requirement IDs are available; classify only against supplied invariants and candidate regressions."}
+
+${args.responsibilityContext ? `## Responsibility Context\n\n${buildResponsibilitySection({ responsibilityContext: args.responsibilityContext, selectedTaskId: args.selectedTaskId })}\n` : ""}
+## Proposals
+
+${args.proposals.map((proposal) => `### ${proposal.proposalId}\nSummary: ${proposal.summary}\nEvidence: ${proposal.evidence}\nRequired change: ${proposal.requiredChange}\nAcceptance: ${proposal.acceptanceCriteria.join("; ")}\nBasis: ${JSON.stringify(proposal.basis)}`).join("\n\n")}`;
+}
+
 export function buildTaskFindingAdmissionPrompt(args: {
   compiledContract: string;
   responsibilityContext: ReviewResponsibilityContext;
@@ -555,32 +604,19 @@ export function buildTaskFindingAdmissionPrompt(args: {
     basis: unknown;
   }[];
 }): string {
-  const requirements = args.responsibilityContext.requirements.filter(
-    (requirement) => requirement.taskId === args.selectedTaskId,
-  );
-  return `Classify the supplied task-review proposals against the supplied evidence only. Return the exact proposalBatchId and one certain or uncertain disposition (admit, defer, demote, or reject) for every proposal. Do not add proposals. If uncertain, use certainty: uncertain; uncertainty is never a reason to reject.
-
-## Proposal Batch
-
-proposalBatchId: ${args.proposalBatchId}
-Candidate identity: ${args.candidateIdentity}
-Latest delta paths: ${args.latestDeltaPaths.join(", ") || "none"}
-
-## Contract
-
-${args.compiledContract}
-
-## Requirement IDs
-
-${requirements.map((requirement) => `- ${requirement.id}: ${requirement.text}`).join("\n")}
-
-## Responsibility Context
-
-${buildResponsibilitySection({ responsibilityContext: args.responsibilityContext, selectedTaskId: args.selectedTaskId })}
-
-## Proposals
-
-${args.proposals.map((proposal) => `### ${proposal.proposalId}\nSummary: ${proposal.summary}\nEvidence: ${proposal.evidence}\nRequired change: ${proposal.requiredChange}\nAcceptance: ${proposal.acceptanceCriteria.join("; ")}\nBasis: ${JSON.stringify(proposal.basis)}`).join("\n\n")}`;
+  return buildFindingAdmissionPrompt({
+    scope: "task",
+    compiledContract: args.compiledContract,
+    requirementIds: args.responsibilityContext.requirements.filter(
+      (requirement) => requirement.taskId === args.selectedTaskId,
+    ),
+    candidateIdentity: args.candidateIdentity,
+    latestDeltaPaths: args.latestDeltaPaths,
+    proposalBatchId: args.proposalBatchId,
+    proposals: args.proposals,
+    responsibilityContext: args.responsibilityContext,
+    selectedTaskId: args.selectedTaskId,
+  });
 }
 
 export function buildAnchoredTaskReviewPrompt(args: {
@@ -601,6 +637,15 @@ export function buildInitialOverallReviewPrompt(args: {
   planContext: string;
   candidateContext: string;
   worktreePath?: string;
+  deferredConcerns?: Array<{
+    id: string;
+    summary: string;
+    evidence: string;
+    basis: unknown;
+    sourceScope?: string;
+    sourceCandidate?: string;
+    rationale?: string;
+  }>;
 }): string {
   return `${buildInitialReviewPrompt({
     scope: "overall",
@@ -608,6 +653,8 @@ export function buildInitialOverallReviewPrompt(args: {
     worktreePath: args.worktreePath ?? "the main checkout",
     candidateContext: args.candidateContext,
   })}
+
+${args.deferredConcerns?.length ? `## Deferred Concerns to Assess\n\nThese are advisory leads, not blockers by themselves. Assess every supplied ID exactly once as not_reproducible, covered_by_proposal (link a proposal from this completion), or observed_non_blocking.\n\n${args.deferredConcerns.map((concern) => `- ${concern.id} [${concern.sourceScope ?? "task"}]${concern.sourceCandidate ? ` @ ${concern.sourceCandidate}` : ""}: ${concern.summary}\n  Evidence: ${concern.evidence}\n  Rationale: ${concern.rationale ?? "Deferred for whole-feature review."}`).join("\n")}` : ""}
 
 Review the complete feature against the original human plan, corpus, execution manifest, landed tasks, and full feature diff. This is review only: do not edit files, change Git state, install dependencies, or run write-producing commands.`;
 }

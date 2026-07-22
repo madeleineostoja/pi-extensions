@@ -114,6 +114,30 @@ describe("finding admission", () => {
     }
   });
 
+  it("turns overall deferrals into admitted blockers", () => {
+    const result = evaluateFindingAdmission({
+      scope: "overall",
+      proposalBatchId: batchId,
+      proposals: [proposal("P1")],
+      knownRequirementIds: ["T001-AC01"],
+      adjudication: {
+        proposalBatchId: batchId,
+        dispositions: [
+          {
+            proposalId: "P1",
+            disposition: "defer",
+            certainty: "certain",
+            rationale: "needs whole feature review",
+          },
+        ],
+      },
+    });
+    expect(result.admittedDrafts.map((draft) => draft.proposalId)).toEqual([
+      "P1",
+    ]);
+    expect(result.deferredConcerns).toEqual([]);
+  });
+
   it("binds the batch to scope, candidate, context, delta, and normalized proposals", () => {
     const base = {
       scope: "task" as const,

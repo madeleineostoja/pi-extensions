@@ -77,6 +77,22 @@ describe("managed completion schemas", () => {
     ).toBe(true);
   });
 
+  it("requires proposal bases for initial overall and integration review findings", () => {
+    const finding = {
+      summary: "Missing validation",
+      evidence: "src/api.ts accepts invalid input",
+      requiredChange: "Validate the input",
+      acceptanceCriteria: ["Invalid input is rejected"],
+      basis: { kind: "requirement", requirementIds: ["T001-AC01"] },
+    };
+    expect(
+      Value.Check(initialOverallReviewSchema, {
+        verdict: "changes_requested",
+        findings: [finding],
+      }),
+    ).toBe(true);
+  });
+
   it("requires complete, certain-or-uncertain admission dispositions", () => {
     expect(
       Value.Check(findingAdmissionBatchSchema, {

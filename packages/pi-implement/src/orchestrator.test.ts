@@ -1113,6 +1113,10 @@ describe("runImplementation", () => {
     subagents.results = [
       { status: "completed", result: GOOD_IMPL },
       { status: "completed", result: GOOD_REVIEW },
+      {
+        status: "completed",
+        result: { proposalBatchId: "stale", dispositions: [] },
+      },
       { status: "completed", result: GOOD_REWORK },
       { status: "completed", result: UNRESOLVED_OVERALL_REVIEW },
       { status: "completed", result: GOOD_REWORK },

@@ -468,6 +468,23 @@ describe("typed review protocol prompts", () => {
       }),
     ).toContain("advisory recommendationMarkdown");
     expect(
+      buildInitialOverallReviewPrompt({
+        planContext: "# Plan",
+        candidateContext: "combined diff",
+        deferredConcerns: [
+          {
+            id: "D-P1",
+            summary: "Cross-task concern",
+            evidence: "task evidence",
+            basis: { kind: "correctness_invariant", invariant: "safe" },
+            sourceScope: "task",
+            sourceCandidate: "candidate-a",
+            rationale: "Needs full feature context",
+          },
+        ],
+      }),
+    ).toContain("Assess every supplied ID exactly once");
+    expect(
       buildAnchoredOverallReviewPrompt({
         planContext: "# Plan",
         candidateContext: "combined diff",

@@ -82,6 +82,9 @@ const deferredConcernSchema = z
     summary: nonEmpty,
     evidence: nonEmpty,
     basis: reviewProposalBasisSchema,
+    sourceScope: z.enum(["task", "integration"]).optional(),
+    sourceCandidate: nonEmpty.optional(),
+    rationale: nonEmpty.optional(),
   })
   .strict();
 
