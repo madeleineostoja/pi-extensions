@@ -7,6 +7,7 @@ import {
   buildStatusLine,
   formatCacheHitRate,
   formatContextPercent,
+  hasPrivateUseGlyph,
   sanitizeStatusText,
 } from "./format.js";
 
@@ -200,8 +201,11 @@ describe("status line sanitization", () => {
   it("preserves SGR-colored statuses and mutes plain statuses", () => {
     const coloredTheme = makeSpyTheme();
     expect(
-      buildStatusLine(new Map([["k", "\x1b[31mcolored\x1b[0m"]]), coloredTheme),
-    ).toBe("\x1b[31mcolored\x1b[0m");
+      buildStatusLine(
+        new Map([["k", "\x1b[31m colored\x1b[0m"]]),
+        coloredTheme,
+      ),
+    ).toBe("\x1b[31m colored\x1b[0m");
     expect(coloredTheme.calls).toHaveLength(0);
 
     const plainTheme = makeSpyTheme();
@@ -211,6 +215,18 @@ describe("status line sanitization", () => {
       color: "muted",
       text: "readonly",
     });
+  });
+
+  it("adds a generic icon only to statuses without a private-use glyph", () => {
+    expect(hasPrivateUseGlyph("󰏯 readonly")).toBe(true);
+    expect(hasPrivateUseGlyph("codex 33% wk")).toBe(false);
+
+    expect(
+      buildStatusLine(new Map([["codex", "codex 33% wk"]]), makePlainTheme()),
+    ).toBe(" codex 33% wk");
+    expect(
+      buildStatusLine(new Map([["readonly", "󰏯 readonly"]]), makePlainTheme()),
+    ).toBe("󰏯 readonly");
   });
 
   it("prioritizes common extension statuses before sorting unknown keys", () => {

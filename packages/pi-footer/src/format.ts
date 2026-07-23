@@ -184,6 +184,14 @@ export function hasAnsi(text: string): boolean {
   return text.includes("\x1b");
 }
 
+const PRIVATE_USE_GLYPH_PATTERN =
+  /[\u{e000}-\u{f8ff}\u{f0000}-\u{ffffd}\u{100000}-\u{10fffd}]/u;
+const GENERIC_STATUS_ICON = "";
+
+export function hasPrivateUseGlyph(text: string): boolean {
+  return PRIVATE_USE_GLYPH_PATTERN.test(text);
+}
+
 const STATUS_ORDER = new Map([
   ["pi-implement.status", 0],
   ["pi-papercuts.status", 1],
@@ -203,7 +211,13 @@ export function buildStatusLine(
     })
     .map(([, text]) => {
       const sanitized = sanitizeStatusText(text);
-      return hasAnsi(sanitized) ? sanitized : theme.fg("muted", sanitized);
+      const styled = hasAnsi(sanitized)
+        ? sanitized
+        : theme.fg("muted", sanitized);
+      if (!sanitized || hasPrivateUseGlyph(sanitized)) {
+        return styled;
+      }
+      return `${theme.fg("muted", GENERIC_STATUS_ICON)} ${styled}`;
     });
   return sorted.join("  ");
 }
