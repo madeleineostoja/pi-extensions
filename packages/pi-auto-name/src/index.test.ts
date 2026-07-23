@@ -39,6 +39,7 @@ function makeFakePi() {
     ((event: unknown, ctx: ExtensionContext) => unknown)[]
   >();
   let sessionName: string | undefined;
+  const getSessionName = vi.fn(() => sessionName);
   const setSessionName = vi.fn((name: string) => {
     sessionName = name;
   });
@@ -50,16 +51,17 @@ function makeFakePi() {
     ) => {
       handlers.set(event, [...(handlers.get(event) || []), handler]);
     },
-    getSessionName: () => sessionName,
+    getSessionName,
     setSessionName,
   } as unknown as ExtensionAPI;
 
   registerExtension(pi);
-  return { handlers, setSessionName };
+  return { handlers, getSessionName, setSessionName };
 }
 
 function makeExtensionCtx(options?: {
   model?: Record<string, unknown> | undefined;
+  mode?: ExtensionContext["mode"];
 }) {
   const notifications: { message: string; type?: "info" | "warning" }[] = [];
   const model = options?.model ?? {
@@ -67,7 +69,7 @@ function makeExtensionCtx(options?: {
     id: "openai/gpt-oss-20b",
   };
   const ctx = {
-    mode: "tui",
+    mode: options?.mode ?? "tui",
     ui: {
       notify: (message: string, type?: "info" | "warning") => {
         notifications.push({ message, type });
@@ -121,6 +123,54 @@ describe("automatic session naming", () => {
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
     vi.clearAllMocks();
+  });
+
+  it("does not run in managed print-mode sessions", async () => {
+    const { handlers, getSessionName, setSessionName } = makeFakePi();
+    const { ctx } = makeExtensionCtx({ mode: "print" });
+    const beforeAgentStart = getBeforeAgentStartHandler(handlers);
+
+    await beforeAgentStart({ prompt: "Implement a plan task" }, ctx);
+    await flushPromises();
+
+    expect(completeTextMock).not.toHaveBeenCalled();
+    expect(getSessionName).not.toHaveBeenCalled();
+    expect(setSessionName).not.toHaveBeenCalled();
+  });
+
+  it("discards a pending title when its session shuts down", async () => {
+    const { handlers, getSessionName, setSessionName } = makeFakePi();
+    const { ctx, notifications } = makeExtensionCtx();
+    const beforeAgentStart = getBeforeAgentStartHandler(handlers);
+    const sessionShutdown = handlers.get("session_shutdown")?.[0];
+    if (!sessionShutdown) {
+      throw new Error("session_shutdown handler was not registered");
+    }
+    let resolveComplete: (value: unknown) => void = () => {};
+    completeTextMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveComplete = resolve;
+      }),
+    );
+
+    await beforeAgentStart({ prompt: "Implement a plan task" }, ctx);
+    const requestSignal = completeTextMock.mock.calls[0][2]
+      .signal as AbortSignal;
+    await sessionShutdown({}, ctx);
+    getSessionName.mockImplementation(() => {
+      throw new Error("stale extension context");
+    });
+    resolveComplete({
+      ok: true,
+      text: "Implement plan task",
+      stopReason: "stop",
+    });
+    await flushPromises();
+
+    expect(requestSignal.aborted).toBe(true);
+    expect(getSessionName).toHaveBeenCalledTimes(1);
+    expect(setSessionName).not.toHaveBeenCalled();
+    expect(notifications).toEqual([]);
   });
 
   it("does not start competing title generations from later prompts", async () => {

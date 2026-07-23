@@ -12,6 +12,8 @@ export default function (pi: ExtensionAPI) {
   const titlePromptsThisSession: string[] = [];
   let warnedThisSession = false;
   let attemptedThisSession = false;
+  let sessionGeneration = 0;
+  let titleAbortController: AbortController | undefined;
 
   function maybeWarn(ctx: ExtensionContext, message: string) {
     if (warnedThisSession) {
@@ -24,12 +26,25 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async () => {
+    sessionGeneration++;
+    titleAbortController?.abort();
+    titleAbortController = undefined;
     titlePromptsThisSession.length = 0;
     warnedThisSession = false;
     attemptedThisSession = false;
   });
 
+  pi.on("session_shutdown", async () => {
+    sessionGeneration++;
+    titleAbortController?.abort();
+    titleAbortController = undefined;
+  });
+
   pi.on("before_agent_start", async (event, ctx) => {
+    if (ctx.mode === "print") {
+      return;
+    }
+
     const prompt = event.prompt?.trim();
 
     if (pi.getSessionName()) {
@@ -47,12 +62,23 @@ export default function (pi: ExtensionAPI) {
     attemptedThisSession = true;
 
     const agentDir = getAgentDir();
+    const generation = sessionGeneration;
+    const abortController = new AbortController();
+    titleAbortController = abortController;
+    const signal = ctx.signal
+      ? AbortSignal.any([ctx.signal, abortController.signal])
+      : abortController.signal;
+
     void generateNameAsync(
       ctx,
       agentDir,
       [...titlePromptsThisSession],
-      maybeWarn,
+      signal,
     ).then((result) => {
+      if (generation !== sessionGeneration) {
+        return;
+      }
+      titleAbortController = undefined;
       if (result.outcome === "success" && !pi.getSessionName()) {
         pi.setSessionName(result.title);
       }
@@ -85,7 +111,7 @@ async function generateNameAsync(
   ctx: ExtensionContext,
   agentDir: string,
   promptText: string | readonly string[],
-  warn: (ctx: ExtensionContext, msg: string) => void,
+  signal: AbortSignal,
 ): Promise<GenerateResult> {
   const localTitle = fallbackTitle(promptText);
 
@@ -96,21 +122,18 @@ async function generateNameAsync(
         return { outcome: "success", title: localTitle };
       }
       const message = `No model configured. Set ${CONFIG_RELATIVE_PATH} with { "model": "provider/model-id" }.`;
-      warn(ctx, message);
       return { outcome: "preflight-failure", message };
     }
 
     const parsed = parseModelRef(configuredModel);
     if (!parsed) {
       const message = `Invalid model reference: ${configuredModel}`;
-      warn(ctx, message);
       return { outcome: "preflight-failure", message };
     }
 
     const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
     if (!model) {
       const message = `Model not found: ${configuredModel}`;
-      warn(ctx, message);
       return { outcome: "preflight-failure", message };
     }
 
@@ -119,7 +142,6 @@ async function generateNameAsync(
       const message = auth.ok
         ? `No API key for ${model.provider}`
         : `Auth error: ${auth.error}`;
-      warn(ctx, message);
       return { outcome: "preflight-failure", message };
     }
 
@@ -139,7 +161,7 @@ async function generateNameAsync(
         headers: auth.headers,
         maxTokens: 1024,
         reasoning: "minimal",
-        signal: ctx.signal,
+        signal,
       },
     );
 
