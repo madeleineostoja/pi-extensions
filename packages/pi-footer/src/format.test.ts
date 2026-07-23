@@ -217,7 +217,6 @@ describe("status line sanitization", () => {
     const result = buildStatusLine(
       new Map([
         ["z", "z-status"],
-        ["pi-usage", "usage-status"],
         ["sandbox", "sandbox-status"],
         ["pi-implement.status", "implement-status"],
         ["pi-papercuts.status", "papercuts-status"],
@@ -237,9 +236,6 @@ describe("status line sanitization", () => {
       result.indexOf("sandbox-status"),
     );
     expect(result.indexOf("sandbox-status")).toBeLessThan(
-      result.indexOf("usage-status"),
-    );
-    expect(result.indexOf("usage-status")).toBeLessThan(
       result.indexOf("a-status"),
     );
     expect(result.indexOf("a-status")).toBeLessThan(result.indexOf("z-status"));

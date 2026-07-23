@@ -189,7 +189,6 @@ const STATUS_ORDER = new Map([
   ["pi-papercuts.status", 1],
   ["pi-readonly.mode", 2],
   ["sandbox", 3],
-  ["pi-usage", 4],
 ]);
 
 export function buildStatusLine(
