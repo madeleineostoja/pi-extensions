@@ -342,6 +342,7 @@ describe("scheduler reducer", () => {
       kind: "integration_needs_rework",
       attemptId: "attempt-a",
       candidateId: "first",
+      reason: "Candidate requires rework.",
     });
 
     expect(rework.accepted).toBe(true);
@@ -364,6 +365,7 @@ describe("scheduler reducer", () => {
         kind: "integration_needs_rework",
         attemptId: "attempt-a",
         candidateId: "first",
+        reason: "Candidate requires rework.",
       }).accepted,
     ).toBe(false);
   });

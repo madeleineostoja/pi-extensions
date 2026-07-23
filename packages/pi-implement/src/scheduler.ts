@@ -74,6 +74,7 @@ export type SchedulerEvent =
       kind: "integration_needs_rework";
       attemptId: string;
       candidateId: string;
+      reason: string;
     }
   | { kind: "integration_paused"; attemptId: string }
   | { kind: "integration_resumed"; attemptId: string }
@@ -577,6 +578,13 @@ export function transition(
           phase: "waiting_rework",
           candidateId: event.candidateId,
         };
+        const execution = state.taskExecution[attempt.owner.taskId];
+        if (execution) {
+          state.taskExecution[attempt.owner.taskId] = {
+            ...execution,
+            lastReason: event.reason,
+          };
+        }
       } else {
         state.runtime.overall = {
           phase: "waiting_rework",

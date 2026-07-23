@@ -298,6 +298,7 @@ describe("SchedulerActor", () => {
           kind: "integration_needs_rework",
           attemptId,
           candidateId,
+          reason: "Candidate requires rework.",
         });
       },
     });

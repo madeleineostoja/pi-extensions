@@ -2693,9 +2693,11 @@ describe("runImplementation", () => {
       diffText?: string;
       implementerResult?: unknown;
       reviewerResult?: unknown;
+      reworkImplementerResult?: unknown;
       reworkReviewerResult?: unknown;
       configureTaskGit?: (taskGit: FakeGit, rootGit: FakeGit) => void;
       canonicalState?: boolean;
+      verifyCommand?: string;
       expectedError?: string | RegExp;
     }) {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
@@ -2753,7 +2755,7 @@ describe("runImplementation", () => {
         { status: "completed", result: args.reviewerResult ?? GOOD_REVIEW },
         {
           status: "completed",
-          result: {
+          result: args.reworkImplementerResult ?? {
             ...GOOD_IMPL,
             findingCompletions: [
               {
@@ -2780,7 +2782,7 @@ describe("runImplementation", () => {
         runId: "r1",
         paths,
         canonicalRunStore,
-        verifyCommand: "echo ok",
+        verifyCommand: args.verifyCommand ?? "echo ok",
         roles: {
           implementer: { model: "p/m", type: "general-purpose" },
           reviewer: { model: "p/m", type: "general-purpose" },
@@ -3041,6 +3043,42 @@ describe("runImplementation", () => {
       });
     });
 
+    it("retains canonical candidate identity after failed integration without replaying its patch", async () => {
+      const { git, canonicalRunStore, subagents } =
+        await runChangedCandidateReviewScenario({
+          stagedNameStatus: "M\tfile.ts",
+          canonicalState: true,
+          verifyCommand: "false",
+          reworkImplementerResult: GOOD_ALREADY_SATISFIED_IMPL,
+          expectedError: /Scheduler blocked/,
+          configureTaskGit: (taskGit) => {
+            const stageAllExcept = taskGit.stageAllExcept.bind(taskGit);
+            taskGit.stageAllExcept = async () => {
+              await stageAllExcept();
+              if (taskGit.stageAllExceptCalls === 2) {
+                taskGit.hasStagedChanges = async () => false;
+              }
+            };
+            taskGit.stagedDeltaFromPatch = async () => {
+              throw new Error("previous candidate patch was applied twice");
+            };
+          },
+        });
+
+      const candidates = Object.values(canonicalRunStore!.read().candidates);
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]!.commitSha).toBe(git.worktreeChild!.headValue);
+      expect(candidates[0]!.treeSha).toBe(
+        await git.worktreeChild!.treeAt(candidates[0]!.commitSha),
+      );
+      expect(git.worktreeChild!.stagedDeltaFromPatchCalls).toEqual([]);
+      expect(
+        subagents.spawns.filter((spawn) =>
+          spawn.description.includes("review task"),
+        ),
+      ).toHaveLength(1);
+    });
+
     it("reconstructs a previous candidate that is not current HEAD", async () => {
       const initialDelta = "diff --git a/initial.ts b/initial.ts";
       const reworkDelta = "diff --git a/rework.ts b/rework.ts";
@@ -3082,6 +3120,7 @@ describe("runImplementation", () => {
             taskGit.stagedDeltaFromPatchCalls.push(previousPatch);
             return { diff: reworkDelta, nameStatus: "M\trework.ts" };
           };
+          taskGit.diffRange = async () => reworkDelta;
         },
       });
 
@@ -3089,7 +3128,7 @@ describe("runImplementation", () => {
       const taskReviewPrompts = subagents.spawns.filter((spawn) =>
         spawn.description.includes("review task"),
       );
-      expect(taskGit.stagedDeltaFromPatchCalls).toEqual([initialDelta]);
+      expect(taskGit.stagedDeltaFromPatchCalls).toEqual([]);
       expect(taskReviewPrompts[1]!.prompt).toContain(reworkDelta);
       expect(taskReviewPrompts[1]!.prompt).not.toContain(
         "full accumulated candidate",

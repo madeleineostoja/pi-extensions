@@ -1750,6 +1750,7 @@ async function runScheduledImplementation(
               kind: "integration_needs_rework",
               attemptId,
               candidateId,
+              reason: `Integration target moved from ${preparation.expected} to ${preparation.actual}.`,
             });
             return;
           }
@@ -1758,6 +1759,7 @@ async function runScheduledImplementation(
               kind: "integration_needs_rework",
               attemptId,
               candidateId,
+              reason: preparation.reason,
             });
             return;
           }
@@ -1827,6 +1829,7 @@ async function runScheduledImplementation(
             kind: "integration_needs_rework",
             attemptId,
             candidateId,
+            reason: `Integration target moved from ${published.expected} to ${published.actual}.`,
           });
           return;
         }
@@ -1835,6 +1838,7 @@ async function runScheduledImplementation(
             kind: "integration_needs_rework",
             attemptId,
             candidateId,
+            reason: published.reason,
           });
           return;
         }
@@ -2041,7 +2045,9 @@ async function runScheduledImplementation(
                 : "stalled";
             task.lastReason =
               completion.outcome === "needs_rework"
-                ? "Integration requires candidate rework."
+                ? (deps.canonicalRunStore?.read().taskExecution[
+                    completion.owner.taskId
+                  ]?.lastReason ?? "Integration requires candidate rework.")
                 : "Integration paused; candidate is retained for deterministic recovery.";
           }
           continue;
@@ -6761,6 +6767,7 @@ async function runTaskWorker(args: {
     planArtifacts,
     schedulerTask,
     initialFeedback,
+    wasNeedsRework = false,
   } = args;
 
   let feedback: RetryFeedback | undefined = initialFeedback;
@@ -6824,9 +6831,12 @@ async function runTaskWorker(args: {
   let closedEpochs =
     currentTaskReviewMetadata(deps.paths, taskId)?.convergence?.closedEpochs ??
     [];
-  let previousCandidate = recoveringAdmission
-    ? canonicalReview?.candidate.current
-    : convergence?.previousCandidate;
+  let previousCandidate =
+    args.wasNeedsRework && canonicalReview
+      ? canonicalReview.candidate.current
+      : recoveringAdmission
+        ? canonicalReview?.candidate.current
+        : convergence?.previousCandidate;
   let previousCandidatePatch = convergence?.previousCandidatePatch;
   let latestEvidence = convergence?.latestEvidence;
   let verificationFailures = convergence?.verificationFailures ?? [];
@@ -7386,27 +7396,8 @@ async function runTaskWorker(args: {
     if (hasStaged) {
       fingerprintBefore = await taskGit.stagedFingerprint();
       candidatePatch = await taskGit.stagedDiff();
-      const previousCandidateIsHead = Boolean(
-        worktreePath &&
-        previousCandidate &&
-        (await taskGit.head()) === previousCandidate,
-      );
-      if (
-        reviewState &&
-        previousCandidatePatch !== undefined &&
-        !previousCandidateIsHead
-      ) {
-        const delta = await taskGit.stagedDeltaFromPatch(
-          previousCandidatePatch,
-        );
-        latestDeltaPaths = parseNameStatusPaths(delta.nameStatus);
-        latestDelta = delta.diff;
-      } else {
-        latestDeltaPaths = parseNameStatusPaths(
-          await taskGit.stagedNameStatus(),
-        );
-        latestDelta = candidatePatch;
-      }
+      latestDeltaPaths = parseNameStatusPaths(await taskGit.stagedNameStatus());
+      latestDelta = candidatePatch;
       worktreeFingerprintBefore =
         await taskGit.worktreeFingerprintExcept(planArtifacts);
 
@@ -7438,6 +7429,10 @@ async function runTaskWorker(args: {
               previousCandidate,
               candidate.trustedCheckpoint!,
             ),
+          );
+          latestDelta = await taskGit.diffRange(
+            previousCandidate,
+            candidate.trustedCheckpoint!,
           );
         }
         semanticNoop = Boolean(
@@ -7496,8 +7491,11 @@ async function runTaskWorker(args: {
       const update = applyNoopReview(reviewState);
       reviewState = update.state;
       latestEvidence = `Implementer reported rework without changing candidate ${candidateIdentity}.`;
-      if (update.outcome === "stalled") {
-        persistCandidate("stalled", latestEvidence);
+      if (wasNeedsRework || update.outcome === "stalled") {
+        const stalledReason = [schedulerTask?.lastReason, latestEvidence]
+          .filter(Boolean)
+          .join("\n\n");
+        persistCandidate("stalled", stalledReason);
         throw new TaskStalledError(
           `task ${task.index} stalled after unchanged candidate rework`,
         );
@@ -8314,33 +8312,39 @@ async function runTaskWorker(args: {
       ...nextTaskReviewMetadata(deps.paths, taskId),
       ...persistReview("reviewed"),
     };
-    await persistCanonicalReviewConvergence(deps, taskId, {
-      stage: reviewState.outstandingIds.length === 0 ? "approved" : "stalled",
-      candidate: {
-        current:
-          candidate.candidateSha ?? candidate.trustedCheckpoint ?? baseSha,
-        previous: previousCandidate,
-        latestDeltaPaths: [],
-      },
-      candidateId: undefined,
-      contextId: reviewContextId,
-      proposalBatchId: reviewProposalBatchId,
-      rawAdjudication,
-      epoch: reviewEpoch,
-      round: reviewState.round,
-      proposals: reviewProposals,
-      admissions: reviewAdmissions,
-      findings: reviewState.findings,
-      outstandingFindingIds: reviewState.outstandingIds,
-      deferredConcerns,
-      observationIds: reviewObservationIds,
-      bestOutstandingCount: reviewState.bestOutstandingCount,
-      consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
-      evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
-      previousCandidatePatch,
-      latestEvidence,
-      verificationFailures,
-    });
+    if (
+      !worktreePath ||
+      !hasStaged ||
+      parsed.result.outcome === "already_satisfied"
+    ) {
+      await persistCanonicalReviewConvergence(deps, taskId, {
+        stage: reviewState.outstandingIds.length === 0 ? "approved" : "stalled",
+        candidate: {
+          current:
+            candidate.candidateSha ?? candidate.trustedCheckpoint ?? baseSha,
+          previous: previousCandidate,
+          latestDeltaPaths: [],
+        },
+        candidateId: undefined,
+        contextId: reviewContextId,
+        proposalBatchId: reviewProposalBatchId,
+        rawAdjudication,
+        epoch: reviewEpoch,
+        round: reviewState.round,
+        proposals: reviewProposals,
+        admissions: reviewAdmissions,
+        findings: reviewState.findings,
+        outstandingFindingIds: reviewState.outstandingIds,
+        deferredConcerns,
+        observationIds: reviewObservationIds,
+        bestOutstandingCount: reviewState.bestOutstandingCount,
+        consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
+        evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
+        previousCandidatePatch,
+        latestEvidence,
+        verificationFailures,
+      });
+    }
 
     // Approved
     if (
@@ -8443,23 +8447,6 @@ async function runTaskWorker(args: {
     }
 
     // Approved changed candidate
-    if (deps.paths) {
-      writeTaskJson(deps.paths, taskId, {
-        id: taskId,
-        planIndex: task.index - 1,
-        title: task.text,
-        status: "approved",
-        dependsOn: [],
-        attempts: attempt,
-        integrationAttempts: schedulerTask?.integrationAttempts ?? 0,
-        baseSha,
-        worktreePath,
-        branchName,
-        activeSubagentIds: [],
-        review: taskReviewMeta,
-      });
-    }
-
     const commitMessage =
       parsed.result.outcome === "changed" ? parsed.result.commitMessage : "";
     const approvedMessage = isValidCommitMessage(commitMessage)
@@ -8500,6 +8487,37 @@ async function runTaskWorker(args: {
         candidateSha: finalizedCommitSha,
         trustedCheckpoint: finalizedCommitSha,
       };
+      previousCandidate = finalizedCommitSha;
+      const finalizedTaskReviewMeta = {
+        ...nextTaskReviewMetadata(deps.paths, taskId),
+        ...persistReview("reviewed"),
+      };
+      await persistCanonicalReviewConvergence(deps, taskId, {
+        stage: "approved",
+        candidate: {
+          current: finalizedCommitSha,
+          previous: previousCandidate,
+          latestDeltaPaths: [],
+        },
+        candidateId: undefined,
+        contextId: reviewContextId,
+        proposalBatchId: reviewProposalBatchId,
+        rawAdjudication,
+        epoch: reviewEpoch,
+        round: reviewState.round,
+        proposals: reviewProposals,
+        admissions: reviewAdmissions,
+        findings: reviewState.findings,
+        outstandingFindingIds: reviewState.outstandingIds,
+        deferredConcerns,
+        observationIds: reviewObservationIds,
+        bestOutstandingCount: reviewState.bestOutstandingCount,
+        consecutiveStalledRounds: reviewState.consecutiveStalledRounds,
+        evidenceRefs: [join(deps.paths!.runDir, "artifacts", taskId)],
+        previousCandidatePatch,
+        latestEvidence,
+        verificationFailures,
+      });
       persistCandidate("approved");
       if (!(await taskGit.isCleanExcept(planArtifacts))) {
         throw new BlockedError(
@@ -8519,15 +8537,18 @@ async function runTaskWorker(args: {
           baseSha,
           worktreePath,
           branchName,
-          taskCommitSha,
+          taskCommitSha: finalizedCommitSha,
+          candidateSha: finalizedCommitSha,
+          trustedCheckpoint: finalizedCommitSha,
+          candidateTree: finalizedTreeSha,
           activeSubagentIds: [],
           commitMessage: approvedMessage,
-          review: taskReviewMeta,
+          review: finalizedTaskReviewMeta,
         });
         appendEvent(deps.paths, {
           type: "task_approved",
           taskId,
-          commitSha: taskCommitSha,
+          commitSha: finalizedCommitSha,
         });
       }
       return "changed";
