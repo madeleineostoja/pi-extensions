@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -421,6 +421,56 @@ describe("pi-papercuts extension", () => {
       expect(setStatus).toHaveBeenLastCalledWith(
         PAPERCUT_STATUS_KEY,
         "󰶯 1 papercuts",
+      );
+    });
+  });
+
+  it("refreshes the footer after a successful direct registry edit", async () => {
+    const handlers = new Map<string, any>();
+    const pi = {
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      on: (event: string, handler: unknown) => handlers.set(event, handler),
+    };
+    registerExtension(pi as never);
+    const root = repo();
+    const store = createPapercutStore(root);
+    await store.propose(proposal, { kind: "agent" });
+    const setStatus = vi.fn();
+    const ctx = {
+      cwd: root,
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        notify: vi.fn(),
+        setStatus,
+        theme: { fg: (_color: string, text: string) => text },
+      },
+    };
+
+    await handlers.get("session_start")({}, ctx);
+    expect(setStatus).toHaveBeenLastCalledWith(
+      PAPERCUT_STATUS_KEY,
+      "󰶯 1 papercuts",
+    );
+    setStatus.mockClear();
+
+    const registry = JSON.parse(readFileSync(store.registryPath, "utf8"));
+    registry.records[0].status = "resolved";
+    writeFileSync(store.registryPath, JSON.stringify(registry));
+    handlers.get("tool_result")(
+      {
+        toolName: "edit",
+        input: { path: store.registryPath },
+        isError: false,
+      },
+      ctx,
+    );
+
+    await vi.waitFor(() => {
+      expect(setStatus).toHaveBeenLastCalledWith(
+        PAPERCUT_STATUS_KEY,
+        undefined,
       );
     });
   });

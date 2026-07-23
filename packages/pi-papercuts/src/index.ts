@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -382,6 +383,22 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  pi.on("tool_result", (event, ctx) => {
+    if (
+      event.isError ||
+      (event.toolName !== "write" && event.toolName !== "edit")
+    ) {
+      return;
+    }
+    const path = (event.input as { path?: unknown }).path;
+    const generation = sessionGeneration;
+    if (
+      typeof path === "string" &&
+      activeRegistryPath === resolve(ctx.cwd, path)
+    ) {
+      queueStatusRefresh(ctx, generation);
+    }
+  });
   pi.on("session_start", async (_event, ctx) => {
     const generation = ++sessionGeneration;
     refreshContext = ctx;
