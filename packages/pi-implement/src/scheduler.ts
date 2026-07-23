@@ -84,6 +84,7 @@ export type SchedulerEvent =
       summary: string;
     }
   | { kind: "integration_paused"; attemptId: string; reason?: string }
+  | { kind: "integration_blocked"; attemptId: string; reason: string }
   | { kind: "integration_resumed"; attemptId: string }
   | {
       kind: "cleanup_debt_recorded";
@@ -661,39 +662,37 @@ export function transition(
       );
       if (
         !attempt ||
-        !["preparing", "prepared", "publishing"].includes(attempt.phase)
+        attempt.phase === "paused" ||
+        attempt.phase === "completed"
       ) {
         return reject("integration attempt is not active");
       }
       state.integrationAttempts = state.integrationAttempts.map((entry) =>
         entry.id === event.attemptId
-          ? attempt.phase === "preparing"
-            ? {
-                ...attempt,
-                phase: "paused",
-                resumePhase: "preparing",
-                ...(event.reason ? { pausedReason: event.reason } : {}),
-              }
-            : attempt.phase === "prepared"
-              ? {
-                  ...attempt,
-                  phase: "paused",
-                  resumePhase: "prepared",
-                  preparedCommitSha: attempt.preparedCommitSha,
-                  ...(event.reason ? { pausedReason: event.reason } : {}),
-                }
-              : attempt.phase === "publishing"
-                ? {
-                    ...attempt,
-                    phase: "paused",
-                    resumePhase: "publishing",
-                    preparedCommitSha: attempt.preparedCommitSha,
-                    protectedArtifactHashes: attempt.protectedArtifactHashes,
-                    ...(event.reason ? { pausedReason: event.reason } : {}),
-                  }
-                : entry
+          ? pauseIntegrationAttempt(attempt, event.reason)
           : entry,
       );
+      return accept();
+    }
+
+    case "integration_blocked": {
+      const attempt = state.integrationAttempts.find(
+        (entry) => entry.id === event.attemptId,
+      );
+      if (
+        !attempt ||
+        attempt.phase === "paused" ||
+        attempt.phase === "completed"
+      ) {
+        return reject("integration attempt is not active");
+      }
+      state.integrationAttempts = state.integrationAttempts.map((entry) =>
+        entry.id === event.attemptId
+          ? pauseIntegrationAttempt(attempt, event.reason)
+          : entry,
+      );
+      state.runtime.phase = "blocked";
+      state.runtime.terminalReason = event.reason;
       return accept();
     }
 
@@ -832,6 +831,41 @@ function closeReworkAttempt(
     };
   }
   return { ...attempt, phase: "completed", protectedArtifactHashes: {} };
+}
+
+function pauseIntegrationAttempt(
+  attempt: Extract<
+    CanonicalRunState["integrationAttempts"][number],
+    { phase: "preparing" | "prepared" | "publishing" }
+  >,
+  reason?: string,
+): CanonicalRunState["integrationAttempts"][number] {
+  const pausedReason = reason ? { pausedReason: reason } : {};
+  if (attempt.phase === "preparing") {
+    return {
+      ...attempt,
+      phase: "paused",
+      resumePhase: "preparing",
+      ...pausedReason,
+    };
+  }
+  if (attempt.phase === "prepared") {
+    return {
+      ...attempt,
+      phase: "paused",
+      resumePhase: "prepared",
+      preparedCommitSha: attempt.preparedCommitSha,
+      ...pausedReason,
+    };
+  }
+  return {
+    ...attempt,
+    phase: "paused",
+    resumePhase: "publishing",
+    preparedCommitSha: attempt.preparedCommitSha,
+    protectedArtifactHashes: attempt.protectedArtifactHashes,
+    ...pausedReason,
+  };
 }
 
 function resumeIntegrationAttempt(

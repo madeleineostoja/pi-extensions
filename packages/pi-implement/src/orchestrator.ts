@@ -56,7 +56,10 @@ import {
   type CanonicalRunState,
 } from "./canonical-state.js";
 import { SchedulerActor } from "./scheduler-actor.js";
-import { IntegrationEngine } from "./integration-engine.js";
+import {
+  IntegrationEngine,
+  integrationWorkspaceName,
+} from "./integration-engine.js";
 import {
   approvedCandidateRef,
   TaskWorkspaceManager,
@@ -1606,12 +1609,13 @@ async function runScheduledImplementation(
           throw new Error(`Cleanup debt ${debtId} has no completed attempt.`);
         }
         if (attempt.preparedCommitSha === "rework") {
+          const workspaceName = integrationWorkspaceName(attempt.id);
           const worktreePath = join(
             deps.paths!.worktreesDir,
             "integrations",
-            attempt.id,
+            workspaceName,
           );
-          const branchName = `pi-implement/integration/${attempt.id.replaceAll(/[^A-Za-z0-9._-]/g, "-")}`;
+          const branchName = `pi-implement/integration/${workspaceName}`;
           const workspace = new TaskWorkspaceManager(
             deps.git,
             join(deps.paths!.worktreesDir, "integrations"),
@@ -1945,13 +1949,17 @@ async function runScheduledImplementation(
             });
             return;
           }
+          const reason =
+            "reason" in preparation
+              ? preparation.reason
+              : "Integration preparation was cancelled.";
           await dispatch({
-            kind: "integration_paused",
+            kind:
+              preparation.kind === "blocked"
+                ? "integration_blocked"
+                : "integration_paused",
             attemptId,
-            reason:
-              "reason" in preparation
-                ? preparation.reason
-                : "Integration preparation was cancelled.",
+            reason,
           });
           return;
         }
@@ -2031,13 +2039,17 @@ async function runScheduledImplementation(
           });
           return;
         }
+        const reason =
+          "reason" in published
+            ? published.reason
+            : "Integration publication was cancelled.";
         await dispatch({
-          kind: "integration_paused",
+          kind:
+            published.kind === "blocked"
+              ? "integration_blocked"
+              : "integration_paused",
           attemptId,
-          reason:
-            "reason" in published
-              ? published.reason
-              : "Integration publication was cancelled.",
+          reason,
         });
       },
       executeWorker: async ({ taskId, signal }) => {
@@ -2231,20 +2243,38 @@ async function runScheduledImplementation(
             continue;
           }
           const task = sched.tasks.get(completion.owner.taskId)!;
+          const canonical = deps.canonicalRunStore?.read();
+          const attempt = canonical?.integrationAttempts.find(
+            (entry) => entry.id === completion.attemptId,
+          );
           if (completion.outcome === "landed") {
             task.status = "landed";
             sched.landedOrder.push(completion.owner.taskId);
+          } else if (completion.outcome === "needs_rework") {
+            task.status = "needs_rework";
+            task.lastReason =
+              canonical?.taskExecution[completion.owner.taskId]?.lastReason ??
+              "Integration requires candidate rework.";
           } else {
             task.status =
-              completion.outcome === "needs_rework"
-                ? "needs_rework"
+              completion.outcome === "blocked"
+                ? "integration_failed"
                 : "stalled";
             task.lastReason =
-              completion.outcome === "needs_rework"
-                ? (deps.canonicalRunStore?.read().taskExecution[
-                    completion.owner.taskId
-                  ]?.lastReason ?? "Integration requires candidate rework.")
-                : "Integration paused; candidate is retained for deterministic recovery.";
+              attempt?.pausedReason ??
+              (completion.outcome === "blocked"
+                ? "Integration blocked; the approved candidate was retained."
+                : "Integration paused; candidate is retained for deterministic recovery.");
+          }
+          updateSchedulerState(deps, sched);
+          if (
+            completion.outcome === "blocked" ||
+            completion.outcome === "paused"
+          ) {
+            throw new BlockedError(
+              task.lastReason ??
+                "Integration did not reach a publishable state.",
+            );
           }
           continue;
         }
@@ -2414,7 +2444,8 @@ async function runScheduledImplementation(
     const canonical = deps.canonicalRunStore?.read();
     if (
       schedulerActor &&
-      canonical?.runtime.phase === "running" &&
+      canonical &&
+      canonical.runtime.phase !== "completed" &&
       Object.values(canonical.runtime.tasks).some(
         (task) => task.phase !== "completed",
       )
@@ -5591,13 +5622,19 @@ async function runConvergentOverallReviewLoop(
     ) {
       completion = await schedulerActor.nextCompletion();
     }
-    const overall = deps.canonicalRunStore.read().runtime.overall;
+    const canonical = deps.canonicalRunStore.read();
+    const overall = canonical.runtime.overall;
     if (overall.phase === "completed") {
       return;
     }
     if (overall.phase !== "waiting_rework") {
+      const attempt = canonical.integrationAttempts.find(
+        (entry) => entry.owner.kind === "overall" && entry.phase === "paused",
+      );
       throw new BlockedError(
-        "Overall integration is paused; the approved candidate is retained for recovery.",
+        canonical.runtime.terminalReason ??
+          attempt?.pausedReason ??
+          "Overall integration is paused; the approved candidate is retained for recovery.",
       );
     }
   }
@@ -6216,7 +6253,13 @@ async function runConvergentOverallReviewLoop(
       completion.outcome !== "landed" ||
       overallRuntime?.phase !== "completed"
     ) {
+      const integrationReason =
+        canonicalAfterIntegration?.runtime.terminalReason ??
+        canonicalAfterIntegration?.integrationAttempts.find(
+          (entry) => entry.id === completion.attemptId,
+        )?.pausedReason;
       overall.latestEvidence =
+        integrationReason ??
         "Overall integration paused; the approved candidate was retained for recovery.";
       persistOverallReviewState(
         deps,
@@ -6456,7 +6499,8 @@ function updateSchedulerState(
 ): void {
   const tasks: ScheduledTaskState[] = [];
   const activeAgentIds: string[] = [];
-  const reviews = deps.canonicalRunStore?.read().reviewConvergence ?? {};
+  const canonical = deps.canonicalRunStore?.read();
+  const reviews = canonical?.reviewConvergence ?? {};
   let landedCount = 0;
   let satisfiedCount = 0;
 
@@ -6468,12 +6512,15 @@ function updateSchedulerState(
       satisfiedCount++;
     }
     const taskMeta = deps.paths ? readTaskJson(deps.paths, task.id) : undefined;
+    const projection = canonicalSchedulerTaskProjection(canonical, task.id);
     tasks.push({
       id: task.id,
       planIndex: task.planIndex - 1,
       title: task.title,
-      status: task.status as ScheduledTaskState["status"],
-      blockedReason: getBlockedReason(task, sched),
+      status:
+        projection?.status ?? (task.status as ScheduledTaskState["status"]),
+      blockedReason:
+        projection?.reason ?? getBlockedReason(task, sched) ?? task.lastReason,
       worktreePath: task.worktreePath,
       landedCommitSha: task.landedCommitSha,
       candidateSha: taskMeta?.candidateSha ?? task.candidateSha,
@@ -6495,6 +6542,16 @@ function updateSchedulerState(
     task.activeAgentRefs.filter((ref) => activeAgentIds.includes(ref.id)),
   );
 
+  const projectedPhase =
+    canonical?.runtime.phase === "blocked"
+      ? "blocked"
+      : canonical &&
+          (Object.values(canonical.runtime.tasks).some(
+            (task) => task.phase === "integrating",
+          ) ||
+            canonical.runtime.overall.phase === "integrating")
+        ? "integrating"
+        : undefined;
   deps.updateState({
     tasks,
     activeSubagentId: activeAgentIds.at(-1),
@@ -6506,7 +6563,52 @@ function updateSchedulerState(
     overallReviewProgress: reviewProgressFor(
       Object.values(reviews).find((review) => review.owner.kind === "overall"),
     ),
+    ...(projectedPhase ? { phase: projectedPhase } : {}),
+    ...(canonical?.runtime.phase === "blocked" &&
+    canonical.runtime.terminalReason
+      ? { lastReason: canonical.runtime.terminalReason }
+      : {}),
   });
+}
+
+function canonicalSchedulerTaskProjection(
+  state: CanonicalRunState | undefined,
+  taskId: string,
+): { status: ScheduledTaskState["status"]; reason?: string } | undefined {
+  const runtime = state?.runtime.tasks[taskId];
+  if (!runtime) {
+    return undefined;
+  }
+  switch (runtime.phase) {
+    case "queued":
+      return { status: "pending" };
+    case "executing":
+      return { status: "coding" };
+    case "candidate_ready":
+      return { status: "approved" };
+    case "waiting_rework":
+      return {
+        status: "needs_rework",
+        reason: state?.taskExecution[taskId]?.lastReason,
+      };
+    case "integrating": {
+      const attempt = state?.integrationAttempts.find(
+        (entry) => entry.id === runtime.integrationAttemptId,
+      );
+      return {
+        status:
+          state?.runtime.phase === "blocked"
+            ? "integration_failed"
+            : "integrating",
+        reason: attempt?.pausedReason,
+      };
+    }
+    case "completed":
+      return { status: runtime.result };
+    case "failed":
+    case "blocked":
+      return { status: runtime.phase, reason: runtime.reason };
+  }
 }
 
 function reviewProgressFor(

@@ -42,7 +42,7 @@ type ActorCompletion =
       kind: "integration";
       owner: { kind: "task"; taskId: string } | { kind: "overall" };
       attemptId: string;
-      outcome: "landed" | "needs_rework" | "paused";
+      outcome: "landed" | "needs_rework" | "paused" | "blocked";
     };
 
 export type SchedulerActorOptions = {
@@ -249,7 +249,12 @@ export class SchedulerActor {
       throw new SchedulerActorError("Scheduler has no integration executor.");
     }
     const controller = linkedAbortController(this.abortController.signal);
-    let integrationOutcome: "landed" | "needs_rework" | "paused" | undefined;
+    let integrationOutcome:
+      | "landed"
+      | "needs_rework"
+      | "paused"
+      | "blocked"
+      | undefined;
     this.integrationControllers.set(effect.attemptId, controller);
     const integration = this.options
       .executeIntegration({
@@ -263,6 +268,8 @@ export class SchedulerActor {
             integrationOutcome = "needs_rework";
           } else if (event.kind === "integration_paused") {
             integrationOutcome = "paused";
+          } else if (event.kind === "integration_blocked") {
+            integrationOutcome = "blocked";
           }
         },
       })
@@ -296,11 +303,13 @@ export class SchedulerActor {
             attemptId: effect.attemptId,
             outcome:
               integrationOutcome ??
-              (runtime?.phase === "waiting_rework"
-                ? "needs_rework"
-                : attempt.phase === "paused"
-                  ? "paused"
-                  : "landed"),
+              (snapshot.runtime.phase === "blocked"
+                ? "blocked"
+                : runtime?.phase === "waiting_rework"
+                  ? "needs_rework"
+                  : attempt.phase === "paused"
+                    ? "paused"
+                    : "landed"),
           });
           this.completionWaiter?.();
           this.completionWaiter = undefined;
@@ -437,6 +446,9 @@ export class SchedulerActor {
   }
 
   private async resumeRetainedIntegrations(): Promise<void> {
+    if (this.snapshot().runtime.phase !== "running") {
+      return;
+    }
     for (const attempt of this.snapshot().integrationAttempts) {
       if (attempt.phase !== "paused") {
         continue;

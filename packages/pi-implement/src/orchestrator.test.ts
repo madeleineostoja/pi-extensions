@@ -2777,6 +2777,7 @@ describe("runImplementation", () => {
         },
       ];
 
+      const statePatches: Array<Record<string, unknown>> = [];
       const run = runImplementation({
         git,
         subagents,
@@ -2792,7 +2793,11 @@ describe("runImplementation", () => {
           planner: { model: "p/m", type: "Explore" },
           selfHeal: { model: "p/m", type: "general-purpose" },
         },
-        updateState: () => {},
+        updateState: (patch) => {
+          if (typeof patch === "object") {
+            statePatches.push(patch);
+          }
+        },
         shouldStop: () => false,
       });
 
@@ -2809,6 +2814,7 @@ describe("runImplementation", () => {
         git,
         subagents,
         canonicalRunStore,
+        statePatches,
       };
     }
 
@@ -2949,11 +2955,11 @@ describe("runImplementation", () => {
     );
 
     it("ignores unsolicited finding completions during initial implementation", async () => {
-      const { canonicalRunStore, subagents } =
+      const { canonicalRunStore, statePatches, subagents } =
         await runChangedCandidateReviewScenario({
           stagedNameStatus: "M\tfile.ts",
           canonicalState: true,
-          expectedError: /Scheduler blocked/,
+          expectedError: /Target checkout branch changed/,
           implementerResult: {
             ...GOOD_IMPL,
             findingCompletions: [
@@ -2975,6 +2981,17 @@ describe("runImplementation", () => {
       });
       expect(convergence?.latestRework).toBeUndefined();
       expect(convergence?.reworkObligationIds).toEqual([]);
+      const projectedStatuses = statePatches.flatMap((patch) =>
+        Array.isArray(patch.tasks)
+          ? patch.tasks.map((task) =>
+              typeof task === "object" && task && "status" in task
+                ? task.status
+                : undefined,
+            )
+          : [],
+      );
+      expect(projectedStatuses).toContain("integrating");
+      expect(projectedStatuses).toContain("integration_failed");
       expect(subagents.spawns.some((spawn) => spawn.role === "reviewer")).toBe(
         true,
       );
@@ -3053,7 +3070,7 @@ describe("runImplementation", () => {
           canonicalState: true,
           verifyCommand: "false",
           reworkImplementerResult: GOOD_ALREADY_SATISFIED_IMPL,
-          expectedError: /Scheduler blocked/,
+          expectedError: /Target checkout branch changed/,
           configureTaskGit: (taskGit) => {
             const stageAllExcept = taskGit.stageAllExcept.bind(taskGit);
             taskGit.stageAllExcept = async () => {

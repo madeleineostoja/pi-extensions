@@ -95,6 +95,33 @@ describe("diffProgress", () => {
     );
   });
 
+  it("includes the authoritative integration block reason", () => {
+    const prev: RunState = {
+      phase: "integrating",
+      totalCount: 1,
+      tasks: [{ id: "t1", planIndex: 0, title: "A", status: "integrating" }],
+    };
+    const next: RunState = {
+      phase: "blocked",
+      lastReason: "Validation cannot access local binaries.",
+      totalCount: 1,
+      tasks: [
+        {
+          id: "t1",
+          planIndex: 0,
+          title: "A",
+          status: "integration_failed",
+          blockedReason: "Validation cannot access local binaries.",
+        },
+      ],
+    };
+
+    expect(diffProgress(prev, next, [])).toEqual([
+      "✗ Task 1/1 integration failed: A — Validation cannot access local binaries.",
+      "✗ pi-implement blocked: Validation cannot access local binaries.",
+    ]);
+  });
+
   it("includes parallel landed summary lines", () => {
     const prev: RunState = {
       phase: "scheduling",

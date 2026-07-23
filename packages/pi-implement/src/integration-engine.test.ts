@@ -1,11 +1,19 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CandidateRef, CanonicalRunState } from "./canonical-state.js";
 import { ExecGitClient } from "./git.js";
-import { IntegrationEngine } from "./integration-engine.js";
+import {
+  IntegrationEngine,
+  integrationWorkspaceName,
+} from "./integration-engine.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" });
@@ -86,6 +94,108 @@ function attempt(candidateId: string, targetBaseSha: string) {
 }
 
 describe("IntegrationEngine", () => {
+  it(
+    "prepares colon-bearing attempt IDs in a PATH-safe workspace",
+    { timeout: 30_000 },
+    async () => {
+      const root = repository();
+      const gitClient = new ExecGitClient(root);
+      const approved = await candidate(root);
+      const targetHead = await gitClient.head();
+      const worktreesRoot = join(root, ".pi", "integrations");
+      const integrationAttempt = {
+        ...attempt(approved.id, targetHead),
+        id: "integration:r20260723-155200-fac95ece9509748f:37",
+      };
+      let validatedPath: string | undefined;
+      const engine = new IntegrationEngine({
+        git: gitClient,
+        worktreesRoot,
+        targetCheckoutId: await gitClient.checkoutIdentity(),
+        targetBranch: await gitClient.currentBranch(),
+        protectedPaths: [],
+        validate: async ({ worktreePath }) => {
+          validatedPath = worktreePath;
+          return { ok: true };
+        },
+      });
+
+      const result = await engine.prepare(integrationAttempt, approved);
+
+      if (result.kind !== "prepared") {
+        throw new Error(JSON.stringify(result));
+      }
+      const workspaceName = basename(result.prepared.worktreePath);
+      expect(workspaceName).toBe(
+        integrationWorkspaceName(integrationAttempt.id),
+      );
+      expect(workspaceName).not.toContain(delimiter);
+      expect(workspaceName).not.toMatch(/[:;]/);
+      expect(validatedPath).toBe(result.prepared.worktreePath);
+      expect(integrationWorkspaceName("integration:a:b")).not.toBe(
+        integrationWorkspaceName("integration:a/b"),
+      );
+      await engine.cleanup(result.prepared);
+    },
+  );
+
+  it(
+    "leaves a legacy colon-named worktree untouched during clean cutover",
+    { timeout: 30_000 },
+    async () => {
+      const root = repository();
+      const gitClient = new ExecGitClient(root);
+      const approved = await candidate(root);
+      const targetHead = await gitClient.head();
+      const integrationAttempt = {
+        ...attempt(approved.id, targetHead),
+        id: "integration:r20260723-155200-fac95ece9509748f:37",
+      };
+      const worktreesRoot = join(root, ".pi", "integrations");
+      const legacyPath = join(worktreesRoot, integrationAttempt.id);
+      const legacyBranch =
+        "pi-implement/integration/integration-r20260723-155200-fac95ece9509748f-37";
+      await gitClient.createTaskBranch(legacyBranch, targetHead);
+      await gitClient.addWorktree(legacyPath, legacyBranch);
+      const legacyGit = gitClient.forWorktree(legacyPath);
+      const patch = await gitClient.diffRange(
+        approved.baseSha,
+        approved.commitSha,
+      );
+      expect((await legacyGit.applyPatch(patch)).exitCode).toBe(0);
+      writeFileSync(join(legacyPath, "legacy-untracked.txt"), "preserve\n");
+      const legacyStatus = git(legacyPath, "status", "--porcelain");
+      const engine = new IntegrationEngine({
+        git: gitClient,
+        worktreesRoot,
+        targetCheckoutId: await gitClient.checkoutIdentity(),
+        targetBranch: await gitClient.currentBranch(),
+        protectedPaths: [],
+        validate: async ({ worktreePath }) => ({
+          ok: !worktreePath.includes(integrationAttempt.id),
+        }),
+      });
+
+      const result = await engine.prepare(integrationAttempt, approved);
+
+      if (result.kind !== "prepared") {
+        throw new Error(JSON.stringify(result));
+      }
+      expect(result.prepared.worktreePath).not.toBe(legacyPath);
+      expect(
+        readFileSync(join(legacyPath, "legacy-untracked.txt"), "utf-8"),
+      ).toBe("preserve\n");
+      expect(git(legacyPath, "status", "--porcelain")).toBe(legacyStatus);
+      expect(
+        (await gitClient.listWorktrees()).map((path) => realpathSync(path)),
+      ).toContain(realpathSync(legacyPath));
+      await engine.cleanup(result.prepared);
+      expect(
+        (await gitClient.listWorktrees()).map((path) => realpathSync(path)),
+      ).toContain(realpathSync(legacyPath));
+    },
+  );
+
   it("prepares and fast-forwards a reviewed candidate without mutating target during preparation", async () => {
     const root = repository();
     const gitClient = new ExecGitClient(root);
@@ -229,7 +339,7 @@ describe("IntegrationEngine", () => {
       protectedPaths: [],
     });
     const integrationAttempt = attempt(approved.id, targetHead);
-    const branchName = "pi-implement/integration/integration-a";
+    const branchName = `pi-implement/integration/${integrationWorkspaceName(integrationAttempt.id)}`;
     await gitClient.createTaskBranch(branchName, targetHead);
 
     const result = await engine.prepare(integrationAttempt, approved);

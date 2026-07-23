@@ -236,6 +236,82 @@ describe("SchedulerActor", () => {
     });
   });
 
+  it("does not automatically resume a paused integration in a blocked run", async () => {
+    const runStore = store();
+    const current = runStore.read();
+    await runStore.update(current.revision, (state) => ({
+      ...state,
+      runtime: {
+        ...state.runtime,
+        phase: "blocked",
+        terminalReason: "Validation blocked.",
+        tasks: {
+          ...state.runtime.tasks,
+          a: {
+            phase: "integrating",
+            candidateId: "candidate:a",
+            integrationAttemptId: "attempt-a",
+          },
+        },
+      },
+      candidates: {
+        "candidate:a": {
+          id: "candidate:a",
+          sourceBaseSha: "base",
+          baseSha: "base",
+          commitSha: "candidate",
+          treeSha: "tree",
+          branchName: "branch/a",
+          worktreePath: "/worktrees/a",
+          reviewReceipt: {
+            id: "review:a",
+            candidateId: "candidate:a",
+            candidateCommitSha: "candidate",
+            candidateTreeSha: "tree",
+            verdict: "approved",
+            convergence: {
+              round: 1,
+              outstandingFindingIds: [],
+              bestOutstandingCount: 0,
+              evidenceRefs: [],
+            },
+            assessedAt: "now",
+          },
+        },
+      },
+      integrationAttempts: [
+        {
+          id: "attempt-a",
+          owner: { kind: "task", taskId: "a" },
+          candidateId: "candidate:a",
+          targetBaseSha: "base",
+          pipelineHash: "pipeline",
+          startedAt: "now",
+          phase: "paused",
+          resumePhase: "preparing",
+          pausedReason: "Validation blocked.",
+        },
+      ],
+    }));
+    const executions: string[] = [];
+    const actor = new SchedulerActor({
+      store: runStore,
+      executeWorker: async () => ({ kind: "satisfied" }),
+      executeIntegration: async ({ attemptId }) => {
+        executions.push(attemptId);
+      },
+    });
+
+    await actor.start();
+    await actor.stop();
+
+    expect(executions).toEqual([]);
+    expect(runStore.read().integrationAttempts[0]).toMatchObject({
+      phase: "paused",
+      pausedReason: "Validation blocked.",
+    });
+  });
+
   it("reports integration rework as needs_rework rather than a landing", async () => {
     const runStore = store();
     const current = runStore.read();
@@ -308,6 +384,90 @@ describe("SchedulerActor", () => {
       kind: "integration",
       outcome: "needs_rework",
     });
+  });
+
+  it("reports an authoritative blocked integration completion", async () => {
+    const runStore = store();
+    const current = runStore.read();
+    await runStore.update(current.revision, (state) => ({
+      ...state,
+      runtime: {
+        ...state.runtime,
+        phase: "running",
+        tasks: {
+          ...state.runtime.tasks,
+          a: { phase: "candidate_ready", candidateId: "candidate:a" },
+        },
+      },
+      candidates: {
+        "candidate:a": {
+          id: "candidate:a",
+          sourceBaseSha: "base",
+          baseSha: "base",
+          commitSha: "candidate",
+          treeSha: "tree",
+          branchName: "branch/a",
+          worktreePath: "/worktrees/a",
+          reviewReceipt: {
+            id: "review:a",
+            candidateId: "candidate:a",
+            candidateCommitSha: "candidate",
+            candidateTreeSha: "tree",
+            verdict: "approved",
+            convergence: {
+              round: 1,
+              outstandingFindingIds: [],
+              bestOutstandingCount: 0,
+              evidenceRefs: [],
+            },
+            assessedAt: "now",
+          },
+        },
+      },
+      integrationAttempts: [],
+    }));
+    let workerSettled = false;
+    const actor = new SchedulerActor({
+      store: runStore,
+      executeWorker: ({ signal }) =>
+        new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              workerSettled = true;
+              resolve({ kind: "cancelled" });
+            },
+            { once: true },
+          );
+        }),
+      executeIntegration: async ({ attemptId, dispatch }) => {
+        await dispatch({
+          kind: "integration_blocked",
+          attemptId,
+          reason: "Validation cannot access local binaries.",
+        });
+      },
+    });
+
+    await actor.start();
+    await expect(
+      actor.requestIntegration({
+        taskId: "a",
+        attemptId: "attempt-a",
+        pipelineHash: "pipeline",
+      }),
+    ).resolves.toBe(true);
+
+    await expect(actor.nextCompletion()).resolves.toMatchObject({
+      kind: "integration",
+      outcome: "blocked",
+    });
+    expect(runStore.read().runtime).toMatchObject({
+      phase: "blocked",
+      terminalReason: "Validation cannot access local binaries.",
+    });
+    await actor.stop();
+    expect(workerSettled).toBe(true);
   });
 
   it("retries retained cleanup debt before scheduling new work", async () => {

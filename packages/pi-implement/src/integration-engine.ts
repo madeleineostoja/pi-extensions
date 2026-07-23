@@ -46,8 +46,8 @@ export type IntegrationOutcome =
   | { kind: "blocked"; reason: string }
   | { kind: "cancelled" };
 
-function safeGitRefPart(value: string): string {
-  return value.replaceAll(/[^A-Za-z0-9._-]/g, "-");
+export function integrationWorkspaceName(attemptId: string): string {
+  return `integration-${createHash("sha256").update(attemptId).digest("hex")}`;
 }
 
 export class IntegrationEngine {
@@ -80,8 +80,9 @@ export class IntegrationEngine {
       };
     }
 
-    const worktreePath = resolve(this.options.worktreesRoot, attempt.id);
-    const branchName = `pi-implement/integration/${safeGitRefPart(attempt.id)}`;
+    const workspaceName = integrationWorkspaceName(attempt.id);
+    const worktreePath = resolve(this.options.worktreesRoot, workspaceName);
+    const branchName = `pi-implement/integration/${workspaceName}`;
     try {
       const existingBranch = (
         await this.options.git.listBranchesMatching(branchName)
@@ -263,8 +264,11 @@ export class IntegrationEngine {
         kind: "reconstructed",
         prepared: {
           attemptId: attempt.id,
-          worktreePath: resolve(this.options.worktreesRoot, attempt.id),
-          branchName: `pi-implement/integration/${safeGitRefPart(attempt.id)}`,
+          worktreePath: resolve(
+            this.options.worktreesRoot,
+            integrationWorkspaceName(attempt.id),
+          ),
+          branchName: `pi-implement/integration/${integrationWorkspaceName(attempt.id)}`,
           targetBaseSha: attempt.targetBaseSha,
           preparedCommitSha,
           treeSha,
@@ -417,8 +421,9 @@ export class IntegrationEngine {
   }
 
   async discardOwnedWorkspace(attempt: IntegrationAttempt): Promise<void> {
-    const worktreePath = resolve(this.options.worktreesRoot, attempt.id);
-    const branchName = `pi-implement/integration/${safeGitRefPart(attempt.id)}`;
+    const workspaceName = integrationWorkspaceName(attempt.id);
+    const worktreePath = resolve(this.options.worktreesRoot, workspaceName);
+    const branchName = `pi-implement/integration/${workspaceName}`;
     await this.options.git.removeWorktree(worktreePath);
     await this.options.git.deleteTaskBranch(branchName);
   }

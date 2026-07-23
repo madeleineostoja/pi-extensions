@@ -366,24 +366,30 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             );
             return;
           }
+          const canonical =
+            paths.canonicalRunState && existsSync(paths.canonicalRunState)
+              ? loadCanonicalRunState(paths.canonicalRunState)
+              : undefined;
+          const phase =
+            canonical?.runtime.phase === "blocked"
+              ? "blocked"
+              : run.currentPhase;
+          const terminalReason =
+            canonical?.runtime.terminalReason ?? run.terminalReason;
           const lines: string[] = [];
           lines.push(`Run: ${runId}`);
           lines.push(`Run dir: ${paths.runDir}`);
           lines.push(`Worktrees dir: ${paths.worktreesDir}`);
           lines.push(`State version: ${run.version}`);
-          lines.push(`Phase: ${run.currentPhase}`);
-          if (run.terminalReason) {
-            lines.push(`Terminal reason: ${run.terminalReason}`);
+          lines.push(`Phase: ${phase}`);
+          if (terminalReason) {
+            lines.push(`Terminal reason: ${terminalReason}`);
           }
           if (run.lastTransition) {
             lines.push(
               `Last transition: ${run.lastTransition.phase} at ${run.lastTransition.at}`,
             );
           }
-          const canonical =
-            paths.canonicalRunState && existsSync(paths.canonicalRunState)
-              ? loadCanonicalRunState(paths.canonicalRunState)
-              : undefined;
           if (canonical) {
             lines.push("Canonical review progress:");
             for (const review of Object.values(canonical.reviewConvergence)) {
@@ -401,6 +407,25 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
                 lines.push(
                   `    evidence: ${review.latestEvidence ?? review.evidenceRefs.at(-1)}`,
                 );
+              }
+            }
+            if (canonical.integrationAttempts.length > 0) {
+              lines.push("Canonical integration attempts:");
+              for (const attempt of canonical.integrationAttempts) {
+                const owner =
+                  attempt.owner.kind === "overall"
+                    ? "overall"
+                    : `task:${attempt.owner.taskId}`;
+                const resume =
+                  attempt.phase === "paused"
+                    ? ` · resume ${attempt.resumePhase}`
+                    : "";
+                lines.push(
+                  `  ${attempt.id} · ${owner} · ${attempt.phase}${resume}`,
+                );
+                if (attempt.pausedReason) {
+                  lines.push(`    reason: ${attempt.pausedReason}`);
+                }
               }
             }
           }
@@ -428,7 +453,9 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
               const review = task.review
                 ? ` (${task.review.lastDecision})`
                 : "";
-              let line = `${task.id} [${task.status}${review}] → ${wt}`;
+              const projection = canonicalTaskProjection(canonical, task.id);
+              const status = projection?.status ?? task.status;
+              let line = `${task.id} [${status}${review}] → ${wt}`;
               if (task.candidateSha) {
                 line += ` · candidate ${task.candidateSha}`;
               }
@@ -438,6 +465,10 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
               }
               if (task.lastTransition) {
                 line += ` · last transition ${task.lastTransition.phase}`;
+              }
+              const taskReason = projection?.reason ?? task.lastReason;
+              if (taskReason) {
+                line += ` · reason ${taskReason}`;
               }
               lines.push(line);
             }
@@ -1288,6 +1319,46 @@ function throwIfCommandStopped(
   }
 }
 
+function canonicalTaskProjection(
+  state: CanonicalRunState | undefined,
+  taskId: string,
+): { status: string; reason?: string } | undefined {
+  const runtime = state?.runtime.tasks[taskId];
+  if (!runtime) {
+    return undefined;
+  }
+  switch (runtime.phase) {
+    case "queued":
+      return { status: "pending" };
+    case "executing":
+      return { status: "coding" };
+    case "candidate_ready":
+      return { status: "approved" };
+    case "waiting_rework":
+      return {
+        status: "needs_rework",
+        reason: state?.taskExecution[taskId]?.lastReason,
+      };
+    case "integrating": {
+      const attempt = state?.integrationAttempts.find(
+        (entry) => entry.id === runtime.integrationAttemptId,
+      );
+      return {
+        status:
+          state?.runtime.phase === "blocked"
+            ? "integration_failed"
+            : "integrating",
+        reason: attempt?.pausedReason,
+      };
+    }
+    case "completed":
+      return { status: runtime.result };
+    case "failed":
+    case "blocked":
+      return { status: runtime.phase, reason: runtime.reason };
+  }
+}
+
 async function formatLatestRetainedRunStatus(
   cwd: string,
 ): Promise<string | undefined> {
@@ -1307,9 +1378,22 @@ async function formatLatestRetainedRunStatus(
   if (!run || run.currentPhase === "done") {
     return undefined;
   }
+  const canonical =
+    paths.canonicalRunState && existsSync(paths.canonicalRunState)
+      ? loadCanonicalRunState(paths.canonicalRunState)
+      : undefined;
+  const pausedAttempt = canonical?.integrationAttempts.find(
+    (attempt) => attempt.phase === "paused" && attempt.pausedReason,
+  );
+  const phase =
+    canonical?.runtime.phase === "blocked" ? "blocked" : run.currentPhase;
+  const reason =
+    canonical?.runtime.terminalReason ??
+    pausedAttempt?.pausedReason ??
+    run.terminalReason;
   const lines = [
-    `Run ${run.runId}: ${run.currentPhase}`,
-    run.terminalReason ? `Reason: ${run.terminalReason}` : undefined,
+    `Run ${run.runId}: ${phase}`,
+    reason ? `Reason: ${reason}` : undefined,
   ].filter((line): line is string => Boolean(line));
   if (run.overallReview?.convergence?.state) {
     const state = run.overallReview.convergence.state;
@@ -1327,10 +1411,15 @@ async function formatLatestRetainedRunStatus(
         continue;
       }
       const convergence = task.review?.convergence?.state;
+      const projection = canonicalTaskProjection(canonical, task.id);
+      const status = projection?.status ?? task.status;
+      const taskReason = projection?.reason
+        ? `; reason ${projection.reason}`
+        : "";
       lines.push(
         convergence
-          ? `${task.id}: ${task.status}; candidate ${task.candidateSha ?? "—"}; outstanding ${convergence.outstandingIds.join(", ") || "none"} (${convergence.outstandingIds.length}); best ${convergence.bestOutstandingCount}; stalled rounds ${convergence.consecutiveStalledRounds}`
-          : `${task.id}: ${task.status}; candidate ${task.candidateSha ?? "—"}`,
+          ? `${task.id}: ${status}; candidate ${task.candidateSha ?? "—"}; outstanding ${convergence.outstandingIds.join(", ") || "none"} (${convergence.outstandingIds.length}); best ${convergence.bestOutstandingCount}; stalled rounds ${convergence.consecutiveStalledRounds}${taskReason}`
+          : `${task.id}: ${status}; candidate ${task.candidateSha ?? "—"}${taskReason}`,
       );
     }
   }

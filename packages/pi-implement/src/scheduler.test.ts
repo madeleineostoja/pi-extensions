@@ -462,6 +462,44 @@ describe("scheduler reducer", () => {
     ).toBe(false);
   });
 
+  it("blocks the run with the authoritative integration reason", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.candidates = { first: candidate("first") };
+    initial.runtime.tasks.a = {
+      phase: "integrating",
+      candidateId: "first",
+      integrationAttemptId: "attempt-a",
+    };
+    initial.integrationAttempts = [
+      {
+        id: "attempt-a",
+        owner: { kind: "task", taskId: "a" },
+        candidateId: "first",
+        targetBaseSha: "base",
+        pipelineHash: "pipeline",
+        startedAt: "now",
+        phase: "preparing",
+      },
+    ];
+
+    const blocked = transition(initial, {
+      kind: "integration_blocked",
+      attemptId: "attempt-a",
+      reason: "Validation cannot access local binaries.",
+    });
+
+    expect(blocked.accepted).toBe(true);
+    expect(blocked.state.runtime).toMatchObject({
+      phase: "blocked",
+      terminalReason: "Validation cannot access local binaries.",
+    });
+    expect(blocked.state.integrationAttempts[0]).toMatchObject({
+      phase: "paused",
+      resumePhase: "preparing",
+      pausedReason: "Validation cannot access local binaries.",
+    });
+  });
+
   it("resumes a retained prepared integration without creating another attempt", () => {
     const initial = state([{ id: "a", planIndex: 0 }]);
     initial.candidates = { first: candidate("first") };
