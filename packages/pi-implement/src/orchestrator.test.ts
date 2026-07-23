@@ -29,6 +29,7 @@ import {
   type PlanBundleManifest,
 } from "./manifest.js";
 import { parsePlanFile } from "./plan.js";
+import { RunStore, type CanonicalRunState } from "./canonical-state.js";
 
 class FakeGit implements GitClient {
   commits: string[] = [];
@@ -366,6 +367,14 @@ function makePaths(dir: string) {
     runDir: join(dir, ".pi", "implement", "runs", "r1"),
     runJson: join(dir, ".pi", "implement", "runs", "r1", "run.json"),
     eventsJsonl: join(dir, ".pi", "implement", "runs", "r1", "events.jsonl"),
+    canonicalRunState: join(
+      dir,
+      ".pi",
+      "implement",
+      "runs",
+      "r1",
+      "canonical-run-state.json",
+    ),
     planSnapshot: join(
       dir,
       ".pi",
@@ -383,6 +392,63 @@ function makePaths(dir: string) {
   writeFileSync(paths.runJson, JSON.stringify({ runId: "r1" }), "utf-8");
   writeTestRunLock(paths);
   return paths;
+}
+
+function makeCanonicalRunStore(
+  paths: StatePaths,
+  dir: string,
+  planPath: string,
+): RunStore {
+  const now = new Date().toISOString();
+  const initial: CanonicalRunState = {
+    schemaVersion: 7,
+    revision: 0,
+    run: {
+      id: "r1",
+      target: {
+        checkoutRoot: dir,
+        gitDir: join(dir, ".git"),
+        commonGitDir: join(dir, ".git"),
+        branchRef: "main",
+        startHead: "h1",
+      },
+      plan: {
+        path: planPath,
+        hash: "hash",
+        indexConvention: "zero-based",
+      },
+      configuredWorkerConcurrency: 1,
+      effectiveWorkerConcurrency: 1,
+    },
+    graph: {
+      tasks: [
+        {
+          id: "task-1",
+          planIndex: 1,
+          title: "Do thing",
+          taskHash: "hash",
+          dependsOn: [],
+        },
+      ],
+    },
+    runtime: {
+      phase: "preflight",
+      tasks: { "task-1": { phase: "queued" } },
+      overall: { phase: "pending" },
+    },
+    candidates: {},
+    taskExecution: {},
+    taskMetadata: {},
+    reviewConvergence: {},
+    workerLeases: [],
+    integrationAttempts: [],
+    landingReceipts: [],
+    projectionDebt: [],
+    cleanupDebt: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  return RunStore.create(paths.canonicalRunState!, initial);
 }
 
 function writeTestRunLock(paths: StatePaths, runId = "r1") {
@@ -2625,9 +2691,11 @@ describe("runImplementation", () => {
     async function runChangedCandidateReviewScenario(args: {
       stagedNameStatus: string;
       diffText?: string;
+      implementerResult?: unknown;
       reviewerResult?: unknown;
       reworkReviewerResult?: unknown;
       configureTaskGit?: (taskGit: FakeGit, rootGit: FakeGit) => void;
+      canonicalState?: boolean;
       expectedError?: string | RegExp;
     }) {
       const dir = mkdtempSync(join(tmpdir(), "pi-implement-"));
@@ -2667,6 +2735,9 @@ describe("runImplementation", () => {
         git.worktreeChild!.diffText = args.diffText;
       }
       args.configureTaskGit?.(git.worktreeChild!, git);
+      const canonicalRunStore = args.canonicalState
+        ? makeCanonicalRunStore(paths, dir, planPath)
+        : undefined;
       const subagents = new FakeSubagents();
       subagents.resultsByDescription = [
         {
@@ -2675,7 +2746,10 @@ describe("runImplementation", () => {
         },
       ];
       subagents.results = [
-        { status: "completed", result: GOOD_IMPL },
+        {
+          status: "completed",
+          result: args.implementerResult ?? GOOD_IMPL,
+        },
         { status: "completed", result: args.reviewerResult ?? GOOD_REVIEW },
         {
           status: "completed",
@@ -2705,6 +2779,7 @@ describe("runImplementation", () => {
         mode: "parallel",
         runId: "r1",
         paths,
+        canonicalRunStore,
         verifyCommand: "echo ok",
         roles: {
           implementer: { model: "p/m", type: "general-purpose" },
@@ -2722,7 +2797,14 @@ describe("runImplementation", () => {
         await run;
       }
 
-      return { dir, paths, planPath, git, subagents };
+      return {
+        dir,
+        paths,
+        planPath,
+        git,
+        subagents,
+        canonicalRunStore,
+      };
     }
 
     it("parallel already_satisfied task completes without a worktree commit", async () => {
@@ -2860,6 +2942,38 @@ describe("runImplementation", () => {
         expect(taskPacket.requirements[0].id).toMatch(/-AC01$/);
       },
     );
+
+    it("ignores unsolicited finding completions during initial implementation", async () => {
+      const { canonicalRunStore, subagents } =
+        await runChangedCandidateReviewScenario({
+          stagedNameStatus: "M\tfile.ts",
+          canonicalState: true,
+          expectedError: /Scheduler blocked/,
+          implementerResult: {
+            ...GOOD_IMPL,
+            findingCompletions: [
+              {
+                id: "task-1-AC01",
+                status: "addressed",
+                evidence: "Implemented the task acceptance criterion.",
+                changedPaths: ["file.ts"],
+                verification: GOOD_IMPL.verification,
+              },
+            ],
+          },
+        });
+
+      const convergence = canonicalRunStore!.read().reviewConvergence["task-1"];
+      expect(convergence).toMatchObject({
+        stage: "approved",
+        outstandingFindingIds: [],
+      });
+      expect(convergence?.latestRework).toBeUndefined();
+      expect(convergence?.reworkObligationIds).toEqual([]);
+      expect(subagents.spawns.some((spawn) => spawn.role === "reviewer")).toBe(
+        true,
+      );
+    });
 
     it("uses the staged delta when reworking a checkpoint already at HEAD", async () => {
       const initialDelta = "diff --git a/initial.ts b/initial.ts";

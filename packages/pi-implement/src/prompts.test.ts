@@ -248,6 +248,21 @@ describe("buildImplementerPrompt", () => {
     expect(prompt).not.toContain("<pi-implement-result>");
   });
 
+  it("reserves finding completions for supplied rework findings", () => {
+    const prompt = buildImplementerPrompt({
+      compiledContract: COMPILED_CONTRACT,
+      worktreePath: WORKTREE_PATH,
+    });
+
+    expect(prompt).toContain(
+      "Return findingCompletions only when this prompt supplies a Rework Completion Protocol",
+    );
+    expect(prompt).toContain(
+      "Task acceptance-criteria IDs are not review finding IDs",
+    );
+    expect(prompt).not.toContain("## Rework Completion Protocol");
+  });
+
   it("includes selected task source material without dropping the compiled contract", () => {
     const sourceMaterial = `### Selected Task Source Anchor
 

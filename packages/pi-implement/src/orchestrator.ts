@@ -7372,15 +7372,16 @@ async function runTaskWorker(args: {
     let latestDeltaPaths: string[] = [];
     let latestDelta = "(no candidate delta)";
     let semanticNoop = false;
-    const latestRework = parsed.ok
-      ? parsed.result.findingCompletions?.map((completion) => ({
-          findingId: completion.id,
-          status: completion.status,
-          evidence: completion.evidence,
-          changedPaths: completion.changedPaths,
-          verification: completion.verification,
-        }))
-      : undefined;
+    const latestRework =
+      parsed.ok && reworkObligationPacket.length > 0
+        ? parsed.result.findingCompletions?.map((completion) => ({
+            findingId: completion.id,
+            status: completion.status,
+            evidence: completion.evidence,
+            changedPaths: completion.changedPaths,
+            verification: completion.verification,
+          }))
+        : undefined;
 
     if (hasStaged) {
       fingerprintBefore = await taskGit.stagedFingerprint();

@@ -180,6 +180,8 @@ Do not edit source plan files or checklist state. Do not stage, commit, reset, c
 
 Make the necessary code, documentation, and test changes for the selected task. Choose and run task-appropriate verification. When in doubt, run more verification rather than less: time is cheap, missed regressions are not. Precommit hooks will run on commit and cannot be bypassed, so satisfy lint, format, typecheck, and test expectations from the start. If verification is limited or fails, report that clearly.
 
+Return findingCompletions only when this prompt supplies a Rework Completion Protocol. Task acceptance-criteria IDs are not review finding IDs.
+
 If useful, call the injected \`explore\` tool for broad map-building or targeted context checks before direct reads/searches. Treat exploration as guidance only: verify relevant findings yourself and do not expand scope based on exploration results.
 
 If blocked, leave the repository in a safe state and explain the blocker in the result block.`;
