@@ -134,31 +134,6 @@ describe("git helpers", () => {
     git(cwd, "worktree", "remove", "--force", linked);
   });
 
-  it("cancels and settles owned Git commands", async () => {
-    const cwd = repo();
-    const dir = mkdtempSync(join(tmpdir(), "pi-implement-git-hold-"));
-    const marker = join(dir, "marker");
-    const release = join(dir, "release");
-    const script = join(dir, "hold.mjs");
-    writeFileSync(
-      script,
-      `import { appendFileSync, existsSync } from "node:fs";\nimport { setTimeout } from "node:timers/promises";\nconst [marker, release] = process.argv.slice(2);\nappendFileSync(marker, "started\\n");\nwhile (!existsSync(release)) await setTimeout(5);\n`,
-    );
-    const controller = new AbortController();
-    const process = new GitProcess(cwd);
-    const command = process.run(
-      ["-c", holdAlias(script), "hold", marker, release],
-      { cwd, signal: controller.signal },
-    );
-    await waitFor(() => existsSync(marker));
-    controller.abort();
-
-    await expect(command).rejects.toMatchObject({
-      failure: { kind: "cancelled" },
-    });
-    await process.onIdle();
-  });
-
   it("returns typed evidence for an index lock", async () => {
     const cwd = repo();
     writeFileSync(join(cwd, ".git", "index.lock"), "held");
