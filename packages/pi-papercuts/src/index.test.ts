@@ -216,7 +216,10 @@ describe("pi-papercuts extension", () => {
     await handlers.get("session_start")({}, ctx);
     expect(setStatus).toHaveBeenLastCalledWith(PAPERCUT_STATUS_KEY, undefined);
     await tool.execute("id", proposal, undefined, undefined, ctx);
-    expect(setStatus).toHaveBeenLastCalledWith(PAPERCUT_STATUS_KEY, "󰶯 1");
+    expect(setStatus).toHaveBeenLastCalledWith(
+      PAPERCUT_STATUS_KEY,
+      "󰶯 1 papercuts",
+    );
     handlers.get("session_shutdown")({}, ctx);
     expect(setStatus).toHaveBeenLastCalledWith(PAPERCUT_STATUS_KEY, undefined);
 
@@ -415,7 +418,10 @@ describe("pi-papercuts extension", () => {
       role: "implementer",
     });
     await vi.waitFor(() => {
-      expect(setStatus).toHaveBeenLastCalledWith(PAPERCUT_STATUS_KEY, "󰶯 1");
+      expect(setStatus).toHaveBeenLastCalledWith(
+        PAPERCUT_STATUS_KEY,
+        "󰶯 1 papercuts",
+      );
     });
   });
 

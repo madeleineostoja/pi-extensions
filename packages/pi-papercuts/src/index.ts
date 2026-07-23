@@ -187,7 +187,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus(
         PAPERCUT_STATUS_KEY,
         count > 0
-          ? `${ctx.ui.theme.fg("warning", "󰶯")} ${ctx.ui.theme.fg("warning", String(count))}`
+          ? `${ctx.ui.theme.fg("warning", "󰶯")} ${ctx.ui.theme.fg("warning", `${count} papercuts`)}`
           : undefined,
       );
     } catch (error) {
