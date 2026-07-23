@@ -311,7 +311,7 @@ describe("status formatting", () => {
     expect(widget).toEqual(
       expect.arrayContaining([expect.stringContaining("raw-1")]),
     );
-    expect(widget).toEqual(
+    expect(widget).not.toEqual(
       expect.arrayContaining([expect.stringContaining("/agents")]),
     );
   });
@@ -373,7 +373,7 @@ describe("status formatting", () => {
     expect(lines[0]).not.toContain("landed");
   });
 
-  it("widget active-agent entries include label, short id, and /agents hint", () => {
+  it("widget active-agent entries include label and short id", () => {
     const now = new Date("2024-01-01T00:10:00Z").getTime();
     const lines = formatWidgetLines(
       {
@@ -398,7 +398,7 @@ describe("status formatting", () => {
     const agentLine = lines.find((l) => l.includes("Task 3/7 implementer"));
     expect(agentLine).toBeDefined();
     expect(agentLine).toContain("agent-12");
-    expect(agentLine).toContain("/agents");
+    expect(agentLine).not.toContain("/agents");
   });
 
   it("includes runtime snapshot details in widget lines", () => {
@@ -441,13 +441,13 @@ describe("status formatting", () => {
     );
     const agentLine = lines.find((l) => l.includes("Task 3/7 implementer"));
     expect(agentLine).toBeDefined();
-    expect(agentLine).toContain("running");
+    expect(agentLine).not.toContain("running");
     expect(agentLine).toContain("4 tool");
     expect(agentLine).toContain("$1.27 (82k)");
     expect(agentLine).not.toContain("6.4k ctx");
     expect(agentLine).not.toContain("12.3k");
     expect(agentLine).toContain("\u21ca2");
-    expect(agentLine).toContain("/agents");
+    expect(agentLine).not.toContain("/agents");
     expect(agentLine).toContain("agent-12");
   });
 

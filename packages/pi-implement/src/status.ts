@@ -548,9 +548,6 @@ export function formatWidgetLines(
       let line = `${glyph} ${label}${duration ? ` \u00b7 ${duration}` : ""}`;
       const shortId = ref.id.slice(0, 8);
       line += ` \u00b7 ${shortId}`;
-      if (snapshot?.status) {
-        line += ` \u00b7 ${snapshot.status}`;
-      }
       if (snapshot?.toolUses !== undefined) {
         line += ` \u00b7 ${snapshot.toolUses} tool`;
       }
@@ -563,7 +560,6 @@ export function formatWidgetLines(
       if (snapshot?.compactionCount !== undefined) {
         line += ` \u00b7 \u21ca${snapshot.compactionCount}`;
       }
-      line += " \u00b7 /agents";
       return line;
     }),
     ...rawActiveIds.map((id) => {
@@ -575,9 +571,6 @@ export function formatWidgetLines(
         line += " Active subagent";
       }
       line += ` · ${id.slice(0, 8)}`;
-      if (snapshot?.status) {
-        line += ` · ${snapshot.status}`;
-      }
       if (snapshot?.toolUses !== undefined) {
         line += ` · ${snapshot.toolUses} tool`;
       }
@@ -590,7 +583,6 @@ export function formatWidgetLines(
       if (snapshot?.compactionCount !== undefined) {
         line += ` · \u21ca${snapshot.compactionCount}`;
       }
-      line += " · /agents";
       return line;
     }),
   ];
