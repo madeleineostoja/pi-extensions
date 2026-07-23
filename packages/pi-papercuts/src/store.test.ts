@@ -10,7 +10,8 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -44,23 +45,40 @@ function proposal(overrides: Partial<PapercutProposal> = {}): PapercutProposal {
   };
 }
 
+function vitestExecutable(): string {
+  const manifestPath = fileURLToPath(
+    import.meta.resolve("vitest/package.json"),
+  );
+  const manifest: unknown = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  if (
+    typeof manifest !== "object" ||
+    manifest === null ||
+    !("bin" in manifest) ||
+    typeof manifest.bin !== "object" ||
+    manifest.bin === null ||
+    !("vitest" in manifest.bin) ||
+    typeof manifest.bin.vitest !== "string"
+  ) {
+    throw new Error("The installed Vitest package has no Vitest executable.");
+  }
+  return resolve(dirname(manifestPath), manifest.bin.vitest);
+}
+
 async function runWorker(
   root: string,
   key: string,
   expectation = "created",
   resultPath?: string,
 ): Promise<void> {
-  const worker = new URL("./store-worker.test.ts", import.meta.url);
-  const config = new URL("../vitest.config.ts", import.meta.url);
-  const vitest = new URL(
-    "../../../node_modules/vitest/vitest.mjs",
-    import.meta.url,
+  const worker = fileURLToPath(
+    new URL("./store-worker.test.ts", import.meta.url),
   );
+  const config = fileURLToPath(new URL("../vitest.config.ts", import.meta.url));
   await execFileAsync(
     process.execPath,
-    [vitest.pathname, "run", worker.pathname, "--config", config.pathname],
+    [vitestExecutable(), "run", worker, "--config", config],
     {
-      cwd: new URL("../", import.meta.url).pathname,
+      cwd: fileURLToPath(new URL("../", import.meta.url)),
       env: {
         ...process.env,
         PAPERCUT_WORKER_ROOT: root,
