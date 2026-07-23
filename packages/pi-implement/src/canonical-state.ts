@@ -321,6 +321,17 @@ const taskExecutionSchema = z
 
 const protectedArtifactHashesSchema = z.record(nonEmpty, nonEmpty);
 
+const integrationRecoverySchema = z
+  .object({
+    status: z.enum(["started", "completed"]),
+    startedAt: nonEmpty,
+    disposition: z
+      .enum(["retry_validation", "candidate_rework", "blocked"])
+      .optional(),
+    summary: nonEmpty.optional(),
+  })
+  .strict();
+
 const integrationAttemptBaseSchema = {
   id: nonEmpty,
   owner: integrationOwnerSchema,
@@ -329,6 +340,8 @@ const integrationAttemptBaseSchema = {
   pipelineHash: nonEmpty,
   startedAt: nonEmpty,
   protectedArtifactHashes: protectedArtifactHashesSchema.optional(),
+  recovery: integrationRecoverySchema.optional(),
+  pausedReason: nonEmpty.optional(),
 };
 
 const integrationAttemptSchema = z.union([
@@ -403,7 +416,7 @@ const projectionDebtSchema = z
 
 export const canonicalRunStateSchema = z
   .object({
-    schemaVersion: z.literal(7),
+    schemaVersion: z.literal(8),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -550,7 +563,7 @@ export class RunStore {
     const next = validateCanonicalRunState(
       {
         ...update(structuredClone(current)),
-        schemaVersion: 7,
+        schemaVersion: 8,
         revision: current.revision + 1,
         updatedAt: new Date().toISOString(),
       },
@@ -583,7 +596,7 @@ export class RunStore {
         const next = validateCanonicalRunState(
           {
             ...proposed,
-            schemaVersion: 7,
+            schemaVersion: 8,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -630,7 +643,7 @@ export function validateCanonicalRunState(
       (issue) => `${issue.path.join(".") || "state"}: ${issue.message}`,
     );
     const version = versionFrom(value);
-    const legacy = version === undefined || version < 7;
+    const legacy = version === undefined || version < 8;
     throw new RunStateError(
       legacy
         ? `Run state at ${path} uses unsupported legacy schema${version === undefined ? "" : ` v${version}`}; start over or clean it up explicitly.`

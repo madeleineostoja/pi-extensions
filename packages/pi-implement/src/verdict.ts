@@ -67,6 +67,13 @@ export type IntegrationSelfHealResult = {
   remainingBlocker?: string | null;
 };
 
+export type IntegrationRecoveryResult = {
+  disposition: "retry_validation" | "candidate_rework" | "blocked";
+  summary: string;
+  commands?: string[];
+  remainingBlocker?: string | null;
+};
+
 export type SchedulerSelfHealResult = {
   repaired: boolean;
   retryScheduler: boolean;
@@ -702,6 +709,53 @@ export function parseIntegrationSelfHealResult(
         : undefined,
       filesChanged: Array.isArray(value.filesChanged)
         ? value.filesChanged.filter((c): c is string => typeof c === "string")
+        : undefined,
+      remainingBlocker:
+        value.remainingBlocker === null ||
+        typeof value.remainingBlocker === "string"
+          ? value.remainingBlocker
+          : undefined,
+    },
+  };
+}
+
+export function parseIntegrationRecoveryResult(
+  value: unknown,
+):
+  | { ok: true; result: IntegrationRecoveryResult }
+  | { ok: false; reason: string } {
+  if (!isRecord(value)) {
+    return {
+      ok: false,
+      reason: "Integration recovery completion must be an object.",
+    };
+  }
+  const disposition = value.disposition;
+  if (
+    disposition !== "retry_validation" &&
+    disposition !== "candidate_rework" &&
+    disposition !== "blocked"
+  ) {
+    return {
+      ok: false,
+      reason: "Integration recovery result has an invalid disposition.",
+    };
+  }
+  if (!isNonEmptyString(value.summary)) {
+    return {
+      ok: false,
+      reason: "Integration recovery result is missing summary.",
+    };
+  }
+  return {
+    ok: true,
+    result: {
+      disposition,
+      summary: value.summary,
+      commands: Array.isArray(value.commands)
+        ? value.commands.filter(
+            (command): command is string => typeof command === "string",
+          )
         : undefined,
       remainingBlocker:
         value.remainingBlocker === null ||

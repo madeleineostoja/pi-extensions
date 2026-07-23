@@ -76,7 +76,14 @@ export type SchedulerEvent =
       candidateId: string;
       reason: string;
     }
-  | { kind: "integration_paused"; attemptId: string }
+  | { kind: "integration_recovery_started"; attemptId: string; now: string }
+  | {
+      kind: "integration_recovery_completed";
+      attemptId: string;
+      disposition: "retry_validation" | "candidate_rework" | "blocked";
+      summary: string;
+    }
+  | { kind: "integration_paused"; attemptId: string; reason?: string }
   | { kind: "integration_resumed"; attemptId: string }
   | {
       kind: "cleanup_debt_recorded";
@@ -543,6 +550,58 @@ export function transition(
       return accept([{ kind: "cleanup", debtId }]);
     }
 
+    case "integration_recovery_started": {
+      const attempt = state.integrationAttempts.find(
+        (entry) => entry.id === event.attemptId,
+      );
+      if (
+        !attempt ||
+        attempt.phase !== "preparing" ||
+        attempt.recovery !== undefined
+      ) {
+        return reject(
+          "integration recovery cannot be started for this attempt",
+        );
+      }
+      state.integrationAttempts = state.integrationAttempts.map((entry) =>
+        entry.id === attempt.id
+          ? {
+              ...entry,
+              recovery: { status: "started", startedAt: event.now },
+            }
+          : entry,
+      );
+      return accept();
+    }
+
+    case "integration_recovery_completed": {
+      const attempt = state.integrationAttempts.find(
+        (entry) => entry.id === event.attemptId,
+      );
+      if (
+        !attempt ||
+        attempt.phase !== "preparing" ||
+        attempt.recovery?.status !== "started"
+      ) {
+        return reject("integration recovery is not active");
+      }
+      const recoveryStartedAt = attempt.recovery.startedAt;
+      state.integrationAttempts = state.integrationAttempts.map((entry) =>
+        entry.id === attempt.id
+          ? {
+              ...entry,
+              recovery: {
+                status: "completed",
+                startedAt: recoveryStartedAt,
+                disposition: event.disposition,
+                summary: event.summary,
+              },
+            }
+          : entry,
+      );
+      return accept();
+    }
+
     case "integration_needs_rework": {
       const attempt = state.integrationAttempts.find(
         (entry) => entry.id === event.attemptId,
@@ -562,7 +621,9 @@ export function transition(
         return reject("integration result does not match an active attempt");
       }
       state.integrationAttempts = state.integrationAttempts.map((entry) =>
-        entry.id === event.attemptId ? closeReworkAttempt(entry) : entry,
+        entry.id === event.attemptId
+          ? { ...closeReworkAttempt(entry), pausedReason: event.reason }
+          : entry,
       );
       const debtId = `integration:${attempt.id}`;
       if (!state.cleanupDebt.some((debt) => debt.id === debtId)) {
@@ -607,13 +668,19 @@ export function transition(
       state.integrationAttempts = state.integrationAttempts.map((entry) =>
         entry.id === event.attemptId
           ? attempt.phase === "preparing"
-            ? { ...attempt, phase: "paused", resumePhase: "preparing" }
+            ? {
+                ...attempt,
+                phase: "paused",
+                resumePhase: "preparing",
+                ...(event.reason ? { pausedReason: event.reason } : {}),
+              }
             : attempt.phase === "prepared"
               ? {
                   ...attempt,
                   phase: "paused",
                   resumePhase: "prepared",
                   preparedCommitSha: attempt.preparedCommitSha,
+                  ...(event.reason ? { pausedReason: event.reason } : {}),
                 }
               : attempt.phase === "publishing"
                 ? {
@@ -622,6 +689,7 @@ export function transition(
                     resumePhase: "publishing",
                     preparedCommitSha: attempt.preparedCommitSha,
                     protectedArtifactHashes: attempt.protectedArtifactHashes,
+                    ...(event.reason ? { pausedReason: event.reason } : {}),
                   }
                 : entry
           : entry,

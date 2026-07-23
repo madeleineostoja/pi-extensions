@@ -184,6 +184,38 @@ describe("IntegrationEngine", () => {
     expect(await gitClient.head()).toBe(targetHead);
   });
 
+  it("reconstructs a paused validation workspace before retrying the approved candidate", async () => {
+    const root = repository();
+    const gitClient = new ExecGitClient(root);
+    const approved = await candidate(root);
+    const targetHead = await gitClient.head();
+    let validations = 0;
+    const engine = new IntegrationEngine({
+      git: gitClient,
+      worktreesRoot: join(root, ".pi", "integrations"),
+      targetCheckoutId: await gitClient.checkoutIdentity(),
+      targetBranch: await gitClient.currentBranch(),
+      protectedPaths: [],
+      validate: async () => {
+        validations++;
+        return validations === 1
+          ? { ok: false, reason: "arbitrary validation failure" }
+          : { ok: true };
+      },
+    });
+    const integrationAttempt = attempt(approved.id, targetHead);
+
+    const blocked = await engine.prepare(integrationAttempt, approved);
+    const retried = await engine.prepare(integrationAttempt, approved);
+
+    expect(blocked).toMatchObject({ kind: "blocked" });
+    expect(retried).toMatchObject({
+      kind: "prepared",
+      prepared: { treeSha: approved.treeSha },
+    });
+    expect(validations).toBe(2);
+  });
+
   it("recreates a missing integration worktree when its owned branch exists", async () => {
     const root = repository();
     const gitClient = new ExecGitClient(root);

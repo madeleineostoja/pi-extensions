@@ -53,6 +53,7 @@ export type GitClient = {
   workingDiff(): Promise<string>;
   workingDiffExcept(paths: string[]): Promise<string>;
   nonignoredUntracked(): Promise<string[]>;
+  nonignoredUntrackedFingerprint(): Promise<string>;
   abortActiveOperation(): Promise<void>;
   restoreSnapshot(
     head: string,
@@ -363,6 +364,20 @@ export class ExecGitClient implements GitClient {
       .split("\0")
       .filter(Boolean)
       .sort();
+  }
+
+  async nonignoredUntrackedFingerprint(): Promise<string> {
+    const paths = await this.nonignoredUntracked();
+    return createHash("sha256")
+      .update(
+        paths
+          .map((path) => {
+            const content = readFileSync(join(this.cwd, path));
+            return `${path}\0${createHash("sha256").update(content).digest("hex")}`;
+          })
+          .join("\0"),
+      )
+      .digest("hex");
   }
 
   async stagedFingerprint(): Promise<string> {

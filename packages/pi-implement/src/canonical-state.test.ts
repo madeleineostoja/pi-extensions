@@ -13,7 +13,7 @@ import {
 
 function state(): CanonicalRunState {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     revision: 0,
     run: {
       id: "run-1",

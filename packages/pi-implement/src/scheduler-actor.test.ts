@@ -7,7 +7,7 @@ import { SchedulerActor } from "./scheduler-actor.js";
 
 function state(): CanonicalRunState {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     revision: 0,
     run: {
       id: "run-1",

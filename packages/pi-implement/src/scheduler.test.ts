@@ -12,7 +12,7 @@ function state(
   concurrency = 2,
 ): CanonicalRunState {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     revision: 0,
     run: {
       id: "run-1",
@@ -400,6 +400,66 @@ describe("scheduler reducer", () => {
     expect(resumed.state.integrationAttempts).toEqual([
       expect.objectContaining({ phase: "preparing" }),
     ]);
+  });
+
+  it("persists one recovery decision and preserves its consumed budget on resume", () => {
+    const initial = state([{ id: "a", planIndex: 0 }]);
+    initial.candidates = { first: candidate("first") };
+    initial.runtime.tasks.a = {
+      phase: "integrating",
+      candidateId: "first",
+      integrationAttemptId: "attempt-a",
+    };
+    initial.integrationAttempts = [
+      {
+        id: "attempt-a",
+        owner: { kind: "task", taskId: "a" },
+        candidateId: "first",
+        targetBaseSha: "base",
+        pipelineHash: "pipeline",
+        startedAt: "now",
+        phase: "preparing",
+      },
+    ];
+
+    const started = transition(initial, {
+      kind: "integration_recovery_started",
+      attemptId: "attempt-a",
+      now: "later",
+    });
+    const completed = transition(started.state, {
+      kind: "integration_recovery_completed",
+      attemptId: "attempt-a",
+      disposition: "blocked",
+      summary: "Recovery could not establish a safe repair.",
+    });
+    const paused = transition(completed.state, {
+      kind: "integration_paused",
+      attemptId: "attempt-a",
+      reason: "Recovery could not establish a safe repair.",
+    });
+    const resumed = transition(paused.state, {
+      kind: "integration_resumed",
+      attemptId: "attempt-a",
+    });
+
+    expect(completed.accepted).toBe(true);
+    expect(paused.state.integrationAttempts[0]).toMatchObject({
+      phase: "paused",
+      recovery: { status: "completed", disposition: "blocked" },
+      pausedReason: "Recovery could not establish a safe repair.",
+    });
+    expect(resumed.state.integrationAttempts[0]).toMatchObject({
+      phase: "preparing",
+      recovery: { status: "completed", disposition: "blocked" },
+    });
+    expect(
+      transition(resumed.state, {
+        kind: "integration_recovery_started",
+        attemptId: "attempt-a",
+        now: "again",
+      }).accepted,
+    ).toBe(false);
   });
 
   it("resumes a retained prepared integration without creating another attempt", () => {

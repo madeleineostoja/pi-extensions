@@ -298,6 +298,17 @@ export const integrationSelfHealSchema = Type.Union([
   }),
 ]);
 
+export const integrationRecoverySchema = withPapercuts({
+  disposition: Type.Union([
+    Type.Literal("retry_validation"),
+    Type.Literal("candidate_rework"),
+    Type.Literal("blocked"),
+  ]),
+  summary: nonEmptyString(),
+  commands: Type.Optional(stringArray()),
+  remainingBlocker: Type.Optional(Type.Union([nonEmptyString(), Type.Null()])),
+});
+
 export const schedulerSelfHealSchema = withPapercuts({
   ...selfHealBaseSchema,
   retryScheduler: Type.Boolean(),
@@ -349,6 +360,9 @@ export type IntegrationAnchoredReviewCompletion = Static<
 >;
 export type IntegrationSelfHealCompletion = Static<
   typeof integrationSelfHealSchema
+>;
+export type IntegrationRecoveryCompletion = Static<
+  typeof integrationRecoverySchema
 >;
 export type SchedulerSelfHealCompletion = Static<
   typeof schedulerSelfHealSchema

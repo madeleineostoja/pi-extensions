@@ -12,7 +12,11 @@ export type IntegrationValidation = (args: {
   git: GitClient;
   worktreePath: string;
   signal?: AbortSignal;
-}) => Promise<{ ok: boolean; reason?: string }>;
+}) => Promise<{
+  ok: boolean;
+  reason?: string;
+  disposition?: "needs_rework" | "blocked";
+}>;
 
 export type IntegrationEngineOptions = {
   git: GitClient;
@@ -118,6 +122,7 @@ export class IntegrationEngine {
           reason: `Integration workspace ${worktreePath} has an unrecorded commit.`,
         };
       }
+      await stagingGit.resetHard(targetHead);
       await stagingGit.restoreWorktreeFromIndexExcept([]);
       if (!(await stagingGit.isClean())) {
         return {
@@ -156,7 +161,10 @@ export class IntegrationEngine {
       }
       if (validation && !validation.ok) {
         return {
-          kind: "needs_rework",
+          kind:
+            validation.disposition === "needs_rework"
+              ? "needs_rework"
+              : "blocked",
           reason: validation.reason ?? "Integration validation failed.",
         };
       }
@@ -406,6 +414,13 @@ export class IntegrationEngine {
         reason: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  async discardOwnedWorkspace(attempt: IntegrationAttempt): Promise<void> {
+    const worktreePath = resolve(this.options.worktreesRoot, attempt.id);
+    const branchName = `pi-implement/integration/${safeGitRefPart(attempt.id)}`;
+    await this.options.git.removeWorktree(worktreePath);
+    await this.options.git.deleteTaskBranch(branchName);
   }
 
   async cleanup(prepared: PreparedIntegration): Promise<void> {

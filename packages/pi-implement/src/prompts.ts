@@ -336,6 +336,54 @@ ${PAPERCUT_GUIDANCE}
 `;
 }
 
+export function buildIntegrationRecoveryPrompt(args: {
+  attemptId: string;
+  owner: string;
+  candidateCommitSha: string;
+  candidateTreeSha: string;
+  targetBaseSha: string;
+  worktreePath: string;
+  command: string;
+  output: string;
+  planArtifacts: string[];
+}): string {
+  return `You are the pi-implement integration recovery agent. Diagnose one failed integration validation command in the owned staging worktree and decide its safe disposition.
+
+Run non-interactively. Do not ask questions or wait for input.
+
+## Immutable integration identity
+
+- Attempt: ${args.attemptId}
+- Owner: ${args.owner}
+- Target base: ${args.targetBaseSha}
+- Approved candidate commit: ${args.candidateCommitSha}
+- Approved candidate tree: ${args.candidateTreeSha}
+- Owned staging worktree: ${args.worktreePath}
+- Protected plan artifacts: ${args.planArtifacts.join(", ") || "(none)"}
+
+## Failed command
+
+\`\`\`text
+${args.command}
+\`\`\`
+
+## Output
+
+\`\`\`text
+${args.output}
+\`\`\`
+
+You may inspect the repository and repair ignored environment/runtime state in the owned staging worktree. You must not change HEAD, commits, the index, tracked candidate content, protected artifacts, or any non-ignored untracked file. Do not edit source code, dependency manifests, lockfiles, plan artifacts, or other worktrees. Do not commit, stage, reset, clean, or bypass validation.
+
+Submit the typed recovery result through the injected completion tool:
+- \`retry_validation\`: ignored environment/runtime state was repaired and the exact failed command should be retried once;
+- \`candidate_rework\`: the failure is attributable to the approved candidate; provide focused feedback in \`summary\`;
+- \`blocked\`: no safe repair or attribution was established; explain the blocker.
+
+${PAPERCUT_GUIDANCE}
+`;
+}
+
 export function buildSchedulerSelfHealPrompt(args: {
   runId: string;
   mode?: string;

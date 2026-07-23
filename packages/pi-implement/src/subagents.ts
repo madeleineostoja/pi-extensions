@@ -56,7 +56,8 @@ export type PiImplementWorkerStage =
   | "overall_rework"
   | "anchored_overall_review"
   | "integration_review"
-  | "integration_admission";
+  | "integration_admission"
+  | "integration_recovery";
 
 export type PiImplementWorkerRole =
   | "implementer"

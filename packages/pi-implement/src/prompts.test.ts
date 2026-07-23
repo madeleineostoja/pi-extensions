@@ -7,6 +7,7 @@ import {
   buildImplementerPrompt,
   buildIntegrationReviewerPrompt,
   buildIntegrationSelfHealPrompt,
+  buildIntegrationRecoveryPrompt,
   buildOverallReworkPrompt,
   buildInitialTaskReviewPrompt,
   buildAnchoredTaskReviewPrompt,
@@ -79,6 +80,27 @@ Do the thing.
 
 - Sibling item
 `;
+
+describe("integration recovery prompt", () => {
+  it("permits only ignored environment repair in the owned staging workspace", () => {
+    const prompt = buildIntegrationRecoveryPrompt({
+      attemptId: "integration:task-1",
+      owner: "task task-1",
+      candidateCommitSha: "candidate",
+      candidateTreeSha: "tree",
+      targetBaseSha: "base",
+      worktreePath: WORKTREE_PATH,
+      command: "sh verify.sh",
+      output: "arbitrary validation failure",
+      planArtifacts: ["plan.md"],
+    });
+
+    expect(prompt).toContain("retry_validation");
+    expect(prompt).toContain("candidate_rework");
+    expect(prompt).toContain("must not change HEAD, commits, the index");
+    expect(prompt).not.toContain("install dependencies");
+  });
+});
 
 describe("papercut prompt guidance", () => {
   it("is included for every eligible role and omitted from planner/material selection prompts", () => {

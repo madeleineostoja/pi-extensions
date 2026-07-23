@@ -17,6 +17,7 @@ import {
   buildImplementerPrompt,
   buildIntegrationReviewerPrompt,
   buildIntegrationSelfHealPrompt,
+  buildIntegrationRecoveryPrompt,
   buildInitialOverallReviewPrompt,
   buildAnchoredOverallReviewPrompt,
   buildOverallReworkPrompt,
@@ -91,6 +92,7 @@ import {
   parseInitialReviewResult,
   parseAdmissionResult,
   parseIntegrationSelfHealResult,
+  parseIntegrationRecoveryResult,
   parseOverallReworkResult,
 } from "./verdict.js";
 import type { IntegrationSelfHealResult } from "./verdict.js";
@@ -115,6 +117,7 @@ import {
   integrationAnchoredReviewSchema,
   integrationInitialReviewSchema,
   integrationSelfHealSchema,
+  integrationRecoverySchema,
   overallReworkSchema,
   initialOverallReviewSchema,
   sourceMaterialRepairSchema,
@@ -1673,7 +1676,11 @@ async function runScheduledImplementation(
           targetCheckoutId: state.run.target.gitDir,
           targetBranch,
           protectedPaths: planArtifacts,
-          validate: async ({ worktreePath, signal: validationSignal }) => {
+          validate: async ({
+            git: stagingGit,
+            worktreePath,
+            signal: validationSignal,
+          }) => {
             const commands = await resolveValidationCommands(deps);
             for (const command of commands) {
               const result = await runValidationCommand(
@@ -1682,16 +1689,187 @@ async function runScheduledImplementation(
                 validationSignal,
               );
               if (result.exitCode !== 0) {
-                return {
-                  ok: false,
-                  reason: `${command.display}: ${result.stderr || result.stdout}`,
+                const failure = `${command.display}: ${result.stderr || result.stdout}`;
+                if (integrationAttempt.recovery !== undefined) {
+                  return {
+                    ok: false,
+                    disposition: "blocked",
+                    reason: `${failure}\n\nIntegration recovery was already consumed for this attempt.`,
+                  };
+                }
+                await dispatch({
+                  kind: "integration_recovery_started",
+                  attemptId,
+                  now: new Date().toISOString(),
+                });
+                type RecoveryBoundary = {
+                  head: string;
+                  tree: string;
+                  staged: string;
+                  working: string;
+                  untracked: string;
+                  protectedArtifacts: Record<string, string>;
+                  targetHead: string;
+                  targetWorking: string;
+                  targetUntracked: string;
                 };
+                const snapshotRecoveryBoundary =
+                  async (): Promise<RecoveryBoundary> => ({
+                    head: await stagingGit.head(),
+                    tree: await stagingGit.tree(),
+                    staged: await stagingGit.stagedFingerprint(),
+                    working: await stagingGit.worktreeFingerprintExcept([]),
+                    untracked:
+                      await stagingGit.nonignoredUntrackedFingerprint(),
+                    protectedArtifacts: await engine.protectedArtifactHashes(),
+                    targetHead: await deps.git.head(),
+                    targetWorking:
+                      await deps.git.worktreeFingerprintExcept(planArtifacts),
+                    targetUntracked:
+                      await deps.git.nonignoredUntrackedFingerprint(),
+                  });
+                const before = await snapshotRecoveryBoundary();
+                const targetSnapshot = await captureRestoreSnapshot(
+                  deps.git,
+                  planArtifacts,
+                );
+                let recovery:
+                  | ReturnType<typeof parseIntegrationRecoveryResult>
+                  | undefined;
+                try {
+                  const id = await deps.subagents.spawn({
+                    type: deps.roles.selfHeal.type,
+                    prompt: buildIntegrationRecoveryPrompt({
+                      attemptId,
+                      owner:
+                        integrationAttempt.owner.kind === "task"
+                          ? `task ${integrationAttempt.owner.taskId}`
+                          : "overall review",
+                      candidateCommitSha: candidate.commitSha,
+                      candidateTreeSha: candidate.treeSha,
+                      targetBaseSha: integrationAttempt.targetBaseSha,
+                      worktreePath,
+                      command: command.display,
+                      output: result.stderr || result.stdout,
+                      planArtifacts,
+                    }),
+                    description: `integration recovery ${attemptId}`,
+                    model: deps.roles.selfHeal.model,
+                    thinking: deps.roles.selfHeal.thinking,
+                    role: "selfHeal",
+                    stage: "integration_recovery",
+                    taskId:
+                      integrationAttempt.owner.kind === "task"
+                        ? integrationAttempt.owner.taskId
+                        : undefined,
+                    cwd: worktreePath,
+                    completion: {
+                      description: "Submit the integration recovery result.",
+                      schema: integrationRecoverySchema,
+                    },
+                  });
+                  const response = await deps.subagents.waitFor(
+                    id,
+                    validationSignal,
+                  );
+                  recovery =
+                    response.status === "completed"
+                      ? parseIntegrationRecoveryResult(response.result)
+                      : undefined;
+                } catch {
+                  recovery = undefined;
+                }
+                let after: RecoveryBoundary | undefined;
+                try {
+                  after = await snapshotRecoveryBoundary();
+                } catch {
+                  after = undefined;
+                }
+                const safe =
+                  after !== undefined &&
+                  before.head === after.head &&
+                  before.tree === after.tree &&
+                  before.staged === after.staged &&
+                  before.working === after.working &&
+                  before.untracked === after.untracked &&
+                  JSON.stringify(before.protectedArtifacts) ===
+                    JSON.stringify(after.protectedArtifacts) &&
+                  before.targetHead === after.targetHead &&
+                  before.targetWorking === after.targetWorking &&
+                  before.targetUntracked === after.targetUntracked &&
+                  after.tree === candidate.treeSha;
+                if (!safe || !recovery?.ok) {
+                  let targetRestored = true;
+                  try {
+                    await restoreAndVerify(
+                      deps.git,
+                      targetSnapshot,
+                      planArtifacts,
+                    );
+                  } catch {
+                    targetRestored = false;
+                  }
+                  let stagingDiscarded = true;
+                  try {
+                    await engine.discardOwnedWorkspace(integrationAttempt);
+                  } catch {
+                    stagingDiscarded = false;
+                  }
+                  const summary = !targetRestored
+                    ? "Integration recovery changed the target checkout and exact restoration failed."
+                    : !stagingDiscarded
+                      ? "Integration recovery workspace could not be discarded safely."
+                      : safe
+                        ? recovery && !recovery.ok
+                          ? recovery.reason
+                          : "Integration recovery did not return a valid result."
+                        : "Integration recovery changed protected candidate state.";
+                  await dispatch({
+                    kind: "integration_recovery_completed",
+                    attemptId,
+                    disposition: "blocked",
+                    summary,
+                  });
+                  return { ok: false, disposition: "blocked", reason: summary };
+                }
+                await dispatch({
+                  kind: "integration_recovery_completed",
+                  attemptId,
+                  disposition: recovery.result.disposition,
+                  summary: recovery.result.summary,
+                });
+                if (recovery.result.disposition === "candidate_rework") {
+                  return {
+                    ok: false,
+                    disposition: "needs_rework",
+                    reason: recovery.result.summary,
+                  };
+                }
+                if (recovery.result.disposition === "blocked") {
+                  return {
+                    ok: false,
+                    disposition: "blocked",
+                    reason: recovery.result.summary,
+                  };
+                }
+                const retry = await runValidationCommand(
+                  command,
+                  worktreePath,
+                  validationSignal,
+                );
+                if (retry.exitCode !== 0) {
+                  return {
+                    ok: false,
+                    disposition: "blocked",
+                    reason: `${command.display}: ${retry.stderr || retry.stdout}`,
+                  };
+                }
               }
             }
             if (commands.length > 0 || attempt.owner.kind !== "task") {
               return { ok: true };
             }
-            const stagingGit = (
+            const fallbackGit = (
               deps.git.withSignal?.(validationSignal) ?? deps.git
             ).forWorktree(worktreePath, await deps.git.root());
             const stagingPlanArtifacts = overallWorktreePlanArtifacts(
@@ -1719,14 +1897,18 @@ async function runScheduledImplementation(
               });
             }
             const verdict = await runIntegrationReviewFallback(
-              { ...deps, git: stagingGit },
+              { ...deps, git: fallbackGit },
               attempt.owner.taskId,
               stagingPlanArtifacts,
               schedulerTask,
             );
             return verdict.ok
               ? { ok: true }
-              : { ok: false, reason: verdict.reason };
+              : {
+                  ok: false,
+                  disposition: "needs_rework",
+                  reason: verdict.reason,
+                };
           },
         });
         const preparation =
@@ -1763,7 +1945,14 @@ async function runScheduledImplementation(
             });
             return;
           }
-          await dispatch({ kind: "integration_paused", attemptId });
+          await dispatch({
+            kind: "integration_paused",
+            attemptId,
+            reason:
+              "reason" in preparation
+                ? preparation.reason
+                : "Integration preparation was cancelled.",
+          });
           return;
         }
         const prepared = preparation.prepared;
@@ -1842,7 +2031,14 @@ async function runScheduledImplementation(
           });
           return;
         }
-        await dispatch({ kind: "integration_paused", attemptId });
+        await dispatch({
+          kind: "integration_paused",
+          attemptId,
+          reason:
+            "reason" in published
+              ? published.reason
+              : "Integration publication was cancelled.",
+        });
       },
       executeWorker: async ({ taskId, signal }) => {
         const canonical = deps.canonicalRunStore!.read();
@@ -5997,9 +6193,16 @@ async function runConvergentOverallReviewLoop(
     ) {
       completion = await schedulerActor.nextCompletion();
     }
-    const overallRuntime = deps.canonicalRunStore?.read().runtime.overall;
+    const canonicalAfterIntegration = deps.canonicalRunStore?.read();
+    const overallRuntime = canonicalAfterIntegration?.runtime.overall;
     if (overallRuntime?.phase === "waiting_rework") {
+      const integrationReason =
+        canonicalAfterIntegration?.integrationAttempts.find(
+          (entry) =>
+            entry.id === completion.attemptId && entry.owner.kind === "overall",
+        )?.pausedReason;
       overall.latestEvidence =
+        integrationReason ??
         "Overall integration requires rework; the approved candidate was retained.";
       persistOverallReviewState(
         deps,

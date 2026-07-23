@@ -5,6 +5,7 @@ import {
   parseInitialReviewResult,
   parseAdmissionResult,
   parseIntegrationSelfHealResult,
+  parseIntegrationRecoveryResult,
   parseOverallReworkResult,
 } from "./verdict.js";
 
@@ -256,6 +257,24 @@ describe("typed result validators", () => {
         ],
       }),
     ).toMatchObject({ ok: true, result: { proposalBatchId: "batch" } });
+  });
+
+  it("parses explicit integration recovery dispositions", () => {
+    expect(
+      parseIntegrationRecoveryResult({
+        disposition: "candidate_rework",
+        summary: "Candidate behavior causes the validation failure.",
+      }),
+    ).toMatchObject({
+      ok: true,
+      result: { disposition: "candidate_rework" },
+    });
+    expect(
+      parseIntegrationRecoveryResult({ disposition: "retry_validation" }),
+    ).toEqual({
+      ok: false,
+      reason: "Integration recovery result is missing summary.",
+    });
   });
 
   it("rejects unsafe retry decisions without a retry mode", () => {

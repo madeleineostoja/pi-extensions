@@ -130,6 +130,9 @@ class FakeGit implements GitClient {
   async nonignoredUntracked() {
     return [];
   }
+  async nonignoredUntrackedFingerprint() {
+    return "untracked";
+  }
   async abortActiveOperation() {
     this.activeOperationValue = undefined;
   }
@@ -401,7 +404,7 @@ function makeCanonicalRunStore(
 ): RunStore {
   const now = new Date().toISOString();
   const initial: CanonicalRunState = {
-    schemaVersion: 7,
+    schemaVersion: 8,
     revision: 0,
     run: {
       id: "r1",
