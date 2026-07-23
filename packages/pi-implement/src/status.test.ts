@@ -207,44 +207,82 @@ describe("status formatting", () => {
     expect(status).toContain("Overall review · overall review rework");
   });
 
-  it("formats pretty agent labels for implementer/reviewer/task roles", () => {
+  it("formats concise sentence-case agent activities", () => {
     const implementer = makeAgentLabel({
       id: "a1",
       role: "implementer",
+      activity: "implementing",
       label: "foo",
       startedAt: "2024-01-01T00:00:00Z",
       taskIndex: 3,
       taskTotal: 7,
       taskTitle: "Add retry handling",
     });
-    expect(implementer).toBe("Task 3/7 implementer \u00b7 Add retry handling");
+    expect(implementer).toBe("Task 3/7 \u00b7 Implementing");
 
     const reviewer = makeAgentLabel({
       id: "a2",
       role: "reviewer",
+      activity: "re_reviewing",
       label: "bar",
       startedAt: "2024-01-01T00:00:00Z",
       taskIndex: 3,
       taskTotal: 7,
       taskTitle: "Add retry handling",
     });
-    expect(reviewer).toBe("Task 3/7 reviewer \u00b7 Add retry handling");
+    expect(reviewer).toBe("Task 3/7 \u00b7 Re-reviewing");
 
     const planner = makeAgentLabel({
       id: "a3",
       role: "planner",
+      activity: "planning_strategy",
       label: "baz",
       startedAt: "2024-01-01T00:00:00Z",
     });
-    expect(planner).toBe("Planner \u00b7 Select implementation strategy");
+    expect(planner).toBe("Planner \u00b7 Planning strategy");
 
     const triage = makeAgentLabel({
       id: "a4",
       role: "triage",
+      activity: "analyzing_dependencies",
       label: "qux",
       startedAt: "2024-01-01T00:00:00Z",
     });
-    expect(triage).toBe("Triage \u00b7 Analyze plan dependencies");
+    expect(triage).toBe("Triage \u00b7 Analyzing dependencies");
+
+    expect(
+      makeAgentLabel({
+        id: "repair",
+        role: "planner",
+        activity: "repairing_source_material",
+        label: "Planner · Repair source material refs for task 2",
+        startedAt: "2024-01-01T00:00:00Z",
+        taskIndex: 2,
+        taskTotal: 4,
+      }),
+    ).toBe("Task 2/4 · Repairing source references");
+
+    expect(
+      makeAgentLabel({
+        id: "admission",
+        role: "admission",
+        activity: "admitting_findings",
+        label: "Admit overall review findings",
+        scopeLabel: "Overall",
+        startedAt: "2024-01-01T00:00:00Z",
+      }),
+    ).toBe("Overall · Admitting findings");
+
+    expect(
+      makeAgentLabel({
+        id: "legacy",
+        role: "implementer",
+        label: "Task 1/2 implementer · Legacy task",
+        startedAt: "2024-01-01T00:00:00Z",
+        taskIndex: 1,
+        taskTotal: 2,
+      }),
+    ).toBe("Task 1/2 · Implementing");
   });
 
   it("formats widget lines compactly for active run state", () => {
@@ -261,6 +299,7 @@ describe("status formatting", () => {
           {
             id: "a1",
             role: "implementer",
+            activity: "implementing",
             label: "Task 3/7 implementer \u00b7 Add retry handling",
             startedAt: "2024-01-01T00:04:00Z",
             taskIndex: 3,
@@ -270,6 +309,7 @@ describe("status formatting", () => {
           {
             id: "a2",
             role: "reviewer",
+            activity: "reviewing",
             label: "Task 4/7 reviewer \u00b7 Add tests",
             startedAt: "2024-01-01T00:08:00Z",
             taskIndex: 4,
@@ -283,10 +323,10 @@ describe("status formatting", () => {
 
     expect(lines[0]).toContain("pi-implement");
     expect(lines[0]).toContain("2/7");
-    expect(lines[0]).toContain("coding");
-    expect(lines[1]).toContain("Task 3/7 implementer");
+    expect(lines[0]).toContain("Implementing");
+    expect(lines[1]).toContain("Task 3/7 · Implementing");
     expect(lines[1]).toContain("6m");
-    expect(lines[2]).toContain("Task 4/7 reviewer");
+    expect(lines[2]).toContain("Task 4/7 · Reviewing");
     expect(lines[2]).toContain("2m");
   });
 
@@ -313,6 +353,9 @@ describe("status formatting", () => {
     );
     expect(widget).not.toEqual(
       expect.arrayContaining([expect.stringContaining("/agents")]),
+    );
+    expect(widget).not.toEqual(
+      expect.arrayContaining([expect.stringContaining("subagent")]),
     );
   });
 
@@ -373,7 +416,7 @@ describe("status formatting", () => {
     expect(lines[0]).not.toContain("landed");
   });
 
-  it("widget active-agent entries include label and short id", () => {
+  it("widget active-agent entries show concise activities", () => {
     const now = new Date("2024-01-01T00:10:00Z").getTime();
     const lines = formatWidgetLines(
       {
@@ -385,6 +428,7 @@ describe("status formatting", () => {
           {
             id: "agent-123456789",
             role: "implementer",
+            activity: "implementing",
             label: "Task 3/7 implementer \u00b7 Add retry handling",
             startedAt: "2024-01-01T00:04:00Z",
             taskIndex: 3,
@@ -395,9 +439,9 @@ describe("status formatting", () => {
       },
       now,
     );
-    const agentLine = lines.find((l) => l.includes("Task 3/7 implementer"));
+    const agentLine = lines.find((l) => l.includes("Task 3/7 · Implementing"));
     expect(agentLine).toBeDefined();
-    expect(agentLine).toContain("agent-12");
+    expect(agentLine).not.toContain("agent-12");
     expect(agentLine).not.toContain("/agents");
   });
 
@@ -413,6 +457,7 @@ describe("status formatting", () => {
           {
             id: "agent-123456789",
             role: "implementer",
+            activity: "implementing",
             label: "Task 3/7 implementer \u00b7 Add retry handling",
             startedAt: "2024-01-01T00:04:00Z",
             taskIndex: 3,
@@ -439,16 +484,14 @@ describe("status formatting", () => {
         },
       ],
     );
-    const agentLine = lines.find((l) => l.includes("Task 3/7 implementer"));
+    const agentLine = lines.find((l) => l.includes("Task 3/7 · Implementing"));
     expect(agentLine).toBeDefined();
-    expect(agentLine).not.toContain("running");
-    expect(agentLine).toContain("4 tool");
     expect(agentLine).toContain("$1.27 (82k)");
-    expect(agentLine).not.toContain("6.4k ctx");
-    expect(agentLine).not.toContain("12.3k");
-    expect(agentLine).toContain("\u21ca2");
-    expect(agentLine).not.toContain("/agents");
-    expect(agentLine).toContain("agent-12");
+    expect(agentLine).not.toContain("running");
+    expect(agentLine).not.toContain("4 tool");
+    expect(agentLine).not.toContain("\u21ca2");
+    expect(agentLine).not.toContain("agent-12");
+    expect(agentLine).not.toContain("Add retry handling");
   });
 
   it("does not throw when runtime snapshots are absent", () => {
@@ -468,6 +511,7 @@ describe("status formatting", () => {
         {
           id: "a1",
           role: "implementer",
+          activity: "implementing",
           label: "Task 3/7 implementer \u00b7 Add retry handling",
           startedAt: "2024-01-01T00:00:00Z",
           taskIndex: 3,
@@ -518,18 +562,22 @@ describe("status formatting", () => {
     const overallReviewer = makeAgentLabel({
       id: "a1",
       role: "reviewer",
+      activity: "reviewing",
       label: "Reviewer · Overall review",
+      scopeLabel: "Overall",
       startedAt: "2024-01-01T00:00:00Z",
     });
-    expect(overallReviewer).toBe("Reviewer · Overall review");
+    expect(overallReviewer).toBe("Overall · Reviewing");
 
     const overallReworker = makeAgentLabel({
       id: "a2",
       role: "implementer",
+      activity: "reworking",
       label: "Overall rework · attempt 1",
+      scopeLabel: "Overall",
       startedAt: "2024-01-01T00:00:00Z",
     });
-    expect(overallReworker).toBe("Overall rework · attempt 1");
+    expect(overallReworker).toBe("Overall · Reworking");
   });
 
   it("keeps checkpoint history bounded while preserving emission sequence", () => {
@@ -576,6 +624,7 @@ describe("status formatting", () => {
           {
             id: "a1",
             role: "implementer",
+            activity: "implementing",
             label: "Task 2/5 implementer · Add retry",
             startedAt: new Date("2024-01-01T00:02:00Z").toISOString(),
             taskIndex: 2,

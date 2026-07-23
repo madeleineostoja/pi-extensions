@@ -699,8 +699,12 @@ async function repairPlannerSourceMaterialRefs(
     const ref: AgentDisplayRef = {
       id,
       role: "planner",
+      activity: "repairing_source_material",
       label: `Planner · Repair source material refs for task ${args.task.index}`,
+      scopeLabel: `Task ${args.task.index}`,
       startedAt: new Date().toISOString(),
+      taskIndex: args.task.index,
+      taskTotal: args.taskTotal,
     };
     args.updateState!((prev) => addActiveAgentPatch(prev, ref));
     const result = await args.subagents!.waitFor(id, args.signal);
@@ -1043,6 +1047,7 @@ type RetryFeedback = {
 
 type TaskSourceMaterialPacketArgs = {
   task: PlanTask;
+  taskTotal?: number;
   taskId?: string;
   planPath: string;
   manifest?: PlanBundleManifest;
@@ -1772,10 +1777,24 @@ async function runScheduledImplementation(
                       schema: integrationRecoverySchema,
                     },
                   });
-                  const response = await deps.subagents.waitFor(
+                  const ref: AgentDisplayRef = {
                     id,
-                    validationSignal,
+                    role: "implementer",
+                    activity: "self_healing",
+                    label: `Integration recovery · ${attemptId}`,
+                    scopeLabel: "Integration",
+                    startedAt: new Date().toISOString(),
+                  };
+                  deps.updateState((previous) =>
+                    addActiveAgentPatch(previous, ref),
                   );
+                  const response = await deps.subagents
+                    .waitFor(id, validationSignal)
+                    .finally(() => {
+                      deps.updateState((previous) =>
+                        removeActiveAgentPatch(previous, id),
+                      );
+                    });
                   recovery =
                     response.status === "completed"
                       ? parseIntegrationRecoveryResult(response.result)
@@ -3964,7 +3983,9 @@ async function tryIntegrationSelfHeal(
   const ref: AgentDisplayRef = {
     id,
     role: "implementer",
+    activity: "self_healing",
     label: `Integration self-heal \u00b7 ${taskId}`,
+    scopeLabel: "Integration",
     startedAt: new Date().toISOString(),
   };
   setSchedulerActiveAgent(task, ref);
@@ -4460,6 +4481,8 @@ async function admitReviewProposals(args: {
   deps: OrchestratorDeps;
   scope: "task" | "overall" | "integration";
   taskId: string;
+  taskIndex?: number;
+  taskTotal?: number;
   compiledContract: string;
   candidateIdentity: string;
   latestDeltaPaths: string[];
@@ -4539,7 +4562,29 @@ async function admitReviewProposals(args: {
         schema: findingAdmissionBatchSchema,
       },
     });
-    result = await args.deps.subagents.waitFor(id, args.deps.signal);
+    const ref: AgentDisplayRef = {
+      id,
+      role: "admission",
+      activity: "admitting_findings",
+      label: `Admit ${args.scope} review findings`,
+      scopeLabel:
+        args.scope === "overall"
+          ? "Overall"
+          : args.scope === "integration"
+            ? "Integration"
+            : "Task",
+      startedAt: new Date().toISOString(),
+      taskIndex: args.taskIndex,
+      taskTotal: args.taskTotal,
+    };
+    args.deps.updateState((previous) => addActiveAgentPatch(previous, ref));
+    result = await args.deps.subagents
+      .waitFor(id, args.deps.signal)
+      .finally(() => {
+        args.deps.updateState((previous) =>
+          removeActiveAgentPatch(previous, id),
+        );
+      });
   } catch (error) {
     result = {
       status: "failed",
@@ -4639,7 +4684,9 @@ async function runIntegrationReviewFallback(
   const ref: AgentDisplayRef = {
     id,
     role: "reviewer",
+    activity: fallbackState ? "re_reviewing" : "reviewing",
     label: `Reviewer · Integration review · ${taskId}`,
+    scopeLabel: "Integration",
     startedAt: new Date().toISOString(),
   };
   setSchedulerActiveAgent(schedulerTask, ref);
@@ -5279,7 +5326,9 @@ async function runInitialOverallReview(args: {
   const ref: AgentDisplayRef = {
     id,
     role: "reviewer",
+    activity: "reviewing",
     label: "Reviewer · Overall review",
+    scopeLabel: "Overall",
     startedAt: new Date().toISOString(),
   };
   deps.updateState((previous) => addActiveAgentPatch(previous, ref));
@@ -5424,9 +5473,11 @@ async function reviewOverallCandidate(args: {
   const ref: AgentDisplayRef = {
     id,
     role: "reviewer",
+    activity: args.initial ? "reviewing" : "re_reviewing",
     label: args.initial
       ? "Reviewer · Overall review"
       : "Reviewer · Overall re-review",
+    scopeLabel: "Overall",
     startedAt: new Date().toISOString(),
   };
   deps.updateState((previous) => addActiveAgentPatch(previous, ref));
@@ -5920,7 +5971,9 @@ async function runConvergentOverallReviewLoop(
     const ref: AgentDisplayRef = {
       id,
       role: "implementer",
+      activity: "reworking",
       label: `Overall rework · attempt ${attempt}`,
+      scopeLabel: "Overall",
       startedAt: new Date().toISOString(),
     };
     deps.updateState((previous) => addActiveAgentPatch(previous, ref));
@@ -7312,6 +7365,7 @@ async function runTaskWorker(args: {
     }
     const sourceMaterialPacket = await buildTaskSourceMaterialPacket({
       task,
+      taskTotal: plan.tasks.length,
       taskId,
       planPath: deps.planPath,
       manifest: deps.manifest,
@@ -7443,6 +7497,7 @@ async function runTaskWorker(args: {
     const implementerRef: AgentDisplayRef = {
       id: implementerId,
       role: "implementer",
+      activity: reviewState ? "reworking" : "implementing",
       label: `Task ${task.index}/${plan.tasks.length} implementer \u00b7 ${shortTask(task.text)}`,
       startedAt: new Date().toISOString(),
       taskId,
@@ -7935,6 +7990,7 @@ async function runTaskWorker(args: {
         const reviewerRef: AgentDisplayRef = {
           id: reviewerId,
           role: "reviewer",
+          activity: reviewState ? "re_reviewing" : "reviewing",
           label: `Task ${task.index}/${plan.tasks.length} reviewer \u00b7 ${shortTask(task.text)}`,
           startedAt: new Date().toISOString(),
           taskId,
@@ -8124,6 +8180,8 @@ async function runTaskWorker(args: {
                   deps,
                   scope: "task",
                   taskId,
+                  taskIndex: task.index,
+                  taskTotal: plan.tasks.length,
                   compiledContract,
                   candidateIdentity,
                   latestDeltaPaths,
@@ -8414,6 +8472,7 @@ async function runTaskWorker(args: {
               const admissionRef: AgentDisplayRef = {
                 id: admissionId,
                 role: "admission",
+                activity: "admitting_findings",
                 label: `Task ${task.index}/${plan.tasks.length} finding admission · ${shortTask(task.text)}`,
                 startedAt: new Date().toISOString(),
                 taskId,

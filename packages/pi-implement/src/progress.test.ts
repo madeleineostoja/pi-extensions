@@ -261,7 +261,7 @@ describe("diffProgress", () => {
       ],
     };
     expect(diffProgress(base, admitted, [])).toContain(
-      "· Task 1/1 review: admitted R1; deferred P2; rejected P3; unresolved R1; outstanding 1, best 1",
+      "· Task 1/1 review · 1 finding admitted · 1 finding deferred · 1 finding rejected · 1 finding outstanding",
     );
 
     const anchored: RunState = {
@@ -285,7 +285,7 @@ describe("diffProgress", () => {
       ],
     };
     expect(diffProgress(admitted, anchored, [])).toContain(
-      "· Task 1/1 review candidate aaaaaaa→bbbbbbb: admitted R1; deferred P2; rejected P3; addressed R1; unresolved R2; admitted regression R2; outstanding 1 (previous 1), best 1",
+      "· Task 1/1 re-review · 1 finding addressed · 1 regression · 1 finding outstanding",
     );
   });
 
@@ -322,6 +322,50 @@ describe("diffProgress", () => {
     };
     expect(
       diffProgress(state, { ...state, activeSubagentId: "agent-1" }, []),
+    ).toEqual([]);
+  });
+
+  it("suppresses empty review snapshots", () => {
+    const task = {
+      id: "t1",
+      planIndex: 0,
+      title: "A",
+      status: "reviewing" as const,
+    };
+    const next: RunState = {
+      phase: "reviewing",
+      totalCount: 1,
+      tasks: [
+        {
+          ...task,
+          reviewProgress: {
+            scope: "task",
+            stage: "initial_review",
+            epoch: 1,
+            round: 0,
+            currentCandidate: "aaaaaaaa",
+            admittedIds: [],
+            resolvedIds: [],
+            deferredIds: [],
+            rejectedIds: [],
+            addressedIds: [],
+            notAddressedIds: [],
+            unresolvedIds: [],
+            newRegressionIds: [],
+            currentOutstandingCount: 0,
+            bestOutstandingCount: 0,
+            consecutiveStalledRounds: 0,
+          },
+        },
+      ],
+    };
+
+    expect(
+      diffProgress(
+        { phase: "reviewing", totalCount: 1, tasks: [task] },
+        next,
+        [],
+      ),
     ).toEqual([]);
   });
 
@@ -364,7 +408,7 @@ describe("diffProgress", () => {
       ],
     };
     expect(diffProgress(state, stalled, [])).toContain(
-      "⚠ Task 1/1 review stalled: outstanding 1, best 1",
+      "⚠ Task 1/1 review stalled · 1 finding outstanding · best 1",
     );
     const retry = {
       ...stalled,

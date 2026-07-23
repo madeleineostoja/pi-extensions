@@ -176,6 +176,7 @@ async function runExecutionPlanner(
     const plannerRef: AgentDisplayRef = {
       id,
       role: "planner",
+      activity: "planning_strategy",
       label: "Planner \u00b7 Build execution manifest",
       startedAt: new Date().toISOString(),
     };

@@ -1868,7 +1868,9 @@ function activeAgentRefs(state: RunState): AgentDisplayRef[] {
     .map((id) => ({
       id,
       role: "implementer" as const,
-      label: `Subagent ${id}`,
+      activity: "working" as const,
+      label: `Agent ${id}`,
+      scopeLabel: "Agent",
       startedAt: new Date(0).toISOString(),
     }));
   return [...refs, ...missingRefs];

@@ -184,38 +184,70 @@ function formatReviewProgressNote(
   if (!next || reviewProgressEqual(prev, next)) {
     return undefined;
   }
-  const scope =
-    next.scope === "integration" ? " integration review" : " review";
-  const candidate = next.previousCandidate
-    ? ` candidate ${next.previousCandidate.slice(0, 7)}→${next.currentCandidate.slice(0, 7)}`
-    : "";
-  const counts = `outstanding ${next.currentOutstandingCount}${next.previousOutstandingCount === undefined ? "" : ` (previous ${next.previousOutstandingCount}`}${next.previousOutstandingCount === undefined ? "" : ")"}, best ${next.bestOutstandingCount}`;
+  const subject = reviewSubject(
+    label,
+    next.scope,
+    next.stage === "anchored_review",
+  );
   if (next.retryKind) {
-    return `↻ ${label}${scope} ${next.retryKind} retry`;
+    return `↻ ${subject} ${next.retryKind} retry`;
   }
   if (next.stage === "stalled") {
-    return `⚠ ${label}${scope} stalled: ${counts}`;
+    return `⚠ ${subject} stalled · ${findingCount(next.currentOutstandingCount, "outstanding")} · best ${next.bestOutstandingCount}`;
   }
   if (next.stage === "approved") {
-    return `✓ ${label}${scope} approved${candidate ? ` at ${next.currentCandidate.slice(0, 7)}` : ""}`;
+    return `✓ ${subject} approved`;
   }
+
   const changes = [
-    next.admittedIds.length ? `admitted ${next.admittedIds.join(", ")}` : "",
-    next.resolvedIds.length ? `resolved ${next.resolvedIds.join(", ")}` : "",
-    next.deferredIds.length ? `deferred ${next.deferredIds.join(", ")}` : "",
-    next.rejectedIds.length ? `rejected ${next.rejectedIds.join(", ")}` : "",
-    next.addressedIds.length ? `addressed ${next.addressedIds.join(", ")}` : "",
-    next.notAddressedIds.length
-      ? `not addressed ${next.notAddressedIds.join(", ")}`
-      : "",
-    next.unresolvedIds.length
-      ? `unresolved ${next.unresolvedIds.join(", ")}`
-      : "",
-    next.newRegressionIds.length
-      ? `admitted regression ${next.newRegressionIds.join(", ")}`
-      : "",
-  ].filter(Boolean);
-  return `· ${label}${scope}${candidate}${changes.length ? `: ${changes.join("; ")}; ` : ": "}${counts}`;
+    findingDelta(next.admittedIds, prev?.admittedIds, "admitted"),
+    findingDelta(next.resolvedIds, prev?.resolvedIds, "resolved"),
+    findingDelta(next.deferredIds, prev?.deferredIds, "deferred"),
+    findingDelta(next.rejectedIds, prev?.rejectedIds, "rejected"),
+    findingDelta(next.addressedIds, prev?.addressedIds, "addressed"),
+    findingDelta(next.notAddressedIds, prev?.notAddressedIds, "not addressed"),
+    findingDelta(next.newRegressionIds, prev?.newRegressionIds, "regression"),
+  ].filter((change): change is string => Boolean(change));
+  const outstandingChanged =
+    next.currentOutstandingCount !== prev?.currentOutstandingCount;
+  if (changes.length === 0 && !outstandingChanged) {
+    return undefined;
+  }
+  if (next.currentOutstandingCount > 0) {
+    changes.push(findingCount(next.currentOutstandingCount, "outstanding"));
+  }
+  return changes.length > 0
+    ? `· ${subject} · ${changes.join(" · ")}`
+    : undefined;
+}
+
+function reviewSubject(
+  label: string,
+  scope: ReviewProgress["scope"],
+  reReview: boolean,
+): string {
+  const qualifier = scope === "integration" ? "integration " : "";
+  return `${label} ${qualifier}${reReview ? "re-review" : "review"}`;
+}
+
+function findingDelta(
+  current: string[],
+  previous: string[] | undefined,
+  kind: string,
+): string | undefined {
+  const previousIds = new Set(previous ?? []);
+  const count = current.filter((id) => !previousIds.has(id)).length;
+  if (count === 0) {
+    return undefined;
+  }
+  if (kind === "regression") {
+    return `${count} ${count === 1 ? "regression" : "regressions"}`;
+  }
+  return findingCount(count, kind);
+}
+
+function findingCount(count: number, kind: string): string {
+  return `${count} ${count === 1 ? "finding" : "findings"} ${kind}`;
 }
 
 function reviewProgressEqual(

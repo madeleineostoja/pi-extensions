@@ -40,10 +40,24 @@ export type AgentRole =
   | "triage"
   | "admission";
 
+export type AgentActivity =
+  | "working"
+  | "planning_strategy"
+  | "repairing_source_material"
+  | "analyzing_dependencies"
+  | "implementing"
+  | "reviewing"
+  | "re_reviewing"
+  | "admitting_findings"
+  | "reworking"
+  | "self_healing";
+
 export type AgentDisplayRef = {
   id: string;
   role: AgentRole;
+  activity?: AgentActivity;
   label: string;
+  scopeLabel?: string;
   startedAt: string;
   taskId?: string;
   taskIndex?: number;
@@ -458,17 +472,65 @@ export function checkpointPatch(
   };
 }
 
+const AGENT_ACTIVITY_LABEL: Record<AgentActivity, string> = {
+  working: "Working",
+  planning_strategy: "Planning strategy",
+  repairing_source_material: "Repairing source references",
+  analyzing_dependencies: "Analyzing dependencies",
+  implementing: "Implementing",
+  reviewing: "Reviewing",
+  re_reviewing: "Re-reviewing",
+  admitting_findings: "Admitting findings",
+  reworking: "Reworking",
+  self_healing: "Self-healing",
+};
+
+const PHASE_LABEL: Partial<Record<Phase, string>> = {
+  preflight: "Preparing",
+  strategy: "Planning strategy",
+  scheduling: "Scheduling",
+  coding: "Implementing",
+  reviewing: "Reviewing",
+  committing: "Committing",
+  integrating: "Integrating",
+  reworking: "Reworking",
+  final_review: "Final review",
+  final_rework: "Final rework",
+  stopping: "Stopping",
+};
+
 export function makeAgentLabel(ref: AgentDisplayRef): string {
-  if (ref.taskIndex !== undefined && ref.taskTotal !== undefined) {
-    return `Task ${ref.taskIndex}/${ref.taskTotal} ${ref.role}${ref.taskTitle ? ` \u00b7 ${ref.taskTitle}` : ""}`;
+  const scope =
+    ref.taskIndex !== undefined && ref.taskTotal !== undefined
+      ? `Task ${ref.taskIndex}/${ref.taskTotal}`
+      : (ref.scopeLabel ?? roleLabel(ref.role));
+  const activity = ref.activity
+    ? AGENT_ACTIVITY_LABEL[ref.activity]
+    : legacyActivityLabel(ref.role);
+  return `${scope} \u00b7 ${activity}`;
+}
+
+function roleLabel(role: AgentRole): string {
+  if (role === "admission") {
+    return "Review";
   }
-  if (ref.role === "planner") {
-    return `Planner \u00b7 Select implementation strategy`;
+  return `${role.charAt(0).toUpperCase()}${role.slice(1)}`;
+}
+
+function legacyActivityLabel(role: AgentRole): string {
+  if (role === "implementer") {
+    return AGENT_ACTIVITY_LABEL.implementing;
   }
-  if (ref.role === "triage") {
-    return `Triage \u00b7 Analyze plan dependencies`;
+  if (role === "reviewer") {
+    return AGENT_ACTIVITY_LABEL.reviewing;
   }
-  return ref.label || `${ref.role} \u00b7 ${ref.id}`;
+  if (role === "planner") {
+    return AGENT_ACTIVITY_LABEL.planning_strategy;
+  }
+  if (role === "triage") {
+    return AGENT_ACTIVITY_LABEL.analyzing_dependencies;
+  }
+  return AGENT_ACTIVITY_LABEL.admitting_findings;
 }
 
 export function formatWidgetLines(
@@ -511,7 +573,7 @@ export function formatWidgetLines(
     progressText = "…";
   }
 
-  const phaseLabel = state.phase;
+  const phaseLabel = PHASE_LABEL[state.phase] ?? state.phase;
   const startedAt = state.activeAgentRefs?.[0]?.startedAt;
   const elapsed = startedAt
     ? formatDuration(nowMs - new Date(startedAt).getTime())
@@ -546,42 +608,22 @@ export function formatWidgetLines(
       const snapshot = snapshotMap.get(ref.id);
       const glyph = ref.role === "implementer" ? "\u25b6" : "\u00b7";
       let line = `${glyph} ${label}${duration ? ` \u00b7 ${duration}` : ""}`;
-      const shortId = ref.id.slice(0, 8);
-      line += ` \u00b7 ${shortId}`;
-      if (snapshot?.toolUses !== undefined) {
-        line += ` \u00b7 ${snapshot.toolUses} tool`;
-      }
       if (
         snapshot?.estimatedCost !== undefined ||
         snapshot?.peakContextTokens !== undefined
       ) {
         line += ` \u00b7 ${formatUsage(snapshot)}`;
       }
-      if (snapshot?.compactionCount !== undefined) {
-        line += ` \u00b7 \u21ca${snapshot.compactionCount}`;
-      }
       return line;
     }),
     ...rawActiveIds.map((id) => {
       const snapshot = snapshotMap.get(id);
-      let line = "·";
-      if (snapshot?.description) {
-        line += ` ${snapshot.description}`;
-      } else {
-        line += " Active subagent";
-      }
-      line += ` · ${id.slice(0, 8)}`;
-      if (snapshot?.toolUses !== undefined) {
-        line += ` · ${snapshot.toolUses} tool`;
-      }
+      let line = `\u00b7 Active agent \u00b7 ${id.slice(0, 8)}`;
       if (
         snapshot?.estimatedCost !== undefined ||
         snapshot?.peakContextTokens !== undefined
       ) {
-        line += ` · ${formatUsage(snapshot)}`;
-      }
-      if (snapshot?.compactionCount !== undefined) {
-        line += ` · \u21ca${snapshot.compactionCount}`;
+        line += ` \u00b7 ${formatUsage(snapshot)}`;
       }
       return line;
     }),
