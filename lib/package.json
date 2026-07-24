@@ -11,7 +11,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "fs-native-extensions": "1.5.0"
+    "fs-native-extensions": "^1.5.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
