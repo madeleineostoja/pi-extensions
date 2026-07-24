@@ -88,7 +88,13 @@ const processLeaseSchema = z
   .object({
     id: nonEmpty,
     workstream: processWorkstreamSchema,
-    kind: z.enum(["implementation", "review", "recovery", "publication"]),
+    kind: z.enum([
+      "implementation",
+      "review",
+      "recovery",
+      "reconciliation",
+      "publication",
+    ]),
     candidateId: nonEmpty.optional(),
     publicationIntentId: nonEmpty.optional(),
     recoveryEpisodeId: nonEmpty.optional(),
@@ -147,6 +153,17 @@ const candidateSchema = z
     baseSha: nonEmpty,
     commitSha: nonEmpty,
     treeSha: nonEmpty,
+    reconciliation: z
+      .object({
+        targetBaseSha: nonEmpty,
+        preparedCommitSha: nonEmpty,
+        treeSha: nonEmpty,
+        worktreePath: nonEmpty,
+        changedPaths: z.array(nonEmpty),
+        replayPatchHash: nonEmpty.optional(),
+      })
+      .strict()
+      .optional(),
     implementationEvidence: z
       .object({
         summary: nonEmpty,
@@ -1106,7 +1123,9 @@ function invariantIssues(
           ? "reviewing"
           : lease.kind === "recovery"
             ? "recovering"
-            : "publishing";
+            : lease.kind === "reconciliation"
+              ? "reconciling"
+              : "publishing";
     if (phase !== expectedPhase) {
       issues.push(`process lease ${key} does not match its workstream phase`);
     }

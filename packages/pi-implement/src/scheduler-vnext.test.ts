@@ -703,6 +703,53 @@ describe("VNext scheduler reducer", () => {
     expect(stale.accepted).toBe(false);
   });
 
+  it("routes replay preparation and reconciliation failures through owned lifecycle gates", async () => {
+    const run = await store();
+    const state = run.read();
+    state.workstreams.source["first-stream"]!.phase = "approved";
+    state.workstreams.source["first-stream"]!.candidateId = "candidate-1";
+    state.candidates["candidate-1"] = {
+      id: "candidate-1",
+      workstream: { kind: "source", id: "first-stream" },
+      baseSha: "base",
+      commitSha: "commit",
+      treeSha: "tree",
+    };
+    const requested = reduceVNextRunEvent(state, {
+      kind: "reconciliation_requested",
+      workstream: { kind: "source", id: "first-stream" },
+      now: "now",
+    });
+    await run.update(state.revision, () => requested.state);
+    const effect = requested.effects[0]!;
+    if (effect.kind !== "run_reconciliation") {
+      throw new Error("Expected reconciliation effect.");
+    }
+    const failed = reduceVNextRunEvent(requested.state, {
+      kind: "reconciliation_completed",
+      workstream: effect.workstream,
+      leaseId: effect.leaseId,
+      outcome: {
+        kind: "reconciliation_required",
+        evidence: "The replay conflicted with the target.",
+        workspace: {
+          id: "staging:first-stream",
+          checkpoint: "commit",
+          changedPaths: ["src/conflict.ts"],
+          stateEvidence: "Conflict markers remain in owned staging.",
+        },
+      },
+    });
+
+    expect(failed.state.workstreams.source["first-stream"]?.phase).toBe(
+      "recovering",
+    );
+    expect(failed.state.gates.at(-1)).toMatchObject({
+      kind: "reconciliation",
+      outcome: "failed",
+    });
+  });
+
   it("permits an overall repair only in whole-plan review after source completion", async () => {
     const initial = (await store()).read();
     initial.workstreams.source["first-stream"]!.phase = "completed";

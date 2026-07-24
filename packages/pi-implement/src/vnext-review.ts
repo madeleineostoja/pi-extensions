@@ -221,7 +221,9 @@ export async function runVNextWorkstreamReview(args: {
     ),
   });
   const workspace = workstreamWorkspace(args.state, args.workstream.id);
-  const workspaceGit = args.git.forWorktree(workspace.worktreePath);
+  const worktreePath =
+    candidate.reconciliation?.worktreePath ?? workspace.worktreePath;
+  const workspaceGit = args.git.forWorktree(worktreePath);
   if (
     (await workspaceGit.head()) !== candidate.commitSha ||
     !(await workspaceGit.isClean())
@@ -232,7 +234,7 @@ export async function runVNextWorkstreamReview(args: {
   }
   const prompt = review
     ? buildAnchoredWorkstreamReviewPrompt({
-        worktreePath: workspace.worktreePath,
+        worktreePath,
         candidate,
         previousCandidate: packet.previousCandidate!,
         latestDelta: packet.baseToTipDiff,
@@ -245,7 +247,7 @@ export async function runVNextWorkstreamReview(args: {
         outstandingFindings: packet.outstandingFindings,
       })
     : buildInitialWorkstreamReviewPrompt({
-        worktreePath: workspace.worktreePath,
+        worktreePath,
         candidate,
         diff: packet.baseToTipDiff,
         contracts: packet.contracts.map((task) => ({

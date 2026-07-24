@@ -85,6 +85,37 @@ export type VNextSchedulerEvent =
       now: string;
     }
   | {
+      kind: "reconciliation_requested";
+      workstream: RuntimeWorkstream;
+      now: string;
+    }
+  | {
+      kind: "reconciliation_completed";
+      workstream: RuntimeWorkstream;
+      leaseId: string;
+      outcome:
+        | {
+            kind: "prepared";
+            evidence: string;
+            workspace: {
+              id: string;
+              checkpoint?: string;
+              changedPaths: string[];
+              stateEvidence: string;
+            };
+          }
+        | {
+            kind: "reconciliation_required";
+            evidence: string;
+            workspace: {
+              id: string;
+              checkpoint?: string;
+              changedPaths: string[];
+              stateEvidence: string;
+            };
+          };
+    }
+  | {
       kind: "publication_intent_recorded";
       intent: VNextRunState["publication"]["intents"][string];
     }
@@ -138,6 +169,12 @@ export type VNextSchedulerEffect =
       episodeId: string;
       independentlyEscalated: boolean;
       retryAfterMs?: number;
+    }
+  | {
+      kind: "run_reconciliation";
+      workstream: RuntimeWorkstream;
+      leaseId: string;
+      candidateId: string;
     }
   | {
       kind: "run_publication";
@@ -612,6 +649,75 @@ export function reduceVNextRunEvent(
         state.phase = "paused";
       }
       return accept();
+    }
+
+    case "reconciliation_requested":
+      return startReconciliation(state, event.workstream, event.now, reject);
+
+    case "reconciliation_completed": {
+      const lease = ownedLease(
+        state,
+        event.leaseId,
+        event.workstream,
+        "reconciliation",
+      );
+      const workstream = getWorkstream(state, event.workstream);
+      if (
+        !lease ||
+        !workstream ||
+        workstream.phase !== "reconciling" ||
+        !processIsAllowed(state, event.workstream)
+      ) {
+        return reject("reconciliation result does not own an active lease");
+      }
+      delete state.processLeases[lease.id];
+      const candidateId = workstream.candidateId;
+      if (!candidateId) {
+        return reject("reconciliation requires an approved candidate");
+      }
+      if (event.outcome.kind === "prepared") {
+        try {
+          recordGateResult(
+            state,
+            event.workstream,
+            {
+              id: `reconciliation:${workstreamId(event.workstream)}:${candidateId}:${state.gates.length + 1}`,
+              kind: "reconciliation",
+              owner: workstreamId(event.workstream),
+              candidateId,
+              attempt: state.gates.length + 1,
+              outcome: "passed",
+              evidence: event.outcome.evidence,
+              outstandingFindingIds: [],
+            },
+            event.outcome.workspace,
+          );
+          workstream.phase = "approved";
+          return accept();
+        } catch (error) {
+          return reject(error instanceof Error ? error.message : String(error));
+        }
+      }
+      try {
+        recordGateResult(
+          state,
+          event.workstream,
+          {
+            id: `reconciliation:${workstreamId(event.workstream)}:${candidateId}:${state.gates.length + 1}`,
+            kind: "reconciliation",
+            owner: workstreamId(event.workstream),
+            candidateId,
+            attempt: state.gates.length + 1,
+            outcome: "failed",
+            evidence: event.outcome.evidence,
+            outstandingFindingIds: [],
+          },
+          event.outcome.workspace,
+        );
+        return accept();
+      } catch (error) {
+        return reject(error instanceof Error ? error.message : String(error));
+      }
     }
 
     case "publication_intent_recorded": {
@@ -1252,6 +1358,41 @@ function startRecoveryProcess(
   };
 }
 
+function startReconciliation(
+  state: VNextRunState,
+  workstream: RuntimeWorkstream,
+  now: string,
+  reject: (error: string) => VNextSchedulerTransition,
+): VNextSchedulerTransition {
+  const current = getWorkstream(state, workstream);
+  const candidateId = current?.candidateId;
+  if (
+    !current ||
+    !candidateId ||
+    current.phase !== "approved" ||
+    !processIsAllowed(state, workstream) ||
+    activeLeaseFor(state, workstream) ||
+    activeLeaseCount(state) >= state.run.workerConcurrency
+  ) {
+    return reject("workstream is not ready for reconciliation");
+  }
+  const lease = createLease(state, workstream, "reconciliation", now, 0);
+  state.processLeases[lease.id] = lease;
+  current.phase = "reconciling";
+  return {
+    state,
+    effects: [
+      {
+        kind: "run_reconciliation",
+        workstream,
+        leaseId: lease.id,
+        candidateId,
+      },
+    ],
+    accepted: true,
+  };
+}
+
 function createLease(
   state: VNextRunState,
   workstream: RuntimeWorkstream,
@@ -1533,7 +1674,8 @@ function approveWorkstream(
         (taskId) => state.tasks[taskId]?.phase === "reviewed_satisfied",
       )
     ) {
-      runtime.phase = "completed";
+      // A satisfied receipt is only safe after replay checks the current target.
+      runtime.phase = "approved";
       return;
     }
   }
