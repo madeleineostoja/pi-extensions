@@ -11,12 +11,28 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { ExecGitClient, isCleanStatus } from "./git.js";
 import { GitProcess } from "./git-process.js";
+import {
+  observePromise,
+  remainsTrue,
+  settle,
+  settleAll,
+  waitForCondition,
+  within,
+} from "./test-boundary.js";
+
+const temporaryDirectories = new Set<string>();
+
+function temporaryDirectory(prefix: string): string {
+  const path = mkdtempSync(join(tmpdir(), prefix));
+  temporaryDirectories.add(path);
+  return path;
+}
 
 function repo(): string {
-  const cwd = mkdtempSync(join(tmpdir(), "pi-implement-git-"));
+  const cwd = temporaryDirectory("pi-implement-git-");
   git(cwd, "init");
   git(cwd, "config", "user.email", "test@example.com");
   git(cwd, "config", "user.name", "Test");
@@ -30,20 +46,30 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" });
 }
 
-async function waitFor(condition: () => boolean): Promise<void> {
-  while (!condition()) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
+afterEach(() => {
+  for (const path of temporaryDirectories) {
+    rmSync(path, { recursive: true, force: true });
   }
-}
+  temporaryDirectories.clear();
+});
 
 function holdAlias(script: string): string {
   return `alias.hold=!${process.execPath} ${script}`;
 }
 
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
 describe("git helpers", () => {
   it("serializes index-sensitive Git commands in one checkout", async () => {
     const cwd = repo();
-    const dir = mkdtempSync(join(tmpdir(), "pi-implement-git-hold-"));
+    const dir = temporaryDirectory("pi-implement-git-hold-");
     const marker = join(dir, "marker");
     const release = join(dir, "release");
     const script = join(dir, "hold.mjs");
@@ -56,27 +82,53 @@ describe("git helpers", () => {
       ["-c", holdAlias(script), "hold", marker, release, "first"],
       { cwd },
     );
-    await waitFor(() => existsSync(marker));
-    const second = process.run(
-      ["-c", holdAlias(script), "hold", marker, release, "second"],
-      { cwd },
-    );
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(readFileSync(marker, "utf-8")).toBe("first\n");
+    const firstObservation = observePromise("first command", first);
+    let second: Promise<unknown> | undefined;
+    try {
+      await waitForCondition(
+        "first command startup",
+        () => existsSync(marker),
+        {
+          diagnostics: firstObservation.describe,
+          observations: [firstObservation],
+        },
+      );
+      second = process.run(
+        ["-c", holdAlias(script), "hold", marker, release, "second"],
+        { cwd },
+      );
+      const secondObservation = observePromise("second command", second);
+      await remainsTrue(
+        "the second command queue boundary",
+        () => readFileSync(marker, "utf-8") === "first\n",
+        {
+          diagnostics: () =>
+            `${firstObservation.describe()}; ${secondObservation.describe()}`,
+        },
+      );
 
-    writeFileSync(release, "go");
-    await Promise.all([first, second]);
-    expect(readFileSync(marker, "utf-8")).toBe("first\nsecond\n");
+      writeFileSync(release, "go");
+      await within("both checkout commands", Promise.all([first, second]), {
+        diagnostics: firstObservation.describe,
+      });
+      expect(readFileSync(marker, "utf-8")).toBe("first\nsecond\n");
+    } finally {
+      writeFileSync(release, "go");
+      await settleAll([
+        settle("first command", first, {
+          diagnostics: firstObservation.describe,
+        }),
+        ...(second ? [settle("second command", second)] : []),
+        settle("checkout queue", process.onIdle()),
+      ]);
+    }
   });
 
   it("allows separate linked worktree checkout queues to overlap", async () => {
     const cwd = repo();
-    const linked = join(
-      mkdtempSync(join(tmpdir(), "pi-implement-linked-")),
-      "linked",
-    );
+    const linked = join(temporaryDirectory("pi-implement-linked-"), "linked");
     git(cwd, "worktree", "add", "-b", "linked", linked);
-    const dir = mkdtempSync(join(tmpdir(), "pi-implement-git-hold-"));
+    const dir = temporaryDirectory("pi-implement-git-hold-");
     const marker = join(dir, "marker");
     const release = join(dir, "release");
     const script = join(dir, "hold.mjs");
@@ -84,33 +136,63 @@ describe("git helpers", () => {
       script,
       `import { appendFileSync, existsSync } from "node:fs";\nimport { setTimeout } from "node:timers/promises";\nconst [marker, release, id] = process.argv.slice(2);\nappendFileSync(marker, id + "\\n");\nwhile (!existsSync(release)) await setTimeout(5);\n`,
     );
-    const first = new GitProcess(cwd).run(
+    const mainProcess = new GitProcess(cwd);
+    const linkedProcess = new GitProcess(linked);
+    const first = mainProcess.run(
       ["-c", holdAlias(script), "hold", marker, release, "main"],
       { cwd },
     );
-    const second = new GitProcess(linked).run(
+    const second = linkedProcess.run(
       ["-c", holdAlias(script), "hold", marker, release, "linked"],
       { cwd: linked },
     );
-    await waitFor(
-      () =>
-        existsSync(marker) &&
-        readFileSync(marker, "utf-8").split("\n").filter(Boolean).length === 2,
-    );
-    writeFileSync(release, "go");
-    await Promise.all([first, second]);
-
-    git(cwd, "worktree", "remove", "--force", linked);
+    const firstObservation = observePromise("main command", first);
+    const secondObservation = observePromise("linked command", second);
+    try {
+      await waitForCondition(
+        "both linked checkout commands to start",
+        () =>
+          existsSync(marker) &&
+          readFileSync(marker, "utf-8").split("\n").filter(Boolean).length ===
+            2,
+        {
+          diagnostics: () =>
+            `${firstObservation.describe()}; ${secondObservation.describe()}`,
+          observations: [firstObservation, secondObservation],
+        },
+      );
+      writeFileSync(release, "go");
+      await within(
+        "both linked checkout commands",
+        Promise.all([first, second]),
+        {
+          diagnostics: () =>
+            `${firstObservation.describe()}; ${secondObservation.describe()}`,
+        },
+      );
+    } finally {
+      writeFileSync(release, "go");
+      await settleAll([
+        settle("main command", first, {
+          diagnostics: firstObservation.describe,
+        }),
+        settle("linked command", second, {
+          diagnostics: secondObservation.describe,
+        }),
+        settle(
+          "linked checkout queues",
+          Promise.all([mainProcess.onIdle(), linkedProcess.onIdle()]),
+        ),
+      ]);
+      git(cwd, "worktree", "remove", "--force", linked);
+    }
   });
 
   it("serializes shared worktree metadata operations per common repository", async () => {
     const cwd = repo();
-    const linked = join(
-      mkdtempSync(join(tmpdir(), "pi-implement-linked-")),
-      "linked",
-    );
+    const linked = join(temporaryDirectory("pi-implement-linked-"), "linked");
     git(cwd, "worktree", "add", "-b", "linked", linked);
-    const dir = mkdtempSync(join(tmpdir(), "pi-implement-git-hold-"));
+    const dir = temporaryDirectory("pi-implement-git-hold-");
     const marker = join(dir, "marker");
     const release = join(dir, "release");
     const script = join(dir, "hold.mjs");
@@ -118,20 +200,140 @@ describe("git helpers", () => {
       script,
       `import { appendFileSync, existsSync } from "node:fs";\nimport { setTimeout } from "node:timers/promises";\nconst [marker, release, id] = process.argv.slice(2);\nappendFileSync(marker, id + "\\n");\nwhile (!existsSync(release)) await setTimeout(5);\n`,
     );
-    const first = new GitProcess(cwd).run(
+    const mainProcess = new GitProcess(cwd);
+    const linkedProcess = new GitProcess(linked);
+    const first = mainProcess.run(
       ["-c", holdAlias(script), "hold", marker, release, "main"],
       { cwd, scope: "repository" },
     );
-    await waitFor(() => existsSync(marker));
-    const second = new GitProcess(linked).run(
-      ["-c", holdAlias(script), "hold", marker, release, "linked"],
-      { cwd: linked, scope: "repository" },
+    const firstObservation = observePromise("main command", first);
+    let second: Promise<unknown> | undefined;
+    try {
+      await waitForCondition("main command startup", () => existsSync(marker), {
+        diagnostics: firstObservation.describe,
+        observations: [firstObservation],
+      });
+      second = linkedProcess.run(
+        ["-c", holdAlias(script), "hold", marker, release, "linked"],
+        { cwd: linked, scope: "repository" },
+      );
+      const secondObservation = observePromise("linked command", second);
+      await remainsTrue(
+        "the common repository queue boundary",
+        () => readFileSync(marker, "utf-8") === "main\n",
+        {
+          diagnostics: () =>
+            `${firstObservation.describe()}; ${secondObservation.describe()}`,
+        },
+      );
+      writeFileSync(release, "go");
+      await within("both repository commands", Promise.all([first, second]), {
+        diagnostics: firstObservation.describe,
+      });
+    } finally {
+      writeFileSync(release, "go");
+      await settleAll([
+        settle("main command", first, {
+          diagnostics: firstObservation.describe,
+        }),
+        ...(second ? [settle("linked command", second)] : []),
+        settle(
+          "common repository queues",
+          Promise.all([mainProcess.onIdle(), linkedProcess.onIdle()]),
+        ),
+      ]);
+      git(cwd, "worktree", "remove", "--force", linked);
+    }
+  });
+
+  it("cancels an owned Git child before its queue and fixture settle", async () => {
+    const cwd = repo();
+    const dir = temporaryDirectory("pi-implement-git-cancel-");
+    const marker = join(dir, "marker");
+    const pidPath = join(dir, "pid");
+    const release = join(dir, "release");
+    const script = join(dir, "hold.mjs");
+    writeFileSync(
+      script,
+      `import { appendFileSync, existsSync, writeFileSync } from "node:fs";\nimport { setTimeout } from "node:timers/promises";\nconst [marker, pidPath, release] = process.argv.slice(2);\nwriteFileSync(pidPath, String(process.pid));\nappendFileSync(marker, "started\\n");\nwhile (!existsSync(release)) await setTimeout(5);\n`,
     );
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(readFileSync(marker, "utf-8")).toBe("main\n");
-    writeFileSync(release, "go");
-    await Promise.all([first, second]);
-    git(cwd, "worktree", "remove", "--force", linked);
+    const controller = new AbortController();
+    const process = new GitProcess(cwd);
+    const command = process.run(
+      ["-c", holdAlias(script), "hold", marker, pidPath, release],
+      { cwd, signal: controller.signal },
+    );
+    const observation = observePromise("cancelled command", command);
+    let childPid: number | undefined;
+    try {
+      await waitForCondition(
+        "owned Git child startup",
+        () => existsSync(pidPath),
+        {
+          diagnostics: observation.describe,
+          observations: [observation],
+        },
+      );
+      const startedChildPid = Number(readFileSync(pidPath, "utf-8"));
+      childPid = startedChildPid;
+      controller.abort();
+      await expect(
+        within("cancelled command", command, {
+          diagnostics: observation.describe,
+        }),
+      ).rejects.toMatchObject({
+        failure: { kind: "cancelled" },
+      });
+      await within("cancelled Git queue", process.onIdle(), {
+        diagnostics: observation.describe,
+      });
+      await waitForCondition(
+        "owned Git child termination",
+        () => !processIsAlive(startedChildPid),
+        { diagnostics: observation.describe },
+      );
+    } finally {
+      writeFileSync(release, "go");
+      controller.abort();
+      if (childPid && processIsAlive(childPid)) {
+        globalThis.process.kill(childPid, "SIGKILL");
+      }
+      const cleanupChildPid = childPid;
+      await settleAll([
+        settle("cancelled command", command, {
+          diagnostics: observation.describe,
+        }),
+        settle("cancelled Git queue", process.onIdle(), {
+          diagnostics: observation.describe,
+        }),
+        ...(cleanupChildPid
+          ? [
+              waitForCondition(
+                "owned Git child termination during cleanup",
+                () => !processIsAlive(cleanupChildPid),
+                { diagnostics: observation.describe },
+              ),
+            ]
+          : []),
+      ]);
+    }
+  });
+
+  it("reports a prematurely exiting Git child without waiting for the suite timeout", async () => {
+    const cwd = repo();
+    const dir = temporaryDirectory("pi-implement-git-exit-");
+    const script = join(dir, "exit.mjs");
+    writeFileSync(
+      script,
+      `console.error("child exited before startup"); process.exit(23);\n`,
+    );
+
+    await expect(
+      within(
+        "prematurely exiting Git child",
+        new GitProcess(cwd).run(["-c", holdAlias(script), "hold"], { cwd }),
+      ),
+    ).rejects.toThrow("child exited before startup");
   });
 
   it("returns typed evidence for an index lock", async () => {
@@ -385,9 +587,7 @@ describe("git helpers", () => {
     const cwd = repo();
     const client = new ExecGitClient(cwd);
     const baseSha = await client.head();
-    const worktreePath = realpathSync(
-      mkdtempSync(join(tmpdir(), "pi-implement-wt2-")),
-    );
+    const worktreePath = realpathSync(temporaryDirectory("pi-implement-wt2-"));
     const branchName = "pi-implement/r1/t001-for-wt";
 
     await client.createTaskBranch(branchName, baseSha);
@@ -406,7 +606,7 @@ describe("git helpers", () => {
     const client = new ExecGitClient(cwd);
     const baseSha = await client.head();
     const worktreePath = realpathSync(
-      mkdtempSync(join(tmpdir(), "pi-implement-wt-identity-")),
+      temporaryDirectory("pi-implement-wt-identity-"),
     );
     const branchName = "pi-implement/r1/t001-identity";
 
@@ -429,9 +629,7 @@ describe("git helpers", () => {
     const cwd = repo();
     const client = new ExecGitClient(cwd);
     const baseSha = await client.head();
-    const worktreePath = realpathSync(
-      mkdtempSync(join(tmpdir(), "pi-implement-wt3-")),
-    );
+    const worktreePath = realpathSync(temporaryDirectory("pi-implement-wt3-"));
     const branchName = "pi-implement/r1/t001-commit-test";
 
     await client.createTaskBranch(branchName, baseSha);
@@ -457,9 +655,7 @@ describe("git helpers", () => {
     const cwd = repo();
     const client = new ExecGitClient(cwd);
     const baseSha = await client.head();
-    const worktreePath = realpathSync(
-      mkdtempSync(join(tmpdir(), "pi-implement-wt4-")),
-    );
+    const worktreePath = realpathSync(temporaryDirectory("pi-implement-wt4-"));
     const branchName = "pi-implement/r1/t001-diff-test";
 
     await client.createTaskBranch(branchName, baseSha);
@@ -484,9 +680,7 @@ describe("git helpers", () => {
     git(cwd, "commit", "-m", "chore: add plan");
     const client = new ExecGitClient(cwd);
     const baseSha = await client.head();
-    const worktreePath = realpathSync(
-      mkdtempSync(join(tmpdir(), "pi-implement-wt5-")),
-    );
+    const worktreePath = realpathSync(temporaryDirectory("pi-implement-wt5-"));
     const branchName = "pi-implement/r1/t001-plan-exclude";
 
     await client.createTaskBranch(branchName, baseSha);
