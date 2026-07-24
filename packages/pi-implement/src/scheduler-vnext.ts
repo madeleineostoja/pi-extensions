@@ -1,5 +1,13 @@
 import type { ExecutionPlan } from "./execution-plan-vnext.js";
 import {
+  applyAnchoredWorkstreamReview,
+  applyInitialWorkstreamReview,
+  retargetAnchoredReview,
+  reviewKey,
+  workstreamReviewState,
+  type VNextReviewOutcome,
+} from "./vnext-review.js";
+import {
   StaleVNextRevisionError,
   type VNextRunState,
   type VNextRunStore,
@@ -16,7 +24,11 @@ type ImplementationOutcome =
       checkpoints: Record<string, string>;
       satisfied: Record<string, string>;
     }
-  | { kind: "satisfaction_claimed"; evidence: Record<string, string> };
+  | {
+      kind: "satisfaction_claimed";
+      candidate: VNextRunState["candidates"][string];
+      evidence: Record<string, string>;
+    };
 
 export type VNextSchedulerEvent =
   | { kind: "workstreams_selected"; now: string }
@@ -31,7 +43,7 @@ export type VNextSchedulerEvent =
       kind: "review_completed";
       workstream: RuntimeWorkstream;
       leaseId: string;
-      outcome: "approved" | "needs_recovery";
+      outcome: VNextReviewOutcome;
     }
   | { kind: "recovery_requested"; workstream: RuntimeWorkstream; now: string }
   | {
@@ -39,6 +51,11 @@ export type VNextSchedulerEvent =
       workstream: RuntimeWorkstream;
       leaseId: string;
       candidate?: VNextRunState["candidates"][string];
+      correction?: {
+        fromCandidateId: string;
+        changedPaths: string[];
+        evidence: string;
+      };
     }
   | {
       kind: "publication_intent_recorded";
@@ -261,9 +278,21 @@ export function reduceVNextRunEvent(
         }
         workstream.phase = "candidate_ready";
       } else {
-        if (event.workstream.kind !== "source") {
+        if (
+          event.workstream.kind !== "source" ||
+          !sameWorkstream(event.outcome.candidate.workstream, event.workstream)
+        ) {
           return reject("only source workstreams can claim satisfaction");
         }
+        const existing = state.candidates[event.outcome.candidate.id];
+        if (
+          existing &&
+          JSON.stringify(existing) !== JSON.stringify(event.outcome.candidate)
+        ) {
+          return reject("candidate identity is immutable");
+        }
+        state.candidates[event.outcome.candidate.id] = event.outcome.candidate;
+        workstream.candidateId = event.outcome.candidate.id;
         const sourceWorkstream = state.workstreams.source[event.workstream.id]!;
         for (const taskId of sourceWorkstream.taskIds) {
           state.tasks[taskId] = {
@@ -294,38 +323,60 @@ export function reduceVNextRunEvent(
         !workstream ||
         workstream.phase !== "reviewing" ||
         lease.candidateId !== workstream.candidateId ||
+        lease.candidateId !== event.outcome.candidateId ||
+        !state.candidates[event.outcome.candidateId] ||
         !processIsAllowed(state, event.workstream)
       ) {
-        return reject("review result does not own an active lease");
+        return reject("review result does not own the current candidate lease");
       }
-      delete state.processLeases[lease.id];
-      if (event.outcome === "approved") {
-        if (event.workstream.kind === "source") {
-          const sourceWorkstream =
-            state.workstreams.source[event.workstream.id]!;
-          for (const taskId of sourceWorkstream.taskIds) {
-            const task = state.tasks[taskId]!;
-            if (task.phase === "satisfaction_claimed") {
-              state.tasks[taskId] = {
-                workstreamId: task.workstreamId,
-                phase: "reviewed_satisfied",
-                evidence: task.evidence,
-              };
-            }
+      const key = reviewKey(event.workstream);
+      try {
+        if (event.outcome.kind === "initial") {
+          if (state.reviews[key]) {
+            return reject(
+              "initial review cannot replace an existing review epoch",
+            );
           }
-          if (
-            sourceWorkstream.taskIds.every(
-              (taskId) => state.tasks[taskId]?.phase === "reviewed_satisfied",
-            )
-          ) {
-            workstream.phase = "completed";
-            return accept();
+          const update = applyInitialWorkstreamReview({
+            workstream: event.workstream,
+            candidateId: event.outcome.candidateId,
+            completion: event.outcome.completion,
+            evidence: event.outcome.evidence,
+          });
+          state.reviews[key] = update.review;
+          for (const finding of update.findings) {
+            state.findings[finding.id] = finding;
+          }
+        } else {
+          const review = workstreamReviewState(state, event.workstream);
+          if (!review || review.candidateId !== event.outcome.candidateId) {
+            return reject(
+              "anchored review is not bound to the current review epoch",
+            );
+          }
+          const update = applyAnchoredWorkstreamReview({
+            state: review,
+            workstream: event.workstream,
+            completion: event.outcome.completion,
+            findings: Object.values(state.findings).filter((finding) =>
+              sameWorkstream(finding.workstream, event.workstream),
+            ),
+            evidence: event.outcome.evidence,
+          });
+          state.reviews[key] = update.review;
+          for (const finding of update.findings) {
+            state.findings[finding.id] = finding;
           }
         }
-        workstream.phase = "approved";
-      } else {
-        workstream.phase = "recovering";
+      } catch (error) {
+        return reject(error instanceof Error ? error.message : String(error));
       }
+      delete state.processLeases[lease.id];
+      if (state.reviews[key]!.outstandingIds.length > 0) {
+        workstream.phase = "recovering";
+        return accept();
+      }
+      approveWorkstream(state, event.workstream);
       return accept();
     }
 
@@ -365,8 +416,36 @@ export function reduceVNextRunEvent(
         ) {
           return reject("candidate identity is immutable");
         }
+        const review = workstreamReviewState(state, event.workstream);
+        if (review) {
+          if (!event.correction) {
+            return reject(
+              "tracked rework requires an anchored correction delta",
+            );
+          }
+          state.reviews[reviewKey(event.workstream)] = retargetAnchoredReview({
+            state: review,
+            candidateId: event.candidate.id,
+            correction: event.correction,
+          });
+        } else if (event.correction) {
+          return reject("a correction delta requires an existing review epoch");
+        }
         state.candidates[event.candidate.id] = event.candidate;
         workstream.candidateId = event.candidate.id;
+        if (event.workstream.kind === "source") {
+          for (const taskId of state.workstreams.source[event.workstream.id]!
+            .taskIds) {
+            const task = state.tasks[taskId]!;
+            if (task.phase === "satisfaction_claimed") {
+              state.tasks[taskId] = {
+                workstreamId: task.workstreamId,
+                phase: "checkpointed",
+                checkpoint: event.candidate.commitSha,
+              };
+            }
+          }
+        }
         workstream.phase = "candidate_ready";
       }
       delete state.processLeases[lease.id];
@@ -1010,6 +1089,39 @@ function sourceTaskOutcomeIsComplete(
         taskIds.includes(taskId),
       ))
   );
+}
+
+function approveWorkstream(
+  state: VNextRunState,
+  workstream: RuntimeWorkstream,
+): void {
+  const runtime = getWorkstream(state, workstream)!;
+  if (workstream.kind === "source") {
+    const source = state.workstreams.source[workstream.id]!;
+    for (const taskId of source.taskIds) {
+      const task = state.tasks[taskId]!;
+      if (task.phase === "satisfaction_claimed") {
+        state.tasks[taskId] = {
+          workstreamId: task.workstreamId,
+          phase: "reviewed_satisfied",
+          evidence: task.evidence,
+        };
+      }
+    }
+    const candidate = runtime.candidateId
+      ? state.candidates[runtime.candidateId]
+      : undefined;
+    if (
+      candidate?.commitSha === candidate?.baseSha &&
+      source.taskIds.every(
+        (taskId) => state.tasks[taskId]?.phase === "reviewed_satisfied",
+      )
+    ) {
+      runtime.phase = "completed";
+      return;
+    }
+  }
+  runtime.phase = "approved";
 }
 
 function taskIdOwner(state: VNextRunState, taskId: string): string {

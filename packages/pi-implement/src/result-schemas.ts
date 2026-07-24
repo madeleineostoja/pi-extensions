@@ -350,6 +350,20 @@ export const anchoredReviewSchema = withPapercuts({
   observations: Type.Optional(Type.Array(reviewObservationSchema)),
 });
 
+export const directReviewFindingSchema = reviewFindingDraftSchema;
+export const initialWorkstreamReviewSchema = Type.Union([
+  closedWithPapercuts({ verdict: Type.Literal("approved") }),
+  closedWithPapercuts({
+    verdict: Type.Literal("changes_requested"),
+    findings: Type.Array(directReviewFindingSchema, { minItems: 1 }),
+  }),
+]);
+export const anchoredWorkstreamReviewSchema = closedWithPapercuts({
+  assessments: Type.Array(findingAssessmentSchema),
+  regressions: Type.Array(regressionFindingDraftSchema),
+  observations: Type.Optional(Type.Array(reviewObservationSchema)),
+});
+
 export const integrationInitialReviewSchema = initialReviewSchema(false);
 export const integrationAnchoredReviewSchema = anchoredReviewSchema;
 
@@ -434,6 +448,13 @@ export type InitialOverallReviewCompletion = Static<
   typeof initialOverallReviewSchema
 >;
 export type AnchoredReviewCompletion = Static<typeof anchoredReviewSchema>;
+export type DirectReviewFinding = Static<typeof directReviewFindingSchema>;
+export type InitialWorkstreamReviewCompletion = Static<
+  typeof initialWorkstreamReviewSchema
+>;
+export type AnchoredWorkstreamReviewCompletion = Static<
+  typeof anchoredWorkstreamReviewSchema
+>;
 export type IntegrationInitialReviewCompletion = Static<
   typeof integrationInitialReviewSchema
 >;

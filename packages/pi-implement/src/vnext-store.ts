@@ -131,6 +131,10 @@ const taskRuntimeSchema = z.discriminatedUnion("phase", [
     ),
 ]);
 
+const verificationEvidenceSchema = z
+  .object({ command: nonEmpty, result: nonEmpty, rationale: nonEmpty })
+  .strict();
+
 const candidateSchema = z
   .object({
     id: nonEmpty,
@@ -141,6 +145,15 @@ const candidateSchema = z
     baseSha: nonEmpty,
     commitSha: nonEmpty,
     treeSha: nonEmpty,
+    implementationEvidence: z
+      .object({
+        summary: nonEmpty,
+        verification: z.array(verificationEvidenceSchema).min(1),
+        uncertainty: nonEmpty.optional(),
+        artifactPath: nonEmpty.optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -156,7 +169,30 @@ const findingSchema = z
     evidence: nonEmpty,
     requiredChange: nonEmpty,
     acceptanceCriteria: z.array(nonEmpty).min(1),
+    origin: z.enum(["initial", "regression"]),
+    introducedRound: z.number().int().nonnegative(),
     status: z.enum(["open", "resolved"]),
+  })
+  .strict();
+
+const reviewStateSchema = z
+  .object({
+    candidateId: nonEmpty,
+    previousCandidateId: nonEmpty.optional(),
+    round: z.number().int().nonnegative(),
+    outstandingIds: z.array(nonEmpty),
+    latestCorrection: z
+      .object({
+        fromCandidateId: nonEmpty,
+        changedPaths: z.array(nonEmpty),
+        evidence: nonEmpty,
+      })
+      .strict()
+      .optional(),
+    evidence: z.array(nonEmpty).min(1),
+    observations: z.array(
+      z.object({ summary: nonEmpty, evidence: nonEmpty }).strict(),
+    ),
   })
   .strict();
 
@@ -259,6 +295,7 @@ export const vnextRunStateSchema = z
     processLeases: z.record(nonEmpty, processLeaseSchema),
     candidates: z.record(nonEmpty, candidateSchema),
     findings: z.record(nonEmpty, findingSchema),
+    reviews: z.record(nonEmpty, reviewStateSchema),
     gates: z.array(gateSchema),
     recoveryEpisodes: z.record(nonEmpty, recoverySchema),
     publication: z
@@ -456,6 +493,7 @@ export function createPlanningRun(args: {
     processLeases: {},
     candidates: {},
     findings: {},
+    reviews: {},
     gates: [],
     recoveryEpisodes: {},
     publication: { intents: {}, receipts: {} },
@@ -1057,6 +1095,65 @@ function invariantIssues(
       issues.push(`finding ${key} references unknown candidate or workstream`);
     }
   }
+  for (const [key, review] of Object.entries(state.reviews)) {
+    const candidate = state.candidates[review.candidateId];
+    if (!candidate || key !== workstreamIdentity(candidate.workstream)) {
+      issues.push(
+        `review ${key} references an unknown candidate or workstream`,
+      );
+      continue;
+    }
+    if (
+      workstreamCandidateId(state, candidate.workstream) !== review.candidateId
+    ) {
+      issues.push(`review ${key} does not match its workstream candidate`);
+    }
+    const outstanding = new Set(review.outstandingIds);
+    if (outstanding.size !== review.outstandingIds.length) {
+      issues.push(`review ${key} repeats an outstanding finding ID`);
+    }
+    const streamFindings = Object.values(state.findings).filter(
+      (finding) =>
+        JSON.stringify(finding.workstream) ===
+        JSON.stringify(candidate.workstream),
+    );
+    for (const finding of streamFindings) {
+      if ((finding.status === "open") !== outstanding.has(finding.id)) {
+        issues.push(
+          `review ${key} has inconsistent outstanding finding ${finding.id}`,
+        );
+      }
+    }
+    if (
+      review.previousCandidateId &&
+      (!state.candidates[review.previousCandidateId] ||
+        !review.latestCorrection ||
+        review.latestCorrection.fromCandidateId !== review.previousCandidateId)
+    ) {
+      issues.push(`review ${key} has an invalid correction anchor`);
+    }
+  }
+  for (const workstream of [
+    ...Object.values(state.workstreams.source),
+    ...Object.values(state.workstreams.overall),
+  ]) {
+    if (workstream.phase === "approved" || workstream.phase === "completed") {
+      const candidateId = workstream.candidateId;
+      const candidate = candidateId ? state.candidates[candidateId] : undefined;
+      const review = candidate
+        ? state.reviews[workstreamIdentity(candidate.workstream)]
+        : undefined;
+      if (
+        !review ||
+        review.candidateId !== candidateId ||
+        review.outstandingIds.length > 0
+      ) {
+        issues.push(
+          "approved or completed workstreams require a converged current review",
+        );
+      }
+    }
+  }
   const gates = new Set<string>();
   for (const gate of state.gates) {
     if (gates.has(gate.id)) {
@@ -1108,6 +1205,19 @@ function invariantIssues(
         JSON.stringify(state.executionPlan)
     ) {
       issues.push("bound execution plan identity was overwritten");
+    }
+    for (const [id, candidate] of Object.entries(previous.candidates)) {
+      if (JSON.stringify(state.candidates[id]) !== JSON.stringify(candidate)) {
+        issues.push(`candidate ${id} was overwritten or removed`);
+      }
+    }
+    for (const [id, finding] of Object.entries(previous.findings)) {
+      if (
+        finding.status === "resolved" &&
+        state.findings[id]?.status !== "resolved"
+      ) {
+        issues.push(`resolved finding ${id} was reopened`);
+      }
     }
     for (const [id, intent] of Object.entries(previous.publication.intents)) {
       if (

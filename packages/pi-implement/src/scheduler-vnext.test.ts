@@ -21,6 +21,7 @@ import {
   selectReadyWorkstreams,
   VNextSchedulerActor,
 } from "./scheduler-vnext.js";
+import { buildVNextReviewPacket } from "./vnext-review.js";
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -166,6 +167,51 @@ describe("VNext scheduler reducer", () => {
     expect(selectReadyWorkstreams(selected.state)).toEqual(["second-stream"]);
   });
 
+  it("builds an initial cumulative packet with contracts and repository-state evidence", async () => {
+    const run = await store();
+    const state = run.read();
+    const candidate = {
+      id: "satisfied:first-stream:base-sha",
+      workstream: { kind: "source" as const, id: "first-stream" },
+      baseSha: "base-sha",
+      commitSha: "base-sha",
+      treeSha: "base-tree",
+      implementationEvidence: {
+        summary: "The behavior already exists.",
+        verification: [
+          {
+            command: "npm test",
+            result: "passed",
+            rationale: "Checks behavior.",
+          },
+        ],
+      },
+    };
+    state.candidates[candidate.id] = candidate;
+    state.workstreams.source["first-stream"]!.candidateId = candidate.id;
+    state.tasks.first = {
+      workstreamId: "first-stream",
+      phase: "satisfaction_claimed",
+      evidence: "Existing endpoint satisfies the contract.",
+    };
+
+    const packet = buildVNextReviewPacket({
+      state,
+      plan: planFor(state.run.checkout.root),
+      workstream: { kind: "source", id: "first-stream" },
+      baseToTipDiff: "",
+    });
+
+    expect(packet.contracts.map((task) => task.id)).toEqual(["first"]);
+    expect(packet.satisfiedEvidence).toEqual({
+      first: "Existing endpoint satisfies the contract.",
+    });
+    expect(packet.sourceMaterial[0]).toMatchObject({
+      path: expect.any(String),
+    });
+    expect(packet.verificationEvidence?.verification).toHaveLength(1);
+  });
+
   it("rejects overlapping checkpoint and satisfied mappings", async () => {
     const initial = (await store()).read();
     const selected = reduceVNextRunEvent(initial, {
@@ -206,10 +252,235 @@ describe("VNext scheduler reducer", () => {
       kind: "review_completed",
       workstream: { kind: "source", id: "first-stream" },
       leaseId: "missing",
-      outcome: "approved",
+      outcome: {
+        kind: "initial",
+        candidateId: "candidate-1",
+        completion: { verdict: "approved" },
+        evidence: "review artifact",
+      },
     });
 
     expect(result).toMatchObject({ accepted: false, state: initial });
+  });
+
+  it("persists direct findings and converges every anchored obligation on a new candidate", async () => {
+    const initial = (await store()).read();
+    const selected = reduceVNextRunEvent(initial, {
+      kind: "workstreams_selected",
+      now: "now",
+    });
+    const implementation = selected.effects[0]!;
+    if (implementation.kind !== "run_implementation") {
+      throw new Error("Expected implementation effect.");
+    }
+    const candidate = {
+      id: "candidate-1",
+      workstream: implementation.workstream,
+      baseSha: "base",
+      commitSha: "commit-1",
+      treeSha: "tree-1",
+    };
+    const ready = reduceVNextRunEvent(selected.state, {
+      kind: "implementation_completed",
+      workstream: implementation.workstream,
+      leaseId: implementation.leaseId,
+      outcome: {
+        kind: "candidate_ready",
+        candidate,
+        checkpoints: { first: "commit-1" },
+        satisfied: {},
+      },
+    });
+    const review = reduceVNextRunEvent(ready.state, {
+      kind: "review_requested",
+      workstream: implementation.workstream,
+      now: "now",
+    });
+    const reviewEffect = review.effects[0]!;
+    if (reviewEffect.kind !== "run_review") {
+      throw new Error("Expected review effect.");
+    }
+    const findings = reduceVNextRunEvent(review.state, {
+      kind: "review_completed",
+      workstream: implementation.workstream,
+      leaseId: reviewEffect.leaseId,
+      outcome: {
+        kind: "initial",
+        candidateId: "candidate-1",
+        evidence: "initial review artifact",
+        completion: {
+          verdict: "changes_requested",
+          findings: [
+            {
+              summary: "Missing observable behavior",
+              evidence: "The endpoint is absent.",
+              requiredChange: "Add the endpoint.",
+              acceptanceCriteria: ["The endpoint responds."],
+            },
+          ],
+        },
+      },
+    });
+    expect(findings.state.workstreams.source["first-stream"]?.phase).toBe(
+      "recovering",
+    );
+    expect(
+      findings.state.reviews["source:first-stream"]?.outstandingIds,
+    ).toEqual(["source-first-stream-r1"]);
+
+    const recovery = reduceVNextRunEvent(findings.state, {
+      kind: "recovery_requested",
+      workstream: implementation.workstream,
+      now: "later",
+    });
+    const recoveryEffect = recovery.effects[0]!;
+    if (recoveryEffect.kind !== "run_recovery") {
+      throw new Error("Expected recovery effect.");
+    }
+    const corrected = reduceVNextRunEvent(recovery.state, {
+      kind: "recovery_completed",
+      workstream: implementation.workstream,
+      leaseId: recoveryEffect.leaseId,
+      candidate: {
+        ...candidate,
+        id: "candidate-2",
+        commitSha: "commit-2",
+        treeSha: "tree-2",
+      },
+      correction: {
+        fromCandidateId: "candidate-1",
+        changedPaths: ["src/endpoint.ts"],
+        evidence: "Implementer checkpoint commit-2",
+      },
+    });
+    const anchored = reduceVNextRunEvent(corrected.state, {
+      kind: "review_requested",
+      workstream: implementation.workstream,
+      now: "later",
+    });
+    const anchoredEffect = anchored.effects[0]!;
+    if (anchoredEffect.kind !== "run_review") {
+      throw new Error("Expected anchored review effect.");
+    }
+    const approved = reduceVNextRunEvent(anchored.state, {
+      kind: "review_completed",
+      workstream: implementation.workstream,
+      leaseId: anchoredEffect.leaseId,
+      outcome: {
+        kind: "anchored",
+        candidateId: "candidate-2",
+        evidence: "anchored review artifact",
+        completion: {
+          assessments: [
+            {
+              id: "source-first-stream-r1",
+              status: "resolved",
+              evidence: "The endpoint now responds.",
+            },
+          ],
+          regressions: [
+            {
+              summary: "caused regression",
+              evidence: "New endpoint breaks another route.",
+              requiredChange: "Repair the route.",
+              acceptanceCriteria: ["Both routes work."],
+              changedPaths: ["src/other.ts"],
+              causalEvidence: "The route was not changed by this correction.",
+            },
+          ],
+        },
+      },
+    });
+    expect(approved.state.workstreams.source["first-stream"]?.phase).toBe(
+      "approved",
+    );
+    expect(approved.state.findings["source-first-stream-r1"]?.status).toBe(
+      "resolved",
+    );
+    expect(approved.state.reviews["source:first-stream"]?.observations).toEqual(
+      [
+        {
+          summary: "caused regression",
+          evidence: "New endpoint breaks another route.",
+        },
+      ],
+    );
+  });
+
+  it("rejects incomplete anchored coverage and stale candidate review results", async () => {
+    const state = (await store()).read();
+    state.workstreams.source["first-stream"]!.phase = "reviewing";
+    state.workstreams.source["first-stream"]!.candidateId = "candidate-2";
+    state.candidates["candidate-1"] = {
+      id: "candidate-1",
+      workstream: { kind: "source", id: "first-stream" },
+      baseSha: "base",
+      commitSha: "one",
+      treeSha: "one",
+    };
+    state.candidates["candidate-2"] = {
+      ...state.candidates["candidate-1"]!,
+      id: "candidate-2",
+      commitSha: "two",
+      treeSha: "two",
+    };
+    state.findings["source-first-stream-r1"] = {
+      id: "source-first-stream-r1",
+      candidateId: "candidate-1",
+      workstream: { kind: "source", id: "first-stream" },
+      summary: "missing behavior",
+      evidence: "missing",
+      requiredChange: "fix it",
+      acceptanceCriteria: ["works"],
+      origin: "initial",
+      introducedRound: 0,
+      status: "open",
+    };
+    state.reviews["source:first-stream"] = {
+      candidateId: "candidate-2",
+      previousCandidateId: "candidate-1",
+      round: 0,
+      outstandingIds: ["source-first-stream-r1"],
+      latestCorrection: {
+        fromCandidateId: "candidate-1",
+        changedPaths: ["src/fix.ts"],
+        evidence: "checkpoint",
+      },
+      evidence: ["initial"],
+      observations: [],
+    };
+    state.processLeases.review = {
+      id: "review",
+      kind: "review",
+      workstream: { kind: "source", id: "first-stream" },
+      candidateId: "candidate-2",
+      attempt: 1,
+      acquiredAt: "now",
+    };
+    const incomplete = reduceVNextRunEvent(state, {
+      kind: "review_completed",
+      workstream: { kind: "source", id: "first-stream" },
+      leaseId: "review",
+      outcome: {
+        kind: "anchored",
+        candidateId: "candidate-2",
+        evidence: "artifact",
+        completion: { assessments: [], regressions: [] },
+      },
+    });
+    expect(incomplete.accepted).toBe(false);
+    const stale = reduceVNextRunEvent(state, {
+      kind: "review_completed",
+      workstream: { kind: "source", id: "first-stream" },
+      leaseId: "review",
+      outcome: {
+        kind: "anchored",
+        candidateId: "candidate-1",
+        evidence: "artifact",
+        completion: { assessments: [], regressions: [] },
+      },
+    });
+    expect(stale.accepted).toBe(false);
   });
 
   it("permits an overall repair only in whole-plan review after source completion", async () => {
@@ -255,6 +526,13 @@ describe("VNext scheduler actor", () => {
           leaseId: effect.leaseId,
           outcome: {
             kind: "satisfaction_claimed",
+            candidate: {
+              id: "satisfied:first-stream:base-sha",
+              workstream: { kind: "source", id: "first-stream" },
+              baseSha: "base-sha",
+              commitSha: "base-sha",
+              treeSha: "base-tree",
+            },
             evidence: {
               first: "Repository state already provides this behavior.",
             },

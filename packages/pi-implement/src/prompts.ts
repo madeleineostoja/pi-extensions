@@ -940,6 +940,45 @@ Submit assessments with each known ID exactly once and status resolved or unreso
 ${PAPERCUT_GUIDANCE}`;
 }
 
+export function buildInitialWorkstreamReviewPrompt(args: {
+  worktreePath: string;
+  candidate: {
+    id: string;
+    baseSha: string;
+    commitSha: string;
+    treeSha: string;
+  };
+  diff: string;
+  contracts: WorkstreamImplementerPromptTask[];
+  sourceMaterial: Array<{ path: string; content: string }>;
+  checkpoints: Record<string, string>;
+  satisfiedEvidence: Record<string, string>;
+  verification?: Array<{ command: string; result: string; rationale: string }>;
+  uncertainty?: string;
+}): string {
+  return `You are the independent reviewer for one cumulative pi-implement workstream. Review read-only in this assigned candidate worktree:\n\n  ${args.worktreePath}\n\nCandidate: ${args.candidate.id}\nBase: ${args.candidate.baseSha}\nTip: ${args.candidate.commitSha}\nTree: ${args.candidate.treeSha}\n\nReview every ordered contract as one cumulative candidate. The task checkpoints, already-satisfied claims, implementation verification, and uncertainty are evidence to assess, not proof of correctness. For an already-satisfied claim, inspect repository state even though the candidate diff is empty. Do not edit files, change Git state, install dependencies, or run write-producing commands.\n\n## Ordered contracts\n\n${args.contracts.map((task, index) => `### ${index + 1}. ${task.id}: ${task.title}\nObjective: ${task.objective}\nIn scope: ${task.inScope.join("; ")}\nAcceptance: ${task.acceptanceCriteria.join("; ")}\nOut of scope: ${task.outOfScope.join("; ")}`).join("\n\n")}\n\n## Source material\n\n${args.sourceMaterial.map((material) => `### ${material.path}\n\n${material.content}`).join("\n\n") || "No additional source material."}\n\n## Task evidence\n\nCheckpoints: ${JSON.stringify(args.checkpoints)}\nAlready-satisfied evidence: ${JSON.stringify(args.satisfiedEvidence)}\nVerification: ${JSON.stringify(args.verification ?? [])}\nUncertainty: ${args.uncertainty ?? "none"}\n\n## Cumulative base-to-tip diff\n\n\`\`\`diff\n${args.diff}\n\`\`\`\n\nReturn approved only when the cumulative candidate satisfies every contract. Otherwise return the complete known set of material blocking findings directly. Each finding must state current evidence, the minimum observable correction, and concrete acceptance criteria. Once the contracts and directly affected interfaces have been covered, stop unless concrete unresolved evidence justifies targeted additional investigation. Exclude style nits, speculative improvements, unrelated audits, and broader redesigns when a narrow correction satisfies the contract. Do not use proposal, admission, deferred-concern, or finding-count workflows.\n\n${PAPERCUT_GUIDANCE}`;
+}
+
+export function buildAnchoredWorkstreamReviewPrompt(args: {
+  worktreePath: string;
+  candidate: { id: string; commitSha: string };
+  previousCandidate: { id: string; commitSha: string };
+  latestDelta: string;
+  changedPaths: string[];
+  correctionEvidence: string;
+  verification?: Array<{ command: string; result: string; rationale: string }>;
+  uncertainty?: string;
+  outstandingFindings: Array<{
+    id: string;
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+  }>;
+}): string {
+  return `You are the independent reviewer for an anchored pi-implement workstream re-review. Review read-only in:\n\n  ${args.worktreePath}\n\nPrevious candidate: ${args.previousCandidate.id} @ ${args.previousCandidate.commitSha}\nCurrent candidate: ${args.candidate.id} @ ${args.candidate.commitSha}\nChanged paths: ${args.changedPaths.join(", ") || "none"}\nCorrection evidence: ${args.correctionEvidence}\nCurrent verification: ${JSON.stringify(args.verification ?? [])}\nCurrent uncertainty: ${args.uncertainty ?? "none"}\n\nAssess every outstanding ID exactly once against the current candidate and the latest correction delta. Do not re-review the complete candidate. A resolved ID cannot reopen. Add a new blocking regression only when this exact latest delta caused it and list a changed path from the latest delta. Put every other concern in observations; observations never block. Do not edit files, change Git state, install dependencies, or run write-producing commands.\n\n## Outstanding findings\n\n${args.outstandingFindings.map((finding) => `### ${finding.id}: ${finding.summary}\nEvidence: ${finding.evidence}\nRequired correction: ${finding.requiredChange}\nAcceptance: ${finding.acceptanceCriteria.join("; ")}`).join("\n\n")}\n\n## Latest correction delta\n\n\`\`\`diff\n${args.latestDelta}\n\`\`\`\n\nReturn one resolved or unresolved assessment for each supplied ID, direct causal regressions only, and optional observations. Stop after the outstanding IDs and concrete latest-delta evidence are covered; pursue more investigation only for a specific unresolved signal. Do not use proposal, admission, deferred-concern, demotion, adjudication, finding-count, verdict-pressure, or brevity-pressure workflows.\n\n${PAPERCUT_GUIDANCE}`;
+}
+
 function formatFindings(findings: ReviewFinding[]): string {
   return findings
     .map(

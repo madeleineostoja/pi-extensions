@@ -44,6 +44,7 @@ export type WorkstreamCandidateOutcome =
     }
   | {
       kind: "satisfaction_claimed";
+      candidate: VNextRunState["candidates"][string];
       evidence: Record<string, string>;
       summary: string;
       verification: WorkstreamImplementerCompletion["verification"];
@@ -388,6 +389,13 @@ async function validateCompletion(args: {
     );
   }
 
+  const implementationEvidence = {
+    summary: args.completion.summary,
+    verification: args.completion.verification,
+    ...(args.completion.uncertainty
+      ? { uncertainty: args.completion.uncertainty }
+      : {}),
+  };
   if (args.completion.outcome === "already_satisfied") {
     if (args.completion.candidateTip !== undefined) {
       throw new WorkstreamCandidateLifecycleError(
@@ -411,6 +419,14 @@ async function validateCompletion(args: {
     }
     return {
       kind: "satisfaction_claimed",
+      candidate: {
+        id: `satisfied:${args.workstream.id}:${args.workspace.baseSha}`,
+        workstream: { kind: "source", id: args.workstream.id },
+        baseSha: args.workspace.baseSha,
+        commitSha: args.workspace.baseSha,
+        treeSha: await args.workspaceGit.treeAt(args.workspace.baseSha),
+        implementationEvidence,
+      },
       evidence,
       summary: args.completion.summary,
       verification: args.completion.verification,
@@ -505,6 +521,7 @@ async function validateCompletion(args: {
       baseSha: args.workspace.baseSha,
       commitSha: candidateTip,
       treeSha,
+      implementationEvidence,
     },
     checkpoints,
     satisfied,
