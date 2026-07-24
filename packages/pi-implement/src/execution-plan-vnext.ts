@@ -1,12 +1,6 @@
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import {
   countMaterialChars,
   MAX_CORPUS_CHARS,
@@ -14,6 +8,7 @@ import {
   type MaterialStore,
 } from "./material-store.js";
 import type { ParsedPlan, PlanTask } from "./plan.js";
+import { writeAtomicJson } from "./atomic-json.js";
 import { normalizeCheckboxMarker } from "./source-checkbox.js";
 
 const ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -511,10 +506,7 @@ export function writeExecutionPlan(runDir: string, plan: ExecutionPlan): void {
   if (existsSync(path)) {
     throw new Error(`Execution plan already exists: ${path}`);
   }
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
-  writeFileSync(tmp, `${JSON.stringify(plan, null, 2)}\n`, "utf-8");
-  renameSync(tmp, path);
+  writeAtomicJson(path, plan);
 }
 
 export function readExecutionPlan(runDir: string): ExecutionPlan | undefined {
