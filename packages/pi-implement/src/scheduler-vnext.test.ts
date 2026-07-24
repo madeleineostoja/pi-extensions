@@ -327,6 +327,26 @@ describe("VNext scheduler reducer", () => {
     expect(
       findings.state.reviews["source:first-stream"]?.outstandingIds,
     ).toEqual(["source-first-stream-r1"]);
+    expect(findings.state.gates).toMatchObject([
+      {
+        kind: "review",
+        outcome: "failed",
+        candidateId: "candidate-1",
+        outstandingFindingIds: ["source-first-stream-r1"],
+      },
+    ]);
+    expect(Object.values(findings.state.recoveryEpisodes)).toMatchObject([
+      {
+        status: "open",
+        candidateId: "candidate-1",
+        workspace: {
+          id: "source:first-stream",
+          checkpoint: "commit-1",
+          changedPaths: [],
+          stateEvidence: "Workspace state was retained by the failed gate.",
+        },
+      },
+    ]);
 
     const recovery = reduceVNextRunEvent(findings.state, {
       kind: "recovery_requested",
@@ -341,6 +361,13 @@ describe("VNext scheduler reducer", () => {
       kind: "recovery_completed",
       workstream: implementation.workstream,
       leaseId: recoveryEffect.leaseId,
+      action: {
+        kind: "rework_candidate",
+        outcome: "completed",
+        summary: "Implemented the required endpoint.",
+        evidence: "checkpoint commit-2",
+        at: "later",
+      },
       candidate: {
         ...candidate,
         id: "candidate-2",
@@ -353,6 +380,13 @@ describe("VNext scheduler reducer", () => {
         evidence: "Implementer checkpoint commit-2",
       },
     });
+    expect(Object.values(corrected.state.recoveryEpisodes)).toMatchObject([
+      {
+        status: "completed",
+        actions: [{ kind: "rework_candidate", outcome: "completed" }],
+      },
+    ]);
+
     const anchored = reduceVNextRunEvent(corrected.state, {
       kind: "review_requested",
       workstream: implementation.workstream,
@@ -405,6 +439,192 @@ describe("VNext scheduler reducer", () => {
         },
       ],
     );
+  });
+
+  it("pauses only after an independently escalated identical no-safe-action cycle", async () => {
+    const state = (await store()).read();
+    state.workstreams.source["first-stream"]!.phase = "recovering";
+    state.workstreams.source["first-stream"]!.candidateId = "candidate-1";
+    state.candidates["candidate-1"] = {
+      id: "candidate-1",
+      workstream: { kind: "source", id: "first-stream" },
+      baseSha: "base",
+      commitSha: "commit",
+      treeSha: "tree",
+    };
+    state.findings["source-first-stream-r1"] = {
+      id: "source-first-stream-r1",
+      candidateId: "candidate-1",
+      workstream: { kind: "source", id: "first-stream" },
+      summary: "missing behavior",
+      evidence: "missing",
+      requiredChange: "fix it",
+      acceptanceCriteria: ["works"],
+      origin: "initial",
+      introducedRound: 0,
+      status: "open",
+    };
+    state.gates.push({
+      id: "review:source:first-stream:candidate-1:1",
+      kind: "review",
+      workstream: { kind: "source", id: "first-stream" },
+      candidateId: "candidate-1",
+      attempt: 1,
+      outcome: "failed",
+      evidence: "review artifact",
+      outstandingFindingIds: ["source-first-stream-r1"],
+    });
+    state.recoveryEpisodes["recovery:review"] = {
+      id: "recovery:review",
+      gateId: "review:source:first-stream:candidate-1:1",
+      gateAttempts: ["review:source:first-stream:candidate-1:1"],
+      workstream: { kind: "source", id: "first-stream" },
+      candidateId: "candidate-1",
+      workspace: {
+        id: "source:first-stream",
+        checkpoint: "commit",
+        changedPaths: [],
+        stateEvidence: "review workspace",
+      },
+      outstandingFindingIds: ["source-first-stream-r1"],
+      status: "open",
+      cycle: {
+        signature: "initial",
+        identicalNoActionCycles: 0,
+        independentlyEscalated: false,
+      },
+      providerFailures: 0,
+      actions: [],
+    };
+    const action = {
+      kind: "no_safe_action" as const,
+      outcome: "no_safe_action" as const,
+      summary: "No safe mutation is available.",
+      evidence: "The same candidate and failure remain.",
+      at: "now",
+    };
+
+    let current = state;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const requested = reduceVNextRunEvent(current, {
+        kind: "recovery_requested",
+        workstream: { kind: "source", id: "first-stream" },
+        now: `attempt-${attempt}`,
+      });
+      expect(requested.accepted).toBe(true);
+      const effect = requested.effects[0]!;
+      if (effect.kind !== "run_recovery") {
+        throw new Error("Expected recovery effect.");
+      }
+      const completed = reduceVNextRunEvent(requested.state, {
+        kind: "recovery_completed",
+        workstream: { kind: "source", id: "first-stream" },
+        leaseId: effect.leaseId,
+        action,
+      });
+      expect(completed.accepted).toBe(true);
+      current = completed.state;
+      if (attempt === 1) {
+        expect(
+          Object.values(current.recoveryEpisodes)[0]?.cycle
+            .independentlyEscalated,
+        ).toBe(true);
+      }
+    }
+    expect(current.phase).toBe("paused");
+    expect(current.workstreams.source["first-stream"]?.candidateId).toBe(
+      "candidate-1",
+    );
+  });
+
+  it("keeps a same-candidate environment repair open for a retried gate", async () => {
+    const state = (await store()).read();
+    state.workstreams.source["first-stream"]!.candidateId = "candidate-1";
+    state.workstreams.source["first-stream"]!.phase = "candidate_ready";
+    state.candidates["candidate-1"] = {
+      id: "candidate-1",
+      workstream: { kind: "source", id: "first-stream" },
+      baseSha: "base",
+      commitSha: "commit",
+      treeSha: "tree",
+    };
+    const failed = reduceVNextRunEvent(state, {
+      kind: "gate_recorded",
+      workstream: { kind: "source", id: "first-stream" },
+      result: {
+        id: "environment:first-stream:1",
+        kind: "environment",
+        owner: "source:first-stream",
+        candidateId: "candidate-1",
+        attempt: 1,
+        outcome: "failed",
+        evidence: "node_modules is missing",
+        outstandingFindingIds: [],
+      },
+      workspace: {
+        id: "source:first-stream",
+        checkpoint: "commit",
+        changedPaths: [],
+        stateEvidence: "Dependencies are absent from the owned workspace.",
+      },
+    });
+    const requested = reduceVNextRunEvent(failed.state, {
+      kind: "recovery_requested",
+      workstream: { kind: "source", id: "first-stream" },
+      now: "now",
+    });
+    const effect = requested.effects[0]!;
+    if (effect.kind !== "run_recovery") {
+      throw new Error("Expected recovery effect.");
+    }
+    const repaired = reduceVNextRunEvent(requested.state, {
+      kind: "recovery_completed",
+      workstream: { kind: "source", id: "first-stream" },
+      leaseId: effect.leaseId,
+      action: {
+        kind: "repair_environment",
+        outcome: "completed",
+        summary: "Installed the missing dependencies.",
+        evidence: "npm install completed in the owned worktree.",
+        at: "later",
+      },
+    });
+
+    expect(repaired.accepted).toBe(true);
+    expect(repaired.state.workstreams.source["first-stream"]?.phase).toBe(
+      "recovering",
+    );
+    expect(Object.values(repaired.state.recoveryEpisodes)).toMatchObject([
+      { status: "open", actions: [{ kind: "repair_environment" }] },
+    ]);
+
+    let providerState = repaired.state;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const retry = reduceVNextRunEvent(providerState, {
+        kind: "recovery_requested",
+        workstream: { kind: "source", id: "first-stream" },
+        now: `retry-${attempt}`,
+      });
+      const retryEffect = retry.effects[0]!;
+      if (retryEffect.kind !== "run_recovery") {
+        throw new Error("Expected recovery retry effect.");
+      }
+      const failedProvider = reduceVNextRunEvent(retry.state, {
+        kind: "recovery_provider_failed",
+        workstream: { kind: "source", id: "first-stream" },
+        leaseId: retryEffect.leaseId,
+        error: "provider unavailable",
+        now: `failed-${attempt}`,
+      });
+      expect(failedProvider.accepted).toBe(true);
+      providerState = failedProvider.state;
+    }
+    expect(providerState.phase).toBe("paused");
+    expect(Object.values(providerState.recoveryEpisodes)[0]).toMatchObject({
+      providerFailures: 3,
+      retryAfterMs: 4_000,
+      status: "paused",
+    });
   });
 
   it("rejects incomplete anchored coverage and stale candidate review results", async () => {

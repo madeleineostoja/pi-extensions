@@ -22,6 +22,7 @@ import {
   writeExecutionPlan,
   type ExecutionPlan,
 } from "./execution-plan-vnext.js";
+import { recoveryActionKinds, recoveryGateKinds } from "./recovery-vnext.js";
 import { normalizeCheckboxMarker } from "./source-checkbox.js";
 
 const nonEmpty = z.string().trim().min(1);
@@ -90,6 +91,7 @@ const processLeaseSchema = z
     kind: z.enum(["implementation", "review", "recovery", "publication"]),
     candidateId: nonEmpty.optional(),
     publicationIntentId: nonEmpty.optional(),
+    recoveryEpisodeId: nonEmpty.optional(),
     attempt: z.number().int().positive(),
     acquiredAt: nonEmpty,
   })
@@ -196,9 +198,21 @@ const reviewStateSchema = z
   })
   .strict();
 
+const commandEvidenceSchema = z
+  .object({
+    command: nonEmpty,
+    cwd: nonEmpty,
+    exitCode: z.number().int().optional(),
+    signal: nonEmpty.optional(),
+    timedOut: z.boolean(),
+    output: z.string().max(12_000),
+  })
+  .strict();
+
 const gateSchema = z
   .object({
     id: nonEmpty,
+    kind: z.enum(recoveryGateKinds),
     workstream: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("source"), id }).strict(),
       z.object({ kind: z.literal("overall"), repairId: id }).strict(),
@@ -207,6 +221,24 @@ const gateSchema = z
     attempt: z.number().int().positive(),
     outcome: z.enum(["passed", "failed"]),
     evidence: nonEmpty,
+    command: commandEvidenceSchema.optional(),
+    targetEvidence: nonEmpty.optional(),
+    outstandingFindingIds: z.array(nonEmpty),
+  })
+  .strict();
+
+const recoveryActionSchema = z
+  .object({
+    kind: z.enum(recoveryActionKinds),
+    outcome: z.enum([
+      "completed",
+      "interrupted",
+      "provider_failure",
+      "no_safe_action",
+    ]),
+    summary: nonEmpty,
+    evidence: nonEmpty,
+    at: nonEmpty,
   })
   .strict();
 
@@ -214,9 +246,32 @@ const recoverySchema = z
   .object({
     id: nonEmpty,
     gateId: nonEmpty,
+    gateAttempts: z.array(nonEmpty).min(1),
+    workstream: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("source"), id }).strict(),
+      z.object({ kind: z.literal("overall"), repairId: id }).strict(),
+    ]),
+    candidateId: nonEmpty.optional(),
+    workspace: z
+      .object({
+        id: nonEmpty,
+        checkpoint: nonEmpty.optional(),
+        changedPaths: z.array(nonEmpty),
+        stateEvidence: nonEmpty,
+      })
+      .strict(),
+    outstandingFindingIds: z.array(nonEmpty),
     status: z.enum(["open", "paused", "completed"]),
-    signature: nonEmpty,
-    actions: z.array(nonEmpty),
+    cycle: z
+      .object({
+        signature: nonEmpty,
+        identicalNoActionCycles: z.number().int().nonnegative(),
+        independentlyEscalated: z.boolean(),
+      })
+      .strict(),
+    providerFailures: z.number().int().nonnegative(),
+    retryAfterMs: z.number().int().nonnegative().optional(),
+    actions: z.array(recoveryActionSchema),
   })
   .strict();
 
@@ -1065,6 +1120,16 @@ function invariantIssues(
         `publication lease ${key} does not match an immutable intent`,
       );
     }
+    if (
+      lease.kind === "recovery" &&
+      (!lease.recoveryEpisodeId ||
+        state.recoveryEpisodes[lease.recoveryEpisodeId]?.status !== "open")
+    ) {
+      issues.push(`recovery lease ${key} does not match an open episode`);
+    }
+    if (lease.kind !== "recovery" && lease.recoveryEpisodeId !== undefined) {
+      issues.push(`non-recovery lease ${key} references a recovery episode`);
+    }
   }
   if (
     state.phase === "planning" &&
@@ -1173,9 +1238,49 @@ function invariantIssues(
       issues.push(`gate ${gate.id} references unknown workstream or candidate`);
     }
   }
+  for (const gate of state.gates.filter((gate) => gate.outcome === "failed")) {
+    if (
+      !Object.values(state.recoveryEpisodes).some(
+        (episode) => episode.gateId === gate.id,
+      )
+    ) {
+      issues.push(`failed gate ${gate.id} has no durable recovery episode`);
+    }
+  }
   for (const [key, recovery] of Object.entries(state.recoveryEpisodes)) {
-    if (key !== recovery.id || !gates.has(recovery.gateId)) {
-      issues.push(`recovery episode ${key} references an unknown gate`);
+    const gate = state.gates.find(
+      (candidate) => candidate.id === recovery.gateId,
+    );
+    if (
+      key !== recovery.id ||
+      !gate ||
+      gate.outcome !== "failed" ||
+      !recovery.gateAttempts.includes(recovery.gateId) ||
+      recovery.gateAttempts.some(
+        (attemptId) =>
+          !state.gates.some((candidate) => candidate.id === attemptId),
+      ) ||
+      !sameWorkstreamIdentity(gate.workstream, recovery.workstream) ||
+      gate.candidateId !== recovery.candidateId ||
+      JSON.stringify(gate.outstandingFindingIds) !==
+        JSON.stringify(recovery.outstandingFindingIds)
+    ) {
+      issues.push(`recovery episode ${key} does not match its failed gate`);
+    }
+    if (
+      recovery.outstandingFindingIds.some(
+        (findingId) =>
+          !state.findings[findingId] ||
+          !sameWorkstreamIdentity(
+            state.findings[findingId]!.workstream,
+            recovery.workstream,
+          ),
+      )
+    ) {
+      issues.push(`recovery episode ${key} references an unknown finding`);
+    }
+    if (recovery.status === "completed" && recovery.actions.length === 0) {
+      issues.push(`completed recovery episode ${key} has no action evidence`);
     }
   }
   for (const [key, intent] of Object.entries(state.publication.intents)) {
@@ -1235,7 +1340,56 @@ function invariantIssues(
       }
     }
   }
+  if (previous) {
+    for (const gate of previous.gates) {
+      const retained = state.gates.find(
+        (candidate) => candidate.id === gate.id,
+      );
+      if (!retained || JSON.stringify(retained) !== JSON.stringify(gate)) {
+        issues.push(`gate ${gate.id} is not immutable`);
+      }
+    }
+    for (const [id, episode] of Object.entries(previous.recoveryEpisodes)) {
+      const retained = state.recoveryEpisodes[id];
+      if (!retained || !sameRecoveryEpisodeHistory(episode, retained)) {
+        issues.push(`recovery episode ${id} rewrites retained history`);
+      }
+    }
+  }
   return issues;
+}
+
+function sameRecoveryEpisodeHistory(
+  previous: VNextRunState["recoveryEpisodes"][string],
+  next: VNextRunState["recoveryEpisodes"][string],
+): boolean {
+  const actionsAppended = next.actions.length > previous.actions.length;
+  const resumed = previous.status === "paused" && next.status === "open";
+  const mutableStateChanged =
+    previous.status !== next.status ||
+    JSON.stringify(previous.cycle) !== JSON.stringify(next.cycle) ||
+    previous.providerFailures !== next.providerFailures ||
+    previous.retryAfterMs !== next.retryAfterMs;
+  return (
+    previous.id === next.id &&
+    previous.gateId === next.gateId &&
+    (previous.status !== "completed" || next.status === "completed") &&
+    (!mutableStateChanged || actionsAppended || resumed) &&
+    JSON.stringify(previous.workstream) === JSON.stringify(next.workstream) &&
+    previous.candidateId === next.candidateId &&
+    JSON.stringify(previous.workspace) === JSON.stringify(next.workspace) &&
+    JSON.stringify(previous.outstandingFindingIds) ===
+      JSON.stringify(next.outstandingFindingIds) &&
+    next.gateAttempts.length >= previous.gateAttempts.length &&
+    previous.gateAttempts.every(
+      (attempt, index) => attempt === next.gateAttempts[index],
+    ) &&
+    next.actions.length >= previous.actions.length &&
+    previous.actions.every(
+      (action, index) =>
+        JSON.stringify(action) === JSON.stringify(next.actions[index]),
+    )
+  );
 }
 
 function workstreamExists(
@@ -1253,6 +1407,13 @@ function workstreamIdentity(
   return workstream.kind === "source"
     ? `source:${workstream.id}`
     : `overall:${workstream.repairId}`;
+}
+
+function sameWorkstreamIdentity(
+  left: z.infer<typeof candidateSchema>["workstream"],
+  right: z.infer<typeof candidateSchema>["workstream"],
+): boolean {
+  return workstreamIdentity(left) === workstreamIdentity(right);
 }
 
 function workstreamPhase(
