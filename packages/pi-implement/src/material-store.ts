@@ -297,47 +297,63 @@ export function buildMaterialStore(
     }
   }
 
-  // Entry-plan corpus links and sibling-task discovery.
-  const corpusReferencedPaths = new Set<string>();
-  for (const target of discoverInlineMarkdownLinks(
-    args.plan.content.split("\n"),
-  )) {
-    const validation = validateCorpusTarget(
-      planDir,
-      target,
-      allowedRoots,
-      repoRoot,
-    );
-    if (typeof validation === "string") {
-      addError(validation);
-      continue;
+  const traversed = new Set<string>();
+  const visitCorpusFile = (
+    absolutePath: string,
+    content: string,
+    ancestors: string[],
+  ) => {
+    if (traversed.has(absolutePath)) {
+      return;
     }
-    if (corpusReferencedPaths.has(validation.absolutePath)) {
-      continue;
-    }
-    corpusReferencedPaths.add(validation.absolutePath);
-    addFile(validation.absolutePath, validation.content, "corpus-link");
-
-    if (isInTasksDirectory(validation.absolutePath)) {
-      const siblingPaths = discoverSiblingTasks(
-        dirname(validation.absolutePath),
+    traversed.add(absolutePath);
+    for (const target of discoverInlineMarkdownLinks(content.split("\n"))) {
+      const validation = validateCorpusTarget(
+        dirname(absolutePath),
+        target,
+        allowedRoots,
+        repoRoot,
       );
-      for (const siblingPath of siblingPaths) {
-        if (filesByPath.has(siblingPath)) {
+      if (typeof validation === "string") {
+        addError(validation);
+        continue;
+      }
+      if (ancestors.includes(validation.absolutePath)) {
+        addError(
+          `cyclic corpus link: ${[...ancestors, validation.absolutePath].join(" -> ")}`,
+        );
+        continue;
+      }
+      addFile(validation.absolutePath, validation.content, "corpus-link");
+      visitCorpusFile(validation.absolutePath, validation.content, [
+        ...ancestors,
+        validation.absolutePath,
+      ]);
+    }
+
+    if (!isInTasksDirectory(absolutePath)) {
+      return;
+    }
+    for (const siblingPath of discoverSiblingTasks(dirname(absolutePath))) {
+      try {
+        const siblingContent = readFileSync(siblingPath, "utf-8");
+        if (!siblingContent.trim()) {
+          addError(`empty or whitespace-only corpus file: ${siblingPath}`);
           continue;
         }
-        try {
-          const siblingContent = readFileSync(siblingPath, "utf-8");
-          if (!siblingContent.trim()) {
-            addError(`empty or whitespace-only corpus file: ${siblingPath}`);
-            continue;
-          }
-          addFile(siblingPath, siblingContent, "sibling-task");
-        } catch {
-          addError(`missing or unreadable corpus file: ${siblingPath}`);
-        }
+        addFile(siblingPath, siblingContent, "sibling-task");
+        visitCorpusFile(siblingPath, siblingContent, [
+          ...ancestors,
+          siblingPath,
+        ]);
+      } catch {
+        addError(`missing or unreadable corpus file: ${siblingPath}`);
       }
     }
+  };
+
+  for (const file of Array.from(filesByPath.values())) {
+    visitCorpusFile(file.absolutePath, file.content, [file.absolutePath]);
   }
 
   const files = finalizeMaterialFiles(filesByPath, planDir);

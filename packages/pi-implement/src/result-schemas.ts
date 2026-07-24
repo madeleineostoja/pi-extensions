@@ -123,6 +123,59 @@ export const executionManifestSchema = Type.Object({
   maxConcurrency: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 
+const strictProvenanceSchema = Type.Object(
+  { path: nonEmptyString(), quote: nonEmptyString() },
+  { additionalProperties: false },
+);
+const strictCompiledContractSchema = Type.Object(
+  {
+    objective: nonEmptyString(),
+    inScope: Type.Array(nonEmptyString(), { minItems: 1 }),
+    acceptanceCriteria: Type.Array(nonEmptyString(), { minItems: 1 }),
+    outOfScope: Type.Array(nonEmptyString(), { minItems: 1 }),
+    supportingDesignContext: Type.Optional(nonEmptyString()),
+    implementationNotes: Type.Optional(nonEmptyString()),
+    verificationGuidance: Type.Optional(nonEmptyString()),
+  },
+  { additionalProperties: false },
+);
+const strictExecutionTaskSchema = Type.Object(
+  {
+    id: Type.String({ pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" }),
+    planIndex: Type.Integer({ minimum: 1 }),
+    title: nonEmptyString(),
+    dependsOn: stringArray(),
+    provenance: Type.Array(strictProvenanceSchema, { minItems: 1 }),
+    compiledContract: strictCompiledContractSchema,
+  },
+  { additionalProperties: false },
+);
+const strictWorkstreamSchema = Type.Object(
+  {
+    id: Type.String({ pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" }),
+    taskIds: Type.Array(nonEmptyString(), { minItems: 1 }),
+    dependsOn: stringArray(),
+    rationale: nonEmptyString(),
+    risk: Type.Union([Type.Literal("normal"), Type.Literal("isolated")]),
+  },
+  { additionalProperties: false },
+);
+
+export const strictExecutionPlanSchema = Type.Object(
+  {
+    version: Type.Literal(1),
+    plannerReason: nonEmptyString(),
+    plannerConfidence: Type.Union([
+      Type.Literal("high"),
+      Type.Literal("medium"),
+      Type.Literal("low"),
+    ]),
+    tasks: Type.Array(strictExecutionTaskSchema, { minItems: 1 }),
+    workstreams: Type.Array(strictWorkstreamSchema, { minItems: 1 }),
+  },
+  { additionalProperties: false },
+);
+
 export const sourceMaterialRepairSchema = Type.Union([
   Type.Object({
     taskId: nonEmptyString(),
