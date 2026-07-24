@@ -722,8 +722,15 @@ export function reduceVNextRunEvent(
 
     case "publication_intent_recorded": {
       const candidate = state.candidates[event.intent.candidateId];
-      if (!candidate) {
-        return reject("publication intent references an unknown candidate");
+      if (
+        !candidate ||
+        !sameWorkstream(candidate.workstream, event.intent.workstream) ||
+        getWorkstream(state, event.intent.workstream)?.candidateId !==
+          candidate.id
+      ) {
+        return reject(
+          "publication intent does not match the approved candidate",
+        );
       }
       const existing = state.publication.intents[event.intent.id];
       if (

@@ -295,11 +295,18 @@ const recoverySchema = z
 const publicationIntentSchema = z
   .object({
     id: nonEmpty,
+    workstream: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("source"), id }).strict(),
+      z.object({ kind: z.literal("overall"), repairId: id }).strict(),
+    ]),
     candidateId: nonEmpty,
+    stagingWorktree: nonEmpty,
+    hookEvidence: nonEmpty,
     targetBaseSha: nonEmpty,
     preparedCommitSha: nonEmpty,
     preparedTreeSha: nonEmpty,
     targetRef: nonEmpty,
+    protectedArtifactSnapshots: z.record(nonEmpty, z.string()),
     protectedArtifactHashes: z.record(nonEmpty, hash),
   })
   .strict();
@@ -307,7 +314,12 @@ const publicationIntentSchema = z
 const publicationReceiptSchema = z
   .object({
     intentId: nonEmpty,
+    candidateId: nonEmpty,
+    targetBaseSha: nonEmpty,
     publishedCommitSha: nonEmpty,
+    publishedTreeSha: nonEmpty,
+    targetRef: nonEmpty,
+    protectedArtifactHashes: z.record(nonEmpty, hash),
     publishedAt: nonEmpty,
   })
   .strict();
@@ -1156,7 +1168,6 @@ function invariantIssues(
   ) {
     issues.push("an unbound planning run cannot have process leases");
   }
-  const candidateIds = new Set(Object.keys(state.candidates));
   for (const [key, candidate] of Object.entries(state.candidates)) {
     if (key !== candidate.id) {
       issues.push(`candidate key ${key} does not match its ID`);
@@ -1303,8 +1314,26 @@ function invariantIssues(
     }
   }
   for (const [key, intent] of Object.entries(state.publication.intents)) {
-    if (key !== intent.id || !candidateIds.has(intent.candidateId)) {
-      issues.push(`publication intent ${key} references an unknown candidate`);
+    const candidate = state.candidates[intent.candidateId];
+    if (
+      key !== intent.id ||
+      !candidate ||
+      !sameWorkstreamIdentity(candidate.workstream, intent.workstream) ||
+      workstreamCandidateId(state, intent.workstream) !== intent.candidateId ||
+      intent.targetRef !== state.run.checkout.branchRef ||
+      (candidate.reconciliation
+        ? intent.targetBaseSha !== candidate.reconciliation.targetBaseSha ||
+          intent.preparedCommitSha !==
+            candidate.reconciliation.preparedCommitSha ||
+          intent.preparedTreeSha !== candidate.reconciliation.treeSha ||
+          intent.stagingWorktree !== candidate.reconciliation.worktreePath
+        : intent.targetBaseSha !== candidate.baseSha ||
+          intent.preparedCommitSha !== candidate.commitSha ||
+          intent.preparedTreeSha !== candidate.treeSha)
+    ) {
+      issues.push(
+        `publication intent ${key} does not match its approved candidate`,
+      );
     }
   }
   for (const [key, receipt] of Object.entries(state.publication.receipts)) {
@@ -1312,7 +1341,13 @@ function invariantIssues(
     if (
       key !== receipt.intentId ||
       !intent ||
-      intent.preparedCommitSha !== receipt.publishedCommitSha
+      intent.candidateId !== receipt.candidateId ||
+      intent.targetBaseSha !== receipt.targetBaseSha ||
+      intent.preparedCommitSha !== receipt.publishedCommitSha ||
+      intent.preparedTreeSha !== receipt.publishedTreeSha ||
+      intent.targetRef !== receipt.targetRef ||
+      JSON.stringify(intent.protectedArtifactHashes) !==
+        JSON.stringify(receipt.protectedArtifactHashes)
     ) {
       issues.push(
         `publication receipt ${key} has no matching immutable intent`,

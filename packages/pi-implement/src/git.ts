@@ -71,8 +71,14 @@ export type GitClient = {
   commit(message: string): Promise<CommandResult>;
   reword(message: string): Promise<CommandResult>;
   mergeFastForward(commitSha: string): Promise<CommandResult>;
+  updateRef?(
+    ref: string,
+    nextSha: string,
+    expectedSha: string,
+  ): Promise<CommandResult>;
   reset(): Promise<void>;
   resetHard(commitSha: string): Promise<void>;
+  synchronizeWorktree?(commitSha: string): Promise<void>;
   aheadOfBase(branchName: string, baseSha: string): Promise<boolean>;
   cherryPickNoCommit(commitSha: string): Promise<CommandResult>;
   applyPatch(patch: string): Promise<CommandResult>;
@@ -515,12 +521,30 @@ export class ExecGitClient implements GitClient {
     return this.run(["merge", "--ff-only", commitSha], true);
   }
 
+  async updateRef(
+    ref: string,
+    nextSha: string,
+    expectedSha: string,
+  ): Promise<CommandResult> {
+    return this.run(
+      ["update-ref", ref, nextSha, expectedSha],
+      true,
+      undefined,
+      "repository",
+      "idempotent",
+    );
+  }
+
   async reset(): Promise<void> {
     await this.run(["reset"]);
   }
 
   async resetHard(commitSha: string): Promise<void> {
     await this.run(["reset", "--hard", commitSha]);
+  }
+
+  async synchronizeWorktree(commitSha: string): Promise<void> {
+    await this.run(["read-tree", "--reset", "-u", commitSha]);
   }
 
   async aheadOfBase(branchName: string, baseSha: string): Promise<boolean> {
