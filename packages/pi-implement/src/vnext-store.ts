@@ -324,8 +324,29 @@ const publicationReceiptSchema = z
   })
   .strict();
 
-const debtSchema = z
-  .object({ id: nonEmpty, reason: nonEmpty, artifactPath: nonEmpty })
+const projectionDebtSchema = z
+  .object({
+    id: nonEmpty,
+    reason: nonEmpty,
+    artifactPath: nonEmpty,
+    canonicalPath: nonEmpty,
+    expectedOldContent: z.string(),
+    expectedOldHash: hash,
+    expectedNewContent: z.string(),
+    expectedNewHash: hash,
+    taskIds: z.array(id).min(1),
+  })
+  .strict();
+
+const cleanupDebtSchema = z
+  .object({
+    id: nonEmpty,
+    reason: nonEmpty,
+    artifactPath: nonEmpty,
+    expectedCommitSha: nonEmpty.optional(),
+    branchName: nonEmpty.optional(),
+    worktreePath: nonEmpty.optional(),
+  })
   .strict();
 
 const pauseSchema = z
@@ -389,8 +410,8 @@ export const vnextRunStateSchema = z
       })
       .strict(),
     protectedArtifactHashes: z.record(nonEmpty, hash),
-    projectionDebt: z.array(debtSchema),
-    cleanupDebt: z.array(debtSchema),
+    projectionDebt: z.array(projectionDebtSchema),
+    cleanupDebt: z.array(cleanupDebtSchema),
     pause: pauseSchema.optional(),
     terminalReason: nonEmpty.optional(),
     wholePlanReview: wholePlanReviewSchema,
@@ -760,12 +781,12 @@ export class VNextRunStore {
     for (const taskId of taskIds) {
       if (
         !current.tasks[taskId] ||
-        !["checkpointed", "reviewed_satisfied"].includes(
+        !["checkpointed", "reviewed_satisfied", "published"].includes(
           current.tasks[taskId].phase,
         )
       ) {
         throw new VNextStateError(
-          "Only checkpointed or reviewed-satisfied tasks may be projected.",
+          "Only checkpointed, reviewed-satisfied, or already-published tasks may be projected.",
           this.path,
         );
       }

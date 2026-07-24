@@ -134,6 +134,7 @@ export type VNextSchedulerEvent =
       workstream: RuntimeWorkstream;
       leaseId: string;
       intentId: string;
+      projectionDebt?: VNextRunState["projectionDebt"][number];
     }
   | { kind: "whole_plan_review_requested" }
   | { kind: "overall_repair_queued"; repairId: string }
@@ -149,6 +150,7 @@ export type VNextSchedulerEvent =
       debt: VNextRunState["projectionDebt"][number];
     }
   | { kind: "projection_debt_settled"; debtId: string }
+  | { kind: "projection_safety_paused"; reason: string }
   | {
       kind: "cleanup_debt_recorded";
       debt: VNextRunState["cleanupDebt"][number];
@@ -834,10 +836,22 @@ export function reduceVNextRunEvent(
       }
       delete state.processLeases[lease.id];
       workstream.phase = "completed";
+      if (
+        event.projectionDebt &&
+        !state.projectionDebt.some(
+          (debt) => debt.id === event.projectionDebt!.id,
+        )
+      ) {
+        state.projectionDebt.push(event.projectionDebt);
+      }
       if (event.workstream.kind === "overall") {
         state.wholePlanReview.status = "pending";
       }
-      return accept();
+      return accept(
+        event.projectionDebt
+          ? [{ kind: "run_projection", debtId: event.projectionDebt.id }]
+          : [],
+      );
     }
 
     case "whole_plan_review_requested":
@@ -973,6 +987,20 @@ export function reduceVNextRunEvent(
         return reject("run still has incomplete workstreams or cleanup debt");
       }
       state.phase = "completed";
+      return accept();
+
+    case "projection_safety_paused":
+      if (Object.keys(state.processLeases).length > 0) {
+        return reject(
+          "projection safety pause requires owned processes to settle",
+        );
+      }
+      state.pause = {
+        resumePhase:
+          state.phase === "whole_plan_review" ? "whole_plan_review" : "running",
+        reason: event.reason,
+      };
+      state.phase = "paused";
       return accept();
 
     case "projection_debt_recorded":
