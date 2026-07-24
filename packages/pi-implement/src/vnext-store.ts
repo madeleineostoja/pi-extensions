@@ -55,6 +55,7 @@ const sourceWorkstreamSchema = z
       "publishing",
       "completed",
     ]),
+    candidateId: nonEmpty.optional(),
   })
   .strict();
 
@@ -73,11 +74,36 @@ const overallWorkstreamSchema = z
       "publishing",
       "completed",
     ]),
+    candidateId: nonEmpty.optional(),
+  })
+  .strict();
+
+const processWorkstreamSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("source"), id }).strict(),
+  z.object({ kind: z.literal("overall"), repairId: id }).strict(),
+]);
+
+const processLeaseSchema = z
+  .object({
+    id: nonEmpty,
+    workstream: processWorkstreamSchema,
+    kind: z.enum(["implementation", "review", "recovery", "publication"]),
+    candidateId: nonEmpty.optional(),
+    publicationIntentId: nonEmpty.optional(),
+    attempt: z.number().int().positive(),
+    acquiredAt: nonEmpty,
   })
   .strict();
 
 const taskRuntimeSchema = z.discriminatedUnion("phase", [
   z.object({ workstreamId: id, phase: z.literal("pending") }).strict(),
+  z
+    .object({
+      workstreamId: id,
+      phase: z.literal("satisfaction_claimed"),
+      evidence: nonEmpty,
+    })
+    .strict(),
   z
     .object({
       workstreamId: id,
@@ -182,6 +208,17 @@ const debtSchema = z
   .object({ id: nonEmpty, reason: nonEmpty, artifactPath: nonEmpty })
   .strict();
 
+const pauseSchema = z
+  .object({
+    resumePhase: z.enum(["planning", "running", "whole_plan_review"]),
+    reason: nonEmpty.optional(),
+  })
+  .strict();
+
+const wholePlanReviewSchema = z
+  .object({ status: z.enum(["pending", "reviewing", "repairing", "approved"]) })
+  .strict();
+
 export const vnextRunStateSchema = z
   .object({
     version: z.literal(1),
@@ -219,6 +256,7 @@ export const vnextRunStateSchema = z
       })
       .strict(),
     tasks: z.record(id, taskRuntimeSchema),
+    processLeases: z.record(nonEmpty, processLeaseSchema),
     candidates: z.record(nonEmpty, candidateSchema),
     findings: z.record(nonEmpty, findingSchema),
     gates: z.array(gateSchema),
@@ -232,6 +270,9 @@ export const vnextRunStateSchema = z
     protectedArtifactHashes: z.record(nonEmpty, hash),
     projectionDebt: z.array(debtSchema),
     cleanupDebt: z.array(debtSchema),
+    pause: pauseSchema.optional(),
+    terminalReason: nonEmpty.optional(),
+    wholePlanReview: wholePlanReviewSchema,
     createdAt: nonEmpty,
     updatedAt: nonEmpty,
   })
@@ -412,6 +453,7 @@ export function createPlanningRun(args: {
     phase: "planning",
     workstreams: { source: {}, overall: {} },
     tasks: {},
+    processLeases: {},
     candidates: {},
     findings: {},
     gates: [],
@@ -420,6 +462,7 @@ export function createPlanningRun(args: {
     protectedArtifactHashes: args.source.protectedArtifactHashes,
     projectionDebt: [],
     cleanupDebt: [],
+    wholePlanReview: { status: "pending" },
     createdAt: now,
     updatedAt: now,
   };
@@ -593,7 +636,12 @@ export class VNextRunStore {
       );
     }
     for (const taskId of taskIds) {
-      if (!current.tasks[taskId] || current.tasks[taskId].phase === "pending") {
+      if (
+        !current.tasks[taskId] ||
+        !["checkpointed", "reviewed_satisfied"].includes(
+          current.tasks[taskId].phase,
+        )
+      ) {
         throw new VNextStateError(
           "Only checkpointed or reviewed-satisfied tasks may be projected.",
           this.path,
@@ -808,8 +856,16 @@ function invariantIssues(
 ): string[] {
   const issues: string[] = [];
   const bound = state.executionPlan !== undefined;
-  if (state.phase === "planning" ? bound : !bound) {
-    issues.push("planning is the only unbound phase");
+  if (state.phase === "planning" && bound) {
+    issues.push("planning cannot bind an execution plan");
+  }
+  if (
+    !bound &&
+    !["planning", "stopping", "paused", "blocked_safety"].includes(state.phase)
+  ) {
+    issues.push(
+      "only planning-derived pause, stop, and safety states may be unbound",
+    );
   }
   if (
     !bound &&
@@ -893,6 +949,90 @@ function invariantIssues(
     if (key !== workstream.repairId) {
       issues.push(`overall workstream key ${key} does not match its repair ID`);
     }
+  }
+  if (Object.keys(state.processLeases).length > state.run.workerConcurrency) {
+    issues.push("active process leases exceed configured worker concurrency");
+  }
+  if (
+    Object.values(state.processLeases).filter(
+      (lease) => lease.kind === "publication",
+    ).length > 1
+  ) {
+    issues.push("publication is serialized to one active process lease");
+  }
+  if (
+    (state.phase === "stopping" || state.phase === "paused") !==
+    (state.pause !== undefined)
+  ) {
+    issues.push("only stopping and paused runs retain resumable pause state");
+  }
+  if (state.phase === "blocked_safety" && !state.terminalReason) {
+    issues.push("a safety-blocked run requires a terminal reason");
+  }
+  if (
+    state.phase === "completed" &&
+    state.wholePlanReview.status !== "approved"
+  ) {
+    issues.push("a completed run requires an approved whole-plan review");
+  }
+  const activeWorkstreams = new Set<string>();
+  for (const [key, lease] of Object.entries(state.processLeases)) {
+    if (key !== lease.id) {
+      issues.push(`process lease key ${key} does not match its ID`);
+    }
+    if (!workstreamExists(state, lease.workstream)) {
+      issues.push(`process lease ${key} references an unknown workstream`);
+      continue;
+    }
+    const workstreamKey = workstreamIdentity(lease.workstream);
+    if (activeWorkstreams.has(workstreamKey)) {
+      issues.push(
+        `workstream ${workstreamKey} has more than one active process lease`,
+      );
+    }
+    activeWorkstreams.add(workstreamKey);
+    if (
+      lease.workstream.kind === "overall" &&
+      (state.phase !== "whole_plan_review" ||
+        Object.values(state.workstreams.source).some(
+          (workstream) => workstream.phase !== "completed",
+        ))
+    ) {
+      issues.push(
+        `overall process lease ${key} is not ready for whole-plan repair`,
+      );
+    }
+    if (lease.candidateId !== workstreamCandidateId(state, lease.workstream)) {
+      issues.push(`process lease ${key} does not match its current candidate`);
+    }
+    const phase = workstreamPhase(state, lease.workstream);
+    const expectedPhase =
+      lease.kind === "implementation"
+        ? "implementing"
+        : lease.kind === "review"
+          ? "reviewing"
+          : lease.kind === "recovery"
+            ? "recovering"
+            : "publishing";
+    if (phase !== expectedPhase) {
+      issues.push(`process lease ${key} does not match its workstream phase`);
+    }
+    if (
+      lease.kind === "publication" &&
+      (!lease.publicationIntentId ||
+        state.publication.intents[lease.publicationIntentId]?.candidateId !==
+          lease.candidateId)
+    ) {
+      issues.push(
+        `publication lease ${key} does not match an immutable intent`,
+      );
+    }
+  }
+  if (
+    state.phase === "planning" &&
+    Object.keys(state.processLeases).length > 0
+  ) {
+    issues.push("an unbound planning run cannot have process leases");
   }
   const candidateIds = new Set(Object.keys(state.candidates));
   for (const [key, candidate] of Object.entries(state.candidates)) {
@@ -995,6 +1135,32 @@ function workstreamExists(
   return workstream.kind === "source"
     ? state.workstreams.source[workstream.id] !== undefined
     : state.workstreams.overall[workstream.repairId] !== undefined;
+}
+
+function workstreamIdentity(
+  workstream: z.infer<typeof candidateSchema>["workstream"],
+): string {
+  return workstream.kind === "source"
+    ? `source:${workstream.id}`
+    : `overall:${workstream.repairId}`;
+}
+
+function workstreamPhase(
+  state: VNextRunState,
+  workstream: z.infer<typeof candidateSchema>["workstream"],
+): string | undefined {
+  return workstream.kind === "source"
+    ? state.workstreams.source[workstream.id]?.phase
+    : state.workstreams.overall[workstream.repairId]?.phase;
+}
+
+function workstreamCandidateId(
+  state: VNextRunState,
+  workstream: z.infer<typeof candidateSchema>["workstream"],
+): string | undefined {
+  return workstream.kind === "source"
+    ? state.workstreams.source[workstream.id]?.candidateId
+    : state.workstreams.overall[workstream.repairId]?.candidateId;
 }
 
 function resolveGitCheckout(cwd: string): { root: string; gitDir: string } {
