@@ -82,6 +82,7 @@ export type GitClient = {
   removeWorktree(worktreePath: string): Promise<void>;
   deleteTaskBranch(branchName: string): Promise<void>;
   diffRange(baseSha: string, headSha: string): Promise<string>;
+  changedPathsBetween?(baseSha: string, headSha: string): Promise<string[]>;
   diffRangeExcept(
     baseSha: string,
     headSha: string,
@@ -600,6 +601,23 @@ export class ExecGitClient implements GitClient {
   async diffRangeNameStatus(baseSha: string, headSha: string): Promise<string> {
     return (await this.run(["diff", "--name-status", `${baseSha}..${headSha}`]))
       .stdout;
+  }
+
+  async changedPathsBetween(
+    baseSha: string,
+    headSha: string,
+  ): Promise<string[]> {
+    return (
+      await this.run([
+        "diff",
+        "--name-only",
+        "--no-renames",
+        "-z",
+        `${baseSha}..${headSha}`,
+      ])
+    ).stdout
+      .split("\0")
+      .filter(Boolean);
   }
 
   async diffRangeExcept(

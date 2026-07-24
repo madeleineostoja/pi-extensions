@@ -185,6 +185,32 @@ export const sourceMaterialRepairSchema = Type.Union([
   needsMaterialResponseSchema,
 ]);
 
+export const workstreamImplementerResultSchema = closedWithPapercuts({
+  outcome: Type.Union([
+    Type.Literal("changed"),
+    Type.Literal("already_satisfied"),
+  ]),
+  summary: nonEmptyString(),
+  verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+  uncertainty: Type.Optional(nonEmptyString()),
+  taskCompletions: Type.Array(
+    Type.Object(
+      {
+        taskId: nonEmptyString(),
+        kind: Type.Union([
+          Type.Literal("checkpoint"),
+          Type.Literal("already_satisfied"),
+        ]),
+        checkpoint: Type.Optional(nonEmptyString()),
+        evidence: Type.Optional(nonEmptyString()),
+      },
+      { additionalProperties: false },
+    ),
+    { minItems: 1 },
+  ),
+  candidateTip: Type.Optional(nonEmptyString()),
+});
+
 export const implementerResultSchema = Type.Union([
   withPapercuts({
     outcome: Type.Literal("changed"),
@@ -385,6 +411,9 @@ export type NeedsMaterialCompletion = Static<
 >;
 export type FindingReworkCompletion = Static<
   typeof findingReworkCompletionSchema
+>;
+export type WorkstreamImplementerCompletion = Static<
+  typeof workstreamImplementerResultSchema
 >;
 export type ImplementerCompletion = Static<typeof implementerResultSchema>;
 export type ReviewFindingDraft = Static<typeof reviewFindingDraftSchema>;

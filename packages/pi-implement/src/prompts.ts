@@ -6,6 +6,18 @@ import type {
 } from "./execution-plan.js";
 import type { ReviewFinding } from "./review-convergence.js";
 
+export type WorkstreamImplementerPromptTask = {
+  id: string;
+  title: string;
+  objective: string;
+  inScope: string[];
+  acceptanceCriteria: string[];
+  outOfScope: string[];
+  provenance: Array<{ path: string; quote: string }>;
+  implementationNotes?: string;
+  verificationGuidance?: string;
+};
+
 export const PAPERCUT_GUIDANCE = `## Optional Papercut Candidates
 
 If this work exposed a novel recurring project-specific failure absent from current instructions, tests, tooling, or docs, include it in the optional \`papercuts\` result array. Each candidate must contain \`key\`, \`title\`, \`trigger\`, \`impact\`, \`currentGap\`, \`proposedResolution\`, and \`suggestedDestination\`. Use \`suggestedDestination\` only for \`agents\`, \`skill\`, \`test\`, \`lint\`, \`tooling\`, \`docs\`, or \`code\`. Malformed candidates are discarded without failing your result. Exclude expected intermediate, transient, ordinary self-corrected, and correctly guided failures.`;
@@ -134,6 +146,60 @@ function formatSourceMaterialSection(sourceMaterial?: string): string {
     ? sourceMaterial.trim()
     : "No referenced source material was resolved for this task.";
   return `## Referenced Source Material\n\n${material}`;
+}
+
+export function buildWorkstreamImplementerPrompt(args: {
+  worktreePath: string;
+  baseSha: string;
+  priorCheckpoints: Record<string, string>;
+  recoveryObligations?: string[];
+  tasks: WorkstreamImplementerPromptTask[];
+  sourceMaterial: Array<{ path: string; content: string }>;
+}): string {
+  const tasks = args.tasks
+    .map(
+      (task, index) =>
+        `### ${index + 1}. ${task.id}: ${task.title}\n\nObjective: ${task.objective}\n\nIn scope:\n${task.inScope.map((item) => `- ${item}`).join("\n")}\n\nAcceptance criteria:\n${task.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}\n\nOut of scope:\n${task.outOfScope.map((item) => `- ${item}`).join("\n")}\n\nProvenance:\n${task.provenance.map((reference) => `- ${reference.path}: ${reference.quote}`).join("\n")}${task.implementationNotes ? `\n\nImplementation notes: ${task.implementationNotes}` : ""}${task.verificationGuidance ? `\n\nVerification guidance: ${task.verificationGuidance}` : ""}`,
+    )
+    .join("\n\n");
+  const material = args.sourceMaterial
+    .map(({ path, content }) => `### ${path}\n\n${content}`)
+    .join("\n\n");
+  const prior = Object.entries(args.priorCheckpoints)
+    .map(([taskId, checkpoint]) => `- ${taskId}: ${checkpoint}`)
+    .join("\n");
+  const obligations = args.recoveryObligations?.length
+    ? args.recoveryObligations.map((item) => `- ${item}`).join("\n")
+    : "- Preserve and build on every committed checkpoint listed below.";
+  return `You are the pi-implement implementer for one ordered workstream. Work only in this assigned Git worktree:
+
+  ${args.worktreePath}
+
+The target checkout is orchestrator-owned. Do not access or mutate it. You have normal active tools inside this worktree and may install dependencies, repair ignored/runtime state, run setup and checks, edit tracked source, use Git, and create commits. Do not push, rewrite unrelated history, or leave an active Git operation or uncommitted work behind.
+
+Implement the ordered task contracts as one coherent invocation. Commit valuable progress as you complete each task. Later correction commits may change earlier task work. Routine missing dependencies, caches, and runtime setup are yours to diagnose and repair; tracked repairs belong in the candidate, while ignored/runtime repairs do not need a source commit.
+
+Your candidate must descend from base ${args.baseSha}. Do not modify source plan or other protected artifacts.
+
+## Prior committed checkpoints
+
+${prior || "None."}
+
+## Recovery obligations
+
+${obligations}
+
+## Ordered task contracts
+
+${tasks}
+
+## Selected immutable source material
+
+${material || "No additional material was selected."}
+
+${PAPERCUT_GUIDANCE}
+
+Submit the typed completion as your final action. For every task return exactly one taskCompletions entry: use kind \`checkpoint\` with the reachable commit SHA that covers it, or kind \`already_satisfied\` with concrete repository-state evidence. If any tracked work changed, return outcome \`changed\` and candidateTip equal to the final committed HEAD. If all tasks were already satisfied, return outcome \`already_satisfied\` and omit candidateTip. Include verification evidence and uncertainty when applicable.`;
 }
 
 export function buildImplementerPrompt(args: {

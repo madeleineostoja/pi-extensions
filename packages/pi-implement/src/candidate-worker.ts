@@ -27,7 +27,7 @@ export class TaskWorkspaceManager {
     if (
       (await Promise.all(worktrees.map(canonicalPath))).includes(expectedPath)
     ) {
-      await this.assertOwnedWorkspace(workspace);
+      await this.assertOwnedWorkspace(workspace, true, options.expectedHead);
       return { created: false };
     }
 
@@ -37,7 +37,7 @@ export class TaskWorkspaceManager {
     }
     try {
       await this.git.addWorktree(workspace.worktreePath, workspace.branchName);
-      await this.assertOwnedWorkspace(workspace, false);
+      await this.assertOwnedWorkspace(workspace, false, options.expectedHead);
       return { created: true };
     } catch (error) {
       try {
@@ -49,6 +49,35 @@ export class TaskWorkspaceManager {
         await this.git.deleteTaskBranch(workspace.branchName);
       }
       throw error;
+    }
+  }
+
+  async recreate(
+    workspace: TaskWorkspace,
+    trustedCheckpoint: string,
+  ): Promise<void> {
+    this.assertOwnedPath(workspace.worktreePath);
+    await this.assertOwnedWorkspace(workspace);
+    const workspaceGit = this.git.forWorktree(workspace.worktreePath);
+    if (
+      !(await this.git.isAncestor(workspace.baseSha, trustedCheckpoint)) ||
+      !(await workspaceGit.isAncestor(
+        trustedCheckpoint,
+        await workspaceGit.head(),
+      ))
+    ) {
+      throw new Error(
+        `Task workspace cannot be recreated from an untrusted checkpoint: ${workspace.worktreePath}`,
+      );
+    }
+    await this.git.removeWorktree(workspace.worktreePath);
+    await this.ensure(workspace, { existingBranch: true });
+    const recreatedGit = this.git.forWorktree(workspace.worktreePath);
+    await recreatedGit.resetHard(trustedCheckpoint);
+    if ((await recreatedGit.head()) !== trustedCheckpoint) {
+      throw new Error(
+        `Task workspace was not recreated at its trusted checkpoint: ${workspace.worktreePath}`,
+      );
     }
   }
 
@@ -86,6 +115,7 @@ export class TaskWorkspaceManager {
   private async assertOwnedWorkspace(
     workspace: Pick<TaskWorkspace, "branchName" | "worktreePath">,
     verifyRegistration = true,
+    expectedHead?: string,
   ): Promise<void> {
     if (verifyRegistration) {
       const worktrees = await this.git.listWorktrees();
@@ -101,6 +131,11 @@ export class TaskWorkspaceManager {
     if ((await taskGit.currentBranch()) !== workspace.branchName) {
       throw new Error(
         `Task workspace branch does not match owned branch: ${workspace.worktreePath}`,
+      );
+    }
+    if (expectedHead && (await taskGit.head()) !== expectedHead) {
+      throw new Error(
+        `Task workspace does not match its expected checkpoint: ${workspace.worktreePath}`,
       );
     }
   }

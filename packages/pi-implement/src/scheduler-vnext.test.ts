@@ -166,6 +166,40 @@ describe("VNext scheduler reducer", () => {
     expect(selectReadyWorkstreams(selected.state)).toEqual(["second-stream"]);
   });
 
+  it("rejects overlapping checkpoint and satisfied mappings", async () => {
+    const initial = (await store()).read();
+    const selected = reduceVNextRunEvent(initial, {
+      kind: "workstreams_selected",
+      now: "now",
+    });
+    const effect = selected.effects.find(
+      (effect) => effect.kind === "run_implementation",
+    );
+    if (!effect || effect.kind !== "run_implementation") {
+      throw new Error("Expected implementation effect.");
+    }
+
+    const result = reduceVNextRunEvent(selected.state, {
+      kind: "implementation_completed",
+      workstream: effect.workstream,
+      leaseId: effect.leaseId,
+      outcome: {
+        kind: "candidate_ready",
+        candidate: {
+          id: "candidate-1",
+          workstream: effect.workstream,
+          baseSha: "base",
+          commitSha: "commit",
+          treeSha: "tree",
+        },
+        checkpoints: { first: "commit" },
+        satisfied: { first: "already present" },
+      },
+    });
+
+    expect(result.accepted).toBe(false);
+  });
+
   it("rejects a stale process result without changing canonical state", async () => {
     const initial = (await store()).read();
     const result = reduceVNextRunEvent(initial, {
@@ -347,6 +381,7 @@ describe("VNext scheduler actor", () => {
         kind: "candidate_ready",
         candidate,
         checkpoints: { first: "commit" },
+        satisfied: {},
       },
     });
     const reviewing = reduceVNextRunEvent(completed.state, {

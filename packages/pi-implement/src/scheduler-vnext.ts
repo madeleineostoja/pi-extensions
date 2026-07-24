@@ -13,7 +13,8 @@ type ImplementationOutcome =
   | {
       kind: "candidate_ready";
       candidate: VNextRunState["candidates"][string];
-      checkpoints?: Record<string, string>;
+      checkpoints: Record<string, string>;
+      satisfied: Record<string, string>;
     }
   | { kind: "satisfaction_claimed"; evidence: Record<string, string> };
 
@@ -244,11 +245,18 @@ export function reduceVNextRunEvent(
           const sourceWorkstream =
             state.workstreams.source[event.workstream.id]!;
           for (const taskId of sourceWorkstream.taskIds) {
-            state.tasks[taskId] = {
-              workstreamId: taskIdOwner(state, taskId),
-              phase: "checkpointed",
-              checkpoint: event.outcome.checkpoints![taskId]!,
-            };
+            const checkpoint = event.outcome.checkpoints[taskId];
+            state.tasks[taskId] = checkpoint
+              ? {
+                  workstreamId: taskIdOwner(state, taskId),
+                  phase: "checkpointed",
+                  checkpoint,
+                }
+              : {
+                  workstreamId: taskIdOwner(state, taskId),
+                  phase: "satisfaction_claimed",
+                  evidence: event.outcome.satisfied[taskId]!,
+                };
           }
         }
         workstream.phase = "candidate_ready";
@@ -982,15 +990,25 @@ function sourceTaskOutcomeIsComplete(
   }
   const taskIds = state.workstreams.source[workstream.id]?.taskIds ?? [];
   const values =
-    outcome.kind === "candidate_ready" ? outcome.checkpoints : outcome.evidence;
-  if (!values) {
-    return false;
-  }
+    outcome.kind === "candidate_ready"
+      ? { ...outcome.checkpoints, ...outcome.satisfied }
+      : outcome.evidence;
+  const mappingsDoNotOverlap =
+    outcome.kind !== "candidate_ready" ||
+    Object.keys(outcome.checkpoints).every(
+      (taskId) => outcome.satisfied[taskId] === undefined,
+    );
   return (
+    mappingsDoNotOverlap &&
     taskIds.every(
       (taskId) =>
         typeof values[taskId] === "string" && values[taskId].trim() !== "",
-    ) && Object.keys(values).every((taskId) => taskIds.includes(taskId))
+    ) &&
+    Object.keys(values).every((taskId) => taskIds.includes(taskId)) &&
+    (outcome.kind !== "candidate_ready" ||
+      Object.keys(outcome.checkpoints).some((taskId) =>
+        taskIds.includes(taskId),
+      ))
   );
 }
 
