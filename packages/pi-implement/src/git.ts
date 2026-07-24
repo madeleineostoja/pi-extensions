@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
+import { ensureGitInfoExclude } from "@pi-extensions/lib";
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -638,23 +638,7 @@ export class ExecGitClient implements GitClient {
   }
 
   async ensureInfoExclude(pattern: string): Promise<void> {
-    await this.process.inRepository((commonGitDir) => {
-      const infoDir = join(commonGitDir, "info");
-      const excludePath = join(infoDir, "exclude");
-      if (!existsSync(excludePath)) {
-        mkdirSync(infoDir, { recursive: true });
-        writeFileSync(excludePath, `${pattern}\n`, "utf-8");
-        return;
-      }
-      const content = readFileSync(excludePath, "utf-8");
-      if (!content.split("\n").includes(pattern)) {
-        writeFileSync(
-          excludePath,
-          `${content.endsWith("\n") ? content : `${content}\n`}${pattern}\n`,
-          "utf-8",
-        );
-      }
-    });
+    await ensureGitInfoExclude(this.cwd, pattern);
   }
 
   withSignal(signal?: AbortSignal): GitClient {

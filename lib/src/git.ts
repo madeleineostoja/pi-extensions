@@ -1,9 +1,24 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { acquireFileLease } from "./file-lease.js";
 
 const execFileAsync = promisify(execFile);
+const excludeLeaseName = "pi-extensions-info-exclude.lock";
+const excludeLeaseTimeoutMs = 10_000;
+
+let testHooks: GitInfoExcludeTestHooks | undefined;
+
+type GitInfoExcludeTestHooks = {
+  beforeRename?(): Promise<void>;
+};
+
+export function setGitInfoExcludeTestHooks(
+  hooks: GitInfoExcludeTestHooks | undefined,
+): void {
+  testHooks = hooks;
+}
 
 export async function gitCommonDir(cwd: string): Promise<string> {
   const { stdout } = await execFileAsync(
@@ -16,24 +31,141 @@ export async function gitCommonDir(cwd: string): Promise<string> {
 
 export async function ensureGitInfoExclude(
   cwd: string,
-  pattern: string,
+  patterns: string | readonly string[],
 ): Promise<void> {
+  const requested = normalizePatterns(patterns);
   const commonDir = await gitCommonDir(cwd);
   const infoDir = join(commonDir, "info");
   const excludePath = join(infoDir, "exclude");
-  if (!existsSync(excludePath)) {
-    mkdirSync(infoDir, { recursive: true });
-    writeFileSync(excludePath, `${pattern}\n`, "utf-8");
-    return;
+  const leasePath = join(infoDir, excludeLeaseName);
+  await mkdir(infoDir, { recursive: true });
+
+  const lease = await acquireFileLease(leasePath, {
+    timeoutMs: excludeLeaseTimeoutMs,
+  });
+  try {
+    const content = await readExclude(excludePath);
+    const nextContent = mergePatterns(content, requested);
+    if (nextContent !== content) {
+      await replaceFileAtomically(excludePath, nextContent);
+    }
+  } finally {
+    await lease.release();
+  }
+}
+
+function normalizePatterns(patterns: string | readonly string[]): string[] {
+  const values = typeof patterns === "string" ? [patterns] : patterns;
+  if (!Array.isArray(values) || values.length === 0) {
+    throw new TypeError("At least one Git info/exclude pattern is required.");
   }
 
-  const content = readFileSync(excludePath, "utf-8");
-  if (content.split("\n").includes(pattern)) {
-    return;
+  const normalized = new Set<string>();
+  for (const pattern of values) {
+    if (
+      typeof pattern !== "string" ||
+      pattern.length === 0 ||
+      pattern.includes("\n") ||
+      pattern.includes("\r")
+    ) {
+      throw new TypeError(
+        "Git info/exclude patterns must be non-empty single lines.",
+      );
+    }
+    normalized.add(pattern);
   }
-  writeFileSync(
-    excludePath,
-    `${content.endsWith("\n") ? content : `${content}\n`}${pattern}\n`,
-    "utf-8",
+  return [...normalized];
+}
+
+async function readExclude(excludePath: string): Promise<string> {
+  try {
+    return await readFile(excludePath, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return "";
+    }
+    throw new Error(`Could not read Git info/exclude at ${excludePath}.`, {
+      cause: error,
+    });
+  }
+}
+
+function mergePatterns(content: string, patterns: readonly string[]): string {
+  const requested = new Set(patterns);
+  const seen = new Set<string>();
+  const lines = content.length === 0 ? [] : content.split("\n");
+  if (content.endsWith("\n")) {
+    lines.pop();
+  }
+
+  const retained = lines.filter((line) => {
+    if (!requested.has(line)) {
+      return true;
+    }
+    if (seen.has(line)) {
+      return false;
+    }
+    seen.add(line);
+    return true;
+  });
+  for (const pattern of patterns) {
+    if (!seen.has(pattern)) {
+      retained.push(pattern);
+    }
+  }
+  return `${retained.join("\n")}\n`;
+}
+
+async function replaceFileAtomically(
+  path: string,
+  content: string,
+): Promise<void> {
+  const directory = dirname(path);
+  const temporaryPath = join(
+    directory,
+    `.${basename(path)}.${process.pid}.${crypto.randomUUID()}.tmp`,
   );
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+
+  try {
+    const mode = await existingMode(path);
+    handle = await open(temporaryPath, "wx", mode);
+    await handle.writeFile(content, "utf-8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await testHooks?.beforeRename?.();
+    await rename(temporaryPath, path);
+    await syncDirectory(directory);
+  } catch (error) {
+    throw new Error(
+      `Could not atomically update Git info/exclude at ${path}.`,
+      {
+        cause: error,
+      },
+    );
+  } finally {
+    await handle?.close();
+    await unlink(temporaryPath).catch(() => {});
+  }
+}
+
+async function existingMode(path: string): Promise<number> {
+  try {
+    return (await stat(path)).mode;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return 0o666;
+    }
+    throw error;
+  }
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  const handle = await open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
