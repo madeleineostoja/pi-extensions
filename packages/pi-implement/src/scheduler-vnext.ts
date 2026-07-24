@@ -138,13 +138,34 @@ export type VNextSchedulerEvent =
     }
   | { kind: "whole_plan_review_requested" }
   | { kind: "overall_repair_queued"; repairId: string }
-  | { kind: "whole_plan_review_completed" }
+  | {
+      kind: "whole_plan_review_completed";
+      outcome:
+        | {
+            kind: "approved";
+            evidence: string;
+            reviewedTargetSha: string;
+            reviewedTargetTreeSha: string;
+          }
+        | {
+            kind: "changes_requested";
+            repairId: string;
+            candidate: VNextRunState["candidates"][string];
+            findings: Array<{
+              summary: string;
+              evidence: string;
+              requiredChange: string;
+              acceptanceCriteria: string[];
+            }>;
+            evidence: string;
+          };
+    }
   | { kind: "process_abandoned"; leaseId: string }
   | { kind: "stop_requested"; reason?: string }
   | { kind: "run_paused"; reason?: string }
   | { kind: "resume_requested" }
   | { kind: "safety_blocked"; reason: string }
-  | { kind: "run_completed" }
+  | { kind: "run_completed"; targetSha: string; targetTreeSha: string }
   | {
       kind: "projection_debt_recorded";
       debt: VNextRunState["projectionDebt"][number];
@@ -330,6 +351,34 @@ export function reduceVNextRunEvent(
           return reject("candidate identity is immutable");
         }
         state.candidates[event.outcome.candidate.id] = event.outcome.candidate;
+        if (event.workstream.kind === "overall") {
+          const review = workstreamReviewState(state, event.workstream);
+          if (review) {
+            try {
+              state.reviews[reviewKey(event.workstream)] =
+                retargetAnchoredReview({
+                  state: review,
+                  candidateId: event.outcome.candidate.id,
+                  correction: {
+                    fromCandidateId: review.candidateId,
+                    changedPaths:
+                      event.outcome.candidate.implementationEvidence
+                        ?.changedPaths ??
+                      event.outcome.candidate.reconciliation?.changedPaths ??
+                      [],
+                    evidence:
+                      event.outcome.candidate.implementationEvidence
+                        ?.artifactPath ??
+                      "Overall repair candidate was checkpointed.",
+                  },
+                });
+            } catch (error) {
+              return reject(
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+          }
+        }
         workstream.candidateId = event.outcome.candidate.id;
         if (event.workstream.kind === "source") {
           const sourceWorkstream =
@@ -845,7 +894,7 @@ export function reduceVNextRunEvent(
         state.projectionDebt.push(event.projectionDebt);
       }
       if (event.workstream.kind === "overall") {
-        state.wholePlanReview.status = "pending";
+        state.wholePlanReview = { status: "pending" };
       }
       return accept(
         event.projectionDebt
@@ -863,28 +912,15 @@ export function reduceVNextRunEvent(
         return reject("whole-plan review is not ready to run");
       }
       state.phase = "whole_plan_review";
-      state.wholePlanReview.status = "reviewing";
+      state.wholePlanReview = { status: "reviewing" };
       return accept([{ kind: "run_whole_plan_review" }]);
 
     case "overall_repair_queued":
-      if (
-        state.phase !== "whole_plan_review" ||
-        state.wholePlanReview.status !== "reviewing" ||
-        !allSourceWorkstreamsComplete(state) ||
-        !safeId(event.repairId) ||
-        state.workstreams.overall[event.repairId]
-      ) {
-        return reject("overall repair is not valid in the current run phase");
-      }
-      state.workstreams.overall[event.repairId] = {
-        kind: "overall",
-        repairId: event.repairId,
-        phase: "queued",
-      };
-      state.wholePlanReview.status = "repairing";
-      return accept();
+      return reject(
+        "overall repairs require a reviewed baseline candidate and findings payload",
+      );
 
-    case "whole_plan_review_completed":
+    case "whole_plan_review_completed": {
       if (
         state.phase !== "whole_plan_review" ||
         state.wholePlanReview.status !== "reviewing" ||
@@ -894,8 +930,52 @@ export function reduceVNextRunEvent(
       ) {
         return reject("whole-plan review cannot complete while repairs exist");
       }
-      state.wholePlanReview.status = "approved";
+      if (event.outcome.kind === "approved") {
+        state.wholePlanReview = {
+          status: "approved",
+          evidence: event.outcome.evidence,
+          reviewedTargetSha: event.outcome.reviewedTargetSha,
+          reviewedTargetTreeSha: event.outcome.reviewedTargetTreeSha,
+        };
+        return accept();
+      }
+      const { repairId, candidate } = event.outcome;
+      if (
+        !safeId(repairId) ||
+        state.workstreams.overall[repairId] ||
+        candidate.workstream.kind !== "overall" ||
+        candidate.workstream.repairId !== repairId
+      ) {
+        return reject("whole-plan findings have an invalid repair identity");
+      }
+      const existing = state.candidates[candidate.id];
+      if (existing && JSON.stringify(existing) !== JSON.stringify(candidate)) {
+        return reject("overall baseline candidate identity is immutable");
+      }
+      state.candidates[candidate.id] = candidate;
+      state.workstreams.overall[repairId] = {
+        kind: "overall",
+        repairId,
+        phase: "queued",
+        candidateId: candidate.id,
+      };
+      const workstream: RuntimeWorkstream = { kind: "overall", repairId };
+      const update = applyInitialWorkstreamReview({
+        workstream,
+        candidateId: candidate.id,
+        completion: {
+          verdict: "changes_requested",
+          findings: event.outcome.findings,
+        },
+        evidence: event.outcome.evidence,
+      });
+      state.reviews[reviewKey(workstream)] = update.review;
+      for (const finding of update.findings) {
+        state.findings[finding.id] = finding;
+      }
+      state.wholePlanReview = { status: "repairing" };
       return accept();
+    }
 
     case "process_abandoned": {
       const lease = state.processLeases[event.leaseId];
@@ -982,7 +1062,12 @@ export function reduceVNextRunEvent(
         state.projectionDebt.length > 0 ||
         state.cleanupDebt.length > 0 ||
         Object.keys(state.processLeases).length > 0 ||
-        state.wholePlanReview.status !== "approved"
+        state.wholePlanReview.status !== "approved" ||
+        state.wholePlanReview.reviewedTargetSha !== event.targetSha ||
+        state.wholePlanReview.reviewedTargetTreeSha !== event.targetTreeSha ||
+        Object.values(state.publication.intents).some(
+          (intent) => !state.publication.receipts[intent.id],
+        )
       ) {
         return reject("run still has incomplete workstreams or cleanup debt");
       }
@@ -1179,6 +1264,7 @@ export class VNextSchedulerActor {
         "recovery_completed",
         "recovery_provider_failed",
         "publication_completed",
+        "whole_plan_review_completed",
         "process_abandoned",
       ].includes(event.kind)
     ) {

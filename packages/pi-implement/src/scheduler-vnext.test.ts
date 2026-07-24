@@ -750,7 +750,54 @@ describe("VNext scheduler reducer", () => {
     });
   });
 
-  it("permits an overall repair only in whole-plan review after source completion", async () => {
+  it("records whole-plan findings as a runtime repair without changing immutable source coverage", async () => {
+    const initial = (await store()).read();
+    initial.workstreams.source["first-stream"]!.phase = "completed";
+    initial.workstreams.source["second-stream"]!.phase = "completed";
+    const reviewing = reduceVNextRunEvent(initial, {
+      kind: "whole_plan_review_requested",
+    });
+    const completed = reduceVNextRunEvent(reviewing.state, {
+      kind: "whole_plan_review_completed",
+      outcome: {
+        kind: "changes_requested",
+        repairId: "overall-repair-1",
+        candidate: {
+          id: "overall-baseline",
+          workstream: { kind: "overall", repairId: "overall-repair-1" },
+          baseSha: "target",
+          commitSha: "target",
+          treeSha: "tree",
+        },
+        findings: [
+          {
+            summary: "The combined changes miss an integration boundary.",
+            evidence: "The run diff demonstrates the missing handoff.",
+            requiredChange: "Preserve the handoff across both workstreams.",
+            acceptanceCriteria: ["The complete behavior crosses the boundary."],
+          },
+        ],
+        evidence: "whole-plan-review.json",
+      },
+    });
+
+    expect(completed.accepted).toBe(true);
+    expect(completed.state.wholePlanReview.status).toBe("repairing");
+    expect(
+      completed.state.workstreams.overall["overall-repair-1"],
+    ).toMatchObject({
+      phase: "queued",
+      candidateId: "overall-baseline",
+    });
+    expect(
+      completed.state.reviews["overall:overall-repair-1"]?.outstandingIds,
+    ).toEqual(["overall-overall-repair-1-r1"]);
+    expect(completed.state.workstreams.source["first-stream"]?.taskIds).toEqual(
+      ["first"],
+    );
+  });
+
+  it("rejects an overall repair that lacks the whole-plan review baseline and findings", async () => {
     const initial = (await store()).read();
     initial.workstreams.source["first-stream"]!.phase = "completed";
     initial.workstreams.source["second-stream"]!.phase = "completed";
@@ -762,14 +809,8 @@ describe("VNext scheduler reducer", () => {
       repairId: "overall-repair-1",
     });
 
-    expect(repair.accepted).toBe(true);
-    expect(repair.state.workstreams.overall).toEqual({
-      "overall-repair-1": {
-        kind: "overall",
-        repairId: "overall-repair-1",
-        phase: "queued",
-      },
-    });
+    expect(repair.accepted).toBe(false);
+    expect(repair.state.workstreams.overall).toEqual({});
   });
 });
 

@@ -4,10 +4,12 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { ExecutionPlan } from "./execution-plan-vnext.js";
 import type { GitClient } from "./git.js";
 import {
+  buildAnchoredOverallReviewPrompt,
   buildAnchoredWorkstreamReviewPrompt,
   buildInitialWorkstreamReviewPrompt,
 } from "./prompts.js";
 import {
+  anchoredReviewSchema,
   anchoredWorkstreamReviewSchema,
   initialWorkstreamReviewSchema,
   type AnchoredWorkstreamReviewCompletion,
@@ -15,6 +17,7 @@ import {
   type InitialWorkstreamReviewCompletion,
 } from "./result-schemas.js";
 import type { SubagentClient } from "./subagents.js";
+import { overallRepairWorkspace } from "./vnext-overall-repair.js";
 import { workstreamWorkspace } from "./workstream-candidate.js";
 import { writeAtomicJson } from "./atomic-json.js";
 import type { RuntimeWorkstream } from "./scheduler-vnext.js";
@@ -194,10 +197,11 @@ export async function runVNextWorkstreamReview(args: {
   signal?: AbortSignal;
   artifactsPath: string;
 }): Promise<VNextReviewOutcome> {
-  if (args.workstream.kind !== "source") {
-    throw new Error(
-      "Workstream review packets currently require source workstreams.",
-    );
+  if (args.workstream.kind === "overall") {
+    return runVNextOverallAnchoredReview({
+      ...args,
+      workstream: args.workstream,
+    });
   }
   const runtime = args.state.workstreams.source[args.workstream.id];
   const candidateId = runtime?.candidateId;
@@ -319,6 +323,105 @@ export async function runVNextWorkstreamReview(args: {
         completion: result.result as InitialWorkstreamReviewCompletion,
         evidence,
       };
+}
+
+async function runVNextOverallAnchoredReview(args: {
+  state: VNextRunState;
+  plan: ExecutionPlan;
+  workstream: Extract<RuntimeWorkstream, { kind: "overall" }>;
+  git: GitClient;
+  subagents: SubagentClient;
+  signal?: AbortSignal;
+  artifactsPath: string;
+}): Promise<VNextReviewOutcome> {
+  const runtime = args.state.workstreams.overall[args.workstream.repairId];
+  const candidateId = runtime?.candidateId;
+  const candidate = candidateId
+    ? args.state.candidates[candidateId]
+    : undefined;
+  const review = workstreamReviewState(args.state, args.workstream);
+  const previousCandidate = review?.previousCandidateId
+    ? args.state.candidates[review.previousCandidateId]
+    : undefined;
+  if (!runtime || !candidate || !review || !previousCandidate) {
+    throw new Error(
+      "Overall repair review requires an anchored candidate epoch.",
+    );
+  }
+  const workspace = overallRepairWorkspace(
+    args.state,
+    args.workstream.repairId,
+    candidate.baseSha,
+  );
+  const workspaceGit = args.git.forWorktree(
+    candidate.reconciliation?.worktreePath ?? workspace.worktreePath,
+  );
+  if (
+    (await workspaceGit.head()) !== candidate.commitSha ||
+    !(await workspaceGit.isClean())
+  ) {
+    throw new Error(
+      "The overall repair workspace does not match its current candidate.",
+    );
+  }
+  const latestDelta = await args.git.diffRange(
+    previousCandidate.commitSha,
+    candidate.commitSha,
+  );
+  const findings = workstreamReviewFindings(args.state, args.workstream).filter(
+    (finding) => review.outstandingIds.includes(finding.id),
+  );
+  const prompt = buildAnchoredOverallReviewPrompt({
+    planContext: JSON.stringify(args.plan, null, 2),
+    candidateContext: `Run base: ${args.state.run.checkout.startHead}\nCandidate: ${candidate.commitSha}`,
+    outstandingFindings: findings as never,
+    previousCandidate: previousCandidate.commitSha,
+    currentCandidate: candidate.commitSha,
+    latestDelta,
+    worktreePath:
+      candidate.reconciliation?.worktreePath ?? workspace.worktreePath,
+  });
+  const handle = await args.subagents.spawn({
+    type: "pi-implement:reviewer",
+    role: "reviewer",
+    taskId: args.workstream.repairId,
+    description: `Assess overall repair ${args.workstream.repairId}`,
+    cwd: candidate.reconciliation?.worktreePath ?? workspace.worktreePath,
+    prompt,
+    readOnly: true,
+    completion: {
+      description: "Assess every outstanding whole-plan finding.",
+      schema: anchoredReviewSchema,
+    } as never,
+  });
+  const result = await args.subagents.waitFor<unknown>(handle, args.signal);
+  if (result.status !== "completed") {
+    throw new Error(
+      `Overall repair reviewer ${result.status}: ${result.error}`,
+    );
+  }
+  if (
+    (await workspaceGit.head()) !== candidate.commitSha ||
+    !(await workspaceGit.isClean())
+  ) {
+    throw new Error("The reviewer changed the overall repair workspace.");
+  }
+  const evidence = reviewEvidencePath(
+    args.artifactsPath,
+    args.workstream.repairId,
+    {
+      previousCandidate,
+      candidate,
+      latestDelta,
+      completion: result.result,
+    },
+  );
+  return {
+    kind: "anchored",
+    candidateId: candidate.id,
+    completion: result.result as AnchoredWorkstreamReviewCompletion,
+    evidence,
+  };
 }
 
 export function applyInitialWorkstreamReview(args: {

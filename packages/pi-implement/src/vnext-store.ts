@@ -170,6 +170,7 @@ const candidateSchema = z
         verification: z.array(verificationEvidenceSchema).min(1),
         uncertainty: nonEmpty.optional(),
         artifactPath: nonEmpty.optional(),
+        changedPaths: z.array(nonEmpty).optional(),
       })
       .strict()
       .optional(),
@@ -357,8 +358,21 @@ const pauseSchema = z
   .strict();
 
 const wholePlanReviewSchema = z
-  .object({ status: z.enum(["pending", "reviewing", "repairing", "approved"]) })
-  .strict();
+  .object({
+    status: z.enum(["pending", "reviewing", "repairing", "approved"]),
+    reviewedTargetSha: nonEmpty.optional(),
+    reviewedTargetTreeSha: nonEmpty.optional(),
+    evidence: nonEmpty.optional(),
+  })
+  .strict()
+  .refine(
+    (review) =>
+      review.status !== "approved" ||
+      (review.reviewedTargetSha !== undefined &&
+        review.reviewedTargetTreeSha !== undefined &&
+        review.evidence !== undefined),
+    "An approved whole-plan review requires immutable target identity and evidence.",
+  );
 
 export const vnextRunStateSchema = z
   .object({
