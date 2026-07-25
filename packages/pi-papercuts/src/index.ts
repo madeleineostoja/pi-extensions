@@ -155,23 +155,21 @@ export default function (pi: ExtensionAPI) {
   }
 
   let activeRegistryPath: string | undefined;
-  let refreshContext: ExtensionContext | undefined;
+  let sessionActive = false;
   let sessionGeneration = 0;
-  let queuedRefresh:
-    | { context: ExtensionContext; generation: number }
-    | undefined;
+  let queuedRefresh: { generation: number } | undefined;
   let unsubscribeFromPapercutChanges = () => {};
 
-  function isActiveSession(ctx: ExtensionContext, generation: number): boolean {
-    return refreshContext === ctx && sessionGeneration === generation;
+  function isActiveSession(generation: number): boolean {
+    return sessionActive && sessionGeneration === generation;
   }
 
   async function refreshStatus(
     ctx: ExtensionContext,
     generation: number,
   ): Promise<void> {
-    const sessionIsActive = () => isActiveSession(ctx, generation);
-    if (ctx.mode !== "tui" || !sessionIsActive()) {
+    const sessionIsActive = () => isActiveSession(generation);
+    if (!sessionIsActive() || ctx.mode !== "tui") {
       return;
     }
     try {
@@ -205,19 +203,19 @@ export default function (pi: ExtensionAPI) {
 
   function queueStatusRefresh(ctx: ExtensionContext, generation: number): void {
     if (
-      !isActiveSession(ctx, generation) ||
-      (queuedRefresh?.context === ctx &&
-        queuedRefresh.generation === generation)
+      !isActiveSession(generation) ||
+      queuedRefresh?.generation === generation
     ) {
       return;
     }
-    const queued = { context: ctx, generation };
+    const queued = { generation };
     queuedRefresh = queued;
     queueMicrotask(() => {
-      if (queuedRefresh === queued) {
-        queuedRefresh = undefined;
+      if (queuedRefresh !== queued) {
+        return;
       }
-      if (isActiveSession(ctx, generation)) {
+      queuedRefresh = undefined;
+      if (isActiveSession(generation)) {
         void refreshStatus(ctx, generation);
       }
     });
@@ -401,12 +399,13 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("session_start", async (_event, ctx) => {
     const generation = ++sessionGeneration;
-    refreshContext = ctx;
+    sessionActive = true;
     activeRegistryPath = undefined;
+    queuedRefresh = undefined;
     unsubscribeFromPapercutChanges();
     unsubscribeFromPapercutChanges = onPapercutChange((change) => {
       if (
-        isActiveSession(ctx, generation) &&
+        isActiveSession(generation) &&
         change.registryPath === activeRegistryPath
       ) {
         queueStatusRefresh(ctx, generation);
@@ -415,12 +414,13 @@ export default function (pi: ExtensionAPI) {
     await refreshStatus(ctx, generation);
   });
   pi.on("session_shutdown", (_event, ctx) => {
-    if (refreshContext !== ctx) {
+    if (!sessionActive) {
       return;
     }
     ++sessionGeneration;
-    refreshContext = undefined;
+    sessionActive = false;
     activeRegistryPath = undefined;
+    queuedRefresh = undefined;
     unsubscribeFromPapercutChanges();
     unsubscribeFromPapercutChanges = () => {};
     if (ctx.mode === "tui") {

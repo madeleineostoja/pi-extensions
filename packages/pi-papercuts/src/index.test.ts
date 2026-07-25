@@ -220,7 +220,7 @@ describe("pi-papercuts extension", () => {
       PAPERCUT_STATUS_KEY,
       "󰶯 1 papercuts",
     );
-    handlers.get("session_shutdown")({}, ctx);
+    handlers.get("session_shutdown")({}, { ...ctx });
     expect(setStatus).toHaveBeenLastCalledWith(PAPERCUT_STATUS_KEY, undefined);
 
     await command.handler("unexpected", { ...ctx, mode: "json", hasUI: false });
@@ -382,12 +382,67 @@ describe("pi-papercuts extension", () => {
       enterLoad = resolve;
     });
 
-    handlers.get("session_shutdown")({}, ctx);
+    handlers.get("session_shutdown")({}, { ...ctx });
     resolveLoad!();
     await start;
 
     expect(setStatus).toHaveBeenCalledTimes(1);
     expect(setStatus).toHaveBeenCalledWith(PAPERCUT_STATUS_KEY, undefined);
+  });
+
+  it("does not inspect a queued context after shutdown invalidates it", async () => {
+    const handlers = new Map<string, any>();
+    const pi = {
+      registerTool: vi.fn(),
+      registerCommand: vi.fn(),
+      on: (event: string, handler: unknown) => handlers.set(event, handler),
+    };
+    registerExtension(pi as never);
+    const root = repo();
+    const setStatus = vi.fn();
+    let invalidated = false;
+    let staleReads = 0;
+    const guarded =
+      <T>(value: T) =>
+      () => {
+        if (invalidated) {
+          staleReads += 1;
+          throw new Error("stale extension context");
+        }
+        return value;
+      };
+    const makeContext = () =>
+      Object.defineProperties(
+        {},
+        {
+          cwd: { get: guarded(root) },
+          mode: { get: guarded("tui") },
+          hasUI: { get: guarded(true) },
+          ui: {
+            get: guarded({
+              notify: vi.fn(),
+              setStatus,
+              theme: { fg: (_color: string, text: string) => text },
+            }),
+          },
+        },
+      );
+    const startContext = makeContext();
+
+    await handlers.get("session_start")({}, startContext);
+    handlers.get("tool_result")(
+      {
+        toolName: "edit",
+        input: { path: join(root, ".pi", "papercuts.json") },
+        isError: false,
+      },
+      startContext,
+    );
+    handlers.get("session_shutdown")({}, makeContext());
+    invalidated = true;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(staleReads).toBe(0);
   });
 
   it("refreshes the live footer when another extension persists a papercut", async () => {
@@ -464,7 +519,7 @@ describe("pi-papercuts extension", () => {
         input: { path: store.registryPath },
         isError: false,
       },
-      ctx,
+      { ...ctx },
     );
 
     await vi.waitFor(() => {
