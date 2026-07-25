@@ -1,20 +1,13 @@
-import { createHash, randomBytes } from "node:crypto";
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, relative, resolve } from "node:path";
-import {
-  normalizeCheckboxMarker,
-  type SourceCheckboxRef,
-} from "./source-checkbox.js";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
+import { writeAtomicFile } from "./atomic-file.js";
+import { normalizeCheckboxMarker, sha256 } from "./source-integrity.js";
+
+export type SourceCheckboxRef = {
+  path: string;
+  lineNumber: number;
+  lineText: string;
+};
 
 export type CheckboxProjectionIntent = {
   id: string;
@@ -132,10 +125,10 @@ function applyCheckboxes(
     if (
       normalizeCheckboxMarker(line.replace(/\r?\n$/, "")) !==
         normalizeCheckboxMarker(checkbox.lineText) ||
-      !/^[-*]\s+\[[ xX]\]/.test(line)
+      !/^[\t ]*[-*+]\s+\[[ xX]\]/.test(line)
     ) {
       throw new Error(
-        "Projection checkbox anchor no longer matches its top-level source line.",
+        "Projection checkbox anchor no longer matches its source line.",
       );
     }
     lines[index] = line.replace(/\[([ xX])\]/, "[x]");
@@ -161,31 +154,11 @@ function canonicalSourcePath(checkoutRoot: string, path: string): string {
 }
 
 function atomicReplace(path: string, content: string): void {
-  const temporary = `${path}.tmp.${randomBytes(12).toString("hex")}`;
-  let descriptor: number | undefined;
-  try {
-    descriptor = openSync(temporary, "wx", 0o600);
-    writeFileSync(descriptor, content, "utf-8");
-    fsyncSync(descriptor);
-    closeSync(descriptor);
-    descriptor = undefined;
-    renameSync(temporary, path);
-    const directory = openSync(dirname(path), "r");
-    try {
-      fsyncSync(directory);
-    } finally {
-      closeSync(directory);
-    }
-  } finally {
-    if (descriptor !== undefined) {
-      closeSync(descriptor);
-    }
-    rmSync(temporary, { force: true });
-  }
+  writeAtomicFile(path, content);
 }
 
 function hash(content: string): string {
-  return createHash("sha256").update(content).digest("hex");
+  return sha256(content);
 }
 
 function message(error: unknown): string {

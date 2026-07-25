@@ -28,6 +28,7 @@ export async function runVNextPublication(args: {
   effect: Extract<VNextSchedulerEffect, { kind: "run_publication" }>;
   publisher: WriteAheadPublisher;
   dispatch: (event: VNextSchedulerEvent) => Promise<void>;
+  projectionDebt?: VNextRunState["projectionDebt"][number];
   resume?: boolean;
 }): Promise<void> {
   const intent = args.state.publication.intents[args.effect.intentId];
@@ -41,12 +42,18 @@ export async function runVNextPublication(args: {
       workstream: args.effect.workstream,
       leaseId: args.effect.leaseId,
       intentId: intent.id,
+      projectionDebt: args.projectionDebt,
     });
     return;
   }
-  const outcome = args.resume
-    ? await args.publisher.recover(toWriteAheadIntent(intent))
-    : await args.publisher.publish(toWriteAheadIntent(intent));
+  const writeAheadIntent = toWriteAheadIntent(intent);
+  const initial = args.resume
+    ? await args.publisher.recover(writeAheadIntent)
+    : await args.publisher.publish(writeAheadIntent);
+  const outcome =
+    initial.kind === "published" || initial.kind === "safety_paused"
+      ? initial
+      : await args.publisher.recover(writeAheadIntent);
   if (outcome.kind !== "published") {
     throw new VNextPublicationError(outcome);
   }
@@ -68,6 +75,7 @@ export async function runVNextPublication(args: {
     workstream: args.effect.workstream,
     leaseId: args.effect.leaseId,
     intentId: intent.id,
+    projectionDebt: args.projectionDebt,
   });
 }
 

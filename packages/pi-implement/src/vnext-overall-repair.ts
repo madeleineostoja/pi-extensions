@@ -7,7 +7,7 @@ import {
   type TaskWorkspace,
 } from "./candidate-worker.js";
 import type { ExecutionPlan } from "./execution-plan-vnext.js";
-import type { GitClient } from "./git.js";
+import { changedPathsBetween, type GitClient } from "./git.js";
 import { buildOverallReworkPrompt } from "./prompts.js";
 import {
   overallReworkSchema,
@@ -218,18 +218,4 @@ export async function runVNextOverallRepair(args: {
     checkpoints: {},
     satisfied: {},
   };
-}
-
-async function changedPathsBetween(
-  git: GitClient,
-  base: string,
-  tip: string,
-): Promise<string[]> {
-  if (git.changedPathsBetween) {
-    return git.changedPathsBetween(base, tip);
-  }
-  return (await git.diffRange(base, tip)).split("\n").flatMap((line) => {
-    const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
-    return match ? [match[2]!] : [];
-  });
 }

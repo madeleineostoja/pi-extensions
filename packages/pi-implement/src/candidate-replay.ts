@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { TaskWorkspaceManager } from "./candidate-worker.js";
-import type { GitClient } from "./git.js";
+import { sha256 } from "./source-integrity.js";
+import { changedPathsBetween, type GitClient } from "./git.js";
 import type { RecoveryGateResult } from "./recovery-vnext.js";
 
 export type ReplayCandidate = {
@@ -331,9 +331,7 @@ export class CandidateReplayEngine {
     candidatePaths: string[],
     targetPaths: string[],
   ): Promise<ReplayStaging> {
-    const id = `staging-${createHash("sha256")
-      .update(`${this.options.runId}\0${targetBaseSha}`)
-      .digest("hex")}`;
+    const id = `staging-${sha256(`${this.options.runId}\0${targetBaseSha}`)}`;
     const worktreePath = resolve(this.options.worktreesRoot, id);
     const branchName = `pi-implement/${this.options.runId}/${id}`;
     const existingBranch = (
@@ -474,23 +472,7 @@ async function assertTargetUnchanged(
   }
 }
 
-async function changedPaths(
-  git: GitClient,
-  base: string,
-  tip: string,
-): Promise<string[]> {
-  if (base === tip) {
-    return [];
-  }
-  if (git.changedPathsBetween) {
-    return [...new Set(await git.changedPathsBetween(base, tip))].sort();
-  }
-  return (await git.diffRangeNameStatus(base, tip))
-    .split("\n")
-    .flatMap((line) => line.split("\t").slice(1))
-    .filter(Boolean)
-    .sort();
-}
+const changedPaths = changedPathsBetween;
 
 function intersection(left: string[], right: string[]): string[] {
   const values = new Set(right);
@@ -498,7 +480,7 @@ function intersection(left: string[], right: string[]): string[] {
 }
 
 function patchHash(patch: string): string {
-  return createHash("sha256").update(patch).digest("hex");
+  return sha256(patch);
 }
 
 function normalizePatch(patch: string): string {

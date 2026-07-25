@@ -1,13 +1,16 @@
-import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
 import type { ExecutionPlan } from "./execution-plan-vnext.js";
-import type { GitClient } from "./git.js";
+import { changedPathsBetween, type GitClient } from "./git.js";
 import {
   buildAnchoredOverallReviewPrompt,
   buildAnchoredWorkstreamReviewPrompt,
   buildInitialWorkstreamReviewPrompt,
 } from "./prompts.js";
+import {
+  resolveCorpusPath as resolveImmutableCorpusPath,
+  sha256,
+} from "./source-integrity.js";
 import {
   anchoredReviewSchema,
   anchoredWorkstreamReviewSchema,
@@ -575,9 +578,7 @@ function reviewEvidencePath(
   evidence: unknown,
 ): string {
   mkdirSync(artifactsPath, { recursive: true });
-  const fingerprint = createHash("sha256")
-    .update(JSON.stringify(evidence))
-    .digest("hex");
+  const fingerprint = sha256(JSON.stringify(evidence));
   const path = join(
     artifactsPath,
     `${workstreamId}-review-${fingerprint}.json`,
@@ -591,31 +592,11 @@ function resolveCorpusPath(
   plan: ExecutionPlan,
   path: string,
 ): string {
-  const candidates = isAbsolute(path)
-    ? [resolve(path)]
-    : [
-        resolve(dirname(plan.source.planPath), path),
-        resolve(state.run.checkout.root, path),
-      ];
-  const corpus = new Set(plan.source.corpusFiles.map((file) => file.path));
-  const resolved = candidates.find((candidate) => corpus.has(candidate));
-  if (!resolved) {
-    throw new Error(`Review material is outside the immutable corpus: ${path}`);
-  }
-  return resolved;
-}
-
-async function changedPathsBetween(
-  git: GitClient,
-  base: string,
-  tip: string,
-): Promise<string[]> {
-  if (git.changedPathsBetween) {
-    return git.changedPathsBetween(base, tip);
-  }
-  return (await git.diffRange(base, tip)).split("\n").flatMap((line) => {
-    const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
-    return match ? [match[2]!] : [];
+  return resolveImmutableCorpusPath({
+    planPath: plan.source.planPath,
+    checkoutRoot: state.run.checkout.root,
+    corpus: plan.source.corpusFiles,
+    reference: path,
   });
 }
 

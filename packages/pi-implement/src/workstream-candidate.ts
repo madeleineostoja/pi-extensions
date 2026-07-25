@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import type { Static } from "typebox";
 import { writeAtomicJson } from "./atomic-json.js";
 import {
@@ -12,8 +11,13 @@ import {
   readExecutionPlan,
   type ExecutionPlan,
 } from "./execution-plan-vnext.js";
-import type { GitClient } from "./git.js";
+import { changedPathsBetween, type GitClient } from "./git.js";
 import { buildWorkstreamImplementerPrompt } from "./prompts.js";
+import {
+  canonicalPath,
+  protectedArtifactsMatch as artifactHashesMatch,
+  resolveCorpusPath as resolveImmutableCorpusPath,
+} from "./source-integrity.js";
 import {
   workstreamImplementerResultSchema,
   type WorkstreamImplementerCompletion,
@@ -602,27 +606,28 @@ function resolveCorpusPath(
   state: VNextRunState,
   path: string,
 ): string {
-  const candidates = isAbsolute(path)
-    ? [resolve(path)]
-    : [
-        resolve(dirname(plan.source.planPath), path),
-        resolve(state.run.checkout.root, path),
-      ];
-  const corpusPaths = new Set(plan.source.corpusFiles.map((file) => file.path));
-  const resolved = candidates.find((candidate) => corpusPaths.has(candidate));
-  if (!resolved) {
+  try {
+    return resolveImmutableCorpusPath({
+      planPath: plan.source.planPath,
+      checkoutRoot: state.run.checkout.root,
+      corpus: plan.source.corpusFiles,
+      reference: path,
+    });
+  } catch (error) {
     throw new WorkstreamCandidateLifecycleError(
-      `Workstream provenance is outside the immutable corpus: ${path}`,
+      error instanceof Error ? error.message : String(error),
     );
   }
-  return resolved;
 }
 
 function protectedPathInWorktree(
   state: VNextRunState,
   path: string,
 ): string | undefined {
-  const relativePath = relative(state.run.checkout.root, path);
+  const relativePath = relative(
+    canonicalPath(state.run.checkout.root),
+    canonicalPath(path),
+  );
   if (
     relativePath === ".." ||
     relativePath.startsWith(`..${process.platform === "win32" ? "\\\\" : "/"}`)
@@ -638,28 +643,12 @@ async function candidateChangesProtectedPaths(
   candidateTip: string,
   protectedPaths: string[],
 ): Promise<boolean> {
-  const changed = git.changedPathsBetween
-    ? await git.changedPathsBetween(baseSha, candidateTip)
-    : (await git.diffRange(baseSha, candidateTip))
-        .split("\n")
-        .flatMap((line) => {
-          const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
-          return match ? [match[1]!, match[2]!] : [];
-        });
+  const changed = await changedPathsBetween(git, baseSha, candidateTip);
   return protectedPaths.some((path) => changed.includes(path));
 }
 
 async function protectedArtifactsMatch(state: VNextRunState): Promise<boolean> {
-  try {
-    return Object.entries(state.protectedArtifactHashes).every(
-      ([path, expected]) =>
-        createHash("sha256")
-          .update(readFileSync(path, "utf-8"))
-          .digest("hex") === expected,
-    );
-  } catch {
-    return false;
-  }
+  return artifactHashesMatch(state.protectedArtifactHashes);
 }
 
 function writeEvidence(

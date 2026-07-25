@@ -1,14 +1,7 @@
-import { createHash, randomBytes } from "node:crypto";
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { writeAtomicFile } from "./atomic-file.js";
 import type { GitClient } from "./git.js";
 
 export type WriteAheadPublicationIntent = {
@@ -324,17 +317,7 @@ export class WriteAheadPublisher {
     }
     for (const [path, content] of Object.entries(snapshots)) {
       const destination = this.assertProtectedPath(path);
-      mkdirSync(dirname(destination), { recursive: true });
-      const temporary = join(
-        dirname(destination),
-        `.${randomBytes(8).toString("hex")}.pi-implement.tmp`,
-      );
-      try {
-        writeFileSync(temporary, content, "utf-8");
-        renameSync(temporary, destination);
-      } finally {
-        rmSync(temporary, { force: true });
-      }
+      writeAtomicFile(destination, content);
     }
     if (
       JSON.stringify(hashes(this.captureProtectedArtifacts())) !==

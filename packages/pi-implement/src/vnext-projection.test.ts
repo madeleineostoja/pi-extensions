@@ -40,6 +40,23 @@ describe("VNext checkbox projection", () => {
     });
   });
 
+  it("projects parser-selected indented task checkboxes", () => {
+    const { root, plan } = fixture("# Plan\n\n  - [ ] First\n  - [ ] Second\n");
+    const intent = createCheckboxProjectionIntent({
+      id: "projection-indented",
+      checkoutRoot: root,
+      taskIds: ["first", "second"],
+      checkboxes: [
+        { path: plan, lineNumber: 3, lineText: "  - [ ] First" },
+        { path: plan, lineNumber: 4, lineText: "  - [ ] Second" },
+      ],
+    });
+
+    expect(resumeCheckboxProjection(root, intent)).toMatchObject({
+      kind: "written",
+    });
+  });
+
   it("safety-pauses rather than overwriting third-party source changes", () => {
     const { root, plan } = fixture();
     const intent = createCheckboxProjectionIntent({

@@ -1084,11 +1084,6 @@ export function reduceVNextRunEvent(
       return accept();
 
     case "projection_safety_paused":
-      if (Object.keys(state.processLeases).length > 0) {
-        return reject(
-          "projection safety pause requires owned processes to settle",
-        );
-      }
       state.pause = {
         resumePhase:
           state.phase === "whole_plan_review" ? "whole_plan_review" : "running",
@@ -1188,6 +1183,21 @@ export class VNextSchedulerActor {
       for (const debt of this.snapshot().cleanupDebt) {
         this.startEffect({ kind: "run_cleanup", debtId: debt.id });
       }
+      for (const intent of Object.values(this.snapshot().publication.intents)) {
+        const workstream = getWorkstream(this.snapshot(), intent.workstream);
+        if (
+          !this.snapshot().publication.receipts[intent.id] &&
+          workstream?.phase === "approved" &&
+          workstream.candidateId === intent.candidateId
+        ) {
+          await this.dispatch({
+            kind: "publication_requested",
+            workstream: intent.workstream,
+            intentId: intent.id,
+            now: this.now(),
+          });
+        }
+      }
       await this.resumeOpenRecoveries();
       await this.schedule();
     }
@@ -1272,6 +1282,7 @@ export class VNextSchedulerActor {
         "review_completed",
         "recovery_completed",
         "recovery_provider_failed",
+        "reconciliation_completed",
         "publication_completed",
         "whole_plan_review_completed",
         "process_abandoned",
@@ -1281,6 +1292,7 @@ export class VNextSchedulerActor {
         [
           "recovery_completed",
           "recovery_provider_failed",
+          "reconciliation_completed",
           "process_abandoned",
         ].includes(event.kind)
       ) {

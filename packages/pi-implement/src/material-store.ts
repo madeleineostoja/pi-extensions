@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ParsedPlan } from "./plan.js";
+import { sha256 } from "./source-integrity.js";
 
 export const MAX_CORPUS_FILES = 50;
 export const MAX_CORPUS_CHARS = 200_000;
@@ -35,22 +35,55 @@ const MARKDOWN_LINK_RE = /(?<!!)\[[^\]\n]*\]\(([^)\n]+)\)/g;
 export function buildMaterialStore(
   args: BuildMaterialStoreArgs,
 ): MaterialStore {
-  const entryPath = resolve(args.planPath);
+  const entryPath = canonicalPathForRootCheck(args.planPath);
   const planDir = dirname(entryPath);
   const repoRoot = args.repoRoot ? resolve(args.repoRoot) : undefined;
   const allowedRoots = materialAllowedRoots(entryPath, planDir, repoRoot);
-  const files = new Map<string, string>([[entryPath, args.plan.content]]);
+  const files = new Map<string, string>();
   const validationErrors: string[] = [];
   const visited = new Set<string>();
+  let corpusChars = 0;
+  let limitsExceeded = false;
+
+  const addFile = (path: string, content: string): boolean => {
+    if (files.has(path)) {
+      return true;
+    }
+    if (files.size >= MAX_CORPUS_FILES) {
+      if (!limitsExceeded) {
+        validationErrors.push(
+          `Plan corpus exceeds maximum file count of ${MAX_CORPUS_FILES}.`,
+        );
+      }
+      limitsExceeded = true;
+      return false;
+    }
+    if (corpusChars + content.length > MAX_CORPUS_CHARS) {
+      if (!limitsExceeded) {
+        validationErrors.push(
+          `Plan corpus exceeds maximum size of ${MAX_CORPUS_CHARS} characters.`,
+        );
+      }
+      limitsExceeded = true;
+      return false;
+    }
+    files.set(path, content);
+    corpusChars += content.length;
+    return true;
+  };
 
   const visit = (path: string, content: string) => {
-    if (visited.has(path)) {
+    const canonicalPath = canonicalPathForRootCheck(path);
+    if (visited.has(canonicalPath) || limitsExceeded) {
       return;
     }
-    visited.add(path);
+    visited.add(canonicalPath);
+    if (!addFile(canonicalPath, content)) {
+      return;
+    }
     for (const target of discoverInlineMarkdownLinks(content.split("\n"))) {
       const resolved = validateCorpusTarget(
-        dirname(path),
+        dirname(canonicalPath),
         target,
         allowedRoots,
         repoRoot,
@@ -58,9 +91,6 @@ export function buildMaterialStore(
       if (typeof resolved === "string") {
         validationErrors.push(resolved);
         continue;
-      }
-      if (!files.has(resolved.absolutePath)) {
-        files.set(resolved.absolutePath, resolved.content);
       }
       visit(resolved.absolutePath, resolved.content);
     }
@@ -105,13 +135,12 @@ function finalizeFiles(
 }
 
 function computeStoreHash(entryPath: string, files: MaterialFile[]): string {
-  const hash = createHash("sha256");
-  hash.update(entryPath);
-  for (const file of files) {
-    hash.update(file.absolutePath);
-    hash.update(file.hash);
-  }
-  return hash.digest("hex");
+  return sha256(
+    [
+      entryPath,
+      ...files.flatMap((file) => [file.absolutePath, file.hash]),
+    ].join("\0"),
+  );
 }
 
 function validateCorpusTarget(
@@ -148,7 +177,7 @@ function validateCorpusTarget(
     }
     const content = readFileSync(candidate, "utf-8");
     return content.trim()
-      ? { absolutePath: resolve(candidate), content }
+      ? { absolutePath: canonicalPathForRootCheck(candidate), content }
       : `empty or whitespace-only corpus file: ${target}`;
   } catch {
     return `missing or unreadable corpus link target: ${target}`;
@@ -176,7 +205,7 @@ function discoverInlineMarkdownLinks(lines: string[]): string[] {
     const searchable = stripInlineCodeSpans(line);
     let match: RegExpExecArray | null;
     while ((match = MARKDOWN_LINK_RE.exec(searchable)) !== null) {
-      const target = (match[1] ?? "").trim();
+      const target = markdownDestination(match[1] ?? "");
       if (
         target &&
         !target.startsWith("#") &&
@@ -188,6 +217,15 @@ function discoverInlineMarkdownLinks(lines: string[]): string[] {
     }
   }
   return targets;
+}
+
+function markdownDestination(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("<")) {
+    const close = trimmed.indexOf(">");
+    return close === -1 ? "" : trimmed.slice(1, close).trim();
+  }
+  return trimmed.split(/\s+/, 1)[0] ?? "";
 }
 
 function materialAllowedRoots(
@@ -248,5 +286,5 @@ function looksLikeScheme(value: string): boolean {
 }
 
 function hashContent(content: string): string {
-  return createHash("sha256").update(content).digest("hex");
+  return sha256(content);
 }

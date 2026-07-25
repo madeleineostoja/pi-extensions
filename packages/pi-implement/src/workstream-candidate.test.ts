@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -424,7 +425,7 @@ describe("workstream candidate lifecycle", () => {
 
     expect(packet.tasks.map((task) => task.id)).toEqual(["first", "second"]);
     expect(packet.sourceMaterial).toEqual([
-      { path: subject.planPath, content: subject.planContent },
+      { path: realpathSync(subject.planPath), content: subject.planContent },
     ]);
   });
 });

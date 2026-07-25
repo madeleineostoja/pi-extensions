@@ -24,6 +24,27 @@ export type CommandResult = {
   cause?: unknown;
 };
 
+export async function changedPathsBetween(
+  git: GitClient,
+  baseSha: string,
+  headSha: string,
+): Promise<string[]> {
+  if (baseSha === headSha) {
+    return [];
+  }
+  if (git.changedPathsBetween) {
+    return [...new Set(await git.changedPathsBetween(baseSha, headSha))].sort();
+  }
+  return [
+    ...new Set(
+      (await git.diffRange(baseSha, headSha)).split("\n").flatMap((line) => {
+        const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+        return match ? [match[1]!, match[2]!] : [];
+      }),
+    ),
+  ].sort();
+}
+
 export type GitClient = {
   root(): Promise<string>;
   mainRoot(): Promise<string>;

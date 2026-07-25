@@ -182,6 +182,22 @@ describe("strict execution-plan compiler", () => {
     expect(calls).toBe(0);
   });
 
+  it("compiles the parser-selected headingless checkbox section", () => {
+    const headingless = `Plan introduction.\n\n- [ ] First branch\n- [ ] Second branch\n- [ ] Join branches\n`;
+
+    expect(compileExecutionPlan(plannerPlan(), input(headingless)).ok).toBe(
+      true,
+    );
+  });
+
+  it("compiles a parser-selected checkbox section with an arbitrary heading", () => {
+    const arbitraryHeading = `# Plan\n\n## Delivery work\n\n- [ ] First branch\n- [ ] Second branch\n- [ ] Join branches\n`;
+
+    expect(
+      compileExecutionPlan(plannerPlan(), input(arbitraryHeading)).ok,
+    ).toBe(true);
+  });
+
   it("binds sequential unchecked indexes and host-owned source identity", () => {
     const result = compileExecutionPlan(plannerPlan(), input());
 

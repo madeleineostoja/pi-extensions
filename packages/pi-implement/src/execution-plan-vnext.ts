@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   countMaterialChars,
   MAX_CORPUS_CHARS,
@@ -9,7 +8,11 @@ import {
 } from "./material-store.js";
 import type { ParsedPlan, PlanTask } from "./plan.js";
 import { writeAtomicJson } from "./atomic-json.js";
-import { normalizeCheckboxMarker } from "./source-checkbox.js";
+import {
+  normalizeCheckboxMarker,
+  resolveCorpusPath,
+  sha256,
+} from "./source-integrity.js";
 
 const ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
@@ -262,13 +265,13 @@ export function compileExecutionPlan(
       return {
         ...task,
         taskHash: taskHash(sourceTask),
-        sourceAnchor: sourceAnchor(input.plan.path, sourceTask),
+        sourceAnchor: sourceAnchor(input.materialStore.entryPath, sourceTask),
       };
     });
   const unsigned = {
     version: 1 as const,
     source: {
-      planPath: resolve(input.plan.path),
+      planPath: input.materialStore.entryPath,
       planHash: input.planHash,
       corpusHash: input.materialStore.storeHash,
       corpusFiles: input.materialStore.files
@@ -297,7 +300,7 @@ export function compileExecutionPlan(
 function validateExecutionPlanInput(
   input: Pick<ExecutionPlanCompilerInput, "plan" | "materialStore">,
 ): ExecutionPlanResult<void> {
-  const { materialStore, plan } = input;
+  const { materialStore } = input;
   if (materialStore.validationErrors.length > 0) {
     return failure(
       `Plan corpus is invalid: ${materialStore.validationErrors.join("; ")}`,
@@ -311,28 +314,6 @@ function validateExecutionPlanInput(
   if (countMaterialChars(materialStore) > MAX_CORPUS_CHARS) {
     return failure(
       `Plan corpus exceeds maximum size of ${MAX_CORPUS_CHARS} characters.`,
-    );
-  }
-  const tasksHeading = plan.lines.findIndex((line) =>
-    /^##[ \t]+Tasks[ \t]*$/.test(line),
-  );
-  if (tasksHeading === -1) {
-    return failure('Source plan must contain a "## Tasks" section.');
-  }
-  const nextHeading = plan.lines.findIndex(
-    (line, index) => index > tasksHeading && /^#{1,2}[ \t]+/.test(line),
-  );
-  const sectionEnd = nextHeading === -1 ? plan.lines.length : nextHeading;
-  if (
-    plan.tasks.some(
-      (task) =>
-        task.indent.length > 0 ||
-        task.lineNumber - 1 <= tasksHeading ||
-        task.lineNumber - 1 >= sectionEnd,
-    )
-  ) {
-    return failure(
-      'Executable tasks must be top-level checkboxes inside the "## Tasks" section.',
     );
   }
   return { ok: true, value: undefined };
@@ -968,20 +949,25 @@ function validateProvenance(
   store: MaterialStore,
 ): ExecutionPlanResult<void> {
   for (const ref of task.provenance) {
-    const candidates = isAbsolute(ref.path)
-      ? [resolve(ref.path)]
-      : [
-          resolve(store.planDir, ref.path),
-          ...(store.repoRoot ? [resolve(store.repoRoot, ref.path)] : []),
-        ];
-    const file = store.files.find((candidate) =>
-      candidates.includes(candidate.absolutePath),
-    );
-    if (!file) {
+    let path: string;
+    try {
+      path = resolveCorpusPath({
+        planPath: store.entryPath,
+        checkoutRoot: store.repoRoot ?? store.planDir,
+        corpus: store.files.map((file) => ({
+          path: file.absolutePath,
+          hash: file.hash,
+        })),
+        reference: ref.path,
+      });
+    } catch {
       return failure(
         `Task "${task.id}" provenance path is outside the immutable corpus: ${ref.path}.`,
       );
     }
+    const file = store.files.find(
+      (candidate) => candidate.absolutePath === path,
+    )!;
     if (!file.content.includes(ref.quote)) {
       return failure(
         `Task "${task.id}" provenance quote is not grounded in ${ref.path}.`,
@@ -1089,11 +1075,11 @@ function sameSet(left: Set<string>, right: Set<string>): boolean {
 }
 
 function hash(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+  return sha256(value);
 }
 
 function hashJson(value: unknown): string {
-  return hash(JSON.stringify(value));
+  return sha256(JSON.stringify(value));
 }
 
 function object(

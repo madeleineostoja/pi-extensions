@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type {
@@ -8,9 +7,20 @@ import type {
 import { buildMaterialStore } from "./material-store.js";
 import { parsePlan } from "./plan.js";
 import { planExecution, readExecutionPlan } from "./execution-plan-vnext.js";
+import { CandidateReplayEngine } from "./candidate-replay.js";
 import { ExecGitClient } from "./git.js";
 import { RuntimeSubagentClient } from "./subagents.js";
+import { runVNextProjection } from "./vnext-projection-runner.js";
+import { createCheckboxProjectionIntent } from "./vnext-projection.js";
+import { runVNextPublication } from "./vnext-publication.js";
+import {
+  completeVNextWholePlanRun,
+  runVNextWholePlanReview,
+} from "./vnext-whole-plan-review.js";
+import { settleVNextCleanupDebt } from "./vnext-cleanup.js";
+import { WriteAheadPublisher } from "./write-ahead-publication.js";
 import { strictExecutionPlanSchema } from "./result-schemas.js";
+import { sha256 } from "./source-integrity.js";
 import { runWorkstreamCandidate } from "./workstream-candidate.js";
 import { runVNextOverallRepair } from "./vnext-overall-repair.js";
 import { runVNextWorkstreamReview } from "./vnext-review.js";
@@ -25,6 +35,7 @@ import {
   sourceIdentityForPlanning,
   sourceIdentityMatches,
   type CheckoutLeaseCapability,
+  type VNextRunState,
   VNextRunStore,
 } from "./vnext-store.js";
 import type { EffectiveRoles } from "./config.js";
@@ -337,7 +348,220 @@ function createActor(args: {
         }
         return;
       }
-      throw new Error(`VNext effect ${effect.kind} is not wired yet.`);
+      if (effect.kind === "run_reconciliation") {
+        const candidate = state.candidates[effect.candidateId];
+        if (!candidate) {
+          throw new Error("Reconciliation candidate is no longer retained.");
+        }
+        const replay = await new CandidateReplayEngine({
+          git: args.git,
+          worktreesRoot: join(args.lease.paths.worktrees, state.run.id),
+          runId: state.run.id,
+        }).prepare(candidate, signal);
+        const workspace =
+          replay.staging === undefined
+            ? {
+                id: `reconciliation:${effect.candidateId}`,
+                changedPaths: [],
+                stateEvidence: replay.kind,
+              }
+            : {
+                id: replay.staging.id,
+                checkpoint: replay.staging.preparedCommitSha,
+                changedPaths: replay.staging.replayPaths ?? [],
+                stateEvidence: replay.kind,
+              };
+        if (replay.kind !== "prepared") {
+          await dispatch({
+            kind: "reconciliation_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            outcome: {
+              kind: "reconciliation_required",
+              evidence:
+                "evidence" in replay
+                  ? replay.evidence
+                  : "Replay did not produce a publishable candidate.",
+              workspace,
+            },
+          });
+          return;
+        }
+        await dispatch({
+          kind: "reconciliation_completed",
+          workstream: effect.workstream,
+          leaseId: effect.leaseId,
+          outcome: {
+            kind: "prepared",
+            evidence: `Prepared ${replay.disposition} replay at ${replay.staging.preparedCommitSha}.`,
+            workspace,
+          },
+        });
+        const branch = await args.git.currentBranch();
+        if (!branch) {
+          throw new Error("Publication requires a named target branch.");
+        }
+        const intent = new WriteAheadPublisher({
+          git: args.git,
+          checkoutRoot: state.run.checkout.root,
+          checkoutIdentity: state.run.checkout.gitDir,
+          protectedPaths: Object.keys(state.protectedArtifactHashes),
+        }).createIntent({
+          id: `publication:${state.run.id}:${effect.workstream.kind === "source" ? effect.workstream.id : effect.workstream.repairId}:${replay.staging.preparedCommitSha}`,
+          candidateId: candidate.id,
+          targetBaseSha: replay.staging.targetBaseSha,
+          preparedCommitSha: replay.staging.preparedCommitSha,
+          preparedTreeSha: replay.staging.treeSha,
+          targetRef: `refs/heads/${branch}`,
+        });
+        await dispatch({
+          kind: "publication_intent_recorded",
+          intent: {
+            ...intent,
+            workstream: effect.workstream,
+            stagingWorktree: replay.staging.worktreePath,
+            hookEvidence: "Candidate checkpoints completed through Git hooks.",
+          },
+        });
+        await dispatch({
+          kind: "publication_requested",
+          workstream: effect.workstream,
+          intentId: intent.id,
+          now: new Date().toISOString(),
+        });
+        return;
+      }
+      if (effect.kind === "run_publication") {
+        const plan = readExecutionPlan(
+          join(args.lease.paths.runs, state.run.id),
+        );
+        const taskIds =
+          effect.workstream.kind === "source"
+            ? (state.workstreams.source[effect.workstream.id]?.taskIds ?? [])
+            : [];
+        let projectionDebt: VNextRunState["projectionDebt"][number] | undefined;
+        try {
+          projectionDebt =
+            taskIds.length === 0 || !plan
+              ? undefined
+              : (() => {
+                  const tasks = taskIds.map((taskId) =>
+                    plan.tasks.find((task) => task.id === taskId),
+                  );
+                  if (tasks.some((task) => !task)) {
+                    throw new Error(
+                      "Publication task is missing its source anchor.",
+                    );
+                  }
+                  const projection = createCheckboxProjectionIntent({
+                    id: `projection:${state.run.id}:${effect.workstream.kind === "source" ? effect.workstream.id : effect.workstream.repairId}`,
+                    checkoutRoot: state.run.checkout.root,
+                    taskIds,
+                    checkboxes: tasks.map((task) => task!.sourceAnchor),
+                  });
+                  return {
+                    ...projection,
+                    reason: "Publish source workstream task completion.",
+                    artifactPath: projection.canonicalPath,
+                  };
+                })();
+        } catch (error) {
+          await dispatch({
+            kind: "process_abandoned",
+            leaseId: effect.leaseId,
+          });
+          await dispatch({
+            kind: "projection_safety_paused",
+            reason: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+        await runVNextPublication({
+          state,
+          effect,
+          publisher: new WriteAheadPublisher({
+            git: args.git,
+            checkoutRoot: state.run.checkout.root,
+            checkoutIdentity: state.run.checkout.gitDir,
+            protectedPaths: Object.keys(state.protectedArtifactHashes),
+          }),
+          dispatch,
+          projectionDebt,
+        });
+        return;
+      }
+      if (effect.kind === "run_projection") {
+        await runVNextProjection({
+          store: args.store,
+          debtId: effect.debtId,
+          dispatch,
+        });
+        const next = args.store.read();
+        if (
+          next.projectionDebt.length === 0 &&
+          Object.values(next.workstreams.source).every(
+            (workstream) => workstream.phase === "completed",
+          )
+        ) {
+          await dispatch({ kind: "whole_plan_review_requested" });
+        }
+        return;
+      }
+      if (effect.kind === "run_whole_plan_review") {
+        const plan = readExecutionPlan(
+          join(args.lease.paths.runs, state.run.id),
+        );
+        if (!plan) {
+          throw new Error(
+            "Whole-plan review requires the durable execution plan.",
+          );
+        }
+        await runVNextWholePlanReview({
+          state,
+          plan,
+          git: args.git,
+          subagents: new RuntimeSubagentClient(args.pi, args.ctx, state.run.id),
+          artifactsPath,
+          signal,
+          dispatch,
+          roles: args.roles.reviewer,
+        });
+        const next = args.store.read();
+        if (next.wholePlanReview.status === "approved") {
+          await completeVNextWholePlanRun({
+            state: next,
+            git: args.git,
+            dispatch,
+          });
+        }
+        return;
+      }
+      if (effect.kind === "run_cleanup") {
+        await settleVNextCleanupDebt({
+          store: args.store,
+          git: args.git,
+          debtId: effect.debtId,
+          dispatch,
+        });
+        return;
+      }
+      if (effect.kind === "run_recovery") {
+        await dispatch({
+          kind: "recovery_completed",
+          workstream: effect.workstream,
+          leaseId: effect.leaseId,
+          action: {
+            kind: "no_safe_action",
+            outcome: "no_safe_action",
+            summary: "No automated recovery action is available for this gate.",
+            evidence:
+              "The durable recovery episode retained the failed gate for operator resume.",
+            at: new Date().toISOString(),
+          },
+        });
+        return;
+      }
+      throw new Error("Unsupported VNext effect.");
     },
     executePlanner: async ({ signal }) => {
       const retained = readExecutionPlan(
@@ -353,7 +577,7 @@ function createActor(args: {
       );
       const result = await planExecution({
         plan: args.plan,
-        planHash: hash(args.plan.content),
+        planHash: sha256(args.plan.content),
         materialStore: args.materialStore,
         checkoutId: args.checkoutIdentity,
         baseSha: args.baseSha,
@@ -394,8 +618,4 @@ function createActor(args: {
 async function readText(path: string): Promise<string> {
   const { readFile } = await import("node:fs/promises");
   return readFile(path, "utf-8");
-}
-
-function hash(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }

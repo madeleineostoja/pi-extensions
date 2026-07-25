@@ -2,6 +2,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -57,9 +58,44 @@ describe("buildMaterialStore", () => {
 
     expect(store.validationErrors).toEqual([]);
     expect(store.files.map((file) => file.absolutePath).sort()).toEqual(
-      [planPath, join(root, "docs", "a.md"), join(root, "docs", "b.md")].sort(),
+      [planPath, join(root, "docs", "a.md"), join(root, "docs", "b.md")]
+        .map((path) => realpathSync(path))
+        .sort(),
     );
     expect(store.storeHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("deduplicates cycles reached through in-root symlink aliases", () => {
+    const root = temporaryDirectory();
+    const planPath = join(root, "plan.md");
+    const designPath = join(root, "design.md");
+    fixture(planPath, "# Plan\n\n- [ ] Task\n\n[design](design.md)\n");
+    fixture(designPath, "[alias](alias.md)\n");
+    symlinkSync(planPath, join(root, "alias.md"));
+
+    const store = storeFor(planPath, root);
+
+    expect(store.validationErrors).toEqual([]);
+    expect(store.files.map((file) => file.absolutePath).sort()).toEqual(
+      [planPath, designPath].map((path) => realpathSync(path)).sort(),
+    );
+  });
+
+  it("stops traversal at corpus resource limits", () => {
+    const root = temporaryDirectory();
+    const planPath = join(root, "plan.md");
+    fixture(planPath, "# Plan\n\n- [ ] Task\n\n[first](1.md)\n");
+    for (let index = 1; index <= 50; index++) {
+      fixture(
+        join(root, `${index}.md`),
+        index === 50 ? "# End\n" : `[next](${index + 1}.md)\n`,
+      );
+    }
+
+    const store = storeFor(planPath, root);
+
+    expect(store.files).toHaveLength(50);
+    expect(store.validationErrors.join("\n")).toContain("maximum file count");
   });
 
   it("ignores image, URL, and non-Markdown links", () => {
@@ -87,7 +123,9 @@ describe("buildMaterialStore", () => {
 
     const store = storeFor(planPath);
 
-    expect(store.files.map((file) => file.absolutePath)).toEqual([planPath]);
+    expect(store.files.map((file) => file.absolutePath)).toEqual([
+      realpathSync(planPath),
+    ]);
     expect(store.validationErrors).toHaveLength(2);
     expect(store.validationErrors.join("\n")).toContain("missing");
     expect(store.validationErrors.join("\n")).toContain("escapes allowed root");
@@ -107,7 +145,9 @@ describe("buildMaterialStore", () => {
 
     const store = storeFor(planPath, root);
 
-    expect(store.files.map((file) => file.absolutePath)).toContain(shared);
+    expect(store.files.map((file) => file.absolutePath)).toContain(
+      realpathSync(shared),
+    );
     expect(store.files.map((file) => file.absolutePath)).not.toContain(
       join(root, "plans", "escape.md"),
     );

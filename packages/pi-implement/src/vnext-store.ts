@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -23,7 +23,12 @@ import {
   type ExecutionPlan,
 } from "./execution-plan-vnext.js";
 import { recoveryActionKinds, recoveryGateKinds } from "./recovery-vnext.js";
-import { normalizeCheckboxMarker } from "./source-checkbox.js";
+import {
+  canonicalPath,
+  normalizeCheckboxMarker,
+  protectedArtifactsMatch as artifactHashesMatch,
+  sha256,
+} from "./source-integrity.js";
 
 const nonEmpty = z.string().trim().min(1);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -805,6 +810,12 @@ export class VNextRunStore {
         );
       }
     }
+    const normalizedHashes = Object.fromEntries(
+      Object.entries(protectedArtifactHashes).map(([path, hash]) => [
+        canonicalPath(path),
+        hash,
+      ]),
+    );
     const next = validateVNextRunState(
       {
         ...current,
@@ -818,14 +829,14 @@ export class VNextRunStore {
               : task,
           ]),
         ),
-        protectedArtifactHashes,
+        protectedArtifactHashes: normalizedHashes,
       },
       this.path,
       current,
     );
     if (
       !sameKeys(
-        Object.keys(protectedArtifactHashes),
+        Object.keys(normalizedHashes),
         new Set(Object.keys(current.protectedArtifactHashes)),
       )
     ) {
@@ -913,9 +924,12 @@ export function sourceIdentityForPlanning(args: {
   corpusFiles: Array<{ path: string; hash: string }>;
   uncheckedLineNumbers: number[];
 }): VNextRunState["run"]["source"] {
-  const planPath = resolve(args.planPath);
+  const planPath = canonicalPath(args.planPath);
   const allArtifacts = args.corpusFiles
-    .map((artifact) => ({ path: resolve(artifact.path), hash: artifact.hash }))
+    .map((artifact) => ({
+      path: canonicalPath(artifact.path),
+      hash: artifact.hash,
+    }))
     .sort((left, right) => left.path.localeCompare(right.path));
   const entry = allArtifacts.find((artifact) => artifact.path === planPath);
   if (!entry) {
@@ -954,9 +968,13 @@ export function sourceIdentityForExecutionPlan(
   const artifacts = [
     { path: plan.source.planPath, hash: plan.source.planHash },
     ...plan.source.corpusFiles.filter(
-      (file) => resolve(file.path) !== resolve(plan.source.planPath),
+      (file) =>
+        canonicalPath(file.path) !== canonicalPath(plan.source.planPath),
     ),
-  ].map((artifact) => ({ path: resolve(artifact.path), hash: artifact.hash }));
+  ].map((artifact) => ({
+    path: canonicalPath(artifact.path),
+    hash: artifact.hash,
+  }));
   const content = readFileSync(plan.source.planPath, "utf-8");
   if (sha256(content) !== plan.source.planHash) {
     throw new VNextStateError(
@@ -974,7 +992,7 @@ export function sourceIdentityForExecutionPlan(
   }
   return {
     entry: {
-      path: resolve(plan.source.planPath),
+      path: canonicalPath(plan.source.planPath),
       normalizedHash: sha256(
         normalizeExecutionPlanCheckboxes(content, plan.tasks),
       ),
@@ -1003,7 +1021,10 @@ export function sourceIdentityMatches(state: VNextRunState): boolean {
       return false;
     }
     return state.run.source.corpus
-      .filter((artifact) => resolve(artifact.path) !== resolve(entry.path))
+      .filter(
+        (artifact) =>
+          canonicalPath(artifact.path) !== canonicalPath(entry.path),
+      )
       .every(
         (artifact) =>
           sha256(readFileSync(artifact.path, "utf-8")) === artifact.hash,
@@ -1014,13 +1035,7 @@ export function sourceIdentityMatches(state: VNextRunState): boolean {
 }
 
 export function protectedArtifactsMatch(state: VNextRunState): boolean {
-  try {
-    return Object.entries(state.protectedArtifactHashes).every(
-      ([path, expected]) => sha256(readFileSync(path, "utf-8")) === expected,
-    );
-  } catch {
-    return false;
-  }
+  return artifactHashesMatch(state.protectedArtifactHashes);
 }
 
 function validatePlanForRun(
@@ -1712,10 +1727,6 @@ function versionOf(value: unknown): number | undefined {
     typeof (value as { version?: unknown }).version === "number"
     ? (value as { version: number }).version
     : undefined;
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 export function makeVNextRunId(): string {

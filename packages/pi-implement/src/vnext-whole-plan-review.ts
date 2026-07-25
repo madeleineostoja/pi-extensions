@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExecutionPlan } from "./execution-plan-vnext.js";
 import type { GitClient } from "./git.js";
 import { buildInitialOverallReviewPrompt } from "./prompts.js";
+import { sha256 } from "./source-integrity.js";
 import {
   initialOverallReviewSchema,
   type InitialOverallReviewCompletion,
@@ -238,9 +238,7 @@ function nextRepairId(state: VNextRunState): string {
 
 function writeWholePlanEvidence(path: string, value: unknown): string {
   mkdirSync(path, { recursive: true });
-  const fingerprint = createHash("sha256")
-    .update(JSON.stringify(value))
-    .digest("hex");
+  const fingerprint = sha256(JSON.stringify(value));
   const evidence = join(path, `whole-plan-review-${fingerprint}.json`);
   writeAtomicJson(evidence, value);
   return evidence;
