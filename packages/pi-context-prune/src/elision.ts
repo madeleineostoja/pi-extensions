@@ -907,10 +907,9 @@ export function makeContextHook(
       toolCallInfoMap,
       mutationPositions,
     );
-    const hasAssistantAfter =
-      config.afterConsumptionBashEnabled || config.emergencyMaxOrdinaryReads > 0
-        ? assistantAfterEachPosition(messages)
-        : [];
+    const hasAssistantAfter = config.afterConsumptionBashEnabled
+      ? assistantAfterEachPosition(messages)
+      : [];
     const distances = userTurnsAfterEachPosition(messages);
     const userTurnCounts = userTurnsUpToEachPosition(messages);
 
@@ -929,12 +928,7 @@ export function makeContextHook(
       totalPromptTokens += estimateMessageTokens(msg);
     }
 
-    const usage = captureContextUsage(pruningState, ctx);
-    const isEmergency =
-      typeof usage?.tokens === "number" &&
-      typeof usage.contextWindow === "number" &&
-      usage.tokens >=
-        usage.contextWindow - config.emergencyContextReserveTokens;
+    captureContextUsage(pruningState, ctx);
 
     const candidates: Candidate[] = [];
 
@@ -1084,42 +1078,6 @@ export function makeContextHook(
         }
       }
 
-      if (
-        isEmergency &&
-        reasons.length === 0 &&
-        msg.toolName === "read" &&
-        !msg.isError &&
-        readPath !== null &&
-        hasAssistantAfter[i]
-      ) {
-        const preview = extractPreview(msg.content);
-        const stubText = buildStubTextForCandidate(
-          {
-            index: i,
-            msg,
-            reasons,
-            originalTokens: tokenCount,
-            estimatedStubTokens: 0,
-            savedTokens: 0,
-            suffixTokens: 0,
-            semanticRisk: 0,
-            priority: 0,
-            isOrdinarySourceRead: false,
-            readMetadata,
-          },
-          "emergency-pressure",
-          tokenCount,
-          preview,
-        );
-        const stubTokens = estimateContentTokens([
-          { type: "text", text: stubText },
-        ]);
-        const savedTokens = Math.max(0, tokenCount - stubTokens);
-        if (savedTokens >= config.emergencyOrdinaryReadMinSavedTokens) {
-          reasons.push("emergency-pressure");
-        }
-      }
-
       if (reasons.length === 0) {
         continue;
       }
@@ -1243,7 +1201,7 @@ export function makeContextHook(
         cand.suffixTokens <= suffixBudget &&
         (nearTail || scorePositive);
 
-      if (qualifiesYoung && !isEmergency && !cand.isOrdinarySourceRead) {
+      if (qualifiesYoung && !cand.isOrdinarySourceRead) {
         applyElision(
           cand,
           primaryReason,
@@ -1258,7 +1216,7 @@ export function makeContextHook(
       }
     }
 
-    if (deferred.length > 0 && (config.batchPruningEnabled || isEmergency)) {
+    if (deferred.length > 0 && config.batchPruningEnabled) {
       deferred.sort((a, b) => {
         if (a.priority !== b.priority) {
           return a.priority - b.priority;
@@ -1266,22 +1224,8 @@ export function makeContextHook(
         return a.index - b.index;
       });
 
-      const emergencyOrdinaryCandidates: Candidate[] = [];
-      const otherDeferred: Candidate[] = [];
-      for (const cand of deferred) {
-        if (
-          isEmergency &&
-          cand.isOrdinarySourceRead &&
-          cand.savedTokens >= config.emergencyOrdinaryReadMinSavedTokens
-        ) {
-          emergencyOrdinaryCandidates.push(cand);
-        } else {
-          otherDeferred.push(cand);
-        }
-      }
-
       const selected: Candidate[] = [];
-      for (const cand of otherDeferred) {
+      for (const cand of deferred) {
         if (cand.isOrdinarySourceRead) {
           continue;
         }
@@ -1291,21 +1235,7 @@ export function makeContextHook(
         selected.push(cand);
       }
 
-      if (isEmergency) {
-        let emergencyOrdinarySelected = 0;
-        for (const cand of emergencyOrdinaryCandidates) {
-          if (selected.length >= config.batchMaxCandidates) {
-            break;
-          }
-          if (emergencyOrdinarySelected >= config.emergencyMaxOrdinaryReads) {
-            break;
-          }
-          selected.push(cand);
-          emergencyOrdinarySelected++;
-        }
-      }
-
-      if (selected.length >= (isEmergency ? 1 : config.batchMinCandidates)) {
+      if (selected.length >= config.batchMinCandidates) {
         const earliest = selected.reduce((oldest, cand) =>
           cand.index < oldest.index ? cand : oldest,
         );
@@ -1334,7 +1264,6 @@ export function makeContextHook(
             ? userTurnCounts[userTurnCounts.length - 1]
             : 0;
         const cooldownOk =
-          isEmergency ||
           !pruningState ||
           currentTurnCount - pruningState.lastBatchUserTurnCount >=
             config.batchCooldownTurns +
@@ -1343,16 +1272,16 @@ export function makeContextHook(
                 : 0);
 
         if (
-          (isEmergency || batchSavedTokens >= config.batchMinSavedTokens) &&
-          (isEmergency || batchNetValue >= config.batchMinNetValue) &&
-          (isEmergency || totalSemanticRisk <= config.batchMaxSemanticRisk) &&
+          batchSavedTokens >= config.batchMinSavedTokens &&
+          batchNetValue >= config.batchMinNetValue &&
+          totalSemanticRisk <= config.batchMaxSemanticRisk &&
           cooldownOk
         ) {
           for (const cand of selected) {
             if (!elidedIndices.has(cand.index)) {
               applyElision(
                 cand,
-                isEmergency ? "emergency-pressure" : "batch-pressure",
+                "batch-pressure",
                 entries,
                 result,
                 pruningState,
@@ -1363,7 +1292,7 @@ export function makeContextHook(
           }
           if (pruningState) {
             pruningState.lastBatchUserTurnCount = currentTurnCount;
-            if (!isEmergency && config.adaptivePolicyEnabled) {
+            if (config.adaptivePolicyEnabled) {
               pruningState.nonEmergencyBatchSinceLastUsage = true;
             }
           }
