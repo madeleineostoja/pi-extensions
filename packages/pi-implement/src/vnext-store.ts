@@ -331,6 +331,7 @@ const publicationPreparationSchema = z
     changedPaths: z.array(nonEmpty),
     disposition: z.enum(["same_base", "clean_non_overlap"]),
     hookEvidence: nonEmpty,
+    hookCommand: commandEvidenceSchema.optional(),
   })
   .strict();
 

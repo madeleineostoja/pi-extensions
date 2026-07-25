@@ -269,9 +269,7 @@ export class ExecGitClient implements GitClient {
 
   async checkpoint(message: string, amend: boolean): Promise<CommandResult> {
     return this.run(
-      amend
-        ? ["commit", "--amend", "--no-verify", "-m", message]
-        : ["commit", "--no-verify", "-m", message],
+      amend ? ["commit", "--amend", "-m", message] : ["commit", "-m", message],
       true,
     );
   }

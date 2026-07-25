@@ -9,6 +9,12 @@ import {
   type WriteAheadPublisher,
 } from "./write-ahead-publication.js";
 
+export class MissingHookEvidenceError extends Error {
+  constructor() {
+    super("Publication preparation lacks ordinary commit hook evidence.");
+  }
+}
+
 export class VNextPublicationError extends Error {
   constructor(
     readonly outcome: Exclude<PublicationOutcome, { kind: "published" }>,
@@ -47,6 +53,9 @@ export async function runVNextPublication(args: {
     throw new Error(
       "Publication intent does not match its durable preparation.",
     );
+  }
+  if (!preparation.hookCommand) {
+    throw new MissingHookEvidenceError();
   }
   const existingReceipt = args.state.publication.receipts[intent.id];
   if (existingReceipt) {

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { ensureGitInfoExclude } from "@pi-extensions/lib";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -65,6 +65,12 @@ function engine(root: string): CandidateReplayEngine {
   });
 }
 
+function preCommit(root: string, script: string): void {
+  const hook = join(root, ".git", "hooks", "pre-commit");
+  writeFileSync(hook, `#!/bin/sh\n${script}\n`);
+  chmodSync(hook, 0o755);
+}
+
 afterEach(() => {
   for (const directory of temporaryDirectories) {
     rmSync(directory, { recursive: true, force: true });
@@ -108,6 +114,51 @@ describe("CandidateReplayEngine", () => {
     await engine(root).cleanup(result.staging);
   });
 
+  it("retains hook rejection evidence without touching the target", async () => {
+    const root = repository();
+    const client = new ExecGitClient(root);
+    const approved = await candidate(root, "candidate.txt", "candidate\n");
+    const target = await client.head();
+    preCommit(root, "echo rejected >&2\nexit 1");
+
+    const result = await engine(root).prepare(approved);
+
+    expect(result).toMatchObject({
+      kind: "hook_rejected",
+      command: { cwd: expect.stringContaining("staging"), exitCode: 1 },
+    });
+    if (result.kind !== "hook_rejected") {
+      throw new Error(JSON.stringify(result));
+    }
+    expect(result.command.command).not.toContain("--no-verify");
+    expect(result.command.output).toContain("rejected");
+    expect(await client.head()).toBe(target);
+    await engine(root).discard(result.staging);
+  });
+
+  it("requires reconciliation review when a commit hook changes the replayed patch", async () => {
+    const root = repository();
+    const client = new ExecGitClient(root);
+    const approved = await candidate(root, "candidate.txt", "candidate\n");
+    preCommit(root, "printf hook\\n >> target.txt\ngit add target.txt");
+
+    const result = await engine(root).prepare(approved);
+
+    expect(result).toMatchObject({
+      kind: "reconciliation_required",
+      disposition: "changed_patch",
+      hookMutated: true,
+      staging: { hookCommand: expect.objectContaining({ exitCode: 0 }) },
+    });
+    if (result.kind !== "reconciliation_required") {
+      throw new Error(JSON.stringify(result));
+    }
+    expect(result.staging.preparedCommitSha).toBeDefined();
+    expect(result.staging.replayPaths).toEqual(["candidate.txt", "target.txt"]);
+    expect(await client.head()).toBe(approved.baseSha);
+    await engine(root).discard(result.staging);
+  });
+
   it("replays two historical candidates serially when target changes do not overlap", async () => {
     const root = repository();
     const client = new ExecGitClient(root);
@@ -142,7 +193,7 @@ describe("CandidateReplayEngine", () => {
           candidate: second,
           disposition: preparedSecond.disposition,
           targetRef: "refs/heads/master",
-          hookEvidence: "hooks passed",
+          hookEvidence: "git commit completed with retained command evidence",
         },
         preparedSecond.staging,
       ),
@@ -157,7 +208,7 @@ describe("CandidateReplayEngine", () => {
     await replay.cleanup(preparedSecond.staging);
   });
 
-  it("recreates a mismatched retained staging commit instead of accepting it", async () => {
+  it("reprepares legacy or mismatched staging instead of accepting it", async () => {
     const root = repository();
     const client = new ExecGitClient(root);
     const approved = await candidate(root, "candidate.txt", "candidate\n");
@@ -172,7 +223,7 @@ describe("CandidateReplayEngine", () => {
         candidate: approved,
         disposition: first.disposition,
         targetRef: "refs/heads/master",
-        hookEvidence: "hooks passed",
+        hookEvidence: "git commit completed with retained command evidence",
       },
       first.staging,
     );
@@ -190,6 +241,10 @@ describe("CandidateReplayEngine", () => {
     if (reused.kind !== "prepared") {
       throw new Error(JSON.stringify(reused));
     }
+    expect(reused.staging.hookCommand).toMatchObject({
+      command: expect.stringContaining("git commit"),
+      exitCode: 0,
+    });
     await replay.cleanup(reused.staging);
   });
 

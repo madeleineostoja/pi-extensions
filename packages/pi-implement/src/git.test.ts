@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -390,9 +391,13 @@ describe("git helpers", () => {
     expect(git(cwd, "status", "--porcelain")).toBe("M  tracked.ts\n");
   });
 
-  it("creates and amends hook-free recovery checkpoints", async () => {
+  it("creates checkpoints through ordinary commit hooks", async () => {
     const cwd = repo();
     const client = new ExecGitClient(cwd);
+    const marker = join(cwd, "hook-ran");
+    const hook = join(cwd, ".git", "hooks", "pre-commit");
+    writeFileSync(hook, `#!/bin/sh\necho ran >> ${marker}\n`);
+    chmodSync(hook, 0o755);
     writeFileSync(join(cwd, "tracked.ts"), "export const value = 2;\n");
     git(cwd, "add", "-A");
     expect(
@@ -408,6 +413,7 @@ describe("git helpers", () => {
 
     expect(await client.head()).not.toBe(first);
     expect(git(cwd, "rev-list", "--count", "HEAD~1..HEAD").trim()).toBe("1");
+    expect(readFileSync(marker, "utf-8")).toBe("ran\nran\n");
   });
 
   it("creates a task branch at the specified base SHA", async () => {

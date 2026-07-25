@@ -569,11 +569,22 @@ export function createVNextRuntime(args: {
               kind:
                 replay.kind === "infrastructure_failure"
                   ? "execution_failed"
-                  : "reconciliation_required",
+                  : replay.kind === "hook_rejected" ||
+                      (replay.kind === "reconciliation_required" &&
+                        replay.hookMutated)
+                    ? "hook_rejected"
+                    : "reconciliation_required",
               evidence:
                 "evidence" in replay
                   ? replay.evidence
                   : "Replay did not produce a publishable candidate.",
+              ...(replay.kind === "hook_rejected"
+                ? { command: replay.command }
+                : replay.kind === "reconciliation_required" &&
+                    replay.hookMutated &&
+                    replay.staging.hookCommand
+                  ? { command: replay.staging.hookCommand }
+                  : {}),
               workspace,
             },
           });
@@ -628,7 +639,12 @@ export function createVNextRuntime(args: {
             candidate,
             disposition: replay.disposition,
             targetRef: `refs/heads/${branch}`,
-            hookEvidence: "Candidate checkpoints completed through Git hooks.",
+            hookEvidence: replay.staging.hookCommand
+              ? `Git commit completed with hooks: ${replay.staging.hookCommand.command}`
+              : "No staging commit was required for the reviewed satisfaction claim.",
+            ...(replay.staging.hookCommand
+              ? { hookCommand: replay.staging.hookCommand }
+              : {}),
           },
           replay.staging,
         );

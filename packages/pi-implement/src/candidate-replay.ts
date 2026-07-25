@@ -1,8 +1,16 @@
 import { resolve } from "node:path";
 import { TaskWorkspaceManager } from "./candidate-worker.js";
 import { sha256 } from "./source-integrity.js";
-import { changedPathsBetween, type GitClient } from "./git.js";
-import type { RecoveryGateResult } from "./recovery-vnext.js";
+import {
+  changedPathsBetween,
+  type CommandResult,
+  type GitClient,
+} from "./git.js";
+import { boundedRecoveryOutput } from "./recovery-vnext.js";
+import type {
+  RecoveryCommandEvidence,
+  RecoveryGateResult,
+} from "./recovery-vnext.js";
 
 export type ReplayCandidate = {
   id: string;
@@ -25,6 +33,7 @@ export type ReplayStaging = {
   candidatePaths: string[];
   targetPaths: string[];
   replayPaths?: string[];
+  hookCommand?: RecoveryCommandEvidence;
 };
 
 export type PublicationPreparation = {
@@ -41,6 +50,7 @@ export type PublicationPreparation = {
   changedPaths: string[];
   disposition: "same_base" | "clean_non_overlap";
   hookEvidence: string;
+  hookCommand?: RecoveryCommandEvidence;
 };
 
 export function stagingIdentity(args: {
@@ -77,6 +87,13 @@ export type CandidateReplayOutcome =
       disposition: "overlap" | "conflict" | "changed_patch";
       staging: ReplayStaging;
       evidence: string;
+      hookMutated?: boolean;
+    }
+  | {
+      kind: "hook_rejected";
+      staging: ReplayStaging;
+      evidence: string;
+      command: RecoveryCommandEvidence;
     }
   | {
       kind: "repository_assessment_required";
@@ -108,17 +125,27 @@ export function reconciliationGateResult(args: {
       outstandingFindingIds: [],
     };
   }
-  if (args.outcome.kind !== "reconciliation_required") {
+  if (
+    args.outcome.kind !== "reconciliation_required" &&
+    args.outcome.kind !== "hook_rejected"
+  ) {
     return undefined;
   }
+  const hook =
+    args.outcome.kind === "hook_rejected" || args.outcome.hookMutated;
   return {
-    id: `reconciliation:${args.candidateId}:${args.attempt}`,
-    kind: "reconciliation",
+    id: `${hook ? "hook" : "reconciliation"}:${args.candidateId}:${args.attempt}`,
+    kind: hook ? "hook" : "reconciliation",
     owner: args.owner,
     candidateId: args.candidateId,
     attempt: args.attempt,
     outcome: "failed",
     evidence: args.outcome.evidence,
+    ...(args.outcome.kind === "hook_rejected"
+      ? { command: args.outcome.command }
+      : args.outcome.staging.hookCommand
+        ? { command: args.outcome.staging.hookCommand }
+        : {}),
     outstandingFindingIds: [],
   };
 }
@@ -130,6 +157,7 @@ export function publicationPreparation(
     disposition: "same_base" | "clean_non_overlap";
     targetRef: string;
     hookEvidence: string;
+    hookCommand?: RecoveryCommandEvidence;
   },
   prepared: Extract<CandidateReplayOutcome, { kind: "prepared" }>["staging"],
 ): PublicationPreparation {
@@ -156,6 +184,7 @@ export function publicationPreparation(
     changedPaths: prepared.replayPaths ?? [],
     disposition: args.disposition,
     hookEvidence: args.hookEvidence,
+    ...(args.hookCommand ? { hookCommand: args.hookCommand } : {}),
   };
 }
 
@@ -228,18 +257,22 @@ export class CandidateReplayEngine {
       }
       if (candidate.commitSha === candidate.baseSha) {
         await assertTargetUnchanged(git, target);
-        return candidate.baseSha === target.head
+        if (candidate.baseSha !== target.head) {
+          return {
+            kind: "repository_assessment_required",
+            staging,
+            evidence:
+              "The reviewed already-satisfied candidate has a stale repository base.",
+          };
+        }
+        const committed = await this.commitPrepared(staging, candidate, target);
+        return committed.kind === "prepared"
           ? {
               kind: "prepared",
               disposition: "same_base",
-              staging: await this.commitPrepared(staging, candidate, target),
+              staging: committed.staging,
             }
-          : {
-              kind: "repository_assessment_required",
-              staging,
-              evidence:
-                "The reviewed already-satisfied candidate has a stale repository base.",
-            };
+          : committed;
       }
 
       const overlaps = intersection(candidatePaths, targetPaths);
@@ -300,7 +333,7 @@ export class CandidateReplayEngine {
             "Replaying the approved candidate produced a different staged patch.",
         };
       }
-      const prepared = await this.commitPrepared(
+      const committed = await this.commitPrepared(
         {
           ...staging,
           replayPaths,
@@ -310,11 +343,14 @@ export class CandidateReplayEngine {
         candidate,
         target,
       );
+      if (committed.kind !== "prepared") {
+        return committed;
+      }
       return {
         kind: "prepared",
         disposition:
           candidate.baseSha === target.head ? "same_base" : "clean_non_overlap",
-        staging: prepared,
+        staging: committed.staging,
       };
     } catch (error) {
       return {
@@ -394,6 +430,11 @@ export class CandidateReplayEngine {
     );
     const stagingGit = this.options.git.forWorktree(worktreePath);
     await stagingGit.abortActiveOperation();
+    if (retainedPreparation && !retainedPreparation.hookCommand) {
+      await stagingGit.resetHard(targetBaseSha);
+      await stagingGit.restoreWorktreeFromIndexExcept([]);
+      retainedPreparation = undefined;
+    }
     if (retainedPreparation) {
       if (
         retainedPreparation.candidateId !== candidate.id ||
@@ -445,6 +486,7 @@ export class CandidateReplayEngine {
         replayPaths: [...retainedPreparation.changedPaths],
         preparedCommitSha: retainedPreparation.preparedCommitSha,
         treeSha: retainedPreparation.preparedTreeSha,
+        hookCommand: retainedPreparation.hookCommand,
       };
     }
     const currentHead = await stagingGit.head();
@@ -511,7 +553,14 @@ export class CandidateReplayEngine {
     staging: ReplayStaging,
     candidate: ReplayCandidate,
     target: Awaited<ReturnType<typeof targetSnapshot>>,
-  ): Promise<ReplayStaging & { preparedCommitSha: string; treeSha: string }> {
+  ): Promise<
+    | {
+        kind: "prepared";
+        staging: ReplayStaging & { preparedCommitSha: string; treeSha: string };
+      }
+    | Extract<CandidateReplayOutcome, { kind: "hook_rejected" }>
+    | Extract<CandidateReplayOutcome, { kind: "reconciliation_required" }>
+  > {
     const stagingGit = this.options.git.forWorktree(staging.worktreePath);
     if (!(await stagingGit.hasStagedChanges())) {
       if (candidate.commitSha !== candidate.baseSha) {
@@ -519,37 +568,93 @@ export class CandidateReplayEngine {
       }
       await assertTargetUnchanged(this.options.git, target);
       return {
-        ...staging,
-        replayPatch: "",
-        replayPatchHash: patchHash(""),
-        replayPaths: [],
-        preparedCommitSha: staging.targetBaseSha,
-        treeSha: await stagingGit.tree(),
+        kind: "prepared",
+        staging: {
+          ...staging,
+          replayPatch: "",
+          replayPatchHash: patchHash(""),
+          replayPaths: [],
+          preparedCommitSha: staging.targetBaseSha,
+          treeSha: await stagingGit.treeAt(staging.targetBaseSha),
+        },
       };
     }
     const commit = await stagingGit.checkpoint(
       `chore: prepare ${candidate.id}`,
       false,
     );
+    const command = hookCommandEvidence(commit, staging.worktreePath);
     if (commit.exitCode !== 0) {
-      throw new Error(
-        commit.stderr || commit.stdout || "Could not checkpoint replay.",
-      );
+      await assertTargetUnchanged(this.options.git, target);
+      return {
+        kind: "hook_rejected",
+        staging,
+        evidence: command.output || "The ordinary staging commit was rejected.",
+        command,
+      };
     }
-    const [preparedCommitSha, treeSha] = await Promise.all([
-      stagingGit.head(),
-      stagingGit.tree(),
+    const preparedCommitSha = await stagingGit.head();
+    const [treeSha, branch, clean] = await Promise.all([
+      stagingGit.treeAt(preparedCommitSha),
+      stagingGit.currentBranch(),
+      stagingGit.isClean(),
     ]);
     if (
-      (await stagingGit.parent(preparedCommitSha)) !== staging.targetBaseSha
+      (await stagingGit.parent(preparedCommitSha)) !== staging.targetBaseSha ||
+      branch !== staging.branchName ||
+      !clean
     ) {
       throw new Error(
-        "Prepared replay commit does not descend directly from target.",
+        "Prepared staging state does not match its durable identity.",
       );
     }
+    const [actualPatch, actualPaths] = await Promise.all([
+      stagingGit.diffRange(staging.targetBaseSha, preparedCommitSha),
+      changedPathsBetween(stagingGit, staging.targetBaseSha, preparedCommitSha),
+    ]);
     await assertTargetUnchanged(this.options.git, target);
-    return { ...staging, preparedCommitSha, treeSha };
+    if (
+      patchHash(actualPatch) !== staging.replayPatchHash ||
+      JSON.stringify(actualPaths) !== JSON.stringify(staging.replayPaths)
+    ) {
+      return {
+        kind: "reconciliation_required",
+        disposition: "changed_patch",
+        staging: {
+          ...staging,
+          preparedCommitSha,
+          treeSha,
+          replayPatch: actualPatch,
+          replayPatchHash: patchHash(actualPatch),
+          replayPaths: actualPaths,
+          hookCommand: command,
+        },
+        evidence:
+          "A repository hook changed the prepared replay; the changed delta requires review.",
+        hookMutated: true,
+      };
+    }
+    return {
+      kind: "prepared",
+      staging: { ...staging, preparedCommitSha, treeSha, hookCommand: command },
+    };
   }
+}
+
+function hookCommandEvidence(
+  command: CommandResult,
+  cwd: string,
+): RecoveryCommandEvidence {
+  return {
+    command: command.command,
+    cwd,
+    exitCode: command.exitCode,
+    ...(command.signal ? { signal: command.signal } : {}),
+    timedOut: command.timedOut === true,
+    output: boundedRecoveryOutput(
+      [command.stdout, command.stderr].filter(Boolean).join("\n"),
+    ),
+  };
 }
 
 async function targetSnapshot(git: GitClient): Promise<{

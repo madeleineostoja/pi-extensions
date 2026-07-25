@@ -671,6 +671,75 @@ describe("VNext scheduler reducer", () => {
     ]);
   });
 
+  it("retains a hook gate with command evidence and retries reconciliation", async () => {
+    const state = (await store()).read();
+    state.workstreams.source["first-stream"]!.candidateId = "candidate-1";
+    state.workstreams.source["first-stream"]!.phase = "candidate_ready";
+    state.candidates["candidate-1"] = {
+      id: "candidate-1",
+      workstream: { kind: "source", id: "first-stream" },
+      baseSha: "base",
+      commitSha: "commit",
+      treeSha: "tree",
+    };
+    const failed = reduceVNextRunEvent(state, {
+      kind: "gate_recorded",
+      workstream: { kind: "source", id: "first-stream" },
+      result: {
+        id: "hook:first-stream:1",
+        kind: "hook",
+        owner: "source:first-stream",
+        candidateId: "candidate-1",
+        attempt: 1,
+        outcome: "failed",
+        evidence: "pre-commit rejected the staged replay",
+        command: {
+          command: "git commit -m chore",
+          cwd: "/tmp/staging",
+          exitCode: 1,
+          timedOut: false,
+          output: "rejected",
+        },
+        outstandingFindingIds: [],
+      },
+      workspace: {
+        id: "staging:candidate-1",
+        checkpoint: "commit",
+        changedPaths: ["candidate.txt"],
+        stateEvidence: "Hook rejected the disposable staging commit.",
+      },
+    });
+    const requested = reduceVNextRunEvent(failed.state, {
+      kind: "recovery_requested",
+      workstream: { kind: "source", id: "first-stream" },
+      now: "now",
+    });
+    const effect = requested.effects[0]!;
+    if (effect.kind !== "run_recovery") {
+      throw new Error("Expected recovery effect.");
+    }
+    const retried = reduceVNextRunEvent(requested.state, {
+      kind: "recovery_completed",
+      workstream: { kind: "source", id: "first-stream" },
+      leaseId: effect.leaseId,
+      action: {
+        kind: "repair_environment",
+        outcome: "completed",
+        summary: "Repaired the hook runtime.",
+        evidence: "Dependency restored in staging.",
+        at: "later",
+      },
+    });
+
+    expect(retried.state.workstreams.source["first-stream"]?.phase).toBe(
+      "approved",
+    );
+    expect(retried.state.gates[0]).toMatchObject({
+      kind: "hook",
+      command: { output: "rejected" },
+    });
+  });
+
   it("rejects incomplete anchored coverage and stale candidate review results", async () => {
     const state = (await store()).read();
     state.workstreams.source["first-stream"]!.phase = "reviewing";
@@ -1307,7 +1376,7 @@ describe("VNext scheduler actor", () => {
             replayPatchHash: "a".repeat(64),
             changedPaths: ["first.txt"],
             disposition: "same_base",
-            hookEvidence: "hooks passed",
+            hookEvidence: "git commit completed with retained command evidence",
           },
         },
         intents: {

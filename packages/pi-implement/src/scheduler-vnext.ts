@@ -1,5 +1,6 @@
 import { publicationPreparationId } from "./candidate-replay.js";
 import { RecoverySafetyError } from "./recovery-service.js";
+import { MissingHookEvidenceError } from "./vnext-publication.js";
 import type { ExecutionPlan } from "./execution-plan-vnext.js";
 import { TargetBoundaryError } from "./workstream-candidate.js";
 import {
@@ -65,6 +66,7 @@ export type VNextSchedulerEvent =
   | {
       kind: "effect_failed";
       effect: "review" | "reconciliation" | "publication";
+      gateKind?: "hook";
       workstream: RuntimeWorkstream;
       leaseId: string;
       evidence: string;
@@ -151,8 +153,12 @@ export type VNextSchedulerEvent =
             };
           }
         | {
-            kind: "reconciliation_required" | "execution_failed";
+            kind:
+              | "reconciliation_required"
+              | "execution_failed"
+              | "hook_rejected";
             evidence: string;
+            command?: RecoveryGateResult["command"];
             workspace: {
               id: string;
               checkpoint?: string;
@@ -513,8 +519,8 @@ export function reduceVNextRunEvent(
           state,
           event.workstream,
           {
-            id: `environment:${event.effect}:${workstreamId(event.workstream)}:${state.gates.length + 1}`,
-            kind: "environment",
+            id: `${event.gateKind === "hook" ? "hook" : `environment:${event.effect}`}:${workstreamId(event.workstream)}:${state.gates.length + 1}`,
+            kind: event.gateKind === "hook" ? "hook" : "environment",
             owner: workstreamId(event.workstream),
             ...(candidateId ? { candidateId } : {}),
             attempt: state.gates.length + 1,
@@ -1247,16 +1253,21 @@ export function reduceVNextRunEvent(
           state,
           event.workstream,
           {
-            id: `${event.outcome.kind === "execution_failed" ? "environment:reconciliation" : "reconciliation"}:${workstreamId(event.workstream)}:${candidateId}:${state.gates.length + 1}`,
+            id: `${event.outcome.kind === "hook_rejected" ? "hook" : event.outcome.kind === "execution_failed" ? "environment:reconciliation" : "reconciliation"}:${workstreamId(event.workstream)}:${candidateId}:${state.gates.length + 1}`,
             kind:
-              event.outcome.kind === "execution_failed"
-                ? "environment"
-                : "reconciliation",
+              event.outcome.kind === "hook_rejected"
+                ? "hook"
+                : event.outcome.kind === "execution_failed"
+                  ? "environment"
+                  : "reconciliation",
             owner: workstreamId(event.workstream),
             candidateId,
             attempt: state.gates.length + 1,
             outcome: "failed",
             evidence: event.outcome.evidence,
+            ...(event.outcome.command
+              ? { command: event.outcome.command }
+              : {}),
             outstandingFindingIds: [],
           },
           event.outcome.workspace,
@@ -1270,6 +1281,12 @@ export function reduceVNextRunEvent(
     case "publication_preparation_recorded": {
       const candidate = state.candidates[event.preparation.candidateId];
       const existing = state.publication.preparations[event.preparation.id];
+      const legacyHookUpgrade =
+        existing &&
+        !existing.hookCommand &&
+        event.preparation.hookCommand &&
+        JSON.stringify({ ...existing, hookCommand: undefined }) ===
+          JSON.stringify({ ...event.preparation, hookCommand: undefined });
       if (
         !candidate ||
         event.preparation.id !==
@@ -1286,6 +1303,7 @@ export function reduceVNextRunEvent(
           event.preparation.targetBaseSha === candidate.baseSha) ||
         event.preparation.targetRef !== state.run.checkout.branchRef ||
         (existing &&
+          !legacyHookUpgrade &&
           JSON.stringify(existing) !== JSON.stringify(event.preparation))
       ) {
         return reject(
@@ -2256,6 +2274,9 @@ export class VNextSchedulerActor {
         ) {
           await this.dispatch({
             kind: "effect_failed",
+            ...(error instanceof MissingHookEvidenceError
+              ? { gateKind: "hook" }
+              : {}),
             effect:
               effect.kind === "run_review"
                 ? "review"
@@ -2641,6 +2662,7 @@ function retryPhaseForGate(
     return "candidate_ready";
   }
   if (
+    gateId.startsWith("hook:") ||
     gateId.startsWith("reconciliation:") ||
     gateId.startsWith("environment:reconciliation:") ||
     gateId.startsWith("environment:publication:")

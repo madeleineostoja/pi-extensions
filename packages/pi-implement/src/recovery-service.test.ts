@@ -35,13 +35,26 @@ describe("VNext recovery service", () => {
         },
         overall: {},
       },
+      gates: [
+        {
+          id: "hook:work:1",
+          kind: "hook",
+          command: {
+            command: "git commit -m chore",
+            cwd: "/tmp/staging",
+            exitCode: 1,
+            timedOut: false,
+            output: "pre-commit rejected",
+          },
+        },
+      ],
       recoveryEpisodes: {
         episode: {
           id: "episode",
-          gateId: "environment:work:1",
+          gateId: "hook:work:1",
           workstream: { kind: "source", id: "work" },
           workspace: {
-            id: "source:work",
+            id: "staging-test",
             changedPaths: [],
             stateEvidence: "provider disconnected",
           },
@@ -97,6 +110,16 @@ describe("VNext recovery service", () => {
       model: "model/recovery",
       thinking: "high",
     });
-    expect(String(spawned[0]?.prompt)).toContain("environment:work:1");
+    expect(spawned[0]).toMatchObject({
+      cwd: join(
+        directory,
+        ".pi",
+        "implement",
+        "worktrees",
+        "run-1",
+        "staging-test",
+      ),
+    });
+    expect(String(spawned[0]?.prompt)).toContain("pre-commit rejected");
   });
 });

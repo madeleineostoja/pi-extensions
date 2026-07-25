@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import type { EffectiveRole } from "./config.js";
 import { changedPathsBetween, type GitClient } from "./git.js";
 import { buildRecoveryPrompt } from "./prompts.js";
@@ -52,10 +52,13 @@ export async function runVNextRecovery(args: {
   const candidate = episode.candidateId
     ? args.state.candidates[episode.candidateId]
     : undefined;
+  const gate = args.state.gates.find((entry) => entry.id === episode.gateId);
   const worktreePath = recoveryWorktree(
     args.state,
     args.effect.workstream,
     candidate,
+    episode.workspace,
+    gate?.kind,
   );
   const handle = await args.subagents.spawn({
     type: args.roles.type,
@@ -67,7 +70,7 @@ export async function runVNextRecovery(args: {
     cwd: worktreePath,
     prompt: buildRecoveryPrompt({
       worktreePath,
-      episode,
+      episode: { ...episode, gate },
       candidate,
       target: {
         branchRef: args.state.run.checkout.branchRef,
@@ -210,7 +213,7 @@ async function assertRetainedCandidateWorkspace(args: {
   git: GitClient;
 }): Promise<void> {
   const workspaceGit = args.git.forWorktree(
-    recoveryWorktree(args.state, args.workstream, args.candidate),
+    candidateWorktree(args.state, args.workstream, args.candidate),
   );
   if (
     (await workspaceGit.head()) !== args.candidate.commitSha ||
@@ -224,6 +227,32 @@ async function assertRetainedCandidateWorkspace(args: {
 }
 
 function recoveryWorktree(
+  state: VNextRunState,
+  workstream: RuntimeWorkstream,
+  candidate: VNextRunState["candidates"][string] | undefined,
+  workspace: VNextRunState["recoveryEpisodes"][string]["workspace"],
+  gateKind: VNextRunState["gates"][number]["kind"] | undefined,
+): string {
+  if (gateKind === "hook" && workspace.id.startsWith("staging-")) {
+    const root = resolve(
+      state.run.checkout.root,
+      ".pi",
+      "implement",
+      "worktrees",
+      state.run.id,
+    );
+    const staging = resolve(root, workspace.id);
+    if (!staging.startsWith(`${root}/`)) {
+      throw new RecoverySafetyError(
+        "Hook staging workspace escapes its run root.",
+      );
+    }
+    return staging;
+  }
+  return candidateWorktree(state, workstream, candidate);
+}
+
+function candidateWorktree(
   state: VNextRunState,
   workstream: RuntimeWorkstream,
   candidate: VNextRunState["candidates"][string] | undefined,
@@ -245,7 +274,7 @@ async function recoveredCandidate(args: {
   candidateTip: string;
   git: GitClient;
 }): Promise<VNextRunState["candidates"][string]> {
-  const worktreePath = recoveryWorktree(
+  const worktreePath = candidateWorktree(
     args.state,
     args.workstream,
     args.candidate,
