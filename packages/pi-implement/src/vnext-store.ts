@@ -404,6 +404,71 @@ const wholePlanReviewSchema = z
     reviewedTargetSha: nonEmpty.optional(),
     reviewedTargetTreeSha: nonEmpty.optional(),
     evidence: nonEmpty.optional(),
+    recovery: z
+      .object({
+        status: z.enum(["open", "running", "completed"]),
+        evidence: z.array(nonEmpty).min(1),
+        providerFailures: z.number().int().nonnegative(),
+        reviewFailures: z.number().int().positive(),
+        actions: z.array(
+          z
+            .object({
+              kind: z.enum([
+                "diagnose",
+                "retry",
+                "repair_environment",
+                "rework_candidate",
+                "reconcile",
+                "recreate_workspace",
+                "no_safe_action",
+              ]),
+              outcome: z.enum([
+                "completed",
+                "no_safe_action",
+                "interrupted",
+                "provider_failure",
+              ]),
+              summary: nonEmpty,
+              evidence: nonEmpty,
+              at: nonEmpty,
+            })
+            .strict(),
+        ),
+      })
+      .strict()
+      .optional(),
+    epoch: z
+      .object({
+        initialTargetSha: nonEmpty,
+        initialTargetTreeSha: nonEmpty,
+        originalFindingIds: z.array(nonEmpty).min(1),
+        outstandingFindingIds: z.array(nonEmpty),
+        findings: z
+          .array(
+            z
+              .object({
+                id: nonEmpty,
+                summary: nonEmpty,
+                evidence: nonEmpty,
+                requiredChange: nonEmpty,
+                acceptanceCriteria: z.array(nonEmpty).min(1),
+              })
+              .strict(),
+          )
+          .min(1),
+        latestRepair: z
+          .object({
+            candidateId: nonEmpty,
+            targetBaseSha: nonEmpty,
+            publishedCommitSha: nonEmpty,
+            publishedTreeSha: nonEmpty,
+            changedPaths: z.array(nonEmpty),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .refine(
@@ -1208,6 +1273,56 @@ function invariantIssues(
   for (const [key, workstream] of Object.entries(state.workstreams.overall)) {
     if (key !== workstream.repairId) {
       issues.push(`overall workstream key ${key} does not match its repair ID`);
+    }
+  }
+  const wholePlanEpoch = state.wholePlanReview.epoch;
+  if (
+    state.wholePlanReview.recovery?.status === "running" &&
+    state.phase !== "whole_plan_review"
+  ) {
+    issues.push("whole-plan recovery may run only during whole-plan review");
+  }
+  if (state.wholePlanReview.status === "repairing" && !wholePlanEpoch) {
+    issues.push("whole-plan repair requires a retained review epoch");
+  }
+  if (
+    state.wholePlanReview.status === "pending" &&
+    wholePlanEpoch &&
+    !wholePlanEpoch.latestRepair
+  ) {
+    issues.push(
+      "a pending anchored whole-plan review requires a published repair",
+    );
+  }
+  if (wholePlanEpoch) {
+    const originalIds = new Set(wholePlanEpoch.originalFindingIds);
+    if (originalIds.size !== wholePlanEpoch.originalFindingIds.length) {
+      issues.push("whole-plan review epoch repeats an original finding ID");
+    }
+    if (
+      !wholePlanEpoch.originalFindingIds.every((findingId) =>
+        wholePlanEpoch.findings.some((finding) => finding.id === findingId),
+      )
+    ) {
+      issues.push("whole-plan review epoch lost an original finding");
+    }
+    const knownFindingIds = new Set(
+      wholePlanEpoch.findings.map((finding) => finding.id),
+    );
+    if (
+      wholePlanEpoch.outstandingFindingIds.some(
+        (findingId) => !knownFindingIds.has(findingId),
+      )
+    ) {
+      issues.push("whole-plan review epoch has an unknown outstanding finding");
+    }
+    const latestCandidate = wholePlanEpoch.latestRepair
+      ? state.candidates[wholePlanEpoch.latestRepair.candidateId]
+      : undefined;
+    if (wholePlanEpoch.latestRepair && !latestCandidate) {
+      issues.push(
+        "whole-plan review epoch references an unknown repair candidate",
+      );
     }
   }
   if (Object.keys(state.processLeases).length > state.run.workerConcurrency) {

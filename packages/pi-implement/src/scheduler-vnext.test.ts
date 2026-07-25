@@ -962,6 +962,55 @@ describe("VNext scheduler reducer", () => {
     });
   });
 
+  it("routes a failed whole-plan assessment through the recovery role before retrying", async () => {
+    const state = (await store()).read();
+    state.workstreams.source["first-stream"]!.phase = "completed";
+    state.workstreams.source["second-stream"]!.phase = "completed";
+    state.phase = "whole_plan_review";
+    state.wholePlanReview = { status: "reviewing" };
+
+    const failed = reduceVNextRunEvent(state, {
+      kind: "whole_plan_review_failed",
+      evidence: "Reviewer provider disconnected.",
+    });
+    const requested = reduceVNextRunEvent(failed.state, {
+      kind: "whole_plan_recovery_requested",
+    });
+    const interrupted = reduceVNextRunEvent(requested.state, {
+      kind: "whole_plan_recovery_abandoned",
+    });
+    const resumed = reduceVNextRunEvent(interrupted.state, {
+      kind: "whole_plan_recovery_requested",
+    });
+    const completed = reduceVNextRunEvent(resumed.state, {
+      kind: "whole_plan_recovery_completed",
+      action: {
+        kind: "retry",
+        outcome: "completed",
+        summary: "The next reviewer invocation can safely retry.",
+        evidence: "The target and corpus identities remain unchanged.",
+        at: "2026-01-01T00:00:00.000Z",
+      },
+    });
+
+    expect(requested.effects).toEqual([{ kind: "run_whole_plan_recovery" }]);
+    expect(resumed.effects).toEqual([{ kind: "run_whole_plan_recovery" }]);
+    expect(completed.state.wholePlanReview).toMatchObject({
+      status: "pending",
+      recovery: {
+        status: "completed",
+        evidence: ["Reviewer provider disconnected."],
+        actions: [
+          {
+            kind: "retry",
+            evidence: "The target and corpus identities remain unchanged.",
+          },
+        ],
+      },
+    });
+    expect(completed.state.phase).toBe("whole_plan_review");
+  });
+
   it("records whole-plan findings as a runtime repair without changing immutable source coverage", async () => {
     const initial = (await store()).read();
     initial.workstreams.source["first-stream"]!.phase = "completed";
@@ -990,11 +1039,19 @@ describe("VNext scheduler reducer", () => {
           },
         ],
         evidence: "whole-plan-review.json",
+        reviewedTargetSha: "target",
+        reviewedTargetTreeSha: "tree",
       },
     });
 
     expect(completed.accepted).toBe(true);
-    expect(completed.state.wholePlanReview.status).toBe("repairing");
+    expect(completed.state.wholePlanReview).toMatchObject({
+      status: "repairing",
+      epoch: {
+        originalFindingIds: ["overall-overall-repair-1-r1"],
+        outstandingFindingIds: ["overall-overall-repair-1-r1"],
+      },
+    });
     expect(
       completed.state.workstreams.overall["overall-repair-1"],
     ).toMatchObject({
@@ -1007,6 +1064,167 @@ describe("VNext scheduler reducer", () => {
     expect(completed.state.workstreams.source["first-stream"]?.taskIds).toEqual(
       ["first"],
     );
+  });
+
+  it("queues a new canonical repair after an anchored post-publication assessment", async () => {
+    const initial = (await store()).read();
+    initial.workstreams.source["first-stream"]!.phase = "completed";
+    initial.workstreams.source["second-stream"]!.phase = "completed";
+    const reviewing = reduceVNextRunEvent(initial, {
+      kind: "whole_plan_review_requested",
+    });
+    const repair = reduceVNextRunEvent(reviewing.state, {
+      kind: "whole_plan_review_completed",
+      outcome: {
+        kind: "changes_requested",
+        repairId: "overall-repair-1",
+        candidate: {
+          id: "overall-baseline",
+          workstream: { kind: "overall", repairId: "overall-repair-1" },
+          baseSha: "target",
+          commitSha: "target",
+          treeSha: "tree",
+        },
+        findings: [
+          {
+            summary: "The combined changes miss an integration boundary.",
+            evidence: "The run diff demonstrates the missing handoff.",
+            requiredChange: "Preserve the handoff across both workstreams.",
+            acceptanceCriteria: ["The complete behavior crosses the boundary."],
+          },
+        ],
+        evidence: "whole-plan-review.json",
+        reviewedTargetSha: "target",
+        reviewedTargetTreeSha: "tree",
+      },
+    });
+    const state = repair.state;
+    state.workstreams.overall["overall-repair-1"]!.phase = "completed";
+    state.wholePlanReview = {
+      status: "pending",
+      epoch: {
+        ...state.wholePlanReview.epoch!,
+        latestRepair: {
+          candidateId: "overall-baseline",
+          targetBaseSha: "target",
+          publishedCommitSha: "published",
+          publishedTreeSha: "published-tree",
+          changedPaths: ["src/integration.ts"],
+        },
+      },
+    };
+    const requested = reduceVNextRunEvent(state, {
+      kind: "whole_plan_review_requested",
+    });
+
+    const reassessed = reduceVNextRunEvent(requested.state, {
+      kind: "whole_plan_review_completed",
+      outcome: {
+        kind: "anchored",
+        completion: {
+          assessments: [
+            {
+              id: "overall-overall-repair-1-r1",
+              status: "unresolved",
+              evidence: "The published repair still misses the handoff.",
+            },
+          ],
+          regressions: [],
+        },
+        evidence: "anchored-whole-plan-review.json",
+        reviewedTargetSha: "published",
+        reviewedTargetTreeSha: "published-tree",
+      },
+    });
+
+    expect(requested.state.wholePlanReview.epoch).toEqual(
+      state.wholePlanReview.epoch,
+    );
+    expect(reassessed.accepted).toBe(true);
+    expect(
+      reassessed.state.workstreams.overall["overall-repair-2"],
+    ).toMatchObject({
+      phase: "queued",
+      candidateId: "overall-baseline:run-1:overall-repair-2:published",
+    });
+    expect(reassessed.state.wholePlanReview).toMatchObject({
+      status: "repairing",
+      epoch: {
+        originalFindingIds: ["overall-overall-repair-1-r1"],
+        outstandingFindingIds: ["overall-overall-repair-1-r1"],
+      },
+    });
+  });
+
+  it("closes an anchored whole-plan epoch only at its published target", async () => {
+    const state = (await store()).read();
+    state.workstreams.source["first-stream"]!.phase = "completed";
+    state.workstreams.source["second-stream"]!.phase = "completed";
+    state.phase = "whole_plan_review";
+    state.workstreams.overall["overall-repair-1"] = {
+      kind: "overall",
+      repairId: "overall-repair-1",
+      phase: "completed",
+      candidateId: "overall-baseline",
+    };
+    state.candidates["overall-baseline"] = {
+      id: "overall-baseline",
+      workstream: { kind: "overall", repairId: "overall-repair-1" },
+      baseSha: "target",
+      commitSha: "target",
+      treeSha: "tree",
+    };
+    state.wholePlanReview = {
+      status: "reviewing",
+      epoch: {
+        initialTargetSha: "target",
+        initialTargetTreeSha: "tree",
+        originalFindingIds: ["whole-plan-finding-1"],
+        outstandingFindingIds: ["whole-plan-finding-1"],
+        findings: [
+          {
+            id: "whole-plan-finding-1",
+            summary: "Missing handoff",
+            evidence: "The initial audit found it.",
+            requiredChange: "Restore the handoff.",
+            acceptanceCriteria: ["The handoff is present."],
+          },
+        ],
+        latestRepair: {
+          candidateId: "overall-baseline",
+          targetBaseSha: "target",
+          publishedCommitSha: "published",
+          publishedTreeSha: "published-tree",
+          changedPaths: ["src/integration.ts"],
+        },
+      },
+    };
+
+    const approved = reduceVNextRunEvent(state, {
+      kind: "whole_plan_review_completed",
+      outcome: {
+        kind: "anchored",
+        completion: {
+          assessments: [
+            {
+              id: "whole-plan-finding-1",
+              status: "resolved",
+              evidence: "The published repair restores the handoff.",
+            },
+          ],
+          regressions: [],
+        },
+        evidence: "anchored-whole-plan-review.json",
+        reviewedTargetSha: "published",
+        reviewedTargetTreeSha: "published-tree",
+      },
+    });
+
+    expect(approved.state.wholePlanReview).toMatchObject({
+      status: "approved",
+      reviewedTargetSha: "published",
+      reviewedTargetTreeSha: "published-tree",
+    });
   });
 
   it("rejects an overall repair that lacks the whole-plan review baseline and findings", async () => {

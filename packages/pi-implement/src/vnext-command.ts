@@ -18,6 +18,7 @@ import { createCheckboxProjectionIntent } from "./vnext-projection.js";
 import { runVNextPublication } from "./vnext-publication.js";
 import {
   completeVNextWholePlanRun,
+  runVNextWholePlanRecovery,
   runVNextWholePlanReview,
 } from "./vnext-whole-plan-review.js";
 import { settleVNextCleanupDebt } from "./vnext-cleanup.js";
@@ -771,6 +772,16 @@ export function createVNextRuntime(args: {
           dispatch,
           roles: args.roles.reviewer,
         });
+        return;
+      }
+      if (effect.kind === "run_whole_plan_recovery") {
+        const action = await runVNextWholePlanRecovery({
+          state,
+          subagents: new RuntimeSubagentClient(args.pi, args.ctx, state.run.id),
+          signal,
+          roles: args.roles.recovery,
+        });
+        await dispatch({ kind: "whole_plan_recovery_completed", action });
         return;
       }
       if (effect.kind === "complete_whole_plan_run") {

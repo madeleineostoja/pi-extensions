@@ -11,6 +11,7 @@ import {
   type RecoveryAction,
   type RecoveryGateResult,
 } from "./recovery-vnext.js";
+import type { AnchoredWorkstreamReviewCompletion } from "./result-schemas.js";
 import {
   applyAnchoredWorkstreamReview,
   applyInitialWorkstreamReview,
@@ -72,6 +73,10 @@ export type VNextSchedulerEvent =
       evidence: string;
     }
   | { kind: "whole_plan_review_failed"; evidence: string }
+  | { kind: "whole_plan_recovery_requested" }
+  | { kind: "whole_plan_recovery_abandoned" }
+  | { kind: "whole_plan_recovery_completed"; action: RecoveryAction }
+  | { kind: "whole_plan_recovery_failed"; evidence: string }
   | {
       kind: "gate_recorded";
       workstream: RuntimeWorkstream;
@@ -214,6 +219,15 @@ export type VNextSchedulerEvent =
               acceptanceCriteria: string[];
             }>;
             evidence: string;
+            reviewedTargetSha: string;
+            reviewedTargetTreeSha: string;
+          }
+        | {
+            kind: "anchored";
+            completion: AnchoredWorkstreamReviewCompletion;
+            evidence: string;
+            reviewedTargetSha: string;
+            reviewedTargetTreeSha: string;
           };
     }
   | { kind: "process_abandoned"; leaseId: string }
@@ -263,6 +277,7 @@ export type VNextSchedulerEffect =
       intentId: string;
     }
   | { kind: "run_whole_plan_review" }
+  | { kind: "run_whole_plan_recovery" }
   | { kind: "complete_whole_plan_run" }
   | { kind: "run_projection"; debtId: string }
   | { kind: "run_cleanup"; debtId: string };
@@ -545,12 +560,102 @@ export function reduceVNextRunEvent(
           "whole-plan failure is not owned by an active assessment",
         );
       }
-      state.pause = {
-        resumePhase: "whole_plan_review",
-        reason: boundedRecoveryOutput(event.evidence),
+      const priorRecovery = state.wholePlanReview.recovery;
+      const recovery = {
+        status: "open" as const,
+        evidence: [
+          ...(priorRecovery?.evidence ?? []),
+          boundedRecoveryOutput(event.evidence),
+        ],
+        providerFailures: 0,
+        reviewFailures: (priorRecovery?.reviewFailures ?? 0) + 1,
+        actions: priorRecovery?.actions ?? [],
       };
-      state.phase = "paused";
+      state.wholePlanReview = {
+        status: "pending",
+        ...(state.wholePlanReview.epoch
+          ? { epoch: state.wholePlanReview.epoch }
+          : {}),
+        recovery,
+      };
+      if (recovery.reviewFailures >= 3) {
+        state.pause = {
+          resumePhase: "whole_plan_review",
+          reason:
+            "Whole-plan review failed three times after recovery retries.",
+        };
+        state.phase = "paused";
+      }
       return accept();
+
+    case "whole_plan_recovery_requested":
+      if (
+        state.phase !== "whole_plan_review" ||
+        state.wholePlanReview.recovery?.status !== "open"
+      ) {
+        return reject("whole-plan recovery is not ready to run");
+      }
+      state.wholePlanReview.recovery.status = "running";
+      return accept([{ kind: "run_whole_plan_recovery" }]);
+
+    case "whole_plan_recovery_abandoned":
+      if (
+        state.phase !== "whole_plan_review" ||
+        state.wholePlanReview.recovery?.status !== "running"
+      ) {
+        return reject("whole-plan recovery has no interrupted owner");
+      }
+      state.wholePlanReview.recovery.status = "open";
+      return accept();
+
+    case "whole_plan_recovery_completed": {
+      const recovery = state.wholePlanReview.recovery;
+      if (
+        state.phase !== "whole_plan_review" ||
+        recovery?.status !== "running" ||
+        !["retry", "diagnose", "no_safe_action"].includes(event.action.kind)
+      ) {
+        return reject("whole-plan recovery does not own an active failure");
+      }
+      recovery.actions.push(event.action);
+      recovery.providerFailures = 0;
+      if (event.action.kind === "no_safe_action") {
+        state.pause = {
+          resumePhase: "whole_plan_review",
+          reason: event.action.evidence,
+        };
+        state.phase = "paused";
+        recovery.status = "open";
+        return accept();
+      }
+      if (event.action.kind === "retry") {
+        recovery.status = "completed";
+        return accept();
+      }
+      recovery.status = "open";
+      return accept();
+    }
+
+    case "whole_plan_recovery_failed": {
+      const recovery = state.wholePlanReview.recovery;
+      if (
+        state.phase !== "whole_plan_review" ||
+        recovery?.status !== "running"
+      ) {
+        return reject("whole-plan recovery failure has no active owner");
+      }
+      recovery.evidence.push(boundedRecoveryOutput(event.evidence));
+      recovery.providerFailures++;
+      recovery.status = "open";
+      if (recovery.providerFailures >= 3) {
+        state.pause = {
+          resumePhase: "whole_plan_review",
+          reason: "Whole-plan recovery provider failed three times.",
+        };
+        state.phase = "paused";
+      }
+      return accept();
+    }
 
     case "implementation_completed": {
       const lease = ownedLease(
@@ -1443,7 +1548,30 @@ export function reduceVNextRunEvent(
         state.projectionDebt.push(event.projectionDebt);
       }
       if (event.workstream.kind === "overall") {
-        state.wholePlanReview = { status: "pending" };
+        const epoch = state.wholePlanReview.epoch;
+        const candidate = state.candidates[intent.candidateId];
+        const receipt = state.publication.receipts[event.intentId];
+        const preparation =
+          state.publication.preparations[intent.preparationId];
+        if (!epoch || !candidate || !receipt || !preparation) {
+          return reject("overall publication has no retained review epoch");
+        }
+        state.wholePlanReview = {
+          status: "pending",
+          epoch: {
+            ...epoch,
+            latestRepair: {
+              candidateId: candidate.id,
+              targetBaseSha: receipt.targetBaseSha,
+              publishedCommitSha: receipt.publishedCommitSha,
+              publishedTreeSha: receipt.publishedTreeSha,
+              changedPaths: preparation.changedPaths,
+            },
+          },
+          ...(state.wholePlanReview.recovery
+            ? { recovery: state.wholePlanReview.recovery }
+            : {}),
+        };
       }
       return accept(
         event.projectionDebt
@@ -1461,7 +1589,15 @@ export function reduceVNextRunEvent(
         return reject("whole-plan review is not ready to run");
       }
       state.phase = "whole_plan_review";
-      state.wholePlanReview = { status: "reviewing" };
+      state.wholePlanReview = {
+        status: "reviewing",
+        ...(state.wholePlanReview.epoch
+          ? { epoch: state.wholePlanReview.epoch }
+          : {}),
+        ...(state.wholePlanReview.recovery
+          ? { recovery: state.wholePlanReview.recovery }
+          : {}),
+      };
       return accept([{ kind: "run_whole_plan_review" }]);
 
     case "overall_repair_queued":
@@ -1480,50 +1616,145 @@ export function reduceVNextRunEvent(
         return reject("whole-plan review cannot complete while repairs exist");
       }
       if (event.outcome.kind === "approved") {
+        if (state.wholePlanReview.epoch) {
+          return reject("an anchored whole-plan review requires assessments");
+        }
         state.wholePlanReview = {
           status: "approved",
           evidence: event.outcome.evidence,
           reviewedTargetSha: event.outcome.reviewedTargetSha,
           reviewedTargetTreeSha: event.outcome.reviewedTargetTreeSha,
+          ...(state.wholePlanReview.recovery
+            ? { recovery: state.wholePlanReview.recovery }
+            : {}),
         };
         return accept();
       }
+      if (event.outcome.kind === "anchored") {
+        const epoch = state.wholePlanReview.epoch;
+        if (
+          !epoch?.latestRepair ||
+          epoch.latestRepair.publishedCommitSha !==
+            event.outcome.reviewedTargetSha ||
+          epoch.latestRepair.publishedTreeSha !==
+            event.outcome.reviewedTargetTreeSha
+        ) {
+          return reject(
+            "anchored whole-plan review lost its published repair boundary",
+          );
+        }
+        const expected = new Set(epoch.outstandingFindingIds);
+        const assessments = new Map(
+          event.outcome.completion.assessments.map((assessment) => [
+            assessment.id,
+            assessment,
+          ]),
+        );
+        if (
+          event.outcome.completion.assessments.length !== expected.size ||
+          assessments.size !== expected.size ||
+          [...expected].some((findingId) => !assessments.has(findingId))
+        ) {
+          return reject(
+            "anchored whole-plan review must assess each outstanding finding exactly once",
+          );
+        }
+        const changedPaths = new Set(epoch.latestRepair.changedPaths);
+        const regressions = event.outcome.completion.regressions.filter(
+          (finding) =>
+            finding.changedPaths.some((path) => changedPaths.has(path)),
+        );
+        const assessedFindings = epoch.findings.map((finding) => {
+          const assessment = expected.has(finding.id)
+            ? assessments.get(finding.id)
+            : undefined;
+          return assessment
+            ? { ...finding, evidence: assessment.evidence }
+            : finding;
+        });
+        const unresolved = assessedFindings.filter(
+          (finding) =>
+            expected.has(finding.id) &&
+            assessments.get(finding.id)?.status === "unresolved",
+        );
+        const nextFindings = [
+          ...unresolved,
+          ...regressions.map((finding, index) => ({
+            id: `whole-plan-regression-${epoch.findings.length + index + 1}`,
+            summary: finding.summary,
+            evidence: finding.evidence,
+            requiredChange: finding.requiredChange,
+            acceptanceCriteria: finding.acceptanceCriteria,
+          })),
+        ];
+        const nextEpoch = {
+          ...epoch,
+          findings: [
+            ...assessedFindings,
+            ...nextFindings.filter(
+              (finding) =>
+                !assessedFindings.some((known) => known.id === finding.id),
+            ),
+          ],
+          outstandingFindingIds: nextFindings.map((finding) => finding.id),
+        };
+        if (nextFindings.length === 0) {
+          state.wholePlanReview = {
+            status: "approved",
+            evidence: event.outcome.evidence,
+            reviewedTargetSha: event.outcome.reviewedTargetSha,
+            reviewedTargetTreeSha: event.outcome.reviewedTargetTreeSha,
+            epoch: nextEpoch,
+            ...(state.wholePlanReview.recovery
+              ? { recovery: state.wholePlanReview.recovery }
+              : {}),
+          };
+          return accept();
+        }
+        return queueWholePlanRepair(
+          state,
+          {
+            repairId: nextOverallRepairId(state),
+            targetSha: event.outcome.reviewedTargetSha,
+            targetTreeSha: event.outcome.reviewedTargetTreeSha,
+            findings: nextFindings,
+            evidence: event.outcome.evidence,
+            epoch: nextEpoch,
+          },
+          reject,
+        );
+      }
       const { repairId, candidate } = event.outcome;
       if (
-        !safeId(repairId) ||
-        state.workstreams.overall[repairId] ||
-        candidate.workstream.kind !== "overall" ||
-        candidate.workstream.repairId !== repairId
+        candidate.baseSha !== event.outcome.reviewedTargetSha ||
+        candidate.commitSha !== event.outcome.reviewedTargetSha ||
+        candidate.treeSha !== event.outcome.reviewedTargetTreeSha
       ) {
-        return reject("whole-plan findings have an invalid repair identity");
+        return reject("whole-plan baseline does not match its reviewed target");
       }
-      const existing = state.candidates[candidate.id];
-      if (existing && JSON.stringify(existing) !== JSON.stringify(candidate)) {
-        return reject("overall baseline candidate identity is immutable");
-      }
-      state.candidates[candidate.id] = candidate;
-      state.workstreams.overall[repairId] = {
-        kind: "overall",
-        repairId,
-        phase: "queued",
-        candidateId: candidate.id,
-      };
-      const workstream: RuntimeWorkstream = { kind: "overall", repairId };
-      const update = applyInitialWorkstreamReview({
-        workstream,
-        candidateId: candidate.id,
-        completion: {
-          verdict: "changes_requested",
-          findings: event.outcome.findings,
+      const initialFindings = event.outcome.findings.map((finding, index) => ({
+        id: `overall-${repairId}-r${index + 1}`,
+        ...finding,
+      }));
+      return queueWholePlanRepair(
+        state,
+        {
+          repairId,
+          targetSha: event.outcome.reviewedTargetSha,
+          targetTreeSha: event.outcome.reviewedTargetTreeSha,
+          candidate,
+          findings: initialFindings,
+          evidence: event.outcome.evidence,
+          epoch: {
+            initialTargetSha: event.outcome.reviewedTargetSha,
+            initialTargetTreeSha: event.outcome.reviewedTargetTreeSha,
+            originalFindingIds: initialFindings.map((finding) => finding.id),
+            outstandingFindingIds: initialFindings.map((finding) => finding.id),
+            findings: initialFindings,
+          },
         },
-        evidence: event.outcome.evidence,
-      });
-      state.reviews[reviewKey(workstream)] = update.review;
-      for (const finding of update.findings) {
-        state.findings[finding.id] = finding;
-      }
-      state.wholePlanReview = { status: "repairing" };
-      return accept();
+        reject,
+      );
     }
 
     case "process_abandoned": {
@@ -1565,6 +1796,9 @@ export function reduceVNextRunEvent(
         resumePhase: state.phase,
         ...(event.reason ? { reason: event.reason } : {}),
       };
+      if (state.wholePlanReview.recovery?.status === "running") {
+        state.wholePlanReview.recovery.status = "open";
+      }
       state.phase = "stopping";
       return accept();
 
@@ -1712,6 +1946,9 @@ export class VNextSchedulerActor {
 
   async start(): Promise<void> {
     await this.reconcileAbandonedProcesses();
+    if (this.snapshot().wholePlanReview.recovery?.status === "running") {
+      await this.persist({ kind: "whole_plan_recovery_abandoned" });
+    }
     await this.drive();
   }
 
@@ -2015,9 +2252,20 @@ export class VNextSchedulerActor {
     }
 
     if (
+      state.phase === "whole_plan_review" &&
+      state.wholePlanReview.recovery?.status === "open"
+    ) {
+      return {
+        kind: "event",
+        event: { kind: "whole_plan_recovery_requested" },
+      };
+    }
+    if (
       state.wholePlanReview.status === "pending" &&
       state.projectionDebt.length === 0 &&
-      allSourceWorkstreamsComplete(state)
+      allSourceWorkstreamsComplete(state) &&
+      state.wholePlanReview.recovery?.status !== "open" &&
+      state.wholePlanReview.recovery?.status !== "running"
     ) {
       return { kind: "event", event: { kind: "whole_plan_review_requested" } };
     }
@@ -2150,7 +2398,9 @@ export class VNextSchedulerActor {
         const managed =
           effect.kind === "run_implementation" ||
           effect.kind === "run_review" ||
-          effect.kind === "run_recovery";
+          effect.kind === "run_recovery" ||
+          effect.kind === "run_whole_plan_review" ||
+          effect.kind === "run_whole_plan_recovery";
         const boundary =
           managed && this.options.captureTargetBoundary
             ? await this.options.captureTargetBoundary()
@@ -2257,6 +2507,16 @@ export class VNextSchedulerActor {
           return;
         }
         if (
+          effect.kind === "run_whole_plan_recovery" &&
+          this.snapshot().phase === "whole_plan_review"
+        ) {
+          await this.dispatch({
+            kind: "whole_plan_recovery_failed",
+            evidence: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+        if (
           effect.kind === "run_whole_plan_review" &&
           this.snapshot().phase === "whole_plan_review"
         ) {
@@ -2300,6 +2560,12 @@ export class VNextSchedulerActor {
         if (leaseId && lease && lease.kind === effectLeaseKind(effect)) {
           await this.persist({ kind: "process_abandoned", leaseId });
         }
+        if (
+          effect.kind === "run_whole_plan_recovery" &&
+          this.snapshot().wholePlanReview.recovery?.status === "running"
+        ) {
+          await this.persist({ kind: "whole_plan_recovery_abandoned" });
+        }
         if (this.safetyReason && this.processes.size === 0) {
           await this.persist({
             kind: "safety_blocked",
@@ -2320,6 +2586,92 @@ export class VNextSchedulerActor {
 }
 
 export class VNextSchedulerActorError extends Error {}
+
+type WholePlanEpoch = NonNullable<VNextRunState["wholePlanReview"]["epoch"]>;
+type WholePlanEpochFinding = WholePlanEpoch["findings"][number];
+
+function nextOverallRepairId(state: VNextRunState): string {
+  let number = 1;
+  while (state.workstreams.overall[`overall-repair-${number}`]) {
+    number++;
+  }
+  return `overall-repair-${number}`;
+}
+
+function queueWholePlanRepair(
+  state: VNextRunState,
+  args: {
+    repairId: string;
+    targetSha: string;
+    targetTreeSha: string;
+    candidate?: VNextRunState["candidates"][string];
+    findings: WholePlanEpochFinding[];
+    evidence: string;
+    epoch: WholePlanEpoch;
+  },
+  reject: (error: string) => VNextSchedulerTransition,
+): VNextSchedulerTransition {
+  if (
+    !safeId(args.repairId) ||
+    state.workstreams.overall[args.repairId] ||
+    args.findings.length === 0
+  ) {
+    return reject("whole-plan findings have an invalid repair identity");
+  }
+  const workstream: RuntimeWorkstream = {
+    kind: "overall",
+    repairId: args.repairId,
+  };
+  const candidate =
+    args.candidate ??
+    ({
+      id: `overall-baseline:${state.run.id}:${args.repairId}:${args.targetSha}`,
+      workstream,
+      baseSha: args.targetSha,
+      commitSha: args.targetSha,
+      treeSha: args.targetTreeSha,
+    } satisfies VNextRunState["candidates"][string]);
+  if (
+    !sameWorkstream(candidate.workstream, workstream) ||
+    candidate.baseSha !== args.targetSha ||
+    candidate.commitSha !== args.targetSha ||
+    candidate.treeSha !== args.targetTreeSha
+  ) {
+    return reject("whole-plan findings have an invalid repair baseline");
+  }
+  const existing = state.candidates[candidate.id];
+  if (existing && JSON.stringify(existing) !== JSON.stringify(candidate)) {
+    return reject("overall baseline candidate identity is immutable");
+  }
+  state.candidates[candidate.id] = candidate;
+  state.workstreams.overall[args.repairId] = {
+    kind: "overall",
+    repairId: args.repairId,
+    phase: "queued",
+    candidateId: candidate.id,
+  };
+  const update = applyInitialWorkstreamReview({
+    workstream,
+    candidateId: candidate.id,
+    completion: {
+      verdict: "changes_requested",
+      findings: args.findings.map(({ id: _, ...finding }) => finding),
+    },
+    evidence: args.evidence,
+  });
+  state.reviews[reviewKey(workstream)] = update.review;
+  for (const finding of update.findings) {
+    state.findings[finding.id] = finding;
+  }
+  state.wholePlanReview = {
+    status: "repairing",
+    epoch: args.epoch,
+    ...(state.wholePlanReview.recovery
+      ? { recovery: state.wholePlanReview.recovery }
+      : {}),
+  };
+  return { state, effects: [], accepted: true };
+}
 
 function startProcess(
   state: VNextRunState,
