@@ -907,6 +907,47 @@ export function validateVNextRunState(
   return structuredClone(state);
 }
 
+export function sourceIdentityForPlanning(args: {
+  planPath: string;
+  planContent: string;
+  corpusFiles: Array<{ path: string; hash: string }>;
+  uncheckedLineNumbers: number[];
+}): VNextRunState["run"]["source"] {
+  const planPath = resolve(args.planPath);
+  const allArtifacts = args.corpusFiles
+    .map((artifact) => ({ path: resolve(artifact.path), hash: artifact.hash }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+  const entry = allArtifacts.find((artifact) => artifact.path === planPath);
+  if (!entry) {
+    throw new VNextStateError(
+      "Planning corpus does not include its entry plan.",
+      planPath,
+    );
+  }
+  const artifacts = [
+    entry,
+    ...allArtifacts.filter((artifact) => artifact.path !== planPath),
+  ];
+  const parts = args.planContent.split(/(\r\n|\n)/);
+  for (const lineNumber of args.uncheckedLineNumbers) {
+    const index = (lineNumber - 1) * 2;
+    if (index < 0 || index >= parts.length) {
+      throw new VNextStateError(
+        "Planning task anchor is outside its entry plan.",
+        planPath,
+      );
+    }
+    parts[index] = normalizeCheckboxMarker(parts[index]!);
+  }
+  return {
+    entry: { path: planPath, normalizedHash: sha256(parts.join("")) },
+    corpus: artifacts,
+    protectedArtifactHashes: Object.fromEntries(
+      artifacts.map((artifact) => [artifact.path, artifact.hash]),
+    ),
+  };
+}
+
 export function sourceIdentityForExecutionPlan(
   plan: ExecutionPlan,
 ): VNextRunState["run"]["source"] {

@@ -40,6 +40,7 @@ type ImplementationOutcome =
 
 export type VNextSchedulerEvent =
   | { kind: "workstreams_selected"; now: string }
+  | { kind: "planner_failed"; reason: string }
   | {
       kind: "implementation_completed";
       workstream: RuntimeWorkstream;
@@ -291,6 +292,14 @@ export function reduceVNextRunEvent(
   }
 
   switch (event.kind) {
+    case "planner_failed":
+      if (state.phase !== "planning") {
+        return reject("only a planning run can retain a planner failure");
+      }
+      state.pause = { resumePhase: "planning", reason: event.reason };
+      state.phase = "paused";
+      return accept();
+
     case "workstreams_selected": {
       const ready = selectReadyRuntimeWorkstreams(state);
       const effects: VNextSchedulerEffect[] = [];
@@ -1349,6 +1358,17 @@ export class VNextSchedulerActor {
           // Projection callbacks are not state authority.
         }
         await this.schedule();
+      })
+      .catch(async (error) => {
+        if (
+          !controller.signal.aborted &&
+          this.snapshot().phase === "planning"
+        ) {
+          await this.dispatch({
+            kind: "planner_failed",
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
       })
       .finally(() => {
         this.processes.delete("planner");

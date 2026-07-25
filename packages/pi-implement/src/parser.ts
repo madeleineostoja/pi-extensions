@@ -1,11 +1,8 @@
 export type ParsedCommand =
   | {
       kind: "execution";
-      mode: {
-        kind: "auto";
-        planPath: string;
-        recovery?: { kind: "resume" | "start-over"; runId: string };
-      };
+      planPath: string;
+      recovery?: { kind: "resume"; runId: string };
     }
   | {
       kind: "control";
@@ -45,16 +42,16 @@ export function parseCommand(input: string): ParsedCommand {
   }
 
   const flags = tokens.slice(1);
-  let recovery: { kind: "resume" | "start-over"; runId: string } | undefined;
+  let recovery: { kind: "resume"; runId: string } | undefined;
   for (let index = 0; index < flags.length; index++) {
     const flag = flags[index];
-    if ((flag === "--resume" || flag === "--start-over") && !recovery) {
+    if (flag === "--resume" && !recovery) {
       const runId = flags[++index];
       if (!runId || runId.startsWith("--")) {
         return { kind: "error", message: usage() };
       }
       recovery = {
-        kind: flag === "--resume" ? "resume" : "start-over",
+        kind: "resume",
         runId,
       };
       continue;
@@ -63,11 +60,8 @@ export function parseCommand(input: string): ParsedCommand {
   }
   return {
     kind: "execution",
-    mode: {
-      kind: "auto",
-      planPath: first,
-      ...(recovery ? { recovery } : {}),
-    },
+    planPath: first,
+    ...(recovery ? { recovery } : {}),
   };
 }
 
@@ -76,5 +70,5 @@ function tokenize(input: string): string[] {
 }
 
 export function usage(): string {
-  return "Usage: /implement to choose an action, or /implement <plan.md> [--resume <run-id> | --start-over <run-id>]";
+  return "Usage: /implement <plan.md> [--resume <run-id>], or /implement :stop";
 }
