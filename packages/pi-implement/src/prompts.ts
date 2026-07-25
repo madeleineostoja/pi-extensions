@@ -118,6 +118,16 @@ export function buildAnchoredOverallReviewPrompt(args: {
   return `You are the independent reviewer for an anchored whole-plan repair. Review read-only in ${args.worktreePath ?? "the repair worktree"}.\n\nPlan context:\n${args.planContext}\n\nCandidate context:\n${args.candidateContext}\n\nPrevious candidate: ${args.previousCandidate}\nCurrent candidate: ${args.currentCandidate}\n\nAssess every outstanding finding exactly once against the current candidate and latest correction delta. Do not re-review the complete candidate. A resolved finding cannot reopen. Add a blocking regression only when the latest delta caused it; place every other concern in observations.\n\n## Outstanding findings\n\n${formatFindings(args.outstandingFindings)}\n\n## Latest correction delta\n\n\`\`\`diff\n${args.latestDelta}\n\`\`\`\n\nDo not edit files, change Git state, install dependencies, or run write-producing commands.`;
 }
 
+export function buildRecoveryPrompt(args: {
+  worktreePath: string;
+  episode: unknown;
+  candidate?: unknown;
+  target: { branchRef: string; startHead: string };
+  permittedMutationBoundary: string;
+}): string {
+  return `You are the pi-implement recovery agent. Recover only the retained failure episode below in this owned worktree:\n\n  ${args.worktreePath}\n\nThe target checkout and immutable source corpus are orchestrator-owned. Do not access or mutate them. You may inspect and repair ignored/runtime state in this worktree. Make tracked changes only when they are necessary to correct the retained candidate or reconciliation failure; commit those changes before reporting them. Do not push, rewrite history, bypass hooks, change protected plan artifacts, or leave an active Git operation or uncommitted work.\n\nTarget identity: ${args.target.branchRef} @ ${args.target.startHead}\nPermitted mutation boundary: ${args.permittedMutationBoundary}\nCurrent candidate: ${JSON.stringify(args.candidate ?? null)}\n\n## Durable recovery episode\n\n${JSON.stringify(args.episode, null, 2)}\n\nChoose exactly one typed action. Use \`retry\` only when the retained candidate/workspace identity is unchanged and the failed lifecycle gate can be rerun. Use \`repair_environment\` for ignored or runtime repair in this workspace. Use \`recreate_workspace\` only when a trusted checkpoint is retained. Use \`rework_candidate\` or \`reconcile\` only after committing a tracked correction; include candidateTip and the changed paths. Use \`diagnose\` only to retain a bounded diagnosis before another recovery turn. Use \`no_safe_action\` when no safe bounded action exists. Include concrete evidence for every action.`;
+}
+
 function formatFindings(findings: Finding[]): string {
   return findings
     .map(

@@ -664,39 +664,11 @@ describe("VNext scheduler reducer", () => {
 
     expect(repaired.accepted).toBe(true);
     expect(repaired.state.workstreams.source["first-stream"]?.phase).toBe(
-      "recovering",
+      "queued",
     );
     expect(Object.values(repaired.state.recoveryEpisodes)).toMatchObject([
       { status: "open", actions: [{ kind: "repair_environment" }] },
     ]);
-
-    let providerState = repaired.state;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const retry = reduceVNextRunEvent(providerState, {
-        kind: "recovery_requested",
-        workstream: { kind: "source", id: "first-stream" },
-        now: `retry-${attempt}`,
-      });
-      const retryEffect = retry.effects[0]!;
-      if (retryEffect.kind !== "run_recovery") {
-        throw new Error("Expected recovery retry effect.");
-      }
-      const failedProvider = reduceVNextRunEvent(retry.state, {
-        kind: "recovery_provider_failed",
-        workstream: { kind: "source", id: "first-stream" },
-        leaseId: retryEffect.leaseId,
-        error: "provider unavailable",
-        now: `failed-${attempt}`,
-      });
-      expect(failedProvider.accepted).toBe(true);
-      providerState = failedProvider.state;
-    }
-    expect(providerState.phase).toBe("paused");
-    expect(Object.values(providerState.recoveryEpisodes)[0]).toMatchObject({
-      providerFailures: 3,
-      retryAfterMs: 4_000,
-      status: "paused",
-    });
   });
 
   it("rejects incomplete anchored coverage and stale candidate review results", async () => {
@@ -1061,6 +1033,89 @@ describe("VNext scheduler actor", () => {
     expect(Object.values(run.read().recoveryEpisodes)).toContainEqual(
       expect.objectContaining({
         workspace: expect.objectContaining({ checkpoint: "checkpoint-1" }),
+      }),
+    );
+    await actor.stop("test complete");
+  });
+
+  it("routes a thrown review effect into durable recovery evidence", async () => {
+    const run = await store();
+    const recovered = deferred();
+    const retried = deferred();
+    let reviewAttempts = 0;
+    const actor = new VNextSchedulerActor({
+      store: run,
+      targetHead: async () => "base-sha",
+      onTransition: (_state, event) => {
+        if (event.kind === "effect_failed") {
+          recovered.resolve();
+        }
+      },
+      executeEffect: async ({ effect, signal, dispatch }) => {
+        if (effect.kind === "run_implementation") {
+          await dispatch({
+            kind: "implementation_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            outcome: {
+              kind: "candidate_ready",
+              candidate: {
+                id: "candidate:first",
+                workstream: { kind: "source", id: "first-stream" },
+                baseSha: "base-sha",
+                commitSha: "checkpoint:first",
+                treeSha: "tree:first",
+              },
+              checkpoints: { first: "checkpoint:first" },
+              satisfied: {},
+            },
+          });
+          return;
+        }
+        if (effect.kind === "run_review") {
+          reviewAttempts += 1;
+          if (reviewAttempts === 1) {
+            throw new Error("review provider disconnected");
+          }
+          retried.resolve();
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+        if (effect.kind === "run_recovery") {
+          await dispatch({
+            kind: "recovery_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            action: {
+              kind: "repair_environment",
+              outcome: "completed",
+              summary: "Restored the review environment.",
+              evidence: "Review workspace is unchanged and ready to retry.",
+              at: "now",
+            },
+          });
+        }
+      },
+    });
+
+    await actor.start();
+    await recovered.promise;
+    await retried.promise;
+
+    expect(run.read()).toMatchObject({
+      workstreams: { source: { "first-stream": { phase: "reviewing" } } },
+      gates: [
+        expect.objectContaining({
+          kind: "environment",
+          evidence: "review provider disconnected",
+        }),
+      ],
+    });
+    expect(Object.values(run.read().recoveryEpisodes)).toContainEqual(
+      expect.objectContaining({
+        status: "open",
+        candidateId: "candidate:first",
       }),
     );
     await actor.stop("test complete");

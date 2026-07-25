@@ -77,18 +77,19 @@ A paused run retains its candidate, recovery evidence, projection debt, and clea
 
 ## Configuration
 
-Configuration is optional and lives at `~/.pi/agent/extensions/pi-implement/config.json`. It accepts role overrides for `planner`, `implementer`, and `reviewer`, plus bounded `workerConcurrency` (default `3`, maximum `8`).
+Configuration is optional and lives at `~/.pi/agent/extensions/pi-implement/config.json`. It accepts role overrides for `planner`, `implementer`, `reviewer`, and `recovery`, plus bounded `workerConcurrency` (default `3`, maximum `8`).
 
 ```json
 {
   "workerConcurrency": 3,
   "planner": { "type": "Explore" },
   "implementer": { "model": "provider/model-id" },
-  "reviewer": { "type": "Review", "thinking": "high" }
+  "reviewer": { "type": "Review", "thinking": "high" },
+  "recovery": { "model": "provider/model-id", "thinking": "high" }
 }
 ```
 
-Implementers choose and run appropriate verification for the workstream; pi-implement has no configured or auto-detected validation command. Managed agents use Pi's current-session generic subagent runtime. The runtime currently records recovery as a retained no-safe-action episode rather than launching an automatic repair agent, so a `recovery` configuration override has no effect. There is no pi-implement-specific reviewer watchdog; use Pi's generic agent controls for supervision.
+Implementers choose and run appropriate verification for the workstream; pi-implement has no configured or auto-detected validation command. Managed agents use Pi's current-session generic subagent runtime. Recovery agents receive the retained gate, candidate, workspace, findings, prior actions, and mutation boundary, then return one typed bounded action. The `recovery` override selects that agent. There is no pi-implement-specific reviewer watchdog; use Pi's generic agent controls for supervision.
 
 ## Maintenance evidence
 

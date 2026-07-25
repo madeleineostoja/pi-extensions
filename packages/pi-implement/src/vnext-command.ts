@@ -30,6 +30,7 @@ import {
 } from "./workstream-candidate.js";
 import { runVNextOverallRepair } from "./vnext-overall-repair.js";
 import { runVNextWorkstreamReview } from "./vnext-review.js";
+import { runVNextRecovery } from "./recovery-service.js";
 import { reduceVNextRunEvent, VNextSchedulerActor } from "./scheduler-vnext.js";
 import {
   acquireCheckoutLease,
@@ -389,6 +390,10 @@ export function createVNextRuntime(args: {
         "artifacts",
       );
       if (effect.kind === "run_implementation") {
+        const sourceWorkstreamId =
+          effect.workstream.kind === "source"
+            ? effect.workstream.id
+            : undefined;
         const outcome =
           effect.workstream.kind === "source"
             ? await runWorkstreamCandidate({
@@ -405,6 +410,22 @@ export function createVNextRuntime(args: {
                 ),
                 signal,
                 roles: args.roles.implementer,
+                recoveryObligations: Object.values(state.recoveryEpisodes)
+                  .filter(
+                    (episode) =>
+                      episode.status === "open" &&
+                      episode.workstream.kind === "source" &&
+                      episode.workstream.id === sourceWorkstreamId,
+                  )
+                  .flatMap((episode) =>
+                    episode.actions.map((action) => action.evidence),
+                  ),
+                trustedCheckpoint: Object.values(state.recoveryEpisodes).find(
+                  (episode) =>
+                    episode.status === "open" &&
+                    episode.workstream.kind === "source" &&
+                    episode.workstream.id === sourceWorkstreamId,
+                )?.workspace.checkpoint,
                 artifactsPath,
               })
             : {
@@ -754,18 +775,20 @@ export function createVNextRuntime(args: {
         return;
       }
       if (effect.kind === "run_recovery") {
+        const outcome = await runVNextRecovery({
+          state,
+          effect,
+          git: args.git,
+          subagents: new RuntimeSubagentClient(args.pi, args.ctx, state.run.id),
+          artifactsPath,
+          signal,
+          roles: args.roles.recovery,
+        });
         await dispatch({
           kind: "recovery_completed",
           workstream: effect.workstream,
           leaseId: effect.leaseId,
-          action: {
-            kind: "no_safe_action",
-            outcome: "no_safe_action",
-            summary: "No automated recovery action is available for this gate.",
-            evidence:
-              "The durable recovery episode retained the failed gate for operator resume.",
-            at: new Date().toISOString(),
-          },
+          ...outcome,
         });
         return;
       }

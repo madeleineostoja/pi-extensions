@@ -1,4 +1,5 @@
 import { publicationPreparationId } from "./candidate-replay.js";
+import { RecoverySafetyError } from "./recovery-service.js";
 import type { ExecutionPlan } from "./execution-plan-vnext.js";
 import { TargetBoundaryError } from "./workstream-candidate.js";
 import {
@@ -61,6 +62,14 @@ export type VNextSchedulerEvent =
       evidence: string;
       trustedCheckpoint?: string;
     }
+  | {
+      kind: "effect_failed";
+      effect: "review" | "reconciliation" | "publication";
+      workstream: RuntimeWorkstream;
+      leaseId: string;
+      evidence: string;
+    }
+  | { kind: "whole_plan_review_failed"; evidence: string }
   | {
       kind: "gate_recorded";
       workstream: RuntimeWorkstream;
@@ -362,6 +371,7 @@ export function reduceVNextRunEvent(
     state.phase === "stopping" &&
     event.kind !== "process_abandoned" &&
     event.kind !== "implementation_failed" &&
+    event.kind !== "effect_failed" &&
     event.kind !== "run_paused"
   ) {
     return reject("stopping runs only settle owned processes");
@@ -479,6 +489,63 @@ export function reduceVNextRunEvent(
       }
     }
 
+    case "effect_failed": {
+      const lease = state.processLeases[event.leaseId];
+      const workstream = getWorkstream(state, event.workstream);
+      const expectedKind =
+        event.effect === "review"
+          ? "review"
+          : event.effect === "reconciliation"
+            ? "reconciliation"
+            : "publication";
+      if (
+        !lease ||
+        lease.kind !== expectedKind ||
+        !sameWorkstream(lease.workstream, event.workstream) ||
+        !workstream
+      ) {
+        return reject("failed effect does not own its active lease");
+      }
+      const candidateId = workstream.candidateId;
+      delete state.processLeases[lease.id];
+      try {
+        recordGateResult(
+          state,
+          event.workstream,
+          {
+            id: `environment:${event.effect}:${workstreamId(event.workstream)}:${state.gates.length + 1}`,
+            kind: "environment",
+            owner: workstreamId(event.workstream),
+            ...(candidateId ? { candidateId } : {}),
+            attempt: state.gates.length + 1,
+            outcome: "failed",
+            evidence: boundedRecoveryOutput(event.evidence),
+            outstandingFindingIds: [],
+          },
+          recoveryWorkspace(state, event.workstream, candidateId),
+        );
+        return accept();
+      } catch (error) {
+        return reject(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    case "whole_plan_review_failed":
+      if (
+        state.phase !== "whole_plan_review" ||
+        state.wholePlanReview.status !== "reviewing"
+      ) {
+        return reject(
+          "whole-plan failure is not owned by an active assessment",
+        );
+      }
+      state.pause = {
+        resumePhase: "whole_plan_review",
+        reason: boundedRecoveryOutput(event.evidence),
+      };
+      state.phase = "paused";
+      return accept();
+
     case "implementation_completed": {
       const lease = ownedLease(
         state,
@@ -590,6 +657,14 @@ export function reduceVNextRunEvent(
         workstream.phase = "candidate_ready";
       }
       delete state.processLeases[lease.id];
+      for (const episode of Object.values(state.recoveryEpisodes)) {
+        if (
+          episode.status === "open" &&
+          sameWorkstream(episode.workstream, event.workstream)
+        ) {
+          episode.status = "completed";
+        }
+      }
       return accept();
     }
 
@@ -898,7 +973,12 @@ export function reduceVNextRunEvent(
       delete state.processLeases[lease.id];
       if (event.candidate) {
         episode.status = "completed";
+        return accept();
       }
+      if (event.action.kind === "diagnose") {
+        return accept();
+      }
+      workstream.phase = retryPhaseForGate(episode.gateId);
       return accept();
     }
 
@@ -1167,7 +1247,7 @@ export function reduceVNextRunEvent(
           state,
           event.workstream,
           {
-            id: `${event.outcome.kind === "execution_failed" ? "environment" : "reconciliation"}:${workstreamId(event.workstream)}:${candidateId}:${state.gates.length + 1}`,
+            id: `${event.outcome.kind === "execution_failed" ? "environment:reconciliation" : "reconciliation"}:${workstreamId(event.workstream)}:${candidateId}:${state.gates.length + 1}`,
             kind:
               event.outcome.kind === "execution_failed"
                 ? "environment"
@@ -1809,6 +1889,7 @@ export class VNextSchedulerActor {
         this.processWorkstreams.size < state.run.workerConcurrency &&
         activeWorkerLeaseCount(state) < state.run.workerConcurrency &&
         episode.status === "open" &&
+        getWorkstream(state, episode.workstream)?.phase === "recovering" &&
         !Object.values(state.processLeases).some(
           (lease) => lease.recoveryEpisodeId === episode.id,
         ) &&
@@ -2126,6 +2207,26 @@ export class VNextSchedulerActor {
         }
         if (
           effect.kind === "run_recovery" &&
+          error instanceof RecoverySafetyError &&
+          this.snapshot().processLeases[effect.leaseId]
+        ) {
+          await this.dispatch({
+            kind: "recovery_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            action: {
+              kind: "no_safe_action",
+              outcome: "no_safe_action",
+              summary:
+                "Recovery output could not satisfy the durable safety boundary.",
+              evidence: error.message,
+              at: this.now(),
+            },
+          });
+          return;
+        }
+        if (
+          effect.kind === "run_recovery" &&
           this.snapshot().processLeases[effect.leaseId]
         ) {
           await this.dispatch({
@@ -2134,6 +2235,36 @@ export class VNextSchedulerActor {
             leaseId: effect.leaseId,
             error: error instanceof Error ? error.message : String(error),
             now: this.now(),
+          });
+          return;
+        }
+        if (
+          effect.kind === "run_whole_plan_review" &&
+          this.snapshot().phase === "whole_plan_review"
+        ) {
+          await this.dispatch({
+            kind: "whole_plan_review_failed",
+            evidence: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+        if (
+          (effect.kind === "run_review" ||
+            effect.kind === "run_reconciliation" ||
+            effect.kind === "run_publication") &&
+          this.snapshot().processLeases[effect.leaseId]
+        ) {
+          await this.dispatch({
+            kind: "effect_failed",
+            effect:
+              effect.kind === "run_review"
+                ? "review"
+                : effect.kind === "run_reconciliation"
+                  ? "reconciliation"
+                  : "publication",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            evidence: error instanceof Error ? error.message : String(error),
           });
         }
       })
@@ -2498,6 +2629,25 @@ function recoverySignatureFor(
     workspaceId: episode.workspace.id,
     nextAction,
   });
+}
+
+function retryPhaseForGate(
+  gateId: string,
+): VNextRunState["workstreams"]["source"][string]["phase"] {
+  if (
+    gateId.startsWith("review:") ||
+    gateId.startsWith("environment:review:")
+  ) {
+    return "candidate_ready";
+  }
+  if (
+    gateId.startsWith("reconciliation:") ||
+    gateId.startsWith("environment:reconciliation:") ||
+    gateId.startsWith("environment:publication:")
+  ) {
+    return "approved";
+  }
+  return "queued";
 }
 
 function workstreamId(workstream: RuntimeWorkstream): string {
