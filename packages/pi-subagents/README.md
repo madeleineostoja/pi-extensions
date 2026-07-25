@@ -106,7 +106,7 @@ An explicit tool-call model override takes precedence over the role configuratio
 
 ## First-party extension integration
 
-Other bundled extensions can use the same runtime directly. `pi-implement` uses internal managed agents for implementer, reviewer, planner, and recovery roles while keeping its own role model/thinking configuration in `~/.pi/agent/extensions/pi-implement/config.json`.
+Other bundled extensions can use the same runtime directly. `pi-implement` uses internal managed agents for planner, implementer, and reviewer roles while keeping its own role model/thinking configuration in `~/.pi/agent/extensions/pi-implement/config.json`. Its current recovery lifecycle retains evidence for operator resolution rather than launching an automatic repair agent.
 
 Managed agents may opt into different tool sets. `pi-implement` owns the task-worktree boundaries for its autonomous workers; public `pi-subagents` v1 does not create separate worktrees or provide a scheduler.
 

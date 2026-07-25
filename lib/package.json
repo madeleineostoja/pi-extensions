@@ -1,11 +1,12 @@
 {
   "name": "@pi-extensions/lib",
   "version": "0.1.0",
-  "description": "Shared library for pi-extensions workspace packages.",
+  "description": "Shared OS-backed coordination and utility helpers for pi-extensions.",
   "license": "MIT",
   "type": "module",
   "files": [
-    "src"
+    "src",
+    "README.md"
   ],
   "exports": {
     ".": "./src/index.ts"
