@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type {
   ExtensionAPI,
@@ -104,7 +104,7 @@ export async function startVNextRun(args: {
       source,
       workerConcurrency: args.workerConcurrency,
     });
-    const actor = createActor({
+    const actor = createVNextRuntime({
       pi: args.pi,
       ctx: args.ctx,
       git,
@@ -192,8 +192,8 @@ export async function resumeVNextRun(args: {
         throw new Error("Plan corpus changed; planning resume is unsafe.");
       }
     } else if (
-      !sourceIdentityMatches(current) ||
-      !protectedArtifactsMatch(current)
+      !projectionDebtMatchesIntent(current) &&
+      (!sourceIdentityMatches(current) || !protectedArtifactsMatch(current))
     ) {
       throw new Error(
         "Plan corpus or protected artifacts changed; resume is unsafe.",
@@ -205,7 +205,7 @@ export async function resumeVNextRun(args: {
         "Bound VNext run is missing execution-plan.json; inspect or remove it manually.",
       );
     }
-    const actor = createActor({
+    const actor = createVNextRuntime({
       pi: args.pi,
       ctx: args.ctx,
       git,
@@ -218,7 +218,7 @@ export async function resumeVNextRun(args: {
       baseSha: store.read().run.checkout.startHead,
     });
     if (store.read().phase === "paused") {
-      await actor.dispatch({ kind: "resume_requested" });
+      await actor.resume();
     }
     await actor.start();
     return { runId: args.runId, actor, lease, store };
@@ -226,6 +226,39 @@ export async function resumeVNextRun(args: {
     await lease.release();
     throw error;
   }
+}
+
+function projectionDebtMatchesIntent(state: VNextRunState): boolean {
+  if (state.projectionDebt.length === 0) {
+    return false;
+  }
+  const projectedPaths = new Set(
+    state.projectionDebt.map((debt) => debt.canonicalPath),
+  );
+  return (
+    state.projectionDebt.every((debt) => {
+      try {
+        const content = readFileSync(debt.canonicalPath, "utf-8");
+        const hash = sha256(content);
+        return (
+          (hash === debt.expectedOldHash &&
+            content === debt.expectedOldContent) ||
+          (hash === debt.expectedNewHash && content === debt.expectedNewContent)
+        );
+      } catch {
+        return false;
+      }
+    }) &&
+    state.run.source.corpus
+      .filter((artifact) => !projectedPaths.has(artifact.path))
+      .every((artifact) => {
+        try {
+          return sha256(readFileSync(artifact.path, "utf-8")) === artifact.hash;
+        } catch {
+          return false;
+        }
+      })
+  );
 }
 
 export async function stopVNextRun(active: ActiveVNextRun): Promise<void> {
@@ -246,7 +279,7 @@ export function vnextRunIds(checkoutRoot: string): string[] {
   );
 }
 
-function createActor(args: {
+export function createVNextRuntime(args: {
   pi: ExtensionAPI;
   ctx: ExtensionCommandContext;
   git: ExecGitClient;
@@ -311,11 +344,6 @@ function createActor(args: {
           leaseId: effect.leaseId,
           outcome,
         });
-        await dispatch({
-          kind: "review_requested",
-          workstream: effect.workstream,
-          now: new Date().toISOString(),
-        });
         return;
       }
       if (effect.kind === "run_review") {
@@ -335,17 +363,6 @@ function createActor(args: {
           leaseId: effect.leaseId,
           outcome,
         });
-        const runtime =
-          effect.workstream.kind === "source"
-            ? args.store.read().workstreams.source[effect.workstream.id]
-            : args.store.read().workstreams.overall[effect.workstream.repairId];
-        if (runtime?.phase === "approved") {
-          await dispatch({
-            kind: "reconciliation_requested",
-            workstream: effect.workstream,
-            now: new Date().toISOString(),
-          });
-        }
         return;
       }
       if (effect.kind === "run_reconciliation") {
@@ -387,16 +404,6 @@ function createActor(args: {
           });
           return;
         }
-        await dispatch({
-          kind: "reconciliation_completed",
-          workstream: effect.workstream,
-          leaseId: effect.leaseId,
-          outcome: {
-            kind: "prepared",
-            evidence: `Prepared ${replay.disposition} replay at ${replay.staging.preparedCommitSha}.`,
-            workspace,
-          },
-        });
         const branch = await args.git.currentBranch();
         if (!branch) {
           throw new Error("Publication requires a named target branch.");
@@ -424,10 +431,14 @@ function createActor(args: {
           },
         });
         await dispatch({
-          kind: "publication_requested",
+          kind: "reconciliation_completed",
           workstream: effect.workstream,
-          intentId: intent.id,
-          now: new Date().toISOString(),
+          leaseId: effect.leaseId,
+          outcome: {
+            kind: "prepared",
+            evidence: `Prepared ${replay.disposition} replay at ${replay.staging.preparedCommitSha}.`,
+            workspace,
+          },
         });
         return;
       }
@@ -496,15 +507,6 @@ function createActor(args: {
           debtId: effect.debtId,
           dispatch,
         });
-        const next = args.store.read();
-        if (
-          next.projectionDebt.length === 0 &&
-          Object.values(next.workstreams.source).every(
-            (workstream) => workstream.phase === "completed",
-          )
-        ) {
-          await dispatch({ kind: "whole_plan_review_requested" });
-        }
         return;
       }
       if (effect.kind === "run_whole_plan_review") {
@@ -526,14 +528,14 @@ function createActor(args: {
           dispatch,
           roles: args.roles.reviewer,
         });
-        const next = args.store.read();
-        if (next.wholePlanReview.status === "approved") {
-          await completeVNextWholePlanRun({
-            state: next,
-            git: args.git,
-            dispatch,
-          });
-        }
+        return;
+      }
+      if (effect.kind === "complete_whole_plan_run") {
+        await completeVNextWholePlanRun({
+          state,
+          git: args.git,
+          dispatch,
+        });
         return;
       }
       if (effect.kind === "run_cleanup") {

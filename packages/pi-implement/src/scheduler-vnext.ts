@@ -208,6 +208,7 @@ export type VNextSchedulerEffect =
       intentId: string;
     }
   | { kind: "run_whole_plan_review" }
+  | { kind: "complete_whole_plan_run" }
   | { kind: "run_projection"; debtId: string }
   | { kind: "run_cleanup"; debtId: string };
 
@@ -227,10 +228,23 @@ export function selectReadyWorkstreams(state: VNextRunState): string[] {
     .map((workstream) => workstream.id);
 }
 
+function runtimeWorkstreams(state: VNextRunState): RuntimeWorkstream[] {
+  return [
+    ...Object.values(state.workstreams.source).map((workstream) => ({
+      kind: "source" as const,
+      id: workstream.id,
+    })),
+    ...Object.values(state.workstreams.overall).map((workstream) => ({
+      kind: "overall" as const,
+      repairId: workstream.repairId,
+    })),
+  ];
+}
+
 export function selectReadyRuntimeWorkstreams(
   state: VNextRunState,
 ): RuntimeWorkstream[] {
-  const capacity = state.run.workerConcurrency - activeLeaseCount(state);
+  const capacity = state.run.workerConcurrency - activeWorkerLeaseCount(state);
   if (capacity <= 0) {
     return [];
   }
@@ -816,10 +830,8 @@ export function reduceVNextRunEvent(
         workstream.phase !== "approved" ||
         !processIsAllowed(state, event.workstream) ||
         activeLeaseFor(state, event.workstream) ||
-        activeLeaseCount(state) >= state.run.workerConcurrency ||
-        Object.values(state.processLeases).some(
-          (lease) => lease.kind === "publication",
-        )
+        activeWorkerLeaseCount(state) > 0 ||
+        hasIntegrationLease(state)
       ) {
         return reject("workstream is not ready for its publication intent");
       }
@@ -1152,8 +1164,10 @@ export class VNextSchedulerActor {
   private readonly controller = new AbortController();
   private readonly processes = new Map<string, Promise<void>>();
   private readonly processControllers = new Map<string, AbortController>();
+  private readonly processWorkstreams = new Map<string, RuntimeWorkstream>();
   private readonly now: () => string;
   private queue = Promise.resolve();
+  private drivePromise: Promise<void> | undefined;
   private stopping = false;
 
   constructor(private readonly options: VNextSchedulerActorOptions) {
@@ -1166,79 +1180,56 @@ export class VNextSchedulerActor {
 
   async start(): Promise<void> {
     await this.reconcileAbandonedProcesses();
-    if (this.snapshot().phase === "planning") {
-      this.startPlanner();
-      return;
-    }
-    if (["running", "whole_plan_review"].includes(this.snapshot().phase)) {
-      if (
-        this.snapshot().phase === "whole_plan_review" &&
-        this.snapshot().wholePlanReview.status === "reviewing"
-      ) {
-        this.startEffect({ kind: "run_whole_plan_review" });
-      }
-      for (const debt of this.snapshot().projectionDebt) {
-        this.startEffect({ kind: "run_projection", debtId: debt.id });
-      }
-      for (const debt of this.snapshot().cleanupDebt) {
-        this.startEffect({ kind: "run_cleanup", debtId: debt.id });
-      }
-      for (const intent of Object.values(this.snapshot().publication.intents)) {
-        const workstream = getWorkstream(this.snapshot(), intent.workstream);
-        if (
-          !this.snapshot().publication.receipts[intent.id] &&
-          workstream?.phase === "approved" &&
-          workstream.candidateId === intent.candidateId
-        ) {
-          await this.dispatch({
-            kind: "publication_requested",
-            workstream: intent.workstream,
-            intentId: intent.id,
-            now: this.now(),
-          });
-        }
-      }
-      await this.resumeOpenRecoveries();
-      await this.schedule();
-    }
+    await this.drive();
   }
 
-  private async resumeOpenRecoveries(): Promise<void> {
-    const episodes = Object.values(this.snapshot().recoveryEpisodes).filter(
-      (episode) => episode.status === "open",
-    );
-    for (const episode of episodes) {
-      if (this.snapshot().phase === "paused") {
-        return;
-      }
-      const hasLease = Object.values(this.snapshot().processLeases).some(
-        (lease) => lease.recoveryEpisodeId === episode.id,
-      );
-      if (!hasLease) {
-        await this.dispatch({
-          kind: "recovery_requested",
-          workstream: episode.workstream,
-          now: this.now(),
-        });
-      }
+  async drive(): Promise<void> {
+    if (this.drivePromise) {
+      return this.drivePromise;
     }
+    this.drivePromise = (async () => {
+      while (!this.stopping) {
+        const next = this.nextDriveStep();
+        if (!next) {
+          return;
+        }
+        if (next.kind === "planner") {
+          this.startPlanner();
+          return;
+        }
+        if (next.kind === "effect") {
+          this.startEffect(next.effect);
+          return;
+        }
+        await this.persist(next.event);
+      }
+    })().finally(() => {
+      this.drivePromise = undefined;
+    });
+    return this.drivePromise;
+  }
+
+  async quiesce(): Promise<void> {
+    await this.queue;
+    await this.drive();
+    await this.queue;
   }
 
   async schedule(): Promise<boolean> {
-    if (
-      this.stopping ||
-      !["running", "whole_plan_review"].includes(this.snapshot().phase)
-    ) {
-      return false;
-    }
-    const effects = await this.dispatch({
-      kind: "workstreams_selected",
-      now: this.now(),
-    });
-    return effects.some((effect) => effect.kind === "run_implementation");
+    const before = Object.keys(this.snapshot().processLeases).length;
+    await this.drive();
+    return Object.keys(this.snapshot().processLeases).length > before;
   }
 
   async dispatch(event: VNextSchedulerEvent): Promise<VNextSchedulerEffect[]> {
+    const effects = await this.persist(event);
+    await this.drive();
+    return effects;
+  }
+
+  private async persist(
+    event: VNextSchedulerEvent,
+  ): Promise<VNextSchedulerEffect[]> {
     const operation = this.queue.then(async () => {
       for (;;) {
         const current = this.options.store.read();
@@ -1274,33 +1265,182 @@ export class VNextSchedulerActor {
       () => undefined,
       () => undefined,
     );
-    const effects = await operation;
-    if (
-      !this.stopping &&
-      [
-        "implementation_completed",
-        "review_completed",
-        "recovery_completed",
-        "recovery_provider_failed",
-        "reconciliation_completed",
-        "publication_completed",
-        "whole_plan_review_completed",
-        "process_abandoned",
-      ].includes(event.kind)
-    ) {
-      if (
-        [
-          "recovery_completed",
-          "recovery_provider_failed",
-          "reconciliation_completed",
-          "process_abandoned",
-        ].includes(event.kind)
-      ) {
-        await this.resumeOpenRecoveries();
-      }
-      await this.schedule();
+    return operation;
+  }
+
+  private hasLiveProcessFor(workstream: RuntimeWorkstream): boolean {
+    return [...this.processWorkstreams.values()].some((active) =>
+      sameWorkstream(active, workstream),
+    );
+  }
+
+  private nextDriveStep():
+    | { kind: "planner" }
+    | { kind: "effect"; effect: VNextSchedulerEffect }
+    | { kind: "event"; event: VNextSchedulerEvent }
+    | undefined {
+    const state = this.snapshot();
+    if (state.phase === "planning") {
+      return this.processes.has("planner") ? undefined : { kind: "planner" };
     }
-    return effects;
+    if (
+      !this.options.executeEffect ||
+      !["running", "whole_plan_review"].includes(state.phase)
+    ) {
+      return undefined;
+    }
+
+    for (const intent of Object.values(state.publication.intents)) {
+      const workstream = getWorkstream(state, intent.workstream);
+      if (
+        state.publication.receipts[intent.id] &&
+        workstream?.phase === "approved" &&
+        workstream.candidateId === intent.candidateId
+      ) {
+        return {
+          kind: "event",
+          event: {
+            kind: "publication_requested",
+            workstream: intent.workstream,
+            intentId: intent.id,
+            now: this.now(),
+          },
+        };
+      }
+    }
+
+    for (const episode of Object.values(state.recoveryEpisodes)) {
+      if (
+        this.processWorkstreams.size < state.run.workerConcurrency &&
+        activeWorkerLeaseCount(state) < state.run.workerConcurrency &&
+        episode.status === "open" &&
+        !Object.values(state.processLeases).some(
+          (lease) => lease.recoveryEpisodeId === episode.id,
+        ) &&
+        !this.hasLiveProcessFor(episode.workstream)
+      ) {
+        return {
+          kind: "event",
+          event: {
+            kind: "recovery_requested",
+            workstream: episode.workstream,
+            now: this.now(),
+          },
+        };
+      }
+    }
+
+    if (activeWorkerLeaseCount(state) === 0 && this.processes.size === 0) {
+      for (const debt of state.projectionDebt) {
+        const effect = { kind: "run_projection" as const, debtId: debt.id };
+        if (!this.processes.has(effectKey(effect))) {
+          return { kind: "effect", effect };
+        }
+      }
+      for (const debt of state.cleanupDebt) {
+        const effect = { kind: "run_cleanup" as const, debtId: debt.id };
+        if (!this.processes.has(effectKey(effect))) {
+          return { kind: "effect", effect };
+        }
+      }
+    }
+
+    if (
+      !hasIntegrationLease(state) &&
+      this.processWorkstreams.size < state.run.workerConcurrency &&
+      activeWorkerLeaseCount(state) < state.run.workerConcurrency
+    ) {
+      const review = runtimeWorkstreams(state).find(
+        (workstream) =>
+          getWorkstream(state, workstream)?.phase === "candidate_ready" &&
+          !activeLeaseFor(state, workstream) &&
+          !this.hasLiveProcessFor(workstream),
+      );
+      if (review) {
+        return {
+          kind: "event",
+          event: {
+            kind: "review_requested",
+            workstream: review,
+            now: this.now(),
+          },
+        };
+      }
+
+      if (selectReadyRuntimeWorkstreams(state).length > 0) {
+        return {
+          kind: "event",
+          event: { kind: "workstreams_selected", now: this.now() },
+        };
+      }
+    }
+
+    const approved = runtimeWorkstreams(state).find((workstream) => {
+      const runtime = getWorkstream(state, workstream);
+      if (
+        runtime?.phase !== "approved" ||
+        runtime.candidateId === undefined ||
+        activeLeaseFor(state, workstream) ||
+        this.hasLiveProcessFor(workstream)
+      ) {
+        return false;
+      }
+      return true;
+    });
+    if (
+      approved &&
+      activeWorkerLeaseCount(state) === 0 &&
+      this.processes.size === 0
+    ) {
+      const candidateId = getWorkstream(state, approved)!.candidateId!;
+      const intent = Object.values(state.publication.intents).find(
+        (entry) =>
+          sameWorkstream(entry.workstream, approved) &&
+          entry.candidateId === candidateId,
+      );
+      return {
+        kind: "event",
+        event: intent
+          ? {
+              kind: "publication_requested",
+              workstream: approved,
+              intentId: intent.id,
+              now: this.now(),
+            }
+          : {
+              kind: "reconciliation_requested",
+              workstream: approved,
+              now: this.now(),
+            },
+      };
+    }
+
+    if (
+      state.wholePlanReview.status === "pending" &&
+      state.projectionDebt.length === 0 &&
+      allSourceWorkstreamsComplete(state)
+    ) {
+      return { kind: "event", event: { kind: "whole_plan_review_requested" } };
+    }
+    if (
+      state.phase === "whole_plan_review" &&
+      state.wholePlanReview.status === "reviewing" &&
+      !this.processes.has("run_whole_plan_review")
+    ) {
+      return { kind: "effect", effect: { kind: "run_whole_plan_review" } };
+    }
+    if (
+      state.phase === "whole_plan_review" &&
+      state.wholePlanReview.status === "approved" &&
+      !this.processes.has("complete_whole_plan_run")
+    ) {
+      return { kind: "effect", effect: { kind: "complete_whole_plan_run" } };
+    }
+    return undefined;
+  }
+
+  async resume(): Promise<void> {
+    await this.persist({ kind: "resume_requested" });
   }
 
   async stop(reason?: string): Promise<void> {
@@ -1322,6 +1462,7 @@ export class VNextSchedulerActor {
       await Promise.allSettled(this.processes.values());
     }
     await this.options.awaitOwnedProcesses?.();
+    await this.reconcileAbandonedProcesses();
     if (this.snapshot().phase === "stopping") {
       await this.dispatch({ kind: "run_paused", reason });
     }
@@ -1390,7 +1531,7 @@ export class VNextSchedulerActor {
   }
 
   private startEffect(effect: VNextSchedulerEffect): void {
-    if (!this.options.executeEffect) {
+    if (this.stopping || !this.options.executeEffect) {
       return;
     }
     const key = effectKey(effect);
@@ -1399,6 +1540,9 @@ export class VNextSchedulerActor {
     }
     const controller = linkedAbortController(this.controller.signal);
     this.processControllers.set(key, controller);
+    if ("workstream" in effect) {
+      this.processWorkstreams.set(key, effect.workstream);
+    }
     const process = Promise.resolve()
       .then(async () => {
         if (effect.kind === "run_recovery" && effect.retryAfterMs) {
@@ -1429,17 +1573,19 @@ export class VNextSchedulerActor {
       .finally(async () => {
         this.processes.delete(key);
         this.processControllers.delete(key);
+        this.processWorkstreams.delete(key);
         const leaseId = "leaseId" in effect ? effect.leaseId : undefined;
         if (leaseId && this.snapshot().processLeases[leaseId]) {
-          await this.dispatch({ kind: "process_abandoned", leaseId });
+          await this.persist({ kind: "process_abandoned", leaseId });
         }
+        await this.drive();
       });
     this.processes.set(key, process);
   }
 
   private async reconcileAbandonedProcesses(): Promise<void> {
     for (const lease of Object.values(this.snapshot().processLeases)) {
-      await this.dispatch({ kind: "process_abandoned", leaseId: lease.id });
+      await this.persist({ kind: "process_abandoned", leaseId: lease.id });
     }
   }
 }
@@ -1459,7 +1605,8 @@ function startProcess(
     !allowed ||
     !processIsAllowed(state, workstream) ||
     activeLeaseFor(state, workstream) ||
-    activeLeaseCount(state) >= state.run.workerConcurrency
+    activeWorkerLeaseCount(state) >= state.run.workerConcurrency ||
+    hasIntegrationLease(state)
   ) {
     return reject("workstream is not ready for this process");
   }
@@ -1488,7 +1635,8 @@ function startRecoveryProcess(
     current.phase !== "recovering" ||
     !processIsAllowed(state, workstream) ||
     activeLeaseFor(state, workstream) ||
-    activeLeaseCount(state) >= state.run.workerConcurrency
+    activeWorkerLeaseCount(state) >= state.run.workerConcurrency ||
+    hasIntegrationLease(state)
   ) {
     return reject("workstream is not ready for recovery");
   }
@@ -1525,7 +1673,8 @@ function startReconciliation(
     current.phase !== "approved" ||
     !processIsAllowed(state, workstream) ||
     activeLeaseFor(state, workstream) ||
-    activeLeaseCount(state) >= state.run.workerConcurrency
+    activeWorkerLeaseCount(state) > 0 ||
+    hasIntegrationLease(state)
   ) {
     return reject("workstream is not ready for reconciliation");
   }
@@ -1591,6 +1740,12 @@ function processIsAllowed(
     : state.phase === "whole_plan_review";
 }
 
+function hasIntegrationLease(state: VNextRunState): boolean {
+  return Object.values(state.processLeases).some(
+    (lease) => lease.kind === "reconciliation" || lease.kind === "publication",
+  );
+}
+
 function activeLeaseFor(
   state: VNextRunState,
   workstream: RuntimeWorkstream,
@@ -1600,8 +1755,13 @@ function activeLeaseFor(
   );
 }
 
-function activeLeaseCount(state: VNextRunState): number {
-  return Object.keys(state.processLeases).length;
+function activeWorkerLeaseCount(state: VNextRunState): number {
+  return Object.values(state.processLeases).filter(
+    (lease) =>
+      lease.kind === "implementation" ||
+      lease.kind === "review" ||
+      lease.kind === "recovery",
+  ).length;
 }
 
 function getWorkstream(

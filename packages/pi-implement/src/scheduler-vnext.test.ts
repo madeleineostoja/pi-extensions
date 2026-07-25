@@ -51,7 +51,11 @@ function plannerTask(
   };
 }
 
-function planFor(directory: string, concurrency = 1): ExecutionPlan {
+function planFor(
+  directory: string,
+  concurrency = 1,
+  independent = false,
+): ExecutionPlan {
   const planPath = join(directory, "plan.md");
   const content = "# Plan\n\n## Tasks\n\n- [ ] First task\n- [ ] Second task\n";
   writeFileSync(planPath, content);
@@ -68,7 +72,13 @@ function planFor(directory: string, concurrency = 1): ExecutionPlan {
       plannerConfidence: "high",
       tasks: [
         plannerTask("first", 1, "First task", planPath),
-        plannerTask("second", 2, "Second task", planPath, ["first"]),
+        plannerTask(
+          "second",
+          2,
+          "Second task",
+          planPath,
+          independent ? [] : ["first"],
+        ),
       ],
       workstreams: [
         {
@@ -81,7 +91,7 @@ function planFor(directory: string, concurrency = 1): ExecutionPlan {
         {
           id: "second-stream",
           taskIds: ["second"],
-          dependsOn: ["first-stream"],
+          dependsOn: independent ? [] : ["first-stream"],
           rationale: "Second change depends on the first change.",
           risk: "normal",
         },
@@ -102,6 +112,19 @@ function planFor(directory: string, concurrency = 1): ExecutionPlan {
   return result.value;
 }
 
+function deferred<T = void>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  return {
+    promise: new Promise<T>((resolvePromise) => {
+      resolve = resolvePromise;
+    }),
+    resolve,
+  };
+}
+
 function fakeLease(directory: string): CheckoutLeaseCapability {
   const paths = checkoutPaths(directory);
   return {
@@ -120,12 +143,15 @@ function fakeLease(directory: string): CheckoutLeaseCapability {
   };
 }
 
-async function store(concurrency = 1): Promise<VNextRunStore> {
+async function store(
+  concurrency = 1,
+  independent = false,
+): Promise<VNextRunStore> {
   const directory = mkdtempSync(
     join(tmpdir(), "pi-implement-vnext-scheduler-"),
   );
   temporaryDirectories.add(directory);
-  const plan = planFor(directory, concurrency);
+  const plan = planFor(directory, concurrency, independent);
   const lease = fakeLease(directory);
   const run = createPlanningRun({
     lease,
@@ -860,13 +886,199 @@ describe("VNext scheduler actor", () => {
     });
 
     await actor.start();
-    await actor.settle();
+    await actor.stop("test stopped after the implementation outcome");
 
     expect(seenLeases).toEqual([["implementation:run-1:2:0"]]);
     expect(run.read().workstreams.source["first-stream"]?.phase).toBe(
       "candidate_ready",
     );
     expect(run.read().processLeases).toEqual({});
+  });
+
+  it("prioritizes a candidate-ready review over another implementation at capacity one", async () => {
+    const run = await store(1, true);
+    const reviewStarted = deferred();
+    const launches: string[] = [];
+    const actor = new VNextSchedulerActor({
+      store: run,
+      executeEffect: async ({ effect, signal, dispatch }) => {
+        if (effect.kind === "run_implementation") {
+          const workstreamId =
+            effect.workstream.kind === "source"
+              ? effect.workstream.id
+              : effect.workstream.repairId;
+          launches.push(`implementation:${workstreamId}`);
+          await dispatch({
+            kind: "implementation_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            outcome: {
+              kind: "satisfaction_claimed",
+              candidate: {
+                id: `satisfied:${workstreamId}:base-sha`,
+                workstream: effect.workstream,
+                baseSha: "base-sha",
+                commitSha: "base-sha",
+                treeSha: "base-tree",
+              },
+              evidence: {
+                first: "Repository state already provides this behavior.",
+              },
+            },
+          });
+          return;
+        }
+        if (effect.kind === "run_review") {
+          launches.push(
+            `review:${
+              effect.workstream.kind === "source"
+                ? effect.workstream.id
+                : effect.workstream.repairId
+            }`,
+          );
+          reviewStarted.resolve();
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+      },
+    });
+
+    await actor.start();
+    await reviewStarted.promise;
+
+    expect(launches).toEqual([
+      "implementation:first-stream",
+      "review:first-stream",
+    ]);
+    expect(run.read().workstreams.source["second-stream"]?.phase).toBe(
+      "queued",
+    );
+
+    await actor.stop("test complete");
+  });
+
+  it("finalizes a receipted publication after its abandoned lease is reconciled", async () => {
+    const run = await store();
+    const initial = run.read();
+    const candidateId = "candidate:first";
+    const intentId = "intent:first";
+    const leaseId = "publication:run-1:2:0";
+    await run.update(initial.revision, (state) => ({
+      ...state,
+      tasks: {
+        ...state.tasks,
+        first: {
+          workstreamId: "first-stream",
+          phase: "checkpointed",
+          checkpoint: "checkpoint-1",
+        },
+      },
+      workstreams: {
+        ...state.workstreams,
+        source: {
+          ...state.workstreams.source,
+          "first-stream": {
+            ...state.workstreams.source["first-stream"]!,
+            phase: "publishing",
+            candidateId,
+          },
+        },
+      },
+      processLeases: {
+        [leaseId]: {
+          id: leaseId,
+          kind: "publication",
+          workstream: { kind: "source", id: "first-stream" },
+          candidateId,
+          publicationIntentId: intentId,
+          attempt: 1,
+          acquiredAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+      candidates: {
+        [candidateId]: {
+          id: candidateId,
+          workstream: { kind: "source", id: "first-stream" },
+          baseSha: "base-sha",
+          commitSha: "commit-1",
+          treeSha: "tree-1",
+        },
+      },
+      reviews: {
+        "source:first-stream": {
+          candidateId,
+          round: 0,
+          outstandingIds: [],
+          evidence: ["approved"],
+          observations: [],
+        },
+      },
+      publication: {
+        intents: {
+          [intentId]: {
+            id: intentId,
+            workstream: { kind: "source", id: "first-stream" },
+            candidateId,
+            stagingWorktree: "staging",
+            hookEvidence: "hooks passed",
+            targetBaseSha: "base-sha",
+            preparedCommitSha: "commit-1",
+            preparedTreeSha: "tree-1",
+            targetRef: "refs/heads/main",
+            protectedArtifactSnapshots: {},
+            protectedArtifactHashes: {},
+          },
+        },
+        receipts: {
+          [intentId]: {
+            intentId,
+            candidateId,
+            targetBaseSha: "base-sha",
+            publishedCommitSha: "commit-1",
+            publishedTreeSha: "tree-1",
+            targetRef: "refs/heads/main",
+            protectedArtifactHashes: {},
+            publishedAt: "2026-01-01T00:00:00.000Z",
+          },
+        },
+      },
+    }));
+    const finalized = deferred();
+    const actor = new VNextSchedulerActor({
+      store: run,
+      onTransition: (_state, event) => {
+        if (event.kind === "publication_completed") {
+          finalized.resolve();
+        }
+      },
+      executeEffect: async ({ effect, signal, dispatch }) => {
+        if (effect.kind === "run_publication") {
+          await dispatch({
+            kind: "publication_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            intentId,
+          });
+          return;
+        }
+        if (effect.kind === "run_implementation") {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+      },
+    });
+
+    await actor.start();
+    await finalized.promise;
+
+    expect(run.read().workstreams.source["first-stream"]?.phase).toBe(
+      "completed",
+    );
+    expect(run.read().publication.receipts[intentId]).toBeDefined();
+
+    await actor.stop("test complete");
   });
 
   it("aborts, settles, and pauses with retained workstreams requeued", async () => {
