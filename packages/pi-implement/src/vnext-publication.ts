@@ -35,6 +35,19 @@ export async function runVNextPublication(args: {
   if (!intent || intent.candidateId !== args.effect.candidateId) {
     throw new Error("Publication effect does not own a durable intent.");
   }
+  const preparation = args.state.publication.preparations[intent.preparationId];
+  if (
+    !preparation ||
+    preparation.candidateId !== intent.candidateId ||
+    preparation.targetBaseSha !== intent.targetBaseSha ||
+    preparation.preparedCommitSha !== intent.preparedCommitSha ||
+    preparation.preparedTreeSha !== intent.preparedTreeSha ||
+    preparation.targetRef !== intent.targetRef
+  ) {
+    throw new Error(
+      "Publication intent does not match its durable preparation.",
+    );
+  }
   const existingReceipt = args.state.publication.receipts[intent.id];
   if (existingReceipt) {
     await args.dispatch({

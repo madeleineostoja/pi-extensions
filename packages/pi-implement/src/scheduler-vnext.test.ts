@@ -7,6 +7,10 @@ import {
   compileExecutionPlan,
   type ExecutionPlan,
 } from "./execution-plan-vnext.js";
+import {
+  publicationPreparationId,
+  stagingIdentity,
+} from "./candidate-replay.js";
 import { buildMaterialStore } from "./material-store.js";
 import { parsePlan } from "./plan.js";
 import {
@@ -1064,6 +1068,18 @@ describe("VNext scheduler actor", () => {
     const initial = run.read();
     const candidateId = "candidate:first";
     const intentId = "intent:first";
+    const preparationId = publicationPreparationId({
+      runId: "run-1",
+      candidateId,
+      candidateCommitSha: "commit-1",
+      targetBaseSha: "base-sha",
+    });
+    const staging = stagingIdentity({
+      runId: "run-1",
+      candidateId,
+      candidateCommitSha: "commit-1",
+      targetBaseSha: "base-sha",
+    });
     const leaseId = "publication:run-1:2:0";
     await run.update(initial.revision, (state) => ({
       ...state,
@@ -1117,13 +1133,36 @@ describe("VNext scheduler actor", () => {
         },
       },
       publication: {
+        preparations: {
+          [preparationId]: {
+            id: preparationId,
+            candidateId,
+            candidateCommitSha: "commit-1",
+            targetBaseSha: "base-sha",
+            targetRef: "refs/heads/main",
+            preparedCommitSha: "commit-1",
+            preparedTreeSha: "tree-1",
+            stagingWorktree: join(
+              initial.run.checkout.root,
+              ".pi",
+              "implement",
+              "worktrees",
+              "run-1",
+              staging.id,
+            ),
+            stagingBranch: staging.branchName,
+            replayPatchHash: "a".repeat(64),
+            changedPaths: ["first.txt"],
+            disposition: "same_base",
+            hookEvidence: "hooks passed",
+          },
+        },
         intents: {
           [intentId]: {
             id: intentId,
             workstream: { kind: "source", id: "first-stream" },
             candidateId,
-            stagingWorktree: "staging",
-            hookEvidence: "hooks passed",
+            preparationId,
             targetBaseSha: "base-sha",
             preparedCommitSha: "commit-1",
             preparedTreeSha: "tree-1",

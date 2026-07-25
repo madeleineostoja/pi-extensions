@@ -233,8 +233,7 @@ export async function runVNextWorkstreamReview(args: {
     ),
   });
   const workspace = workstreamWorkspace(args.state, args.workstream.id);
-  const worktreePath =
-    candidate.reconciliation?.worktreePath ?? workspace.worktreePath;
+  const worktreePath = workspace.worktreePath;
   const workspaceGit = args.git.forWorktree(worktreePath);
   if (
     (await workspaceGit.head()) !== candidate.commitSha ||
@@ -368,9 +367,7 @@ async function runVNextOverallAnchoredReview(args: {
     args.workstream.repairId,
     candidate.baseSha,
   );
-  const workspaceGit = args.git.forWorktree(
-    candidate.reconciliation?.worktreePath ?? workspace.worktreePath,
-  );
+  const workspaceGit = args.git.forWorktree(workspace.worktreePath);
   if (
     (await workspaceGit.head()) !== candidate.commitSha ||
     !(await workspaceGit.isClean())
@@ -393,8 +390,7 @@ async function runVNextOverallAnchoredReview(args: {
     previousCandidate: previousCandidate.commitSha,
     currentCandidate: candidate.commitSha,
     latestDelta,
-    worktreePath:
-      candidate.reconciliation?.worktreePath ?? workspace.worktreePath,
+    worktreePath: workspace.worktreePath,
   });
   const handle = await args.subagents.spawn({
     type: args.roles?.type ?? "pi-implement:reviewer",
@@ -403,7 +399,7 @@ async function runVNextOverallAnchoredReview(args: {
     thinking: args.roles?.thinking,
     taskId: args.workstream.repairId,
     description: `Assess overall repair ${args.workstream.repairId}`,
-    cwd: candidate.reconciliation?.worktreePath ?? workspace.worktreePath,
+    cwd: workspace.worktreePath,
     prompt,
     readOnly: true,
     completion: {

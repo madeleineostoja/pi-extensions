@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CandidateReplayEngine,
+  publicationPreparation,
   reconciliationGateResult,
-  reconciledCandidate,
   type ReplayCandidate,
 } from "./candidate-replay.js";
 import { ExecGitClient } from "./git.js";
@@ -131,13 +131,66 @@ describe("CandidateReplayEngine", () => {
       throw new Error(JSON.stringify(preparedSecond));
     }
     expect(preparedSecond.staging.treeSha).not.toBe(second.treeSha);
-    expect(reconciledCandidate(second, preparedSecond.staging)).toMatchObject({
-      baseSha: preparedSecond.staging.targetBaseSha,
-      commitSha: preparedSecond.staging.preparedCommitSha,
-      treeSha: preparedSecond.staging.treeSha,
+    expect(preparedSecond.staging.id).not.toBe(preparedFirst.staging.id);
+    expect(preparedSecond.staging.branchName).not.toBe(
+      preparedFirst.staging.branchName,
+    );
+    expect(
+      publicationPreparation(
+        {
+          runId: "run-1",
+          candidate: second,
+          disposition: preparedSecond.disposition,
+          targetRef: "refs/heads/master",
+          hookEvidence: "hooks passed",
+        },
+        preparedSecond.staging,
+      ),
+    ).toMatchObject({
+      candidateId: second.id,
+      candidateCommitSha: second.commitSha,
+      targetBaseSha: preparedSecond.staging.targetBaseSha,
+      preparedCommitSha: preparedSecond.staging.preparedCommitSha,
+      preparedTreeSha: preparedSecond.staging.treeSha,
     });
     await replay.cleanup(preparedFirst.staging);
     await replay.cleanup(preparedSecond.staging);
+  });
+
+  it("recreates a mismatched retained staging commit instead of accepting it", async () => {
+    const root = repository();
+    const client = new ExecGitClient(root);
+    const approved = await candidate(root, "candidate.txt", "candidate\n");
+    const replay = engine(root);
+    const first = await replay.prepare(approved);
+    if (first.kind !== "prepared") {
+      throw new Error(JSON.stringify(first));
+    }
+    const retained = publicationPreparation(
+      {
+        runId: "run-1",
+        candidate: approved,
+        disposition: first.disposition,
+        targetRef: "refs/heads/master",
+        hookEvidence: "hooks passed",
+      },
+      first.staging,
+    );
+    const staging = client.forWorktree(first.staging.worktreePath);
+    writeFileSync(join(first.staging.worktreePath, "candidate.txt"), "wrong\n");
+    git(first.staging.worktreePath, "add", "candidate.txt");
+    await staging.checkpoint("feat: wrong", false);
+
+    const reused = await replay.prepare(approved, undefined, retained);
+
+    expect(reused).toMatchObject({
+      kind: "prepared",
+      staging: { treeSha: approved.treeSha },
+    });
+    if (reused.kind !== "prepared") {
+      throw new Error(JSON.stringify(reused));
+    }
+    await replay.cleanup(reused.staging);
   });
 
   it("retains staging for reconciliation when intervening target paths overlap", async () => {

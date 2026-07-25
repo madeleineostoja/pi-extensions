@@ -18,6 +18,10 @@ import {
 import { z } from "zod";
 import { writeAtomicJson, type AtomicJsonWriteHooks } from "./atomic-json.js";
 import {
+  publicationPreparationId,
+  stagingIdentity,
+} from "./candidate-replay.js";
+import {
   readExecutionPlan,
   writeExecutionPlan,
   type ExecutionPlan,
@@ -159,17 +163,6 @@ const candidateSchema = z
     baseSha: nonEmpty,
     commitSha: nonEmpty,
     treeSha: nonEmpty,
-    reconciliation: z
-      .object({
-        targetBaseSha: nonEmpty,
-        preparedCommitSha: nonEmpty,
-        treeSha: nonEmpty,
-        worktreePath: nonEmpty,
-        changedPaths: z.array(nonEmpty),
-        replayPatchHash: nonEmpty.optional(),
-      })
-      .strict()
-      .optional(),
     implementationEvidence: z
       .object({
         summary: nonEmpty,
@@ -299,6 +292,24 @@ const recoverySchema = z
   })
   .strict();
 
+const publicationPreparationSchema = z
+  .object({
+    id: nonEmpty,
+    candidateId: nonEmpty,
+    candidateCommitSha: nonEmpty,
+    targetBaseSha: nonEmpty,
+    targetRef: nonEmpty,
+    preparedCommitSha: nonEmpty,
+    preparedTreeSha: nonEmpty,
+    stagingWorktree: nonEmpty,
+    stagingBranch: nonEmpty,
+    replayPatchHash: hash,
+    changedPaths: z.array(nonEmpty),
+    disposition: z.enum(["same_base", "clean_non_overlap"]),
+    hookEvidence: nonEmpty,
+  })
+  .strict();
+
 const publicationIntentSchema = z
   .object({
     id: nonEmpty,
@@ -307,8 +318,7 @@ const publicationIntentSchema = z
       z.object({ kind: z.literal("overall"), repairId: id }).strict(),
     ]),
     candidateId: nonEmpty,
-    stagingWorktree: nonEmpty,
-    hookEvidence: nonEmpty,
+    preparationId: nonEmpty,
     targetBaseSha: nonEmpty,
     preparedCommitSha: nonEmpty,
     preparedTreeSha: nonEmpty,
@@ -425,6 +435,7 @@ export const vnextRunStateSchema = z
     recoveryEpisodes: z.record(nonEmpty, recoverySchema),
     publication: z
       .object({
+        preparations: z.record(nonEmpty, publicationPreparationSchema),
         intents: z.record(nonEmpty, publicationIntentSchema),
         receipts: z.record(nonEmpty, publicationReceiptSchema),
       })
@@ -621,7 +632,7 @@ export function createPlanningRun(args: {
     reviews: {},
     gates: [],
     recoveryEpisodes: {},
-    publication: { intents: {}, receipts: {} },
+    publication: { preparations: {}, intents: {}, receipts: {} },
     protectedArtifactHashes: args.source.protectedArtifactHashes,
     projectionDebt: [],
     cleanupDebt: [],
@@ -1417,26 +1428,67 @@ function invariantIssues(
       issues.push(`completed recovery episode ${key} has no action evidence`);
     }
   }
+  for (const [key, preparation] of Object.entries(
+    state.publication.preparations,
+  )) {
+    const candidate = state.candidates[preparation.candidateId];
+    const staging = stagingIdentity({
+      runId: state.run.id,
+      candidateId: preparation.candidateId,
+      candidateCommitSha: preparation.candidateCommitSha,
+      targetBaseSha: preparation.targetBaseSha,
+    });
+    if (
+      key !== preparation.id ||
+      preparation.id !==
+        publicationPreparationId({
+          runId: state.run.id,
+          candidateId: preparation.candidateId,
+          candidateCommitSha: preparation.candidateCommitSha,
+          targetBaseSha: preparation.targetBaseSha,
+        }) ||
+      !candidate ||
+      candidate.commitSha !== preparation.candidateCommitSha ||
+      preparation.targetRef !== state.run.checkout.branchRef ||
+      preparation.stagingBranch !== staging.branchName ||
+      preparation.stagingWorktree !==
+        join(
+          state.run.checkout.root,
+          ".pi",
+          "implement",
+          "worktrees",
+          state.run.id,
+          staging.id,
+        ) ||
+      (preparation.disposition === "same_base" &&
+        preparation.targetBaseSha !== candidate.baseSha) ||
+      (preparation.disposition === "clean_non_overlap" &&
+        preparation.targetBaseSha === candidate.baseSha) ||
+      preparation.preparedTreeSha === "" ||
+      preparation.replayPatchHash === ""
+    ) {
+      issues.push(
+        `publication preparation ${key} does not match its reviewed candidate`,
+      );
+    }
+  }
   for (const [key, intent] of Object.entries(state.publication.intents)) {
     const candidate = state.candidates[intent.candidateId];
+    const preparation = state.publication.preparations[intent.preparationId];
     if (
       key !== intent.id ||
       !candidate ||
+      !preparation ||
       !sameWorkstreamIdentity(candidate.workstream, intent.workstream) ||
       workstreamCandidateId(state, intent.workstream) !== intent.candidateId ||
-      intent.targetRef !== state.run.checkout.branchRef ||
-      (candidate.reconciliation
-        ? intent.targetBaseSha !== candidate.reconciliation.targetBaseSha ||
-          intent.preparedCommitSha !==
-            candidate.reconciliation.preparedCommitSha ||
-          intent.preparedTreeSha !== candidate.reconciliation.treeSha ||
-          intent.stagingWorktree !== candidate.reconciliation.worktreePath
-        : intent.targetBaseSha !== candidate.baseSha ||
-          intent.preparedCommitSha !== candidate.commitSha ||
-          intent.preparedTreeSha !== candidate.treeSha)
+      preparation.candidateId !== intent.candidateId ||
+      preparation.targetRef !== intent.targetRef ||
+      preparation.targetBaseSha !== intent.targetBaseSha ||
+      preparation.preparedCommitSha !== intent.preparedCommitSha ||
+      preparation.preparedTreeSha !== intent.preparedTreeSha
     ) {
       issues.push(
-        `publication intent ${key} does not match its approved candidate`,
+        `publication intent ${key} does not match its immutable preparation`,
       );
     }
   }
@@ -1490,6 +1542,16 @@ function invariantIssues(
         state.findings[id]?.status !== "resolved"
       ) {
         issues.push(`resolved finding ${id} was reopened`);
+      }
+    }
+    for (const [id, preparation] of Object.entries(
+      previous.publication.preparations,
+    )) {
+      if (
+        JSON.stringify(state.publication.preparations[id]) !==
+        JSON.stringify(preparation)
+      ) {
+        issues.push(`publication preparation ${id} was overwritten or removed`);
       }
     }
     for (const [id, intent] of Object.entries(previous.publication.intents)) {

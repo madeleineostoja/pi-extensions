@@ -7,7 +7,10 @@ import type {
 import { buildMaterialStore } from "./material-store.js";
 import { parsePlan } from "./plan.js";
 import { planExecution, readExecutionPlan } from "./execution-plan-vnext.js";
-import { CandidateReplayEngine } from "./candidate-replay.js";
+import {
+  CandidateReplayEngine,
+  publicationPreparation,
+} from "./candidate-replay.js";
 import { ExecGitClient } from "./git.js";
 import { RuntimeSubagentClient } from "./subagents.js";
 import { runVNextProjection } from "./vnext-projection-runner.js";
@@ -27,7 +30,7 @@ import {
 } from "./workstream-candidate.js";
 import { runVNextOverallRepair } from "./vnext-overall-repair.js";
 import { runVNextWorkstreamReview } from "./vnext-review.js";
-import { VNextSchedulerActor } from "./scheduler-vnext.js";
+import { reduceVNextRunEvent, VNextSchedulerActor } from "./scheduler-vnext.js";
 import {
   acquireCheckoutLease,
   checkoutPaths,
@@ -178,6 +181,7 @@ export async function resumeVNextRun(args: {
       planPath,
       repoRoot: checkoutRoot,
     });
+    await recoverPublicationTransactions({ store, git });
     const current = store.read();
     if (current.phase === "planning") {
       const source = sourceIdentityForPlanning({
@@ -228,6 +232,54 @@ export async function resumeVNextRun(args: {
   } catch (error) {
     await lease.release();
     throw error;
+  }
+}
+
+async function recoverPublicationTransactions(args: {
+  store: VNextRunStore;
+  git: ExecGitClient;
+}): Promise<void> {
+  for (const intent of Object.values(args.store.read().publication.intents)) {
+    const state = args.store.read();
+    const workstream =
+      intent.workstream.kind === "source"
+        ? state.workstreams.source[intent.workstream.id]
+        : state.workstreams.overall[intent.workstream.repairId];
+    if (workstream?.phase === "completed") {
+      continue;
+    }
+    const outcome = await new WriteAheadPublisher({
+      git: args.git,
+      checkoutRoot: state.run.checkout.root,
+      checkoutIdentity: state.run.checkout.gitDir,
+      protectedPaths: Object.keys(state.protectedArtifactHashes),
+    }).recover(intent);
+    if (outcome.kind === "published") {
+      if (!state.publication.receipts[intent.id]) {
+        const transition = reduceVNextRunEvent(args.store.read(), {
+          kind: "publication_receipt_recorded",
+          receipt: outcome.receipt,
+        });
+        if (!transition.accepted) {
+          throw new Error(
+            transition.error ?? "Publication recovery receipt was rejected.",
+          );
+        }
+        const revision = args.store.read().revision;
+        await args.store.update(revision, () => transition.state);
+      }
+      continue;
+    }
+    if (
+      outcome.kind !== "retry_from_base" ||
+      state.publication.receipts[intent.id]
+    ) {
+      throw new Error(
+        outcome.kind === "safety_paused"
+          ? outcome.reason
+          : "Publication recovery could not prove an exact durable transaction state.",
+      );
+    }
   }
 }
 
@@ -405,11 +457,20 @@ export function createVNextRuntime(args: {
         if (!candidate) {
           throw new Error("Reconciliation candidate is no longer retained.");
         }
+        const targetBaseSha = await args.git.head();
+        const retainedPreparation = Object.values(
+          state.publication.preparations,
+        ).find(
+          (preparation) =>
+            preparation.candidateId === candidate.id &&
+            preparation.candidateCommitSha === candidate.commitSha &&
+            preparation.targetBaseSha === targetBaseSha,
+        );
         const replay = await new CandidateReplayEngine({
           git: args.git,
           worktreesRoot: join(args.lease.paths.worktrees, state.run.id),
           runId: state.run.id,
-        }).prepare(candidate, signal);
+        }).prepare(candidate, signal, retainedPreparation);
         const workspace =
           replay.staging === undefined
             ? {
@@ -424,12 +485,18 @@ export function createVNextRuntime(args: {
                 stateEvidence: replay.kind,
               };
         if (replay.kind !== "prepared") {
+          if (replay.kind === "cancelled") {
+            return;
+          }
           await dispatch({
             kind: "reconciliation_completed",
             workstream: effect.workstream,
             leaseId: effect.leaseId,
             outcome: {
-              kind: "reconciliation_required",
+              kind:
+                replay.kind === "infrastructure_failure"
+                  ? "execution_failed"
+                  : "reconciliation_required",
               evidence:
                 "evidence" in replay
                   ? replay.evidence
@@ -443,6 +510,20 @@ export function createVNextRuntime(args: {
         if (!branch) {
           throw new Error("Publication requires a named target branch.");
         }
+        const preparation = publicationPreparation(
+          {
+            runId: state.run.id,
+            candidate,
+            disposition: replay.disposition,
+            targetRef: `refs/heads/${branch}`,
+            hookEvidence: "Candidate checkpoints completed through Git hooks.",
+          },
+          replay.staging,
+        );
+        await dispatch({
+          kind: "publication_preparation_recorded",
+          preparation,
+        });
         const intent = new WriteAheadPublisher({
           git: args.git,
           checkoutRoot: state.run.checkout.root,
@@ -451,9 +532,9 @@ export function createVNextRuntime(args: {
         }).createIntent({
           id: `publication:${state.run.id}:${effect.workstream.kind === "source" ? effect.workstream.id : effect.workstream.repairId}:${replay.staging.preparedCommitSha}`,
           candidateId: candidate.id,
-          targetBaseSha: replay.staging.targetBaseSha,
-          preparedCommitSha: replay.staging.preparedCommitSha,
-          preparedTreeSha: replay.staging.treeSha,
+          targetBaseSha: preparation.targetBaseSha,
+          preparedCommitSha: preparation.preparedCommitSha,
+          preparedTreeSha: preparation.preparedTreeSha,
           targetRef: `refs/heads/${branch}`,
         });
         await dispatch({
@@ -461,8 +542,7 @@ export function createVNextRuntime(args: {
           intent: {
             ...intent,
             workstream: effect.workstream,
-            stagingWorktree: replay.staging.worktreePath,
-            hookEvidence: "Candidate checkpoints completed through Git hooks.",
+            preparationId: preparation.id,
           },
         });
         await dispatch({

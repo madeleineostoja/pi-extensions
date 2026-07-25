@@ -27,16 +27,44 @@ export type ReplayStaging = {
   replayPaths?: string[];
 };
 
-export type ReconciledCandidate = ReplayCandidate & {
+export type PublicationPreparation = {
   id: string;
-  reconciliation: {
-    targetBaseSha: string;
-    preparedCommitSha: string;
-    treeSha: string;
-    worktreePath: string;
-    changedPaths: string[];
-  };
+  candidateId: string;
+  candidateCommitSha: string;
+  targetBaseSha: string;
+  targetRef: string;
+  preparedCommitSha: string;
+  preparedTreeSha: string;
+  stagingWorktree: string;
+  stagingBranch: string;
+  replayPatchHash: string;
+  changedPaths: string[];
+  disposition: "same_base" | "clean_non_overlap";
+  hookEvidence: string;
 };
+
+export function stagingIdentity(args: {
+  runId: string;
+  candidateId: string;
+  candidateCommitSha: string;
+  targetBaseSha: string;
+}): { id: string; branchName: string } {
+  const id = `staging-${sha256(
+    `${args.runId}\0${args.candidateId}\0${args.candidateCommitSha}\0${args.targetBaseSha}`,
+  )}`;
+  return { id, branchName: `pi-implement/${args.runId}/${id}` };
+}
+
+export function publicationPreparationId(args: {
+  runId: string;
+  candidateId: string;
+  candidateCommitSha: string;
+  targetBaseSha: string;
+}): string {
+  return `preparation-${sha256(
+    `${args.runId}\0${args.candidateId}\0${args.candidateCommitSha}\0${args.targetBaseSha}`,
+  )}`;
+}
 
 export type CandidateReplayOutcome =
   | {
@@ -95,26 +123,39 @@ export function reconciliationGateResult(args: {
   };
 }
 
-export function reconciledCandidate(
-  candidate: ReplayCandidate,
+export function publicationPreparation(
+  args: {
+    runId: string;
+    candidate: ReplayCandidate;
+    disposition: "same_base" | "clean_non_overlap";
+    targetRef: string;
+    hookEvidence: string;
+  },
   prepared: Extract<CandidateReplayOutcome, { kind: "prepared" }>["staging"],
-): ReconciledCandidate {
+): PublicationPreparation {
+  const replayPatchHash = prepared.replayPatchHash;
+  if (!replayPatchHash) {
+    throw new Error("Prepared replay is missing its immutable patch identity.");
+  }
   return {
-    ...candidate,
-    id: `reconciled:${candidate.id}:${prepared.preparedCommitSha}`,
-    baseSha: prepared.targetBaseSha,
-    commitSha: prepared.preparedCommitSha,
-    treeSha: prepared.treeSha,
-    reconciliation: {
+    id: publicationPreparationId({
+      runId: args.runId,
+      candidateId: args.candidate.id,
+      candidateCommitSha: args.candidate.commitSha,
       targetBaseSha: prepared.targetBaseSha,
-      preparedCommitSha: prepared.preparedCommitSha,
-      treeSha: prepared.treeSha,
-      worktreePath: prepared.worktreePath,
-      changedPaths: prepared.replayPaths ?? [],
-      ...(prepared.replayPatchHash
-        ? { replayPatchHash: prepared.replayPatchHash }
-        : {}),
-    },
+    }),
+    candidateId: args.candidate.id,
+    candidateCommitSha: args.candidate.commitSha,
+    targetBaseSha: prepared.targetBaseSha,
+    targetRef: args.targetRef,
+    preparedCommitSha: prepared.preparedCommitSha,
+    preparedTreeSha: prepared.treeSha,
+    stagingWorktree: prepared.worktreePath,
+    stagingBranch: prepared.branchName,
+    replayPatchHash,
+    changedPaths: prepared.replayPaths ?? [],
+    disposition: args.disposition,
+    hookEvidence: args.hookEvidence,
   };
 }
 
@@ -137,6 +178,7 @@ export class CandidateReplayEngine {
   async prepare(
     candidate: ReplayCandidate,
     signal?: AbortSignal,
+    retainedPreparation?: PublicationPreparation,
   ): Promise<CandidateReplayOutcome> {
     if (signal?.aborted) {
       return { kind: "cancelled" };
@@ -154,17 +196,20 @@ export class CandidateReplayEngine {
           "Candidate or target no longer descends from the reviewed base.",
         );
       }
-      const [candidatePaths, targetPaths] = await Promise.all([
+      const [candidatePaths, targetPaths, candidatePatch] = await Promise.all([
         changedPaths(this.options.git, candidate.baseSha, candidate.commitSha),
         candidate.baseSha === target.head
           ? Promise.resolve([])
           : changedPaths(this.options.git, candidate.baseSha, target.head),
+        git.diffRange(candidate.baseSha, candidate.commitSha),
       ]);
       const staging = await this.ensureStaging(
         target.head,
         candidate,
         candidatePaths,
         targetPaths,
+        patchHash(candidatePatch),
+        retainedPreparation,
       );
       retainedStaging = staging;
       if (staging.preparedCommitSha && staging.treeSha) {
@@ -199,7 +244,7 @@ export class CandidateReplayEngine {
 
       const overlaps = intersection(candidatePaths, targetPaths);
       const workspaceGit = git.forWorktree(staging.worktreePath);
-      const patch = await git.diffRange(candidate.baseSha, candidate.commitSha);
+      const patch = candidatePatch;
       const applied = await workspaceGit.applyPatch(patch);
       if (signal?.aborted) {
         await assertTargetUnchanged(git, target);
@@ -330,10 +375,16 @@ export class CandidateReplayEngine {
     candidate: ReplayCandidate,
     candidatePaths: string[],
     targetPaths: string[],
+    candidatePatchHash: string,
+    retainedPreparation?: PublicationPreparation,
   ): Promise<ReplayStaging> {
-    const id = `staging-${sha256(`${this.options.runId}\0${targetBaseSha}`)}`;
+    const { id, branchName } = stagingIdentity({
+      runId: this.options.runId,
+      candidateId: candidate.id,
+      candidateCommitSha: candidate.commitSha,
+      targetBaseSha,
+    });
     const worktreePath = resolve(this.options.worktreesRoot, id);
-    const branchName = `pi-implement/${this.options.runId}/${id}`;
     const existingBranch = (
       await this.options.git.listBranchesMatching(branchName)
     ).includes(branchName);
@@ -343,6 +394,59 @@ export class CandidateReplayEngine {
     );
     const stagingGit = this.options.git.forWorktree(worktreePath);
     await stagingGit.abortActiveOperation();
+    if (retainedPreparation) {
+      if (
+        retainedPreparation.candidateId !== candidate.id ||
+        retainedPreparation.candidateCommitSha !== candidate.commitSha ||
+        retainedPreparation.targetBaseSha !== targetBaseSha ||
+        retainedPreparation.stagingWorktree !== worktreePath ||
+        retainedPreparation.stagingBranch !== branchName
+      ) {
+        throw new Error(
+          "Retained preparation does not match its staging identity.",
+        );
+      }
+      const [parent, tree, patch] = await Promise.all([
+        stagingGit.parent(retainedPreparation.preparedCommitSha),
+        stagingGit.treeAt(retainedPreparation.preparedCommitSha),
+        stagingGit.diffRange(
+          retainedPreparation.targetBaseSha,
+          retainedPreparation.preparedCommitSha,
+        ),
+      ]);
+      if (
+        parent !== retainedPreparation.targetBaseSha ||
+        tree !== retainedPreparation.preparedTreeSha ||
+        patchHash(patch) !== retainedPreparation.replayPatchHash ||
+        patchHash(patch) !== candidatePatchHash
+      ) {
+        throw new Error(
+          "Retained preparation commit no longer matches its replay.",
+        );
+      }
+      await stagingGit.resetHard(retainedPreparation.preparedCommitSha);
+      await stagingGit.restoreWorktreeFromIndexExcept([]);
+      if (!(await stagingGit.isClean())) {
+        throw new Error(
+          "Retained preparation staging cannot be restored cleanly.",
+        );
+      }
+      return {
+        id,
+        worktreePath,
+        branchName,
+        targetBaseSha,
+        candidateId: candidate.id,
+        candidateCommitSha: candidate.commitSha,
+        replayPatch: patch,
+        replayPatchHash: patchHash(patch),
+        candidatePaths,
+        targetPaths,
+        replayPaths: [...retainedPreparation.changedPaths],
+        preparedCommitSha: retainedPreparation.preparedCommitSha,
+        treeSha: retainedPreparation.preparedTreeSha,
+      };
+    }
     const currentHead = await stagingGit.head();
     if (
       currentHead !== targetBaseSha &&
@@ -353,21 +457,33 @@ export class CandidateReplayEngine {
         targetBaseSha,
         currentHead,
       );
-      return {
-        id,
-        worktreePath,
-        branchName,
+      const replayPaths = await changedPaths(
+        stagingGit,
         targetBaseSha,
-        candidateId: candidate.id,
-        candidateCommitSha: candidate.commitSha,
-        replayPatch,
-        replayPatchHash: patchHash(replayPatch),
-        candidatePaths,
-        targetPaths,
-        replayPaths: await changedPaths(stagingGit, targetBaseSha, currentHead),
-        preparedCommitSha: currentHead,
-        treeSha: await stagingGit.treeAt(currentHead),
-      };
+        currentHead,
+      );
+      if (
+        patchHash(replayPatch) !== candidatePatchHash ||
+        JSON.stringify(replayPaths) !== JSON.stringify(candidatePaths)
+      ) {
+        await stagingGit.resetHard(targetBaseSha);
+      } else {
+        return {
+          id,
+          worktreePath,
+          branchName,
+          targetBaseSha,
+          candidateId: candidate.id,
+          candidateCommitSha: candidate.commitSha,
+          replayPatch,
+          replayPatchHash: patchHash(replayPatch),
+          candidatePaths,
+          targetPaths,
+          replayPaths,
+          preparedCommitSha: currentHead,
+          treeSha: await stagingGit.treeAt(currentHead),
+        };
+      }
     }
     await stagingGit.resetHard(targetBaseSha);
     await stagingGit.restoreWorktreeFromIndexExcept([]);
@@ -404,6 +520,9 @@ export class CandidateReplayEngine {
       await assertTargetUnchanged(this.options.git, target);
       return {
         ...staging,
+        replayPatch: "",
+        replayPatchHash: patchHash(""),
+        replayPaths: [],
         preparedCommitSha: staging.targetBaseSha,
         treeSha: await stagingGit.tree(),
       };
@@ -480,7 +599,7 @@ function intersection(left: string[], right: string[]): string[] {
 }
 
 function patchHash(patch: string): string {
-  return sha256(patch);
+  return sha256(normalizePatch(patch));
 }
 
 function normalizePatch(patch: string): string {

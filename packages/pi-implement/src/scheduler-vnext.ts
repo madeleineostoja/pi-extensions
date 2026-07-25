@@ -1,3 +1,4 @@
+import { publicationPreparationId } from "./candidate-replay.js";
 import type { ExecutionPlan } from "./execution-plan-vnext.js";
 import { TargetBoundaryError } from "./workstream-candidate.js";
 import {
@@ -118,7 +119,7 @@ export type VNextSchedulerEvent =
             };
           }
         | {
-            kind: "reconciliation_required";
+            kind: "reconciliation_required" | "execution_failed";
             evidence: string;
             workspace: {
               id: string;
@@ -127,6 +128,10 @@ export type VNextSchedulerEvent =
               stateEvidence: string;
             };
           };
+    }
+  | {
+      kind: "publication_preparation_recorded";
+      preparation: VNextRunState["publication"]["preparations"][string];
     }
   | {
       kind: "publication_intent_recorded";
@@ -475,9 +480,7 @@ export function reduceVNextRunEvent(
                     fromCandidateId: review.candidateId,
                     changedPaths:
                       event.outcome.candidate.implementationEvidence
-                        ?.changedPaths ??
-                      event.outcome.candidate.reconciliation?.changedPaths ??
-                      [],
+                        ?.changedPaths ?? [],
                     evidence:
                       event.outcome.candidate.implementationEvidence
                         ?.artifactPath ??
@@ -833,7 +836,6 @@ export function reduceVNextRunEvent(
       ) {
         return reject("reconciliation result does not own an active lease");
       }
-      delete state.processLeases[lease.id];
       const candidateId = workstream.candidateId;
       if (!candidateId) {
         return reject("reconciliation requires an approved candidate");
@@ -855,19 +857,46 @@ export function reduceVNextRunEvent(
             },
             event.outcome.workspace,
           );
-          workstream.phase = "approved";
-          return accept();
+          const intent = Object.values(state.publication.intents).find(
+            (entry) =>
+              entry.candidateId === candidateId &&
+              sameWorkstream(entry.workstream, event.workstream),
+          );
+          if (!intent) {
+            return reject(
+              "prepared reconciliation requires a durable publication intent",
+            );
+          }
+          state.processLeases[lease.id] = {
+            ...lease,
+            kind: "publication",
+            publicationIntentId: intent.id,
+          };
+          workstream.phase = "publishing";
+          return accept([
+            {
+              kind: "run_publication",
+              workstream: event.workstream,
+              leaseId: lease.id,
+              candidateId,
+              intentId: intent.id,
+            },
+          ]);
         } catch (error) {
           return reject(error instanceof Error ? error.message : String(error));
         }
       }
       try {
+        delete state.processLeases[lease.id];
         recordGateResult(
           state,
           event.workstream,
           {
-            id: `reconciliation:${workstreamId(event.workstream)}:${candidateId}:${state.gates.length + 1}`,
-            kind: "reconciliation",
+            id: `${event.outcome.kind === "execution_failed" ? "environment" : "reconciliation"}:${workstreamId(event.workstream)}:${candidateId}:${state.gates.length + 1}`,
+            kind:
+              event.outcome.kind === "execution_failed"
+                ? "environment"
+                : "reconciliation",
             owner: workstreamId(event.workstream),
             candidateId,
             attempt: state.gates.length + 1,
@@ -883,16 +912,53 @@ export function reduceVNextRunEvent(
       }
     }
 
-    case "publication_intent_recorded": {
-      const candidate = state.candidates[event.intent.candidateId];
+    case "publication_preparation_recorded": {
+      const candidate = state.candidates[event.preparation.candidateId];
+      const existing = state.publication.preparations[event.preparation.id];
       if (
         !candidate ||
-        !sameWorkstream(candidate.workstream, event.intent.workstream) ||
-        getWorkstream(state, event.intent.workstream)?.candidateId !==
-          candidate.id
+        event.preparation.id !==
+          publicationPreparationId({
+            runId: state.run.id,
+            candidateId: event.preparation.candidateId,
+            candidateCommitSha: event.preparation.candidateCommitSha,
+            targetBaseSha: event.preparation.targetBaseSha,
+          }) ||
+        candidate.commitSha !== event.preparation.candidateCommitSha ||
+        (event.preparation.disposition === "same_base" &&
+          event.preparation.targetBaseSha !== candidate.baseSha) ||
+        (event.preparation.disposition === "clean_non_overlap" &&
+          event.preparation.targetBaseSha === candidate.baseSha) ||
+        event.preparation.targetRef !== state.run.checkout.branchRef ||
+        (existing &&
+          JSON.stringify(existing) !== JSON.stringify(event.preparation))
       ) {
         return reject(
-          "publication intent does not match the approved candidate",
+          "publication preparation is not immutable candidate replay",
+        );
+      }
+      state.publication.preparations[event.preparation.id] = event.preparation;
+      return accept();
+    }
+
+    case "publication_intent_recorded": {
+      const candidate = state.candidates[event.intent.candidateId];
+      const preparation =
+        state.publication.preparations[event.intent.preparationId];
+      if (
+        !candidate ||
+        !preparation ||
+        !sameWorkstream(candidate.workstream, event.intent.workstream) ||
+        getWorkstream(state, event.intent.workstream)?.candidateId !==
+          candidate.id ||
+        preparation.candidateId !== candidate.id ||
+        preparation.targetBaseSha !== event.intent.targetBaseSha ||
+        preparation.preparedCommitSha !== event.intent.preparedCommitSha ||
+        preparation.preparedTreeSha !== event.intent.preparedTreeSha ||
+        preparation.targetRef !== event.intent.targetRef
+      ) {
+        return reject(
+          "publication intent does not match its immutable preparation",
         );
       }
       const existing = state.publication.intents[event.intent.id];
@@ -1751,7 +1817,10 @@ export class VNextSchedulerActor {
         this.processControllers.delete(key);
         this.processWorkstreams.delete(key);
         const leaseId = "leaseId" in effect ? effect.leaseId : undefined;
-        if (leaseId && this.snapshot().processLeases[leaseId]) {
+        const lease = leaseId
+          ? this.snapshot().processLeases[leaseId]
+          : undefined;
+        if (leaseId && lease && lease.kind === effectLeaseKind(effect)) {
           await this.persist({ kind: "process_abandoned", leaseId });
         }
         if (this.safetyReason && this.processes.size === 0) {
@@ -2237,12 +2306,33 @@ function abortableDelay(
 
 function effectKey(effect: VNextSchedulerEffect): string {
   if ("leaseId" in effect) {
-    return effect.leaseId;
+    return `${effect.kind}:${effect.leaseId}`;
   }
   if ("debtId" in effect) {
     return `${effect.kind}:${effect.debtId}`;
   }
   return effect.kind;
+}
+
+function effectLeaseKind(
+  effect: VNextSchedulerEffect,
+): ProcessLease["kind"] | undefined {
+  if (effect.kind === "run_implementation") {
+    return "implementation";
+  }
+  if (effect.kind === "run_review") {
+    return "review";
+  }
+  if (effect.kind === "run_recovery") {
+    return "recovery";
+  }
+  if (effect.kind === "run_reconciliation") {
+    return "reconciliation";
+  }
+  if (effect.kind === "run_publication") {
+    return "publication";
+  }
+  return undefined;
 }
 
 function safeId(value: string): boolean {
