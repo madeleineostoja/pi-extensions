@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
-  existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -180,11 +178,7 @@ async function changedResult(cwd: string, taskIds: string[]) {
   for (const taskId of taskIds) {
     writeFileSync(join(cwd, `${taskId}.txt`), `${taskId}\n`);
   }
-  mkdirSync(join(cwd, "node_modules"), { recursive: true });
-  writeFileSync(join(cwd, "node_modules", "runtime-cache"), "repaired\n", {
-    flush: true,
-  });
-  await client.stageAllExcept([]);
+  git(cwd, "add", "-A");
   await client.checkpoint("feat: implement workstream", false);
   const checkpoint = await client.head();
   return {
@@ -227,14 +221,14 @@ describe("workstream candidate lifecycle", () => {
       workstreamId: "combined",
       git: new ExecGitClient(subject.root),
       subagents: agent(async (cwd) => {
-        const result = await changedResult(cwd, ["first", "second"]);
+        const result = await changedResult(cwd, ["first"]);
         const completion = result.result as WorkstreamImplementerCompletion;
-        completion.taskCompletions[1] = {
+        completion.taskCompletions.push({
           taskId: "second",
           kind: "already_satisfied",
           evidence:
             "The repository already exposed the required second behavior.",
-        };
+        });
         return { ...result, result: completion };
       }),
       artifactsPath: join(
@@ -257,15 +251,6 @@ describe("workstream candidate lifecycle", () => {
     expect(readFileSync(join(subject.root, "plan.md"), "utf-8")).toBe(
       subject.planContent,
     );
-    expect(
-      existsSync(
-        join(
-          workstreamWorkspace(subject.run.read(), "combined").worktreePath,
-          "node_modules",
-          "runtime-cache",
-        ),
-      ),
-    ).toBe(true);
     expect(outcome.evidencePath).toContain("combined-implementation.json");
   });
 
@@ -334,11 +319,11 @@ describe("workstream candidate lifecycle", () => {
         subagents: agent(async (cwd) => {
           const client = new ExecGitClient(cwd);
           writeFileSync(join(cwd, "first.txt"), "first\n");
-          await client.stageAllExcept([]);
+          git(cwd, "add", "-A");
           await client.checkpoint("feat: first checkpoint", false);
           trustedCheckpoint = await client.head();
           writeFileSync(join(cwd, "second.txt"), "untrusted\n");
-          await client.stageAllExcept([]);
+          git(cwd, "add", "-A");
           await client.checkpoint("feat: untrusted checkpoint", false);
           writeFileSync(join(cwd, "uncommitted.txt"), "retain as evidence\n");
           return { status: "failed", error: "provider disconnected" };

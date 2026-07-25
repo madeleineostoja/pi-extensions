@@ -1,21 +1,31 @@
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   createCheckboxProjectionIntent,
   resumeCheckboxProjection,
 } from "./vnext-projection.js";
+
+const temporaryDirectories = new Set<string>();
 
 function fixture(content = "# Plan\n\n- [ ] First\n- [ ] Second\n"): {
   root: string;
   plan: string;
 } {
   const root = mkdtempSync(join(tmpdir(), "pi-implement-projection-"));
+  temporaryDirectories.add(root);
   const plan = join(root, "plan.md");
   writeFileSync(plan, content);
   return { root, plan };
 }
+
+afterEach(() => {
+  for (const directory of temporaryDirectories) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  temporaryDirectories.clear();
+});
 
 describe("VNext checkbox projection", () => {
   it("atomically projects only anchored top-level checkbox markers and resumes after a post-write crash", () => {
@@ -40,7 +50,7 @@ describe("VNext checkbox projection", () => {
     });
   });
 
-  it("projects parser-selected indented task checkboxes", () => {
+  it("projects indented task checkboxes", () => {
     const { root, plan } = fixture("# Plan\n\n  - [ ] First\n  - [ ] Second\n");
     const intent = createCheckboxProjectionIntent({
       id: "projection-indented",

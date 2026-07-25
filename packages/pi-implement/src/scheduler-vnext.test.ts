@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   compileExecutionPlan,
   type ExecutionPlan,
@@ -22,6 +22,8 @@ import {
   VNextSchedulerActor,
 } from "./scheduler-vnext.js";
 import { buildVNextReviewPacket } from "./vnext-review.js";
+
+const temporaryDirectories = new Set<string>();
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -122,6 +124,7 @@ async function store(concurrency = 1): Promise<VNextRunStore> {
   const directory = mkdtempSync(
     join(tmpdir(), "pi-implement-vnext-scheduler-"),
   );
+  temporaryDirectories.add(directory);
   const plan = planFor(directory, concurrency);
   const lease = fakeLease(directory);
   const run = createPlanningRun({
@@ -140,6 +143,13 @@ async function store(concurrency = 1): Promise<VNextRunStore> {
   await run.bindExecutionPlan(plan);
   return run;
 }
+
+afterEach(() => {
+  for (const directory of temporaryDirectories) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  temporaryDirectories.clear();
+});
 
 describe("VNext scheduler reducer", () => {
   it("selects only dependency-ready workstreams within the persisted capacity", async () => {
@@ -896,6 +906,7 @@ describe("VNext scheduler actor", () => {
     const directory = mkdtempSync(
       join(tmpdir(), "pi-implement-vnext-planner-"),
     );
+    temporaryDirectories.add(directory);
     const plan = planFor(directory);
     const run = createPlanningRun({
       lease: fakeLease(directory),

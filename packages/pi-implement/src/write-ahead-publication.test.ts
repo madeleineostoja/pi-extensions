@@ -1,10 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { ensureGitInfoExclude } from "@pi-extensions/lib";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { ExecGitClient } from "./git.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
+
+const temporaryDirectories = new Set<string>();
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
@@ -12,6 +15,7 @@ function git(cwd: string, ...args: string[]): string {
 
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "pi-implement-publication-"));
+  temporaryDirectories.add(root);
   git(root, "init", "-q");
   git(root, "config", "user.email", "test@example.com");
   git(root, "config", "user.name", "Test");
@@ -23,12 +27,12 @@ async function fixture() {
   const base = await client.head();
   const branch = "pi-implement/prepared";
   const staging = join(root, ".pi", "staging");
-  await client.ensureInfoExclude(".pi/");
+  await ensureGitInfoExclude(root, ".pi/");
   await client.createTaskBranch(branch, base);
   await client.addWorktree(staging, branch);
   const stagingGit = client.forWorktree(staging);
   writeFileSync(join(staging, "app.txt"), "prepared\n");
-  await stagingGit.stageAllExcept([]);
+  git(staging, "add", "-A");
   await stagingGit.checkpoint("feat: prepared", false);
   const prepared = await stagingGit.head();
   const tree = await stagingGit.treeAt(prepared);
@@ -36,6 +40,13 @@ async function fixture() {
   writeFileSync(join(root, "plan.md"), "operator draft\n");
   return { root, client, base, prepared, tree, targetRef };
 }
+
+afterEach(() => {
+  for (const directory of temporaryDirectories) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  temporaryDirectories.clear();
+});
 
 describe("WriteAheadPublisher", () => {
   it("publishes with a ref compare-and-swap and restores sanctioned plan dirtiness", async () => {

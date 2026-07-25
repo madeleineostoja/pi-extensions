@@ -1,8 +1,17 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { registerImplementCommand } from "./command.js";
+
+const temporaryDirectories = new Set<string>();
+
+afterEach(() => {
+  for (const directory of temporaryDirectories) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  temporaryDirectories.clear();
+});
 
 describe("/implement VNext command", () => {
   it("returns an all-checked plan as a no-op without allocating a run", async () => {
@@ -15,6 +24,7 @@ describe("/implement VNext command", () => {
     };
     registerImplementCommand(pi as never);
     const root = mkdtempSync(join(tmpdir(), "pi-implement-command-"));
+    temporaryDirectories.add(root);
     const plan = join(root, "plan.md");
     writeFileSync(plan, "# Plan\n\n- [x] Finished\n");
     const notifications: Array<{ message: string; level: string }> = [];

@@ -1,15 +1,13 @@
-import { createHash, randomBytes } from "node:crypto";
-import { ensureGitInfoExclude } from "@pi-extensions/lib";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
-  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { GitProcess, type ProcessFailureKind } from "./git-process.js";
 
 export type CommandResult = {
@@ -47,7 +45,6 @@ export async function changedPathsBetween(
 
 export type GitClient = {
   root(): Promise<string>;
-  mainRoot(): Promise<string>;
   checkoutIdentity(): Promise<string>;
   currentBranch(): Promise<string>;
   activeOperation(): Promise<string | undefined>;
@@ -56,71 +53,35 @@ export type GitClient = {
   tree(): Promise<string>;
   treeAt(commit: string): Promise<string>;
   isAncestor(ancestor: string, descendant: string): Promise<boolean>;
-  isAmendOf(before: string, after: string): Promise<boolean>;
-  status(): Promise<string>;
   isClean(): Promise<boolean>;
   isCleanExcept(paths: string[]): Promise<boolean>;
-  stageAllExcept(paths: string[]): Promise<void>;
-  stagePaths(paths: string[]): Promise<void>;
   hasStagedChanges(): Promise<boolean>;
-  stagedDiffStat(): Promise<string>;
   stagedNameStatus(): Promise<string>;
   stagedDiff(): Promise<string>;
-  stagedDeltaFromPatch(
-    previousPatch: string,
-  ): Promise<{ diff: string; nameStatus: string }>;
-  diffRangeNameStatus(baseSha: string, headSha: string): Promise<string>;
-  stagedDiffExcept(paths: string[]): Promise<string>;
-  workingDiff(): Promise<string>;
-  workingDiffExcept(paths: string[]): Promise<string>;
   nonignoredUntracked(): Promise<string[]>;
-  nonignoredUntrackedFingerprint(): Promise<string>;
   abortActiveOperation(): Promise<void>;
-  restoreSnapshot(
-    head: string,
-    stagedPatch: string,
-    workingPatch: string,
-    protectedPaths: string[],
-  ): Promise<void>;
   stagedFingerprint(): Promise<string>;
   worktreeFingerprintExcept(paths: string[]): Promise<string>;
   restoreWorktreeFromIndexExcept(paths: string[]): Promise<void>;
-  restoreStagedPatch(patch: string, protectedPaths: string[]): Promise<void>;
   checkpoint(message: string, amend: boolean): Promise<CommandResult>;
-  runCheckpointHooks(checkpoint: string): Promise<CommandResult>;
-  rewordInternal(message: string): Promise<CommandResult>;
-  commit(message: string): Promise<CommandResult>;
-  reword(message: string): Promise<CommandResult>;
-  mergeFastForward(commitSha: string): Promise<CommandResult>;
   updateRef?(
     ref: string,
     nextSha: string,
     expectedSha: string,
   ): Promise<CommandResult>;
-  reset(): Promise<void>;
   resetHard(commitSha: string): Promise<void>;
   synchronizeWorktree?(commitSha: string): Promise<void>;
-  aheadOfBase(branchName: string, baseSha: string): Promise<boolean>;
-  cherryPickNoCommit(commitSha: string): Promise<CommandResult>;
   applyPatch(patch: string): Promise<CommandResult>;
-  cherryPickAbort(): Promise<void>;
   createTaskBranch(branchName: string, baseSha: string): Promise<void>;
   addWorktree(worktreePath: string, branchName: string): Promise<void>;
   removeWorktree(worktreePath: string): Promise<void>;
   deleteTaskBranch(branchName: string): Promise<void>;
   diffRange(baseSha: string, headSha: string): Promise<string>;
   changedPathsBetween?(baseSha: string, headSha: string): Promise<string[]>;
-  diffRangeExcept(
-    baseSha: string,
-    headSha: string,
-    paths: string[],
-  ): Promise<string>;
   listBranchesMatching(pattern: string): Promise<string[]>;
   listWorktrees(): Promise<string[]>;
-  ensureInfoExclude(pattern: string): Promise<void>;
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient;
   withSignal?(signal?: AbortSignal): GitClient;
-  onIdle?(): Promise<void>;
 };
 
 export class ExecGitClient implements GitClient {
@@ -136,19 +97,6 @@ export class ExecGitClient implements GitClient {
 
   async root(): Promise<string> {
     return (await this.run(["rev-parse", "--show-toplevel"])).stdout.trim();
-  }
-
-  // Resolves the main checkout even when called from a linked worktree, so
-  // state pathing and cleanup never operate relative to a user-owned worktree.
-  async mainRoot(): Promise<string> {
-    const commonDir = (
-      await this.run([
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-common-dir",
-      ])
-    ).stdout.trim();
-    return dirname(commonDir);
   }
 
   async checkoutIdentity(): Promise<string> {
@@ -217,44 +165,8 @@ export class ExecGitClient implements GitClient {
     );
   }
 
-  async isAmendOf(before: string, after: string): Promise<boolean> {
-    if (before === after) {
-      return true;
-    }
-    const [
-      beforeParents,
-      afterParents,
-      beforeTree,
-      afterTree,
-      beforeMessage,
-      afterMessage,
-    ] = await Promise.all([
-      this.run(["show", "-s", "--format=%P", before], true),
-      this.run(["show", "-s", "--format=%P", after], true),
-      this.run(["rev-parse", `${before}^{tree}`], true),
-      this.run(["rev-parse", `${after}^{tree}`], true),
-      this.run(["show", "-s", "--format=%B", before], true),
-      this.run(["show", "-s", "--format=%B", after], true),
-    ]);
-    return (
-      beforeParents.exitCode === 0 &&
-      afterParents.exitCode === 0 &&
-      beforeTree.exitCode === 0 &&
-      afterTree.exitCode === 0 &&
-      beforeMessage.exitCode === 0 &&
-      afterMessage.exitCode === 0 &&
-      beforeParents.stdout.trim() === afterParents.stdout.trim() &&
-      beforeTree.stdout.trim() === afterTree.stdout.trim() &&
-      beforeMessage.stdout === afterMessage.stdout
-    );
-  }
-
-  async status(): Promise<string> {
-    return (await this.run(["status", "--porcelain"])).stdout;
-  }
-
   async isClean(): Promise<boolean> {
-    return isCleanStatus(await this.status());
+    return isCleanStatus((await this.run(["status", "--porcelain"])).stdout);
   }
 
   async isCleanExcept(paths: string[]): Promise<boolean> {
@@ -263,27 +175,6 @@ export class ExecGitClient implements GitClient {
       await this.run(["status", "--porcelain", "--", ":/", ...excludes])
     ).stdout;
     return isCleanStatus(status);
-  }
-
-  async stageAllExcept(paths: string[]): Promise<void> {
-    await this.run(["reset", "-q"]);
-    const excluded = new Set(await this.repoRelativePaths(paths));
-    const candidates = await this.changedPaths();
-    const specs = candidates
-      .filter((path) => !excluded.has(path))
-      .map((path) => `:(top,literal)${path}`);
-    if (specs.length) {
-      await this.run(["add", "-A", "--", ...specs]);
-    }
-  }
-
-  async stagePaths(paths: string[]): Promise<void> {
-    const specs = (await this.repoRelativePaths(paths)).map(
-      (path) => `:(top,literal)${path}`,
-    );
-    if (specs.length) {
-      await this.run(["add", "-A", "--", ...specs]);
-    }
   }
 
   async hasStagedChanges(): Promise<boolean> {
@@ -302,87 +193,13 @@ export class ExecGitClient implements GitClient {
     );
   }
 
-  async stagedDiffStat(): Promise<string> {
-    return (await this.run(["diff", "--cached", "--stat", "HEAD"])).stdout;
-  }
-
   async stagedNameStatus(): Promise<string> {
     return (await this.run(["diff", "--cached", "--name-status", "HEAD"]))
       .stdout;
   }
 
-  async unstagedNameStatus(): Promise<string> {
-    return (await this.run(["diff", "--name-status"])).stdout;
-  }
-
   async stagedDiff(): Promise<string> {
     return (await this.run(["diff", "--cached", "--binary", "HEAD"])).stdout;
-  }
-
-  async stagedDeltaFromPatch(
-    previousPatch: string,
-  ): Promise<{ diff: string; nameStatus: string }> {
-    const tempIndex = join(
-      tmpdir(),
-      `pi-implement-index-${process.pid}-${randomBytes(8).toString("hex")}`,
-    );
-    try {
-      await this.run(["read-tree", "HEAD"], false, {
-        GIT_INDEX_FILE: tempIndex,
-      });
-      if (previousPatch.trim()) {
-        const patchPath = `${tempIndex}.patch`;
-        try {
-          writeFileSync(patchPath, previousPatch, "utf-8");
-          await this.run(
-            ["apply", "--index", "--whitespace=nowarn", patchPath],
-            false,
-            { GIT_INDEX_FILE: tempIndex },
-          );
-        } finally {
-          rmSync(patchPath, { force: true });
-        }
-      }
-      const previousTree = (
-        await this.run(["write-tree"], false, { GIT_INDEX_FILE: tempIndex })
-      ).stdout.trim();
-      const currentTree = (await this.run(["write-tree"])).stdout.trim();
-      const [diff, nameStatus] = await Promise.all([
-        this.run(["diff", "--binary", previousTree, currentTree]),
-        this.run(["diff", "--name-status", previousTree, currentTree]),
-      ]);
-      return { diff: diff.stdout, nameStatus: nameStatus.stdout };
-    } finally {
-      rmSync(tempIndex, { force: true });
-    }
-  }
-
-  async stagedDiffExcept(paths: string[]): Promise<string> {
-    return (
-      await this.run([
-        "diff",
-        "--cached",
-        "--binary",
-        "HEAD",
-        "--",
-        ...(await this.protectedPathspecs(paths)),
-      ])
-    ).stdout;
-  }
-
-  async workingDiff(): Promise<string> {
-    return (await this.run(["diff", "--binary"])).stdout;
-  }
-
-  async workingDiffExcept(paths: string[]): Promise<string> {
-    return (
-      await this.run([
-        "diff",
-        "--binary",
-        "--",
-        ...(await this.protectedPathspecs(paths)),
-      ])
-    ).stdout;
   }
 
   async nonignoredUntracked(): Promise<string[]> {
@@ -392,20 +209,6 @@ export class ExecGitClient implements GitClient {
       .split("\0")
       .filter(Boolean)
       .sort();
-  }
-
-  async nonignoredUntrackedFingerprint(): Promise<string> {
-    const paths = await this.nonignoredUntracked();
-    return createHash("sha256")
-      .update(
-        paths
-          .map((path) => {
-            const content = readFileSync(join(this.cwd, path));
-            return `${path}\0${createHash("sha256").update(content).digest("hex")}`;
-          })
-          .join("\0"),
-      )
-      .digest("hex");
   }
 
   async stagedFingerprint(): Promise<string> {
@@ -464,51 +267,6 @@ export class ExecGitClient implements GitClient {
     }
   }
 
-  async restoreSnapshot(
-    head: string,
-    stagedPatch: string,
-    workingPatch: string,
-    protectedPaths: string[],
-  ): Promise<void> {
-    await this.resetHard(head);
-    await this.restoreWorktreeFromIndexExcept(protectedPaths);
-    const tmpDir = mkdtempSync(join(tmpdir(), "pi-implement-snapshot-"));
-    const stagedPath = join(tmpDir, "staged.patch");
-    const workingPath = join(tmpDir, "working.patch");
-    try {
-      writeFileSync(stagedPath, stagedPatch, "utf-8");
-      writeFileSync(workingPath, workingPatch, "utf-8");
-      if (stagedPatch.trim()) {
-        await this.run(["apply", "--index", "--whitespace=nowarn", stagedPath]);
-      }
-      if (workingPatch.trim()) {
-        await this.run(["apply", "--whitespace=nowarn", workingPath]);
-      }
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  }
-
-  async restoreStagedPatch(
-    patch: string,
-    protectedPaths: string[],
-  ): Promise<void> {
-    const pathspecs = await this.protectedPathspecs(protectedPaths);
-    const tmpDir = mkdtempSync(join(tmpdir(), "pi-implement-patch-"));
-    const patchPath = join(tmpDir, "candidate.patch");
-    try {
-      writeFileSync(patchPath, patch, "utf-8");
-      await this.run(["reset", "-q"]);
-      await this.run(["restore", "-q", "--worktree", "--", ...pathspecs]);
-      await this.run(["clean", "-fd", "--", ...pathspecs]);
-      if (patch.trim()) {
-        await this.run(["apply", "--index", "--whitespace=nowarn", patchPath]);
-      }
-    } finally {
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  }
-
   async checkpoint(message: string, amend: boolean): Promise<CommandResult> {
     return this.run(
       amend
@@ -516,30 +274,6 @@ export class ExecGitClient implements GitClient {
         : ["commit", "--no-verify", "-m", message],
       true,
     );
-  }
-
-  async runCheckpointHooks(checkpoint: string): Promise<CommandResult> {
-    const reset = await this.run(["reset", "--soft", `${checkpoint}^`], true);
-    if (reset.exitCode !== 0) {
-      return reset;
-    }
-    return this.run(["commit", "-C", checkpoint], true);
-  }
-
-  async rewordInternal(message: string): Promise<CommandResult> {
-    return this.run(["commit", "--amend", "--no-verify", "-m", message], true);
-  }
-
-  async commit(message: string): Promise<CommandResult> {
-    return this.run(["commit", "-m", message], true);
-  }
-
-  async reword(message: string): Promise<CommandResult> {
-    return this.run(["commit", "--amend", "-m", message], true);
-  }
-
-  async mergeFastForward(commitSha: string): Promise<CommandResult> {
-    return this.run(["merge", "--ff-only", commitSha], true);
   }
 
   async updateRef(
@@ -556,32 +290,12 @@ export class ExecGitClient implements GitClient {
     );
   }
 
-  async reset(): Promise<void> {
-    await this.run(["reset"]);
-  }
-
   async resetHard(commitSha: string): Promise<void> {
     await this.run(["reset", "--hard", commitSha]);
   }
 
   async synchronizeWorktree(commitSha: string): Promise<void> {
     await this.run(["read-tree", "--reset", "-u", commitSha]);
-  }
-
-  async aheadOfBase(branchName: string, baseSha: string): Promise<boolean> {
-    const result = await this.run(
-      ["rev-list", "--count", `${baseSha}..${branchName}`],
-      true,
-    );
-    if (result.exitCode !== 0) {
-      return false;
-    }
-    const count = parseInt(result.stdout.trim(), 10);
-    return !isNaN(count) && count > 0;
-  }
-
-  async cherryPickNoCommit(commitSha: string): Promise<CommandResult> {
-    return this.run(["cherry-pick", "--no-commit", commitSha], true);
   }
 
   async applyPatch(patch: string): Promise<CommandResult> {
@@ -596,10 +310,6 @@ export class ExecGitClient implements GitClient {
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
-  }
-
-  async cherryPickAbort(): Promise<void> {
-    await this.run(["cherry-pick", "--abort"]);
   }
 
   async createTaskBranch(branchName: string, baseSha: string): Promise<void> {
@@ -643,11 +353,6 @@ export class ExecGitClient implements GitClient {
       .stdout;
   }
 
-  async diffRangeNameStatus(baseSha: string, headSha: string): Promise<string> {
-    return (await this.run(["diff", "--name-status", `${baseSha}..${headSha}`]))
-      .stdout;
-  }
-
   async changedPathsBetween(
     baseSha: string,
     headSha: string,
@@ -663,22 +368,6 @@ export class ExecGitClient implements GitClient {
     ).stdout
       .split("\0")
       .filter(Boolean);
-  }
-
-  async diffRangeExcept(
-    baseSha: string,
-    headSha: string,
-    paths: string[],
-  ): Promise<string> {
-    return (
-      await this.run([
-        "diff",
-        "--binary",
-        `${baseSha}..${headSha}`,
-        "--",
-        ...(await this.protectedPathspecs(paths)),
-      ])
-    ).stdout;
   }
 
   async listBranchesMatching(pattern: string): Promise<string[]> {
@@ -700,16 +389,8 @@ export class ExecGitClient implements GitClient {
     return paths;
   }
 
-  async ensureInfoExclude(pattern: string): Promise<void> {
-    await ensureGitInfoExclude(this.cwd, pattern);
-  }
-
   withSignal(signal?: AbortSignal): GitClient {
     return new ExecGitClient(this.cwd, this.mainRepoRoot, signal);
-  }
-
-  onIdle(): Promise<void> {
-    return this.process.onIdle();
   }
 
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient {

@@ -44,7 +44,7 @@ describe("TaskWorkspaceManager", () => {
     await manager.ensure(workspace);
     const taskGit = client.forWorktree(workspace.worktreePath);
     writeFileSync(join(workspace.worktreePath, "file.txt"), "candidate\n");
-    await taskGit.stageAllExcept([]);
+    execFileSync("git", ["add", "-A"], { cwd: workspace.worktreePath });
     await taskGit.checkpoint("feat: candidate", false);
     const checkpoint = await taskGit.head();
 

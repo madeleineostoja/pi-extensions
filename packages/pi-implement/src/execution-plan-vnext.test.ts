@@ -198,6 +198,25 @@ describe("strict execution-plan compiler", () => {
     ).toBe(true);
   });
 
+  it("compiles consistently indented source tasks", () => {
+    const indented = `# Plan\n\n  - [ ] First branch\n  - [ ] Second branch\n  - [ ] Join branches\n`;
+
+    const result = compileExecutionPlan(plannerPlan(), input(indented));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error(result.reason);
+    }
+    expect(result.value.tasks.map((task) => task.sourceAnchor)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          lineNumber: 3,
+          lineText: "  - [ ] First branch",
+        }),
+      ]),
+    );
+  });
+
   it("binds sequential unchecked indexes and host-owned source identity", () => {
     const result = compileExecutionPlan(plannerPlan(), input());
 

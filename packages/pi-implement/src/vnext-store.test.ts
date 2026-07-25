@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   compileExecutionPlan,
   type ExecutionPlan,
@@ -29,6 +29,13 @@ function root(): string {
   roots.push(value);
   return value;
 }
+
+afterEach(() => {
+  for (const directory of roots) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  roots.length = 0;
+});
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");

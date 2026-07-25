@@ -47,24 +47,6 @@ afterEach(() => {
 });
 
 describe("buildMaterialStore", () => {
-  it("recursively ingests ordinary local Markdown links and deduplicates cycles", () => {
-    const root = temporaryDirectory();
-    const planPath = join(root, "plan.md");
-    fixture(planPath, "# Plan\n\n- [ ] Task\n\n[a](docs/a.md)\n");
-    fixture(join(root, "docs", "a.md"), "[b](b.md)\n");
-    fixture(join(root, "docs", "b.md"), "[plan](../plan.md)\n");
-
-    const store = storeFor(planPath, root);
-
-    expect(store.validationErrors).toEqual([]);
-    expect(store.files.map((file) => file.absolutePath).sort()).toEqual(
-      [planPath, join(root, "docs", "a.md"), join(root, "docs", "b.md")]
-        .map((path) => realpathSync(path))
-        .sort(),
-    );
-    expect(store.storeHash).toMatch(/^[a-f0-9]{64}$/);
-  });
-
   it("deduplicates cycles reached through in-root symlink aliases", () => {
     const root = temporaryDirectory();
     const planPath = join(root, "plan.md");

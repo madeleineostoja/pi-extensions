@@ -1,16 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  normalizeCheckboxMarker,
-  resolveCorpusPath,
-  sha256,
-} from "./source-integrity.js";
+import { resolveCorpusPath, sha256 } from "./source-integrity.js";
 
 describe("source integrity", () => {
-  it("normalizes only a checkbox marker", () => {
-    expect(normalizeCheckboxMarker("  - [x] Task")).toBe("  - [ ] Task");
-    expect(normalizeCheckboxMarker("  - Task")).toBe("  - Task");
-  });
-
   it("resolves only references in the immutable corpus", () => {
     const planPath = "/checkout/plans/plan.md";
     const corpus = [

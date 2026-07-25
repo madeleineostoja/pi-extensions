@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { ensureGitInfoExclude } from "@pi-extensions/lib";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   CandidateReplayEngine,
   reconciliationGateResult,
@@ -16,8 +17,11 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" });
 }
 
+const temporaryDirectories = new Set<string>();
+
 function repository(): string {
   const root = mkdtempSync(join(tmpdir(), "pi-implement-replay-"));
+  temporaryDirectories.add(root);
   git(root, "init", "-q");
   git(root, "config", "user.email", "test@example.com");
   git(root, "config", "user.name", "Test");
@@ -34,7 +38,7 @@ async function candidate(
   content: string,
 ): Promise<ReplayCandidate> {
   const client = new ExecGitClient(root);
-  await client.ensureInfoExclude(".pi/");
+  await ensureGitInfoExclude(root, ".pi/");
   const baseSha = await client.head();
   const branch = `candidate-${path}`;
   const worktree = join(root, ".pi", branch);
@@ -42,7 +46,7 @@ async function candidate(
   await client.addWorktree(worktree, branch);
   const workspace = client.forWorktree(worktree);
   writeFileSync(join(worktree, path), content);
-  await workspace.stageAllExcept([]);
+  git(worktree, "add", "-A");
   await workspace.checkpoint(`feat: ${path}`, false);
   const commitSha = await workspace.head();
   return {
@@ -60,6 +64,13 @@ function engine(root: string): CandidateReplayEngine {
     runId: "run-1",
   });
 }
+
+afterEach(() => {
+  for (const directory of temporaryDirectories) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  temporaryDirectories.clear();
+});
 
 describe("CandidateReplayEngine", () => {
   it("prepares a clean candidate in disposable staging without touching the target", async () => {
