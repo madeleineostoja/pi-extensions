@@ -349,6 +349,7 @@ export function createVNextRuntime(args: {
   return new VNextSchedulerActor({
     store: args.store,
     targetHead: () => args.git.head(),
+    targetDiff: (from, to) => args.git.diffRange(from, to),
     captureTargetBoundary: async () => {
       const state = args.store.read();
       const protectedPaths = Object.keys(state.protectedArtifactHashes);
@@ -444,11 +445,45 @@ export function createVNextRuntime(args: {
           artifactsPath,
           roles: args.roles.reviewer,
         });
+        const projectionDebt =
+          outcome.kind !== "repository_state" ||
+          effect.workstream.kind !== "source"
+            ? undefined
+            : (() => {
+                const taskIds =
+                  state.workstreams.source[effect.workstream.id]?.taskIds ?? [];
+                const plan = readExecutionPlan(
+                  join(args.lease.paths.runs, state.run.id),
+                );
+                if (!plan || taskIds.length === 0) {
+                  return undefined;
+                }
+                const tasks = taskIds.map((taskId) =>
+                  plan.tasks.find((task) => task.id === taskId),
+                );
+                if (tasks.some((task) => !task)) {
+                  throw new Error(
+                    "Satisfaction assessment task is missing its source anchor.",
+                  );
+                }
+                const projection = createCheckboxProjectionIntent({
+                  id: `projection:${state.run.id}:${effect.workstream.id}`,
+                  checkoutRoot: state.run.checkout.root,
+                  taskIds,
+                  checkboxes: tasks.map((task) => task!.sourceAnchor),
+                });
+                return {
+                  ...projection,
+                  reason: "Approve repository-state satisfaction assessment.",
+                  artifactPath: projection.canonicalPath,
+                };
+              })();
         await dispatch({
           kind: "review_completed",
           workstream: effect.workstream,
           leaseId: effect.leaseId,
           outcome,
+          ...(projectionDebt ? { projectionDebt } : {}),
         });
         return;
       }
@@ -484,6 +519,23 @@ export function createVNextRuntime(args: {
                 changedPaths: replay.staging.replayPaths ?? [],
                 stateEvidence: replay.kind,
               };
+        if (replay.kind === "repository_assessment_required") {
+          if (effect.workstream.kind !== "source") {
+            throw new Error("Only source workstreams may assess satisfaction.");
+          }
+          await dispatch({
+            kind: "repository_assessment_required",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            targetSha: replay.staging.targetBaseSha,
+            interveningDiff: await args.git.diffRange(
+              candidate.baseSha,
+              replay.staging.targetBaseSha,
+            ),
+            evidence: replay.evidence,
+          });
+          return;
+        }
         if (replay.kind !== "prepared") {
           if (replay.kind === "cancelled") {
             return;
@@ -502,6 +554,45 @@ export function createVNextRuntime(args: {
                   ? replay.evidence
                   : "Replay did not produce a publishable candidate.",
               workspace,
+            },
+          });
+          return;
+        }
+        if (
+          effect.workstream.kind === "source" &&
+          candidate.commitSha === candidate.baseSha &&
+          replay.staging.targetBaseSha === candidate.baseSha
+        ) {
+          const plan = readExecutionPlan(
+            join(args.lease.paths.runs, state.run.id),
+          );
+          const taskIds =
+            state.workstreams.source[effect.workstream.id]?.taskIds ?? [];
+          const tasks = taskIds.map((taskId) =>
+            plan?.tasks.find((task) => task.id === taskId),
+          );
+          if (!plan || tasks.some((task) => !task)) {
+            throw new Error(
+              "Satisfaction completion task is missing its source anchor.",
+            );
+          }
+          const projection = createCheckboxProjectionIntent({
+            id: `projection:${state.run.id}:${effect.workstream.id}`,
+            checkoutRoot: state.run.checkout.root,
+            taskIds,
+            checkboxes: tasks.map((task) => task!.sourceAnchor),
+          });
+          await dispatch({
+            kind: "satisfaction_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            targetSha: replay.staging.targetBaseSha,
+            evidence:
+              "The reviewed satisfaction claim was assessed on its current target.",
+            projectionDebt: {
+              ...projection,
+              reason: "Approve current-target satisfaction claim.",
+              artifactPath: projection.canonicalPath,
             },
           });
           return;

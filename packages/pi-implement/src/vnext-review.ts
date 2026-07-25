@@ -66,6 +66,13 @@ export type VNextReviewPacket = {
 
 export type VNextReviewOutcome =
   | {
+      kind: "repository_state";
+      candidateId: string;
+      assessedTargetSha: string;
+      completion: InitialWorkstreamReviewCompletion;
+      evidence: string;
+    }
+  | {
       kind: "initial";
       candidateId: string;
       completion: InitialWorkstreamReviewCompletion;
@@ -150,8 +157,10 @@ export function buildVNextReviewPacket(args: {
       checkpoints[taskId] = task.checkpoint;
     }
     if (
-      task?.phase === "satisfaction_claimed" ||
-      task?.phase === "reviewed_satisfied"
+      (task?.phase === "satisfaction_claimed" ||
+        task?.phase === "reviewed_satisfied" ||
+        task?.phase === "published") &&
+      task.evidence
     ) {
       satisfiedEvidence[taskId] = task.evidence;
     }
@@ -205,7 +214,7 @@ export async function runVNextWorkstreamReview(args: {
     thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   };
 }): Promise<VNextReviewOutcome> {
-  if (args.workstream.kind === "overall") {
+  if (args.workstream.kind !== "source") {
     return runVNextOverallAnchoredReview({
       ...args,
       workstream: args.workstream,
@@ -219,6 +228,13 @@ export async function runVNextWorkstreamReview(args: {
   if (!runtime || !candidate) {
     throw new Error("A workstream review requires a current candidate.");
   }
+  const assessment = Object.values(args.state.satisfaction.assessments).find(
+    (entry) =>
+      entry.status === "pending" &&
+      entry.candidateId === candidateId &&
+      entry.workstream.kind === "source" &&
+      entry.workstream.id === runtime.id,
+  );
   const review = workstreamReviewState(args.state, args.workstream);
   const previousCandidate = review?.previousCandidateId
     ? args.state.candidates[review.previousCandidateId]
@@ -227,10 +243,12 @@ export async function runVNextWorkstreamReview(args: {
     state: args.state,
     plan: args.plan,
     workstream: args.workstream,
-    baseToTipDiff: await args.git.diffRange(
-      previousCandidate?.commitSha ?? candidate.baseSha,
-      candidate.commitSha,
-    ),
+    baseToTipDiff: assessment
+      ? assessment.interveningDiff
+      : await args.git.diffRange(
+          previousCandidate?.commitSha ?? candidate.baseSha,
+          candidate.commitSha,
+        ),
   });
   const workspace = workstreamWorkspace(args.state, args.workstream.id);
   const worktreePath = workspace.worktreePath;
@@ -243,21 +261,13 @@ export async function runVNextWorkstreamReview(args: {
       "The review workspace does not match its current candidate.",
     );
   }
-  const prompt = review
-    ? buildAnchoredWorkstreamReviewPrompt({
-        worktreePath,
-        candidate,
-        previousCandidate: packet.previousCandidate!,
-        latestDelta: packet.baseToTipDiff,
-        changedPaths: review.latestCorrection?.changedPaths ?? [],
-        correctionEvidence:
-          review.latestCorrection?.evidence ??
-          "No correction evidence was retained.",
-        verification: packet.verificationEvidence?.verification,
-        uncertainty: packet.uncertainty,
-        outstandingFindings: packet.outstandingFindings,
-      })
-    : buildInitialWorkstreamReviewPrompt({
+  if (assessment && (await args.git.head()) !== assessment.targetSha) {
+    throw new Error(
+      "Repository-state assessment target changed before review.",
+    );
+  }
+  const prompt = assessment
+    ? buildInitialWorkstreamReviewPrompt({
         worktreePath,
         candidate,
         diff: packet.baseToTipDiff,
@@ -272,7 +282,42 @@ export async function runVNextWorkstreamReview(args: {
         satisfiedEvidence: packet.satisfiedEvidence,
         verification: packet.verificationEvidence?.verification,
         uncertainty: packet.uncertainty,
-      });
+        repositoryState: {
+          historicalBaseSha: assessment.historicalBaseSha,
+          assessedTargetSha: assessment.targetSha,
+          priorReviewEvidence: review?.evidence ?? [],
+        },
+      })
+    : review
+      ? buildAnchoredWorkstreamReviewPrompt({
+          worktreePath,
+          candidate,
+          previousCandidate: packet.previousCandidate!,
+          latestDelta: packet.baseToTipDiff,
+          changedPaths: review.latestCorrection?.changedPaths ?? [],
+          correctionEvidence:
+            review.latestCorrection?.evidence ??
+            "No correction evidence was retained.",
+          verification: packet.verificationEvidence?.verification,
+          uncertainty: packet.uncertainty,
+          outstandingFindings: packet.outstandingFindings,
+        })
+      : buildInitialWorkstreamReviewPrompt({
+          worktreePath,
+          candidate,
+          diff: packet.baseToTipDiff,
+          contracts: packet.contracts.map((task) => ({
+            id: task.id,
+            title: task.title,
+            ...task.compiledContract,
+            provenance: task.provenance,
+          })),
+          sourceMaterial: packet.sourceMaterial,
+          checkpoints: packet.checkpoints,
+          satisfiedEvidence: packet.satisfiedEvidence,
+          verification: packet.verificationEvidence?.verification,
+          uncertainty: packet.uncertainty,
+        });
   const handle = await args.subagents.spawn({
     type: args.roles?.type ?? "pi-implement:reviewer",
     role: "reviewer",
@@ -283,7 +328,7 @@ export async function runVNextWorkstreamReview(args: {
     cwd: workspace.worktreePath,
     prompt,
     readOnly: true,
-    completion: (review
+    completion: (review && !assessment
       ? {
           description: "Assess every outstanding finding.",
           schema: anchoredWorkstreamReviewSchema,
@@ -299,9 +344,10 @@ export async function runVNextWorkstreamReview(args: {
   }
   if (
     (await workspaceGit.head()) !== candidate.commitSha ||
-    !(await workspaceGit.isClean())
+    !(await workspaceGit.isClean()) ||
+    (assessment && (await args.git.head()) !== assessment.targetSha)
   ) {
-    throw new Error("The reviewer changed the candidate workspace.");
+    throw new Error("The reviewer changed the assessed repository state.");
   }
   if (review && previousCandidate) {
     const changedPaths = await changedPathsBetween(
@@ -319,19 +365,27 @@ export async function runVNextWorkstreamReview(args: {
     packet,
     completion: result.result,
   });
-  return review
+  return assessment
     ? {
-        kind: "anchored",
+        kind: "repository_state",
         candidateId: candidate.id,
-        completion: result.result as AnchoredWorkstreamReviewCompletion,
-        evidence,
-      }
-    : {
-        kind: "initial",
-        candidateId: candidate.id,
+        assessedTargetSha: assessment.targetSha,
         completion: result.result as InitialWorkstreamReviewCompletion,
         evidence,
-      };
+      }
+    : review
+      ? {
+          kind: "anchored",
+          candidateId: candidate.id,
+          completion: result.result as AnchoredWorkstreamReviewCompletion,
+          evidence,
+        }
+      : {
+          kind: "initial",
+          candidateId: candidate.id,
+          completion: result.result as InitialWorkstreamReviewCompletion,
+          evidence,
+        };
 }
 
 async function runVNextOverallAnchoredReview(args: {

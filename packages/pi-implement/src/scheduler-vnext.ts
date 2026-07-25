@@ -77,6 +77,7 @@ export type VNextSchedulerEvent =
       workstream: RuntimeWorkstream;
       leaseId: string;
       outcome: VNextReviewOutcome;
+      projectionDebt?: VNextRunState["projectionDebt"][number];
     }
   | { kind: "recovery_requested"; workstream: RuntimeWorkstream; now: string }
   | {
@@ -102,6 +103,28 @@ export type VNextSchedulerEvent =
       kind: "reconciliation_requested";
       workstream: RuntimeWorkstream;
       now: string;
+    }
+  | {
+      kind: "satisfaction_reassessment_requested";
+      workstream: Extract<RuntimeWorkstream, { kind: "source" }>;
+      targetSha: string;
+      interveningDiff: string;
+    }
+  | {
+      kind: "satisfaction_completed";
+      workstream: Extract<RuntimeWorkstream, { kind: "source" }>;
+      leaseId: string;
+      targetSha: string;
+      evidence: string;
+      projectionDebt?: VNextRunState["projectionDebt"][number];
+    }
+  | {
+      kind: "repository_assessment_required";
+      workstream: Extract<RuntimeWorkstream, { kind: "source" }>;
+      leaseId: string;
+      targetSha: string;
+      interveningDiff: string;
+      evidence: string;
     }
   | {
       kind: "reconciliation_completed";
@@ -248,8 +271,13 @@ function hasCompletionReceipt(
   ) {
     return false;
   }
-  return Object.values(state.publication.receipts).some(
-    (receipt) => receipt.candidateId === workstream.candidateId,
+  return (
+    Object.values(state.publication.receipts).some(
+      (receipt) => receipt.candidateId === workstream.candidateId,
+    ) ||
+    Object.values(state.satisfaction.receipts).some(
+      (receipt) => receipt.candidateId === workstream.candidateId,
+    )
   );
 }
 
@@ -369,6 +397,27 @@ export function reduceVNextRunEvent(
             event.baseShas[workstream.id] !== runtime.baseSha
           ) {
             return reject("workstream runtime base is immutable");
+          }
+          const staleSatisfactionDependency = runtime.dependsOn.some(
+            (dependencyId) => {
+              const dependency = state.workstreams.source[dependencyId];
+              const receipts = Object.values(
+                state.satisfaction.receipts,
+              ).filter(
+                (receipt) => receipt.candidateId === dependency?.candidateId,
+              );
+              return (
+                receipts.length > 0 &&
+                !receipts.some(
+                  (receipt) => receipt.assessedTargetSha === assignedBase,
+                )
+              );
+            },
+          );
+          if (staleSatisfactionDependency) {
+            return reject(
+              "a dependency satisfaction receipt is stale for the assigned target base",
+            );
           }
           runtime.baseSha = assignedBase;
         }
@@ -580,6 +629,24 @@ export function reduceVNextRunEvent(
         return reject("review result does not own the current candidate lease");
       }
       const key = reviewKey(event.workstream);
+      const assessedTargetSha =
+        event.outcome.kind === "repository_state"
+          ? event.outcome.assessedTargetSha
+          : undefined;
+      const assessment = assessedTargetSha
+        ? Object.values(state.satisfaction.assessments).find(
+            (entry) =>
+              entry.status === "pending" &&
+              entry.candidateId === event.outcome.candidateId &&
+              entry.targetSha === assessedTargetSha &&
+              sameWorkstream(entry.workstream, event.workstream),
+          )
+        : undefined;
+      if (event.outcome.kind === "repository_state" && !assessment) {
+        return reject(
+          "repository-state review does not own a pending assessment",
+        );
+      }
       try {
         if (event.outcome.kind === "initial") {
           if (state.reviews[key]) {
@@ -597,6 +664,35 @@ export function reduceVNextRunEvent(
           for (const finding of update.findings) {
             state.findings[finding.id] = finding;
           }
+        } else if (event.outcome.kind === "repository_state") {
+          const review = workstreamReviewState(state, event.workstream);
+          if (!review || review.candidateId !== event.outcome.candidateId) {
+            return reject(
+              "repository-state review is not bound to its candidate",
+            );
+          }
+          const findings =
+            event.outcome.completion.verdict === "changes_requested"
+              ? event.outcome.completion.findings.map((finding, index) => ({
+                  ...finding,
+                  id: `${reviewKey(event.workstream).replace(":", "-")}-repository-${review.round + 1}-${index + 1}`,
+                  candidateId: event.outcome.candidateId,
+                  workstream: event.workstream,
+                  origin: "regression" as const,
+                  introducedRound: review.round + 1,
+                  status: "open" as const,
+                }))
+              : [];
+          state.reviews[key] = {
+            ...review,
+            round: review.round + 1,
+            outstandingIds: findings.map((finding) => finding.id),
+            evidence: [...review.evidence, event.outcome.evidence],
+          };
+          for (const finding of findings) {
+            state.findings[finding.id] = finding;
+          }
+          assessment!.status = findings.length === 0 ? "approved" : "rejected";
         } else {
           const review = workstreamReviewState(state, event.workstream);
           if (!review || review.candidateId !== event.outcome.candidateId) {
@@ -641,6 +737,36 @@ export function reduceVNextRunEvent(
       if (outstandingFindingIds.length > 0) {
         workstream.phase = "recovering";
         return accept();
+      }
+      if (event.outcome.kind === "repository_state") {
+        if (event.workstream.kind !== "source") {
+          return reject(
+            "only source workstreams may record satisfaction receipts",
+          );
+        }
+        const receiptId = `satisfaction:${event.outcome.candidateId}:${event.outcome.assessedTargetSha}`;
+        state.satisfaction.receipts[receiptId] = {
+          id: receiptId,
+          candidateId: event.outcome.candidateId,
+          workstream: event.workstream,
+          assessedTargetSha: event.outcome.assessedTargetSha,
+          evidence: event.outcome.evidence,
+          assessedAt: new Date().toISOString(),
+        };
+        workstream.phase = "completed";
+        if (
+          event.projectionDebt &&
+          !state.projectionDebt.some(
+            (debt) => debt.id === event.projectionDebt!.id,
+          )
+        ) {
+          state.projectionDebt.push(event.projectionDebt);
+        }
+        return accept(
+          event.projectionDebt
+            ? [{ kind: "run_projection", debtId: event.projectionDebt.id }]
+            : [],
+        );
       }
       approveWorkstream(state, event.workstream);
       return accept();
@@ -814,6 +940,155 @@ export function reduceVNextRunEvent(
         };
         state.phase = "paused";
       }
+      return accept();
+    }
+
+    case "satisfaction_completed": {
+      const lease = ownedLease(
+        state,
+        event.leaseId,
+        event.workstream,
+        "reconciliation",
+      );
+      const workstream = state.workstreams.source[event.workstream.id];
+      const candidateId = workstream?.candidateId;
+      const candidate = candidateId ? state.candidates[candidateId] : undefined;
+      if (
+        !lease ||
+        !workstream ||
+        !candidate ||
+        workstream.phase !== "reconciling" ||
+        candidate.commitSha !== candidate.baseSha ||
+        candidate.baseSha !== event.targetSha
+      ) {
+        return reject(
+          "satisfaction completion does not own a current candidate",
+        );
+      }
+      const assessmentId = `assessment:${candidate.id}:${event.targetSha}`;
+      state.satisfaction.assessments[assessmentId] = {
+        id: assessmentId,
+        candidateId: candidate.id,
+        workstream: event.workstream,
+        historicalBaseSha: candidate.baseSha,
+        targetSha: event.targetSha,
+        interveningDiff: "",
+        evidence: event.evidence,
+        status: "approved",
+      };
+      const receiptId = `satisfaction:${candidate.id}:${event.targetSha}`;
+      state.satisfaction.receipts[receiptId] = {
+        id: receiptId,
+        candidateId: candidate.id,
+        workstream: event.workstream,
+        assessedTargetSha: event.targetSha,
+        evidence: event.evidence,
+        assessedAt: new Date().toISOString(),
+      };
+      delete state.processLeases[lease.id];
+      workstream.phase = "completed";
+      if (
+        event.projectionDebt &&
+        !state.projectionDebt.some(
+          (debt) => debt.id === event.projectionDebt!.id,
+        )
+      ) {
+        state.projectionDebt.push(event.projectionDebt);
+      }
+      return accept(
+        event.projectionDebt
+          ? [{ kind: "run_projection", debtId: event.projectionDebt.id }]
+          : [],
+      );
+    }
+
+    case "repository_assessment_required": {
+      const lease = ownedLease(
+        state,
+        event.leaseId,
+        event.workstream,
+        "reconciliation",
+      );
+      const workstream = state.workstreams.source[event.workstream.id];
+      const candidateId = workstream?.candidateId;
+      const candidate = candidateId ? state.candidates[candidateId] : undefined;
+      if (
+        !lease ||
+        !workstream ||
+        !candidate ||
+        workstream.phase !== "reconciling" ||
+        candidate.commitSha !== candidate.baseSha
+      ) {
+        return reject(
+          "repository assessment does not own a satisfied candidate",
+        );
+      }
+      const assessmentId = `assessment:${candidate.id}:${event.targetSha}`;
+      const existing = state.satisfaction.assessments[assessmentId];
+      if (
+        existing &&
+        JSON.stringify(existing) !==
+          JSON.stringify({
+            id: assessmentId,
+            candidateId: candidate.id,
+            workstream: event.workstream,
+            historicalBaseSha: candidate.baseSha,
+            targetSha: event.targetSha,
+            interveningDiff: event.interveningDiff,
+            evidence: event.evidence,
+            status: "pending",
+          })
+      ) {
+        return reject("repository assessment identity is immutable");
+      }
+      state.satisfaction.assessments[assessmentId] = {
+        id: assessmentId,
+        candidateId: candidate.id,
+        workstream: event.workstream,
+        historicalBaseSha: candidate.baseSha,
+        targetSha: event.targetSha,
+        interveningDiff: event.interveningDiff,
+        evidence: event.evidence,
+        status: "pending",
+      };
+      delete state.processLeases[lease.id];
+      workstream.phase = "candidate_ready";
+      return accept();
+    }
+
+    case "satisfaction_reassessment_requested": {
+      const workstream = state.workstreams.source[event.workstream.id];
+      const candidateId = workstream?.candidateId;
+      const candidate = candidateId ? state.candidates[candidateId] : undefined;
+      if (
+        !workstream ||
+        !candidate ||
+        workstream.phase !== "completed" ||
+        candidate.commitSha !== candidate.baseSha ||
+        !Object.values(state.satisfaction.receipts).some(
+          (receipt) => receipt.candidateId === candidate.id,
+        ) ||
+        Object.values(state.satisfaction.receipts).some(
+          (receipt) =>
+            receipt.candidateId === candidate.id &&
+            receipt.assessedTargetSha === event.targetSha,
+        )
+      ) {
+        return reject("satisfaction receipt is not eligible for reassessment");
+      }
+      const assessmentId = `assessment:${candidate.id}:${event.targetSha}`;
+      state.satisfaction.assessments[assessmentId] = {
+        id: assessmentId,
+        candidateId: candidate.id,
+        workstream: event.workstream,
+        historicalBaseSha: candidate.baseSha,
+        targetSha: event.targetSha,
+        interveningDiff: event.interveningDiff,
+        evidence:
+          "A later target publication made the satisfaction receipt stale.",
+        status: "pending",
+      };
+      workstream.phase = "candidate_ready";
       return accept();
     }
 
@@ -1313,6 +1588,7 @@ export type VNextSchedulerActorOptions = {
   ) => void;
   awaitOwnedProcesses?: () => Promise<void>;
   targetHead?: () => Promise<string>;
+  targetDiff?: (from: string, to: string) => Promise<string>;
   captureTargetBoundary?: () => Promise<string>;
   now?: () => string;
 };
@@ -1444,6 +1720,41 @@ export class VNextSchedulerActor {
     const baseSha = this.options.targetHead
       ? await this.options.targetHead()
       : state.run.checkout.startHead;
+    const staleDependency = unassigned
+      .flatMap(
+        (workstream) => state.workstreams.source[workstream.id]!.dependsOn,
+      )
+      .find((dependencyId) => {
+        const dependency = state.workstreams.source[dependencyId];
+        const candidate = dependency?.candidateId
+          ? state.candidates[dependency.candidateId]
+          : undefined;
+        return (
+          dependency?.phase === "completed" &&
+          candidate?.commitSha === candidate?.baseSha &&
+          (() => {
+            const receipts = Object.values(state.satisfaction.receipts).filter(
+              (receipt) => receipt.candidateId === candidate?.id,
+            );
+            return (
+              receipts.length > 0 &&
+              !receipts.some((receipt) => receipt.assessedTargetSha === baseSha)
+            );
+          })()
+        );
+      });
+    if (staleDependency) {
+      const dependency = state.workstreams.source[staleDependency]!;
+      const candidate = state.candidates[dependency.candidateId!]!;
+      return {
+        kind: "satisfaction_reassessment_requested",
+        workstream: { kind: "source", id: staleDependency },
+        targetSha: baseSha,
+        interveningDiff: this.options.targetDiff
+          ? await this.options.targetDiff(candidate.baseSha, baseSha)
+          : "",
+      };
+    }
     return {
       ...event,
       baseShas: Object.fromEntries(
@@ -1745,6 +2056,20 @@ export class VNextSchedulerActor {
           managed && this.options.captureTargetBoundary
             ? await this.options.captureTargetBoundary()
             : undefined;
+        if (
+          effect.kind === "run_implementation" &&
+          effect.workstream.kind === "source" &&
+          boundary !== undefined
+        ) {
+          const boundaryHead = JSON.parse(boundary).head;
+          const baseSha =
+            this.snapshot().workstreams.source[effect.workstream.id]?.baseSha;
+          if (typeof boundaryHead !== "string" || boundaryHead !== baseSha) {
+            throw new TargetBoundaryError(
+              "Target moved before the assigned workstream base could start.",
+            );
+          }
+        }
         let executionError: unknown;
         try {
           await this.options.executeEffect!({

@@ -775,6 +775,104 @@ describe("VNext scheduler reducer", () => {
     expect(stale.accepted).toBe(false);
   });
 
+  it("records an approved repository-state satisfaction receipt without publishing", async () => {
+    const state = (await store()).read();
+    const candidateId = "satisfied:first-stream:base";
+    const assessmentId = `assessment:${candidateId}:current-target`;
+    state.workstreams.source["first-stream"] = {
+      ...state.workstreams.source["first-stream"]!,
+      baseSha: "base",
+      candidateId,
+      phase: "reviewing",
+    };
+    state.candidates[candidateId] = {
+      id: candidateId,
+      workstream: { kind: "source", id: "first-stream" },
+      baseSha: "base",
+      commitSha: "base",
+      treeSha: "base-tree",
+    };
+    state.reviews["source:first-stream"] = {
+      candidateId,
+      round: 0,
+      outstandingIds: [],
+      evidence: ["initial approval"],
+      observations: [],
+    };
+    state.satisfaction.assessments[assessmentId] = {
+      id: assessmentId,
+      candidateId,
+      workstream: { kind: "source", id: "first-stream" },
+      historicalBaseSha: "base",
+      targetSha: "current-target",
+      interveningDiff: "diff --git a/x b/x",
+      evidence: "Target advanced after the original review.",
+      status: "pending",
+    };
+    state.processLeases.review = {
+      id: "review",
+      kind: "review",
+      workstream: { kind: "source", id: "first-stream" },
+      candidateId,
+      attempt: 1,
+      acquiredAt: "now",
+    };
+
+    const completed = reduceVNextRunEvent(state, {
+      kind: "review_completed",
+      workstream: { kind: "source", id: "first-stream" },
+      leaseId: "review",
+      outcome: {
+        kind: "repository_state",
+        candidateId,
+        assessedTargetSha: "current-target",
+        completion: { verdict: "approved" },
+        evidence:
+          "Repository state satisfies the original workstream contract.",
+      },
+    });
+
+    expect(completed.accepted).toBe(true);
+    expect(completed.state.workstreams.source["first-stream"]?.phase).toBe(
+      "completed",
+    );
+    expect(completed.state.satisfaction.receipts).toMatchObject({
+      [`satisfaction:${candidateId}:current-target`]: {
+        assessedTargetSha: "current-target",
+      },
+    });
+    expect(completed.state.publication.receipts).toEqual({});
+
+    const rejected = reduceVNextRunEvent(structuredClone(state), {
+      kind: "review_completed",
+      workstream: { kind: "source", id: "first-stream" },
+      leaseId: "review",
+      outcome: {
+        kind: "repository_state",
+        candidateId,
+        assessedTargetSha: "current-target",
+        completion: {
+          verdict: "changes_requested",
+          findings: [
+            {
+              summary: "Target change invalidates the claimed behavior.",
+              evidence: "The intervening target diff removes the behavior.",
+              requiredChange: "Restore the behavior on the current target.",
+              acceptanceCriteria: ["The behavior works on the current target."],
+            },
+          ],
+        },
+        evidence: "Repository-state review rejected the stale claim.",
+      },
+    });
+    expect(rejected.state.workstreams.source["first-stream"]?.phase).toBe(
+      "recovering",
+    );
+    expect(
+      rejected.state.reviews["source:first-stream"]?.outstandingIds,
+    ).toEqual(["source-first-stream-repository-1-1"]);
+  });
+
   it("routes replay preparation and reconciliation failures through owned lifecycle gates", async () => {
     const run = await store();
     const state = run.read();

@@ -292,6 +292,30 @@ const recoverySchema = z
   })
   .strict();
 
+const satisfactionReceiptSchema = z
+  .object({
+    id: nonEmpty,
+    candidateId: nonEmpty,
+    workstream: z.object({ kind: z.literal("source"), id }).strict(),
+    assessedTargetSha: nonEmpty,
+    evidence: nonEmpty,
+    assessedAt: nonEmpty,
+  })
+  .strict();
+
+const satisfactionAssessmentSchema = z
+  .object({
+    id: nonEmpty,
+    candidateId: nonEmpty,
+    workstream: z.object({ kind: z.literal("source"), id }).strict(),
+    historicalBaseSha: nonEmpty,
+    targetSha: nonEmpty,
+    interveningDiff: z.string(),
+    evidence: nonEmpty,
+    status: z.enum(["pending", "approved", "rejected"]),
+  })
+  .strict();
+
 const publicationPreparationSchema = z
   .object({
     id: nonEmpty,
@@ -433,6 +457,12 @@ export const vnextRunStateSchema = z
     reviews: z.record(nonEmpty, reviewStateSchema),
     gates: z.array(gateSchema),
     recoveryEpisodes: z.record(nonEmpty, recoverySchema),
+    satisfaction: z
+      .object({
+        receipts: z.record(nonEmpty, satisfactionReceiptSchema),
+        assessments: z.record(nonEmpty, satisfactionAssessmentSchema),
+      })
+      .strict(),
     publication: z
       .object({
         preparations: z.record(nonEmpty, publicationPreparationSchema),
@@ -632,6 +662,7 @@ export function createPlanningRun(args: {
     reviews: {},
     gates: [],
     recoveryEpisodes: {},
+    satisfaction: { receipts: {}, assessments: {} },
     publication: { preparations: {}, intents: {}, receipts: {} },
     protectedArtifactHashes: args.source.protectedArtifactHashes,
     projectionDebt: [],
@@ -1428,6 +1459,41 @@ function invariantIssues(
       issues.push(`completed recovery episode ${key} has no action evidence`);
     }
   }
+  for (const [key, receipt] of Object.entries(state.satisfaction.receipts)) {
+    const candidate = state.candidates[receipt.candidateId];
+    const assessment = Object.values(state.satisfaction.assessments).find(
+      (entry) =>
+        entry.candidateId === receipt.candidateId &&
+        entry.targetSha === receipt.assessedTargetSha &&
+        entry.status === "approved",
+    );
+    if (
+      key !== receipt.id ||
+      !candidate ||
+      candidate.workstream.kind !== "source" ||
+      candidate.workstream.id !== receipt.workstream.id ||
+      !assessment
+    ) {
+      issues.push(`satisfaction receipt ${key} has no approved assessment`);
+    }
+  }
+  for (const [key, assessment] of Object.entries(
+    state.satisfaction.assessments,
+  )) {
+    const candidate = state.candidates[assessment.candidateId];
+    if (
+      key !== assessment.id ||
+      !candidate ||
+      candidate.commitSha !== candidate.baseSha ||
+      candidate.baseSha !== assessment.historicalBaseSha ||
+      candidate.workstream.kind !== "source" ||
+      candidate.workstream.id !== assessment.workstream.id
+    ) {
+      issues.push(
+        `satisfaction assessment ${key} does not match its candidate`,
+      );
+    }
+  }
   for (const [key, preparation] of Object.entries(
     state.publication.preparations,
   )) {
@@ -1542,6 +1608,16 @@ function invariantIssues(
         state.findings[id]?.status !== "resolved"
       ) {
         issues.push(`resolved finding ${id} was reopened`);
+      }
+    }
+    for (const [id, receipt] of Object.entries(
+      previous.satisfaction.receipts,
+    )) {
+      if (
+        JSON.stringify(state.satisfaction.receipts[id]) !==
+        JSON.stringify(receipt)
+      ) {
+        issues.push(`satisfaction receipt ${id} was overwritten or removed`);
       }
     }
     for (const [id, preparation] of Object.entries(
