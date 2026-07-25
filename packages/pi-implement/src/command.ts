@@ -15,6 +15,13 @@ import {
   resumeVNextRun,
   type ActiveVNextRun,
 } from "./vnext-command.js";
+import {
+  cleanupCompletedVNextRun,
+  cleanupWithLease,
+  formatVNextStatus,
+  inspectVNextRun,
+  listCheckoutVNextRuns,
+} from "./vnext-controls.js";
 
 export function registerImplementCommand(pi: ExtensionAPI): void {
   let active: ActiveVNextRun | undefined;
@@ -35,24 +42,85 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         return;
       }
       if (parsed.kind === "control") {
-        if (parsed.name !== "stop") {
+        try {
+          const checkoutRoot = await new (
+            await import("./git.js")
+          ).ExecGitClient(ctx.cwd).root();
+          if (parsed.name === "stop") {
+            if (!active) {
+              ctx.ui.notify(
+                "pi-implement has no active VNext run in this session.",
+                "info",
+              );
+              return;
+            }
+            await stopVNextRun(active);
+            active = undefined;
+            ctx.ui.notify("pi-implement paused safely.", "info");
+            return;
+          }
+          if (parsed.name === "status") {
+            if (active) {
+              ctx.ui.notify(formatVNextStatus(active.store.read()), "info");
+              return;
+            }
+            const runs = listCheckoutVNextRuns(checkoutRoot);
+            ctx.ui.notify(
+              runs.length === 0
+                ? "pi-implement: no VNext runs in this checkout."
+                : runs
+                    .map((run) =>
+                      run.kind === "run"
+                        ? formatVNextStatus(run.state)
+                        : `Historical artifact: ${run.runId} (manual inspection/removal only)`,
+                    )
+                    .join("\n\n"),
+              "info",
+            );
+            return;
+          }
+          if (parsed.name === "inspect") {
+            if (!parsed.runId) {
+              throw new Error("Inspect requires a VNext run ID.");
+            }
+            ctx.ui.notify(inspectVNextRun(checkoutRoot, parsed.runId), "info");
+            return;
+          }
+          if (parsed.name === "cleanup") {
+            if (!parsed.runId) {
+              throw new Error("Cleanup requires a completed VNext run ID.");
+            }
+            if (active?.runId === parsed.runId) {
+              const completed = active;
+              await cleanupWithLease({
+                lease: completed.lease,
+                git: new (await import("./git.js")).ExecGitClient(checkoutRoot),
+                runId: parsed.runId,
+              });
+              await completed.lease.release();
+              active = undefined;
+            } else {
+              await cleanupCompletedVNextRun({
+                checkoutRoot,
+                runId: parsed.runId,
+              });
+            }
+            ctx.ui.notify(
+              `pi-implement cleaned VNext run ${parsed.runId}.`,
+              "info",
+            );
+            return;
+          }
           ctx.ui.notify(
-            "This control moves to checkout-local VNext inspection in a later update.",
+            "VNext configuration is available in the extension config file.",
             "info",
           );
           return;
-        }
-        if (!active) {
-          ctx.ui.notify(
-            "pi-implement has no active VNext run in this session.",
-            "info",
-          );
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          ctx.ui.notify(`pi-implement blocked: ${reason}`, "warning");
           return;
         }
-        await stopVNextRun(active);
-        active = undefined;
-        ctx.ui.notify("pi-implement paused safely.", "info");
-        return;
       }
       if (active) {
         ctx.ui.notify(
@@ -68,7 +136,16 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         return;
       }
       try {
-        if (parsed.recovery) {
+        if (parsed.recovery?.kind === "start-over") {
+          const checkoutRoot = await new (
+            await import("./git.js")
+          ).ExecGitClient(ctx.cwd).root();
+          await cleanupCompletedVNextRun({
+            checkoutRoot,
+            runId: parsed.recovery.runId,
+          });
+        }
+        if (parsed.recovery?.kind === "resume") {
           active = await resumeVNextRun({
             pi,
             ctx,

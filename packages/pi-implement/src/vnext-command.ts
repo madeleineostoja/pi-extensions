@@ -153,7 +153,10 @@ export async function resumeVNextRun(args: {
     timeoutMs: 10_000,
   });
   try {
-    const store = VNextRunStore.open(lease, args.runId);
+    const store = VNextRunStore.open(
+      lease,
+      join(lease.paths.runs, args.runId, "run-state.json"),
+    );
     const content = await readText(planPath);
     const parsed = parsePlan(planPath, content);
     const materialStore = buildMaterialStore({

@@ -2,7 +2,7 @@ export type ParsedCommand =
   | {
       kind: "execution";
       planPath: string;
-      recovery?: { kind: "resume"; runId: string };
+      recovery?: { kind: "resume" | "start-over"; runId: string };
     }
   | {
       kind: "control";
@@ -24,7 +24,7 @@ export function parseCommand(input: string): ParsedCommand {
   if (first.startsWith(":")) {
     const name = first.slice(1);
     if (
-      tokens.length === 1 &&
+      (tokens.length === 1 || (tokens.length === 2 && tokens[1])) &&
       (name === "status" ||
         name === "stop" ||
         name === "cleanup" ||
@@ -32,7 +32,11 @@ export function parseCommand(input: string): ParsedCommand {
         name === "inspect" ||
         name === "view")
     ) {
-      return { kind: "control", name };
+      return {
+        kind: "control",
+        name,
+        ...(tokens[1] ? { runId: tokens[1] } : {}),
+      };
     }
     return { kind: "error", message: usage() };
   }
@@ -42,16 +46,16 @@ export function parseCommand(input: string): ParsedCommand {
   }
 
   const flags = tokens.slice(1);
-  let recovery: { kind: "resume"; runId: string } | undefined;
+  let recovery: { kind: "resume" | "start-over"; runId: string } | undefined;
   for (let index = 0; index < flags.length; index++) {
     const flag = flags[index];
-    if (flag === "--resume" && !recovery) {
+    if ((flag === "--resume" || flag === "--start-over") && !recovery) {
       const runId = flags[++index];
       if (!runId || runId.startsWith("--")) {
         return { kind: "error", message: usage() };
       }
       recovery = {
-        kind: "resume",
+        kind: flag === "--resume" ? "resume" : "start-over",
         runId,
       };
       continue;
@@ -70,5 +74,5 @@ function tokenize(input: string): string[] {
 }
 
 export function usage(): string {
-  return "Usage: /implement <plan.md> [--resume <run-id>], or /implement :stop";
+  return "Usage: /implement <plan.md> [--resume <run-id> | --start-over <run-id>], or /implement :status | :inspect <run-id> | :cleanup <run-id> | :stop";
 }
