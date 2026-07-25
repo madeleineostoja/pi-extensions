@@ -61,6 +61,7 @@ const sourceWorkstreamSchema = z
       "publishing",
       "completed",
     ]),
+    baseSha: nonEmpty.optional(),
     candidateId: nonEmpty.optional(),
   })
   .strict();
@@ -1157,6 +1158,9 @@ function invariantIssues(
     if (key !== workstream.id) {
       issues.push(`source workstream key ${key} does not match its ID`);
     }
+    if (workstream.phase !== "queued" && !workstream.baseSha) {
+      issues.push(`source workstream ${key} has no assigned runtime base`);
+    }
   }
   for (const [key, workstream] of Object.entries(state.workstreams.overall)) {
     if (key !== workstream.repairId) {
@@ -1265,6 +1269,15 @@ function invariantIssues(
     }
     if (!workstreamExists(state, candidate.workstream)) {
       issues.push(`candidate ${key} references an unknown workstream`);
+    }
+    if (
+      candidate.workstream.kind === "source" &&
+      state.workstreams.source[candidate.workstream.id]?.baseSha !==
+        candidate.baseSha
+    ) {
+      issues.push(
+        `candidate ${key} does not match its workstream runtime base`,
+      );
     }
   }
   for (const [key, finding] of Object.entries(state.findings)) {
@@ -1455,6 +1468,16 @@ function invariantIssues(
         JSON.stringify(state.executionPlan)
     ) {
       issues.push("bound execution plan identity was overwritten");
+    }
+    for (const [id, workstream] of Object.entries(
+      previous.workstreams.source,
+    )) {
+      if (
+        workstream.baseSha !== undefined &&
+        state.workstreams.source[id]?.baseSha !== workstream.baseSha
+      ) {
+        issues.push(`source workstream ${id} runtime base was overwritten`);
+      }
     }
     for (const [id, candidate] of Object.entries(previous.candidates)) {
       if (JSON.stringify(state.candidates[id]) !== JSON.stringify(candidate)) {

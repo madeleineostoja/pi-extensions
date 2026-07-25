@@ -21,7 +21,10 @@ import { settleVNextCleanupDebt } from "./vnext-cleanup.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
 import { strictExecutionPlanSchema } from "./result-schemas.js";
 import { sha256 } from "./source-integrity.js";
-import { runWorkstreamCandidate } from "./workstream-candidate.js";
+import {
+  runWorkstreamCandidate,
+  TargetBoundaryError,
+} from "./workstream-candidate.js";
 import { runVNextOverallRepair } from "./vnext-overall-repair.js";
 import { runVNextWorkstreamReview } from "./vnext-review.js";
 import { VNextSchedulerActor } from "./scheduler-vnext.js";
@@ -293,6 +296,38 @@ export function createVNextRuntime(args: {
 }): VNextSchedulerActor {
   return new VNextSchedulerActor({
     store: args.store,
+    targetHead: () => args.git.head(),
+    captureTargetBoundary: async () => {
+      const state = args.store.read();
+      const protectedPaths = Object.keys(state.protectedArtifactHashes);
+      const [checkout, branch, head, operation, clean] = await Promise.all([
+        args.git.checkoutIdentity(),
+        args.git.currentBranch(),
+        args.git.head(),
+        args.git.activeOperation(),
+        args.git.isCleanExcept(protectedPaths),
+      ]);
+      const protectedMatch = protectedArtifactsMatch(state);
+      if (
+        checkout !== state.run.checkout.gitDir ||
+        branch !== state.run.checkout.branchRef.replace("refs/heads/", "") ||
+        operation !== undefined ||
+        !clean ||
+        !protectedMatch
+      ) {
+        throw new TargetBoundaryError(
+          "Managed work requires an unchanged, clean target checkout boundary.",
+        );
+      }
+      return JSON.stringify({
+        checkout,
+        branch,
+        head,
+        operation,
+        clean,
+        protected: protectedMatch,
+      });
+    },
     executeEffect: async ({ effect, signal, dispatch }) => {
       const state = args.store.read();
       const artifactsPath = join(

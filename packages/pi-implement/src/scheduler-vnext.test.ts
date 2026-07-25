@@ -178,7 +178,7 @@ afterEach(() => {
 });
 
 describe("VNext scheduler reducer", () => {
-  it("selects only dependency-ready workstreams within the persisted capacity", async () => {
+  it("assigns a landed dependency base when a dependent becomes eligible", async () => {
     const run = await store(1);
     const initial = run.read();
 
@@ -186,6 +186,7 @@ describe("VNext scheduler reducer", () => {
     const selected = reduceVNextRunEvent(initial, {
       kind: "workstreams_selected",
       now: "now",
+      baseShas: { "first-stream": "base-sha" },
     });
 
     expect(selected.accepted).toBe(true);
@@ -200,7 +201,36 @@ describe("VNext scheduler reducer", () => {
 
     selected.state.processLeases = {};
     selected.state.workstreams.source["first-stream"]!.phase = "completed";
+    selected.state.workstreams.source["first-stream"]!.candidateId =
+      "candidate:first";
+    selected.state.candidates["candidate:first"] = {
+      id: "candidate:first",
+      workstream: { kind: "source", id: "first-stream" },
+      baseSha: "base-sha",
+      commitSha: "commit:first",
+      treeSha: "tree:first",
+    };
+    selected.state.publication.receipts["intent:first"] = {
+      intentId: "intent:first",
+      candidateId: "candidate:first",
+      targetBaseSha: "base-sha",
+      publishedCommitSha: "commit:first",
+      publishedTreeSha: "tree:first",
+      targetRef: "refs/heads/main",
+      protectedArtifactHashes: {},
+      publishedAt: "now",
+    };
     expect(selectReadyWorkstreams(selected.state)).toEqual(["second-stream"]);
+
+    const dependent = reduceVNextRunEvent(selected.state, {
+      kind: "workstreams_selected",
+      now: "later",
+      baseShas: { "second-stream": "landed-dependency-sha" },
+    });
+    expect(dependent.accepted).toBe(true);
+    expect(dependent.state.workstreams.source["second-stream"]?.baseSha).toBe(
+      "landed-dependency-sha",
+    );
   });
 
   it("builds an initial cumulative packet with contracts and repository-state evidence", async () => {
@@ -253,6 +283,7 @@ describe("VNext scheduler reducer", () => {
     const selected = reduceVNextRunEvent(initial, {
       kind: "workstreams_selected",
       now: "now",
+      baseShas: { "first-stream": "base" },
     });
     const effect = selected.effects.find(
       (effect) => effect.kind === "run_implementation",
@@ -304,6 +335,7 @@ describe("VNext scheduler reducer", () => {
     const selected = reduceVNextRunEvent(initial, {
       kind: "workstreams_selected",
       now: "now",
+      baseShas: { "first-stream": "base" },
     });
     const implementation = selected.effects[0]!;
     if (implementation.kind !== "run_implementation") {
@@ -743,6 +775,7 @@ describe("VNext scheduler reducer", () => {
     const run = await store();
     const state = run.read();
     state.workstreams.source["first-stream"]!.phase = "approved";
+    state.workstreams.source["first-stream"]!.baseSha = "base";
     state.workstreams.source["first-stream"]!.candidateId = "candidate-1";
     state.candidates["candidate-1"] = {
       id: "candidate-1",
@@ -895,6 +928,74 @@ describe("VNext scheduler actor", () => {
     expect(run.read().processLeases).toEqual({});
   });
 
+  it("retains a failed implementation's trusted checkpoint for recovery", async () => {
+    const run = await store();
+    const failed = deferred();
+    const actor = new VNextSchedulerActor({
+      store: run,
+      targetHead: async () => "base-sha",
+      onTransition: (_state, event) => {
+        if (event.kind === "implementation_failed") {
+          failed.resolve();
+        }
+      },
+      executeEffect: async ({ effect, signal }) => {
+        if (effect.kind === "run_implementation") {
+          throw Object.assign(new Error("provider disconnected"), {
+            trustedCheckpoint: "checkpoint-1",
+          });
+        }
+        if (effect.kind === "run_recovery") {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+      },
+    });
+
+    await actor.start();
+    await failed.promise;
+
+    expect(Object.values(run.read().recoveryEpisodes)).toContainEqual(
+      expect.objectContaining({
+        workspace: expect.objectContaining({ checkpoint: "checkpoint-1" }),
+      }),
+    );
+    await actor.stop("test complete");
+  });
+
+  it("assigns one captured target base to concurrently eligible workstreams", async () => {
+    const run = await store(2, true);
+    const started = deferred();
+    const bases: string[] = [];
+    let count = 0;
+    const actor = new VNextSchedulerActor({
+      store: run,
+      targetHead: async () => "current-target-sha",
+      executeEffect: async ({ effect, signal }) => {
+        if (effect.kind !== "run_implementation") {
+          return;
+        }
+        const id =
+          effect.workstream.kind === "source" ? effect.workstream.id : "";
+        bases.push(run.read().workstreams.source[id]!.baseSha!);
+        count += 1;
+        if (count === 2) {
+          started.resolve();
+        }
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    });
+
+    await actor.start();
+    await started.promise;
+
+    expect(bases).toEqual(["current-target-sha", "current-target-sha"]);
+    await actor.stop("test complete");
+  });
+
   it("prioritizes a candidate-ready review over another implementation at capacity one", async () => {
     const run = await store(1, true);
     const reviewStarted = deferred();
@@ -981,6 +1082,7 @@ describe("VNext scheduler actor", () => {
           "first-stream": {
             ...state.workstreams.source["first-stream"]!,
             phase: "publishing",
+            baseSha: "base-sha",
             candidateId,
           },
         },
@@ -1114,6 +1216,37 @@ describe("VNext scheduler actor", () => {
     });
   });
 
+  it("retains an interrupted implementation checkpoint while stopping", async () => {
+    const run = await store();
+    const actor = new VNextSchedulerActor({
+      store: run,
+      targetHead: async () => "base-sha",
+      executeEffect: async ({ effect, signal }) => {
+        if (effect.kind !== "run_implementation") {
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        throw Object.assign(new Error("interrupted"), {
+          trustedCheckpoint: "checkpoint-on-stop",
+        });
+      },
+    });
+
+    await actor.start();
+    await actor.stop("operator stopped the run");
+
+    expect(run.read().phase).toBe("paused");
+    expect(Object.values(run.read().recoveryEpisodes)).toContainEqual(
+      expect.objectContaining({
+        workspace: expect.objectContaining({
+          checkpoint: "checkpoint-on-stop",
+        }),
+      }),
+    );
+  });
+
   it("settles a planner before pausing an unbound planning run", async () => {
     const directory = mkdtempSync(
       join(tmpdir(), "pi-implement-vnext-planner-"),
@@ -1167,6 +1300,7 @@ describe("VNext scheduler actor", () => {
     const selected = reduceVNextRunEvent(run.read(), {
       kind: "workstreams_selected",
       now: "now",
+      baseShas: { "first-stream": "base-sha" },
     });
     const effect = selected.effects.find(
       (effect) => effect.kind === "run_implementation",
@@ -1178,7 +1312,7 @@ describe("VNext scheduler actor", () => {
     const candidate = {
       id: "candidate-1",
       workstream: { kind: "source" as const, id: "first-stream" },
-      baseSha: "base",
+      baseSha: "base-sha",
       commitSha: "commit",
       treeSha: "tree",
     };

@@ -82,6 +82,8 @@ export class WorkstreamCandidateLifecycleError extends Error {
   }
 }
 
+export class TargetBoundaryError extends WorkstreamCandidateLifecycleError {}
+
 export async function runWorkstreamCandidate(
   args: WorkstreamCandidateLifecycleArgs,
 ): Promise<WorkstreamCandidateOutcome> {
@@ -103,14 +105,19 @@ export async function runWorkstreamCandidate(
       `Workstream ${args.workstreamId} does not match its immutable execution plan.`,
     );
   }
-  if ((await args.git.head()) !== args.state.run.checkout.startHead) {
+  if (!runtime.baseSha) {
     throw new WorkstreamCandidateLifecycleError(
-      "Target checkout changed from the run base before workstream execution.",
+      "Workstream has no assigned runtime base.",
+    );
+  }
+  if ((await args.git.head()) !== runtime.baseSha) {
+    throw new TargetBoundaryError(
+      "Target checkout changed from the assigned workstream base before execution.",
     );
   }
   const protectedPaths = Object.keys(args.state.protectedArtifactHashes);
   if (!(await protectedArtifactsMatch(args.state))) {
-    throw new WorkstreamCandidateLifecycleError(
+    throw new TargetBoundaryError(
       "Protected artifacts changed before workstream execution.",
     );
   }
@@ -206,7 +213,7 @@ export async function runWorkstreamCandidate(
     writeEvidence(args.artifactsPath, args.workstreamId, {
       status: "target_changed",
     });
-    throw new WorkstreamCandidateLifecycleError(
+    throw new TargetBoundaryError(
       "Implementer changed the target checkout or protected artifacts.",
     );
   }
@@ -334,11 +341,17 @@ export function workstreamWorkspace(
       `Unknown source workstream: ${workstreamId}`,
     );
   }
+  const baseSha = state.workstreams.source[workstreamId]!.baseSha;
+  if (!baseSha) {
+    throw new WorkstreamCandidateLifecycleError(
+      "Workstream has no assigned runtime base.",
+    );
+  }
   return {
     taskId: workstreamId,
     branchName: `pi-implement/${state.run.id}/${workstreamId}`,
     worktreePath: join(worktreesRunRoot(state), workstreamId),
-    baseSha: state.run.checkout.startHead,
+    baseSha,
   };
 }
 

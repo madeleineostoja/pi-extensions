@@ -1,4 +1,5 @@
 import type { ExecutionPlan } from "./execution-plan-vnext.js";
+import { TargetBoundaryError } from "./workstream-candidate.js";
 import {
   advanceNoActionCycle,
   boundedRecoveryOutput,
@@ -39,7 +40,11 @@ type ImplementationOutcome =
     };
 
 export type VNextSchedulerEvent =
-  | { kind: "workstreams_selected"; now: string }
+  | {
+      kind: "workstreams_selected";
+      now: string;
+      baseShas: Record<string, string>;
+    }
   | { kind: "planner_failed"; reason: string }
   | {
       kind: "implementation_completed";
@@ -48,6 +53,13 @@ export type VNextSchedulerEvent =
       outcome: ImplementationOutcome;
     }
   | { kind: "review_requested"; workstream: RuntimeWorkstream; now: string }
+  | {
+      kind: "implementation_failed";
+      workstream: RuntimeWorkstream;
+      leaseId: string;
+      evidence: string;
+      trustedCheckpoint?: string;
+    }
   | {
       kind: "gate_recorded";
       workstream: RuntimeWorkstream;
@@ -219,6 +231,23 @@ export type VNextSchedulerTransition = {
   error?: string;
 };
 
+function hasCompletionReceipt(
+  state: VNextRunState,
+  workstreamId: string,
+): boolean {
+  const workstream = state.workstreams.source[workstreamId];
+  if (
+    !workstream ||
+    workstream.phase !== "completed" ||
+    workstream.candidateId === undefined
+  ) {
+    return false;
+  }
+  return Object.values(state.publication.receipts).some(
+    (receipt) => receipt.candidateId === workstream.candidateId,
+  );
+}
+
 export function selectReadyWorkstreams(state: VNextRunState): string[] {
   return selectReadyRuntimeWorkstreams(state)
     .filter(
@@ -253,9 +282,8 @@ export function selectReadyRuntimeWorkstreams(
       .filter(
         (workstream) =>
           workstream.phase === "queued" &&
-          workstream.dependsOn.every(
-            (dependency) =>
-              state.workstreams.source[dependency]?.phase === "completed",
+          workstream.dependsOn.every((dependency) =>
+            hasCompletionReceipt(state, dependency),
           ),
       )
       .slice(0, capacity)
@@ -300,6 +328,7 @@ export function reduceVNextRunEvent(
   if (
     state.phase === "stopping" &&
     event.kind !== "process_abandoned" &&
+    event.kind !== "implementation_failed" &&
     event.kind !== "run_paused"
   ) {
     return reject("stopping runs only settle owned processes");
@@ -315,9 +344,29 @@ export function reduceVNextRunEvent(
       return accept();
 
     case "workstreams_selected": {
+      if (hasIntegrationLease(state)) {
+        return reject(
+          "implementation cannot start while integration owns the target",
+        );
+      }
       const ready = selectReadyRuntimeWorkstreams(state);
       const effects: VNextSchedulerEffect[] = [];
       for (const [index, workstream] of ready.entries()) {
+        if (workstream.kind === "source") {
+          const runtime = state.workstreams.source[workstream.id]!;
+          const assignedBase = runtime.baseSha ?? event.baseShas[workstream.id];
+          if (!assignedBase) {
+            return reject("source workstream requires a captured runtime base");
+          }
+          if (
+            runtime.baseSha !== undefined &&
+            event.baseShas[workstream.id] !== undefined &&
+            event.baseShas[workstream.id] !== runtime.baseSha
+          ) {
+            return reject("workstream runtime base is immutable");
+          }
+          runtime.baseSha = assignedBase;
+        }
         const lease = createLease(
           state,
           workstream,
@@ -334,6 +383,46 @@ export function reduceVNextRunEvent(
         });
       }
       return accept(effects);
+    }
+
+    case "implementation_failed": {
+      const lease = ownedLease(
+        state,
+        event.leaseId,
+        event.workstream,
+        "implementation",
+      );
+      const workstream = getWorkstream(state, event.workstream);
+      if (!lease || !workstream || workstream.phase !== "implementing") {
+        return reject("implementation failure does not own an active lease");
+      }
+      delete state.processLeases[lease.id];
+      try {
+        recordGateResult(
+          state,
+          event.workstream,
+          {
+            id: `environment:${workstreamId(event.workstream)}:${state.gates.length + 1}`,
+            kind: "environment",
+            owner: workstreamId(event.workstream),
+            attempt: state.gates.length + 1,
+            outcome: "failed",
+            evidence: event.evidence.slice(0, 12_000),
+            outstandingFindingIds: [],
+          },
+          {
+            id: workstreamId(event.workstream),
+            ...(event.trustedCheckpoint
+              ? { checkpoint: event.trustedCheckpoint }
+              : {}),
+            changedPaths: [],
+            stateEvidence: event.evidence.slice(0, 12_000),
+          },
+        );
+        return accept();
+      } catch (error) {
+        return reject(error instanceof Error ? error.message : String(error));
+      }
     }
 
     case "implementation_completed": {
@@ -1157,6 +1246,8 @@ export type VNextSchedulerActorOptions = {
     event: VNextSchedulerEvent | { kind: "planner_bound" },
   ) => void;
   awaitOwnedProcesses?: () => Promise<void>;
+  targetHead?: () => Promise<string>;
+  captureTargetBoundary?: () => Promise<string>;
   now?: () => string;
 };
 
@@ -1169,6 +1260,7 @@ export class VNextSchedulerActor {
   private queue = Promise.resolve();
   private drivePromise: Promise<void> | undefined;
   private stopping = false;
+  private safetyReason: string | undefined;
 
   constructor(private readonly options: VNextSchedulerActorOptions) {
     this.now = options.now ?? (() => new Date().toISOString());
@@ -1201,7 +1293,7 @@ export class VNextSchedulerActor {
           this.startEffect(next.effect);
           return;
         }
-        await this.persist(next.event);
+        await this.persist(await this.withAssignedRuntimeBases(next.event));
       }
     })().finally(() => {
       this.drivePromise = undefined;
@@ -1266,6 +1358,32 @@ export class VNextSchedulerActor {
       () => undefined,
     );
     return operation;
+  }
+
+  private async withAssignedRuntimeBases(
+    event: VNextSchedulerEvent,
+  ): Promise<VNextSchedulerEvent> {
+    if (event.kind !== "workstreams_selected") {
+      return event;
+    }
+    const state = this.snapshot();
+    const unassigned = selectReadyRuntimeWorkstreams(state).filter(
+      (workstream): workstream is { kind: "source"; id: string } =>
+        workstream.kind === "source" &&
+        state.workstreams.source[workstream.id]?.baseSha === undefined,
+    );
+    if (unassigned.length === 0) {
+      return event;
+    }
+    const baseSha = this.options.targetHead
+      ? await this.options.targetHead()
+      : state.run.checkout.startHead;
+    return {
+      ...event,
+      baseShas: Object.fromEntries(
+        unassigned.map((workstream) => [workstream.id, baseSha]),
+      ),
+    };
   }
 
   private hasLiveProcessFor(workstream: RuntimeWorkstream): boolean {
@@ -1347,6 +1465,7 @@ export class VNextSchedulerActor {
 
     if (
       !hasIntegrationLease(state) &&
+      (state.projectionDebt.length === 0 || this.processes.size === 0) &&
       this.processWorkstreams.size < state.run.workerConcurrency &&
       activeWorkerLeaseCount(state) < state.run.workerConcurrency
     ) {
@@ -1370,7 +1489,11 @@ export class VNextSchedulerActor {
       if (selectReadyRuntimeWorkstreams(state).length > 0) {
         return {
           kind: "event",
-          event: { kind: "workstreams_selected", now: this.now() },
+          event: {
+            kind: "workstreams_selected",
+            now: this.now(),
+            baseShas: {},
+          },
         };
       }
     }
@@ -1548,15 +1671,68 @@ export class VNextSchedulerActor {
         if (effect.kind === "run_recovery" && effect.retryAfterMs) {
           await abortableDelay(effect.retryAfterMs, controller.signal);
         }
-        await this.options.executeEffect!({
-          effect,
-          signal: controller.signal,
-          dispatch: async (event) => {
-            await this.dispatch(event);
-          },
-        });
+        const managed =
+          effect.kind === "run_implementation" ||
+          effect.kind === "run_review" ||
+          effect.kind === "run_recovery";
+        const boundary =
+          managed && this.options.captureTargetBoundary
+            ? await this.options.captureTargetBoundary()
+            : undefined;
+        let executionError: unknown;
+        try {
+          await this.options.executeEffect!({
+            effect,
+            signal: controller.signal,
+            dispatch: async (event) => {
+              await this.dispatch(event);
+            },
+          });
+        } catch (error) {
+          executionError = error;
+        }
+        if (
+          boundary !== undefined &&
+          boundary !== (await this.options.captureTargetBoundary!())
+        ) {
+          throw new TargetBoundaryError(
+            "A managed agent changed the target checkout boundary.",
+          );
+        }
+        if (executionError) {
+          throw executionError;
+        }
       })
       .catch(async (error) => {
+        if (error instanceof TargetBoundaryError) {
+          this.safetyReason = error.message;
+          this.stopping = true;
+          this.controller.abort();
+          for (const controller of this.processControllers.values()) {
+            controller.abort();
+          }
+          return;
+        }
+        if (
+          effect.kind === "run_implementation" &&
+          this.snapshot().processLeases[effect.leaseId]
+        ) {
+          const checkpoint =
+            error &&
+            typeof error === "object" &&
+            "trustedCheckpoint" in error &&
+            typeof error.trustedCheckpoint === "string"
+              ? error.trustedCheckpoint
+              : undefined;
+          await this.dispatch({
+            kind: "implementation_failed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            evidence: error instanceof Error ? error.message : String(error),
+            ...(checkpoint ? { trustedCheckpoint: checkpoint } : {}),
+          });
+          return;
+        }
         if (
           effect.kind === "run_recovery" &&
           this.snapshot().processLeases[effect.leaseId]
@@ -1577,6 +1753,13 @@ export class VNextSchedulerActor {
         const leaseId = "leaseId" in effect ? effect.leaseId : undefined;
         if (leaseId && this.snapshot().processLeases[leaseId]) {
           await this.persist({ kind: "process_abandoned", leaseId });
+        }
+        if (this.safetyReason && this.processes.size === 0) {
+          await this.persist({
+            kind: "safety_blocked",
+            reason: this.safetyReason,
+          });
+          return;
         }
         await this.drive();
       });

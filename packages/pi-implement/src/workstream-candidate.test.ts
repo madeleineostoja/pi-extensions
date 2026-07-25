@@ -146,6 +146,19 @@ async function fixture(args: {
     workerConcurrency: 2,
   });
   await run.bindExecutionPlan(result.value);
+  const state = run.read();
+  await run.update(state.revision, (current) => ({
+    ...current,
+    workstreams: {
+      ...current.workstreams,
+      source: Object.fromEntries(
+        Object.entries(current.workstreams.source).map(([id, workstream]) => [
+          id,
+          { ...workstream, baseSha: current.run.checkout.startHead },
+        ]),
+      ),
+    },
+  }));
   return { root, planPath, planContent, plan: result.value, run };
 }
 
