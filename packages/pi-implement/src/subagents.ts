@@ -46,25 +46,17 @@ export function hasLiveManagedRunAgents(
 export type ProbeResult = { ok: true; version?: number } | { ok: false };
 
 export type PiImplementWorkerStage =
+  | "planning"
   | "implementation"
-  | "initial_task_review"
-  | "task_admission"
-  | "task_rework"
-  | "anchored_task_review"
-  | "initial_overall_review"
-  | "overall_admission"
-  | "overall_rework"
-  | "anchored_overall_review"
-  | "integration_review"
-  | "integration_admission"
-  | "integration_recovery";
+  | "review"
+  | "recovery"
+  | "whole_plan_review";
 
 export type PiImplementWorkerRole =
   | "implementer"
   | "reviewer"
   | "planner"
-  | "selfHeal"
-  | "admission";
+  | "recovery";
 
 export type SpawnArgs<TSchemaValue extends TSchema = TSchema> = {
   type: string;
@@ -271,15 +263,9 @@ function registerPiImplementDefinitions(
         "Internal read-only execution manifest planner for pi-implement.",
     },
     {
-      type: "pi-implement:admission",
-      title: "pi-implement finding admission",
-      description: "Internal no-tools finding-admission adjudicator.",
-    },
-    {
-      type: "pi-implement:self-heal",
-      title: "pi-implement self-heal",
-      description:
-        "Internal worker for scheduler and integration repair prompts.",
+      type: "pi-implement:recovery",
+      title: "pi-implement recovery",
+      description: "Internal write-capable worker for pi-implement recovery.",
     },
   ]) {
     runtime.definitions.register({ ...definition, visibility: "internal" });

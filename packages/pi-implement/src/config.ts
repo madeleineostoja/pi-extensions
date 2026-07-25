@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "pi-subagents/runtime";
 
 export type RoleConfig = {
@@ -15,7 +14,6 @@ export type ImplementConfig = {
   planner?: RoleConfig;
   recovery?: RoleConfig;
   workerConcurrency?: number;
-  maxParallel?: number;
 };
 
 export type ConfigReadResult = {
@@ -34,13 +32,11 @@ export type EffectiveRoles = {
   implementer: EffectiveRole;
   reviewer: EffectiveRole;
   planner: EffectiveRole;
-  recovery?: EffectiveRole;
-  selfHeal: EffectiveRole;
+  recovery: EffectiveRole;
 };
 
 export const DEFAULT_SUBAGENT_TYPE = "general-purpose";
 const DEFAULT_PLANNER_TYPE = "Explore";
-const DEFAULT_RECOVERY_TYPE = DEFAULT_SUBAGENT_TYPE;
 const DEFAULT_WORKER_CONCURRENCY = 3;
 const HARD_MAX_CONCURRENCY = 8;
 const THINKING_LEVELS = new Set<ThinkingLevel>([
@@ -71,6 +67,16 @@ export function parseConfig(raw: string): {
     const object = value as Record<string, unknown>;
     const config: ImplementConfig = {};
     const invalid: string[] = [];
+    const unsupported = Object.keys(object).filter(
+      (key) =>
+        ![
+          "workerConcurrency",
+          "planner",
+          "implementer",
+          "reviewer",
+          "recovery",
+        ].includes(key),
+    );
     if (object.workerConcurrency !== undefined) {
       if (
         typeof object.workerConcurrency === "number" &&
@@ -96,15 +102,21 @@ export function parseConfig(raw: string): {
         config[name] = role;
       }
     }
-    for (const removed of ["maxParallel", "verifyCommand", "selfHeal"]) {
-      if (object[removed] !== undefined) {
-        invalid.push(`${removed} is unsupported in VNext`);
-      }
-    }
     return {
       config,
-      ...(invalid.length > 0
-        ? { warning: `Invalid config fields ignored: ${invalid.join(", ")}.` }
+      ...(invalid.length > 0 || unsupported.length > 0
+        ? {
+            warning: [
+              invalid.length > 0
+                ? `Invalid config fields ignored: ${invalid.join(", ")}.`
+                : undefined,
+              unsupported.length > 0
+                ? `Unsupported config fields ignored: ${unsupported.join(", ")}.`
+                : undefined,
+            ]
+              .filter((message): message is string => Boolean(message))
+              .join(" "),
+          }
         : {}),
     };
   } catch (error) {
@@ -122,8 +134,6 @@ export function resolveWorkerConcurrency(config: ImplementConfig): number {
   );
 }
 
-export const resolveMaxParallel = resolveWorkerConcurrency;
-
 export function readConfig(agentDir: string): ConfigReadResult {
   const path = getConfigPath(agentDir);
   try {
@@ -140,77 +150,20 @@ export function readConfig(agentDir: string): ConfigReadResult {
   }
 }
 
-export function currentModelRef(ctx: ExtensionContext): string | undefined {
-  const model = ctx.model as { provider?: string; id?: string } | undefined;
-  return model?.provider && model.id
-    ? `${model.provider}/${model.id}`
-    : undefined;
-}
-
-export function resolveEffectiveRoles(
-  config: ImplementConfig,
-  _ctx: ExtensionContext,
-): { ok: true; roles: EffectiveRoles } | { ok: false; reason: string } {
+export function resolveEffectiveRoles(config: ImplementConfig): {
+  ok: true;
+  roles: EffectiveRoles;
+} {
   const implementer = effective(config.implementer, DEFAULT_SUBAGENT_TYPE);
-  const recovery = effective(
-    config.recovery,
-    DEFAULT_RECOVERY_TYPE,
-    implementer,
-  );
   return {
     ok: true,
     roles: {
       implementer,
       reviewer: effective(config.reviewer, DEFAULT_SUBAGENT_TYPE),
       planner: effective(config.planner, DEFAULT_PLANNER_TYPE),
-      recovery,
-      selfHeal: recovery,
+      recovery: effective(config.recovery, DEFAULT_SUBAGENT_TYPE, implementer),
     },
   };
-}
-
-export function reviewerDefaultTypeWarning(
-  roles: EffectiveRoles,
-): string | undefined {
-  return roles.reviewer.type === DEFAULT_SUBAGENT_TYPE
-    ? "Reviewer subagent is using the default general-purpose type. Configure reviewer.type to a dedicated read-only review agent for stronger isolation."
-    : undefined;
-}
-
-export function formatConfigStatus(
-  result: ConfigReadResult,
-  roles?: EffectiveRoles,
-): string {
-  const lines = [`Config: ${result.path}`];
-  if (result.warning) {
-    lines.push(`Warning: ${result.warning}`);
-  }
-  for (const name of [
-    "planner",
-    "implementer",
-    "reviewer",
-    "recovery",
-  ] as const) {
-    const role =
-      roles?.[name] ??
-      effective(
-        result.config[name],
-        name === "planner" ? DEFAULT_PLANNER_TYPE : DEFAULT_SUBAGENT_TYPE,
-      );
-    lines.push(
-      `${capitalize(name)} model: ${role.model ?? "(subagent type default)"}`,
-    );
-    lines.push(`${capitalize(name)} subagent: ${role.type}`);
-    lines.push(
-      `${capitalize(name)} thinking: ${role.thinking ?? "(session default)"}`,
-    );
-  }
-  lines.push(`Worker concurrency: ${resolveWorkerConcurrency(result.config)}`);
-  const reviewerWarning = roles && reviewerDefaultTypeWarning(roles);
-  if (reviewerWarning) {
-    lines.push(`Warning: ${reviewerWarning}`);
-  }
-  return lines.join("\n");
 }
 
 function parseRole(
@@ -261,10 +214,6 @@ function effective(
     type: config?.type ?? type,
     thinking: config?.thinking ?? fallback?.thinking,
   };
-}
-
-function capitalize(value: string): string {
-  return value.slice(0, 1).toUpperCase() + value.slice(1);
 }
 
 function message(error: unknown): string {

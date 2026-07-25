@@ -359,12 +359,7 @@ describe("git helpers", () => {
 
   it("keeps Git subprocesses inside the execution boundary", () => {
     const sourceDir = new URL(".", import.meta.url);
-    for (const name of [
-      "git.ts",
-      "state.ts",
-      "strategy.ts",
-      "orchestrator.ts",
-    ]) {
+    for (const name of ["git.ts", "candidate.ts", "candidate-worker.ts"]) {
       const source = readFileSync(new URL(name, sourceDir), "utf-8");
       expect(source).not.toContain("node:child_process");
       expect(source).not.toMatch(/exec(?:File)?\s*\(\s*["']git/);

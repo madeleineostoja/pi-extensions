@@ -1,6 +1,6 @@
 {
   "name": "pi-implement",
-  "description": "Pi extension that implements /plan markdown artifacts one task at a time.",
+  "description": "Pi extension that executes Markdown plans through checkout-owned workstreams.",
   "license": "MIT",
   "type": "module",
   "files": [
@@ -18,7 +18,6 @@
     "@pi-extensions/lib": "0.1.0",
     "execa": "^10.0.0",
     "p-queue": "^9.3.2",
-    "pi-papercuts": "*",
     "pi-subagents": "*",
     "zod": "^4.4.3"
   },

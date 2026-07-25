@@ -92,6 +92,11 @@ export async function runVNextWholePlanReview(args: {
   artifactsPath: string;
   signal?: AbortSignal;
   dispatch: (event: VNextSchedulerEvent) => Promise<void>;
+  roles?: {
+    model?: string;
+    type?: string;
+    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  };
 }): Promise<void> {
   if (
     Object.values(args.state.workstreams.source).some(
@@ -122,8 +127,10 @@ export async function runVNextWholePlanReview(args: {
     fullDiff,
   });
   const handle = await args.subagents.spawn({
-    type: "pi-implement:reviewer",
+    type: args.roles?.type ?? "pi-implement:reviewer",
     role: "reviewer",
+    model: args.roles?.model,
+    thinking: args.roles?.thinking,
     taskId: "whole-plan",
     description: `Review complete run ${args.state.run.id}`,
     cwd: args.state.run.checkout.root,

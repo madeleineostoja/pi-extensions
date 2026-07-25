@@ -130,11 +130,10 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         return;
       }
       const config = readConfig(getAgentDir());
-      const effective = resolveEffectiveRoles(config.config, ctx);
-      if (!effective.ok) {
-        ctx.ui.notify(`pi-implement blocked: ${effective.reason}`, "warning");
-        return;
+      if (config.warning) {
+        ctx.ui.notify(`pi-implement config: ${config.warning}`, "warning");
       }
+      const effective = resolveEffectiveRoles(config.config);
       try {
         if (parsed.recovery?.kind === "start-over") {
           const checkoutRoot = await new (

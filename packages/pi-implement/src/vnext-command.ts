@@ -194,21 +194,18 @@ export async function resumeVNextRun(args: {
         "Bound VNext run is missing execution-plan.json; inspect or remove it manually.",
       );
     }
-    const actor =
-      store.read().phase === "planning"
-        ? createActor({
-            pi: args.pi,
-            ctx: args.ctx,
-            git,
-            store,
-            lease,
-            roles: args.roles,
-            plan: parsed,
-            materialStore,
-            checkoutIdentity,
-            baseSha: store.read().run.checkout.startHead,
-          })
-        : new VNextSchedulerActor({ store });
+    const actor = createActor({
+      pi: args.pi,
+      ctx: args.ctx,
+      git,
+      store,
+      lease,
+      roles: args.roles,
+      plan: parsed,
+      materialStore,
+      checkoutIdentity,
+      baseSha: store.read().run.checkout.startHead,
+    });
     if (store.read().phase === "paused") {
       await actor.dispatch({ kind: "resume_requested" });
     }
@@ -294,6 +291,7 @@ function createActor(args: {
                   ),
                   signal,
                   artifactsPath,
+                  roles: args.roles.implementer,
                 })),
               };
         await dispatch({
@@ -318,6 +316,7 @@ function createActor(args: {
           subagents: new RuntimeSubagentClient(args.pi, args.ctx, state.run.id),
           signal,
           artifactsPath,
+          roles: args.roles.reviewer,
         });
         await dispatch({
           kind: "review_completed",

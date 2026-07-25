@@ -9,7 +9,6 @@ import {
 import type { ExecutionPlan } from "./execution-plan-vnext.js";
 import type { GitClient } from "./git.js";
 import { buildOverallReworkPrompt } from "./prompts.js";
-import type { ReviewFinding } from "./review-convergence.js";
 import {
   overallReworkSchema,
   type OverallReworkCompletion,
@@ -49,6 +48,11 @@ export async function runVNextOverallRepair(args: {
   subagents: SubagentClient;
   artifactsPath: string;
   signal?: AbortSignal;
+  roles?: {
+    model?: string;
+    type?: string;
+    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  };
 }): Promise<{
   candidate: VNextRunState["candidates"][string];
   checkpoints: Record<string, string>;
@@ -101,8 +105,10 @@ export async function runVNextOverallRepair(args: {
       finding.status === "open",
   );
   const handle = await args.subagents.spawn({
-    type: "pi-implement:implementer",
+    type: args.roles?.type ?? "pi-implement:implementer",
     role: "implementer",
+    model: args.roles?.model,
+    thinking: args.roles?.thinking,
     taskId: args.repairId,
     description: `Repair whole-plan findings for ${args.repairId}`,
     cwd: workspace.worktreePath,
@@ -116,7 +122,7 @@ export async function runVNextOverallRepair(args: {
         baseline.commitSha,
       ),
       runId: args.state.run.id,
-      findings: findings as unknown as ReviewFinding[],
+      findings,
       worktreePath: workspace.worktreePath,
     }),
     completion: {

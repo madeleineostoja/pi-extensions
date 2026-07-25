@@ -101,7 +101,7 @@ function task(id: string, planIndex: number, dependsOn: string[]) {
 }
 
 describe("strict execution-plan compiler", () => {
-  it("blocks recursive corpus cycles before invoking the planner", async () => {
+  it("deduplicates recursive corpus cycles before invoking the planner", async () => {
     const directory = mkdtempSync(join(tmpdir(), "pi-implement-plan-"));
     const sourcePath = join(directory, "plan.md");
     try {
@@ -128,12 +128,40 @@ describe("strict execution-plan compiler", () => {
         runDir: join(directory, "run"),
         requestPlanner: async () => {
           calls++;
-          return plannerPlan();
+          return {
+            version: 1,
+            plannerReason: "One task is sufficient for this cycle fixture.",
+            plannerConfidence: "high",
+            tasks: [
+              {
+                id: "task",
+                planIndex: 1,
+                title: "Task",
+                dependsOn: [],
+                provenance: [{ path: sourcePath, quote: "Task" }],
+                compiledContract: {
+                  objective: "Implement the task.",
+                  inScope: ["Task behavior"],
+                  acceptanceCriteria: ["Task works"],
+                  outOfScope: ["Unrelated changes"],
+                },
+              },
+            ],
+            workstreams: [
+              {
+                id: "task-work",
+                taskIds: ["task"],
+                dependsOn: [],
+                rationale: "Only one task exists.",
+                risk: "normal",
+              },
+            ],
+          };
         },
       });
 
-      expect(result.ok).toBe(false);
-      expect(calls).toBe(0);
+      expect(result.ok).toBe(true);
+      expect(calls).toBe(1);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

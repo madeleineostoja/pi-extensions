@@ -1,6 +1,3 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { normalizeCheckboxMarker } from "./source-checkbox.js";
-
 export type PlanTask = {
   index: number;
   lineNumber: number;
@@ -135,58 +132,4 @@ function formatSectionRange(section: CheckboxSection): string {
   const startLine = section.startIndex + 1;
   const endLine = Math.max(startLine, section.endIndex);
   return `${section.heading} (lines ${startLine}-${endLine})`;
-}
-
-export function parsePlanFile(path: string): ParsedPlan {
-  return parsePlan(path, readFileSync(path, "utf-8"));
-}
-
-export function nextUncheckedTask(plan: ParsedPlan): PlanTask | undefined {
-  return plan.tasks.find((task) => !task.checked);
-}
-
-export function markTaskDoneInContent(content: string, task: PlanTask): string {
-  return replaceTaskMarker(content, task, "x");
-}
-
-export function markTaskUndoneInContent(
-  content: string,
-  task: PlanTask,
-): string {
-  return replaceTaskMarker(content, task, " ");
-}
-
-export function markTaskDone(path: string, task: PlanTask): void {
-  const content = readFileSync(path, "utf-8");
-  writeFileSync(path, markTaskDoneInContent(content, task), "utf-8");
-}
-
-export function markTaskUndone(path: string, task: PlanTask): void {
-  const content = readFileSync(path, "utf-8");
-  writeFileSync(path, markTaskUndoneInContent(content, task), "utf-8");
-}
-
-function replaceTaskMarker(
-  content: string,
-  task: PlanTask,
-  marker: "x" | " ",
-): string {
-  const lineEnding = content.includes("\r\n") ? "\r\n" : "\n";
-  const lines = content.split(/\r?\n/);
-  const index = task.lineNumber - 1;
-  if (
-    normalizeCheckboxMarker(lines[index]) ===
-    normalizeCheckboxMarker(task.originalLine)
-  ) {
-    lines[index] = replaceMarker(lines[index], marker);
-    return lines.join(lineEnding);
-  }
-
-  throw new Error(
-    `Stale source checkbox: line ${task.lineNumber} no longer matches recorded text.`,
-  );
-}
-
-function replaceMarker(line: string, marker: "x" | " "): string {
-  return line.replace(/\[([ xX])\]/, `[${marker}]`);
 }

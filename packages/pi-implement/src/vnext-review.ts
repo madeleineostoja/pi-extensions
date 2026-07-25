@@ -196,6 +196,11 @@ export async function runVNextWorkstreamReview(args: {
   subagents: SubagentClient;
   signal?: AbortSignal;
   artifactsPath: string;
+  roles?: {
+    model?: string;
+    type?: string;
+    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  };
 }): Promise<VNextReviewOutcome> {
   if (args.workstream.kind === "overall") {
     return runVNextOverallAnchoredReview({
@@ -267,8 +272,10 @@ export async function runVNextWorkstreamReview(args: {
         uncertainty: packet.uncertainty,
       });
   const handle = await args.subagents.spawn({
-    type: "pi-implement:reviewer",
+    type: args.roles?.type ?? "pi-implement:reviewer",
     role: "reviewer",
+    model: args.roles?.model,
+    thinking: args.roles?.thinking,
     taskId: args.workstream.id,
     description: `Review workstream ${args.workstream.id}`,
     cwd: workspace.worktreePath,
@@ -333,6 +340,11 @@ async function runVNextOverallAnchoredReview(args: {
   subagents: SubagentClient;
   signal?: AbortSignal;
   artifactsPath: string;
+  roles?: {
+    model?: string;
+    type?: string;
+    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  };
 }): Promise<VNextReviewOutcome> {
   const runtime = args.state.workstreams.overall[args.workstream.repairId];
   const candidateId = runtime?.candidateId;
@@ -382,8 +394,10 @@ async function runVNextOverallAnchoredReview(args: {
       candidate.reconciliation?.worktreePath ?? workspace.worktreePath,
   });
   const handle = await args.subagents.spawn({
-    type: "pi-implement:reviewer",
+    type: args.roles?.type ?? "pi-implement:reviewer",
     role: "reviewer",
+    model: args.roles?.model,
+    thinking: args.roles?.thinking,
     taskId: args.workstream.repairId,
     description: `Assess overall repair ${args.workstream.repairId}`,
     cwd: candidate.reconciliation?.worktreePath ?? workspace.worktreePath,
