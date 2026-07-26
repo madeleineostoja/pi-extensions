@@ -380,17 +380,6 @@ const projectionDebtSchema = z
   })
   .strict();
 
-const cleanupDebtSchema = z
-  .object({
-    id: nonEmpty,
-    reason: nonEmpty,
-    artifactPath: nonEmpty,
-    expectedCommitSha: nonEmpty.optional(),
-    branchName: nonEmpty.optional(),
-    worktreePath: nonEmpty.optional(),
-  })
-  .strict();
-
 const pauseSchema = z
   .object({
     resumePhase: z.enum(["planning", "running", "whole_plan_review"]),
@@ -538,7 +527,6 @@ export const vnextRunStateSchema = z
       .strict(),
     protectedArtifactHashes: z.record(nonEmpty, hash),
     projectionDebt: z.array(projectionDebtSchema),
-    cleanupDebt: z.array(cleanupDebtSchema),
     pause: pauseSchema.optional(),
     terminalReason: nonEmpty.optional(),
     wholePlanReview: wholePlanReviewSchema,
@@ -732,7 +720,6 @@ export function createPlanningRun(args: {
     publication: { preparations: {}, intents: {}, receipts: {} },
     protectedArtifactHashes: args.source.protectedArtifactHashes,
     projectionDebt: [],
-    cleanupDebt: [],
     wholePlanReview: { status: "pending" },
     createdAt: now,
     updatedAt: now,

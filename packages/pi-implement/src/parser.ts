@@ -6,7 +6,14 @@ export type ParsedCommand =
     }
   | {
       kind: "control";
-      name: "status" | "stop" | "cleanup" | "config" | "inspect" | "view";
+      name:
+        | "status"
+        | "stop"
+        | "cleanup"
+        | "abandon"
+        | "config"
+        | "inspect"
+        | "view";
       runId?: string;
     }
   | { kind: "error"; message: string };
@@ -28,6 +35,7 @@ export function parseCommand(input: string): ParsedCommand {
       (name === "status" ||
         name === "stop" ||
         name === "cleanup" ||
+        name === "abandon" ||
         name === "config" ||
         name === "inspect" ||
         name === "view")
@@ -74,5 +82,5 @@ function tokenize(input: string): string[] {
 }
 
 export function usage(): string {
-  return "Usage: /implement <plan.md> [--resume <run-id> | --start-over <run-id>], or /implement :status | :inspect <run-id> | :cleanup <run-id> | :stop";
+  return "Usage: /implement <plan.md> [--resume <run-id> | --start-over <run-id>], or /implement :status | :inspect <run-id> | :cleanup <run-id> | :abandon <run-id> | :stop";
 }

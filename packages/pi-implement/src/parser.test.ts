@@ -29,5 +29,10 @@ describe("parseCommand", () => {
       name: "inspect",
       runId: "run-1",
     });
+    expect(parseCommand(":abandon run-1")).toEqual({
+      kind: "control",
+      name: "abandon",
+      runId: "run-1",
+    });
   });
 });

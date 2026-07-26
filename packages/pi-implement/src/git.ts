@@ -79,6 +79,7 @@ export type GitClient = {
   diffRange(baseSha: string, headSha: string): Promise<string>;
   changedPathsBetween?(baseSha: string, headSha: string): Promise<string[]>;
   listBranchesMatching(pattern: string): Promise<string[]>;
+  branchTip?(branchName: string): Promise<string | undefined>;
   listWorktrees(): Promise<string[]>;
   forWorktree(worktreePath: string, mainRepoRoot?: string): GitClient;
   withSignal?(signal?: AbortSignal): GitClient;
@@ -372,8 +373,16 @@ export class ExecGitClient implements GitClient {
     const result = await this.run(["branch", "--list", pattern]);
     return result.stdout
       .split("\n")
-      .map((b) => b.trim().replace(/^\*\s*/, ""))
+      .map((b) => b.trim().replace(/^[*+]\s*/, ""))
       .filter(Boolean);
+  }
+
+  async branchTip(branchName: string): Promise<string | undefined> {
+    const result = await this.run(
+      ["rev-parse", "-q", "--verify", branchName],
+      true,
+    );
+    return result.exitCode === 0 ? result.stdout.trim() : undefined;
   }
 
   async listWorktrees(): Promise<string[]> {

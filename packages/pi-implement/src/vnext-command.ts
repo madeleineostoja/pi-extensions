@@ -21,8 +21,8 @@ import {
   runVNextWholePlanRecovery,
   runVNextWholePlanReview,
 } from "./vnext-whole-plan-review.js";
-import { settleVNextCleanupDebt } from "./vnext-cleanup.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
+import { assertProspectiveVNextRunPreflight } from "./vnext-controls.js";
 import { strictExecutionPlanSchema } from "./result-schemas.js";
 import { sha256 } from "./source-integrity.js";
 import {
@@ -88,6 +88,7 @@ export async function startVNextRun(args: {
     timeoutMs: 10_000,
   });
   try {
+    await assertProspectiveVNextRunPreflight(git);
     const source = sourceIdentityForPlanning({
       planPath,
       planContent: content,
@@ -788,15 +789,6 @@ export function createVNextRuntime(args: {
         await completeVNextWholePlanRun({
           state,
           git: args.git,
-          dispatch,
-        });
-        return;
-      }
-      if (effect.kind === "run_cleanup") {
-        await settleVNextCleanupDebt({
-          store: args.store,
-          git: args.git,
-          debtId: effect.debtId,
           dispatch,
         });
         return;

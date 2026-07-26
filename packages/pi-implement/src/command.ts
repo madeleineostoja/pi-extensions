@@ -16,6 +16,7 @@ import {
   type ActiveVNextRun,
 } from "./vnext-command.js";
 import {
+  abandonVNextRun,
   cleanupCompletedVNextRun,
   cleanupWithLease,
   formatVNextStatus,
@@ -86,24 +87,54 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
             ctx.ui.notify(inspectVNextRun(checkoutRoot, parsed.runId), "info");
             return;
           }
+          if (parsed.name === "abandon") {
+            if (!parsed.runId) {
+              throw new Error(
+                "Abandon requires a paused or safety-blocked VNext run ID.",
+              );
+            }
+            if (active?.runId === parsed.runId) {
+              throw new Error(
+                "Stop the active session run before abandoning it.",
+              );
+            }
+            await abandonVNextRun({ checkoutRoot, runId: parsed.runId });
+            ctx.ui.notify(
+              `pi-implement abandoned VNext run ${parsed.runId}.`,
+              "info",
+            );
+            return;
+          }
           if (parsed.name === "cleanup") {
             if (!parsed.runId) {
               throw new Error("Cleanup requires a completed VNext run ID.");
             }
             if (active?.runId === parsed.runId) {
               const completed = active;
-              await cleanupWithLease({
+              const projected = await cleanupWithLease({
                 lease: completed.lease,
                 git: new (await import("./git.js")).ExecGitClient(checkoutRoot),
                 runId: parsed.runId,
               });
+              if (projected.length > 0) {
+                ctx.ui.notify(
+                  `Projected tracked files are now ordinary working changes; commit or revert before the next run: ${projected.join(", ")}`,
+                  "warning",
+                );
+              }
               await completed.lease.release();
               active = undefined;
             } else {
-              await cleanupCompletedVNextRun({
+              const projected = await cleanupCompletedVNextRun({
                 checkoutRoot,
                 runId: parsed.runId,
               });
+              if (projected.length > 0) {
+                ctx.ui.notify(
+                  `Projected tracked files are now ordinary working changes; commit or revert before the next run: ${projected.join(", ")}`,
+                  "warning",
+                );
+              }
             }
             ctx.ui.notify(
               `pi-implement cleaned VNext run ${parsed.runId}.`,
@@ -142,6 +173,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           await cleanupCompletedVNextRun({
             checkoutRoot,
             runId: parsed.recovery.runId,
+            prospectiveStart: true,
           });
         }
         if (parsed.recovery?.kind === "resume") {

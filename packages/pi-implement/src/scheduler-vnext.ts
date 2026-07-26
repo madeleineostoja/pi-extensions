@@ -241,12 +241,7 @@ export type VNextSchedulerEvent =
       debt: VNextRunState["projectionDebt"][number];
     }
   | { kind: "projection_debt_settled"; debtId: string }
-  | { kind: "projection_safety_paused"; reason: string }
-  | {
-      kind: "cleanup_debt_recorded";
-      debt: VNextRunState["cleanupDebt"][number];
-    }
-  | { kind: "cleanup_debt_settled"; debtId: string };
+  | { kind: "projection_safety_paused"; reason: string };
 
 export type VNextSchedulerEffect =
   | {
@@ -279,8 +274,7 @@ export type VNextSchedulerEffect =
   | { kind: "run_whole_plan_review" }
   | { kind: "run_whole_plan_recovery" }
   | { kind: "complete_whole_plan_run" }
-  | { kind: "run_projection"; debtId: string }
-  | { kind: "run_cleanup"; debtId: string };
+  | { kind: "run_projection"; debtId: string };
 
 export type VNextSchedulerTransition = {
   state: VNextRunState;
@@ -1843,7 +1837,6 @@ export function reduceVNextRunEvent(
           (workstream) => workstream.phase !== "completed",
         ) ||
         state.projectionDebt.length > 0 ||
-        state.cleanupDebt.length > 0 ||
         Object.keys(state.processLeases).length > 0 ||
         state.wholePlanReview.status !== "approved" ||
         state.wholePlanReview.reviewedTargetSha !== event.targetSha ||
@@ -1878,22 +1871,6 @@ export function reduceVNextRunEvent(
         return reject("projection debt does not exist");
       }
       state.projectionDebt = state.projectionDebt.filter(
-        (debt) => debt.id !== event.debtId,
-      );
-      return accept();
-
-    case "cleanup_debt_recorded":
-      if (!state.cleanupDebt.some((debt) => debt.id === event.debt.id)) {
-        state.cleanupDebt.push(event.debt);
-        return accept([{ kind: "run_cleanup", debtId: event.debt.id }]);
-      }
-      return accept();
-
-    case "cleanup_debt_settled":
-      if (!state.cleanupDebt.some((debt) => debt.id === event.debtId)) {
-        return reject("cleanup debt does not exist");
-      }
-      state.cleanupDebt = state.cleanupDebt.filter(
         (debt) => debt.id !== event.debtId,
       );
       return accept();
@@ -2164,12 +2141,6 @@ export class VNextSchedulerActor {
     if (activeWorkerLeaseCount(state) === 0 && this.processes.size === 0) {
       for (const debt of state.projectionDebt) {
         const effect = { kind: "run_projection" as const, debtId: debt.id };
-        if (!this.processes.has(effectKey(effect))) {
-          return { kind: "effect", effect };
-        }
-      }
-      for (const debt of state.cleanupDebt) {
-        const effect = { kind: "run_cleanup" as const, debtId: debt.id };
         if (!this.processes.has(effectKey(effect))) {
           return { kind: "effect", effect };
         }

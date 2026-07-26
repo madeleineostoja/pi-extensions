@@ -1,10 +1,10 @@
 import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { ExecGitClient } from "./git.js";
-import { VNextSchedulerActor } from "./scheduler-vnext.js";
+import { ExecGitClient, type GitClient } from "./git.js";
 import {
-  settleVNextCleanupDebt,
-  trashCompletedVNextRun,
+  projectedArtifactPaths,
+  sweepOwnedRunResources,
+  trashVNextRun,
 } from "./vnext-cleanup.js";
 import {
   acquireCheckoutLease,
@@ -64,14 +64,6 @@ export function formatVNextStatus(state: VNextRunState): string {
     .map((lease) => `${lease.kind}:${lease.id}`)
     .join(", ");
   const latestGate = state.gates.at(-1);
-  const debts = [
-    state.projectionDebt.length > 0
-      ? `projection debt ${state.projectionDebt.length}`
-      : undefined,
-    state.cleanupDebt.length > 0
-      ? `cleanup debt ${state.cleanupDebt.length}`
-      : undefined,
-  ].filter(Boolean);
   return [
     `Run: ${state.run.id}`,
     `Phase: ${state.phase}`,
@@ -84,7 +76,7 @@ export function formatVNextStatus(state: VNextRunState): string {
       ? [`Latest gate: ${latestGate.kind} ${latestGate.outcome}`]
       : []),
     `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted`,
-    `Debt: ${debts.join(", ") || "none"}`,
+    `Debt: ${state.projectionDebt.length > 0 ? `projection debt ${state.projectionDebt.length}` : "none"}`,
     ...(state.pause?.reason ? [`Pause: ${state.pause.reason}`] : []),
     ...(state.terminalReason ? [`Safety: ${state.terminalReason}`] : []),
   ].join("\n");
@@ -109,10 +101,28 @@ export function inspectVNextRun(checkoutRoot: string, runId: string): string {
   ].join("\n");
 }
 
+export async function assertProspectiveVNextRunPreflight(
+  git: GitClient,
+): Promise<void> {
+  const [root, head, branch, operation, clean] = await Promise.all([
+    git.root(),
+    git.head(),
+    git.currentBranch(),
+    git.activeOperation(),
+    git.isClean(),
+  ]);
+  if (!root || !head || !branch || operation || !clean) {
+    throw new Error(
+      "A new run requires a clean Git worktree with a resolvable HEAD, named branch, and no active Git operation.",
+    );
+  }
+}
+
 export async function cleanupCompletedVNextRun(args: {
   checkoutRoot: string;
   runId: string;
-}): Promise<void> {
+  prospectiveStart?: boolean;
+}): Promise<string[]> {
   assertRunId(args.runId);
   const git = new ExecGitClient(args.checkoutRoot);
   const lease = await acquireCheckoutLease({
@@ -121,12 +131,15 @@ export async function cleanupCompletedVNextRun(args: {
     timeoutMs: 10_000,
   });
   try {
+    if (args.prospectiveStart) {
+      await assertProspectiveVNextRunPreflight(git);
+    }
     const trash = join(lease.paths.trash, args.runId);
     if (existsSync(trash)) {
       rmSync(trash, { recursive: true, force: true });
-      return;
+      return [];
     }
-    await cleanupWithLease({ lease, git, runId: args.runId });
+    return cleanupWithLease({ lease, git, runId: args.runId });
   } finally {
     await lease.release();
   }
@@ -134,26 +147,84 @@ export async function cleanupCompletedVNextRun(args: {
 
 export async function cleanupWithLease(args: {
   lease: CheckoutLeaseCapability;
-  git: ExecGitClient;
+  git: GitClient;
   runId: string;
-}): Promise<void> {
-  const store = VNextRunStore.open(
-    args.lease,
-    join(args.lease.paths.runs, args.runId, "run-state.json"),
-  );
+}): Promise<string[]> {
+  const store = openExactRun(args.lease, args.runId);
+  await assertCurrentRunAuthority(store, args.git, args.lease);
   if (store.read().phase !== "completed") {
     throw new Error("Only completed VNext runs may be destructively cleaned.");
   }
-  const actor = new VNextSchedulerActor({ store });
-  for (const debt of store.read().cleanupDebt) {
-    await settleVNextCleanupDebt({
-      store,
-      git: args.git,
-      debtId: debt.id,
-      dispatch: (event) => actor.dispatch(event).then(() => undefined),
-    });
+  await sweepOwnedRunResources({ lease: args.lease, store, git: args.git });
+  const projected = projectedArtifactPaths(store.read());
+  trashVNextRun({ lease: args.lease, store });
+  return projected;
+}
+
+export async function abandonVNextRun(args: {
+  checkoutRoot: string;
+  runId: string;
+}): Promise<void> {
+  assertRunId(args.runId);
+  const git = new ExecGitClient(args.checkoutRoot);
+  const checkoutIdentity = await git.checkoutIdentity();
+  const lease = await acquireCheckoutLease({
+    checkoutRoot: args.checkoutRoot,
+    gitDir: checkoutIdentity,
+    runId: args.runId,
+    timeoutMs: 10_000,
+  });
+  try {
+    const store = openExactRun(lease, args.runId);
+    const state = store.read();
+    await assertCurrentRunAuthority(store, git, lease);
+    if (!["paused", "blocked_safety"].includes(state.phase)) {
+      throw new Error("Only paused or safety-blocked runs may be abandoned.");
+    }
+    if (Object.keys(state.processLeases).length > 0) {
+      throw new Error("Stop active processes before abandoning this run.");
+    }
+    await sweepOwnedRunResources({ lease, store, git });
+    trashVNextRun({ lease, store });
+  } finally {
+    await lease.release();
   }
-  trashCompletedVNextRun({ lease: args.lease, store });
+}
+
+function openExactRun(
+  lease: CheckoutLeaseCapability,
+  runId: string,
+): VNextRunStore {
+  const directory = join(lease.paths.runs, runId);
+  if (!existsSync(directory) || lstatSync(directory).isSymbolicLink()) {
+    throw new Error("Run is historical or symlinked; recover it manually.");
+  }
+  const path = join(directory, "run-state.json");
+  if (!existsSync(path)) {
+    throw new Error("Run is historical or missing; recover it manually.");
+  }
+  return VNextRunStore.open(lease, path);
+}
+
+async function assertCurrentRunAuthority(
+  store: VNextRunStore,
+  git: GitClient,
+  lease: CheckoutLeaseCapability,
+): Promise<void> {
+  const state = store.read();
+  const [root, gitDir] = await Promise.all([
+    git.root(),
+    git.checkoutIdentity(),
+  ]);
+  if (
+    state.run.checkout.root !== root ||
+    state.run.checkout.gitDir !== gitDir ||
+    state.run.id !== lease.owner.runId
+  ) {
+    throw new Error(
+      "Run belongs to a different checkout; recover it manually.",
+    );
+  }
 }
 
 function assertRunId(runId: string): void {
