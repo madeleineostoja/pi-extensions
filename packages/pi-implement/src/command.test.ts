@@ -16,8 +16,10 @@ afterEach(() => {
 
 describe("/implement command", () => {
   it("rejects terminal runs before creating a resume actor", () => {
-    expect(() => assertRunCanResume("completed")).toThrow(":cleanup");
-    expect(() => assertRunCanResume("blocked_safety")).toThrow(":abandon");
+    expect(() => assertRunCanResume("completed")).toThrow("/implement cleanup");
+    expect(() => assertRunCanResume("blocked_safety")).toThrow(
+      "/implement cleanup",
+    );
     expect(() => assertRunCanResume("paused")).not.toThrow();
   });
 
@@ -36,7 +38,7 @@ describe("/implement command", () => {
     writeFileSync(plan, "# Plan\n\n- [x] Finished\n");
     const notifications: Array<{ message: string; level: string }> = [];
 
-    await handler!("plan.md", {
+    await handler!("run plan.md", {
       cwd: root,
       mode: "print",
       ui: {
@@ -50,6 +52,53 @@ describe("/implement command", () => {
         message: "All plan tasks are already checked; no run was created.",
         level: "info",
       },
+    ]);
+  });
+
+  it("opens one run-oriented menu for an empty command", async () => {
+    let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
+    const pi = {
+      on() {},
+      registerCommand(_name: string, command: { handler: typeof handler }) {
+        handler = command.handler;
+      },
+    };
+    registerImplementCommand(pi as never);
+    const root = mkdtempSync(join(tmpdir(), "pi-implement-menu-"));
+    temporaryDirectories.add(root);
+    const plan = join(root, "plan.md");
+    writeFileSync(plan, "# Plan\n\n- [x] Finished\n");
+    const { execFileSync } = await import("node:child_process");
+    execFileSync("git", ["init"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: root,
+    });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: root });
+    execFileSync("git", ["add", "plan.md"], { cwd: root });
+    execFileSync("git", ["commit", "-m", "test"], { cwd: root });
+    const selections = ["New run"];
+    const menus: string[][] = [];
+    const notifications: string[] = [];
+
+    await handler!("", {
+      cwd: root,
+      hasUI: true,
+      mode: "tui",
+      ui: {
+        input: async () => "plan.md",
+        notify: (message: string) => notifications.push(message),
+        select: async (_title: string, options: string[]) => {
+          menus.push(options);
+          return selections.shift();
+        },
+        setWidget() {},
+      },
+    });
+
+    expect(menus).toEqual([["New run", "Close"]]);
+    expect(menus.flat().every((item) => !item.includes("..."))).toBe(true);
+    expect(notifications).toEqual([
+      "All plan tasks are already checked; no run was created.",
     ]);
   });
 });

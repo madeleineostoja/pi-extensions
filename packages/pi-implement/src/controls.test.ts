@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,7 +14,11 @@ import { TaskWorkspaceManager } from "./candidate-worker.js";
 import { ExecGitClient } from "./git.js";
 import { sweepOwnedRunResources } from "./cleanup.js";
 import { checkoutPaths, type RunState, type RunStore } from "./store.js";
-import { assertProspectiveRunPreflight, listCheckoutRuns } from "./controls.js";
+import {
+  assertProspectiveRunPreflight,
+  cleanupRun,
+  listCheckoutRuns,
+} from "./controls.js";
 
 const temporaryDirectories = new Set<string>();
 
@@ -132,6 +142,18 @@ describe(" controls", () => {
         (path) => path === workspace.worktreePath,
       ),
     ).toBe(false);
+  });
+
+  it("finishes a cleanup interrupted after moving the run to trash", async () => {
+    const root = repository();
+    const trash = join(checkoutPaths(root).trash, "run-1");
+    mkdirSync(trash, { recursive: true });
+    writeFileSync(join(trash, "run-state.json"), "retained");
+
+    await expect(
+      cleanupRun({ checkoutRoot: root, runId: "run-1" }),
+    ).resolves.toEqual([]);
+    expect(existsSync(trash)).toBe(false);
   });
 
   it("reports malformed retained directories as manual-only historical artifacts", () => {

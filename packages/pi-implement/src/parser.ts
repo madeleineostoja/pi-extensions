@@ -6,75 +6,40 @@ export type ParsedCommand =
     }
   | {
       kind: "control";
-      name:
-        | "status"
-        | "stop"
-        | "cleanup"
-        | "abandon"
-        | "config"
-        | "inspect"
-        | "view";
+      name: "status" | "stop" | "cleanup" | "inspect";
       runId?: string;
     }
   | { kind: "error"; message: string };
 
 export function parseCommand(input: string): ParsedCommand {
-  const trimmed = input.trim();
+  const [subcommand, ...args] = tokenize(input);
 
-  if (trimmed.length === 0) {
-    return { kind: "error", message: usage() };
+  if (subcommand === "run" && args.length === 1) {
+    return { kind: "execution", planPath: args[0]! };
   }
-
-  const tokens = tokenize(trimmed);
-  const first = tokens[0];
-
-  if (first.startsWith(":")) {
-    const name = first.slice(1);
-    if (
-      (tokens.length === 1 || (tokens.length === 2 && tokens[1])) &&
-      (name === "status" ||
-        name === "stop" ||
-        name === "cleanup" ||
-        name === "abandon" ||
-        name === "config" ||
-        name === "inspect" ||
-        name === "view")
-    ) {
-      return {
-        kind: "control",
-        name,
-        ...(tokens[1] ? { runId: tokens[1] } : {}),
-      };
-    }
-    return { kind: "error", message: usage() };
+  if (
+    (subcommand === "resume" || subcommand === "restart") &&
+    args.length === 2
+  ) {
+    return {
+      kind: "execution",
+      planPath: args[0]!,
+      recovery: {
+        kind: subcommand === "resume" ? "resume" : "start-over",
+        runId: args[1]!,
+      },
+    };
   }
-
-  if (first.startsWith("-")) {
-    return { kind: "error", message: usage() };
+  if ((subcommand === "status" || subcommand === "stop") && args.length === 0) {
+    return { kind: "control", name: subcommand };
   }
-
-  const flags = tokens.slice(1);
-  let recovery: { kind: "resume" | "start-over"; runId: string } | undefined;
-  for (let index = 0; index < flags.length; index++) {
-    const flag = flags[index];
-    if ((flag === "--resume" || flag === "--start-over") && !recovery) {
-      const runId = flags[++index];
-      if (!runId || runId.startsWith("--")) {
-        return { kind: "error", message: usage() };
-      }
-      recovery = {
-        kind: flag === "--resume" ? "resume" : "start-over",
-        runId,
-      };
-      continue;
-    }
-    return { kind: "error", message: usage() };
+  if (
+    (subcommand === "inspect" || subcommand === "cleanup") &&
+    args.length === 1
+  ) {
+    return { kind: "control", name: subcommand, runId: args[0] };
   }
-  return {
-    kind: "execution",
-    planPath: first,
-    ...(recovery ? { recovery } : {}),
-  };
+  return { kind: "error", message: usage() };
 }
 
 function tokenize(input: string): string[] {
@@ -82,5 +47,5 @@ function tokenize(input: string): string[] {
 }
 
 export function usage(): string {
-  return "Usage: /implement <plan.md> [--resume <run-id> | --start-over <run-id>], or /implement :status | :inspect <run-id> | :cleanup <run-id> | :abandon <run-id> | :stop";
+  return "Usage: /implement run <plan.md> | resume <plan.md> <run-id> | restart <plan.md> <run-id> | status | inspect <run-id> | cleanup <run-id> | stop";
 }

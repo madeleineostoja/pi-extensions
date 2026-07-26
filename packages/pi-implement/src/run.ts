@@ -68,6 +68,7 @@ export async function startRun(args: {
   planPath: string;
   roles: EffectiveRoles;
   workerConcurrency: number;
+  onTransition?: SchedulerActorOptions["onTransition"];
 }): Promise<{ kind: "no-op" } | { kind: "started"; active: ActiveRun }> {
   const planPath = resolve(args.ctx.cwd, args.planPath);
   const content = await readText(planPath);
@@ -133,6 +134,7 @@ export async function startRun(args: {
       materialStore,
       checkoutIdentity,
       baseSha,
+      onTransition: args.onTransition,
     });
     await actor.start();
     return { kind: "started", active: { runId, actor, lease, store } };
@@ -148,6 +150,7 @@ export async function resumeRun(args: {
   planPath: string;
   runId: string;
   roles: EffectiveRoles;
+  onTransition?: SchedulerActorOptions["onTransition"];
 }): Promise<ActiveRun> {
   const planPath = resolve(args.ctx.cwd, args.planPath);
   const git = new ExecGitClient(args.ctx.cwd);
@@ -238,6 +241,7 @@ export async function resumeRun(args: {
       materialStore,
       checkoutIdentity,
       baseSha: store.read().run.checkout.startHead,
+      onTransition: args.onTransition,
     });
     if (store.read().phase === "paused") {
       await actor.resume();
@@ -252,11 +256,13 @@ export async function resumeRun(args: {
 
 export function assertRunCanResume(phase: RunState["phase"]): void {
   if (phase === "completed") {
-    throw new Error("Completed runs cannot resume; use :cleanup instead.");
+    throw new Error(
+      "Completed runs cannot resume; use /implement cleanup <run-id> instead.",
+    );
   }
   if (phase === "blocked_safety") {
     throw new Error(
-      "Safety-blocked runs cannot resume; use :abandon after manual recovery.",
+      "Safety-blocked runs cannot resume; use /implement cleanup <run-id> after manual recovery.",
     );
   }
 }

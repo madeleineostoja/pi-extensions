@@ -55,28 +55,30 @@ A new run requires a Git worktree with a resolvable `HEAD`, a named local branch
 
 The target checkout remains orchestrator-owned. Managed agents run only while integration and publication are idle; integration and publication run only while managed agents are idle. Before and after every managed agent, pi-implement verifies target identity, Git-operation state, cleanliness outside protected projections, and exact protected-artifact hashes. It safety-blocks rather than attributing unauthorized target changes to an agent.
 
-Tracked source plans become expected working changes after checkbox projection. While the run is active, their exact retained hashes are verified and excluded from target cleanliness checks. Unrelated dirt still blocks lifecycle work. Resume first settles retained publication and projection transactions, then validates the target and protected corpus. Completed and safety-blocked runs cannot resume; use `:cleanup` for completed runs, or manually recover and use `:abandon` for paused or safety-blocked runs.
+Tracked source plans become expected working changes after checkbox projection. While the run is active, their exact retained hashes are verified and excluded from target cleanliness checks. Unrelated dirt still blocks lifecycle work. Resume first settles retained publication and projection transactions, then validates the target and protected corpus. Completed and safety-blocked runs cannot resume. Cleaning up an incomplete run requires confirmation, stops active work, preserves already-published target and plan changes, and permanently removes the ability to resume it.
 
 ## Commands
 
+Running `/implement` opens the run menu. The current session run appears first, followed by retained checkout runs and the action to create a new run. Selecting a run shows only actions valid for its current phase.
+
 ```text
-/implement path/to/plan.md
-/implement path/to/plan.md --resume <run-id>
-/implement path/to/plan.md --start-over <completed-run-id>
-/implement :status
-/implement :inspect <run-id>
-/implement :cleanup <completed-run-id>
-/implement :abandon <run-id>
-/implement :stop
+/implement run <plan.md>
+/implement resume <plan.md> <run-id>
+/implement restart <plan.md> <completed-run-id>
+/implement status
+/implement inspect <run-id>
+/implement cleanup <run-id>
+/implement stop
 ```
 
-- `:status` lists runs in the current checkout with their phase, findings, gates, leases, and projection debt.
-- `:inspect` shows a run's durable state and evidence paths.
-- `:stop` settles owned processes and pauses the active session run safely.
-- `--resume` resumes a nonterminal run from the same checkout after transaction-aware safety checks pass.
-- `--start-over` verifies prospective new-run preflight, cleans a completed run, then starts a new run for the supplied plan.
-- `:cleanup` conservatively removes a completed run's provably owned worktrees and branches. It is retryable after partial cleanup. It retains run authority and reports manual recovery paths if ownership cannot be proven. After cleanup, projected tracked files are ordinary working changes that must be committed or reverted before another run.
-- `:abandon` is available only for a paused or safety-blocked run in the current checkout with no active process leases. It never changes the target and removes authority only after the same conservative owned-resource scan succeeds.
+- `status` lists runs in the current checkout with their phase, findings, gates, leases, and projection debt.
+- `inspect` shows a run's durable state and evidence paths.
+- `stop` settles owned processes, pauses the active session run safely, and preserves it for resume.
+- `resume` resumes a nonterminal run from the same checkout after transaction-aware safety checks pass.
+- `restart` verifies prospective new-run preflight, cleans a completed run, then starts a new run for the supplied plan.
+- `cleanup` conservatively removes a completed, paused, or safety-blocked run's provably owned worktrees and branches. Incomplete runs require confirmation and are stopped first. Cleanup is retryable after partial failure, preserves published target and plan changes, and reports manual recovery paths if ownership cannot be proven. Projected tracked files become ordinary working changes that must be committed or reverted before another run.
+
+While a session run is active, a diagnostic widget shows its run phase, published-task progress, workstream task titles and stages, latest failures, and open findings.
 
 ## Configuration
 

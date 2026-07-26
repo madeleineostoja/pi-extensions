@@ -150,9 +150,7 @@ export async function cleanupCompletedRun(args: {
     if (args.prospectiveStart) {
       await assertProspectiveRunPreflight(git);
     }
-    const trash = join(lease.paths.trash, args.runId);
-    if (existsSync(trash)) {
-      rmSync(trash, { recursive: true, force: true });
+    if (removeRetainedTrash(lease, args.runId)) {
       return [];
     }
     return cleanupWithLease({ lease, git, runId: args.runId });
@@ -165,22 +163,34 @@ export async function cleanupWithLease(args: {
   lease: CheckoutLeaseCapability;
   git: GitClient;
   runId: string;
+  allowIncomplete?: boolean;
 }): Promise<string[]> {
   const store = openExactRun(args.lease, args.runId);
   await assertCurrentRunAuthority(store, args.git, args.lease);
-  if (store.read().phase !== "completed") {
-    throw new Error("Only completed runs may be destructively cleaned.");
+  const state = store.read();
+  const allowedPhases = args.allowIncomplete
+    ? ["completed", "paused", "blocked_safety"]
+    : ["completed"];
+  if (!allowedPhases.includes(state.phase)) {
+    throw new Error(
+      args.allowIncomplete
+        ? "Only completed, paused, or safety-blocked runs may be cleaned up."
+        : "Only completed runs may be destructively cleaned.",
+    );
+  }
+  if (Object.keys(state.processLeases).length > 0) {
+    throw new Error("Stop active processes before cleaning up this run.");
   }
   await sweepOwnedRunResources({ lease: args.lease, store, git: args.git });
-  const projected = projectedArtifactPaths(store.read());
+  const projected = projectedArtifactPaths(state);
   trashRun({ lease: args.lease, store });
   return projected;
 }
 
-export async function abandonRun(args: {
+export async function cleanupRun(args: {
   checkoutRoot: string;
   runId: string;
-}): Promise<void> {
+}): Promise<string[]> {
   assertRunId(args.runId);
   const git = new ExecGitClient(args.checkoutRoot);
   const checkoutIdentity = await git.checkoutIdentity();
@@ -191,20 +201,30 @@ export async function abandonRun(args: {
     timeoutMs: 10_000,
   });
   try {
-    const store = openExactRun(lease, args.runId);
-    const state = store.read();
-    await assertCurrentRunAuthority(store, git, lease);
-    if (!["paused", "blocked_safety"].includes(state.phase)) {
-      throw new Error("Only paused or safety-blocked runs may be abandoned.");
+    if (removeRetainedTrash(lease, args.runId)) {
+      return [];
     }
-    if (Object.keys(state.processLeases).length > 0) {
-      throw new Error("Stop active processes before abandoning this run.");
-    }
-    await sweepOwnedRunResources({ lease, store, git });
-    trashRun({ lease, store });
+    return cleanupWithLease({
+      lease,
+      git,
+      runId: args.runId,
+      allowIncomplete: true,
+    });
   } finally {
     await lease.release();
   }
+}
+
+function removeRetainedTrash(
+  lease: CheckoutLeaseCapability,
+  runId: string,
+): boolean {
+  const trash = join(lease.paths.trash, runId);
+  if (!existsSync(trash)) {
+    return false;
+  }
+  rmSync(trash, { recursive: true, force: true });
+  return true;
 }
 
 function openExactRun(lease: CheckoutLeaseCapability, runId: string): RunStore {
