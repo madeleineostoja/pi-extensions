@@ -1,8 +1,8 @@
 import {
-  AuthStorage,
   createAgentSession,
   DefaultResourceLoader,
   ModelRegistry,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSession,
@@ -11,6 +11,7 @@ import {
   createFauxCore,
   fauxAssistantMessage,
   fauxToolCall,
+  InMemoryCredentialStore,
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
@@ -109,8 +110,11 @@ async function createRealSessionHarness(responses: FauxResponse) {
     throw new Error("Missing faux test model.");
   }
   faux.setResponses(responses);
-  const authStorage = AuthStorage.inMemory();
-  const modelRegistry = ModelRegistry.inMemory(authStorage);
+  const modelRuntime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+  });
+  const modelRegistry = new ModelRegistry(modelRuntime);
   modelRegistry.registerProvider(TEST_PROVIDER, {
     api: fauxModel.api,
     baseUrl: fauxModel.baseUrl,
@@ -157,8 +161,7 @@ async function createRealSessionHarness(responses: FauxResponse) {
       ...options,
       cwd: TEST_CWD,
       model,
-      modelRegistry,
-      authStorage,
+      modelRuntime,
       settingsManager,
       resourceLoader,
       noTools: "builtin",
