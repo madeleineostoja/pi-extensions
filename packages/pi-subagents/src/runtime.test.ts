@@ -517,7 +517,7 @@ describe("SubagentRuntime", () => {
     session.steer = vi.fn((message: string) => {
       calls.push(message);
       return message === "first" ? first.promise : second.promise;
-    });
+    }) as never;
     const runtime = new SubagentRuntime(pi as never, { createSession: vi.fn(async () => ({ session })) });
     const started = await runtime.runManagedAgent({ type: "General", prompt: "work", cwd: "/workspace", ctx: makeCtx() as never, mode: "background" });
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
