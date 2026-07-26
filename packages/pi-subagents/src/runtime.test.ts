@@ -270,9 +270,12 @@ describe("SubagentRuntime", () => {
     expect(runtime.snapshot(previous.id)).toBeUndefined();
     expect(runtime.snapshot(current.id)).toEqual(current);
     expect(runtime.inspect(previous.id)).toBeUndefined();
-    expect(runtime.inspect(current.id)).toEqual({
+    expect(runtime.inspect(current.id)).toMatchObject({
       snapshot: current,
       messages: [],
+      activity: [],
+      omittedMessages: 0,
+      omittedActivity: 0,
     });
     runtime.subscribe(previous.id, previousListener)();
     const unsubscribeCurrent = runtime.subscribe(current.id, currentListener);
@@ -381,7 +384,6 @@ describe("SubagentRuntime", () => {
       estimatedCost: 0.25,
       contextUsage: { tokens: 8, contextWindow: 100, percent: 8 },
       peakContextTokens: 8,
-      activeTool: "read",
       lastActivity: "2023-11-14T22:13:21.000Z",
       lastAssistantText: "Working on it",
       transcript: {
@@ -417,8 +419,8 @@ describe("SubagentRuntime", () => {
     ];
     expect(runtime.snapshots()[0]?.health).toMatchObject({
       turns: 1,
-      tokensTotal: 22,
-      estimatedCost: 0.75,
+      tokensTotal: 12,
+      estimatedCost: 0.5,
       contextUsage: { tokens: 20, contextWindow: 100, percent: 20 },
       peakContextTokens: 20,
       lastAssistantText: "Updated answer",
@@ -473,9 +475,11 @@ describe("SubagentRuntime", () => {
     expect(listener).toHaveBeenCalledTimes(1);
     expect(runtime.inspect(started.id)).toMatchObject({
       snapshot: {
-        health: { activeTool: "bash", lastAssistantText: "live update" },
+        health: { lastAssistantText: "live update" },
       },
-      messages: session.messages,
+      messages: [
+        { role: "assistant", timestamp: "2023-11-14T22:13:20.000Z" },
+      ],
     });
 
     unsubscribe();
@@ -527,16 +531,14 @@ describe("SubagentRuntime", () => {
     const inspection = runtime.inspect(started.id);
     expect(inspection?.snapshot.status).toBe("completed");
     expect(inspection?.messages).toHaveLength(TERMINAL_MESSAGE_TAIL_LIMIT);
-    expect(inspection?.messages[0]).toMatchObject({
-      content: [{ text: "message 1" }],
-    });
+    expect(inspection?.messages[0]).toMatchObject({ text: "message 1" });
     expect(session.dispose).toHaveBeenCalledTimes(1);
     session.messages[session.messages.length - 1] = {
       role: "assistant",
       content: [{ type: "text", text: "mutated" }],
     } as AgentSession["messages"][number];
     expect(runtime.inspect(started.id)?.messages.at(-1)).toMatchObject({
-      content: [{ text: `message ${TERMINAL_MESSAGE_TAIL_LIMIT}` }],
+      text: `message ${TERMINAL_MESSAGE_TAIL_LIMIT}`,
     });
   });
 

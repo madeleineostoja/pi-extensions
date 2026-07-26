@@ -120,7 +120,7 @@ export default function (pi: ExtensionAPI): void {
   pi.registerCommand("agents", {
     description: "Inspect and stop current-session subagents",
     handler: async (_args, ctx) =>
-      showAgentsDashboard(getSubagentRuntimes(), ctx),
+      showAgentsDashboard(runtime, ctx),
   });
 
   pi.registerTool({
@@ -176,7 +176,7 @@ export default function (pi: ExtensionAPI): void {
     name: "steer_subagent",
     label: "steer_subagent",
     description:
-      "Send guidance to a running background subagent. Fails for unknown or completed agents; join when its result becomes a dependency.",
+      "Cooperatively queue guidance for a running background subagent after its current assistant turn's tool calls. Fails for unknown or completed agents; join when its result becomes a dependency.",
     parameters: Type.Object({
       id: Type.String({ description: "Background subagent id." }),
       message: Type.String({ description: "Steering message to send." }),

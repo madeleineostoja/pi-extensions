@@ -910,12 +910,11 @@ describe("public subagent tools", () => {
       ctx: makeCtx() as never,
       mode: "background",
     });
-    await expect(runtime.steer(started.id, "look here")).resolves.toMatchObject(
-      { status: "running" },
-    );
+    const steering = runtime.steer(started.id, "look here");
     expect(session.steer).not.toHaveBeenCalled();
 
     sessionReady.resolve({ session });
+    await expect(steering).resolves.toMatchObject({ status: "running" });
     await vi.waitFor(() =>
       expect(session.steer).toHaveBeenCalledWith("look here"),
     );

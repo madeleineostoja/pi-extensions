@@ -153,7 +153,7 @@ function makeRuntime(
     snapshot: vi.fn((id: string) => records.find((record) => record.id === id)),
     inspect: vi.fn((id: string): RuntimeInspection | undefined => {
       const record = records.find((candidate) => candidate.id === id);
-      return record ? { snapshot: record, messages } : undefined;
+      return record ? { snapshot: record, messages: messages as never, activity: [], omittedMessages: 0, omittedActivity: 0, compactedHistory: false } : undefined;
     }),
     subscribe: vi.fn((id: string, listener: () => void) => {
       const set = listeners.get(id) ?? new Set<() => void>();
@@ -229,7 +229,6 @@ describe("/agents dashboard", () => {
           tokensTotal: 1200,
           estimatedCost: 1.27,
           contextUsage: { tokens: 600, contextWindow: 1000, percent: 60 },
-          activeTool: "read",
         },
       }),
       snapshot({
@@ -247,7 +246,7 @@ describe("/agents dashboard", () => {
     ]);
 
     expect(rows[0]).toMatch(/^subagent-1  running\s+General\/implementer\s+/);
-    expect(rows[0]).toContain("  2/600  read");
+    expect(rows[0]).toContain("  2/600");
     expect(rows[1]).toContain("  1/?");
     expect(rows[1]).toMatch(/^subagent-2  completed\s+Review\s+/);
     expect(rows[1]).not.toContain("Review/reviewer");
@@ -273,14 +272,14 @@ describe("/agents dashboard", () => {
 
     ctx.ui.select = vi.fn(async (title: string, options: string[]) => {
       selectCalls.push({ title, options });
-      return options[1];
+      return title === "Agent view" ? "All" : title === "Agent subagent-1" ? "Inspect activity" : options[1];
     });
 
     await showAgentsDashboard([publicRuntime, implementRuntime], ctx as never);
 
-    expect(selectCalls[0]?.options).toHaveLength(2);
-    expect(selectCalls[0]?.options[0]).toContain("public agent");
-    expect(selectCalls[0]?.options[1]).toContain("implement task");
+    expect(selectCalls[1]?.options).toHaveLength(2);
+    expect(selectCalls[1]?.options[0]).toContain("public agent");
+    expect(selectCalls[1]?.options[1]).toContain("implement task");
     expect(notifications[0]?.message).toContain(
       "Type/role: pi-implement:implementer/implementer",
     );
@@ -306,14 +305,14 @@ describe("/agents dashboard", () => {
 
     ctx.ui.select = vi.fn(async (title: string, options: string[]) => {
       selectCalls.push({ title, options });
-      return options[0];
+      return title === "Agent view" ? "All" : title === "Agent parent" ? "Inspect activity" : options[0];
     });
 
     await showAgentsDashboard(runtime, ctx as never);
 
-    expect(selectCalls[0]?.options).toHaveLength(1);
-    expect(selectCalls[0]?.options[0]).toContain("parent");
-    expect(selectCalls[0]?.options[0]).not.toContain("child");
+    expect(selectCalls[1]?.options).toHaveLength(1);
+    expect(selectCalls[1]?.options[0]).toContain("parent");
+    expect(selectCalls[1]?.options[0]).not.toContain("child");
     expect(notifications[0]?.message).toContain("Nested explore children:");
     expect(notifications[0]?.message).toContain("child");
   });
@@ -342,7 +341,6 @@ describe("/agents dashboard", () => {
         estimatedCost: 0.1,
         contextUsage: { tokens: 8, contextWindow: 100, percent: 8 },
         peakContextTokens: 9,
-        activeTool: "read",
         lastAssistantText: "first",
       },
     });
@@ -365,7 +363,6 @@ describe("/agents dashboard", () => {
 
     running.health = {
       ...running.health,
-      activeTool: "bash",
       turns: 2,
       tokensTotal: 30,
       estimatedCost: 1.27,
@@ -377,7 +374,7 @@ describe("/agents dashboard", () => {
 
     expect(ui.requestRender).toHaveBeenCalled();
     const rendered = ui.component?.render(80).join("\n") ?? "";
-    expect(rendered).toContain("Active tool: bash");
+    expect(rendered).not.toContain("Active tool");
     expect(rendered).toContain("Turns/context: 2/20");
     expect(rendered).toContain("Estimated API cost: $1.27");
     expect(rendered).toContain("Peak context: 20");

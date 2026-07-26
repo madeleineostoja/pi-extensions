@@ -22,7 +22,6 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
       updatedAt: "2026-01-01T00:00:02.000Z",
     },
     health: {
-      activeTool: "read",
       turns: 2,
       tokensTotal: 123,
       estimatedCost: 1.27,
@@ -55,7 +54,7 @@ describe("subagent roster", () => {
 
     expect(rows.join("\n")).toContain("General");
     expect(rows.join("\n")).toContain("running");
-    expect(rows.join("\n")).toContain("read");
+    expect(rows.join("\n")).not.toContain("tool");
     expect(rows.join("\n")).toContain("2");
     expect(rows.join("\n")).toMatch(/\$1\.27\s+90/);
     expect(rows.join("\n")).not.toContain("80");
@@ -81,7 +80,6 @@ describe("subagent roster", () => {
     const rows = formatRosterRows([
       snapshot({
         health: {
-          activeTool: "read",
           turns: 2,
           estimatedCost: 2.345,
           contextUsage: {
@@ -94,7 +92,6 @@ describe("subagent roster", () => {
       }),
       snapshot({
         health: {
-          activeTool: "bash",
           turns: 3,
           estimatedCost: 0,
           contextUsage: {
@@ -152,14 +149,13 @@ describe("subagent roster", () => {
       expect(tui.requestRender).toHaveBeenCalled();
       snapshots[0] = snapshot({
         health: {
-          activeTool: "bash",
           turns: 3,
           estimatedCost: 0.5,
           contextUsage: { tokens: 456, contextWindow: 1000, percent: 45.6 },
           peakContextTokens: 456,
         },
       });
-      expect(widget.render(120).join("\n")).toContain("bash");
+      expect(widget.render(120).join("\n")).not.toContain("tool");
       expect(widget.render(120).join("\n")).toMatch(/\$0\.50\s+460/);
 
       snapshots[0] = snapshot({

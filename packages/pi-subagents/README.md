@@ -65,13 +65,13 @@ Sends additional guidance to a running background agent.
 { "id": "subagent-1", "message": "Narrow this to config parsing only." }
 ```
 
-Steering fails for unknown, queued, completed, failed, or stopped agents.
+Steering fails for unknown, queued, completed, failed, or stopped agents. Accepted guidance is cooperatively queued after the current assistant turn's tool calls.
 
 ## Foreground, background, and inspection
 
 Foreground agents are for bounded work where the caller needs the answer before continuing. Background mode is for actual concurrency, not merely long-running work: continue the independent work that justified it, optionally steer the child, then join with `get_subagent_result({ "id": "...", "wait": true })` at the dependency barrier. Do not launch a background agent and immediately join it, and do not poll.
 
-Use `/agents` to inspect current-session subagents and stop running work. Runtime records are session-scoped and include status, owner, type, description, cwd, requested model/thinking, effective thinking when initialized, timestamps, health, and final result or error. Child sessions are in-memory only: they do not appear in `/resume` and cannot be resumed. After a child exits, `/agents` retains a bounded terminal message tail for inspection.
+Use `/agents` to select Running agents (or All to include retained terminal records), inspect activity, cooperatively queue guidance, summarise activity, or stop running work with confirmation. Runtime records are session-scoped and include status, owner, type, description, cwd, requested model/thinking, effective thinking when initialized, timestamps, canonical Pi session health, and final result or error. Inspection is a bounded immutable view: it retains up to 100 sanitized messages and activity records with 2 KiB previews, not a raw transcript. Activity summaries are advisory point-in-time operator output only; they do not change the target agent. Child sessions are in-memory only: they do not appear in `/resume` and cannot be resumed.
 
 ## Configuration
 

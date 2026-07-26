@@ -17,7 +17,7 @@ import type {
   SubagentRuntime,
   SubagentRuntimeStatus,
 } from "./runtime.js";
-import { contextUsageLabel, costLabel, tokenLabel } from "./roster.js";
+import { contextUsageLabel, costLabel, elapsedLabel, tokenLabel } from "./formatters.js";
 
 const terminalStatuses = new Set<SubagentRuntimeStatus>([
   "completed",
@@ -34,24 +34,57 @@ export async function showAgentsDashboard(
   runtimeOrRuntimes: SubagentRuntime | readonly SubagentRuntime[],
   ctx: ExtensionCommandContext,
 ): Promise<void> {
-  const entries = dashboardEntries(runtimeOrRuntimes);
-  if (entries.length === 0) {
-    ctx.ui.notify("No current-session agents.", "info");
+  let filter: "Running" | "All" = "Running";
+  let selectedKey: string | undefined;
+  while (true) {
+    const all = dashboardEntries(runtimeOrRuntimes);
+    if (all.length === 0) {
+      ctx.ui.notify("No current-session agents.", "info");
+      return;
+    }
+    const view = await ctx.ui.select("Agent view", ["Running", "All"]);
+    if (!view) return;
+    filter = view === "All" ? "All" : "Running";
+    const visible = all.filter((entry) => filter === "All" || entry.snapshot.status === "running" || entry.snapshot.status === "queued");
+    if (visible.length === 0) {
+      ctx.ui.notify(filter === "Running" ? "No running agents. Choose All to inspect retained records." : "No current-session agents.", "info");
+      return;
+    }
+    const rows = visible.map((entry) => `${formatListRow(entry.snapshot)}${nestedChildren(all, entry).length ? `\n  ↳ ${nestedChildren(all, entry).map((child) => child.snapshot.description).join(" · ")}` : ""}`);
+    const selected = await ctx.ui.select(`${filter} agents`, rows);
+    if (!selected) return;
+    const entry = visible.find((candidate) => candidate.snapshot.key !== undefined && candidate.snapshot.key === selectedKey) ?? visible[rows.indexOf(selected)];
+    if (!entry) continue;
+    selectedKey = entry.snapshot.key;
+    const current = entry.runtime.inspect(entry.snapshot.id);
+    if (!current) {
+      ctx.ui.notify("Selected agent is no longer available; refreshed.", "warning");
+      continue;
+    }
+    const actions = ["Inspect activity", "Summarise activity"];
+    if (current.snapshot.status === "running" && current.snapshot.extensionBinding === "bound") actions.push("Send guidance", "Stop agent");
+    actions.push("Back");
+    const action = await ctx.ui.select(`Agent ${current.snapshot.id}`, actions);
+    if (!action || action === "Back") continue;
+    try {
+      if (action === "Inspect activity") {
+        await showAgentDetail(entry.runtime, ctx, current.snapshot.id);
+        return;
+      } else if (action === "Send guidance") {
+        const message = await (ctx.ui as unknown as { input?: (title: string) => Promise<string | undefined> }).input?.("Guidance (cooperatively queued after current tool calls)");
+        if (message?.trim()) await entry.runtime.steer(current.snapshot.id, message);
+      } else if (action === "Stop agent") {
+        const confirm = await (ctx.ui as unknown as { confirm?: (title: string, message: string) => Promise<boolean> }).confirm?.("Stop agent", "Stop this running agent?");
+        if (confirm) entry.runtime.stop(current.snapshot.id);
+      } else if (action === "Summarise activity") {
+        const result = await entry.runtime.summarise(current.snapshot.id, (ctx as unknown as { model?: never }).model);
+        ctx.ui.notify(result.ok ? result.text : result.message ?? result.reason, result.ok ? "info" : "warning");
+      }
+    } catch {
+      ctx.ui.notify("Selected agent is no longer available; refreshed.", "warning");
+    }
     return;
   }
-
-  const rows = formatListRows(entries.map((entry) => entry.snapshot));
-  const selected = await ctx.ui.select("Current-session agents", rows);
-  if (!selected) {
-    ctx.ui.notify(formatList(entries), "info");
-    return;
-  }
-  const index = rows.indexOf(selected);
-  const entry = entries[index];
-  if (!entry) {
-    return;
-  }
-  await showAgentDetail(entry.runtime, ctx, entry.snapshot.id);
 }
 
 function dashboardEntries(
@@ -74,6 +107,10 @@ function dashboardEntries(
     }
   }
   return entries;
+}
+
+function nestedChildren(entries: DashboardEntry[], entry: DashboardEntry): DashboardEntry[] {
+  return entries.filter((candidate) => nestedOwner(candidate.snapshot.owner)?.parentId === entry.snapshot.id);
 }
 
 function formatList(entries: DashboardEntry[]): string {
@@ -171,7 +208,6 @@ export function formatListRows(snapshots: RuntimeSnapshot[]): string[] {
     type: `${snapshot.type}${roleLabel(snapshot.owner)}`,
     elapsed: elapsedLabel(snapshot),
     usage: turnsContextLabel(snapshot),
-    tool: snapshot.health?.activeTool ?? "-",
     description: snapshot.description,
   }));
   const widths = {
@@ -195,10 +231,6 @@ export function formatListRows(snapshots: RuntimeSnapshot[]): string[] {
       "turns/context",
       rows.map((row) => row.usage),
     ),
-    tool: maxWidth(
-      "tool",
-      rows.map((row) => row.tool),
-    ),
   };
   return rows.map((row) =>
     [
@@ -207,7 +239,6 @@ export function formatListRows(snapshots: RuntimeSnapshot[]): string[] {
       row.type.padEnd(widths.type),
       row.elapsed.padStart(widths.elapsed),
       row.usage.padStart(widths.usage),
-      row.tool.padEnd(widths.tool),
       row.description,
     ].join("  "),
   );
@@ -236,7 +267,6 @@ export function formatDetail(
     `Elapsed: ${elapsedLabel(snapshot)}`,
     `Turns/context: ${turnsContextLabel(snapshot)}`,
     usageDetailLabel(snapshot),
-    `Active tool: ${snapshot.health?.activeTool ?? "none"}`,
     `Last activity: ${snapshot.health?.lastActivity ?? "unknown"}`,
   ];
   const preview = previewText(
@@ -401,7 +431,7 @@ class AgentInspectorOverlay implements Component {
     const { snapshot } = inspection;
     const lines = [
       this.theme.fg("dim", "[Status]"),
-      `Elapsed: ${elapsedLabel(snapshot)} · Turns/context: ${turnsContextLabel(snapshot)} · Active tool: ${snapshot.health?.activeTool ?? "none"}`,
+      `Elapsed: ${elapsedLabel(snapshot)} · Turns/context: ${turnsContextLabel(snapshot)}`,
       usageDetailLabel(snapshot),
       `Owner: ${ownerLabel(snapshot.owner)}`,
       `Last activity: ${snapshot.health?.lastActivity ?? "unknown"}`,
@@ -512,25 +542,6 @@ function nestedOwner(
   return typeof owner === "object" && owner.kind === "nested"
     ? owner
     : undefined;
-}
-
-function elapsedLabel(snapshot: RuntimeSnapshot): string {
-  const start = Date.parse(
-    snapshot.timestamps.startedAt ?? snapshot.timestamps.queuedAt,
-  );
-  const end = Date.parse(
-    snapshot.timestamps.completedAt ?? new Date().toISOString(),
-  );
-  if (!Number.isFinite(start) || !Number.isFinite(end)) {
-    return "unknown";
-  }
-  const seconds = Math.max(0, Math.round((end - start) / 1000));
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
-  return `${minutes}m ${remainder.toString().padStart(2, "0")}s`;
 }
 
 function turnsContextLabel(snapshot: RuntimeSnapshot): string {
