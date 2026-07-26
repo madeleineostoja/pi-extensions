@@ -616,11 +616,9 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
 
   it("parent-directory grants allow later reads beneath that directory without re-prompting", async () => {
     const { pi, ctx } = startSandbox({ mode: "tui" });
-    const dir = fs.mkdtempSync(path.join(os.homedir(), ".pi-sandbox-parent-"));
-    const firstPath = path.join(dir, "first.txt");
-    const secondPath = path.join(dir, "second.txt");
-    fs.writeFileSync(firstPath, "");
-    fs.writeFileSync(secondPath, "");
+    const dir = fs.realpathSync(os.homedir());
+    const firstPath = path.join(dir, ".pi-sandbox-parent-first.txt");
+    const secondPath = path.join(dir, ".pi-sandbox-parent-second.txt");
     (ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       `Allow parent directory this session (${fs.realpathSync(dir)})`,
     );
