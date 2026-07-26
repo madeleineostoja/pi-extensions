@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExecutionPlan } from "./execution-plan-vnext.js";
+import type { ExecutionPlan } from "./execution-plan.js";
 import { changedPathsBetween, type GitClient } from "./git.js";
 import {
   buildAnchoredOverallReviewPrompt,
@@ -20,13 +20,13 @@ import {
   type InitialWorkstreamReviewCompletion,
 } from "./result-schemas.js";
 import type { SubagentClient } from "./subagents.js";
-import { overallRepairWorkspace } from "./vnext-overall-repair.js";
+import { overallRepairWorkspace } from "./overall-repair.js";
 import { workstreamWorkspace } from "./workstream-candidate.js";
 import { writeAtomicJson } from "./atomic-json.js";
-import type { RuntimeWorkstream } from "./scheduler-vnext.js";
-import { protectedArtifactsMatch, type VNextRunState } from "./vnext-store.js";
+import type { RuntimeWorkstream } from "./scheduler.js";
+import { protectedArtifactsMatch, type RunState } from "./store.js";
 
-export type VNextReviewState = {
+export type ReviewState = {
   candidateId: string;
   previousCandidateId?: string;
   round: number;
@@ -40,7 +40,7 @@ export type VNextReviewState = {
   observations: Array<{ summary: string; evidence: string }>;
 };
 
-export type VNextReviewFinding = DirectReviewFinding & {
+export type ReviewFinding = DirectReviewFinding & {
   id: string;
   candidateId: string;
   workstream: RuntimeWorkstream;
@@ -49,22 +49,22 @@ export type VNextReviewFinding = DirectReviewFinding & {
   status: "open" | "resolved";
 };
 
-export type VNextReviewPacket = {
+export type ReviewPacket = {
   workstream: RuntimeWorkstream;
-  candidate: VNextRunState["candidates"][string];
-  previousCandidate?: VNextRunState["candidates"][string];
+  candidate: RunState["candidates"][string];
+  previousCandidate?: RunState["candidates"][string];
   contracts: ExecutionPlan["tasks"];
   sourceMaterial: Array<{ path: string; content: string }>;
   checkpoints: Record<string, string>;
   satisfiedEvidence: Record<string, string>;
-  verificationEvidence?: VNextRunState["candidates"][string]["implementationEvidence"];
+  verificationEvidence?: RunState["candidates"][string]["implementationEvidence"];
   uncertainty?: string;
-  outstandingFindings: VNextReviewFinding[];
-  latestCorrection?: VNextReviewState["latestCorrection"];
+  outstandingFindings: ReviewFinding[];
+  latestCorrection?: ReviewState["latestCorrection"];
   baseToTipDiff: string;
 };
 
-export type VNextReviewOutcome =
+export type ReviewOutcome =
   | {
       kind: "repository_state";
       candidateId: string;
@@ -92,16 +92,16 @@ export function reviewKey(workstream: RuntimeWorkstream): string {
 }
 
 export function workstreamReviewState(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
-): VNextReviewState | undefined {
+): ReviewState | undefined {
   return state.reviews[reviewKey(workstream)];
 }
 
 export function workstreamReviewFindings(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
-): VNextReviewFinding[] {
+): ReviewFinding[] {
   return Object.values(state.findings).filter((finding) => {
     if (finding.workstream.kind === "source" && workstream.kind === "source") {
       return finding.workstream.id === workstream.id;
@@ -116,12 +116,12 @@ export function workstreamReviewFindings(
   });
 }
 
-export function buildVNextReviewPacket(args: {
-  state: VNextRunState;
+export function buildReviewPacket(args: {
+  state: RunState;
   plan: ExecutionPlan;
   workstream: RuntimeWorkstream;
   baseToTipDiff: string;
-}): VNextReviewPacket {
+}): ReviewPacket {
   if (!protectedArtifactsMatch(args.state)) {
     throw new Error("Review material no longer matches the immutable corpus.");
   }
@@ -200,8 +200,8 @@ export function buildVNextReviewPacket(args: {
   };
 }
 
-export async function runVNextWorkstreamReview(args: {
-  state: VNextRunState;
+export async function runWorkstreamReview(args: {
+  state: RunState;
   plan: ExecutionPlan;
   workstream: RuntimeWorkstream;
   git: GitClient;
@@ -213,9 +213,9 @@ export async function runVNextWorkstreamReview(args: {
     type?: string;
     thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   };
-}): Promise<VNextReviewOutcome> {
+}): Promise<ReviewOutcome> {
   if (args.workstream.kind !== "source") {
-    return runVNextOverallAnchoredReview({
+    return runOverallAnchoredReview({
       ...args,
       workstream: args.workstream,
     });
@@ -239,7 +239,7 @@ export async function runVNextWorkstreamReview(args: {
   const previousCandidate = review?.previousCandidateId
     ? args.state.candidates[review.previousCandidateId]
     : undefined;
-  const packet = buildVNextReviewPacket({
+  const packet = buildReviewPacket({
     state: args.state,
     plan: args.plan,
     workstream: args.workstream,
@@ -388,8 +388,8 @@ export async function runVNextWorkstreamReview(args: {
         };
 }
 
-async function runVNextOverallAnchoredReview(args: {
-  state: VNextRunState;
+async function runOverallAnchoredReview(args: {
+  state: RunState;
   plan: ExecutionPlan;
   workstream: Extract<RuntimeWorkstream, { kind: "overall" }>;
   git: GitClient;
@@ -401,7 +401,7 @@ async function runVNextOverallAnchoredReview(args: {
     type?: string;
     thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   };
-}): Promise<VNextReviewOutcome> {
+}): Promise<ReviewOutcome> {
   const runtime = args.state.workstreams.overall[args.workstream.repairId];
   const candidateId = runtime?.candidateId;
   const candidate = candidateId
@@ -496,7 +496,7 @@ export function applyInitialWorkstreamReview(args: {
   candidateId: string;
   completion: InitialWorkstreamReviewCompletion;
   evidence: string;
-}): { review: VNextReviewState; findings: VNextReviewFinding[] } {
+}): { review: ReviewState; findings: ReviewFinding[] } {
   const findings =
     args.completion.verdict === "changes_requested"
       ? args.completion.findings.map((finding, index) => ({
@@ -522,12 +522,12 @@ export function applyInitialWorkstreamReview(args: {
 }
 
 export function applyAnchoredWorkstreamReview(args: {
-  state: VNextReviewState;
+  state: ReviewState;
   workstream: RuntimeWorkstream;
   completion: AnchoredWorkstreamReviewCompletion;
-  findings: VNextReviewFinding[];
+  findings: ReviewFinding[];
   evidence: string;
-}): { review: VNextReviewState; findings: VNextReviewFinding[] } {
+}): { review: ReviewState; findings: ReviewFinding[] } {
   assertAssessmentCoverage(
     args.state.outstandingIds,
     args.completion.assessments,
@@ -600,14 +600,14 @@ export function applyAnchoredWorkstreamReview(args: {
 }
 
 export function retargetAnchoredReview(args: {
-  state: VNextReviewState;
+  state: ReviewState;
   candidateId: string;
   correction: {
     fromCandidateId: string;
     changedPaths: string[];
     evidence: string;
   };
-}): VNextReviewState {
+}): ReviewState {
   if (args.state.candidateId !== args.correction.fromCandidateId) {
     throw new Error("A correction must begin at the reviewed candidate.");
   }
@@ -638,7 +638,7 @@ function reviewEvidencePath(
 }
 
 function resolveCorpusPath(
-  state: VNextRunState,
+  state: RunState,
   plan: ExecutionPlan,
   path: string,
 ): string {

@@ -6,11 +6,11 @@ import {
   type CommandResult,
   type GitClient,
 } from "./git.js";
-import { boundedRecoveryOutput } from "./recovery-vnext.js";
+import { boundedRecoveryOutput } from "./recovery.js";
 import type {
   RecoveryCommandEvidence,
   RecoveryGateResult,
-} from "./recovery-vnext.js";
+} from "./recovery.js";
 
 export type ReplayCandidate = {
   id: string;
@@ -50,7 +50,7 @@ export type PublicationPreparation = {
   changedPaths: string[];
   disposition: "same_base" | "clean_non_overlap";
   hookEvidence: string;
-  hookCommand?: RecoveryCommandEvidence;
+  hookCommand: RecoveryCommandEvidence;
 };
 
 export function stagingIdentity(args: {
@@ -157,7 +157,7 @@ export function publicationPreparation(
     disposition: "same_base" | "clean_non_overlap";
     targetRef: string;
     hookEvidence: string;
-    hookCommand?: RecoveryCommandEvidence;
+    hookCommand: RecoveryCommandEvidence;
   },
   prepared: Extract<CandidateReplayOutcome, { kind: "prepared" }>["staging"],
 ): PublicationPreparation {
@@ -184,7 +184,7 @@ export function publicationPreparation(
     changedPaths: prepared.replayPaths ?? [],
     disposition: args.disposition,
     hookEvidence: args.hookEvidence,
-    ...(args.hookCommand ? { hookCommand: args.hookCommand } : {}),
+    hookCommand: args.hookCommand,
   };
 }
 
@@ -432,11 +432,6 @@ export class CandidateReplayEngine {
     );
     const stagingGit = this.options.git.forWorktree(worktreePath);
     await stagingGit.abortActiveOperation();
-    if (retainedPreparation && !retainedPreparation.hookCommand) {
-      await stagingGit.resetHard(targetBaseSha);
-      await stagingGit.restoreWorktreeFromIndexExcept([]);
-      retainedPreparation = undefined;
-    }
     if (retainedPreparation) {
       if (
         retainedPreparation.candidateId !== candidate.id ||

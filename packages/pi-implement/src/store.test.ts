@@ -4,14 +4,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  compileExecutionPlan,
-  type ExecutionPlan,
-} from "./execution-plan-vnext.js";
+import { compileExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
 import { buildMaterialStore } from "./material-store.js";
-import { recoverProjectionTransactions } from "./vnext-command.js";
+import { recoverProjectionTransactions } from "./run.js";
 import { parsePlan } from "./plan.js";
-import { createCheckboxProjectionIntent } from "./vnext-projection.js";
+import { createCheckboxProjectionIntent } from "./projection.js";
 import {
   acquireCheckoutLease,
   checkoutPaths,
@@ -19,15 +16,15 @@ import {
   executionPlanPath,
   protectedArtifactsMatch,
   sourceIdentityForExecutionPlan,
-  VNextRunStore,
+  RunStore,
   sourceIdentityMatches,
   type CheckoutLeaseCapability,
-} from "./vnext-store.js";
+} from "./store.js";
 
 const roots: string[] = [];
 
 function root(): string {
-  const value = mkdtempSync(join(tmpdir(), "pi-implement-vnext-"));
+  const value = mkdtempSync(join(tmpdir(), "pi-implement-"));
   roots.push(value);
   return value;
 }
@@ -126,7 +123,7 @@ function fakeLease(directory: string): CheckoutLeaseCapability {
   };
 }
 
-describe("VNext checkout store", () => {
+describe(" checkout store", () => {
   it("writes planning state before binding one immutable execution plan", async () => {
     const directory = root();
     const plan = planFor(directory);
@@ -182,7 +179,7 @@ describe("VNext checkout store", () => {
       source: sourceIdentityForExecutionPlan(plan),
       workerConcurrency: 1,
     });
-    const interrupted = VNextRunStore.open(lease, initial.path, {
+    const interrupted = RunStore.open(lease, initial.path, {
       beforeRename: () => {
         throw new Error("interrupted state replacement");
       },
@@ -191,7 +188,7 @@ describe("VNext checkout store", () => {
     await expect(interrupted.bindExecutionPlan(plan)).rejects.toThrow(
       "interrupted state replacement",
     );
-    const resumed = VNextRunStore.open(lease, initial.path);
+    const resumed = RunStore.open(lease, initial.path);
     await expect(resumed.bindExecutionPlan(plan)).resolves.toMatchObject({
       phase: "running",
       executionPlan: { hash: plan.executionPlanHash },

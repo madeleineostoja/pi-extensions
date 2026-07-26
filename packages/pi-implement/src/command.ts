@@ -9,33 +9,28 @@ import {
   resolveWorkerConcurrency,
 } from "./config.js";
 import { parseCommand, usage } from "./parser.js";
+import { stopRun, startRun, resumeRun, type ActiveRun } from "./run.js";
 import {
-  stopVNextRun,
-  startVNextRun,
-  resumeVNextRun,
-  type ActiveVNextRun,
-} from "./vnext-command.js";
-import {
-  abandonVNextRun,
-  cleanupCompletedVNextRun,
+  abandonRun,
+  cleanupCompletedRun,
   cleanupWithLease,
-  formatVNextStatus,
-  inspectVNextRun,
-  listCheckoutVNextRuns,
-} from "./vnext-controls.js";
+  formatStatus,
+  inspectRun,
+  listCheckoutRuns,
+} from "./controls.js";
 
 export function registerImplementCommand(pi: ExtensionAPI): void {
-  let active: ActiveVNextRun | undefined;
+  let active: ActiveRun | undefined;
 
   pi.on("session_shutdown", async () => {
     if (active) {
-      await stopVNextRun(active);
+      await stopRun(active);
       active = undefined;
     }
   });
 
   pi.registerCommand("implement", {
-    description: "Run a strict VNext implementation plan",
+    description: "Run a strict implementation plan",
     handler: async (input: string, ctx: ExtensionCommandContext) => {
       const parsed = parseCommand(input);
       if (parsed.kind === "error") {
@@ -50,29 +45,29 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           if (parsed.name === "stop") {
             if (!active) {
               ctx.ui.notify(
-                "pi-implement has no active VNext run in this session.",
+                "pi-implement has no active run in this session.",
                 "info",
               );
               return;
             }
-            await stopVNextRun(active);
+            await stopRun(active);
             active = undefined;
             ctx.ui.notify("pi-implement paused safely.", "info");
             return;
           }
           if (parsed.name === "status") {
             if (active) {
-              ctx.ui.notify(formatVNextStatus(active.store.read()), "info");
+              ctx.ui.notify(formatStatus(active.store.read()), "info");
               return;
             }
-            const runs = listCheckoutVNextRuns(checkoutRoot);
+            const runs = listCheckoutRuns(checkoutRoot);
             ctx.ui.notify(
               runs.length === 0
-                ? "pi-implement: no VNext runs in this checkout."
+                ? "pi-implement: no runs in this checkout."
                 : runs
                     .map((run) =>
                       run.kind === "run"
-                        ? formatVNextStatus(run.state)
+                        ? formatStatus(run.state)
                         : `Historical artifact: ${run.runId} (manual inspection/removal only)`,
                     )
                     .join("\n\n"),
@@ -82,15 +77,15 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           }
           if (parsed.name === "inspect") {
             if (!parsed.runId) {
-              throw new Error("Inspect requires a VNext run ID.");
+              throw new Error("Inspect requires a run ID.");
             }
-            ctx.ui.notify(inspectVNextRun(checkoutRoot, parsed.runId), "info");
+            ctx.ui.notify(inspectRun(checkoutRoot, parsed.runId), "info");
             return;
           }
           if (parsed.name === "abandon") {
             if (!parsed.runId) {
               throw new Error(
-                "Abandon requires a paused or safety-blocked VNext run ID.",
+                "Abandon requires a paused or safety-blocked run ID.",
               );
             }
             if (active?.runId === parsed.runId) {
@@ -98,16 +93,16 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
                 "Stop the active session run before abandoning it.",
               );
             }
-            await abandonVNextRun({ checkoutRoot, runId: parsed.runId });
+            await abandonRun({ checkoutRoot, runId: parsed.runId });
             ctx.ui.notify(
-              `pi-implement abandoned VNext run ${parsed.runId}.`,
+              `pi-implement abandoned run ${parsed.runId}.`,
               "info",
             );
             return;
           }
           if (parsed.name === "cleanup") {
             if (!parsed.runId) {
-              throw new Error("Cleanup requires a completed VNext run ID.");
+              throw new Error("Cleanup requires a completed run ID.");
             }
             if (active?.runId === parsed.runId) {
               const completed = active;
@@ -125,7 +120,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
               await completed.lease.release();
               active = undefined;
             } else {
-              const projected = await cleanupCompletedVNextRun({
+              const projected = await cleanupCompletedRun({
                 checkoutRoot,
                 runId: parsed.runId,
               });
@@ -136,14 +131,11 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
                 );
               }
             }
-            ctx.ui.notify(
-              `pi-implement cleaned VNext run ${parsed.runId}.`,
-              "info",
-            );
+            ctx.ui.notify(`pi-implement cleaned run ${parsed.runId}.`, "info");
             return;
           }
           ctx.ui.notify(
-            "VNext configuration is available in the extension config file.",
+            "Configuration is available in the extension config file.",
             "info",
           );
           return;
@@ -155,7 +147,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       }
       if (active) {
         ctx.ui.notify(
-          "pi-implement already has an active VNext run in this session.",
+          "pi-implement already has an active run in this session.",
           "warning",
         );
         return;
@@ -170,27 +162,24 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           const checkoutRoot = await new (
             await import("./git.js")
           ).ExecGitClient(ctx.cwd).root();
-          await cleanupCompletedVNextRun({
+          await cleanupCompletedRun({
             checkoutRoot,
             runId: parsed.recovery.runId,
             prospectiveStart: true,
           });
         }
         if (parsed.recovery?.kind === "resume") {
-          active = await resumeVNextRun({
+          active = await resumeRun({
             pi,
             ctx,
             planPath: parsed.planPath,
             runId: parsed.recovery.runId,
             roles: effective.roles,
           });
-          ctx.ui.notify(
-            `pi-implement resumed VNext run ${active.runId}.`,
-            "info",
-          );
+          ctx.ui.notify(`pi-implement resumed run ${active.runId}.`, "info");
           return;
         }
-        const result = await startVNextRun({
+        const result = await startRun({
           pi,
           ctx,
           planPath: parsed.planPath,
@@ -205,10 +194,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           return;
         }
         active = result.active;
-        ctx.ui.notify(
-          `pi-implement started VNext run ${active.runId}.`,
-          "info",
-        );
+        ctx.ui.notify(`pi-implement started run ${active.runId}.`, "info");
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         ctx.ui.notify(`pi-implement blocked: ${reason}`, "warning");

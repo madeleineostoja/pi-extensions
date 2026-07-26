@@ -9,7 +9,7 @@ import {
   readExecutionPlan,
   writeExecutionPlan,
   type ExecutionPlanCompilerInput,
-} from "./execution-plan-vnext.js";
+} from "./execution-plan.js";
 import { buildMaterialStore } from "./material-store.js";
 import { parsePlan } from "./plan.js";
 

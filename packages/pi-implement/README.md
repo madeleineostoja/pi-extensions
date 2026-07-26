@@ -1,6 +1,6 @@
 # pi-implement
 
-`/implement` executes an unchecked Markdown plan through checkout-owned workstreams. It is a hard-cutover VNext extension: historical pi-implement runs cannot resume or be converted.
+`/implement` executes an unchecked Markdown plan through checkout-owned workstreams. Runs use the current pi-implement state format; retained artifacts that cannot be validated are for manual inspection or removal, not migration.
 
 ## Write a plan
 
@@ -24,15 +24,14 @@ Pi-implement starts with the plan and recursively follows ordinary local Markdow
 
 ## How a run works
 
-1. Pi-implement parses the plan, ingests its Markdown corpus, and asks a planner for one strict immutable execution plan.
-2. The plan must cover every unchecked source task exactly once with grounded contracts, dependencies, and static workstreams. Invalid planner output blocks before implementation starts.
-3. Closely related tasks are batched into an ordered workstream. Clearly independent workstreams may implement concurrently up to `workerConcurrency`.
-4. An implementer works in a disposable owned Git worktree. It owns ordinary setup, dependency/cache repair, verification, and committed checkpoints. A task that is already satisfied can instead return concrete repository-state evidence.
-5. An independent reviewer assesses the whole workstream candidate. Material blocking findings open a durable recovery episode with the candidate and gate evidence retained for operator resolution.
-6. An approved candidate replays onto staging from the current target. Publication is serialized and uses a short write-ahead transaction. Conflicts, changed reconciliation deltas, and failed publication checks stop that publication attempt rather than publishing unchecked.
-7. After publication, Pi-implement atomically checks the corresponding source tasks. It then performs a whole-plan review; any finding is repaired through the same workstream machinery.
+1. Pi-implement parses the corpus and asks a planner for one strict immutable execution plan. That plan must cover every unchecked source task exactly once with grounded contracts, dependencies, and static workstreams.
+2. An eligible workstream receives an immutable base from the current target only after all of its dependencies have completed. Independent workstreams may implement and review concurrently up to `workerConcurrency`.
+3. Implementers work in disposable owned Git worktrees and retain committed checkpoints and evidence. Already-satisfied tasks receive repository-state review instead of a fabricated change.
+4. Target publication waits until every managed agent is idle. One serialized integration lane replays an approved candidate onto the current target, runs ordinary Git commit hooks, verifies the prepared commit, records a write-ahead publication intent, and updates the target with compare-and-swap protection.
+5. Reconciliation, hook failures, review findings, and recoverable execution failures enter durable recovery episodes. Recovery agents choose bounded actions in owned worktrees; target and projection safety failures stop autonomous mutation instead.
+6. After publication or reviewed satisfaction, pi-implement atomically projects the corresponding source checkboxes. It then performs a whole-plan review. Findings re-enter the same repair, review, integration, and publication path until the plan closes.
 
-A checkpoint is not completion. Source checkboxes change only after the containing workstream publishes, or after an already-satisfied task receives reviewed completion. Successful publication is never rolled back because checkbox projection or owned-worktree cleanup needs a later retry.
+A checkpoint is not completion. Source checkboxes change only after a workstream publishes or an already-satisfied task receives a current-target satisfaction receipt. Successful publication is never rolled back because checkbox projection or owned-resource cleanup needs a later retry.
 
 ## Safety, recovery, and state
 
@@ -50,11 +49,13 @@ The invoking checkout owns all operational state:
   trash/
 ```
 
-One OS-backed lease covers each run and destructive cleanup in that checkout. Linked checkouts have independent state and leases. `run-state.json` is the only lifecycle authority; events, status output, evidence, and Markdown checkboxes are projections.
+One OS-backed lease covers each run and destructive cleanup in that checkout. Linked checkouts have independent state and leases. `run-state.json` is the lifecycle authority; status output, evidence, and Markdown checkboxes are projections.
 
-The target checkout remains orchestrator-owned. Agents can repair routine environment state only in their owned worktree; committed checkpoints and evidence survive a provider failure, while dirty owned worktrees can be recreated. If target identity, protected plan artifacts, or restoration cannot be proven, pi-implement prevents that publication attempt.
+A new run requires a Git worktree with a resolvable `HEAD`, a named local branch, no active merge, rebase, cherry-pick, or revert, and a clean index and worktree including nonignored untracked files. Tracked plan files are allowed while clean. No upstream, remote, package-manager, validation-command, or hook dry-run preflight is required.
 
-A paused run retains its candidate, recovery evidence, projection debt, and cleanup debt. Resume from the same checkout and source plan after resolving the cause. Historical run directories are manual-inspection artifacts, not resumable state.
+The target checkout remains orchestrator-owned. Managed agents run only while integration and publication are idle; integration and publication run only while managed agents are idle. Before and after every managed agent, pi-implement verifies target identity, Git-operation state, cleanliness outside protected projections, and exact protected-artifact hashes. It safety-blocks rather than attributing unauthorized target changes to an agent.
+
+Tracked source plans become expected working changes after checkbox projection. While the run is active, their exact retained hashes are verified and excluded from target cleanliness checks. Unrelated dirt still blocks lifecycle work. Resume first settles retained publication and projection transactions, then validates the target and protected corpus. Completed and safety-blocked runs cannot resume; use `:cleanup` for completed runs, or manually recover and use `:abandon` for paused or safety-blocked runs.
 
 ## Commands
 
@@ -65,15 +66,17 @@ A paused run retains its candidate, recovery evidence, projection debt, and clea
 /implement :status
 /implement :inspect <run-id>
 /implement :cleanup <completed-run-id>
+/implement :abandon <run-id>
 /implement :stop
 ```
 
-- `:status` lists VNext runs in the current checkout and their phase, findings, gates, and debt.
+- `:status` lists runs in the current checkout with their phase, findings, gates, leases, and projection debt.
 - `:inspect` shows a run's durable state and evidence paths.
 - `:stop` settles owned processes and pauses the active session run safely.
-- `--resume` resumes a paused VNext run after source and checkout safety checks pass.
-- `--start-over` cleans a completed VNext run, then starts a new run for the supplied plan.
-- `:cleanup` removes only a completed VNext run whose durable cleanup obligations have settled. Unknown or historical artifacts require manual cleanup.
+- `--resume` resumes a nonterminal run from the same checkout after transaction-aware safety checks pass.
+- `--start-over` verifies prospective new-run preflight, cleans a completed run, then starts a new run for the supplied plan.
+- `:cleanup` conservatively removes a completed run's provably owned worktrees and branches. It is retryable after partial cleanup. It retains run authority and reports manual recovery paths if ownership cannot be proven. After cleanup, projected tracked files are ordinary working changes that must be committed or reverted before another run.
+- `:abandon` is available only for a paused or safety-blocked run in the current checkout with no active process leases. It never changes the target and removes authority only after the same conservative owned-resource scan succeeds.
 
 ## Configuration
 
@@ -89,11 +92,7 @@ Configuration is optional and lives at `~/.pi/agent/extensions/pi-implement/conf
 }
 ```
 
-Implementers choose and run appropriate verification for the workstream; pi-implement has no configured or auto-detected validation command. Managed agents use Pi's current-session generic subagent runtime. Recovery agents receive the retained gate, candidate, workspace, findings, prior actions, and mutation boundary, then return one typed bounded action. The `recovery` override selects that agent. There is no pi-implement-specific reviewer watchdog; use Pi's generic agent controls for supervision.
-
-## Maintenance evidence
-
-The VNext lifecycle audit retains 111 focused test cases across 17 files. Reducer tests cover illegal transitions and durable invariants; real-Git tests cover checkout, replay, publication, projection, and cleanup boundaries; lifecycle tests cover queued actor work, recovery, and target safety. The lifecycle and real-Git boundary groups each passed three consecutive focused runs; the recorded package suite completed in 157 seconds before the mandatory workspace and root suites. These figures describe retained safety coverage, not a coverage target.
+Implementers choose and run appropriate verification for their workstream; pi-implement has no configured or auto-detected validation command. Managed agents use Pi's current-session generic subagent runtime. Recovery agents receive the retained gate, candidate, workspace, findings, prior actions, and mutation boundary, then return one typed bounded action. The `recovery` override selects that agent. There is no pi-implement-specific reviewer watchdog; use Pi's generic agent controls for supervision.
 
 ## Human follow-up
 

@@ -242,6 +242,13 @@ describe("CandidateReplayEngine", () => {
           disposition: preparedSecond.disposition,
           targetRef: "refs/heads/master",
           hookEvidence: "git commit completed with retained command evidence",
+          hookCommand: {
+            command: "git commit",
+            cwd: preparedSecond.staging.worktreePath,
+            timedOut: false,
+            output: "",
+            exitCode: 0,
+          },
         },
         preparedSecond.staging,
       ),
@@ -256,7 +263,7 @@ describe("CandidateReplayEngine", () => {
     await replay.cleanup(preparedSecond.staging);
   });
 
-  it("reprepares legacy or mismatched staging instead of accepting it", async () => {
+  it("reprepares mismatched staging instead of accepting it", async () => {
     const root = repository();
     const client = new ExecGitClient(root);
     const approved = await candidate(root, "candidate.txt", "candidate\n");
@@ -272,6 +279,13 @@ describe("CandidateReplayEngine", () => {
         disposition: first.disposition,
         targetRef: "refs/heads/master",
         hookEvidence: "git commit completed with retained command evidence",
+        hookCommand: {
+          command: "git commit",
+          cwd: first.staging.worktreePath,
+          timedOut: false,
+          output: "",
+          exitCode: 0,
+        },
       },
       first.staging,
     );

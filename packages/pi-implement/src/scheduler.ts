@@ -1,7 +1,7 @@
 import { publicationPreparationId } from "./candidate-replay.js";
 import { RecoverySafetyError } from "./recovery-service.js";
-import { MissingHookEvidenceError } from "./vnext-publication.js";
-import type { ExecutionPlan } from "./execution-plan-vnext.js";
+import { MissingHookEvidenceError } from "./publication.js";
+import type { ExecutionPlan } from "./execution-plan.js";
 import { TargetBoundaryError } from "./workstream-candidate.js";
 import {
   advanceNoActionCycle,
@@ -10,7 +10,7 @@ import {
   recoveryCycleSignature,
   type RecoveryAction,
   type RecoveryGateResult,
-} from "./recovery-vnext.js";
+} from "./recovery.js";
 import type { AnchoredWorkstreamReviewCompletion } from "./result-schemas.js";
 import {
   applyAnchoredWorkstreamReview,
@@ -18,32 +18,27 @@ import {
   retargetAnchoredReview,
   reviewKey,
   workstreamReviewState,
-  type VNextReviewOutcome,
-} from "./vnext-review.js";
-import {
-  StaleVNextRevisionError,
-  type VNextRunState,
-  type VNextRunStore,
-} from "./vnext-store.js";
+  type ReviewOutcome,
+} from "./review.js";
+import { StaleRevisionError, type RunState, type RunStore } from "./store.js";
 
-export type RuntimeWorkstream =
-  VNextRunState["candidates"][string]["workstream"];
-type ProcessLease = VNextRunState["processLeases"][string];
+export type RuntimeWorkstream = RunState["candidates"][string]["workstream"];
+type ProcessLease = RunState["processLeases"][string];
 
 type ImplementationOutcome =
   | {
       kind: "candidate_ready";
-      candidate: VNextRunState["candidates"][string];
+      candidate: RunState["candidates"][string];
       checkpoints: Record<string, string>;
       satisfied: Record<string, string>;
     }
   | {
       kind: "satisfaction_claimed";
-      candidate: VNextRunState["candidates"][string];
+      candidate: RunState["candidates"][string];
       evidence: Record<string, string>;
     };
 
-export type VNextSchedulerEvent =
+export type SchedulerEvent =
   | {
       kind: "workstreams_selected";
       now: string;
@@ -92,8 +87,8 @@ export type VNextSchedulerEvent =
       kind: "review_completed";
       workstream: RuntimeWorkstream;
       leaseId: string;
-      outcome: VNextReviewOutcome;
-      projectionDebt?: VNextRunState["projectionDebt"][number];
+      outcome: ReviewOutcome;
+      projectionDebt?: RunState["projectionDebt"][number];
     }
   | { kind: "recovery_requested"; workstream: RuntimeWorkstream; now: string }
   | {
@@ -101,7 +96,7 @@ export type VNextSchedulerEvent =
       workstream: RuntimeWorkstream;
       leaseId: string;
       action: RecoveryAction;
-      candidate?: VNextRunState["candidates"][string];
+      candidate?: RunState["candidates"][string];
       correction?: {
         fromCandidateId: string;
         changedPaths: string[];
@@ -132,7 +127,7 @@ export type VNextSchedulerEvent =
       leaseId: string;
       targetSha: string;
       evidence: string;
-      projectionDebt?: VNextRunState["projectionDebt"][number];
+      projectionDebt?: RunState["projectionDebt"][number];
     }
   | {
       kind: "repository_assessment_required";
@@ -174,11 +169,11 @@ export type VNextSchedulerEvent =
     }
   | {
       kind: "publication_preparation_recorded";
-      preparation: VNextRunState["publication"]["preparations"][string];
+      preparation: RunState["publication"]["preparations"][string];
     }
   | {
       kind: "publication_intent_recorded";
-      intent: VNextRunState["publication"]["intents"][string];
+      intent: RunState["publication"]["intents"][string];
     }
   | {
       kind: "publication_requested";
@@ -188,14 +183,14 @@ export type VNextSchedulerEvent =
     }
   | {
       kind: "publication_receipt_recorded";
-      receipt: VNextRunState["publication"]["receipts"][string];
+      receipt: RunState["publication"]["receipts"][string];
     }
   | {
       kind: "publication_completed";
       workstream: RuntimeWorkstream;
       leaseId: string;
       intentId: string;
-      projectionDebt?: VNextRunState["projectionDebt"][number];
+      projectionDebt?: RunState["projectionDebt"][number];
     }
   | { kind: "whole_plan_review_requested" }
   | { kind: "overall_repair_queued"; repairId: string }
@@ -211,7 +206,7 @@ export type VNextSchedulerEvent =
         | {
             kind: "changes_requested";
             repairId: string;
-            candidate: VNextRunState["candidates"][string];
+            candidate: RunState["candidates"][string];
             findings: Array<{
               summary: string;
               evidence: string;
@@ -238,12 +233,12 @@ export type VNextSchedulerEvent =
   | { kind: "run_completed"; targetSha: string; targetTreeSha: string }
   | {
       kind: "projection_debt_recorded";
-      debt: VNextRunState["projectionDebt"][number];
+      debt: RunState["projectionDebt"][number];
     }
   | { kind: "projection_debt_settled"; debtId: string }
   | { kind: "projection_safety_paused"; reason: string };
 
-export type VNextSchedulerEffect =
+export type SchedulerEffect =
   | {
       kind: "run_implementation";
       workstream: RuntimeWorkstream;
@@ -276,17 +271,14 @@ export type VNextSchedulerEffect =
   | { kind: "complete_whole_plan_run" }
   | { kind: "run_projection"; debtId: string };
 
-export type VNextSchedulerTransition = {
-  state: VNextRunState;
-  effects: VNextSchedulerEffect[];
+export type SchedulerTransition = {
+  state: RunState;
+  effects: SchedulerEffect[];
   accepted: boolean;
   error?: string;
 };
 
-function hasCompletionReceipt(
-  state: VNextRunState,
-  workstreamId: string,
-): boolean {
+function hasCompletionReceipt(state: RunState, workstreamId: string): boolean {
   const workstream = state.workstreams.source[workstreamId];
   if (
     !workstream ||
@@ -305,7 +297,7 @@ function hasCompletionReceipt(
   );
 }
 
-export function selectReadyWorkstreams(state: VNextRunState): string[] {
+export function selectReadyWorkstreams(state: RunState): string[] {
   return selectReadyRuntimeWorkstreams(state)
     .filter(
       (workstream): workstream is { kind: "source"; id: string } =>
@@ -314,7 +306,7 @@ export function selectReadyWorkstreams(state: VNextRunState): string[] {
     .map((workstream) => workstream.id);
 }
 
-function runtimeWorkstreams(state: VNextRunState): RuntimeWorkstream[] {
+function runtimeWorkstreams(state: RunState): RuntimeWorkstream[] {
   return [
     ...Object.values(state.workstreams.source).map((workstream) => ({
       kind: "source" as const,
@@ -328,7 +320,7 @@ function runtimeWorkstreams(state: VNextRunState): RuntimeWorkstream[] {
 }
 
 export function selectReadyRuntimeWorkstreams(
-  state: VNextRunState,
+  state: RunState,
 ): RuntimeWorkstream[] {
   const capacity = state.run.workerConcurrency - activeWorkerLeaseCount(state);
   if (capacity <= 0) {
@@ -361,20 +353,22 @@ export function selectReadyRuntimeWorkstreams(
   return [];
 }
 
-export function reduceVNextRunEvent(
-  input: VNextRunState,
-  event: VNextSchedulerEvent,
-): VNextSchedulerTransition {
+export function reduceRunEvent(
+  input: RunState,
+  event: SchedulerEvent,
+): SchedulerTransition {
   const state = structuredClone(input);
-  const reject = (error: string): VNextSchedulerTransition => ({
+  const reject = (error: string): SchedulerTransition => ({
     state: input,
     effects: [],
     accepted: false,
     error,
   });
-  const accept = (
-    effects: VNextSchedulerEffect[] = [],
-  ): VNextSchedulerTransition => ({ state, effects, accepted: true });
+  const accept = (effects: SchedulerEffect[] = []): SchedulerTransition => ({
+    state,
+    effects,
+    accepted: true,
+  });
 
   if (state.phase === "blocked_safety" || state.phase === "completed") {
     return reject("terminal runs do not accept lifecycle events");
@@ -408,7 +402,7 @@ export function reduceVNextRunEvent(
         );
       }
       const ready = selectReadyRuntimeWorkstreams(state);
-      const effects: VNextSchedulerEffect[] = [];
+      const effects: SchedulerEffect[] = [];
       for (const [index, workstream] of ready.entries()) {
         if (workstream.kind === "source") {
           const runtime = state.workstreams.source[workstream.id]!;
@@ -1380,12 +1374,6 @@ export function reduceVNextRunEvent(
     case "publication_preparation_recorded": {
       const candidate = state.candidates[event.preparation.candidateId];
       const existing = state.publication.preparations[event.preparation.id];
-      const legacyHookUpgrade =
-        existing &&
-        !existing.hookCommand &&
-        event.preparation.hookCommand &&
-        JSON.stringify({ ...existing, hookCommand: undefined }) ===
-          JSON.stringify({ ...event.preparation, hookCommand: undefined });
       if (
         !candidate ||
         event.preparation.id !==
@@ -1402,7 +1390,6 @@ export function reduceVNextRunEvent(
           event.preparation.targetBaseSha === candidate.baseSha) ||
         event.preparation.targetRef !== state.run.checkout.branchRef ||
         (existing &&
-          !legacyHookUpgrade &&
           JSON.stringify(existing) !== JSON.stringify(event.preparation))
       ) {
         return reject(
@@ -1877,23 +1864,23 @@ export function reduceVNextRunEvent(
   }
 }
 
-export type VNextEffectExecution = (args: {
-  effect: VNextSchedulerEffect;
+export type EffectExecution = (args: {
+  effect: SchedulerEffect;
   signal: AbortSignal;
-  dispatch: (event: VNextSchedulerEvent) => Promise<void>;
+  dispatch: (event: SchedulerEvent) => Promise<void>;
 }) => Promise<void>;
 
-export type VNextPlannerExecution = (args: {
+export type PlannerExecution = (args: {
   signal: AbortSignal;
 }) => Promise<ExecutionPlan>;
 
-export type VNextSchedulerActorOptions = {
-  store: VNextRunStore;
-  executeEffect?: VNextEffectExecution;
-  executePlanner?: VNextPlannerExecution;
+export type SchedulerActorOptions = {
+  store: RunStore;
+  executeEffect?: EffectExecution;
+  executePlanner?: PlannerExecution;
   onTransition?: (
-    state: VNextRunState,
-    event: VNextSchedulerEvent | { kind: "planner_bound" },
+    state: RunState,
+    event: SchedulerEvent | { kind: "planner_bound" },
   ) => void;
   awaitOwnedProcesses?: () => Promise<void>;
   targetHead?: () => Promise<string>;
@@ -1902,7 +1889,7 @@ export type VNextSchedulerActorOptions = {
   now?: () => string;
 };
 
-export class VNextSchedulerActor {
+export class SchedulerActor {
   private readonly controller = new AbortController();
   private readonly processes = new Map<string, Promise<void>>();
   private readonly processControllers = new Map<string, AbortController>();
@@ -1913,11 +1900,11 @@ export class VNextSchedulerActor {
   private stopping = false;
   private safetyReason: string | undefined;
 
-  constructor(private readonly options: VNextSchedulerActorOptions) {
+  constructor(private readonly options: SchedulerActorOptions) {
     this.now = options.now ?? (() => new Date().toISOString());
   }
 
-  snapshot(): VNextRunState {
+  snapshot(): RunState {
     return this.options.store.read();
   }
 
@@ -1967,21 +1954,19 @@ export class VNextSchedulerActor {
     return Object.keys(this.snapshot().processLeases).length > before;
   }
 
-  async dispatch(event: VNextSchedulerEvent): Promise<VNextSchedulerEffect[]> {
+  async dispatch(event: SchedulerEvent): Promise<SchedulerEffect[]> {
     const effects = await this.persist(event);
     await this.drive();
     return effects;
   }
 
-  private async persist(
-    event: VNextSchedulerEvent,
-  ): Promise<VNextSchedulerEffect[]> {
+  private async persist(event: SchedulerEvent): Promise<SchedulerEffect[]> {
     const operation = this.queue.then(async () => {
       for (;;) {
         const current = this.options.store.read();
-        const transition = reduceVNextRunEvent(current, event);
+        const transition = reduceRunEvent(current, event);
         if (!transition.accepted) {
-          throw new VNextSchedulerActorError(
+          throw new SchedulerActorError(
             transition.error ?? `Reducer rejected ${event.kind}.`,
           );
         }
@@ -2000,7 +1985,7 @@ export class VNextSchedulerActor {
           }
           return transition.effects;
         } catch (error) {
-          if (error instanceof StaleVNextRevisionError) {
+          if (error instanceof StaleRevisionError) {
             continue;
           }
           throw error;
@@ -2015,8 +2000,8 @@ export class VNextSchedulerActor {
   }
 
   private async withAssignedRuntimeBases(
-    event: VNextSchedulerEvent,
-  ): Promise<VNextSchedulerEvent> {
+    event: SchedulerEvent,
+  ): Promise<SchedulerEvent> {
     if (event.kind !== "workstreams_selected") {
       return event;
     }
@@ -2083,8 +2068,8 @@ export class VNextSchedulerActor {
 
   private nextDriveStep():
     | { kind: "planner" }
-    | { kind: "effect"; effect: VNextSchedulerEffect }
-    | { kind: "event"; event: VNextSchedulerEvent }
+    | { kind: "effect"; effect: SchedulerEffect }
+    | { kind: "event"; event: SchedulerEvent }
     | undefined {
     const state = this.snapshot();
     if (state.phase === "planning") {
@@ -2348,7 +2333,7 @@ export class VNextSchedulerActor {
     this.processes.set("planner", process);
   }
 
-  private startEffect(effect: VNextSchedulerEffect): void {
+  private startEffect(effect: SchedulerEffect): void {
     if (this.stopping || !this.options.executeEffect) {
       return;
     }
@@ -2556,12 +2541,12 @@ export class VNextSchedulerActor {
   }
 }
 
-export class VNextSchedulerActorError extends Error {}
+export class SchedulerActorError extends Error {}
 
-type WholePlanEpoch = NonNullable<VNextRunState["wholePlanReview"]["epoch"]>;
+type WholePlanEpoch = NonNullable<RunState["wholePlanReview"]["epoch"]>;
 type WholePlanEpochFinding = WholePlanEpoch["findings"][number];
 
-function nextOverallRepairId(state: VNextRunState): string {
+function nextOverallRepairId(state: RunState): string {
   let number = 1;
   while (state.workstreams.overall[`overall-repair-${number}`]) {
     number++;
@@ -2570,18 +2555,18 @@ function nextOverallRepairId(state: VNextRunState): string {
 }
 
 function queueWholePlanRepair(
-  state: VNextRunState,
+  state: RunState,
   args: {
     repairId: string;
     targetSha: string;
     targetTreeSha: string;
-    candidate?: VNextRunState["candidates"][string];
+    candidate?: RunState["candidates"][string];
     findings: WholePlanEpochFinding[];
     evidence: string;
     epoch: WholePlanEpoch;
   },
-  reject: (error: string) => VNextSchedulerTransition,
-): VNextSchedulerTransition {
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
   if (
     !safeId(args.repairId) ||
     state.workstreams.overall[args.repairId] ||
@@ -2601,7 +2586,7 @@ function queueWholePlanRepair(
       baseSha: args.targetSha,
       commitSha: args.targetSha,
       treeSha: args.targetTreeSha,
-    } satisfies VNextRunState["candidates"][string]);
+    } satisfies RunState["candidates"][string]);
   if (
     !sameWorkstream(candidate.workstream, workstream) ||
     candidate.baseSha !== args.targetSha ||
@@ -2645,12 +2630,12 @@ function queueWholePlanRepair(
 }
 
 function startProcess(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
   kind: "review",
   now: string,
-  reject: (error: string) => VNextSchedulerTransition,
-): VNextSchedulerTransition {
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
   const current = getWorkstream(state, workstream);
   const allowed = kind === "review" && current?.phase === "candidate_ready";
   if (
@@ -2673,11 +2658,11 @@ function startProcess(
 }
 
 function startRecoveryProcess(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
   now: string,
-  reject: (error: string) => VNextSchedulerTransition,
-): VNextSchedulerTransition {
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
   const current = getWorkstream(state, workstream);
   const episode = openRecoveryEpisodeForWorkstream(state, workstream);
   if (
@@ -2712,11 +2697,11 @@ function startRecoveryProcess(
 }
 
 function startReconciliation(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
   now: string,
-  reject: (error: string) => VNextSchedulerTransition,
-): VNextSchedulerTransition {
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
   const current = getWorkstream(state, workstream);
   const candidateId = current?.candidateId;
   if (
@@ -2748,7 +2733,7 @@ function startReconciliation(
 }
 
 function createLease(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
   kind: ProcessLease["kind"],
   acquiredAt: string,
@@ -2772,7 +2757,7 @@ function createLease(
 }
 
 function ownedLease(
-  state: VNextRunState,
+  state: RunState,
   leaseId: string,
   workstream: RuntimeWorkstream,
   kind: ProcessLease["kind"],
@@ -2784,7 +2769,7 @@ function ownedLease(
 }
 
 function processIsAllowed(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
 ): boolean {
   return workstream.kind === "source"
@@ -2792,14 +2777,14 @@ function processIsAllowed(
     : state.phase === "whole_plan_review";
 }
 
-function hasIntegrationLease(state: VNextRunState): boolean {
+function hasIntegrationLease(state: RunState): boolean {
   return Object.values(state.processLeases).some(
     (lease) => lease.kind === "reconciliation" || lease.kind === "publication",
   );
 }
 
 function activeLeaseFor(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
 ): boolean {
   return Object.values(state.processLeases).some((lease) =>
@@ -2807,7 +2792,7 @@ function activeLeaseFor(
   );
 }
 
-function activeWorkerLeaseCount(state: VNextRunState): number {
+function activeWorkerLeaseCount(state: RunState): number {
   return Object.values(state.processLeases).filter(
     (lease) =>
       lease.kind === "implementation" ||
@@ -2817,11 +2802,11 @@ function activeWorkerLeaseCount(state: VNextRunState): number {
 }
 
 function getWorkstream(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
 ):
-  | VNextRunState["workstreams"]["source"][string]
-  | VNextRunState["workstreams"]["overall"][string]
+  | RunState["workstreams"]["source"][string]
+  | RunState["workstreams"]["overall"][string]
   | undefined {
   return workstream.kind === "source"
     ? state.workstreams.source[workstream.id]
@@ -2829,10 +2814,10 @@ function getWorkstream(
 }
 
 function recordGateResult(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
   result: RecoveryGateResult,
-  workspace: VNextRunState["recoveryEpisodes"][string]["workspace"],
+  workspace: RunState["recoveryEpisodes"][string]["workspace"],
 ): void {
   const runtime = getWorkstream(state, workstream);
   const candidate = result.candidateId
@@ -2923,10 +2908,10 @@ function recordGateResult(
 }
 
 function recoveryWorkspace(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
   candidateId?: string,
-): VNextRunState["recoveryEpisodes"][string]["workspace"] {
+): RunState["recoveryEpisodes"][string]["workspace"] {
   const candidate = candidateId ? state.candidates[candidateId] : undefined;
   return {
     id: workstreamId(workstream),
@@ -2937,9 +2922,9 @@ function recoveryWorkspace(
 }
 
 function openRecoveryEpisodeForWorkstream(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
-): VNextRunState["recoveryEpisodes"][string] | undefined {
+): RunState["recoveryEpisodes"][string] | undefined {
   return Object.values(state.recoveryEpisodes)
     .filter(
       (episode) =>
@@ -2950,8 +2935,8 @@ function openRecoveryEpisodeForWorkstream(
 }
 
 function recoverySignatureFor(
-  state: VNextRunState,
-  episode: VNextRunState["recoveryEpisodes"][string],
+  state: RunState,
+  episode: RunState["recoveryEpisodes"][string],
   nextAction: RecoveryAction["kind"],
   diagnosis?: string,
 ): string {
@@ -2977,7 +2962,7 @@ function recoverySignatureFor(
 
 function retryPhaseForGate(
   gateId: string,
-): VNextRunState["workstreams"]["source"][string]["phase"] {
+): RunState["workstreams"]["source"][string]["phase"] {
   if (
     gateId.startsWith("review:") ||
     gateId.startsWith("environment:review:")
@@ -3002,7 +2987,7 @@ function workstreamId(workstream: RuntimeWorkstream): string {
 }
 
 function sourceTaskOutcomeIsComplete(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
   outcome: ImplementationOutcome,
 ): boolean {
@@ -3034,7 +3019,7 @@ function sourceTaskOutcomeIsComplete(
 }
 
 function approveWorkstream(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
 ): void {
   const runtime = getWorkstream(state, workstream)!;
@@ -3067,11 +3052,11 @@ function approveWorkstream(
   runtime.phase = "approved";
 }
 
-function taskIdOwner(state: VNextRunState, taskId: string): string {
+function taskIdOwner(state: RunState, taskId: string): string {
   return state.tasks[taskId]!.workstreamId;
 }
 
-function allSourceWorkstreamsComplete(state: VNextRunState): boolean {
+function allSourceWorkstreamsComplete(state: RunState): boolean {
   return Object.values(state.workstreams.source).every(
     (workstream) => workstream.phase === "completed",
   );
@@ -3124,7 +3109,7 @@ function abortableDelay(
   });
 }
 
-function effectKey(effect: VNextSchedulerEffect): string {
+function effectKey(effect: SchedulerEffect): string {
   if ("leaseId" in effect) {
     return `${effect.kind}:${effect.leaseId}`;
   }
@@ -3135,7 +3120,7 @@ function effectKey(effect: VNextSchedulerEffect): string {
 }
 
 function effectLeaseKind(
-  effect: VNextSchedulerEffect,
+  effect: SchedulerEffect,
 ): ProcessLease["kind"] | undefined {
   if (effect.kind === "run_implementation") {
     return "implementation";

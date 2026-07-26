@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExecutionPlan } from "./execution-plan-vnext.js";
+import type { ExecutionPlan } from "./execution-plan.js";
 import type { GitClient } from "./git.js";
 import {
   buildAnchoredOverallReviewPrompt,
@@ -15,25 +15,22 @@ import {
   type InitialOverallReviewCompletion,
   type RecoveryCompletion,
 } from "./result-schemas.js";
-import {
-  boundedRecoveryOutput,
-  type RecoveryAction,
-} from "./recovery-vnext.js";
-import type { VNextSchedulerEvent } from "./scheduler-vnext.js";
+import { boundedRecoveryOutput, type RecoveryAction } from "./recovery.js";
+import type { SchedulerEvent } from "./scheduler.js";
 import type { SubagentClient } from "./subagents.js";
 import { writeAtomicJson } from "./atomic-json.js";
-import { protectedArtifactsMatch, type VNextRunState } from "./vnext-store.js";
+import { protectedArtifactsMatch, type RunState } from "./store.js";
 
 export type WholePlanReviewPacket = {
   planContext: string;
   candidateContext: string;
   fullDiff: string;
-  receipts: VNextRunState["publication"]["receipts"];
+  receipts: RunState["publication"]["receipts"];
   uncertainty: string[];
 };
 
 export function buildWholePlanReviewPacket(args: {
-  state: VNextRunState;
+  state: RunState;
   plan: ExecutionPlan;
   currentTargetSha: string;
   fullDiff: string;
@@ -95,14 +92,14 @@ export function buildWholePlanReviewPacket(args: {
   };
 }
 
-export async function runVNextWholePlanReview(args: {
-  state: VNextRunState;
+export async function runWholePlanReview(args: {
+  state: RunState;
   plan: ExecutionPlan;
   git: GitClient;
   subagents: SubagentClient;
   artifactsPath: string;
   signal?: AbortSignal;
-  dispatch: (event: VNextSchedulerEvent) => Promise<void>;
+  dispatch: (event: SchedulerEvent) => Promise<void>;
   roles?: {
     model?: string;
     type?: string;
@@ -271,8 +268,8 @@ export async function runVNextWholePlanReview(args: {
   });
 }
 
-export async function runVNextWholePlanRecovery(args: {
-  state: VNextRunState;
+export async function runWholePlanRecovery(args: {
+  state: RunState;
   subagents: SubagentClient;
   signal?: AbortSignal;
   roles?: {
@@ -326,10 +323,10 @@ export async function runVNextWholePlanRecovery(args: {
   };
 }
 
-export async function completeVNextWholePlanRun(args: {
-  state: VNextRunState;
+export async function completeWholePlanRun(args: {
+  state: RunState;
   git: GitClient;
-  dispatch: (event: VNextSchedulerEvent) => Promise<void>;
+  dispatch: (event: SchedulerEvent) => Promise<void>;
 }): Promise<void> {
   const review = args.state.wholePlanReview;
   if (
@@ -357,7 +354,7 @@ export async function completeVNextWholePlanRun(args: {
   });
 }
 
-function nextRepairId(state: VNextRunState): string {
+function nextRepairId(state: RunState): string {
   let number = 1;
   while (state.workstreams.overall[`overall-repair-${number}`]) {
     number++;

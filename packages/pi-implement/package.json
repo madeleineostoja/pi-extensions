@@ -1,6 +1,6 @@
 {
   "name": "pi-implement",
-  "description": "Execute Markdown plans through strict checkout-owned VNext workstreams.",
+  "description": "Execute Markdown plans through strict checkout-owned workstreams.",
   "license": "MIT",
   "type": "module",
   "files": [

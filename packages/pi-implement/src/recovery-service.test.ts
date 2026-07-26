@@ -2,9 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runVNextRecovery } from "./recovery-service.js";
+import { runRecovery } from "./recovery-service.js";
 import type { SpawnArgs } from "./subagents.js";
-import type { VNextRunState } from "./vnext-store.js";
+import type { RunState } from "./store.js";
 
 const directories = new Set<string>();
 
@@ -15,7 +15,7 @@ afterEach(() => {
   directories.clear();
 });
 
-describe("VNext recovery service", () => {
+describe(" recovery service", () => {
   it("launches the configured recovery role with the retained episode", async () => {
     const directory = mkdtempSync(join(tmpdir(), "pi-implement-recovery-"));
     directories.add(directory);
@@ -63,9 +63,9 @@ describe("VNext recovery service", () => {
       },
       candidates: {},
       protectedArtifactHashes: {},
-    } as unknown as VNextRunState;
+    } as unknown as RunState;
 
-    const outcome = await runVNextRecovery({
+    const outcome = await runRecovery({
       state,
       effect: {
         kind: "run_recovery",

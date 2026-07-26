@@ -6,69 +6,69 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { buildMaterialStore } from "./material-store.js";
 import { parsePlan } from "./plan.js";
-import { planExecution, readExecutionPlan } from "./execution-plan-vnext.js";
+import { planExecution, readExecutionPlan } from "./execution-plan.js";
 import {
   CandidateReplayEngine,
   publicationPreparation,
 } from "./candidate-replay.js";
 import { ExecGitClient } from "./git.js";
 import { RuntimeSubagentClient, type SubagentClient } from "./subagents.js";
-import { runVNextProjection } from "./vnext-projection-runner.js";
+import { runProjection } from "./projection-runner.js";
 import {
   createCheckboxProjectionIntent,
   resumeCheckboxProjection,
-} from "./vnext-projection.js";
-import { runVNextPublication } from "./vnext-publication.js";
+} from "./projection.js";
+import { runPublication } from "./publication.js";
 import {
-  completeVNextWholePlanRun,
-  runVNextWholePlanRecovery,
-  runVNextWholePlanReview,
-} from "./vnext-whole-plan-review.js";
+  completeWholePlanRun,
+  runWholePlanRecovery,
+  runWholePlanReview,
+} from "./whole-plan-review.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
-import { assertProspectiveVNextRunPreflight } from "./vnext-controls.js";
+import { assertProspectiveRunPreflight } from "./controls.js";
 import { strictExecutionPlanSchema } from "./result-schemas.js";
 import { canonicalPath, sha256 } from "./source-integrity.js";
 import {
   runWorkstreamCandidate,
   TargetBoundaryError,
 } from "./workstream-candidate.js";
-import { runVNextOverallRepair } from "./vnext-overall-repair.js";
-import { runVNextWorkstreamReview } from "./vnext-review.js";
-import { runVNextRecovery } from "./recovery-service.js";
+import { runOverallRepair } from "./overall-repair.js";
+import { runWorkstreamReview } from "./review.js";
+import { runRecovery } from "./recovery-service.js";
 import {
-  reduceVNextRunEvent,
-  VNextSchedulerActor,
-  type VNextSchedulerActorOptions,
-} from "./scheduler-vnext.js";
+  reduceRunEvent,
+  SchedulerActor,
+  type SchedulerActorOptions,
+} from "./scheduler.js";
 import {
   acquireCheckoutLease,
   checkoutPaths,
   createPlanningRun,
-  loadVNextRunState,
-  makeVNextRunId,
+  loadRunState,
+  makeRunId,
   protectedArtifactsMatch,
   sourceIdentityForPlanning,
   sourceIdentityMatches,
   type CheckoutLeaseCapability,
-  type VNextRunState,
-  VNextRunStore,
-} from "./vnext-store.js";
+  type RunState,
+  RunStore,
+} from "./store.js";
 import type { EffectiveRoles } from "./config.js";
 
-export type ActiveVNextRun = {
+export type ActiveRun = {
   runId: string;
-  actor: VNextSchedulerActor;
+  actor: SchedulerActor;
   lease: CheckoutLeaseCapability;
-  store: VNextRunStore;
+  store: RunStore;
 };
 
-export async function startVNextRun(args: {
+export async function startRun(args: {
   pi: ExtensionAPI;
   ctx: ExtensionCommandContext;
   planPath: string;
   roles: EffectiveRoles;
   workerConcurrency: number;
-}): Promise<{ kind: "no-op" } | { kind: "started"; active: ActiveVNextRun }> {
+}): Promise<{ kind: "no-op" } | { kind: "started"; active: ActiveRun }> {
   const planPath = resolve(args.ctx.cwd, args.planPath);
   const content = await readText(planPath);
   const parsed = parsePlan(planPath, content);
@@ -80,7 +80,7 @@ export async function startVNextRun(args: {
     git.root(),
     git.checkoutIdentity(),
   ]);
-  const runId = makeVNextRunId();
+  const runId = makeRunId();
   const lease = await acquireCheckoutLease({
     checkoutRoot,
     gitDir: checkoutIdentity,
@@ -88,7 +88,7 @@ export async function startVNextRun(args: {
     timeoutMs: 10_000,
   });
   try {
-    await assertProspectiveVNextRunPreflight(git);
+    await assertProspectiveRunPreflight(git);
     const [baseSha, branch] = await Promise.all([
       git.head(),
       git.currentBranch(),
@@ -122,7 +122,7 @@ export async function startVNextRun(args: {
       source,
       workerConcurrency: args.workerConcurrency,
     });
-    const actor = createVNextRuntime({
+    const actor = createRuntime({
       pi: args.pi,
       ctx: args.ctx,
       git,
@@ -142,13 +142,13 @@ export async function startVNextRun(args: {
   }
 }
 
-export async function resumeVNextRun(args: {
+export async function resumeRun(args: {
   pi: ExtensionAPI;
   ctx: ExtensionCommandContext;
   planPath: string;
   runId: string;
   roles: EffectiveRoles;
-}): Promise<ActiveVNextRun> {
+}): Promise<ActiveRun> {
   const planPath = resolve(args.ctx.cwd, args.planPath);
   const git = new ExecGitClient(args.ctx.cwd);
   const [checkoutRoot, checkoutIdentity] = await Promise.all([
@@ -163,10 +163,10 @@ export async function resumeVNextRun(args: {
   const runPath = join(checkoutPaths(checkoutRoot).runs, args.runId);
   if (!existsSync(join(runPath, "run-state.json"))) {
     throw new Error(
-      `Run ${args.runId} is not a VNext run in this checkout. Historical runs are unsupported; inspect or remove them manually.`,
+      `Run ${args.runId} is unavailable in this checkout; inspect or remove its artifacts manually.`,
     );
   }
-  const retained = loadVNextRunState(join(runPath, "run-state.json"));
+  const retained = loadRunState(join(runPath, "run-state.json"));
   if (
     retained.run.checkout.root !== checkoutRoot ||
     retained.run.checkout.gitDir !== checkoutIdentity
@@ -175,7 +175,7 @@ export async function resumeVNextRun(args: {
       "Run belongs to a different checkout; inspect it from that checkout.",
     );
   }
-  assertVNextRunCanResume(retained.phase);
+  assertRunCanResume(retained.phase);
   const lease = await acquireCheckoutLease({
     checkoutRoot,
     gitDir: checkoutIdentity,
@@ -183,7 +183,7 @@ export async function resumeVNextRun(args: {
     timeoutMs: 10_000,
   });
   try {
-    const store = VNextRunStore.open(
+    const store = RunStore.open(
       lease,
       join(lease.paths.runs, args.runId, "run-state.json"),
     );
@@ -220,14 +220,14 @@ export async function resumeVNextRun(args: {
         "Plan corpus or protected artifacts changed; resume is unsafe.",
       );
     }
-    await assertVNextResumeTargetBoundary(current, git);
+    await assertResumeTargetBoundary(current, git);
     const plan = readExecutionPlan(runPath);
     if (current.phase !== "planning" && !plan) {
       throw new Error(
-        "Bound VNext run is missing execution-plan.json; inspect or remove it manually.",
+        "Bound run is missing execution-plan.json; inspect or remove it manually.",
       );
     }
-    const actor = createVNextRuntime({
+    const actor = createRuntime({
       pi: args.pi,
       ctx: args.ctx,
       git,
@@ -250,7 +250,7 @@ export async function resumeVNextRun(args: {
   }
 }
 
-export function assertVNextRunCanResume(phase: VNextRunState["phase"]): void {
+export function assertRunCanResume(phase: RunState["phase"]): void {
   if (phase === "completed") {
     throw new Error("Completed runs cannot resume; use :cleanup instead.");
   }
@@ -262,7 +262,7 @@ export function assertVNextRunCanResume(phase: VNextRunState["phase"]): void {
 }
 
 async function recoverPublicationTransactions(args: {
-  store: VNextRunStore;
+  store: RunStore;
   git: ExecGitClient;
 }): Promise<void> {
   for (const intent of Object.values(args.store.read().publication.intents)) {
@@ -282,7 +282,7 @@ async function recoverPublicationTransactions(args: {
     }).recover(intent);
     if (outcome.kind === "published") {
       if (!state.publication.receipts[intent.id]) {
-        const transition = reduceVNextRunEvent(args.store.read(), {
+        const transition = reduceRunEvent(args.store.read(), {
           kind: "publication_receipt_recorded",
           receipt: outcome.receipt,
         });
@@ -310,7 +310,7 @@ async function recoverPublicationTransactions(args: {
 }
 
 export async function recoverProjectionTransactions(args: {
-  store: VNextRunStore;
+  store: RunStore;
 }): Promise<void> {
   const initial = args.store.read();
   if (initial.projectionDebt.length === 0) {
@@ -344,8 +344,8 @@ export async function recoverProjectionTransactions(args: {
   }
 }
 
-async function assertVNextResumeTargetBoundary(
-  state: VNextRunState,
+async function assertResumeTargetBoundary(
+  state: RunState,
   git: ExecGitClient,
 ): Promise<void> {
   const protectedPaths = Object.keys(state.protectedArtifactHashes);
@@ -375,7 +375,7 @@ async function assertVNextResumeTargetBoundary(
   }
 }
 
-function expectedTargetHead(state: VNextRunState): string {
+function expectedTargetHead(state: RunState): string {
   const pending = Object.values(state.publication.intents).filter(
     (intent) => !state.publication.receipts[intent.id],
   );
@@ -395,7 +395,7 @@ function expectedTargetHead(state: VNextRunState): string {
   return tip?.publishedCommitSha ?? state.run.checkout.startHead;
 }
 
-function projectionDebtMatchesIntent(state: VNextRunState): boolean {
+function projectionDebtMatchesIntent(state: RunState): boolean {
   if (state.projectionDebt.length === 0) {
     return false;
   }
@@ -428,7 +428,7 @@ function projectionDebtMatchesIntent(state: VNextRunState): boolean {
   );
 }
 
-export async function stopVNextRun(active: ActiveVNextRun): Promise<void> {
+export async function stopRun(active: ActiveRun): Promise<void> {
   try {
     await active.actor.stop("Stopped by user.");
   } finally {
@@ -436,7 +436,7 @@ export async function stopVNextRun(active: ActiveVNextRun): Promise<void> {
   }
 }
 
-export function vnextRunIds(checkoutRoot: string): string[] {
+export function RunIds(checkoutRoot: string): string[] {
   const runs = checkoutPaths(checkoutRoot).runs;
   if (!existsSync(runs)) {
     return [];
@@ -446,11 +446,11 @@ export function vnextRunIds(checkoutRoot: string): string[] {
   );
 }
 
-export function createVNextRuntime(args: {
+export function createRuntime(args: {
   pi: ExtensionAPI;
   ctx: ExtensionCommandContext;
   git: ExecGitClient;
-  store: VNextRunStore;
+  store: RunStore;
   lease: CheckoutLeaseCapability;
   roles: EffectiveRoles;
   plan: ReturnType<typeof parsePlan>;
@@ -458,12 +458,12 @@ export function createVNextRuntime(args: {
   checkoutIdentity: string;
   baseSha: string;
   subagents?: SubagentClient;
-  onTransition?: VNextSchedulerActorOptions["onTransition"];
-}): VNextSchedulerActor {
+  onTransition?: SchedulerActorOptions["onTransition"];
+}): SchedulerActor {
   const subagents =
     args.subagents ??
     new RuntimeSubagentClient(args.pi, args.ctx, args.store.read().run.id);
-  return new VNextSchedulerActor({
+  return new SchedulerActor({
     store: args.store,
     onTransition: args.onTransition,
     targetHead: () => args.git.head(),
@@ -546,7 +546,7 @@ export function createVNextRuntime(args: {
               })
             : {
                 kind: "candidate_ready" as const,
-                ...(await runVNextOverallRepair({
+                ...(await runOverallRepair({
                   state,
                   plan: readExecutionPlan(
                     join(args.lease.paths.runs, state.run.id),
@@ -568,7 +568,7 @@ export function createVNextRuntime(args: {
         return;
       }
       if (effect.kind === "run_review") {
-        const outcome = await runVNextWorkstreamReview({
+        const outcome = await runWorkstreamReview({
           state,
           plan: readExecutionPlan(join(args.lease.paths.runs, state.run.id))!,
           workstream: effect.workstream,
@@ -747,18 +747,19 @@ export function createVNextRuntime(args: {
         if (!branch) {
           throw new Error("Publication requires a named target branch.");
         }
+        if (!replay.staging.hookCommand) {
+          throw new Error(
+            "Publishable staging commit is missing ordinary hook evidence.",
+          );
+        }
         const preparation = publicationPreparation(
           {
             runId: state.run.id,
             candidate,
             disposition: replay.disposition,
             targetRef: `refs/heads/${branch}`,
-            hookEvidence: replay.staging.hookCommand
-              ? `Git commit completed with hooks: ${replay.staging.hookCommand.command}`
-              : "No staging commit was required for the reviewed satisfaction claim.",
-            ...(replay.staging.hookCommand
-              ? { hookCommand: replay.staging.hookCommand }
-              : {}),
+            hookEvidence: `Git commit completed with hooks: ${replay.staging.hookCommand.command}`,
+            hookCommand: replay.staging.hookCommand,
           },
           replay.staging,
         );
@@ -807,7 +808,7 @@ export function createVNextRuntime(args: {
           effect.workstream.kind === "source"
             ? (state.workstreams.source[effect.workstream.id]?.taskIds ?? [])
             : [];
-        let projectionDebt: VNextRunState["projectionDebt"][number] | undefined;
+        let projectionDebt: RunState["projectionDebt"][number] | undefined;
         try {
           projectionDebt =
             taskIds.length === 0 || !plan
@@ -844,7 +845,7 @@ export function createVNextRuntime(args: {
           });
           return;
         }
-        await runVNextPublication({
+        await runPublication({
           state,
           effect,
           publisher: new WriteAheadPublisher({
@@ -859,7 +860,7 @@ export function createVNextRuntime(args: {
         return;
       }
       if (effect.kind === "run_projection") {
-        await runVNextProjection({
+        await runProjection({
           store: args.store,
           debtId: effect.debtId,
           dispatch,
@@ -875,7 +876,7 @@ export function createVNextRuntime(args: {
             "Whole-plan review requires the durable execution plan.",
           );
         }
-        await runVNextWholePlanReview({
+        await runWholePlanReview({
           state,
           plan,
           git: args.git,
@@ -888,7 +889,7 @@ export function createVNextRuntime(args: {
         return;
       }
       if (effect.kind === "run_whole_plan_recovery") {
-        const action = await runVNextWholePlanRecovery({
+        const action = await runWholePlanRecovery({
           state,
           subagents,
           signal,
@@ -898,7 +899,7 @@ export function createVNextRuntime(args: {
         return;
       }
       if (effect.kind === "complete_whole_plan_run") {
-        await completeVNextWholePlanRun({
+        await completeWholePlanRun({
           state,
           git: args.git,
           dispatch,
@@ -906,7 +907,7 @@ export function createVNextRuntime(args: {
         return;
       }
       if (effect.kind === "run_recovery") {
-        const outcome = await runVNextRecovery({
+        const outcome = await runRecovery({
           state,
           effect,
           git: args.git,
@@ -923,7 +924,7 @@ export function createVNextRuntime(args: {
         });
         return;
       }
-      throw new Error("Unsupported VNext effect.");
+      throw new Error("Unsupported effect.");
     },
     executePlanner: async ({ signal }) => {
       const retained = readExecutionPlan(
@@ -947,7 +948,7 @@ export function createVNextRuntime(args: {
             role: "planner",
             model: args.roles.planner.model,
             thinking: args.roles.planner.thinking,
-            description: "Compile strict VNext execution plan",
+            description: "Compile strict execution plan",
             prompt,
             cwd: args.ctx.cwd,
             readOnly: true,

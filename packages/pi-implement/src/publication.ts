@@ -1,8 +1,5 @@
-import type {
-  VNextSchedulerEffect,
-  VNextSchedulerEvent,
-} from "./scheduler-vnext.js";
-import type { VNextRunState } from "./vnext-store.js";
+import type { SchedulerEffect, SchedulerEvent } from "./scheduler.js";
+import type { RunState } from "./store.js";
 import {
   type PublicationOutcome,
   type WriteAheadPublicationIntent,
@@ -15,7 +12,7 @@ export class MissingHookEvidenceError extends Error {
   }
 }
 
-export class VNextPublicationError extends Error {
+export class PublicationError extends Error {
   constructor(
     readonly outcome: Exclude<PublicationOutcome, { kind: "published" }>,
   ) {
@@ -29,12 +26,12 @@ export class VNextPublicationError extends Error {
   }
 }
 
-export async function runVNextPublication(args: {
-  state: VNextRunState;
-  effect: Extract<VNextSchedulerEffect, { kind: "run_publication" }>;
+export async function runPublication(args: {
+  state: RunState;
+  effect: Extract<SchedulerEffect, { kind: "run_publication" }>;
   publisher: WriteAheadPublisher;
-  dispatch: (event: VNextSchedulerEvent) => Promise<void>;
-  projectionDebt?: VNextRunState["projectionDebt"][number];
+  dispatch: (event: SchedulerEvent) => Promise<void>;
+  projectionDebt?: RunState["projectionDebt"][number];
   resume?: boolean;
 }): Promise<void> {
   const intent = args.state.publication.intents[args.effect.intentId];
@@ -77,7 +74,7 @@ export async function runVNextPublication(args: {
       ? initial
       : await args.publisher.recover(writeAheadIntent);
   if (outcome.kind !== "published") {
-    throw new VNextPublicationError(outcome);
+    throw new PublicationError(outcome);
   }
   await args.dispatch({
     kind: "publication_receipt_recorded",
@@ -102,7 +99,7 @@ export async function runVNextPublication(args: {
 }
 
 function toWriteAheadIntent(
-  intent: VNextRunState["publication"]["intents"][string],
+  intent: RunState["publication"]["intents"][string],
 ): WriteAheadPublicationIntent {
   return {
     id: intent.id,

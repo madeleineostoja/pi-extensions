@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createCheckboxProjectionIntent,
   resumeCheckboxProjection,
-} from "./vnext-projection.js";
+} from "./projection.js";
 
 const temporaryDirectories = new Set<string>();
 
@@ -27,7 +27,7 @@ afterEach(() => {
   temporaryDirectories.clear();
 });
 
-describe("VNext checkbox projection", () => {
+describe(" checkbox projection", () => {
   it("atomically projects only anchored top-level checkbox markers and resumes after a post-write crash", () => {
     const { root, plan } = fixture();
     const intent = createCheckboxProjectionIntent({

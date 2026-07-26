@@ -4,22 +4,22 @@ import { ExecGitClient, type GitClient } from "./git.js";
 import {
   projectedArtifactPaths,
   sweepOwnedRunResources,
-  trashVNextRun,
-} from "./vnext-cleanup.js";
+  trashRun,
+} from "./cleanup.js";
 import {
   acquireCheckoutLease,
   checkoutPaths,
-  loadVNextRunState,
-  VNextRunStore,
+  loadRunState,
+  RunStore,
   type CheckoutLeaseCapability,
-  type VNextRunState,
-} from "./vnext-store.js";
+  type RunState,
+} from "./store.js";
 
-export type VNextRunListing =
-  | { kind: "run"; runId: string; state: VNextRunState }
+export type RunListing =
+  | { kind: "run"; runId: string; state: RunState }
   | { kind: "historical"; runId: string };
 
-export function listCheckoutVNextRuns(checkoutRoot: string): VNextRunListing[] {
+export function listCheckoutRuns(checkoutRoot: string): RunListing[] {
   const runs = checkoutPaths(checkoutRoot).runs;
   if (!existsSync(runs)) {
     return [];
@@ -31,7 +31,7 @@ export function listCheckoutVNextRuns(checkoutRoot: string): VNextRunListing[] {
       if (lstatSync(path).isSymbolicLink()) {
         throw new Error("run entry is symlinked");
       }
-      const state = loadVNextRunState(join(path, "run-state.json"));
+      const state = loadRunState(join(path, "run-state.json"));
       if (state.run.checkout.root !== checkoutRoot) {
         throw new Error("run belongs to another checkout");
       }
@@ -42,7 +42,7 @@ export function listCheckoutVNextRuns(checkoutRoot: string): VNextRunListing[] {
   });
 }
 
-export function formatVNextStatus(state: VNextRunState): string {
+export function formatStatus(state: RunState): string {
   const activeRecovery = Object.values(state.recoveryEpisodes).filter(
     (episode) => episode.status === "open",
   );
@@ -82,26 +82,26 @@ export function formatVNextStatus(state: VNextRunState): string {
   ].join("\n");
 }
 
-export function inspectVNextRun(checkoutRoot: string, runId: string): string {
+export function inspectRun(checkoutRoot: string, runId: string): string {
   assertRunId(runId);
   const path = join(checkoutPaths(checkoutRoot).runs, runId);
   if (lstatSync(path).isSymbolicLink()) {
     throw new Error("Run artifact is symlinked; inspect it manually.");
   }
-  const state = loadVNextRunState(join(path, "run-state.json"));
+  const state = loadRunState(join(path, "run-state.json"));
   if (state.run.checkout.root !== checkoutRoot) {
     throw new Error("Run belongs to a different checkout.");
   }
   const artifacts = join(path, "artifacts");
   return [
-    formatVNextStatus(state),
+    formatStatus(state),
     `State: ${join(path, "run-state.json")}`,
     `Execution plan: ${join(path, "execution-plan.json")}`,
     `Artifacts: ${existsSync(artifacts) ? artifacts : "none"}`,
   ].join("\n");
 }
 
-export async function assertProspectiveVNextRunPreflight(
+export async function assertProspectiveRunPreflight(
   git: GitClient,
 ): Promise<void> {
   try {
@@ -134,7 +134,7 @@ export async function assertProspectiveVNextRunPreflight(
   }
 }
 
-export async function cleanupCompletedVNextRun(args: {
+export async function cleanupCompletedRun(args: {
   checkoutRoot: string;
   runId: string;
   prospectiveStart?: boolean;
@@ -148,7 +148,7 @@ export async function cleanupCompletedVNextRun(args: {
   });
   try {
     if (args.prospectiveStart) {
-      await assertProspectiveVNextRunPreflight(git);
+      await assertProspectiveRunPreflight(git);
     }
     const trash = join(lease.paths.trash, args.runId);
     if (existsSync(trash)) {
@@ -169,15 +169,15 @@ export async function cleanupWithLease(args: {
   const store = openExactRun(args.lease, args.runId);
   await assertCurrentRunAuthority(store, args.git, args.lease);
   if (store.read().phase !== "completed") {
-    throw new Error("Only completed VNext runs may be destructively cleaned.");
+    throw new Error("Only completed runs may be destructively cleaned.");
   }
   await sweepOwnedRunResources({ lease: args.lease, store, git: args.git });
   const projected = projectedArtifactPaths(store.read());
-  trashVNextRun({ lease: args.lease, store });
+  trashRun({ lease: args.lease, store });
   return projected;
 }
 
-export async function abandonVNextRun(args: {
+export async function abandonRun(args: {
   checkoutRoot: string;
   runId: string;
 }): Promise<void> {
@@ -201,16 +201,13 @@ export async function abandonVNextRun(args: {
       throw new Error("Stop active processes before abandoning this run.");
     }
     await sweepOwnedRunResources({ lease, store, git });
-    trashVNextRun({ lease, store });
+    trashRun({ lease, store });
   } finally {
     await lease.release();
   }
 }
 
-function openExactRun(
-  lease: CheckoutLeaseCapability,
-  runId: string,
-): VNextRunStore {
+function openExactRun(lease: CheckoutLeaseCapability, runId: string): RunStore {
   const directory = join(lease.paths.runs, runId);
   if (!existsSync(directory) || lstatSync(directory).isSymbolicLink()) {
     throw new Error("Run is historical or symlinked; recover it manually.");
@@ -219,11 +216,11 @@ function openExactRun(
   if (!existsSync(path)) {
     throw new Error("Run is historical or missing; recover it manually.");
   }
-  return VNextRunStore.open(lease, path);
+  return RunStore.open(lease, path);
 }
 
 async function assertCurrentRunAuthority(
-  store: VNextRunStore,
+  store: RunStore,
   git: GitClient,
   lease: CheckoutLeaseCapability,
 ): Promise<void> {

@@ -25,8 +25,8 @@ import {
   readExecutionPlan,
   writeExecutionPlan,
   type ExecutionPlan,
-} from "./execution-plan-vnext.js";
-import { recoveryActionKinds, recoveryGateKinds } from "./recovery-vnext.js";
+} from "./execution-plan.js";
+import { recoveryActionKinds, recoveryGateKinds } from "./recovery.js";
 import {
   canonicalPath,
   normalizeCheckboxMarker,
@@ -331,7 +331,7 @@ const publicationPreparationSchema = z
     changedPaths: z.array(nonEmpty),
     disposition: z.enum(["same_base", "clean_non_overlap"]),
     hookEvidence: nonEmpty,
-    hookCommand: commandEvidenceSchema.optional(),
+    hookCommand: commandEvidenceSchema,
   })
   .strict();
 
@@ -469,7 +469,7 @@ const wholePlanReviewSchema = z
     "An approved whole-plan review requires immutable target identity and evidence.",
   );
 
-export const vnextRunStateSchema = z
+export const RunStateSchema = z
   .object({
     version: z.literal(1),
     revision: z.number().int().nonnegative(),
@@ -535,7 +535,7 @@ export const vnextRunStateSchema = z
   })
   .strict();
 
-export type VNextRunState = z.infer<typeof vnextRunStateSchema>;
+export type RunState = z.infer<typeof RunStateSchema>;
 export type CheckoutPaths = {
   root: string;
   lock: string;
@@ -559,9 +559,9 @@ export type CheckoutLeaseCapability = {
   assertOwned(): void;
   release(): Promise<void>;
 };
-export type VNextStoreHooks = AtomicJsonWriteHooks;
+export type StoreHooks = AtomicJsonWriteHooks;
 
-export class VNextStateError extends Error {
+export class StateError extends Error {
   constructor(
     message: string,
     readonly path: string,
@@ -571,7 +571,7 @@ export class VNextStateError extends Error {
   }
 }
 
-export class StaleVNextRevisionError extends VNextStateError {
+export class StaleRevisionError extends StateError {
   constructor(path: string, expected: number, actual: number) {
     super(
       `Run state at ${path} changed from revision ${expected} to ${actual}.`,
@@ -615,7 +615,7 @@ export async function acquireCheckoutLease(args: {
   );
   const runPath = args.runPath ?? join(paths.runs, args.runId);
   if (resolve(runPath) !== join(paths.runs, args.runId)) {
-    throw new VNextStateError(
+    throw new StateError(
       "Checkout lease run path escapes its checkout-local runs directory.",
       runPath,
     );
@@ -654,7 +654,7 @@ function capability(
     owner,
     assertOwned() {
       if (released) {
-        throw new VNextStateError(
+        throw new StateError(
           "Checkout lease capability has been released.",
           paths.lock,
         );
@@ -680,25 +680,25 @@ function capability(
 export function createPlanningRun(args: {
   lease: CheckoutLeaseCapability;
   runId: string;
-  checkout: VNextRunState["run"]["checkout"];
-  source: VNextRunState["run"]["source"];
+  checkout: RunState["run"]["checkout"];
+  source: RunState["run"]["source"];
   workerConcurrency: number;
   now?: string;
-  hooks?: VNextStoreHooks;
-}): VNextRunStore {
+  hooks?: StoreHooks;
+}): RunStore {
   assertLeaseRun(args.lease, args.runId);
   if (
     resolve(args.checkout.root) !== args.lease.owner.checkoutRoot ||
     resolve(args.checkout.gitDir) !== args.lease.owner.gitDir
   ) {
-    throw new VNextStateError(
+    throw new StateError(
       "Planning state checkout identity does not match its lease-owned checkout.",
       args.lease.paths.root,
     );
   }
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
-  const state: VNextRunState = {
+  const state: RunState = {
     version: 1,
     revision: 0,
     run: {
@@ -724,78 +724,75 @@ export function createPlanningRun(args: {
     createdAt: now,
     updatedAt: now,
   };
-  return VNextRunStore.create(args.lease, path, state, args.hooks);
+  return RunStore.create(args.lease, path, state, args.hooks);
 }
 
-export class VNextRunStore {
+export class RunStore {
   private constructor(
     readonly lease: CheckoutLeaseCapability,
     readonly path: string,
-    private snapshot: VNextRunState,
-    private readonly hooks: VNextStoreHooks,
+    private snapshot: RunState,
+    private readonly hooks: StoreHooks,
   ) {}
 
   static create(
     lease: CheckoutLeaseCapability,
     path: string,
-    initial: VNextRunState,
-    hooks: VNextStoreHooks = {},
-  ): VNextRunStore {
+    initial: RunState,
+    hooks: StoreHooks = {},
+  ): RunStore {
     assertLeaseRun(lease, initial.run.id);
     assertRunStatePath(lease, path, initial.run.id);
     ensureRunDirectory(lease, initial.run.id);
     if (existsSync(path)) {
-      throw new VNextStateError(
-        "Canonical VNext run state already exists.",
-        path,
-      );
+      throw new StateError("Canonical run state already exists.", path);
     }
-    const state = validateVNextRunState(initial, path);
+    const state = validateRunState(initial, path);
     writeAtomicJson(path, state, hooks);
-    return new VNextRunStore(lease, path, state, hooks);
+    return new RunStore(lease, path, state, hooks);
   }
 
   static open(
     lease: CheckoutLeaseCapability,
     path: string,
-    hooks: VNextStoreHooks = {},
-  ): VNextRunStore {
+    hooks: StoreHooks = {},
+  ): RunStore {
     lease.assertOwned();
-    const state = loadVNextRunState(path);
+    const state = loadRunState(path);
     assertLeaseRun(lease, state.run.id);
     assertRunStatePath(lease, path, state.run.id);
-    return new VNextRunStore(lease, path, state, hooks);
+    return new RunStore(lease, path, state, hooks);
   }
 
-  read(): VNextRunState {
+  read(): RunState {
     return structuredClone(this.snapshot);
   }
 
-  refresh(): VNextRunState {
-    this.snapshot = loadVNextRunState(this.path);
+  refresh(): RunState {
+    this.snapshot = loadRunState(this.path);
     return this.read();
   }
 
   async update(
     expectedRevision: number,
-    update: (current: VNextRunState) => VNextRunState,
-  ): Promise<VNextRunState> {
+    update: (current: RunState) => RunState,
+  ): Promise<RunState> {
     this.lease.assertOwned();
     const queued = updates.get(this.path) ?? Promise.resolve();
     const operation = queued
       .catch(() => undefined)
       .then(() => {
         this.lease.assertOwned();
-        const current = loadVNextRunState(this.path);
+        const current = loadRunState(this.path);
         if (current.revision !== expectedRevision) {
           this.snapshot = current;
-          throw new StaleVNextRevisionError(
+          throw new StaleRevisionError(
             this.path,
             expectedRevision,
             current.revision,
           );
         }
-        const next = validateVNextRunState(
+        const next = validateRunState(
           {
             ...update(structuredClone(current)),
             version: 1,
@@ -809,7 +806,7 @@ export class VNextRunStore {
           JSON.stringify(next.protectedArtifactHashes) !==
           JSON.stringify(current.protectedArtifactHashes)
         ) {
-          throw new VNextStateError(
+          throw new StateError(
             "Protected artifact hashes may advance only through a projection transition.",
             this.path,
           );
@@ -822,11 +819,11 @@ export class VNextRunStore {
     return this.read();
   }
 
-  async bindExecutionPlan(plan: ExecutionPlan): Promise<VNextRunState> {
+  async bindExecutionPlan(plan: ExecutionPlan): Promise<RunState> {
     this.lease.assertOwned();
     const current = this.read();
     if (current.phase !== "planning" || current.executionPlan) {
-      throw new VNextStateError(
+      throw new StateError(
         "Only an unbound planning run can bind an execution plan.",
         this.path,
       );
@@ -835,7 +832,7 @@ export class VNextRunStore {
     const runDir = join(this.lease.paths.runs, current.run.id);
     const persisted = readExecutionPlan(runDir);
     if (persisted && persisted.executionPlanHash !== plan.executionPlanHash) {
-      throw new VNextStateError(
+      throw new StateError(
         "The retained execution plan does not match this planning run.",
         this.path,
       );
@@ -883,11 +880,11 @@ export class VNextRunStore {
     expectedRevision: number,
     taskIds: string[],
     protectedArtifactHashes: Record<string, string>,
-  ): Promise<VNextRunState> {
+  ): Promise<RunState> {
     this.lease.assertOwned();
-    const current = loadVNextRunState(this.path);
+    const current = loadRunState(this.path);
     if (current.revision !== expectedRevision) {
-      throw new StaleVNextRevisionError(
+      throw new StaleRevisionError(
         this.path,
         expectedRevision,
         current.revision,
@@ -900,7 +897,7 @@ export class VNextRunStore {
           current.tasks[taskId].phase,
         )
       ) {
-        throw new VNextStateError(
+        throw new StateError(
           "Only checkpointed, reviewed-satisfied, or already-published tasks may be projected.",
           this.path,
         );
@@ -912,7 +909,7 @@ export class VNextRunStore {
         hash,
       ]),
     );
-    const next = validateVNextRunState(
+    const next = validateRunState(
       {
         ...current,
         revision: current.revision + 1,
@@ -936,13 +933,13 @@ export class VNextRunStore {
         new Set(Object.keys(current.protectedArtifactHashes)),
       )
     ) {
-      throw new VNextStateError(
+      throw new StateError(
         "Projection cannot add or remove protected artifacts.",
         this.path,
       );
     }
     if (!sourceIdentityMatches(next) || !protectedArtifactsMatch(next)) {
-      throw new VNextStateError(
+      throw new StateError(
         "Projection does not match the canonical source or protected artifacts.",
         this.path,
       );
@@ -963,38 +960,35 @@ export function executionPlanPath(paths: CheckoutPaths, runId: string): string {
   return join(paths.runs, runId, "execution-plan.json");
 }
 
-export function loadVNextRunState(path: string): VNextRunState {
+export function loadRunState(path: string): RunState {
   if (!existsSync(path)) {
-    throw new VNextStateError(
-      "VNext run state is missing; historical state is unsupported.",
-      path,
-    );
+    throw new StateError("Run state is missing.", path);
   }
   try {
-    return validateVNextRunState(JSON.parse(readFileSync(path, "utf-8")), path);
+    return validateRunState(JSON.parse(readFileSync(path, "utf-8")), path);
   } catch (error) {
-    if (error instanceof VNextStateError) {
+    if (error instanceof StateError) {
       throw error;
     }
-    throw new VNextStateError("VNext run state is malformed JSON.", path, [
+    throw new StateError(" run state is malformed JSON.", path, [
       String(error),
     ]);
   }
 }
 
-export function validateVNextRunState(
+export function validateRunState(
   value: unknown,
   path: string,
-  previous?: VNextRunState,
-): VNextRunState {
-  const parsed = vnextRunStateSchema.safeParse(value);
+  previous?: RunState,
+): RunState {
+  const parsed = RunStateSchema.safeParse(value);
   if (!parsed.success) {
     const version = versionOf(value);
     const message =
       version === undefined || version !== 1
-        ? "VNext run state uses an unsupported historical schema."
-        : "VNext run state is invalid.";
-    throw new VNextStateError(
+        ? "Run state has an unsupported schema."
+        : "Run state is invalid.";
+    throw new StateError(
       message,
       path,
       parsed.error.issues.map(
@@ -1005,8 +999,8 @@ export function validateVNextRunState(
   const state = parsed.data;
   const issues = invariantIssues(state, path, previous);
   if (issues.length > 0) {
-    throw new VNextStateError(
-      "VNext run state violates lifecycle invariants.",
+    throw new StateError(
+      " run state violates lifecycle invariants.",
       path,
       issues,
     );
@@ -1019,7 +1013,7 @@ export function sourceIdentityForPlanning(args: {
   planContent: string;
   corpusFiles: Array<{ path: string; hash: string }>;
   uncheckedLineNumbers: number[];
-}): VNextRunState["run"]["source"] {
+}): RunState["run"]["source"] {
   const planPath = canonicalPath(args.planPath);
   const allArtifacts = args.corpusFiles
     .map((artifact) => ({
@@ -1029,7 +1023,7 @@ export function sourceIdentityForPlanning(args: {
     .sort((left, right) => left.path.localeCompare(right.path));
   const entry = allArtifacts.find((artifact) => artifact.path === planPath);
   if (!entry) {
-    throw new VNextStateError(
+    throw new StateError(
       "Planning corpus does not include its entry plan.",
       planPath,
     );
@@ -1042,7 +1036,7 @@ export function sourceIdentityForPlanning(args: {
   for (const lineNumber of args.uncheckedLineNumbers) {
     const index = (lineNumber - 1) * 2;
     if (index < 0 || index >= parts.length) {
-      throw new VNextStateError(
+      throw new StateError(
         "Planning task anchor is outside its entry plan.",
         planPath,
       );
@@ -1060,7 +1054,7 @@ export function sourceIdentityForPlanning(args: {
 
 export function sourceIdentityForExecutionPlan(
   plan: ExecutionPlan,
-): VNextRunState["run"]["source"] {
+): RunState["run"]["source"] {
   const artifacts = [
     { path: plan.source.planPath, hash: plan.source.planHash },
     ...plan.source.corpusFiles.filter(
@@ -1073,14 +1067,14 @@ export function sourceIdentityForExecutionPlan(
   }));
   const content = readFileSync(plan.source.planPath, "utf-8");
   if (sha256(content) !== plan.source.planHash) {
-    throw new VNextStateError(
+    throw new StateError(
       "Source plan changed after execution planning.",
       plan.source.planPath,
     );
   }
   for (const artifact of artifacts) {
     if (sha256(readFileSync(artifact.path, "utf-8")) !== artifact.hash) {
-      throw new VNextStateError(
+      throw new StateError(
         "Execution-plan corpus changed after planning.",
         artifact.path,
       );
@@ -1100,7 +1094,7 @@ export function sourceIdentityForExecutionPlan(
   };
 }
 
-export function sourceIdentityMatches(state: VNextRunState): boolean {
+export function sourceIdentityMatches(state: RunState): boolean {
   try {
     const entry = state.run.source.entry;
     const content = readFileSync(entry.path, "utf-8");
@@ -1130,13 +1124,13 @@ export function sourceIdentityMatches(state: VNextRunState): boolean {
   }
 }
 
-export function protectedArtifactsMatch(state: VNextRunState): boolean {
+export function protectedArtifactsMatch(state: RunState): boolean {
   return artifactHashesMatch(state.protectedArtifactHashes);
 }
 
 function validatePlanForRun(
   plan: ExecutionPlan,
-  state: VNextRunState,
+  state: RunState,
   path: string,
 ): void {
   if (
@@ -1144,14 +1138,14 @@ function validatePlanForRun(
     plan.source.baseSha !== state.run.checkout.startHead ||
     plan.workerConcurrency !== state.run.workerConcurrency
   ) {
-    throw new VNextStateError(
+    throw new StateError(
       "Execution plan identity does not match this planning run.",
       path,
     );
   }
   const source = sourceIdentityForExecutionPlan(plan);
   if (JSON.stringify(source) !== JSON.stringify(state.run.source)) {
-    throw new VNextStateError(
+    throw new StateError(
       "Execution plan source identity does not match this planning run.",
       path,
     );
@@ -1159,9 +1153,9 @@ function validatePlanForRun(
 }
 
 function invariantIssues(
-  state: VNextRunState,
+  state: RunState,
   path: string,
-  previous?: VNextRunState,
+  previous?: RunState,
 ): string[] {
   const issues: string[] = [];
   const bound = state.executionPlan !== undefined;
@@ -1769,8 +1763,8 @@ function invariantIssues(
 }
 
 function sameRecoveryEpisodeHistory(
-  previous: VNextRunState["recoveryEpisodes"][string],
-  next: VNextRunState["recoveryEpisodes"][string],
+  previous: RunState["recoveryEpisodes"][string],
+  next: RunState["recoveryEpisodes"][string],
 ): boolean {
   const actionsAppended = next.actions.length > previous.actions.length;
   const resumed = previous.status === "paused" && next.status === "open";
@@ -1802,7 +1796,7 @@ function sameRecoveryEpisodeHistory(
 }
 
 function workstreamExists(
-  state: VNextRunState,
+  state: RunState,
   workstream: z.infer<typeof candidateSchema>["workstream"],
 ): boolean {
   return workstream.kind === "source"
@@ -1826,7 +1820,7 @@ function sameWorkstreamIdentity(
 }
 
 function workstreamPhase(
-  state: VNextRunState,
+  state: RunState,
   workstream: z.infer<typeof candidateSchema>["workstream"],
 ): string | undefined {
   return workstream.kind === "source"
@@ -1835,7 +1829,7 @@ function workstreamPhase(
 }
 
 function workstreamCandidateId(
-  state: VNextRunState,
+  state: RunState,
   workstream: z.infer<typeof candidateSchema>["workstream"],
 ): string | undefined {
   return workstream.kind === "source"
@@ -1856,7 +1850,7 @@ function resolveGitCheckout(cwd: string): { root: string; gitDir: string } {
     ).trim();
     return { root: realpathSync(root), gitDir: realpathSync(gitDir) };
   } catch (error) {
-    throw new VNextStateError(
+    throw new StateError(
       "Pi-implement requires a Git worktree containing the invocation directory.",
       cwd,
       [error instanceof Error ? error.message : String(error)],
@@ -1875,7 +1869,7 @@ function assertContainedRealpath(
     relativePath === ".." ||
     relativePath.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
   ) {
-    throw new VNextStateError(message, path);
+    throw new StateError(message, path);
   }
 }
 
@@ -1886,7 +1880,7 @@ function assertPathComponentsAreNotSymlinks(root: string, path: string): void {
     relativePath === ".." ||
     relativePath.startsWith("../")
   ) {
-    throw new VNextStateError(
+    throw new StateError(
       "Checkout state path escapes the target checkout.",
       path,
     );
@@ -1895,7 +1889,7 @@ function assertPathComponentsAreNotSymlinks(root: string, path: string): void {
   for (const component of relativePath.split("/")) {
     current = join(current, component);
     if (existsSync(current) && lstatSync(current).isSymbolicLink()) {
-      throw new VNextStateError(
+      throw new StateError(
         "Checkout state path cannot contain symlinks.",
         current,
       );
@@ -1919,7 +1913,7 @@ function ensureRunDirectory(
 
 function assertSafeRunId(runId: string): void {
   if (!id.safeParse(runId).success) {
-    throw new VNextStateError(
+    throw new StateError(
       "Run IDs must be safe checkout-local path segments.",
       runId,
     );
@@ -1933,7 +1927,7 @@ function assertLeaseRun(lease: CheckoutLeaseCapability, runId: string): void {
     lease.owner.runId !== runId ||
     lease.owner.runPath !== join(lease.paths.runs, runId)
   ) {
-    throw new VNextStateError(
+    throw new StateError(
       "Checkout lease capability is not authorized for this run.",
       lease.paths.root,
     );
@@ -1946,7 +1940,7 @@ function assertRunStatePath(
   runId: string,
 ): void {
   if (resolve(path) !== runStatePath(lease.paths, runId)) {
-    throw new VNextStateError(
+    throw new StateError(
       "Run state path is not checkout-local to the lease-owned run.",
       path,
     );
@@ -1968,7 +1962,7 @@ function normalizeExecutionPlanCheckboxes(
       normalizeCheckboxMarker(line) !==
         normalizeCheckboxMarker(task.sourceAnchor.lineText)
     ) {
-      throw new VNextStateError(
+      throw new StateError(
         "Source plan no longer matches an execution-plan task anchor.",
         task.sourceAnchor.path,
       );
@@ -1993,6 +1987,6 @@ function versionOf(value: unknown): number | undefined {
     : undefined;
 }
 
-export function makeVNextRunId(): string {
+export function makeRunId(): string {
   return `r${Date.now().toString(36)}-${randomBytes(8).toString("hex")}`;
 }

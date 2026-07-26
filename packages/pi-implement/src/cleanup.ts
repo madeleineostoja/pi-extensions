@@ -9,11 +9,7 @@ import {
 import { join, relative, resolve } from "node:path";
 import { sha256 } from "./source-integrity.js";
 import type { GitClient } from "./git.js";
-import type {
-  CheckoutLeaseCapability,
-  VNextRunState,
-  VNextRunStore,
-} from "./vnext-store.js";
+import type { CheckoutLeaseCapability, RunState, RunStore } from "./store.js";
 
 type OwnedResource = {
   branchName: string;
@@ -23,7 +19,7 @@ type OwnedResource = {
 
 export async function sweepOwnedRunResources(args: {
   lease: CheckoutLeaseCapability;
-  store: VNextRunStore;
+  store: RunStore;
   git: GitClient;
 }): Promise<void> {
   args.lease.assertOwned();
@@ -88,7 +84,7 @@ export async function sweepOwnedRunResources(args: {
   }
 }
 
-export function projectedArtifactPaths(state: VNextRunState): string[] {
+export function projectedArtifactPaths(state: RunState): string[] {
   return Object.entries(state.protectedArtifactHashes)
     .filter(([path, hash]) => {
       try {
@@ -103,9 +99,9 @@ export function projectedArtifactPaths(state: VNextRunState): string[] {
     .map(([path]) => path);
 }
 
-export function trashVNextRun(args: {
+export function trashRun(args: {
   lease: CheckoutLeaseCapability;
-  store: VNextRunStore;
+  store: RunStore;
 }): void {
   args.lease.assertOwned();
   if (Object.keys(args.store.read().processLeases).length > 0) {
@@ -132,7 +128,7 @@ export function runWorktreesRoot(
   return join(lease.paths.worktrees, runId);
 }
 
-function ownedResources(state: VNextRunState): Map<string, OwnedResource> {
+function ownedResources(state: RunState): Map<string, OwnedResource> {
   const resources = new Map<string, OwnedResource>();
   const root = join(
     state.run.checkout.root,

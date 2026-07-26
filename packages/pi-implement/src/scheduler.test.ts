@@ -3,10 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  compileExecutionPlan,
-  type ExecutionPlan,
-} from "./execution-plan-vnext.js";
+import { compileExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
 import {
   publicationPreparationId,
   stagingIdentity,
@@ -18,14 +15,14 @@ import {
   createPlanningRun,
   sourceIdentityForExecutionPlan,
   type CheckoutLeaseCapability,
-  type VNextRunStore,
-} from "./vnext-store.js";
+  type RunStore,
+} from "./store.js";
 import {
-  reduceVNextRunEvent,
+  reduceRunEvent,
   selectReadyWorkstreams,
-  VNextSchedulerActor,
-} from "./scheduler-vnext.js";
-import { buildVNextReviewPacket } from "./vnext-review.js";
+  SchedulerActor,
+} from "./scheduler.js";
+import { buildReviewPacket } from "./review.js";
 
 const temporaryDirectories = new Set<string>();
 
@@ -147,13 +144,8 @@ function fakeLease(directory: string): CheckoutLeaseCapability {
   };
 }
 
-async function store(
-  concurrency = 1,
-  independent = false,
-): Promise<VNextRunStore> {
-  const directory = mkdtempSync(
-    join(tmpdir(), "pi-implement-vnext-scheduler-"),
-  );
+async function store(concurrency = 1, independent = false): Promise<RunStore> {
+  const directory = mkdtempSync(join(tmpdir(), "pi-implement-scheduler-"));
   temporaryDirectories.add(directory);
   const plan = planFor(directory, concurrency, independent);
   const lease = fakeLease(directory);
@@ -181,13 +173,13 @@ afterEach(() => {
   temporaryDirectories.clear();
 });
 
-describe("VNext scheduler reducer", () => {
+describe(" scheduler reducer", () => {
   it("assigns a landed dependency base when a dependent becomes eligible", async () => {
     const run = await store(1);
     const initial = run.read();
 
     expect(selectReadyWorkstreams(initial)).toEqual(["first-stream"]);
-    const selected = reduceVNextRunEvent(initial, {
+    const selected = reduceRunEvent(initial, {
       kind: "workstreams_selected",
       now: "now",
       baseShas: { "first-stream": "base-sha" },
@@ -226,7 +218,7 @@ describe("VNext scheduler reducer", () => {
     };
     expect(selectReadyWorkstreams(selected.state)).toEqual(["second-stream"]);
 
-    const dependent = reduceVNextRunEvent(selected.state, {
+    const dependent = reduceRunEvent(selected.state, {
       kind: "workstreams_selected",
       now: "later",
       baseShas: { "second-stream": "landed-dependency-sha" },
@@ -265,7 +257,7 @@ describe("VNext scheduler reducer", () => {
       evidence: "Existing endpoint satisfies the contract.",
     };
 
-    const packet = buildVNextReviewPacket({
+    const packet = buildReviewPacket({
       state,
       plan: planFor(state.run.checkout.root),
       workstream: { kind: "source", id: "first-stream" },
@@ -284,7 +276,7 @@ describe("VNext scheduler reducer", () => {
 
   it("rejects overlapping checkpoint and satisfied mappings", async () => {
     const initial = (await store()).read();
-    const selected = reduceVNextRunEvent(initial, {
+    const selected = reduceRunEvent(initial, {
       kind: "workstreams_selected",
       now: "now",
       baseShas: { "first-stream": "base" },
@@ -296,7 +288,7 @@ describe("VNext scheduler reducer", () => {
       throw new Error("Expected implementation effect.");
     }
 
-    const result = reduceVNextRunEvent(selected.state, {
+    const result = reduceRunEvent(selected.state, {
       kind: "implementation_completed",
       workstream: effect.workstream,
       leaseId: effect.leaseId,
@@ -319,7 +311,7 @@ describe("VNext scheduler reducer", () => {
 
   it("rejects a stale process result without changing canonical state", async () => {
     const initial = (await store()).read();
-    const result = reduceVNextRunEvent(initial, {
+    const result = reduceRunEvent(initial, {
       kind: "review_completed",
       workstream: { kind: "source", id: "first-stream" },
       leaseId: "missing",
@@ -336,7 +328,7 @@ describe("VNext scheduler reducer", () => {
 
   it("persists direct findings and converges every anchored obligation on a new candidate", async () => {
     const initial = (await store()).read();
-    const selected = reduceVNextRunEvent(initial, {
+    const selected = reduceRunEvent(initial, {
       kind: "workstreams_selected",
       now: "now",
       baseShas: { "first-stream": "base" },
@@ -352,7 +344,7 @@ describe("VNext scheduler reducer", () => {
       commitSha: "commit-1",
       treeSha: "tree-1",
     };
-    const ready = reduceVNextRunEvent(selected.state, {
+    const ready = reduceRunEvent(selected.state, {
       kind: "implementation_completed",
       workstream: implementation.workstream,
       leaseId: implementation.leaseId,
@@ -363,7 +355,7 @@ describe("VNext scheduler reducer", () => {
         satisfied: {},
       },
     });
-    const review = reduceVNextRunEvent(ready.state, {
+    const review = reduceRunEvent(ready.state, {
       kind: "review_requested",
       workstream: implementation.workstream,
       now: "now",
@@ -372,7 +364,7 @@ describe("VNext scheduler reducer", () => {
     if (reviewEffect.kind !== "run_review") {
       throw new Error("Expected review effect.");
     }
-    const findings = reduceVNextRunEvent(review.state, {
+    const findings = reduceRunEvent(review.state, {
       kind: "review_completed",
       workstream: implementation.workstream,
       leaseId: reviewEffect.leaseId,
@@ -420,7 +412,7 @@ describe("VNext scheduler reducer", () => {
       },
     ]);
 
-    const recovery = reduceVNextRunEvent(findings.state, {
+    const recovery = reduceRunEvent(findings.state, {
       kind: "recovery_requested",
       workstream: implementation.workstream,
       now: "later",
@@ -429,7 +421,7 @@ describe("VNext scheduler reducer", () => {
     if (recoveryEffect.kind !== "run_recovery") {
       throw new Error("Expected recovery effect.");
     }
-    const corrected = reduceVNextRunEvent(recovery.state, {
+    const corrected = reduceRunEvent(recovery.state, {
       kind: "recovery_completed",
       workstream: implementation.workstream,
       leaseId: recoveryEffect.leaseId,
@@ -459,7 +451,7 @@ describe("VNext scheduler reducer", () => {
       },
     ]);
 
-    const anchored = reduceVNextRunEvent(corrected.state, {
+    const anchored = reduceRunEvent(corrected.state, {
       kind: "review_requested",
       workstream: implementation.workstream,
       now: "later",
@@ -468,7 +460,7 @@ describe("VNext scheduler reducer", () => {
     if (anchoredEffect.kind !== "run_review") {
       throw new Error("Expected anchored review effect.");
     }
-    const approved = reduceVNextRunEvent(anchored.state, {
+    const approved = reduceRunEvent(anchored.state, {
       kind: "review_completed",
       workstream: implementation.workstream,
       leaseId: anchoredEffect.leaseId,
@@ -578,7 +570,7 @@ describe("VNext scheduler reducer", () => {
 
     let current = state;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const requested = reduceVNextRunEvent(current, {
+      const requested = reduceRunEvent(current, {
         kind: "recovery_requested",
         workstream: { kind: "source", id: "first-stream" },
         now: `attempt-${attempt}`,
@@ -588,7 +580,7 @@ describe("VNext scheduler reducer", () => {
       if (effect.kind !== "run_recovery") {
         throw new Error("Expected recovery effect.");
       }
-      const completed = reduceVNextRunEvent(requested.state, {
+      const completed = reduceRunEvent(requested.state, {
         kind: "recovery_completed",
         workstream: { kind: "source", id: "first-stream" },
         leaseId: effect.leaseId,
@@ -620,7 +612,7 @@ describe("VNext scheduler reducer", () => {
       commitSha: "commit",
       treeSha: "tree",
     };
-    const failed = reduceVNextRunEvent(state, {
+    const failed = reduceRunEvent(state, {
       kind: "gate_recorded",
       workstream: { kind: "source", id: "first-stream" },
       result: {
@@ -640,7 +632,7 @@ describe("VNext scheduler reducer", () => {
         stateEvidence: "Dependencies are absent from the owned workspace.",
       },
     });
-    const requested = reduceVNextRunEvent(failed.state, {
+    const requested = reduceRunEvent(failed.state, {
       kind: "recovery_requested",
       workstream: { kind: "source", id: "first-stream" },
       now: "now",
@@ -649,7 +641,7 @@ describe("VNext scheduler reducer", () => {
     if (effect.kind !== "run_recovery") {
       throw new Error("Expected recovery effect.");
     }
-    const repaired = reduceVNextRunEvent(requested.state, {
+    const repaired = reduceRunEvent(requested.state, {
       kind: "recovery_completed",
       workstream: { kind: "source", id: "first-stream" },
       leaseId: effect.leaseId,
@@ -682,7 +674,7 @@ describe("VNext scheduler reducer", () => {
       commitSha: "commit",
       treeSha: "tree",
     };
-    const failed = reduceVNextRunEvent(state, {
+    const failed = reduceRunEvent(state, {
       kind: "gate_recorded",
       workstream: { kind: "source", id: "first-stream" },
       result: {
@@ -709,7 +701,7 @@ describe("VNext scheduler reducer", () => {
         stateEvidence: "Hook rejected the disposable staging commit.",
       },
     });
-    const requested = reduceVNextRunEvent(failed.state, {
+    const requested = reduceRunEvent(failed.state, {
       kind: "recovery_requested",
       workstream: { kind: "source", id: "first-stream" },
       now: "now",
@@ -718,7 +710,7 @@ describe("VNext scheduler reducer", () => {
     if (effect.kind !== "run_recovery") {
       throw new Error("Expected recovery effect.");
     }
-    const retried = reduceVNextRunEvent(requested.state, {
+    const retried = reduceRunEvent(requested.state, {
       kind: "recovery_completed",
       workstream: { kind: "source", id: "first-stream" },
       leaseId: effect.leaseId,
@@ -790,7 +782,7 @@ describe("VNext scheduler reducer", () => {
       attempt: 1,
       acquiredAt: "now",
     };
-    const incomplete = reduceVNextRunEvent(state, {
+    const incomplete = reduceRunEvent(state, {
       kind: "review_completed",
       workstream: { kind: "source", id: "first-stream" },
       leaseId: "review",
@@ -802,7 +794,7 @@ describe("VNext scheduler reducer", () => {
       },
     });
     expect(incomplete.accepted).toBe(false);
-    const stale = reduceVNextRunEvent(state, {
+    const stale = reduceRunEvent(state, {
       kind: "review_completed",
       workstream: { kind: "source", id: "first-stream" },
       leaseId: "review",
@@ -859,7 +851,7 @@ describe("VNext scheduler reducer", () => {
       acquiredAt: "now",
     };
 
-    const completed = reduceVNextRunEvent(state, {
+    const completed = reduceRunEvent(state, {
       kind: "review_completed",
       workstream: { kind: "source", id: "first-stream" },
       leaseId: "review",
@@ -884,7 +876,7 @@ describe("VNext scheduler reducer", () => {
     });
     expect(completed.state.publication.receipts).toEqual({});
 
-    const rejected = reduceVNextRunEvent(structuredClone(state), {
+    const rejected = reduceRunEvent(structuredClone(state), {
       kind: "review_completed",
       workstream: { kind: "source", id: "first-stream" },
       leaseId: "review",
@@ -927,7 +919,7 @@ describe("VNext scheduler reducer", () => {
       commitSha: "commit",
       treeSha: "tree",
     };
-    const requested = reduceVNextRunEvent(state, {
+    const requested = reduceRunEvent(state, {
       kind: "reconciliation_requested",
       workstream: { kind: "source", id: "first-stream" },
       now: "now",
@@ -937,7 +929,7 @@ describe("VNext scheduler reducer", () => {
     if (effect.kind !== "run_reconciliation") {
       throw new Error("Expected reconciliation effect.");
     }
-    const failed = reduceVNextRunEvent(requested.state, {
+    const failed = reduceRunEvent(requested.state, {
       kind: "reconciliation_completed",
       workstream: effect.workstream,
       leaseId: effect.leaseId,
@@ -969,20 +961,20 @@ describe("VNext scheduler reducer", () => {
     state.phase = "whole_plan_review";
     state.wholePlanReview = { status: "reviewing" };
 
-    const failed = reduceVNextRunEvent(state, {
+    const failed = reduceRunEvent(state, {
       kind: "whole_plan_review_failed",
       evidence: "Reviewer provider disconnected.",
     });
-    const requested = reduceVNextRunEvent(failed.state, {
+    const requested = reduceRunEvent(failed.state, {
       kind: "whole_plan_recovery_requested",
     });
-    const interrupted = reduceVNextRunEvent(requested.state, {
+    const interrupted = reduceRunEvent(requested.state, {
       kind: "whole_plan_recovery_abandoned",
     });
-    const resumed = reduceVNextRunEvent(interrupted.state, {
+    const resumed = reduceRunEvent(interrupted.state, {
       kind: "whole_plan_recovery_requested",
     });
-    const completed = reduceVNextRunEvent(resumed.state, {
+    const completed = reduceRunEvent(resumed.state, {
       kind: "whole_plan_recovery_completed",
       action: {
         kind: "retry",
@@ -1015,10 +1007,10 @@ describe("VNext scheduler reducer", () => {
     const initial = (await store()).read();
     initial.workstreams.source["first-stream"]!.phase = "completed";
     initial.workstreams.source["second-stream"]!.phase = "completed";
-    const reviewing = reduceVNextRunEvent(initial, {
+    const reviewing = reduceRunEvent(initial, {
       kind: "whole_plan_review_requested",
     });
-    const completed = reduceVNextRunEvent(reviewing.state, {
+    const completed = reduceRunEvent(reviewing.state, {
       kind: "whole_plan_review_completed",
       outcome: {
         kind: "changes_requested",
@@ -1070,10 +1062,10 @@ describe("VNext scheduler reducer", () => {
     const initial = (await store()).read();
     initial.workstreams.source["first-stream"]!.phase = "completed";
     initial.workstreams.source["second-stream"]!.phase = "completed";
-    const reviewing = reduceVNextRunEvent(initial, {
+    const reviewing = reduceRunEvent(initial, {
       kind: "whole_plan_review_requested",
     });
-    const repair = reduceVNextRunEvent(reviewing.state, {
+    const repair = reduceRunEvent(reviewing.state, {
       kind: "whole_plan_review_completed",
       outcome: {
         kind: "changes_requested",
@@ -1113,11 +1105,11 @@ describe("VNext scheduler reducer", () => {
         },
       },
     };
-    const requested = reduceVNextRunEvent(state, {
+    const requested = reduceRunEvent(state, {
       kind: "whole_plan_review_requested",
     });
 
-    const reassessed = reduceVNextRunEvent(requested.state, {
+    const reassessed = reduceRunEvent(requested.state, {
       kind: "whole_plan_review_completed",
       outcome: {
         kind: "anchored",
@@ -1200,7 +1192,7 @@ describe("VNext scheduler reducer", () => {
       },
     };
 
-    const approved = reduceVNextRunEvent(state, {
+    const approved = reduceRunEvent(state, {
       kind: "whole_plan_review_completed",
       outcome: {
         kind: "anchored",
@@ -1231,10 +1223,10 @@ describe("VNext scheduler reducer", () => {
     const initial = (await store()).read();
     initial.workstreams.source["first-stream"]!.phase = "completed";
     initial.workstreams.source["second-stream"]!.phase = "completed";
-    const review = reduceVNextRunEvent(initial, {
+    const review = reduceRunEvent(initial, {
       kind: "whole_plan_review_requested",
     });
-    const repair = reduceVNextRunEvent(review.state, {
+    const repair = reduceRunEvent(review.state, {
       kind: "overall_repair_queued",
       repairId: "overall-repair-1",
     });
@@ -1244,11 +1236,11 @@ describe("VNext scheduler reducer", () => {
   });
 });
 
-describe("VNext scheduler actor", () => {
+describe(" scheduler actor", () => {
   it("persists a lease before its effect and ignores a throwing projection callback", async () => {
     const run = await store();
     const seenLeases: string[][] = [];
-    const actor = new VNextSchedulerActor({
+    const actor = new SchedulerActor({
       store: run,
       onTransition: () => {
         throw new Error("status sink failed");
@@ -1292,7 +1284,7 @@ describe("VNext scheduler actor", () => {
   it("retains a failed implementation's trusted checkpoint for recovery", async () => {
     const run = await store();
     const failed = deferred();
-    const actor = new VNextSchedulerActor({
+    const actor = new SchedulerActor({
       store: run,
       targetHead: async () => "base-sha",
       onTransition: (_state, event) => {
@@ -1330,7 +1322,7 @@ describe("VNext scheduler actor", () => {
     const recovered = deferred();
     const retried = deferred();
     let reviewAttempts = 0;
-    const actor = new VNextSchedulerActor({
+    const actor = new SchedulerActor({
       store: run,
       targetHead: async () => "base-sha",
       onTransition: (_state, event) => {
@@ -1413,7 +1405,7 @@ describe("VNext scheduler actor", () => {
     const started = deferred();
     const bases: string[] = [];
     let count = 0;
-    const actor = new VNextSchedulerActor({
+    const actor = new SchedulerActor({
       store: run,
       targetHead: async () => "current-target-sha",
       executeEffect: async ({ effect, signal }) => {
@@ -1444,7 +1436,7 @@ describe("VNext scheduler actor", () => {
     const run = await store(1, true);
     const reviewStarted = deferred();
     const launches: string[] = [];
-    const actor = new VNextSchedulerActor({
+    const actor = new SchedulerActor({
       store: run,
       executeEffect: async ({ effect, signal, dispatch }) => {
         if (effect.kind === "run_implementation") {
@@ -1595,6 +1587,13 @@ describe("VNext scheduler actor", () => {
             changedPaths: ["first.txt"],
             disposition: "same_base",
             hookEvidence: "git commit completed with retained command evidence",
+            hookCommand: {
+              command: "git commit",
+              cwd: initial.run.checkout.root,
+              timedOut: false,
+              output: "",
+              exitCode: 0,
+            },
           },
         },
         intents: {
@@ -1626,7 +1625,7 @@ describe("VNext scheduler actor", () => {
       },
     }));
     const finalized = deferred();
-    const actor = new VNextSchedulerActor({
+    const actor = new SchedulerActor({
       store: run,
       onTransition: (_state, event) => {
         if (event.kind === "publication_completed") {
@@ -1665,7 +1664,7 @@ describe("VNext scheduler actor", () => {
   it("aborts, settles, and pauses with retained workstreams requeued", async () => {
     const run = await store();
     let aborted = false;
-    const actor = new VNextSchedulerActor({
+    const actor = new SchedulerActor({
       store: run,
       executeEffect: async ({ effect, signal }) => {
         if (effect.kind !== "run_implementation") {
@@ -1697,7 +1696,7 @@ describe("VNext scheduler actor", () => {
 
   it("retains an interrupted implementation checkpoint while stopping", async () => {
     const run = await store();
-    const actor = new VNextSchedulerActor({
+    const actor = new SchedulerActor({
       store: run,
       targetHead: async () => "base-sha",
       executeEffect: async ({ effect, signal }) => {
@@ -1727,9 +1726,7 @@ describe("VNext scheduler actor", () => {
   });
 
   it("settles a planner before pausing an unbound planning run", async () => {
-    const directory = mkdtempSync(
-      join(tmpdir(), "pi-implement-vnext-planner-"),
-    );
+    const directory = mkdtempSync(join(tmpdir(), "pi-implement-planner-"));
     temporaryDirectories.add(directory);
     const plan = planFor(directory);
     const run = createPlanningRun({
@@ -1746,7 +1743,7 @@ describe("VNext scheduler actor", () => {
       workerConcurrency: 1,
     });
     let aborted = false;
-    const actor = new VNextSchedulerActor({
+    const actor = new SchedulerActor({
       store: run,
       executePlanner: async ({ signal }) => {
         await new Promise<void>((resolve) => {
@@ -1776,7 +1773,7 @@ describe("VNext scheduler actor", () => {
 
   it("reconciles abandoned review leases without discarding their candidate", async () => {
     const run = await store();
-    const selected = reduceVNextRunEvent(run.read(), {
+    const selected = reduceRunEvent(run.read(), {
       kind: "workstreams_selected",
       now: "now",
       baseShas: { "first-stream": "base-sha" },
@@ -1795,7 +1792,7 @@ describe("VNext scheduler actor", () => {
       commitSha: "commit",
       treeSha: "tree",
     };
-    const completed = reduceVNextRunEvent(selected.state, {
+    const completed = reduceRunEvent(selected.state, {
       kind: "implementation_completed",
       workstream: { kind: "source", id: "first-stream" },
       leaseId,
@@ -1806,7 +1803,7 @@ describe("VNext scheduler actor", () => {
         satisfied: {},
       },
     });
-    const reviewing = reduceVNextRunEvent(completed.state, {
+    const reviewing = reduceRunEvent(completed.state, {
       kind: "review_requested",
       workstream: { kind: "source", id: "first-stream" },
       now: "now",
@@ -1814,7 +1811,7 @@ describe("VNext scheduler actor", () => {
     const revision = run.read().revision;
     await run.update(revision, () => reviewing.state);
 
-    const actor = new VNextSchedulerActor({ store: run });
+    const actor = new SchedulerActor({ store: run });
     await actor.start();
 
     expect(run.read()).toMatchObject({

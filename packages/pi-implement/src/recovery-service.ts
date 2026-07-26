@@ -7,28 +7,22 @@ import {
   recoveryCompletionSchema,
   type RecoveryCompletion,
 } from "./result-schemas.js";
-import {
-  boundedRecoveryOutput,
-  type RecoveryAction,
-} from "./recovery-vnext.js";
-import type {
-  RuntimeWorkstream,
-  VNextSchedulerEffect,
-} from "./scheduler-vnext.js";
+import { boundedRecoveryOutput, type RecoveryAction } from "./recovery.js";
+import type { RuntimeWorkstream, SchedulerEffect } from "./scheduler.js";
 import type { SubagentClient } from "./subagents.js";
 import { writeAtomicJson } from "./atomic-json.js";
 import {
   recreateWorkstreamWorkspace,
   workstreamWorkspace,
 } from "./workstream-candidate.js";
-import { overallRepairWorkspace } from "./vnext-overall-repair.js";
-import type { VNextRunState } from "./vnext-store.js";
+import { overallRepairWorkspace } from "./overall-repair.js";
+import type { RunState } from "./store.js";
 
 export class RecoverySafetyError extends Error {}
 
-export type VNextRecoveryResult = {
+export type RecoveryResult = {
   action: RecoveryAction;
-  candidate?: VNextRunState["candidates"][string];
+  candidate?: RunState["candidates"][string];
   correction?: {
     fromCandidateId: string;
     changedPaths: string[];
@@ -36,15 +30,15 @@ export type VNextRecoveryResult = {
   };
 };
 
-export async function runVNextRecovery(args: {
-  state: VNextRunState;
-  effect: Extract<VNextSchedulerEffect, { kind: "run_recovery" }>;
+export async function runRecovery(args: {
+  state: RunState;
+  effect: Extract<SchedulerEffect, { kind: "run_recovery" }>;
   git: GitClient;
   subagents: SubagentClient;
   artifactsPath: string;
   signal?: AbortSignal;
   roles: EffectiveRole;
-}): Promise<VNextRecoveryResult> {
+}): Promise<RecoveryResult> {
   const episode = args.state.recoveryEpisodes[args.effect.episodeId];
   if (!episode || episode.workstream.kind !== args.effect.workstream.kind) {
     throw new Error("Recovery effect does not own a durable episode.");
@@ -145,7 +139,7 @@ export async function runVNextRecovery(args: {
         trustedCheckpoint: checkpoint,
       });
     }
-    const result: VNextRecoveryResult = { action };
+    const result: RecoveryResult = { action };
     if (["rework_candidate", "reconcile"].includes(completion.action)) {
       if (!candidate || !completion.candidateTip) {
         throw new Error(
@@ -207,9 +201,9 @@ export async function runVNextRecovery(args: {
 }
 
 async function assertRetainedCandidateWorkspace(args: {
-  state: VNextRunState;
+  state: RunState;
   workstream: RuntimeWorkstream;
-  candidate: VNextRunState["candidates"][string];
+  candidate: RunState["candidates"][string];
   git: GitClient;
 }): Promise<void> {
   const workspaceGit = args.git.forWorktree(
@@ -227,11 +221,11 @@ async function assertRetainedCandidateWorkspace(args: {
 }
 
 function recoveryWorktree(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
-  candidate: VNextRunState["candidates"][string] | undefined,
-  workspace: VNextRunState["recoveryEpisodes"][string]["workspace"],
-  gateKind: VNextRunState["gates"][number]["kind"] | undefined,
+  candidate: RunState["candidates"][string] | undefined,
+  workspace: RunState["recoveryEpisodes"][string]["workspace"],
+  gateKind: RunState["gates"][number]["kind"] | undefined,
 ): string {
   if (gateKind === "hook" && workspace.id.startsWith("staging-")) {
     const root = resolve(
@@ -253,9 +247,9 @@ function recoveryWorktree(
 }
 
 function candidateWorktree(
-  state: VNextRunState,
+  state: RunState,
   workstream: RuntimeWorkstream,
-  candidate: VNextRunState["candidates"][string] | undefined,
+  candidate: RunState["candidates"][string] | undefined,
 ): string {
   if (workstream.kind === "source") {
     return workstreamWorkspace(state, workstream.id).worktreePath;
@@ -268,12 +262,12 @@ function candidateWorktree(
 }
 
 async function recoveredCandidate(args: {
-  state: VNextRunState;
+  state: RunState;
   workstream: RuntimeWorkstream;
-  candidate: VNextRunState["candidates"][string];
+  candidate: RunState["candidates"][string];
   candidateTip: string;
   git: GitClient;
-}): Promise<VNextRunState["candidates"][string]> {
+}): Promise<RunState["candidates"][string]> {
   const worktreePath = candidateWorktree(
     args.state,
     args.workstream,

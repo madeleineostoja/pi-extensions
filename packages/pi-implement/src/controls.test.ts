@@ -5,16 +5,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { TaskWorkspaceManager } from "./candidate-worker.js";
 import { ExecGitClient } from "./git.js";
-import { sweepOwnedRunResources } from "./vnext-cleanup.js";
-import {
-  checkoutPaths,
-  type VNextRunState,
-  type VNextRunStore,
-} from "./vnext-store.js";
-import {
-  assertProspectiveVNextRunPreflight,
-  listCheckoutVNextRuns,
-} from "./vnext-controls.js";
+import { sweepOwnedRunResources } from "./cleanup.js";
+import { checkoutPaths, type RunState, type RunStore } from "./store.js";
+import { assertProspectiveRunPreflight, listCheckoutRuns } from "./controls.js";
 
 const temporaryDirectories = new Set<string>();
 
@@ -39,30 +32,28 @@ function repository(): string {
   return root;
 }
 
-describe("VNext controls", () => {
+describe(" controls", () => {
   it("requires a clean named branch with no active Git operation before starting", async () => {
     const root = repository();
     const git = new ExecGitClient(root);
 
-    await expect(
-      assertProspectiveVNextRunPreflight(git),
-    ).resolves.toBeUndefined();
+    await expect(assertProspectiveRunPreflight(git)).resolves.toBeUndefined();
 
     writeFileSync(join(root, "unrelated.txt"), "operator dirt\n");
-    await expect(assertProspectiveVNextRunPreflight(git)).rejects.toThrow(
+    await expect(assertProspectiveRunPreflight(git)).rejects.toThrow(
       "clean target checkout",
     );
     rmSync(join(root, "unrelated.txt"));
 
     const branch = await git.currentBranch();
     execFileSync("git", ["checkout", "--detach"], { cwd: root });
-    await expect(assertProspectiveVNextRunPreflight(git)).rejects.toThrow(
+    await expect(assertProspectiveRunPreflight(git)).rejects.toThrow(
       "named local branch",
     );
     execFileSync("git", ["checkout", branch], { cwd: root });
 
     writeFileSync(join(root, ".git", "MERGE_HEAD"), await git.head());
-    await expect(assertProspectiveVNextRunPreflight(git)).rejects.toThrow(
+    await expect(assertProspectiveRunPreflight(git)).rejects.toThrow(
       "active merge operation",
     );
     rmSync(join(root, ".git", "MERGE_HEAD"));
@@ -96,13 +87,13 @@ describe("VNext controls", () => {
         },
       },
       publication: { preparations: {} },
-    } as unknown as VNextRunState;
+    } as unknown as RunState;
     const lease = {
       paths,
       owner: { runId: "run-1" },
       assertOwned() {},
     } as never;
-    const store = { read: () => state } as VNextRunStore;
+    const store = { read: () => state } as RunStore;
 
     await sweepOwnedRunResources({ lease, store, git });
     await sweepOwnedRunResources({ lease, store, git });
@@ -122,7 +113,7 @@ describe("VNext controls", () => {
     mkdirSync(path, { recursive: true });
     writeFileSync(join(path, "run-state.json"), "historical state");
 
-    expect(listCheckoutVNextRuns(root)).toEqual([
+    expect(listCheckoutRuns(root)).toEqual([
       { kind: "historical", runId: "old-run" },
     ]);
   });

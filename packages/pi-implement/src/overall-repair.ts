@@ -6,7 +6,7 @@ import {
   TaskWorkspaceManager,
   type TaskWorkspace,
 } from "./candidate-worker.js";
-import type { ExecutionPlan } from "./execution-plan-vnext.js";
+import type { ExecutionPlan } from "./execution-plan.js";
 import { changedPathsBetween, type GitClient } from "./git.js";
 import { buildOverallReworkPrompt } from "./prompts.js";
 import {
@@ -14,11 +14,11 @@ import {
   type OverallReworkCompletion,
 } from "./result-schemas.js";
 import type { SubagentClient } from "./subagents.js";
-import type { RuntimeWorkstream } from "./scheduler-vnext.js";
-import { protectedArtifactsMatch, type VNextRunState } from "./vnext-store.js";
+import type { RuntimeWorkstream } from "./scheduler.js";
+import { protectedArtifactsMatch, type RunState } from "./store.js";
 
 export function overallRepairWorkspace(
-  state: VNextRunState,
+  state: RunState,
   repairId: string,
   baseSha: string,
 ): TaskWorkspace {
@@ -40,8 +40,8 @@ export function overallRepairWorkspace(
   };
 }
 
-export async function runVNextOverallRepair(args: {
-  state: VNextRunState;
+export async function runOverallRepair(args: {
+  state: RunState;
   plan: ExecutionPlan;
   repairId: string;
   git: GitClient;
@@ -54,7 +54,7 @@ export async function runVNextOverallRepair(args: {
     thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   };
 }): Promise<{
-  candidate: VNextRunState["candidates"][string];
+  candidate: RunState["candidates"][string];
   checkpoints: Record<string, string>;
   satisfied: Record<string, string>;
 }> {

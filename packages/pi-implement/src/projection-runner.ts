@@ -1,11 +1,11 @@
-import type { VNextSchedulerEvent } from "./scheduler-vnext.js";
-import type { VNextRunStore } from "./vnext-store.js";
-import { resumeCheckboxProjection } from "./vnext-projection.js";
+import type { SchedulerEvent } from "./scheduler.js";
+import type { RunStore } from "./store.js";
+import { resumeCheckboxProjection } from "./projection.js";
 
-export async function runVNextProjection(args: {
-  store: VNextRunStore;
+export async function runProjection(args: {
+  store: RunStore;
   debtId: string;
-  dispatch: (event: VNextSchedulerEvent) => Promise<void>;
+  dispatch: (event: SchedulerEvent) => Promise<void>;
 }): Promise<void> {
   const state = args.store.read();
   const debt = state.projectionDebt.find((item) => item.id === args.debtId);

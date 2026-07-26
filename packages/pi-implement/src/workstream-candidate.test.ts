@@ -11,12 +11,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  compileExecutionPlan,
-  type ExecutionPlan,
-} from "./execution-plan-vnext.js";
+import { compileExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
 import { ExecGitClient } from "./git.js";
-import { createVNextRuntime } from "./vnext-command.js";
+import { createRuntime } from "./run.js";
 import { buildMaterialStore } from "./material-store.js";
 import { parsePlan } from "./plan.js";
 import type { WorkstreamImplementerCompletion } from "./result-schemas.js";
@@ -34,8 +31,8 @@ import {
   protectedArtifactsMatch,
   sourceIdentityForExecutionPlan,
   type CheckoutLeaseCapability,
-  type VNextRunStore,
-} from "./vnext-store.js";
+  type RunStore,
+} from "./store.js";
 
 const temporaryDirectories = new Set<string>();
 
@@ -44,7 +41,7 @@ type Fixture = {
   planPath: string;
   planContent: string;
   plan: ExecutionPlan;
-  run: VNextRunStore;
+  run: RunStore;
 };
 
 function temporaryDirectory(prefix: string): string {
@@ -324,7 +321,7 @@ describe("workstream candidate lifecycle", () => {
       subject.run.read().run.checkout.gitDir,
     );
     expect(protectedArtifactsMatch(subject.run.read())).toBe(true);
-    const runtime = createVNextRuntime({
+    const runtime = createRuntime({
       pi: {} as never,
       ctx: {} as never,
       git: new ExecGitClient(subject.root),

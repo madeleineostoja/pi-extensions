@@ -7,10 +7,7 @@ import {
   type TaskWorkspace,
 } from "./candidate-worker.js";
 import { captureRestoreSnapshot, snapshotChanged } from "./candidate.js";
-import {
-  readExecutionPlan,
-  type ExecutionPlan,
-} from "./execution-plan-vnext.js";
+import { readExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
 import { changedPathsBetween, type GitClient } from "./git.js";
 import { buildWorkstreamImplementerPrompt } from "./prompts.js";
 import {
@@ -23,7 +20,7 @@ import {
   type WorkstreamImplementerCompletion,
 } from "./result-schemas.js";
 import type { SubagentClient, SubagentHandle } from "./subagents.js";
-import type { VNextRunState } from "./vnext-store.js";
+import type { RunState } from "./store.js";
 
 export type WorkstreamPacket = {
   workstreamId: string;
@@ -38,7 +35,7 @@ export type WorkstreamPacket = {
 export type WorkstreamCandidateOutcome =
   | {
       kind: "candidate_ready";
-      candidate: VNextRunState["candidates"][string];
+      candidate: RunState["candidates"][string];
       checkpoints: Record<string, string>;
       satisfied: Record<string, string>;
       summary: string;
@@ -48,7 +45,7 @@ export type WorkstreamCandidateOutcome =
     }
   | {
       kind: "satisfaction_claimed";
-      candidate: VNextRunState["candidates"][string];
+      candidate: RunState["candidates"][string];
       evidence: Record<string, string>;
       summary: string;
       verification: WorkstreamImplementerCompletion["verification"];
@@ -57,7 +54,7 @@ export type WorkstreamCandidateOutcome =
     };
 
 export type WorkstreamCandidateLifecycleArgs = {
-  state: VNextRunState;
+  state: RunState;
   plan: ExecutionPlan;
   workstreamId: string;
   git: GitClient;
@@ -264,7 +261,7 @@ export async function runWorkstreamCandidate(
 }
 
 export async function recreateWorkstreamWorkspace(args: {
-  state: VNextRunState;
+  state: RunState;
   workstreamId: string;
   git: GitClient;
   trustedCheckpoint: string;
@@ -278,7 +275,7 @@ export async function recreateWorkstreamWorkspace(args: {
 }
 
 export function buildWorkstreamPacket(args: {
-  state: VNextRunState;
+  state: RunState;
   plan: ExecutionPlan;
   workstreamId: string;
   workspace: TaskWorkspace;
@@ -333,7 +330,7 @@ export function buildWorkstreamPacket(args: {
 }
 
 export function workstreamWorkspace(
-  state: VNextRunState,
+  state: RunState,
   workstreamId: string,
 ): TaskWorkspace {
   if (!state.workstreams.source[workstreamId]) {
@@ -355,7 +352,7 @@ export function workstreamWorkspace(
   };
 }
 
-function worktreesRunRoot(state: VNextRunState): string {
+function worktreesRunRoot(state: RunState): string {
   return join(
     resolve(state.run.checkout.root),
     ".pi",
@@ -551,7 +548,7 @@ async function validateCompletion(args: {
 }
 
 function exactPlanForState(
-  state: VNextRunState,
+  state: RunState,
   supplied: ExecutionPlan,
 ): ExecutionPlan {
   if (!state.executionPlan) {
@@ -573,7 +570,7 @@ function exactPlanForState(
 }
 
 function trustedCheckpointForWorkstream(
-  state: VNextRunState,
+  state: RunState,
   workstreamId: string,
 ): string | undefined {
   const workstream = state.workstreams.source[workstreamId];
@@ -616,7 +613,7 @@ async function retainedCheckpoint(
 
 function resolveCorpusPath(
   plan: ExecutionPlan,
-  state: VNextRunState,
+  state: RunState,
   path: string,
 ): string {
   try {
@@ -634,7 +631,7 @@ function resolveCorpusPath(
 }
 
 function protectedPathInWorktree(
-  state: VNextRunState,
+  state: RunState,
   path: string,
 ): string | undefined {
   const relativePath = relative(
@@ -660,7 +657,7 @@ async function candidateChangesProtectedPaths(
   return protectedPaths.some((path) => changed.includes(path));
 }
 
-async function protectedArtifactsMatch(state: VNextRunState): Promise<boolean> {
+async function protectedArtifactsMatch(state: RunState): Promise<boolean> {
   return artifactHashesMatch(state.protectedArtifactHashes);
 }
 

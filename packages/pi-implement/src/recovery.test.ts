@@ -4,9 +4,9 @@ import {
   boundedRecoveryOutput,
   providerRetryDelayMs,
   recoveryCycleSignature,
-} from "./recovery-vnext.js";
+} from "./recovery.js";
 
-describe("VNext recovery cycles", () => {
+describe(" recovery cycles", () => {
   it("escalates one repeated no-action cycle and pauses the next identical one", () => {
     const initial = {
       signature: "same",
