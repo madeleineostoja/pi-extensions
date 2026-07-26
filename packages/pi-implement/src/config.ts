@@ -35,8 +35,6 @@ export type EffectiveRoles = {
   recovery: EffectiveRole;
 };
 
-export const DEFAULT_SUBAGENT_TYPE = "general-purpose";
-const DEFAULT_PLANNER_TYPE = "Explore";
 const DEFAULT_WORKER_CONCURRENCY = 3;
 const HARD_MAX_CONCURRENCY = 8;
 const THINKING_LEVELS = new Set<ThinkingLevel>([
@@ -154,14 +152,18 @@ export function resolveEffectiveRoles(config: ImplementConfig): {
   ok: true;
   roles: EffectiveRoles;
 } {
-  const implementer = effective(config.implementer, DEFAULT_SUBAGENT_TYPE);
+  const implementer = effective(config.implementer, "pi-implement:implementer");
   return {
     ok: true,
     roles: {
       implementer,
-      reviewer: effective(config.reviewer, DEFAULT_SUBAGENT_TYPE),
-      planner: effective(config.planner, DEFAULT_PLANNER_TYPE),
-      recovery: effective(config.recovery, DEFAULT_SUBAGENT_TYPE, implementer),
+      reviewer: effective(config.reviewer, "Review"),
+      planner: effective(config.planner, "pi-implement:planner"),
+      recovery: effective(
+        config.recovery,
+        "pi-implement:recovery",
+        implementer,
+      ),
     },
   };
 }

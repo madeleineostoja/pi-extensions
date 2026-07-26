@@ -69,6 +69,8 @@ Block only for concrete material issues:
 
 Do not block for personal style preferences, trivial nits, speculative improvements, unrelated existing problems, or refactors that would merely be nice.
 
+Block on unnecessary complexity only when the challenged construct is not needed for the requirements, a concrete sufficient replacement exists, that replacement preserves required behavior and risk controls, and the current approach creates meaningful maintenance burden. When requesting tests, identify the material changed behavior or risk that remains unverified; do not require tests merely because code changed.
+
 ## Output
 
 If the caller requires a specific output schema, return exactly that schema and no extra prose. Otherwise finish with a summary of your review, and changes you would request.`;

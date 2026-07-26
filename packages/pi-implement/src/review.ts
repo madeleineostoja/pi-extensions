@@ -319,7 +319,7 @@ export async function runWorkstreamReview(args: {
           uncertainty: packet.uncertainty,
         });
   const handle = await args.subagents.spawn({
-    type: args.roles?.type ?? "pi-implement:reviewer",
+    type: args.roles?.type ?? "Review",
     role: "reviewer",
     model: args.roles?.model,
     thinking: args.roles?.thinking,
@@ -447,7 +447,7 @@ async function runOverallAnchoredReview(args: {
     worktreePath: workspace.worktreePath,
   });
   const handle = await args.subagents.spawn({
-    type: args.roles?.type ?? "pi-implement:reviewer",
+    type: args.roles?.type ?? "Review",
     role: "reviewer",
     model: args.roles?.model,
     thinking: args.roles?.thinking,

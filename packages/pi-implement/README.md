@@ -82,14 +82,14 @@ While a session run is active, a diagnostic widget shows its run phase, publishe
 
 ## Configuration
 
-Configuration is optional and lives at `~/.pi/agent/extensions/pi-implement/config.json`. It accepts role overrides for `planner`, `implementer`, `reviewer`, and `recovery`, plus bounded `workerConcurrency` (default `3`, maximum `8`).
+Configuration is optional and lives at `~/.pi/agent/extensions/pi-implement/config.json`. It accepts role overrides for `planner`, `implementer`, `reviewer`, and `recovery`, plus bounded `workerConcurrency` (default `3`, maximum `8`). Default role types are `pi-implement:planner`, `pi-implement:implementer`, `Review`, and `pi-implement:recovery`, respectively. Model and thinking fields are optional overrides; recovery inherits configured implementer values when its own are omitted.
 
 ```json
 {
   "workerConcurrency": 3,
-  "planner": { "type": "Explore" },
+  "planner": { "thinking": "high" },
   "implementer": { "model": "provider/model-id" },
-  "reviewer": { "type": "Review", "thinking": "high" },
+  "reviewer": { "thinking": "high" },
   "recovery": { "model": "provider/model-id", "thinking": "high" }
 }
 ```
