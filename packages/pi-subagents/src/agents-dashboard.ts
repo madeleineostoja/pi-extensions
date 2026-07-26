@@ -250,7 +250,7 @@ export function formatDetail(
 ): string {
   const inspection = isInspection(inspectionOrSnapshot)
     ? inspectionOrSnapshot
-    : { snapshot: inspectionOrSnapshot, messages: [] };
+    : { snapshot: inspectionOrSnapshot, messages: [], activity: [], omittedMessages: 0, omittedActivity: 0, compactedHistory: false };
   const { snapshot } = inspection;
   const owner = nestedOwner(snapshot.owner);
   const lines = [
@@ -283,9 +283,13 @@ export function formatDetail(
     lines.push(`Error: ${snapshot.error}`);
   }
   lines.push(transcriptLabel(snapshot));
+  lines.push(`Compactions: ${snapshot.health?.compactions ?? 0} · Pending guidance: ${snapshot.health?.pendingSteering ?? 0}`);
   const messageTail = formatMessageTail(inspection.messages, 6);
   if (messageTail.length > 0) {
     lines.push("Message tail:", ...messageTail.map((line) => `- ${line}`));
+  }
+  if (inspection.activity.length > 0) {
+    lines.push("Recent activity:", ...inspection.activity.slice(-6).map((activity) => `- ${activity.kind}: ${activity.status}`));
   }
   lines.push("Nested explore children:");
   if (children.length === 0) {
@@ -431,11 +435,12 @@ class AgentInspectorOverlay implements Component {
     const { snapshot } = inspection;
     const lines = [
       this.theme.fg("dim", "[Status]"),
-      `Elapsed: ${elapsedLabel(snapshot)} · Turns/context: ${turnsContextLabel(snapshot)}`,
-      usageDetailLabel(snapshot),
       `Owner: ${ownerLabel(snapshot.owner)}`,
       `Last activity: ${snapshot.health?.lastActivity ?? "unknown"}`,
+      `Compactions: ${snapshot.health?.compactions ?? 0} · Pending guidance: ${snapshot.health?.pendingSteering ?? 0}`,
       transcriptLabel(snapshot),
+      `Elapsed: ${elapsedLabel(snapshot)} · Turns/context: ${turnsContextLabel(snapshot)}`,
+      usageDetailLabel(snapshot),
     ];
     if (this.stopArmed && !terminalStatuses.has(snapshot.status)) {
       lines.push(
@@ -459,6 +464,9 @@ class AgentInspectorOverlay implements Component {
     if (snapshot.error) {
       lines.push("", this.theme.fg("error", "[Error]"));
       lines.push(...this.wrap(snapshot.error, width, "error"));
+    }
+    if (inspection.activity.length > 0) {
+      lines.push("", this.theme.fg("dim", "[Recent activity]"), ...inspection.activity.slice(-12).map((activity) => `${activity.kind}: ${activity.status}`));
     }
     const transcript = formatTranscriptTail(inspection.messages, width, 12);
     if (transcript.length > 0) {
@@ -575,7 +583,7 @@ function formatMessageTail(
 ): string[] {
   return messages.slice(-count).map((message) => {
     const role = messageRole(message);
-    const text = previewText(messageText(message) ?? message, 240) ?? "";
+    const text = previewText(inspectionMessageText(message) ?? messageText(message) ?? message, 240) ?? "";
     return `${role}: ${text}`;
   });
 }
@@ -588,7 +596,7 @@ function formatTranscriptTail(
   return messages.slice(-count).flatMap((message) => {
     const role = messageRole(message);
     const label = roleLabelForTranscript(role);
-    const text = previewText(messageText(message) ?? message, 1200);
+    const text = previewText(inspectionMessageText(message) ?? messageText(message) ?? message, 1200);
     if (!text) {
       return [];
     }
@@ -618,6 +626,10 @@ function messageRole(message: unknown): string {
   return isObject(message) && typeof message.role === "string"
     ? message.role
     : "message";
+}
+
+function inspectionMessageText(message: unknown): string | undefined {
+  return isObject(message) && typeof message.text === "string" ? message.text : undefined;
 }
 
 function messageText(message: unknown): string | undefined {
