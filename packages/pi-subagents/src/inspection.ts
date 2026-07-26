@@ -53,19 +53,27 @@ export type RuntimeInspection = {
   compactedHistory: boolean;
 };
 
-export function truncateUtf8(value: string, maxBytes = INSPECTION_TEXT_LIMIT_BYTES): string {
+export function truncateUtf8(
+  value: string,
+  maxBytes = INSPECTION_TEXT_LIMIT_BYTES,
+): string {
   if (Buffer.byteLength(value) <= maxBytes) {
     return value;
   }
   const suffix = "…";
   let end = value.length;
-  while (end > 0 && Buffer.byteLength(value.slice(0, end) + suffix) > maxBytes) {
+  while (
+    end > 0 &&
+    Buffer.byteLength(value.slice(0, end) + suffix) > maxBytes
+  ) {
     end -= 1;
   }
   return `${value.slice(0, end)}${suffix}`;
 }
 
-export function immutableInspection(inspection: RuntimeInspection): RuntimeInspection {
+export function immutableInspection(
+  inspection: RuntimeInspection,
+): RuntimeInspection {
   return Object.freeze({
     ...inspection,
     snapshot: freezeValue(inspection.snapshot),
@@ -91,7 +99,8 @@ export function projectMessages(messages: readonly unknown[]): {
     const role = message.role;
     if (role === "toolResult") {
       const toolCallId = stringValue(message.toolCallId);
-      const index = toolCallId === undefined ? undefined : calls.get(toolCallId);
+      const index =
+        toolCallId === undefined ? undefined : calls.get(toolCallId);
       const content = safeText(message.content);
       const error = message.isError === true ? content : undefined;
       if (index !== undefined) {
@@ -102,7 +111,9 @@ export function projectMessages(messages: readonly unknown[]): {
             status: message.isError === true ? "failed" : "completed",
             ...(content === undefined
               ? {}
-              : message.isError === true ? { error } : { result: content }),
+              : message.isError === true
+                ? { error }
+                : { result: content }),
           };
         }
       }
@@ -141,9 +152,15 @@ export function projectMessages(messages: readonly unknown[]): {
         toolCallId,
         toolName,
         status: "running",
-        ...(safeToolArguments(toolName, part.arguments ?? part.params) === undefined
+        ...(safeToolArguments(toolName, part.arguments ?? part.params) ===
+        undefined
           ? {}
-          : { arguments: safeToolArguments(toolName, part.arguments ?? part.params) }),
+          : {
+              arguments: safeToolArguments(
+                toolName,
+                part.arguments ?? part.params,
+              ),
+            }),
         ...(timestamp === undefined ? {} : { timestamp }),
       });
     }
@@ -155,12 +172,21 @@ export function retainActivity(activity: readonly InspectionActivity[]): {
   activity: InspectionActivity[];
   omittedActivity: number;
 } {
-  const omittedActivity = Math.max(0, activity.length - INSPECTION_RECORD_LIMIT);
-  return { activity: activity.slice(-INSPECTION_RECORD_LIMIT), omittedActivity };
+  const omittedActivity = Math.max(
+    0,
+    activity.length - INSPECTION_RECORD_LIMIT,
+  );
+  return {
+    activity: activity.slice(-INSPECTION_RECORD_LIMIT),
+    omittedActivity,
+  };
 }
 
 function retain(messages: InspectionMessage[], activity: InspectionActivity[]) {
-  const omittedMessages = Math.max(0, messages.length - INSPECTION_RECORD_LIMIT);
+  const omittedMessages = Math.max(
+    0,
+    messages.length - INSPECTION_RECORD_LIMIT,
+  );
   const retainedActivity = retainActivity(activity);
   return {
     messages: messages.slice(-INSPECTION_RECORD_LIMIT),
@@ -178,8 +204,17 @@ function safeToolArguments(name: string, value: unknown): string | undefined {
   if (name === "edit" || name === "write") {
     return path === undefined ? undefined : `path: ${truncateUtf8(path)}`;
   }
+  const range = [
+    scalarText(value.offset),
+    scalarText(value.limit),
+    scalarText(value.startLine),
+    scalarText(value.endLine),
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join(", ");
   const fields = [
     path && `path: ${path}`,
+    range && `range: ${range}`,
     stringValue(value.query) && `query: ${stringValue(value.query)}`,
     stringValue(value.command) && `command: ${stringValue(value.command)}`,
     stringValue(value.symbol) && `symbol: ${stringValue(value.symbol)}`,
@@ -228,6 +263,12 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function scalarText(value: unknown): string | undefined {
+  return typeof value === "string" || typeof value === "number"
+    ? String(value)
+    : undefined;
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -238,7 +279,9 @@ function freezeValue<T>(value: T): T {
   }
   if (isObject(value)) {
     return Object.freeze(
-      Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, freezeValue(entry)])),
+      Object.fromEntries(
+        Object.entries(value).map(([key, entry]) => [key, freezeValue(entry)]),
+      ),
     ) as T;
   }
   return value;

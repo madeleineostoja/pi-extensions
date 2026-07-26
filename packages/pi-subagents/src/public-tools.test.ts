@@ -422,14 +422,15 @@ describe("public subagent tools", () => {
       cwd: "/workspace",
     });
     runtime.start(running.id);
-    const steerResult = await steer!.execute(
-      "call-4",
-      { id: running.id, message: "continue" },
-      undefined,
-      undefined,
-      makeCtx(),
-    );
-    expect(steerResult.isError).toBe(false);
+    await expect(
+      steer!.execute(
+        "call-4",
+        { id: running.id, message: "continue" },
+        undefined,
+        undefined,
+        makeCtx(),
+      ),
+    ).rejects.toThrow(/not steerable/);
 
     const failedForSteer = runtime.queue({
       owner: "test",

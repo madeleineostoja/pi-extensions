@@ -17,7 +17,12 @@ import type {
   SubagentRuntime,
   SubagentRuntimeStatus,
 } from "./runtime.js";
-import { contextUsageLabel, costLabel, elapsedLabel, tokenLabel } from "./formatters.js";
+import {
+  contextUsageLabel,
+  costLabel,
+  elapsedLabel,
+  tokenLabel,
+} from "./formatters.js";
 
 const terminalStatuses = new Set<SubagentRuntimeStatus>([
   "completed",
@@ -35,7 +40,6 @@ export async function showAgentsDashboard(
   ctx: ExtensionCommandContext,
 ): Promise<void> {
   let filter: "Running" | "All" = "Running";
-  let selectedKey: string | undefined;
   while (true) {
     const all = dashboardEntries(runtimeOrRuntimes);
     if (all.length === 0) {
@@ -43,47 +47,106 @@ export async function showAgentsDashboard(
       return;
     }
     const view = await ctx.ui.select("Agent view", ["Running", "All"]);
-    if (!view) return;
-    filter = view === "All" ? "All" : "Running";
-    const visible = all.filter((entry) => filter === "All" || entry.snapshot.status === "running" || entry.snapshot.status === "queued");
-    if (visible.length === 0) {
-      ctx.ui.notify(filter === "Running" ? "No running agents. Choose All to inspect retained records." : "No current-session agents.", "info");
+    if (!view) {
       return;
     }
-    const rows = visible.map((entry) => `${formatListRow(entry.snapshot)}${nestedChildren(all, entry).length ? `\n  ↳ ${nestedChildren(all, entry).map((child) => child.snapshot.description).join(" · ")}` : ""}`);
+    filter = view === "All" ? "All" : "Running";
+    const topLevel = all.filter((entry) => !nestedOwner(entry.snapshot.owner));
+    const visible = topLevel.filter(
+      (entry) =>
+        filter === "All" ||
+        entry.snapshot.status === "running" ||
+        entry.snapshot.status === "queued",
+    );
+    if (visible.length === 0) {
+      ctx.ui.notify(
+        filter === "Running"
+          ? "No running agents. Choose All to inspect retained records."
+          : "No current-session agents.",
+        "info",
+      );
+      return;
+    }
+    const rows = visible.map(
+      (entry) =>
+        `${formatListRow(entry.snapshot)}${
+          nestedChildren(all, entry).length
+            ? `\n  ↳ ${nestedChildren(all, entry)
+                .map((child) => child.snapshot.description)
+                .join(" · ")}`
+            : ""
+        }`,
+    );
     const selected = await ctx.ui.select(`${filter} agents`, rows);
-    if (!selected) return;
-    const entry = visible.find((candidate) => candidate.snapshot.key !== undefined && candidate.snapshot.key === selectedKey) ?? visible[rows.indexOf(selected)];
-    if (!entry) continue;
-    selectedKey = entry.snapshot.key;
+    if (!selected) {
+      return;
+    }
+    const entry = visible[rows.indexOf(selected)];
+    if (!entry) {
+      continue;
+    }
     const current = entry.runtime.inspect(entry.snapshot.id);
     if (!current) {
-      ctx.ui.notify("Selected agent is no longer available; refreshed.", "warning");
+      ctx.ui.notify(
+        "Selected agent is no longer available; refreshed.",
+        "warning",
+      );
       continue;
     }
     const actions = ["Inspect activity", "Summarise activity"];
-    if (current.snapshot.status === "running" && current.snapshot.extensionBinding === "bound") actions.push("Send guidance", "Stop agent");
+    if (current.snapshot.status === "running") {
+      actions.push("Stop agent");
+    }
+    if (
+      current.snapshot.status === "running" &&
+      current.snapshot.extensionBinding === "bound"
+    ) {
+      actions.push("Send guidance");
+    }
     actions.push("Back");
     const action = await ctx.ui.select(`Agent ${current.snapshot.id}`, actions);
-    if (!action || action === "Back") continue;
+    if (!action || action === "Back") {
+      continue;
+    }
     try {
       if (action === "Inspect activity") {
         await showAgentDetail(entry.runtime, ctx, current.snapshot.id);
         return;
       } else if (action === "Send guidance") {
-        const message = await (ctx.ui as unknown as { input?: (title: string) => Promise<string | undefined> }).input?.("Guidance (cooperatively queued after current tool calls)");
-        if (message?.trim()) await entry.runtime.steer(current.snapshot.id, message);
+        const message = await (
+          ctx.ui as unknown as {
+            input?: (title: string) => Promise<string | undefined>;
+          }
+        ).input?.("Guidance (cooperatively queued after current tool calls)");
+        if (message?.trim()) {
+          await entry.runtime.steer(current.snapshot.id, message);
+        }
       } else if (action === "Stop agent") {
-        const confirm = await (ctx.ui as unknown as { confirm?: (title: string, message: string) => Promise<boolean> }).confirm?.("Stop agent", "Stop this running agent?");
-        if (confirm) entry.runtime.stop(current.snapshot.id);
+        const confirm = await (
+          ctx.ui as unknown as {
+            confirm?: (title: string, message: string) => Promise<boolean>;
+          }
+        ).confirm?.("Stop agent", "Stop this running agent?");
+        if (confirm) {
+          entry.runtime.stop(current.snapshot.id);
+        }
       } else if (action === "Summarise activity") {
-        const result = await entry.runtime.summarise(current.snapshot.id, (ctx as unknown as { model?: never }).model);
-        ctx.ui.notify(result.ok ? result.text : result.message ?? result.reason, result.ok ? "info" : "warning");
+        const result = await entry.runtime.summarise(
+          current.snapshot.id,
+          (ctx as unknown as { model?: never }).model,
+        );
+        ctx.ui.notify(
+          result.ok ? result.text : (result.message ?? result.reason),
+          result.ok ? "info" : "warning",
+        );
       }
     } catch {
-      ctx.ui.notify("Selected agent is no longer available; refreshed.", "warning");
+      ctx.ui.notify(
+        "Selected agent is no longer available; refreshed.",
+        "warning",
+      );
     }
-    return;
+    continue;
   }
 }
 
@@ -101,23 +164,20 @@ function dashboardEntries(
     }
     seen.add(runtime);
     for (const snapshot of runtime.snapshots({ includeNested: true })) {
-      if (!nestedOwner(snapshot.owner)) {
-        entries.push({ runtime, snapshot });
-      }
+      entries.push({ runtime, snapshot });
     }
   }
   return entries;
 }
 
-function nestedChildren(entries: DashboardEntry[], entry: DashboardEntry): DashboardEntry[] {
-  return entries.filter((candidate) => nestedOwner(candidate.snapshot.owner)?.parentId === entry.snapshot.id);
-}
-
-function formatList(entries: DashboardEntry[]): string {
-  return [
-    "Current-session agents",
-    ...formatListRows(entries.map((entry) => entry.snapshot)),
-  ].join("\n");
+function nestedChildren(
+  entries: DashboardEntry[],
+  entry: DashboardEntry,
+): DashboardEntry[] {
+  return entries.filter(
+    (candidate) =>
+      nestedOwner(candidate.snapshot.owner)?.parentId === entry.snapshot.id,
+  );
 }
 
 async function showAgentDetail(
@@ -174,6 +234,11 @@ async function showLiveInspector(
         overlay.close(),
       );
       unsubscribe = runtime.subscribe(id, () => {
+        if (!runtime.inspect(id)) {
+          tui.requestRender();
+          overlay.close();
+          return;
+        }
         tui.requestRender();
       });
       return overlay;
@@ -250,7 +315,14 @@ export function formatDetail(
 ): string {
   const inspection = isInspection(inspectionOrSnapshot)
     ? inspectionOrSnapshot
-    : { snapshot: inspectionOrSnapshot, messages: [], activity: [], omittedMessages: 0, omittedActivity: 0, compactedHistory: false };
+    : {
+        snapshot: inspectionOrSnapshot,
+        messages: [],
+        activity: [],
+        omittedMessages: 0,
+        omittedActivity: 0,
+        compactedHistory: false,
+      };
   const { snapshot } = inspection;
   const owner = nestedOwner(snapshot.owner);
   const lines = [
@@ -280,16 +352,23 @@ export function formatDetail(
     lines.push(`Result: ${result}`);
   }
   if (snapshot.error) {
-    lines.push(`Error: ${snapshot.error}`);
+    lines.push(`Error: ${previewText(snapshot.error, 2048)}`);
   }
   lines.push(transcriptLabel(snapshot));
-  lines.push(`Compactions: ${snapshot.health?.compactions ?? 0} · Pending guidance: ${snapshot.health?.pendingSteering ?? 0}`);
+  lines.push(
+    `Compactions: ${snapshot.health?.compactions ?? 0} · Pending guidance: ${snapshot.health?.pendingSteering ?? 0}`,
+  );
   const messageTail = formatMessageTail(inspection.messages, 6);
   if (messageTail.length > 0) {
     lines.push("Message tail:", ...messageTail.map((line) => `- ${line}`));
   }
   if (inspection.activity.length > 0) {
-    lines.push("Recent activity:", ...inspection.activity.slice(-6).map((activity) => `- ${activity.kind}: ${activity.status}`));
+    lines.push(
+      "Recent activity:",
+      ...inspection.activity
+        .slice(-6)
+        .map((activity) => `- ${activity.kind}: ${activity.status}`),
+    );
   }
   lines.push("Nested explore children:");
   if (children.length === 0) {
@@ -466,7 +545,13 @@ class AgentInspectorOverlay implements Component {
       lines.push(...this.wrap(snapshot.error, width, "error"));
     }
     if (inspection.activity.length > 0) {
-      lines.push("", this.theme.fg("dim", "[Recent activity]"), ...inspection.activity.slice(-12).map((activity) => `${activity.kind}: ${activity.status}`));
+      lines.push(
+        "",
+        this.theme.fg("dim", "[Recent activity]"),
+        ...inspection.activity
+          .slice(-12)
+          .map((activity) => `${activity.kind}: ${activity.status}`),
+      );
     }
     const transcript = formatTranscriptTail(inspection.messages, width, 12);
     if (transcript.length > 0) {
@@ -583,7 +668,11 @@ function formatMessageTail(
 ): string[] {
   return messages.slice(-count).map((message) => {
     const role = messageRole(message);
-    const text = previewText(inspectionMessageText(message) ?? messageText(message) ?? message, 240) ?? "";
+    const text =
+      previewText(
+        inspectionMessageText(message) ?? messageText(message) ?? message,
+        240,
+      ) ?? "";
     return `${role}: ${text}`;
   });
 }
@@ -596,7 +685,10 @@ function formatTranscriptTail(
   return messages.slice(-count).flatMap((message) => {
     const role = messageRole(message);
     const label = roleLabelForTranscript(role);
-    const text = previewText(inspectionMessageText(message) ?? messageText(message) ?? message, 1200);
+    const text = previewText(
+      inspectionMessageText(message) ?? messageText(message) ?? message,
+      1200,
+    );
     if (!text) {
       return [];
     }
@@ -629,7 +721,9 @@ function messageRole(message: unknown): string {
 }
 
 function inspectionMessageText(message: unknown): string | undefined {
-  return isObject(message) && typeof message.text === "string" ? message.text : undefined;
+  return isObject(message) && typeof message.text === "string"
+    ? message.text
+    : undefined;
 }
 
 function messageText(message: unknown): string | undefined {

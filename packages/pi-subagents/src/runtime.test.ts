@@ -218,11 +218,18 @@ describe("SubagentRuntime", () => {
     const second = { ...fakePi().pi, events };
     const child = { ...fakePi().pi, events: {} };
     const runtime = getSubagentRuntime(first as never);
-    const record = runtime.queue({ owner: "owner", type: "General", description: "reload", cwd: "/workspace" });
+    const record = runtime.queue({
+      owner: "owner",
+      type: "General",
+      description: "reload",
+      cwd: "/workspace",
+    });
 
     expect(getSubagentRuntime(second as never)).toBe(runtime);
     expect(runtime.pi).toBe(second);
-    expect(getSubagentRuntime(second as never).snapshot(record.id)).toMatchObject({
+    expect(
+      getSubagentRuntime(second as never).snapshot(record.id),
+    ).toMatchObject({
       id: record.id,
       status: "queued",
     });
@@ -365,11 +372,13 @@ describe("SubagentRuntime", () => {
     });
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
 
-    session.getContextUsage = vi.fn<AgentSession["getContextUsage"]>(() => ({
-      tokens: 8,
-      contextWindow: 100,
-      percent: 8,
-    }));
+    session.getSessionStats = vi.fn(() => ({
+      assistantMessages: 1,
+      toolCalls: 1,
+      tokens: { total: 10 },
+      cost: 0.25,
+      contextUsage: { tokens: 8, contextWindow: 100, percent: 8 },
+    })) as never;
     Object.assign(session, {
       sessionId: "session-1",
       sessionFile: "/tmp/session.jsonl",
@@ -409,11 +418,13 @@ describe("SubagentRuntime", () => {
       },
     });
 
-    session.getContextUsage = vi.fn<AgentSession["getContextUsage"]>(() => ({
-      tokens: 20,
-      contextWindow: 100,
-      percent: 20,
-    }));
+    session.getSessionStats = vi.fn(() => ({
+      assistantMessages: 1,
+      toolCalls: 0,
+      tokens: { total: 12 },
+      cost: 0.5,
+      contextUsage: { tokens: 20, contextWindow: 100, percent: 20 },
+    })) as never;
     session.messages = [
       {
         role: "assistant",
@@ -443,11 +454,13 @@ describe("SubagentRuntime", () => {
       lastAssistantText: "Updated answer",
     });
 
-    session.getContextUsage = vi.fn<AgentSession["getContextUsage"]>(() => ({
-      tokens: null,
-      contextWindow: 100,
-      percent: null,
-    }));
+    session.getSessionStats = vi.fn(() => ({
+      assistantMessages: 1,
+      toolCalls: 0,
+      tokens: { total: 12 },
+      cost: 0.5,
+      contextUsage: { tokens: null, contextWindow: 100, percent: null },
+    })) as never;
     expect(runtime.snapshot(started.id)?.health).toMatchObject({
       contextUsage: { tokens: null, contextWindow: 100, percent: null },
       peakContextTokens: 20,
@@ -494,9 +507,7 @@ describe("SubagentRuntime", () => {
       snapshot: {
         health: { lastAssistantText: "live update" },
       },
-      messages: [
-        { role: "assistant", timestamp: "2023-11-14T22:13:20.000Z" },
-      ],
+      messages: [{ role: "assistant", timestamp: "2023-11-14T22:13:20.000Z" }],
     });
 
     unsubscribe();
@@ -518,8 +529,16 @@ describe("SubagentRuntime", () => {
       calls.push(message);
       return message === "first" ? first.promise : second.promise;
     }) as never;
-    const runtime = new SubagentRuntime(pi as never, { createSession: vi.fn(async () => ({ session })) });
-    const started = await runtime.runManagedAgent({ type: "General", prompt: "work", cwd: "/workspace", ctx: makeCtx() as never, mode: "background" });
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
     const one = runtime.steer(started.id, "first");
     const two = runtime.steer(started.id, "second");
