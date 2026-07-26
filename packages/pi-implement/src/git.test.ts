@@ -16,7 +16,6 @@ import { ExecGitClient } from "./git.js";
 import { GitProcess } from "./git-process.js";
 import {
   observePromise,
-  remainsTrue,
   settle,
   settleAll,
   waitForCondition,
@@ -75,7 +74,7 @@ describe("git helpers", () => {
     const script = join(dir, "hold.mjs");
     writeFileSync(
       script,
-      `import { appendFileSync, existsSync } from "node:fs";\nimport { setTimeout } from "node:timers/promises";\nconst [marker, release, id] = process.argv.slice(2);\nappendFileSync(marker, id + "\\n");\nwhile (!existsSync(release)) await setTimeout(5);\n`,
+      `import { appendFileSync, existsSync, writeFileSync } from "node:fs";\nimport { setTimeout } from "node:timers/promises";\nconst [marker, release, id] = process.argv.slice(2);\nconst finished = marker + ".first-finished";\nif (id === "first") {\n  appendFileSync(marker, id + "\\n");\n  while (!existsSync(release)) await setTimeout(5);\n  writeFileSync(finished, "done");\n} else {\n  if (!existsSync(finished)) process.exit(23);\n  appendFileSync(marker, id + "\\n");\n}\n`,
     );
     const process = new GitProcess(cwd);
     const first = process.run(
@@ -97,16 +96,6 @@ describe("git helpers", () => {
         ["-c", holdAlias(script), "hold", marker, release, "second"],
         { cwd },
       );
-      const secondObservation = observePromise("second command", second);
-      await remainsTrue(
-        "the second command queue boundary",
-        () => readFileSync(marker, "utf-8") === "first\n",
-        {
-          diagnostics: () =>
-            `${firstObservation.describe()}; ${secondObservation.describe()}`,
-        },
-      );
-
       writeFileSync(release, "go");
       await within("both checkout commands", Promise.all([first, second]), {
         diagnostics: firstObservation.describe,
@@ -198,7 +187,7 @@ describe("git helpers", () => {
     const script = join(dir, "hold.mjs");
     writeFileSync(
       script,
-      `import { appendFileSync, existsSync } from "node:fs";\nimport { setTimeout } from "node:timers/promises";\nconst [marker, release, id] = process.argv.slice(2);\nappendFileSync(marker, id + "\\n");\nwhile (!existsSync(release)) await setTimeout(5);\n`,
+      `import { appendFileSync, existsSync, writeFileSync } from "node:fs";\nimport { setTimeout } from "node:timers/promises";\nconst [marker, release, id] = process.argv.slice(2);\nconst finished = marker + ".first-finished";\nif (id === "main") {\n  appendFileSync(marker, id + "\\n");\n  while (!existsSync(release)) await setTimeout(5);\n  writeFileSync(finished, "done");\n} else {\n  if (!existsSync(finished)) process.exit(23);\n  appendFileSync(marker, id + "\\n");\n}\n`,
     );
     const mainProcess = new GitProcess(cwd);
     const linkedProcess = new GitProcess(linked);
@@ -216,15 +205,6 @@ describe("git helpers", () => {
       second = linkedProcess.run(
         ["-c", holdAlias(script), "hold", marker, release, "linked"],
         { cwd: linked, scope: "repository" },
-      );
-      const secondObservation = observePromise("linked command", second);
-      await remainsTrue(
-        "the common repository queue boundary",
-        () => readFileSync(marker, "utf-8") === "main\n",
-        {
-          diagnostics: () =>
-            `${firstObservation.describe()}; ${secondObservation.describe()}`,
-        },
       );
       writeFileSync(release, "go");
       await within("both repository commands", Promise.all([first, second]), {
@@ -350,11 +330,15 @@ describe("git helpers", () => {
     const cwd = repo();
     const lock = join(cwd, ".git", "index.lock");
     writeFileSync(lock, "held");
-    setTimeout(() => rmSync(lock), 10);
+    const process = new GitProcess(cwd, {
+      retryDelay: async () => {
+        rmSync(lock);
+      },
+    });
 
-    await expect(new ExecGitClient(cwd).tree()).resolves.toMatch(
-      /^[0-9a-f]{40}$/,
-    );
+    await expect(
+      process.run(["write-tree"], { cwd, retry: "idempotent" }),
+    ).resolves.toMatchObject({ exitCode: 0 });
   });
 
   it("detects rebase directory state as an active operation", async () => {

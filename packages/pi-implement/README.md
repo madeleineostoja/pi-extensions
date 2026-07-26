@@ -93,7 +93,7 @@ Implementers choose and run appropriate verification for the workstream; pi-impl
 
 ## Maintenance evidence
 
-The VNext behavioral audit retained 90 focused tests across 16 files, reducing the pi-implement test suite from 3,782 to 3,600 lines and production code from 11,853 to 11,534 lines. The workspace suite completed in 92.94 seconds in the recorded run; the real Git/process boundary suite passed three consecutive focused runs. These figures describe retained safety coverage, not a coverage target.
+The VNext lifecycle audit retains 111 focused test cases across 17 files. Reducer tests cover illegal transitions and durable invariants; real-Git tests cover checkout, replay, publication, projection, and cleanup boundaries; lifecycle tests cover queued actor work, recovery, and target safety. The lifecycle and real-Git boundary groups each passed three consecutive focused runs; the recorded package suite completed in 157 seconds before the mandatory workspace and root suites. These figures describe retained safety coverage, not a coverage target.
 
 ## Human follow-up
 

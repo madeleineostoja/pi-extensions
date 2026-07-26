@@ -53,23 +53,6 @@ export async function waitForCondition(
   }
 }
 
-export async function remainsTrue(
-  description: string,
-  condition: () => boolean,
-  options: { durationMs?: number; diagnostics?: () => string } = {},
-): Promise<void> {
-  const durationMs = options.durationMs ?? 30;
-  const deadline = Date.now() + durationMs;
-  while (Date.now() < deadline) {
-    if (!condition()) {
-      throw new Error(
-        `${description} changed before ${durationMs}ms${options.diagnostics ? `; ${options.diagnostics()}` : ""}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-}
-
 export async function within<T>(
   description: string,
   promise: Promise<T>,

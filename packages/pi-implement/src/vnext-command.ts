@@ -12,7 +12,7 @@ import {
   publicationPreparation,
 } from "./candidate-replay.js";
 import { ExecGitClient } from "./git.js";
-import { RuntimeSubagentClient } from "./subagents.js";
+import { RuntimeSubagentClient, type SubagentClient } from "./subagents.js";
 import { runVNextProjection } from "./vnext-projection-runner.js";
 import {
   createCheckboxProjectionIntent,
@@ -35,7 +35,11 @@ import {
 import { runVNextOverallRepair } from "./vnext-overall-repair.js";
 import { runVNextWorkstreamReview } from "./vnext-review.js";
 import { runVNextRecovery } from "./recovery-service.js";
-import { reduceVNextRunEvent, VNextSchedulerActor } from "./scheduler-vnext.js";
+import {
+  reduceVNextRunEvent,
+  VNextSchedulerActor,
+  type VNextSchedulerActorOptions,
+} from "./scheduler-vnext.js";
 import {
   acquireCheckoutLease,
   checkoutPaths,
@@ -453,9 +457,15 @@ export function createVNextRuntime(args: {
   materialStore: ReturnType<typeof buildMaterialStore>;
   checkoutIdentity: string;
   baseSha: string;
+  subagents?: SubagentClient;
+  onTransition?: VNextSchedulerActorOptions["onTransition"];
 }): VNextSchedulerActor {
+  const subagents =
+    args.subagents ??
+    new RuntimeSubagentClient(args.pi, args.ctx, args.store.read().run.id);
   return new VNextSchedulerActor({
     store: args.store,
+    onTransition: args.onTransition,
     targetHead: () => args.git.head(),
     targetDiff: (from, to) => args.git.diffRange(from, to),
     captureTargetBoundary: async () => {
@@ -513,11 +523,7 @@ export function createVNextRuntime(args: {
                 )!,
                 workstreamId: effect.workstream.id,
                 git: args.git,
-                subagents: new RuntimeSubagentClient(
-                  args.pi,
-                  args.ctx,
-                  state.run.id,
-                ),
+                subagents,
                 signal,
                 roles: args.roles.implementer,
                 recoveryObligations: Object.values(state.recoveryEpisodes)
@@ -547,11 +553,7 @@ export function createVNextRuntime(args: {
                   )!,
                   repairId: effect.workstream.repairId,
                   git: args.git,
-                  subagents: new RuntimeSubagentClient(
-                    args.pi,
-                    args.ctx,
-                    state.run.id,
-                  ),
+                  subagents,
                   signal,
                   artifactsPath,
                   roles: args.roles.implementer,
@@ -571,7 +573,7 @@ export function createVNextRuntime(args: {
           plan: readExecutionPlan(join(args.lease.paths.runs, state.run.id))!,
           workstream: effect.workstream,
           git: args.git,
-          subagents: new RuntimeSubagentClient(args.pi, args.ctx, state.run.id),
+          subagents,
           signal,
           artifactsPath,
           roles: args.roles.reviewer,
@@ -877,7 +879,7 @@ export function createVNextRuntime(args: {
           state,
           plan,
           git: args.git,
-          subagents: new RuntimeSubagentClient(args.pi, args.ctx, state.run.id),
+          subagents,
           artifactsPath,
           signal,
           dispatch,
@@ -888,7 +890,7 @@ export function createVNextRuntime(args: {
       if (effect.kind === "run_whole_plan_recovery") {
         const action = await runVNextWholePlanRecovery({
           state,
-          subagents: new RuntimeSubagentClient(args.pi, args.ctx, state.run.id),
+          subagents,
           signal,
           roles: args.roles.recovery,
         });
@@ -908,7 +910,7 @@ export function createVNextRuntime(args: {
           state,
           effect,
           git: args.git,
-          subagents: new RuntimeSubagentClient(args.pi, args.ctx, state.run.id),
+          subagents,
           artifactsPath,
           signal,
           roles: args.roles.recovery,
@@ -930,11 +932,7 @@ export function createVNextRuntime(args: {
       if (retained) {
         return retained;
       }
-      const client = new RuntimeSubagentClient(
-        args.pi,
-        args.ctx,
-        args.store.read().run.id,
-      );
+      const client = subagents;
       const result = await planExecution({
         plan: args.plan,
         planHash: sha256(args.plan.content),

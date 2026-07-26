@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { ensureGitInfoExclude } from "@pi-extensions/lib";
 import {
   mkdtempSync,
   readFileSync,
@@ -15,10 +16,12 @@ import {
   type ExecutionPlan,
 } from "./execution-plan-vnext.js";
 import { ExecGitClient } from "./git.js";
+import { createVNextRuntime } from "./vnext-command.js";
 import { buildMaterialStore } from "./material-store.js";
 import { parsePlan } from "./plan.js";
 import type { WorkstreamImplementerCompletion } from "./result-schemas.js";
 import type { SubagentClient } from "./subagents.js";
+import { within } from "./test-boundary.js";
 import {
   buildWorkstreamPacket,
   recreateWorkstreamWorkspace,
@@ -28,6 +31,7 @@ import {
 import {
   checkoutPaths,
   createPlanningRun,
+  protectedArtifactsMatch,
   sourceIdentityForExecutionPlan,
   type CheckoutLeaseCapability,
   type VNextRunStore,
@@ -53,6 +57,16 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" });
 }
 
+function deferred(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  return {
+    promise: new Promise<void>((resolvePromise) => {
+      resolve = resolvePromise;
+    }),
+    resolve,
+  };
+}
+
 function fakeLease(root: string): CheckoutLeaseCapability {
   const paths = checkoutPaths(root);
   return {
@@ -75,10 +89,11 @@ async function fixture(args: {
   workstreams: Array<{ id: string; taskIds: string[] }>;
   tasks?: Array<{ id: string; title: string }>;
 }): Promise<Fixture> {
-  const root = temporaryDirectory("pi-implement-workstream-");
+  const root = realpathSync(temporaryDirectory("pi-implement-workstream-"));
   git(root, "init");
   git(root, "config", "user.email", "test@example.com");
   git(root, "config", "user.name", "Test");
+  await ensureGitInfoExclude(root, ".pi/");
   const tasks = args.tasks ?? [
     { id: "first", title: "First task" },
     { id: "second", title: "Second task" },
@@ -132,6 +147,7 @@ async function fixture(args: {
   if (!result.ok) {
     throw new Error(result.reason);
   }
+  const branch = await new ExecGitClient(root).currentBranch();
   const run = createPlanningRun({
     lease: fakeLease(root),
     runId: "run-1",
@@ -139,7 +155,7 @@ async function fixture(args: {
       root,
       gitDir: join(root, ".git"),
       commonGitDir: join(root, ".git"),
-      branchRef: "refs/heads/master",
+      branchRef: `refs/heads/${branch}`,
       startHead: result.value.source.baseSha,
     },
     source: sourceIdentityForExecutionPlan(result.value),
@@ -267,6 +283,89 @@ describe("workstream candidate lifecycle", () => {
     expect(outcome.evidencePath).toContain("combined-implementation.json");
   });
 
+  it("runs implementation and review through the production runtime factory", async () => {
+    const subject = await fixture({
+      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
+    });
+    const completed = deferred();
+    const handles = new Map<string, { role: string; cwd: string }>();
+    let sequence = 0;
+    let reviews = 0;
+    const subagents: SubagentClient = {
+      async probe() {
+        return { ok: true };
+      },
+      async spawn(args) {
+        const id = `agent-${sequence++}`;
+        handles.set(id, { role: args.role ?? "unknown", cwd: args.cwd ?? "" });
+        return id as never;
+      },
+      async stop() {},
+      async waitFor(id) {
+        const handle = handles.get(id as string)!;
+        if (handle.role === "implementer") {
+          return changedResult(handle.cwd, ["first", "second"]) as never;
+        }
+        reviews += 1;
+        return {
+          status: "completed",
+          result: { verdict: "approved" },
+        } as never;
+      },
+    };
+    const targetGit = new ExecGitClient(subject.root);
+    expect(
+      await targetGit.isCleanExcept([realpathSync(subject.planPath)]),
+    ).toBe(true);
+    expect(
+      await targetGit.hasStagedChangesInPaths([realpathSync(subject.planPath)]),
+    ).toBe(false);
+    expect(await targetGit.checkoutIdentity()).toBe(
+      subject.run.read().run.checkout.gitDir,
+    );
+    expect(protectedArtifactsMatch(subject.run.read())).toBe(true);
+    const runtime = createVNextRuntime({
+      pi: {} as never,
+      ctx: {} as never,
+      git: new ExecGitClient(subject.root),
+      store: subject.run,
+      lease: subject.run.lease,
+      roles: {} as never,
+      plan: parsePlan(subject.planPath, subject.planContent),
+      materialStore: buildMaterialStore({
+        plan: parsePlan(subject.planPath, subject.planContent),
+        planPath: subject.planPath,
+        repoRoot: subject.root,
+      }),
+      checkoutIdentity: await new ExecGitClient(
+        subject.root,
+      ).checkoutIdentity(),
+      baseSha: await new ExecGitClient(subject.root).head(),
+      subagents,
+      onTransition: (_state, event) => {
+        if (event.kind === "review_completed") {
+          completed.resolve();
+        }
+      },
+    });
+
+    await runtime.start();
+    try {
+      await within("production runtime completion", completed.promise, {
+        timeoutMs: 10_000,
+        diagnostics: () => JSON.stringify(runtime.snapshot()),
+      });
+      await runtime.quiesce();
+
+      expect(runtime.snapshot().gates).toContainEqual(
+        expect.objectContaining({ kind: "review", outcome: "passed" }),
+      );
+      expect(reviews).toBe(1);
+    } finally {
+      await runtime.stop("test completed after review");
+    }
+  });
+
   it("runs independent workstreams concurrently in isolated worktrees", async () => {
     const subject = await fixture({
       tasks: [
@@ -280,41 +379,62 @@ describe("workstream candidate lifecycle", () => {
     });
     let active = 0;
     let peak = 0;
+    let started = 0;
+    const bothStarted = deferred();
+    const release = deferred();
     const worker = (taskId: string) =>
       agent(async (cwd) => {
         active += 1;
         peak = Math.max(peak, active);
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        started += 1;
+        if (started === 2) {
+          bothStarted.resolve();
+        }
+        await release.promise;
         const result = await changedResult(cwd, [taskId]);
         active -= 1;
         return result;
       });
 
-    const [first, second] = await Promise.all([
-      runWorkstreamCandidate({
-        state: subject.run.read(),
-        plan: subject.plan,
-        workstreamId: "first-stream",
-        git: new ExecGitClient(subject.root),
-        subagents: worker("first"),
-      }),
-      runWorkstreamCandidate({
-        state: subject.run.read(),
-        plan: subject.plan,
-        workstreamId: "second-stream",
-        git: new ExecGitClient(subject.root),
-        subagents: worker("second"),
-      }),
-    ]);
+    const firstPromise = runWorkstreamCandidate({
+      state: subject.run.read(),
+      plan: subject.plan,
+      workstreamId: "first-stream",
+      git: new ExecGitClient(subject.root),
+      subagents: worker("first"),
+    });
+    const secondPromise = runWorkstreamCandidate({
+      state: subject.run.read(),
+      plan: subject.plan,
+      workstreamId: "second-stream",
+      git: new ExecGitClient(subject.root),
+      subagents: worker("second"),
+    });
+    try {
+      await within(
+        "both workstreams to reach their start barrier",
+        bothStarted.promise,
+        {
+          timeoutMs: 10_000,
+          diagnostics: () => `started=${started}; active=${active}`,
+        },
+      );
+      expect(peak).toBe(2);
+      release.resolve();
 
-    expect(peak).toBe(2);
-    expect(first.kind).toBe("candidate_ready");
-    expect(second.kind).toBe("candidate_ready");
-    expect(
-      workstreamWorkspace(subject.run.read(), "first-stream").worktreePath,
-    ).not.toBe(
-      workstreamWorkspace(subject.run.read(), "second-stream").worktreePath,
-    );
+      const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+      expect(first.kind).toBe("candidate_ready");
+      expect(second.kind).toBe("candidate_ready");
+      expect(
+        workstreamWorkspace(subject.run.read(), "first-stream").worktreePath,
+      ).not.toBe(
+        workstreamWorkspace(subject.run.read(), "second-stream").worktreePath,
+      );
+    } finally {
+      release.resolve();
+      await Promise.allSettled([firstPromise, secondPromise]);
+    }
   });
 
   it("retains committed progress after a failed worker and safely recreates a dirty workspace", async () => {
