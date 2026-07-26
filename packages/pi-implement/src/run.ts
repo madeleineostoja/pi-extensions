@@ -1,0 +1,970 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
+import { buildMaterialStore } from "./material-store.js";
+import { parsePlan } from "./plan.js";
+import { planExecution, readExecutionPlan } from "./execution-plan.js";
+import {
+  CandidateReplayEngine,
+  publicationPreparation,
+} from "./candidate-replay.js";
+import { ExecGitClient } from "./git.js";
+import { RuntimeSubagentClient, type SubagentClient } from "./subagents.js";
+import { runProjection } from "./projection-runner.js";
+import {
+  createCheckboxProjectionIntent,
+  resumeCheckboxProjection,
+} from "./projection.js";
+import { runPublication } from "./publication.js";
+import {
+  completeWholePlanRun,
+  runWholePlanRecovery,
+  runWholePlanReview,
+} from "./whole-plan-review.js";
+import { WriteAheadPublisher } from "./write-ahead-publication.js";
+import { assertProspectiveRunPreflight } from "./controls.js";
+import { strictExecutionPlanSchema } from "./result-schemas.js";
+import { canonicalPath, sha256 } from "./source-integrity.js";
+import {
+  runWorkstreamCandidate,
+  TargetBoundaryError,
+} from "./workstream-candidate.js";
+import { runOverallRepair } from "./overall-repair.js";
+import { runWorkstreamReview } from "./review.js";
+import { runRecovery } from "./recovery-service.js";
+import {
+  reduceRunEvent,
+  SchedulerActor,
+  type SchedulerActorOptions,
+} from "./scheduler.js";
+import {
+  acquireCheckoutLease,
+  checkoutPaths,
+  createPlanningRun,
+  loadRunState,
+  makeRunId,
+  protectedArtifactsMatch,
+  sourceIdentityForPlanning,
+  sourceIdentityMatches,
+  type CheckoutLeaseCapability,
+  type RunState,
+  RunStore,
+} from "./store.js";
+import type { EffectiveRoles } from "./config.js";
+
+export type ActiveRun = {
+  runId: string;
+  actor: SchedulerActor;
+  lease: CheckoutLeaseCapability;
+  store: RunStore;
+};
+
+export async function startRun(args: {
+  pi: ExtensionAPI;
+  ctx: ExtensionCommandContext;
+  planPath: string;
+  roles: EffectiveRoles;
+  workerConcurrency: number;
+}): Promise<{ kind: "no-op" } | { kind: "started"; active: ActiveRun }> {
+  const planPath = resolve(args.ctx.cwd, args.planPath);
+  const content = await readText(planPath);
+  const parsed = parsePlan(planPath, content);
+  if (parsed.tasks.every((task) => task.checked)) {
+    return { kind: "no-op" };
+  }
+  const git = new ExecGitClient(args.ctx.cwd);
+  const [checkoutRoot, checkoutIdentity] = await Promise.all([
+    git.root(),
+    git.checkoutIdentity(),
+  ]);
+  const runId = makeRunId();
+  const lease = await acquireCheckoutLease({
+    checkoutRoot,
+    gitDir: checkoutIdentity,
+    runId,
+    timeoutMs: 10_000,
+  });
+  try {
+    await assertProspectiveRunPreflight(git);
+    const [baseSha, branch] = await Promise.all([
+      git.head(),
+      git.currentBranch(),
+    ]);
+    const materialStore = buildMaterialStore({
+      plan: parsed,
+      planPath,
+      repoRoot: checkoutRoot,
+    });
+    const source = sourceIdentityForPlanning({
+      planPath,
+      planContent: content,
+      corpusFiles: materialStore.files.map((file) => ({
+        path: file.absolutePath,
+        hash: file.hash,
+      })),
+      uncheckedLineNumbers: parsed.tasks
+        .filter((task) => !task.checked)
+        .map((task) => task.lineNumber),
+    });
+    const store = createPlanningRun({
+      lease,
+      runId,
+      checkout: {
+        root: checkoutRoot,
+        gitDir: checkoutIdentity,
+        commonGitDir: checkoutIdentity,
+        branchRef: `refs/heads/${branch}`,
+        startHead: baseSha,
+      },
+      source,
+      workerConcurrency: args.workerConcurrency,
+    });
+    const actor = createRuntime({
+      pi: args.pi,
+      ctx: args.ctx,
+      git,
+      store,
+      lease,
+      roles: args.roles,
+      plan: parsed,
+      materialStore,
+      checkoutIdentity,
+      baseSha,
+    });
+    await actor.start();
+    return { kind: "started", active: { runId, actor, lease, store } };
+  } catch (error) {
+    await lease.release();
+    throw error;
+  }
+}
+
+export async function resumeRun(args: {
+  pi: ExtensionAPI;
+  ctx: ExtensionCommandContext;
+  planPath: string;
+  runId: string;
+  roles: EffectiveRoles;
+}): Promise<ActiveRun> {
+  const planPath = resolve(args.ctx.cwd, args.planPath);
+  const git = new ExecGitClient(args.ctx.cwd);
+  const [checkoutRoot, checkoutIdentity] = await Promise.all([
+    git.root(),
+    git.checkoutIdentity(),
+  ]);
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(args.runId)) {
+    throw new Error(
+      "Run ID is invalid; inspect or remove historical artifacts manually.",
+    );
+  }
+  const runPath = join(checkoutPaths(checkoutRoot).runs, args.runId);
+  if (!existsSync(join(runPath, "run-state.json"))) {
+    throw new Error(
+      `Run ${args.runId} is unavailable in this checkout; inspect or remove its artifacts manually.`,
+    );
+  }
+  const retained = loadRunState(join(runPath, "run-state.json"));
+  if (
+    retained.run.checkout.root !== checkoutRoot ||
+    retained.run.checkout.gitDir !== checkoutIdentity
+  ) {
+    throw new Error(
+      "Run belongs to a different checkout; inspect it from that checkout.",
+    );
+  }
+  assertRunCanResume(retained.phase);
+  const lease = await acquireCheckoutLease({
+    checkoutRoot,
+    gitDir: checkoutIdentity,
+    runId: args.runId,
+    timeoutMs: 10_000,
+  });
+  try {
+    const store = RunStore.open(
+      lease,
+      join(lease.paths.runs, args.runId, "run-state.json"),
+    );
+    await recoverPublicationTransactions({ store, git });
+    await recoverProjectionTransactions({ store });
+    const current = store.read();
+    const content = await readText(planPath);
+    const parsed = parsePlan(planPath, content);
+    const materialStore = buildMaterialStore({
+      plan: parsed,
+      planPath,
+      repoRoot: checkoutRoot,
+    });
+    if (current.phase === "planning") {
+      const source = sourceIdentityForPlanning({
+        planPath,
+        planContent: content,
+        corpusFiles: materialStore.files.map((file) => ({
+          path: file.absolutePath,
+          hash: file.hash,
+        })),
+        uncheckedLineNumbers: parsed.tasks
+          .filter((task) => !task.checked)
+          .map((task) => task.lineNumber),
+      });
+      if (JSON.stringify(source) !== JSON.stringify(current.run.source)) {
+        throw new Error("Plan corpus changed; planning resume is unsafe.");
+      }
+    } else if (
+      !sourceIdentityMatches(current) ||
+      !protectedArtifactsMatch(current)
+    ) {
+      throw new Error(
+        "Plan corpus or protected artifacts changed; resume is unsafe.",
+      );
+    }
+    await assertResumeTargetBoundary(current, git);
+    const plan = readExecutionPlan(runPath);
+    if (current.phase !== "planning" && !plan) {
+      throw new Error(
+        "Bound run is missing execution-plan.json; inspect or remove it manually.",
+      );
+    }
+    const actor = createRuntime({
+      pi: args.pi,
+      ctx: args.ctx,
+      git,
+      store,
+      lease,
+      roles: args.roles,
+      plan: parsed,
+      materialStore,
+      checkoutIdentity,
+      baseSha: store.read().run.checkout.startHead,
+    });
+    if (store.read().phase === "paused") {
+      await actor.resume();
+    }
+    await actor.start();
+    return { runId: args.runId, actor, lease, store };
+  } catch (error) {
+    await lease.release();
+    throw error;
+  }
+}
+
+export function assertRunCanResume(phase: RunState["phase"]): void {
+  if (phase === "completed") {
+    throw new Error("Completed runs cannot resume; use :cleanup instead.");
+  }
+  if (phase === "blocked_safety") {
+    throw new Error(
+      "Safety-blocked runs cannot resume; use :abandon after manual recovery.",
+    );
+  }
+}
+
+async function recoverPublicationTransactions(args: {
+  store: RunStore;
+  git: ExecGitClient;
+}): Promise<void> {
+  for (const intent of Object.values(args.store.read().publication.intents)) {
+    const state = args.store.read();
+    const workstream =
+      intent.workstream.kind === "source"
+        ? state.workstreams.source[intent.workstream.id]
+        : state.workstreams.overall[intent.workstream.repairId];
+    if (workstream?.phase === "completed") {
+      continue;
+    }
+    const outcome = await new WriteAheadPublisher({
+      git: args.git,
+      checkoutRoot: state.run.checkout.root,
+      checkoutIdentity: state.run.checkout.gitDir,
+      protectedPaths: Object.keys(state.protectedArtifactHashes),
+    }).recover(intent);
+    if (outcome.kind === "published") {
+      if (!state.publication.receipts[intent.id]) {
+        const transition = reduceRunEvent(args.store.read(), {
+          kind: "publication_receipt_recorded",
+          receipt: outcome.receipt,
+        });
+        if (!transition.accepted) {
+          throw new Error(
+            transition.error ?? "Publication recovery receipt was rejected.",
+          );
+        }
+        const revision = args.store.read().revision;
+        await args.store.update(revision, () => transition.state);
+      }
+      continue;
+    }
+    if (
+      outcome.kind !== "retry_from_base" ||
+      state.publication.receipts[intent.id]
+    ) {
+      throw new Error(
+        outcome.kind === "safety_paused"
+          ? outcome.reason
+          : "Publication recovery could not prove an exact durable transaction state.",
+      );
+    }
+  }
+}
+
+export async function recoverProjectionTransactions(args: {
+  store: RunStore;
+}): Promise<void> {
+  const initial = args.store.read();
+  if (initial.projectionDebt.length === 0) {
+    return;
+  }
+  if (!projectionDebtMatchesIntent(initial)) {
+    throw new Error(
+      "Projection recovery requires each protected source artifact to match an exact retained intent side.",
+    );
+  }
+  for (const debt of initial.projectionDebt) {
+    const state = args.store.read();
+    if (!state.projectionDebt.some((item) => item.id === debt.id)) {
+      continue;
+    }
+    const outcome = resumeCheckboxProjection(state.run.checkout.root, debt);
+    if (outcome.kind === "safety_paused") {
+      throw new Error(`Projection recovery is unsafe: ${outcome.reason}`);
+    }
+    await args.store.recordProjection(state.revision, debt.taskIds, {
+      ...state.protectedArtifactHashes,
+      [debt.canonicalPath]: outcome.protectedHash,
+    });
+    const recorded = args.store.read();
+    await args.store.update(recorded.revision, (current) => ({
+      ...current,
+      projectionDebt: current.projectionDebt.filter(
+        (item) => item.id !== debt.id,
+      ),
+    }));
+  }
+}
+
+async function assertResumeTargetBoundary(
+  state: RunState,
+  git: ExecGitClient,
+): Promise<void> {
+  const protectedPaths = Object.keys(state.protectedArtifactHashes);
+  const [branch, head, operation, clean, protectedIndexDirty] =
+    await Promise.all([
+      git.currentBranch(),
+      git.head(),
+      git.activeOperation(),
+      git.isCleanExcept(protectedPaths),
+      git.hasStagedChangesInPaths(protectedPaths),
+    ]);
+  if (`refs/heads/${branch}` !== state.run.checkout.branchRef) {
+    throw new Error("Resume requires the retained local target branch.");
+  }
+  if (head !== expectedTargetHead(state)) {
+    throw new Error("Resume requires the target HEAD retained by this run.");
+  }
+  if (operation) {
+    throw new Error(
+      `Resume cannot continue during an active ${operation} operation.`,
+    );
+  }
+  if (!clean || protectedIndexDirty || !protectedArtifactsMatch(state)) {
+    throw new Error(
+      "Resume requires a clean target outside sanctioned projections with exact protected content.",
+    );
+  }
+}
+
+function expectedTargetHead(state: RunState): string {
+  const pending = Object.values(state.publication.intents).filter(
+    (intent) => !state.publication.receipts[intent.id],
+  );
+  if (pending.length === 1) {
+    return pending[0]!.targetBaseSha;
+  }
+  if (pending.length > 1) {
+    throw new Error("Resume found multiple unresolved publication intents.");
+  }
+  const receipts = Object.values(state.publication.receipts);
+  const publishedBases = new Set(
+    receipts.map((receipt) => receipt.targetBaseSha),
+  );
+  const tip = receipts.find(
+    (receipt) => !publishedBases.has(receipt.publishedCommitSha),
+  );
+  return tip?.publishedCommitSha ?? state.run.checkout.startHead;
+}
+
+function projectionDebtMatchesIntent(state: RunState): boolean {
+  if (state.projectionDebt.length === 0) {
+    return false;
+  }
+  const projectedPaths = new Set(
+    state.projectionDebt.map((debt) => canonicalPath(debt.canonicalPath)),
+  );
+  return (
+    state.projectionDebt.every((debt) => {
+      try {
+        const content = readFileSync(debt.canonicalPath, "utf-8");
+        const hash = sha256(content);
+        return (
+          (hash === debt.expectedOldHash &&
+            content === debt.expectedOldContent) ||
+          (hash === debt.expectedNewHash && content === debt.expectedNewContent)
+        );
+      } catch {
+        return false;
+      }
+    }) &&
+    state.run.source.corpus
+      .filter((artifact) => !projectedPaths.has(canonicalPath(artifact.path)))
+      .every((artifact) => {
+        try {
+          return sha256(readFileSync(artifact.path, "utf-8")) === artifact.hash;
+        } catch {
+          return false;
+        }
+      })
+  );
+}
+
+export async function stopRun(active: ActiveRun): Promise<void> {
+  try {
+    await active.actor.stop("Stopped by user.");
+  } finally {
+    await active.lease.release();
+  }
+}
+
+export function createRuntime(args: {
+  pi: ExtensionAPI;
+  ctx: ExtensionCommandContext;
+  git: ExecGitClient;
+  store: RunStore;
+  lease: CheckoutLeaseCapability;
+  roles: EffectiveRoles;
+  plan: ReturnType<typeof parsePlan>;
+  materialStore: ReturnType<typeof buildMaterialStore>;
+  checkoutIdentity: string;
+  baseSha: string;
+  subagents?: SubagentClient;
+  onTransition?: SchedulerActorOptions["onTransition"];
+}): SchedulerActor {
+  const subagents =
+    args.subagents ??
+    new RuntimeSubagentClient(args.pi, args.ctx, args.store.read().run.id);
+  return new SchedulerActor({
+    store: args.store,
+    onTransition: args.onTransition,
+    targetHead: () => args.git.head(),
+    targetDiff: (from, to) => args.git.diffRange(from, to),
+    captureTargetBoundary: async () => {
+      const state = args.store.read();
+      const protectedPaths = Object.keys(state.protectedArtifactHashes);
+      const [checkout, branch, head, operation, clean, protectedIndexDirty] =
+        await Promise.all([
+          args.git.checkoutIdentity(),
+          args.git.currentBranch(),
+          args.git.head(),
+          args.git.activeOperation(),
+          args.git.isCleanExcept(protectedPaths),
+          args.git.hasStagedChangesInPaths(protectedPaths),
+        ]);
+      const protectedMatch = protectedArtifactsMatch(state);
+      if (
+        checkout !== state.run.checkout.gitDir ||
+        branch !== state.run.checkout.branchRef.replace("refs/heads/", "") ||
+        operation !== undefined ||
+        !clean ||
+        protectedIndexDirty ||
+        !protectedMatch
+      ) {
+        throw new TargetBoundaryError(
+          "Managed work requires an unchanged, clean target checkout boundary.",
+        );
+      }
+      return JSON.stringify({
+        checkout,
+        branch,
+        head,
+        operation,
+        clean,
+        protected: protectedMatch,
+      });
+    },
+    executeEffect: async ({ effect, signal, dispatch }) => {
+      const state = args.store.read();
+      const artifactsPath = join(
+        args.lease.paths.runs,
+        state.run.id,
+        "artifacts",
+      );
+      if (effect.kind === "run_implementation") {
+        const sourceWorkstreamId =
+          effect.workstream.kind === "source"
+            ? effect.workstream.id
+            : undefined;
+        const outcome =
+          effect.workstream.kind === "source"
+            ? await runWorkstreamCandidate({
+                state,
+                plan: readExecutionPlan(
+                  join(args.lease.paths.runs, state.run.id),
+                )!,
+                workstreamId: effect.workstream.id,
+                git: args.git,
+                subagents,
+                signal,
+                roles: args.roles.implementer,
+                recoveryObligations: Object.values(state.recoveryEpisodes)
+                  .filter(
+                    (episode) =>
+                      episode.status === "open" &&
+                      episode.workstream.kind === "source" &&
+                      episode.workstream.id === sourceWorkstreamId,
+                  )
+                  .flatMap((episode) =>
+                    episode.actions.map((action) => action.evidence),
+                  ),
+                trustedCheckpoint: Object.values(state.recoveryEpisodes).find(
+                  (episode) =>
+                    episode.status === "open" &&
+                    episode.workstream.kind === "source" &&
+                    episode.workstream.id === sourceWorkstreamId,
+                )?.workspace.checkpoint,
+                artifactsPath,
+              })
+            : {
+                kind: "candidate_ready" as const,
+                ...(await runOverallRepair({
+                  state,
+                  plan: readExecutionPlan(
+                    join(args.lease.paths.runs, state.run.id),
+                  )!,
+                  repairId: effect.workstream.repairId,
+                  git: args.git,
+                  subagents,
+                  signal,
+                  artifactsPath,
+                  roles: args.roles.implementer,
+                })),
+              };
+        await dispatch({
+          kind: "implementation_completed",
+          workstream: effect.workstream,
+          leaseId: effect.leaseId,
+          outcome,
+        });
+        return;
+      }
+      if (effect.kind === "run_review") {
+        const outcome = await runWorkstreamReview({
+          state,
+          plan: readExecutionPlan(join(args.lease.paths.runs, state.run.id))!,
+          workstream: effect.workstream,
+          git: args.git,
+          subagents,
+          signal,
+          artifactsPath,
+          roles: args.roles.reviewer,
+        });
+        const projectionDebt =
+          outcome.kind !== "repository_state" ||
+          effect.workstream.kind !== "source"
+            ? undefined
+            : (() => {
+                const taskIds =
+                  state.workstreams.source[effect.workstream.id]?.taskIds ?? [];
+                const plan = readExecutionPlan(
+                  join(args.lease.paths.runs, state.run.id),
+                );
+                if (!plan || taskIds.length === 0) {
+                  return undefined;
+                }
+                const tasks = taskIds.map((taskId) =>
+                  plan.tasks.find((task) => task.id === taskId),
+                );
+                if (tasks.some((task) => !task)) {
+                  throw new Error(
+                    "Satisfaction assessment task is missing its source anchor.",
+                  );
+                }
+                const projection = createCheckboxProjectionIntent({
+                  id: `projection:${state.run.id}:${effect.workstream.id}`,
+                  checkoutRoot: state.run.checkout.root,
+                  taskIds,
+                  checkboxes: tasks.map((task) => task!.sourceAnchor),
+                });
+                return {
+                  ...projection,
+                  reason: "Approve repository-state satisfaction assessment.",
+                  artifactPath: projection.canonicalPath,
+                };
+              })();
+        await dispatch({
+          kind: "review_completed",
+          workstream: effect.workstream,
+          leaseId: effect.leaseId,
+          outcome,
+          ...(projectionDebt ? { projectionDebt } : {}),
+        });
+        return;
+      }
+      if (effect.kind === "run_reconciliation") {
+        const candidate = state.candidates[effect.candidateId];
+        if (!candidate) {
+          throw new Error("Reconciliation candidate is no longer retained.");
+        }
+        const targetBaseSha = await args.git.head();
+        const retainedPreparation = Object.values(
+          state.publication.preparations,
+        ).find(
+          (preparation) =>
+            preparation.candidateId === candidate.id &&
+            preparation.candidateCommitSha === candidate.commitSha &&
+            preparation.targetBaseSha === targetBaseSha,
+        );
+        const replay = await new CandidateReplayEngine({
+          git: args.git,
+          worktreesRoot: join(args.lease.paths.worktrees, state.run.id),
+          runId: state.run.id,
+          protectedPaths: Object.keys(state.protectedArtifactHashes),
+          protectedArtifactsMatch: () => protectedArtifactsMatch(state),
+        }).prepare(candidate, signal, retainedPreparation);
+        const workspace =
+          replay.staging === undefined
+            ? {
+                id: `reconciliation:${effect.candidateId}`,
+                changedPaths: [],
+                stateEvidence: replay.kind,
+              }
+            : {
+                id: replay.staging.id,
+                checkpoint: replay.staging.preparedCommitSha,
+                changedPaths: replay.staging.replayPaths ?? [],
+                stateEvidence: replay.kind,
+              };
+        if (replay.kind === "repository_assessment_required") {
+          if (effect.workstream.kind !== "source") {
+            throw new Error("Only source workstreams may assess satisfaction.");
+          }
+          await dispatch({
+            kind: "repository_assessment_required",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            targetSha: replay.staging.targetBaseSha,
+            interveningDiff: await args.git.diffRange(
+              candidate.baseSha,
+              replay.staging.targetBaseSha,
+            ),
+            evidence: replay.evidence,
+          });
+          return;
+        }
+        if (replay.kind !== "prepared") {
+          if (replay.kind === "cancelled") {
+            return;
+          }
+          await dispatch({
+            kind: "reconciliation_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            outcome: {
+              kind:
+                replay.kind === "infrastructure_failure"
+                  ? "execution_failed"
+                  : replay.kind === "hook_rejected" ||
+                      (replay.kind === "reconciliation_required" &&
+                        replay.hookMutated)
+                    ? "hook_rejected"
+                    : "reconciliation_required",
+              evidence:
+                "evidence" in replay
+                  ? replay.evidence
+                  : "Replay did not produce a publishable candidate.",
+              ...(replay.kind === "hook_rejected"
+                ? { command: replay.command }
+                : replay.kind === "reconciliation_required" &&
+                    replay.hookMutated &&
+                    replay.staging.hookCommand
+                  ? { command: replay.staging.hookCommand }
+                  : {}),
+              workspace,
+            },
+          });
+          return;
+        }
+        if (
+          effect.workstream.kind === "source" &&
+          candidate.commitSha === candidate.baseSha &&
+          replay.staging.targetBaseSha === candidate.baseSha
+        ) {
+          const plan = readExecutionPlan(
+            join(args.lease.paths.runs, state.run.id),
+          );
+          const taskIds =
+            state.workstreams.source[effect.workstream.id]?.taskIds ?? [];
+          const tasks = taskIds.map((taskId) =>
+            plan?.tasks.find((task) => task.id === taskId),
+          );
+          if (!plan || tasks.some((task) => !task)) {
+            throw new Error(
+              "Satisfaction completion task is missing its source anchor.",
+            );
+          }
+          const projection = createCheckboxProjectionIntent({
+            id: `projection:${state.run.id}:${effect.workstream.id}`,
+            checkoutRoot: state.run.checkout.root,
+            taskIds,
+            checkboxes: tasks.map((task) => task!.sourceAnchor),
+          });
+          await dispatch({
+            kind: "satisfaction_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            targetSha: replay.staging.targetBaseSha,
+            evidence:
+              "The reviewed satisfaction claim was assessed on its current target.",
+            projectionDebt: {
+              ...projection,
+              reason: "Approve current-target satisfaction claim.",
+              artifactPath: projection.canonicalPath,
+            },
+          });
+          return;
+        }
+        const branch = await args.git.currentBranch();
+        if (!branch) {
+          throw new Error("Publication requires a named target branch.");
+        }
+        if (!replay.staging.hookCommand) {
+          throw new Error(
+            "Publishable staging commit is missing ordinary hook evidence.",
+          );
+        }
+        const preparation = publicationPreparation(
+          {
+            runId: state.run.id,
+            candidate,
+            disposition: replay.disposition,
+            targetRef: `refs/heads/${branch}`,
+            hookEvidence: `Git commit completed with hooks: ${replay.staging.hookCommand.command}`,
+            hookCommand: replay.staging.hookCommand,
+          },
+          replay.staging,
+        );
+        await dispatch({
+          kind: "publication_preparation_recorded",
+          preparation,
+        });
+        const intent = new WriteAheadPublisher({
+          git: args.git,
+          checkoutRoot: state.run.checkout.root,
+          checkoutIdentity: state.run.checkout.gitDir,
+          protectedPaths: Object.keys(state.protectedArtifactHashes),
+        }).createIntent({
+          id: `publication:${state.run.id}:${effect.workstream.kind === "source" ? effect.workstream.id : effect.workstream.repairId}:${replay.staging.preparedCommitSha}`,
+          candidateId: candidate.id,
+          targetBaseSha: preparation.targetBaseSha,
+          preparedCommitSha: preparation.preparedCommitSha,
+          preparedTreeSha: preparation.preparedTreeSha,
+          targetRef: `refs/heads/${branch}`,
+        });
+        await dispatch({
+          kind: "publication_intent_recorded",
+          intent: {
+            ...intent,
+            workstream: effect.workstream,
+            preparationId: preparation.id,
+          },
+        });
+        await dispatch({
+          kind: "reconciliation_completed",
+          workstream: effect.workstream,
+          leaseId: effect.leaseId,
+          outcome: {
+            kind: "prepared",
+            evidence: `Prepared ${replay.disposition} replay at ${replay.staging.preparedCommitSha}.`,
+            workspace,
+          },
+        });
+        return;
+      }
+      if (effect.kind === "run_publication") {
+        const plan = readExecutionPlan(
+          join(args.lease.paths.runs, state.run.id),
+        );
+        const taskIds =
+          effect.workstream.kind === "source"
+            ? (state.workstreams.source[effect.workstream.id]?.taskIds ?? [])
+            : [];
+        let projectionDebt: RunState["projectionDebt"][number] | undefined;
+        try {
+          projectionDebt =
+            taskIds.length === 0 || !plan
+              ? undefined
+              : (() => {
+                  const tasks = taskIds.map((taskId) =>
+                    plan.tasks.find((task) => task.id === taskId),
+                  );
+                  if (tasks.some((task) => !task)) {
+                    throw new Error(
+                      "Publication task is missing its source anchor.",
+                    );
+                  }
+                  const projection = createCheckboxProjectionIntent({
+                    id: `projection:${state.run.id}:${effect.workstream.kind === "source" ? effect.workstream.id : effect.workstream.repairId}`,
+                    checkoutRoot: state.run.checkout.root,
+                    taskIds,
+                    checkboxes: tasks.map((task) => task!.sourceAnchor),
+                  });
+                  return {
+                    ...projection,
+                    reason: "Publish source workstream task completion.",
+                    artifactPath: projection.canonicalPath,
+                  };
+                })();
+        } catch (error) {
+          await dispatch({
+            kind: "process_abandoned",
+            leaseId: effect.leaseId,
+          });
+          await dispatch({
+            kind: "safety_paused",
+            reason: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+        await runPublication({
+          state,
+          effect,
+          publisher: new WriteAheadPublisher({
+            git: args.git,
+            checkoutRoot: state.run.checkout.root,
+            checkoutIdentity: state.run.checkout.gitDir,
+            protectedPaths: Object.keys(state.protectedArtifactHashes),
+          }),
+          dispatch,
+          projectionDebt,
+        });
+        return;
+      }
+      if (effect.kind === "run_projection") {
+        await runProjection({
+          store: args.store,
+          debtId: effect.debtId,
+          dispatch,
+        });
+        return;
+      }
+      if (effect.kind === "run_whole_plan_review") {
+        const plan = readExecutionPlan(
+          join(args.lease.paths.runs, state.run.id),
+        );
+        if (!plan) {
+          throw new Error(
+            "Whole-plan review requires the durable execution plan.",
+          );
+        }
+        await runWholePlanReview({
+          state,
+          plan,
+          git: args.git,
+          subagents,
+          artifactsPath,
+          signal,
+          dispatch,
+          roles: args.roles.reviewer,
+        });
+        return;
+      }
+      if (effect.kind === "run_whole_plan_recovery") {
+        const action = await runWholePlanRecovery({
+          state,
+          subagents,
+          signal,
+          roles: args.roles.recovery,
+        });
+        await dispatch({ kind: "whole_plan_recovery_completed", action });
+        return;
+      }
+      if (effect.kind === "complete_whole_plan_run") {
+        await completeWholePlanRun({
+          state,
+          git: args.git,
+          dispatch,
+        });
+        return;
+      }
+      if (effect.kind === "run_recovery") {
+        const outcome = await runRecovery({
+          state,
+          effect,
+          git: args.git,
+          subagents,
+          artifactsPath,
+          signal,
+          roles: args.roles.recovery,
+        });
+        await dispatch({
+          kind: "recovery_completed",
+          workstream: effect.workstream,
+          leaseId: effect.leaseId,
+          ...outcome,
+        });
+        return;
+      }
+      throw new Error("Unsupported effect.");
+    },
+    executePlanner: async ({ signal }) => {
+      const retained = readExecutionPlan(
+        join(args.lease.paths.runs, args.store.read().run.id),
+      );
+      if (retained) {
+        return retained;
+      }
+      const client = subagents;
+      const result = await planExecution({
+        plan: args.plan,
+        planHash: sha256(args.plan.content),
+        materialStore: args.materialStore,
+        checkoutId: args.checkoutIdentity,
+        baseSha: args.baseSha,
+        workerConcurrency: args.store.read().run.workerConcurrency,
+        runDir: join(args.lease.paths.runs, args.store.read().run.id),
+        requestPlanner: async (prompt) => {
+          const handle = await client.spawn({
+            type: args.roles.planner.type,
+            role: "planner",
+            model: args.roles.planner.model,
+            thinking: args.roles.planner.thinking,
+            description: "Compile strict execution plan",
+            prompt,
+            cwd: args.ctx.cwd,
+            readOnly: true,
+            completion: {
+              description: "Return the strict execution plan.",
+              schema: strictExecutionPlanSchema,
+            },
+          });
+          const response = await client.waitFor(handle, signal);
+          if (response.status !== "completed") {
+            throw new Error(`Planner ${response.status}: ${response.error}`);
+          }
+          return response.result;
+        },
+      });
+      if (!result.ok || result.value.kind === "no-op") {
+        throw new Error(
+          result.ok ? "Plan became a no-op during planning." : result.reason,
+        );
+      }
+      return result.value.plan;
+    },
+  });
+}
+
+async function readText(path: string): Promise<string> {
+  const { readFile } = await import("node:fs/promises");
+  return readFile(path, "utf-8");
+}

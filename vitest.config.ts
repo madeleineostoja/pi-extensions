@@ -11,6 +11,7 @@ export default defineConfig({
   },
   test: {
     isolate: false,
+    fileParallelism: false,
     projects: ["packages/*", "lib"],
     environment: "node",
     globals: false,

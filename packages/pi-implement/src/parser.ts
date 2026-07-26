@@ -1,15 +1,19 @@
 export type ParsedCommand =
   | {
       kind: "execution";
-      mode: {
-        kind: "auto";
-        planPath: string;
-        recovery?: { kind: "resume" | "start-over"; runId: string };
-      };
+      planPath: string;
+      recovery?: { kind: "resume" | "start-over"; runId: string };
     }
   | {
       kind: "control";
-      name: "status" | "stop" | "cleanup" | "config" | "inspect" | "view";
+      name:
+        | "status"
+        | "stop"
+        | "cleanup"
+        | "abandon"
+        | "config"
+        | "inspect"
+        | "view";
       runId?: string;
     }
   | { kind: "error"; message: string };
@@ -27,15 +31,20 @@ export function parseCommand(input: string): ParsedCommand {
   if (first.startsWith(":")) {
     const name = first.slice(1);
     if (
-      tokens.length === 1 &&
+      (tokens.length === 1 || (tokens.length === 2 && tokens[1])) &&
       (name === "status" ||
         name === "stop" ||
         name === "cleanup" ||
+        name === "abandon" ||
         name === "config" ||
         name === "inspect" ||
         name === "view")
     ) {
-      return { kind: "control", name };
+      return {
+        kind: "control",
+        name,
+        ...(tokens[1] ? { runId: tokens[1] } : {}),
+      };
     }
     return { kind: "error", message: usage() };
   }
@@ -63,11 +72,8 @@ export function parseCommand(input: string): ParsedCommand {
   }
   return {
     kind: "execution",
-    mode: {
-      kind: "auto",
-      planPath: first,
-      ...(recovery ? { recovery } : {}),
-    },
+    planPath: first,
+    ...(recovery ? { recovery } : {}),
   };
 }
 
@@ -76,5 +82,5 @@ function tokenize(input: string): string[] {
 }
 
 export function usage(): string {
-  return "Usage: /implement to choose an action, or /implement <plan.md> [--resume <run-id> | --start-over <run-id>]";
+  return "Usage: /implement <plan.md> [--resume <run-id> | --start-over <run-id>], or /implement :status | :inspect <run-id> | :cleanup <run-id> | :abandon <run-id> | :stop";
 }

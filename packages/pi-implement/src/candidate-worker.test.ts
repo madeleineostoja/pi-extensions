@@ -1,91 +1,59 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import {
-  approvedCandidateRef,
-  TaskWorkspaceManager,
-} from "./candidate-worker.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { TaskWorkspaceManager } from "./candidate-worker.js";
 import { ExecGitClient } from "./git.js";
 
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf-8" });
-}
+const temporaryDirectories = new Set<string>();
 
 function repository(): string {
   const cwd = mkdtempSync(join(tmpdir(), "pi-implement-worker-"));
-  git(cwd, "init");
-  git(cwd, "config", "user.email", "test@example.com");
-  git(cwd, "config", "user.name", "Test");
+  temporaryDirectories.add(cwd);
+  execFileSync("git", ["init"], { cwd });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd });
   writeFileSync(join(cwd, "file.txt"), "base\n");
-  git(cwd, "add", ".");
-  git(cwd, "commit", "-m", "chore: init");
+  execFileSync("git", ["add", "."], { cwd });
+  execFileSync("git", ["commit", "-m", "chore: init"], { cwd });
   return cwd;
 }
 
-describe("candidate worker", () => {
-  it("creates an immutable approved candidate in its owned task worktree", async () => {
+afterEach(() => {
+  for (const path of temporaryDirectories) {
+    rmSync(path, { recursive: true, force: true });
+  }
+  temporaryDirectories.clear();
+});
+
+describe("TaskWorkspaceManager", () => {
+  it("recreates a disposable workspace from its committed checkpoint", async () => {
     const root = repository();
     const client = new ExecGitClient(root);
     const baseSha = await client.head();
     const worktreesRoot = join(root, ".pi", "worktrees");
-    const worktreePath = join(worktreesRoot, "task-a");
-    const branchName = "pi-implement/run/task-a";
+    const workspace = {
+      taskId: "task-a",
+      branchName: "pi-implement/run/task-a",
+      worktreePath: join(worktreesRoot, "task-a"),
+      baseSha,
+    };
     const manager = new TaskWorkspaceManager(client, worktreesRoot);
 
-    await manager.ensure({
-      taskId: "task-a",
-      branchName,
-      worktreePath,
-      baseSha,
-    });
-    const taskGit = client.forWorktree(worktreePath);
-    writeFileSync(join(worktreePath, "file.txt"), "candidate\n");
-    await taskGit.stageAllExcept([]);
+    await manager.ensure(workspace);
+    const taskGit = client.forWorktree(workspace.worktreePath);
+    writeFileSync(join(workspace.worktreePath, "file.txt"), "candidate\n");
+    execFileSync("git", ["add", "-A"], { cwd: workspace.worktreePath });
     await taskGit.checkpoint("feat: candidate", false);
+    const checkpoint = await taskGit.head();
 
-    const candidate = await approvedCandidateRef({
-      taskId: "task-a",
-      git: taskGit,
-      sourceBaseSha: baseSha,
-      baseSha,
-      branchName,
-      worktreePath,
-      review: {
-        lastDecision: "reviewed",
-        convergence: {
-          epoch: 1,
-          closedEpochs: [],
-          state: {
-            round: 2,
-            findings: [],
-            outstandingIds: [],
-            bestOutstandingCount: 0,
-            consecutiveStalledRounds: 0,
-          },
-        },
-      },
-      artifactRefs: ["review.json"],
-      protectedPaths: [],
-      assessedAt: "now",
-    });
+    await manager.recreate(workspace, checkpoint);
+    const recreated = client.forWorktree(workspace.worktreePath);
+    expect(await recreated.head()).toBe(checkpoint);
+    expect(await recreated.isClean()).toBe(true);
 
-    expect(candidate).toMatchObject({
-      sourceBaseSha: baseSha,
-      baseSha,
-      branchName,
-      worktreePath,
-      reviewReceipt: {
-        candidateId: candidate.id,
-        candidateCommitSha: candidate.commitSha,
-        candidateTreeSha: candidate.treeSha,
-        verdict: "approved",
-        convergence: { round: 2, evidenceRefs: ["review.json"] },
-      },
-    });
-    expect(await taskGit.treeAt(candidate.commitSha)).toBe(candidate.treeSha);
-    expect(await client.head()).toBe(baseSha);
+    await manager.remove(workspace, checkpoint);
   });
 
   it("rejects candidate worktrees outside its owned namespace", async () => {

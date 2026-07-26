@@ -1,4 +1,17 @@
 export { ensureGitInfoExclude, gitCommonDir } from "./git.js";
+export {
+  acquireFileLease,
+  FileLeaseAbortedError,
+  FileLeaseTimeoutError,
+  FileLeaseUnavailableError,
+  probeFileLease,
+  tryAcquireFileLease,
+} from "./file-lease.js";
+export type {
+  FileLease,
+  FileLeaseAcquireOptions,
+  FileLeaseProbe,
+} from "./file-lease.js";
 export { completeText } from "./complete.js";
 export type { CompleteTextDeps, CompleteTextResult } from "./complete.js";
 export { parseModelRef, isModelRef } from "./model-ref.js";

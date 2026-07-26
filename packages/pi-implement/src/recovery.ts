@@ -1,0 +1,142 @@
+import { createHash } from "node:crypto";
+
+export const recoveryGateKinds = [
+  "review",
+  "environment",
+  "hook",
+  "reconciliation",
+  "target",
+  "whole_plan",
+] as const;
+export type RecoveryGateKind = (typeof recoveryGateKinds)[number];
+
+export const recoveryActionKinds = [
+  "diagnose",
+  "retry",
+  "repair_environment",
+  "rework_candidate",
+  "reconcile",
+  "recreate_workspace",
+  "no_safe_action",
+] as const;
+export type RecoveryActionKind = (typeof recoveryActionKinds)[number];
+
+export type RecoveryActionOutcome =
+  | "completed"
+  | "interrupted"
+  | "provider_failure"
+  | "no_safe_action";
+
+export type RecoveryGateResult = {
+  id: string;
+  kind: RecoveryGateKind;
+  owner: string;
+  candidateId?: string;
+  attempt: number;
+  outcome: "passed" | "failed";
+  evidence: string;
+  command?: RecoveryCommandEvidence;
+  targetEvidence?: string;
+  outstandingFindingIds: string[];
+};
+
+export type RecoveryCommandEvidence = {
+  command: string;
+  cwd: string;
+  exitCode?: number;
+  signal?: string;
+  timedOut: boolean;
+  output: string;
+};
+
+export type RecoveryAction = {
+  kind: RecoveryActionKind;
+  outcome: RecoveryActionOutcome;
+  summary: string;
+  evidence: string;
+  at: string;
+};
+
+export type RecoveryCycle = {
+  signature: string;
+  identicalNoActionCycles: number;
+  independentlyEscalated: boolean;
+};
+
+export type RecoveryCycleDisposition = "continue" | "escalate" | "pause";
+
+export function boundedRecoveryOutput(output: string, limit = 12_000): string {
+  return output.length <= limit ? output : output.slice(-limit);
+}
+
+export function recoveryCycleSignature(args: {
+  gateId: string;
+  candidateTree?: string;
+  failureEvidence: string;
+  diagnosis?: string;
+  workspaceEvidence?: string;
+  outstandingFindings: Array<{ id: string; evidence: string }>;
+  workspaceId: string;
+  nextAction: RecoveryActionKind;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        gateId: args.gateId,
+        candidateTree: args.candidateTree ?? "",
+        failureEvidence: normalize(args.failureEvidence),
+        diagnosis: normalize(args.diagnosis ?? ""),
+        workspaceEvidence: normalize(args.workspaceEvidence ?? ""),
+        outstandingFindings: [...args.outstandingFindings]
+          .map((finding) => ({
+            id: finding.id,
+            evidence: normalize(finding.evidence),
+          }))
+          .sort((left, right) => left.id.localeCompare(right.id)),
+        workspaceId: args.workspaceId,
+        nextAction: args.nextAction,
+      }),
+    )
+    .digest("hex");
+}
+
+export function advanceNoActionCycle(args: {
+  cycle: RecoveryCycle;
+  signature: string;
+}): { cycle: RecoveryCycle; disposition: RecoveryCycleDisposition } {
+  if (args.cycle.signature !== args.signature) {
+    return {
+      cycle: {
+        signature: args.signature,
+        identicalNoActionCycles: 0,
+        independentlyEscalated: false,
+      },
+      disposition: "continue",
+    };
+  }
+  if (!args.cycle.independentlyEscalated) {
+    return {
+      cycle: {
+        ...args.cycle,
+        identicalNoActionCycles: args.cycle.identicalNoActionCycles + 1,
+        independentlyEscalated: true,
+      },
+      disposition: "escalate",
+    };
+  }
+  return {
+    cycle: {
+      ...args.cycle,
+      identicalNoActionCycles: args.cycle.identicalNoActionCycles + 1,
+    },
+    disposition: "pause",
+  };
+}
+
+export function providerRetryDelayMs(consecutiveFailures: number): number {
+  return Math.min(60_000, 1_000 * 2 ** Math.max(0, consecutiveFailures - 1));
+}
+
+function normalize(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}

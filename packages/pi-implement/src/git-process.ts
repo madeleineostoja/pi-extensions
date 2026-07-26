@@ -111,10 +111,17 @@ export async function runCommand(
   };
 }
 
+export type GitProcessHooks = {
+  retryDelay?: (milliseconds: number) => Promise<void>;
+};
+
 export class GitProcess {
   private identityPromise: Promise<RepositoryIdentity> | undefined;
 
-  constructor(private readonly cwd: string) {}
+  constructor(
+    private readonly cwd: string,
+    private readonly hooks: GitProcessHooks = {},
+  ) {}
 
   async run(
     args: string[],
@@ -202,7 +209,7 @@ export class GitProcess {
         kind === "lock_busy" &&
         attempt < 2
       ) {
-        await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+        await (this.hooks.retryDelay ?? delay)(25 * (attempt + 1));
         continue;
       }
       throw new GitProcessError({
@@ -224,6 +231,10 @@ export class GitProcess {
   ): Promise<GitProcessResult> {
     return runCommand("git", args, options);
   }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 export function classifyFailure(

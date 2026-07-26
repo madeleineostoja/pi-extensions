@@ -1,8 +1,6 @@
 import { realpath } from "node:fs/promises";
 import { relative, resolve } from "node:path";
-import type { CandidateRef } from "./canonical-state.js";
 import type { GitClient } from "./git.js";
-import type { TaskJson } from "./state.js";
 
 export type TaskWorkspace = {
   taskId: string;
@@ -27,7 +25,7 @@ export class TaskWorkspaceManager {
     if (
       (await Promise.all(worktrees.map(canonicalPath))).includes(expectedPath)
     ) {
-      await this.assertOwnedWorkspace(workspace);
+      await this.assertOwnedWorkspace(workspace, true, options.expectedHead);
       return { created: false };
     }
 
@@ -37,7 +35,7 @@ export class TaskWorkspaceManager {
     }
     try {
       await this.git.addWorktree(workspace.worktreePath, workspace.branchName);
-      await this.assertOwnedWorkspace(workspace, false);
+      await this.assertOwnedWorkspace(workspace, false, options.expectedHead);
       return { created: true };
     } catch (error) {
       try {
@@ -49,6 +47,35 @@ export class TaskWorkspaceManager {
         await this.git.deleteTaskBranch(workspace.branchName);
       }
       throw error;
+    }
+  }
+
+  async recreate(
+    workspace: TaskWorkspace,
+    trustedCheckpoint: string,
+  ): Promise<void> {
+    this.assertOwnedPath(workspace.worktreePath);
+    await this.assertOwnedWorkspace(workspace);
+    const workspaceGit = this.git.forWorktree(workspace.worktreePath);
+    if (
+      !(await this.git.isAncestor(workspace.baseSha, trustedCheckpoint)) ||
+      !(await workspaceGit.isAncestor(
+        trustedCheckpoint,
+        await workspaceGit.head(),
+      ))
+    ) {
+      throw new Error(
+        `Task workspace cannot be recreated from an untrusted checkpoint: ${workspace.worktreePath}`,
+      );
+    }
+    await this.git.removeWorktree(workspace.worktreePath);
+    await this.ensure(workspace, { existingBranch: true });
+    const recreatedGit = this.git.forWorktree(workspace.worktreePath);
+    await recreatedGit.resetHard(trustedCheckpoint);
+    if ((await recreatedGit.head()) !== trustedCheckpoint) {
+      throw new Error(
+        `Task workspace was not recreated at its trusted checkpoint: ${workspace.worktreePath}`,
+      );
     }
   }
 
@@ -86,6 +113,7 @@ export class TaskWorkspaceManager {
   private async assertOwnedWorkspace(
     workspace: Pick<TaskWorkspace, "branchName" | "worktreePath">,
     verifyRegistration = true,
+    expectedHead?: string,
   ): Promise<void> {
     if (verifyRegistration) {
       const worktrees = await this.git.listWorktrees();
@@ -103,6 +131,11 @@ export class TaskWorkspaceManager {
         `Task workspace branch does not match owned branch: ${workspace.worktreePath}`,
       );
     }
+    if (expectedHead && (await taskGit.head()) !== expectedHead) {
+      throw new Error(
+        `Task workspace does not match its expected checkpoint: ${workspace.worktreePath}`,
+      );
+    }
   }
 }
 
@@ -112,92 +145,4 @@ async function canonicalPath(path: string): Promise<string> {
   } catch {
     return resolve(path);
   }
-}
-
-export async function approvedCandidateRef(args: {
-  taskId: string;
-  git: GitClient;
-  sourceBaseSha: string;
-  baseSha: string;
-  branchName: string;
-  worktreePath: string;
-  review: TaskJson["review"] | undefined;
-  artifactRefs: string[];
-  protectedPaths: string[];
-  assessedAt: string;
-  reviewContext?: { contextId?: string; admittedFindingIds?: string[] };
-}): Promise<CandidateRef> {
-  const {
-    taskId,
-    git,
-    sourceBaseSha,
-    baseSha,
-    branchName,
-    worktreePath,
-    review,
-    artifactRefs,
-    protectedPaths,
-    assessedAt,
-    reviewContext,
-  } = args;
-  const commitSha = await git.head();
-  const [treeSha, branch, clean, isDescendant] = await Promise.all([
-    git.tree(),
-    git.currentBranch(),
-    git.isCleanExcept(protectedPaths),
-    git.isAncestor(baseSha, commitSha),
-  ]);
-  if (branch !== branchName) {
-    throw new Error(
-      `Approved candidate is on ${branch}, not owned branch ${branchName}`,
-    );
-  }
-  if (!clean) {
-    throw new Error("Approved candidate worktree is dirty");
-  }
-  if (!isDescendant) {
-    throw new Error(
-      `Candidate ${commitSha} does not descend from base ${baseSha}`,
-    );
-  }
-  if ((await git.treeAt(commitSha)) !== treeSha) {
-    throw new Error(
-      `Approved candidate ${commitSha} tree does not match its worktree`,
-    );
-  }
-
-  const convergence = review?.convergence?.state;
-  if (review?.lastDecision !== "reviewed" || !convergence) {
-    throw new Error("Approved candidate is missing typed review convergence");
-  }
-  if (convergence.outstandingIds.length > 0) {
-    throw new Error("Approved candidate has unresolved review findings");
-  }
-
-  const id = `candidate:${taskId}:${commitSha}`;
-  return {
-    id,
-    sourceBaseSha,
-    baseSha,
-    commitSha,
-    treeSha,
-    branchName,
-    worktreePath,
-    reviewReceipt: {
-      id: `review:${id}`,
-      candidateId: id,
-      candidateCommitSha: commitSha,
-      candidateTreeSha: treeSha,
-      verdict: "approved",
-      convergence: {
-        round: convergence.round,
-        outstandingFindingIds: convergence.outstandingIds,
-        bestOutstandingCount: convergence.bestOutstandingCount,
-        evidenceRefs: artifactRefs,
-        contextId: reviewContext?.contextId,
-        admittedFindingIds: reviewContext?.admittedFindingIds,
-      },
-      assessedAt,
-    },
-  };
 }

@@ -1,0 +1,249 @@
+import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { ExecGitClient, type GitClient } from "./git.js";
+import {
+  projectedArtifactPaths,
+  sweepOwnedRunResources,
+  trashRun,
+} from "./cleanup.js";
+import {
+  acquireCheckoutLease,
+  checkoutPaths,
+  loadRunState,
+  RunStore,
+  type CheckoutLeaseCapability,
+  type RunState,
+} from "./store.js";
+
+export type RunListing =
+  | { kind: "run"; runId: string; state: RunState }
+  | { kind: "historical"; runId: string };
+
+export function listCheckoutRuns(checkoutRoot: string): RunListing[] {
+  const runs = checkoutPaths(checkoutRoot).runs;
+  if (!existsSync(runs)) {
+    return [];
+  }
+  return readdirSync(runs).map((runId) => {
+    try {
+      assertRunId(runId);
+      const path = join(runs, runId);
+      if (lstatSync(path).isSymbolicLink()) {
+        throw new Error("run entry is symlinked");
+      }
+      const state = loadRunState(join(path, "run-state.json"));
+      if (state.run.checkout.root !== checkoutRoot) {
+        throw new Error("run belongs to another checkout");
+      }
+      return { kind: "run" as const, runId, state };
+    } catch {
+      return { kind: "historical" as const, runId };
+    }
+  });
+}
+
+export function formatStatus(state: RunState): string {
+  const activeRecovery = Object.values(state.recoveryEpisodes).filter(
+    (episode) => episode.status === "open",
+  );
+  const pausedRecovery = Object.values(state.recoveryEpisodes).filter(
+    (episode) => episode.status === "paused",
+  );
+  const phases = [
+    ...Object.values(state.workstreams.source).map(
+      (workstream) => `${workstream.id}: ${workstream.phase}`,
+    ),
+    ...Object.values(state.workstreams.overall).map(
+      (workstream) => `${workstream.repairId}: ${workstream.phase}`,
+    ),
+  ].join(", ");
+  const openFindings = Object.values(state.findings).filter(
+    (finding) => finding.status === "open",
+  ).length;
+  const activeProcesses = Object.values(state.processLeases)
+    .map((lease) => `${lease.kind}:${lease.id}`)
+    .join(", ");
+  const latestGate = state.gates.at(-1);
+  return [
+    `Run: ${state.run.id}`,
+    `Phase: ${state.phase}`,
+    `Workstreams: ${phases || "none"}`,
+    `Active processes: ${activeProcesses || "none"}`,
+    `Open findings: ${openFindings}`,
+    `Active recovery: ${state.phase === "paused" ? 0 : activeRecovery.length}`,
+    `Paused recovery: ${pausedRecovery.length}`,
+    ...(latestGate
+      ? [`Latest gate: ${latestGate.kind} ${latestGate.outcome}`]
+      : []),
+    `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted`,
+    `Debt: ${state.projectionDebt.length > 0 ? `projection debt ${state.projectionDebt.length}` : "none"}`,
+    ...(state.pause?.reason ? [`Pause: ${state.pause.reason}`] : []),
+    ...(state.terminalReason ? [`Safety: ${state.terminalReason}`] : []),
+  ].join("\n");
+}
+
+export function inspectRun(checkoutRoot: string, runId: string): string {
+  assertRunId(runId);
+  const path = join(checkoutPaths(checkoutRoot).runs, runId);
+  if (lstatSync(path).isSymbolicLink()) {
+    throw new Error("Run artifact is symlinked; inspect it manually.");
+  }
+  const state = loadRunState(join(path, "run-state.json"));
+  if (state.run.checkout.root !== checkoutRoot) {
+    throw new Error("Run belongs to a different checkout.");
+  }
+  const artifacts = join(path, "artifacts");
+  return [
+    formatStatus(state),
+    `State: ${join(path, "run-state.json")}`,
+    `Execution plan: ${join(path, "execution-plan.json")}`,
+    `Artifacts: ${existsSync(artifacts) ? artifacts : "none"}`,
+  ].join("\n");
+}
+
+export async function assertProspectiveRunPreflight(
+  git: GitClient,
+): Promise<void> {
+  try {
+    if (!(await git.root())) {
+      throw new Error("missing root");
+    }
+  } catch {
+    throw new Error("A new run requires a Git worktree.");
+  }
+  try {
+    if (!(await git.head())) {
+      throw new Error("missing HEAD");
+    }
+  } catch {
+    throw new Error("A new run requires a resolvable HEAD.");
+  }
+  if (!(await git.currentBranch())) {
+    throw new Error("A new run requires a named local branch.");
+  }
+  const operation = await git.activeOperation();
+  if (operation) {
+    throw new Error(
+      `A new run cannot start during an active ${operation} operation.`,
+    );
+  }
+  if (!(await git.isClean())) {
+    throw new Error(
+      "A new run requires a clean target checkout with no nonignored untracked files.",
+    );
+  }
+}
+
+export async function cleanupCompletedRun(args: {
+  checkoutRoot: string;
+  runId: string;
+  prospectiveStart?: boolean;
+}): Promise<string[]> {
+  assertRunId(args.runId);
+  const git = new ExecGitClient(args.checkoutRoot);
+  const lease = await acquireCheckoutLease({
+    checkoutRoot: args.checkoutRoot,
+    runId: args.runId,
+    timeoutMs: 10_000,
+  });
+  try {
+    if (args.prospectiveStart) {
+      await assertProspectiveRunPreflight(git);
+    }
+    const trash = join(lease.paths.trash, args.runId);
+    if (existsSync(trash)) {
+      rmSync(trash, { recursive: true, force: true });
+      return [];
+    }
+    return cleanupWithLease({ lease, git, runId: args.runId });
+  } finally {
+    await lease.release();
+  }
+}
+
+export async function cleanupWithLease(args: {
+  lease: CheckoutLeaseCapability;
+  git: GitClient;
+  runId: string;
+}): Promise<string[]> {
+  const store = openExactRun(args.lease, args.runId);
+  await assertCurrentRunAuthority(store, args.git, args.lease);
+  if (store.read().phase !== "completed") {
+    throw new Error("Only completed runs may be destructively cleaned.");
+  }
+  await sweepOwnedRunResources({ lease: args.lease, store, git: args.git });
+  const projected = projectedArtifactPaths(store.read());
+  trashRun({ lease: args.lease, store });
+  return projected;
+}
+
+export async function abandonRun(args: {
+  checkoutRoot: string;
+  runId: string;
+}): Promise<void> {
+  assertRunId(args.runId);
+  const git = new ExecGitClient(args.checkoutRoot);
+  const checkoutIdentity = await git.checkoutIdentity();
+  const lease = await acquireCheckoutLease({
+    checkoutRoot: args.checkoutRoot,
+    gitDir: checkoutIdentity,
+    runId: args.runId,
+    timeoutMs: 10_000,
+  });
+  try {
+    const store = openExactRun(lease, args.runId);
+    const state = store.read();
+    await assertCurrentRunAuthority(store, git, lease);
+    if (!["paused", "blocked_safety"].includes(state.phase)) {
+      throw new Error("Only paused or safety-blocked runs may be abandoned.");
+    }
+    if (Object.keys(state.processLeases).length > 0) {
+      throw new Error("Stop active processes before abandoning this run.");
+    }
+    await sweepOwnedRunResources({ lease, store, git });
+    trashRun({ lease, store });
+  } finally {
+    await lease.release();
+  }
+}
+
+function openExactRun(lease: CheckoutLeaseCapability, runId: string): RunStore {
+  const directory = join(lease.paths.runs, runId);
+  if (!existsSync(directory) || lstatSync(directory).isSymbolicLink()) {
+    throw new Error("Run is historical or symlinked; recover it manually.");
+  }
+  const path = join(directory, "run-state.json");
+  if (!existsSync(path)) {
+    throw new Error("Run is historical or missing; recover it manually.");
+  }
+  return RunStore.open(lease, path);
+}
+
+async function assertCurrentRunAuthority(
+  store: RunStore,
+  git: GitClient,
+  lease: CheckoutLeaseCapability,
+): Promise<void> {
+  const state = store.read();
+  const [root, gitDir] = await Promise.all([
+    git.root(),
+    git.checkoutIdentity(),
+  ]);
+  if (
+    state.run.checkout.root !== root ||
+    state.run.checkout.gitDir !== gitDir ||
+    state.run.id !== lease.owner.runId
+  ) {
+    throw new Error(
+      "Run belongs to a different checkout; recover it manually.",
+    );
+  }
+}
+
+function assertRunId(runId: string): void {
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(runId)) {
+    throw new Error(
+      "Run ID is invalid; historical artifacts require manual cleanup.",
+    );
+  }
+}
