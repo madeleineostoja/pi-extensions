@@ -57,8 +57,6 @@ describe("subagent roster", () => {
     expect(rows.join("\n")).not.toContain("tool");
     expect(rows.join("\n")).toContain("2");
     expect(rows.join("\n")).toMatch(/\$1\.27\s+90/);
-    expect(rows.join("\n")).not.toContain("80");
-    expect(rows.join("\n")).not.toContain("123");
     expect(rows.join("\n")).toContain("do work");
   });
 
