@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type {
   ExtensionAPI,
@@ -436,16 +436,6 @@ export async function stopRun(active: ActiveRun): Promise<void> {
   }
 }
 
-export function RunIds(checkoutRoot: string): string[] {
-  const runs = checkoutPaths(checkoutRoot).runs;
-  if (!existsSync(runs)) {
-    return [];
-  }
-  return readdirSync(runs).filter((runId) =>
-    existsSync(join(runs, runId, "run-state.json")),
-  );
-}
-
 export function createRuntime(args: {
   pi: ExtensionAPI;
   ctx: ExtensionCommandContext;
@@ -840,7 +830,7 @@ export function createRuntime(args: {
             leaseId: effect.leaseId,
           });
           await dispatch({
-            kind: "projection_safety_paused",
+            kind: "safety_paused",
             reason: error instanceof Error ? error.message : String(error),
           });
           return;

@@ -7,10 +7,7 @@ import {
   type GitClient,
 } from "./git.js";
 import { boundedRecoveryOutput } from "./recovery.js";
-import type {
-  RecoveryCommandEvidence,
-  RecoveryGateResult,
-} from "./recovery.js";
+import type { RecoveryCommandEvidence } from "./recovery.js";
 
 export type ReplayCandidate = {
   id: string;
@@ -106,49 +103,6 @@ export type CandidateReplayOutcome =
       evidence: string;
       staging?: ReplayStaging;
     };
-
-export function reconciliationGateResult(args: {
-  outcome: CandidateReplayOutcome;
-  owner: string;
-  candidateId: string;
-  attempt: number;
-}): RecoveryGateResult | undefined {
-  if (args.outcome.kind === "prepared") {
-    return {
-      id: `reconciliation:${args.candidateId}:${args.attempt}`,
-      kind: "reconciliation",
-      owner: args.owner,
-      candidateId: args.candidateId,
-      attempt: args.attempt,
-      outcome: "passed",
-      evidence: `Prepared ${args.outcome.disposition} replay at ${args.outcome.staging.preparedCommitSha}.`,
-      outstandingFindingIds: [],
-    };
-  }
-  if (
-    args.outcome.kind !== "reconciliation_required" &&
-    args.outcome.kind !== "hook_rejected"
-  ) {
-    return undefined;
-  }
-  const hook =
-    args.outcome.kind === "hook_rejected" || args.outcome.hookMutated;
-  return {
-    id: `${hook ? "hook" : "reconciliation"}:${args.candidateId}:${args.attempt}`,
-    kind: hook ? "hook" : "reconciliation",
-    owner: args.owner,
-    candidateId: args.candidateId,
-    attempt: args.attempt,
-    outcome: "failed",
-    evidence: args.outcome.evidence,
-    ...(args.outcome.kind === "hook_rejected"
-      ? { command: args.outcome.command }
-      : args.outcome.staging.hookCommand
-        ? { command: args.outcome.staging.hookCommand }
-        : {}),
-    outstandingFindingIds: [],
-  };
-}
 
 export function publicationPreparation(
   args: {
@@ -363,51 +317,6 @@ export class CandidateReplayEngine {
     }
   }
 
-  async recreate(staging: ReplayStaging): Promise<void> {
-    await this.workspaces.recreate(
-      {
-        taskId: staging.id,
-        branchName: staging.branchName,
-        worktreePath: staging.worktreePath,
-        baseSha: staging.targetBaseSha,
-      },
-      staging.targetBaseSha,
-    );
-  }
-
-  async discard(staging: ReplayStaging): Promise<void> {
-    const stagingGit = this.options.git.forWorktree(staging.worktreePath);
-    await stagingGit.abortActiveOperation();
-    await stagingGit.resetHard(staging.targetBaseSha);
-    await stagingGit.restoreWorktreeFromIndexExcept([]);
-    await this.workspaces.remove(
-      {
-        taskId: staging.id,
-        branchName: staging.branchName,
-        worktreePath: staging.worktreePath,
-        baseSha: staging.targetBaseSha,
-      },
-      staging.targetBaseSha,
-    );
-  }
-
-  async cleanup(staging: ReplayStaging): Promise<void> {
-    if (!staging.preparedCommitSha) {
-      throw new Error(
-        "Only a clean prepared staging workspace may be removed.",
-      );
-    }
-    await this.workspaces.remove(
-      {
-        taskId: staging.id,
-        branchName: staging.branchName,
-        worktreePath: staging.worktreePath,
-        baseSha: staging.targetBaseSha,
-      },
-      staging.preparedCommitSha,
-    );
-  }
-
   private async ensureStaging(
     targetBaseSha: string,
     candidate: ReplayCandidate,
@@ -486,45 +395,9 @@ export class CandidateReplayEngine {
         hookCommand: retainedPreparation.hookCommand,
       };
     }
-    const currentHead = await stagingGit.head();
-    if (
-      currentHead !== targetBaseSha &&
-      (await stagingGit.parent(currentHead)) === targetBaseSha &&
-      (await stagingGit.isClean())
-    ) {
-      const replayPatch = await stagingGit.diffRange(
-        targetBaseSha,
-        currentHead,
-      );
-      const replayPaths = await changedPaths(
-        stagingGit,
-        targetBaseSha,
-        currentHead,
-      );
-      if (
-        patchHash(replayPatch) !== candidatePatchHash ||
-        JSON.stringify(replayPaths) !== JSON.stringify(candidatePaths)
-      ) {
-        await stagingGit.resetHard(targetBaseSha);
-      } else {
-        return {
-          id,
-          worktreePath,
-          branchName,
-          targetBaseSha,
-          candidateId: candidate.id,
-          candidateCommitSha: candidate.commitSha,
-          replayPatch,
-          replayPatchHash: patchHash(replayPatch),
-          candidatePaths,
-          targetPaths,
-          replayPaths,
-          preparedCommitSha: currentHead,
-          treeSha: await stagingGit.treeAt(currentHead),
-        };
-      }
+    if ((await stagingGit.head()) !== targetBaseSha) {
+      await stagingGit.resetHard(targetBaseSha);
     }
-    await stagingGit.resetHard(targetBaseSha);
     await stagingGit.restoreWorktreeFromIndexExcept([]);
     if (
       !(await stagingGit.isClean()) ||

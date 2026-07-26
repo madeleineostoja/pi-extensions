@@ -1,6 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { ensureGitInfoExclude } from "@pi-extensions/lib";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -8,8 +14,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   CandidateReplayEngine,
   publicationPreparation,
-  reconciliationGateResult,
   type ReplayCandidate,
+  type ReplayStaging,
 } from "./candidate-replay.js";
 import { ExecGitClient } from "./git.js";
 
@@ -65,6 +71,19 @@ function engine(root: string): CandidateReplayEngine {
   });
 }
 
+async function removeStaging(
+  root: string,
+  staging: ReplayStaging,
+): Promise<void> {
+  const client = new ExecGitClient(root);
+  const workspace = client.forWorktree(staging.worktreePath);
+  await workspace.abortActiveOperation();
+  await workspace.resetHard(staging.targetBaseSha);
+  await workspace.restoreWorktreeFromIndexExcept([]);
+  await client.removeWorktree(staging.worktreePath);
+  await client.deleteTaskBranch(staging.branchName);
+}
+
 function preCommit(root: string, script: string): void {
   const hook = join(root, ".git", "hooks", "pre-commit");
   writeFileSync(hook, `#!/bin/sh\n${script}\n`);
@@ -98,7 +117,7 @@ describe("CandidateReplayEngine", () => {
     const prepared = await protectedEngine.prepare(approved);
     expect(prepared).toMatchObject({ kind: "prepared" });
     if (prepared.kind === "prepared") {
-      await protectedEngine.cleanup(prepared.staging);
+      await removeStaging(root, prepared.staging);
     }
 
     await expect(
@@ -151,15 +170,25 @@ describe("CandidateReplayEngine", () => {
     expect(await client.currentBranch()).toBe(before.branch);
     expect(await client.tree()).toBe(before.tree);
     expect(result.staging.treeSha).toBe(approved.treeSha);
-    expect(
-      reconciliationGateResult({
-        outcome: result,
-        owner: "source:workstream",
-        candidateId: approved.id,
-        attempt: 1,
-      }),
-    ).toMatchObject({ kind: "reconciliation", outcome: "passed" });
-    await engine(root).cleanup(result.staging);
+    await removeStaging(root, result.staging);
+  });
+
+  it("reruns hooks when a staging commit has no durable preparation", async () => {
+    const root = repository();
+    const approved = await candidate(root, "candidate.txt", "candidate\n");
+    const marker = join(root, ".git", "hook-runs");
+    preCommit(root, `echo ran >> "${marker}"`);
+    const replay = engine(root);
+
+    const first = await replay.prepare(approved);
+    expect(first.kind).toBe("prepared");
+    const second = await replay.prepare(approved);
+    expect(second.kind).toBe("prepared");
+    expect(readFileSync(marker, "utf-8").trim().split("\n")).toHaveLength(2);
+    if (second.kind !== "prepared") {
+      throw new Error(JSON.stringify(second));
+    }
+    await removeStaging(root, second.staging);
   });
 
   it("retains hook rejection evidence without touching the target", async () => {
@@ -181,7 +210,7 @@ describe("CandidateReplayEngine", () => {
     expect(result.command.command).not.toContain("--no-verify");
     expect(result.command.output).toContain("rejected");
     expect(await client.head()).toBe(target);
-    await engine(root).discard(result.staging);
+    await removeStaging(root, result.staging);
   });
 
   it("requires reconciliation review when a commit hook changes the replayed patch", async () => {
@@ -204,7 +233,7 @@ describe("CandidateReplayEngine", () => {
     expect(result.staging.preparedCommitSha).toBeDefined();
     expect(result.staging.replayPaths).toEqual(["candidate.txt", "target.txt"]);
     expect(await client.head()).toBe(approved.baseSha);
-    await engine(root).discard(result.staging);
+    await removeStaging(root, result.staging);
   });
 
   it("replays two historical candidates serially when target changes do not overlap", async () => {
@@ -259,8 +288,8 @@ describe("CandidateReplayEngine", () => {
       preparedCommitSha: preparedSecond.staging.preparedCommitSha,
       preparedTreeSha: preparedSecond.staging.treeSha,
     });
-    await replay.cleanup(preparedFirst.staging);
-    await replay.cleanup(preparedSecond.staging);
+    await removeStaging(root, preparedFirst.staging);
+    await removeStaging(root, preparedSecond.staging);
   });
 
   it("reprepares mismatched staging instead of accepting it", async () => {
@@ -307,7 +336,7 @@ describe("CandidateReplayEngine", () => {
       command: expect.stringContaining("git commit"),
       exitCode: 0,
     });
-    await replay.cleanup(reused.staging);
+    await removeStaging(root, reused.staging);
   });
 
   it("retains staging for reconciliation when intervening target paths overlap", async () => {
@@ -332,15 +361,7 @@ describe("CandidateReplayEngine", () => {
       throw new Error(JSON.stringify(result));
     }
     expect(await client.head()).not.toBe(approved.baseSha);
-    expect(
-      reconciliationGateResult({
-        outcome: result,
-        owner: "source:workstream",
-        candidateId: approved.id,
-        attempt: 1,
-      }),
-    ).toMatchObject({ kind: "reconciliation", outcome: "failed" });
-    await engine(root).discard(result.staging);
+    await removeStaging(root, result.staging);
   });
 
   it("cancels before creating staging worktrees", async () => {
@@ -383,6 +404,6 @@ describe("CandidateReplayEngine", () => {
     if (result.kind !== "repository_assessment_required") {
       throw new Error(JSON.stringify(result));
     }
-    await engine(root).discard(result.staging);
+    await removeStaging(root, result.staging);
   });
 });

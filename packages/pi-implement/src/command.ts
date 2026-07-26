@@ -203,14 +203,4 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
   });
 }
 
-export function isActiveImplementPhase(phase: string): boolean {
-  return ["planning", "running", "whole_plan_review", "stopping"].includes(
-    phase,
-  );
-}
-
-export function canStartImplementRun(phase: string): boolean {
-  return !isActiveImplementPhase(phase);
-}
-
 export { usage };

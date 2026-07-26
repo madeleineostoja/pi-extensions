@@ -7,6 +7,7 @@ import {
   rmSync,
 } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { stagingIdentity } from "./candidate-replay.js";
 import { sha256 } from "./source-integrity.js";
 import type { GitClient } from "./git.js";
 import type { CheckoutLeaseCapability, RunState, RunStore } from "./store.js";
@@ -166,6 +167,31 @@ function ownedResources(state: RunState): Map<string, OwnedResource> {
       preparation.stagingWorktree,
       preparation.preparedCommitSha,
     );
+  }
+  for (const assessment of Object.values(state.satisfaction.assessments)) {
+    const candidate = state.candidates[assessment.candidateId];
+    if (!candidate) {
+      continue;
+    }
+    const staging = stagingIdentity({
+      runId: state.run.id,
+      candidateId: candidate.id,
+      candidateCommitSha: candidate.commitSha,
+      targetBaseSha: assessment.targetSha,
+    });
+    add(staging.branchName, join(root, staging.id), assessment.targetSha);
+  }
+  for (const episode of Object.values(state.recoveryEpisodes)) {
+    if (
+      episode.workspace.id.startsWith("staging-") &&
+      episode.workspace.checkpoint
+    ) {
+      add(
+        `pi-implement/${state.run.id}/${episode.workspace.id}`,
+        join(root, episode.workspace.id),
+        episode.workspace.checkpoint,
+      );
+    }
   }
   return resources;
 }

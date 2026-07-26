@@ -15,6 +15,7 @@ import {
   createPlanningRun,
   sourceIdentityForExecutionPlan,
   type CheckoutLeaseCapability,
+  type RunState,
   type RunStore,
 } from "./store.js";
 import {
@@ -1279,6 +1280,125 @@ describe(" scheduler actor", () => {
       "candidate_ready",
     );
     expect(run.read().processLeases).toEqual({});
+  });
+
+  it("pauses a failed projection instead of relaunching it", async () => {
+    const run = await store();
+    const content =
+      "# Plan\n\n## Tasks\n\n- [ ] First task\n- [ ] Second task\n";
+    const projected = content.replace("- [ ] First task", "- [x] First task");
+    const initial = run.read();
+    await run.update(initial.revision, (state) => ({
+      ...state,
+      tasks: {
+        ...state.tasks,
+        first: {
+          workstreamId: "first-stream",
+          phase: "checkpointed",
+          checkpoint: "checkpoint:first",
+        },
+      },
+      projectionDebt: [
+        {
+          id: "projection:run-1:first",
+          reason: "Publish first task.",
+          artifactPath: join(state.run.checkout.root, "plan.md"),
+          canonicalPath: join(state.run.checkout.root, "plan.md"),
+          expectedOldContent: content,
+          expectedOldHash: sha256(content),
+          expectedNewContent: projected,
+          expectedNewHash: sha256(projected),
+          taskIds: ["first"],
+        },
+      ],
+    }));
+    const paused = deferred();
+    let attempts = 0;
+    const actor = new SchedulerActor({
+      store: run,
+      onTransition: (_state, event) => {
+        if (event.kind === "safety_paused") {
+          paused.resolve();
+        }
+      },
+      executeEffect: async ({ effect }) => {
+        if (effect.kind === "run_projection") {
+          attempts += 1;
+          throw new Error("projection store write failed");
+        }
+      },
+    });
+
+    await actor.start();
+    await paused.promise;
+
+    expect(run.read()).toMatchObject({
+      phase: "paused",
+      pause: {
+        resumePhase: "running",
+        reason: "projection store write failed",
+      },
+      projectionDebt: [{ id: "projection:run-1:first" }],
+    });
+    expect(attempts).toBe(1);
+    await actor.stop("test complete");
+  });
+
+  it("pauses a failed whole-plan closure instead of relaunching it", async () => {
+    let state = (await store()).read();
+    state.phase = "whole_plan_review";
+    for (const workstream of Object.values(state.workstreams.source)) {
+      workstream.phase = "completed";
+    }
+    state.wholePlanReview = {
+      status: "approved",
+      evidence: "whole-plan-review.json",
+      reviewedTargetSha: "target",
+      reviewedTargetTreeSha: "tree",
+    };
+    const fakeStore = {
+      read: () => structuredClone(state),
+      update: async (
+        expectedRevision: number,
+        update: (current: RunState) => RunState,
+      ) => {
+        expect(expectedRevision).toBe(state.revision);
+        state = {
+          ...update(structuredClone(state)),
+          revision: state.revision + 1,
+        };
+        return structuredClone(state);
+      },
+    } as RunStore;
+    const paused = deferred();
+    let attempts = 0;
+    const actor = new SchedulerActor({
+      store: fakeStore,
+      onTransition: (_state, event) => {
+        if (event.kind === "safety_paused") {
+          paused.resolve();
+        }
+      },
+      executeEffect: async ({ effect }) => {
+        if (effect.kind === "complete_whole_plan_run") {
+          attempts += 1;
+          throw new Error("reviewed target moved before closure");
+        }
+      },
+    });
+
+    await actor.start();
+    await paused.promise;
+
+    expect(state).toMatchObject({
+      phase: "paused",
+      pause: {
+        resumePhase: "whole_plan_review",
+        reason: "reviewed target moved before closure",
+      },
+    });
+    expect(attempts).toBe(1);
+    await actor.stop("test complete");
   });
 
   it("retains a failed implementation's trusted checkpoint for recovery", async () => {

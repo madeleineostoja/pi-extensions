@@ -185,9 +185,6 @@ function agent(
 ): SubagentClient {
   let cwd = "";
   return {
-    async probe() {
-      return { ok: true };
-    },
     async spawn(args) {
       cwd = args.cwd!;
       return "agent" as never;
@@ -280,7 +277,7 @@ describe("workstream candidate lifecycle", () => {
     expect(outcome.evidencePath).toContain("combined-implementation.json");
   });
 
-  it("runs implementation and review through the production runtime factory", async () => {
+  it("completes implementation, publication, projection, and whole-plan review through the production runtime", async () => {
     const subject = await fixture({
       workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
     });
@@ -289,9 +286,6 @@ describe("workstream candidate lifecycle", () => {
     let sequence = 0;
     let reviews = 0;
     const subagents: SubagentClient = {
-      async probe() {
-        return { ok: true };
-      },
       async spawn(args) {
         const id = `agent-${sequence++}`;
         handles.set(id, { role: args.role ?? "unknown", cwd: args.cwd ?? "" });
@@ -340,7 +334,7 @@ describe("workstream candidate lifecycle", () => {
       baseSha: await new ExecGitClient(subject.root).head(),
       subagents,
       onTransition: (_state, event) => {
-        if (event.kind === "review_completed") {
+        if (event.kind === "run_completed") {
           completed.resolve();
         }
       },
@@ -349,19 +343,32 @@ describe("workstream candidate lifecycle", () => {
     await runtime.start();
     try {
       await within("production runtime completion", completed.promise, {
-        timeoutMs: 10_000,
+        timeoutMs: 50_000,
         diagnostics: () => JSON.stringify(runtime.snapshot()),
       });
-      await runtime.quiesce();
+      await runtime.settle();
 
+      expect(runtime.snapshot()).toMatchObject({
+        phase: "completed",
+        wholePlanReview: { status: "approved" },
+      });
       expect(runtime.snapshot().gates).toContainEqual(
         expect.objectContaining({ kind: "review", outcome: "passed" }),
       );
-      expect(reviews).toBe(1);
+      expect(Object.keys(runtime.snapshot().publication.receipts)).toHaveLength(
+        1,
+      );
+      expect(readFileSync(subject.planPath, "utf-8")).toContain(
+        "- [x] First task\n- [x] Second task",
+      );
+      expect(readFileSync(join(subject.root, "first.txt"), "utf-8")).toBe(
+        "first\n",
+      );
+      expect(reviews).toBe(2);
     } finally {
-      await runtime.stop("test completed after review");
+      await runtime.stop("test completed");
     }
-  });
+  }, 60_000);
 
   it("runs independent workstreams concurrently in isolated worktrees", async () => {
     const subject = await fixture({

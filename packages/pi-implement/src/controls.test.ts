@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { stagingIdentity } from "./candidate-replay.js";
 import { TaskWorkspaceManager } from "./candidate-worker.js";
 import { ExecGitClient } from "./git.js";
 import { sweepOwnedRunResources } from "./cleanup.js";
@@ -78,6 +79,19 @@ describe(" controls", () => {
     execFileSync("git", ["add", "."], { cwd: workspace.worktreePath });
     await workspaceGit.checkpoint("feat: candidate", false);
     const candidateSha = await workspaceGit.head();
+    const satisfactionCandidateId = "satisfied:task-b:base";
+    const satisfactionStaging = stagingIdentity({
+      runId: "run-1",
+      candidateId: satisfactionCandidateId,
+      candidateCommitSha: baseSha,
+      targetBaseSha: baseSha,
+    });
+    await new TaskWorkspaceManager(git, join(paths.worktrees, "run-1")).ensure({
+      taskId: satisfactionStaging.id,
+      branchName: satisfactionStaging.branchName,
+      worktreePath: join(paths.worktrees, "run-1", satisfactionStaging.id),
+      baseSha,
+    });
     const state = {
       run: { id: "run-1", checkout: { root } },
       candidates: {
@@ -85,7 +99,21 @@ describe(" controls", () => {
           workstream: { kind: "source", id: "task-a" },
           commitSha: candidateSha,
         },
+        [satisfactionCandidateId]: {
+          id: satisfactionCandidateId,
+          workstream: { kind: "source", id: "task-b" },
+          commitSha: baseSha,
+        },
       },
+      satisfaction: {
+        assessments: {
+          assessment: {
+            candidateId: satisfactionCandidateId,
+            targetSha: baseSha,
+          },
+        },
+      },
+      recoveryEpisodes: {},
       publication: { preparations: {} },
     } as unknown as RunState;
     const lease = {

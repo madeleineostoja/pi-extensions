@@ -3,11 +3,7 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { getSubagentRuntime } from "pi-subagents/runtime";
-import type {
-  RuntimeContextUsage,
-  RuntimeSnapshot,
-  ThinkingLevel,
-} from "pi-subagents/runtime";
+import type { RuntimeSnapshot, ThinkingLevel } from "pi-subagents/runtime";
 import type { Static, TSchema } from "typebox";
 
 export type SubagentHandle<TResult = unknown> = string & {
@@ -15,7 +11,6 @@ export type SubagentHandle<TResult = unknown> = string & {
 };
 
 export type SubagentClient = {
-  probe(timeoutMs?: number): Promise<ProbeResult>;
   spawn<TSchemaValue extends TSchema = TSchema>(
     args: SpawnArgs<TSchemaValue>,
   ): Promise<SubagentHandle<Static<TSchemaValue>>>;
@@ -24,33 +19,7 @@ export type SubagentClient = {
     id: SubagentHandle<TResult>,
     signal?: AbortSignal,
   ): Promise<SubagentResult<TResult>>;
-  snapshots?(ids?: string[]): AgentSnapshot[];
 };
-
-export function hasLiveManagedRunAgents(
-  runtime: ReturnType<typeof getSubagentRuntime>,
-  runId: string,
-): boolean {
-  return runtime.snapshots({ includeNested: true }).some((snapshot) => {
-    const owner = snapshot.owner;
-    return (
-      typeof owner === "object" &&
-      owner !== null &&
-      owner.kind === "pi-implement" &&
-      owner.runId === runId &&
-      !["completed", "failed", "stopped"].includes(snapshot.status)
-    );
-  });
-}
-
-export type ProbeResult = { ok: true; version?: number } | { ok: false };
-
-export type PiImplementWorkerStage =
-  | "planning"
-  | "implementation"
-  | "review"
-  | "recovery"
-  | "whole_plan_review";
 
 export type PiImplementWorkerRole =
   | "implementer"
@@ -66,15 +35,8 @@ export type SpawnArgs<TSchemaValue extends TSchema = TSchema> = {
   thinking?: ThinkingLevel;
   cwd?: string;
   role?: PiImplementWorkerRole;
-  ownerRole?: PiImplementWorkerRole;
-  stage?: PiImplementWorkerStage;
-  noTools?: boolean;
   taskId?: string;
   readOnly?: boolean;
-  systemPrompt?: string;
-  systemPromptMode?: "append" | "replace";
-  tools?: string[];
-  excludeTools?: string[];
   completion?: {
     description: string;
     schema: TSchemaValue;
@@ -82,25 +44,10 @@ export type SpawnArgs<TSchemaValue extends TSchema = TSchema> = {
   };
 };
 
-export type AgentSnapshot = {
-  id: string;
-  status?: string;
-  description?: string;
-  toolUses?: number;
-  tokensTotal?: number;
-  estimatedCost?: number;
-  contextUsage?: RuntimeContextUsage;
-  peakContextTokens?: number;
-  compactionCount?: number;
-  cwd?: string;
-  model?: string;
-  thinking?: ThinkingLevel;
-};
-
 export type SubagentResult<TResult = any> =
-  | { status: "completed"; result: TResult; runtime?: AgentSnapshot }
-  | { status: "failed"; error: string; runtime?: AgentSnapshot }
-  | { status: "stopped"; error: string; runtime?: AgentSnapshot };
+  | { status: "completed"; result: TResult }
+  | { status: "failed"; error: string }
+  | { status: "stopped"; error: string };
 
 const READ_ONLY_TOOLS = [
   "read",
@@ -132,15 +79,11 @@ export class RuntimeSubagentClient implements SubagentClient {
     registerPiImplementDefinitions(this.runtime);
   }
 
-  async probe(): Promise<ProbeResult> {
-    return { ok: true, version: 3 };
-  }
-
   async spawn<TSchemaValue extends TSchema = TSchema>(
     args: SpawnArgs<TSchemaValue>,
   ): Promise<SubagentHandle<Static<TSchemaValue>>> {
     const cwd = args.cwd ?? this.ctx.cwd;
-    const role = args.ownerRole ?? args.role ?? "implementer";
+    const role = args.role ?? "implementer";
     const snapshot = await this.runtime.runManagedAgent({
       owner: {
         kind: "pi-implement",
@@ -158,21 +101,15 @@ export class RuntimeSubagentClient implements SubagentClient {
       ctx: this.ctx,
       rosterVisibility: "hide",
       completion: args.completion as never,
-      systemPrompt: args.systemPrompt,
-      systemPromptMode: args.systemPromptMode,
-      ...(args.noTools
-        ? { noTools: true, excludeTools: args.excludeTools ?? [] }
-        : args.tools
-          ? { tools: args.tools, excludeTools: args.excludeTools ?? [] }
-          : args.readOnly || role === "reviewer" || role === "planner"
-            ? {
-                tools: READ_ONLY_TOOLS.filter(
-                  (name) =>
-                    this.pi.getActiveTools?.().includes(name) ?? name !== "lsp",
-                ),
-                excludeTools: args.excludeTools ?? MUTATING_TOOLS,
-              }
-            : { excludeTools: args.excludeTools ?? ["propose_papercut"] }),
+      ...(args.readOnly || role === "reviewer" || role === "planner"
+        ? {
+            tools: READ_ONLY_TOOLS.filter(
+              (name) =>
+                this.pi.getActiveTools?.().includes(name) ?? name !== "lsp",
+            ),
+            excludeTools: MUTATING_TOOLS,
+          }
+        : { excludeTools: ["propose_papercut"] }),
     });
     return snapshot.id as SubagentHandle<Static<TSchemaValue>>;
   }
@@ -212,12 +149,10 @@ export class RuntimeSubagentClient implements SubagentClient {
       const snapshot = (await this.runtime.wait(
         id,
       )) as RuntimeSnapshot<TResult>;
-      const runtime = toAgentSnapshot(snapshot);
       if (snapshot.status === "completed") {
         return {
           status: "completed",
           result: snapshot.result as TResult,
-          runtime,
         };
       }
       return {
@@ -225,19 +160,10 @@ export class RuntimeSubagentClient implements SubagentClient {
         error:
           snapshot.error ??
           (stopped ? "Stopped by user." : `Subagent ${snapshot.status}.`),
-        runtime,
       };
     } finally {
       signal?.removeEventListener("abort", abort);
     }
-  }
-
-  snapshots(ids?: string[]): AgentSnapshot[] {
-    const idSet = ids ? new Set(ids) : undefined;
-    return this.runtime
-      .snapshots({ includeNested: true })
-      .filter((snapshot: RuntimeSnapshot) => !idSet || idSet.has(snapshot.id))
-      .map(toAgentSnapshot);
   }
 }
 
@@ -270,20 +196,4 @@ function registerPiImplementDefinitions(
   ]) {
     runtime.definitions.register({ ...definition, visibility: "internal" });
   }
-}
-
-function toAgentSnapshot(snapshot: RuntimeSnapshot): AgentSnapshot {
-  return {
-    id: snapshot.id,
-    status: snapshot.status,
-    description: snapshot.description,
-    toolUses: snapshot.health?.toolUses,
-    tokensTotal: snapshot.health?.tokensTotal,
-    estimatedCost: snapshot.health?.estimatedCost,
-    contextUsage: snapshot.health?.contextUsage,
-    peakContextTokens: snapshot.health?.peakContextTokens,
-    cwd: snapshot.cwd,
-    model: snapshot.model,
-    thinking: snapshot.thinking,
-  };
 }

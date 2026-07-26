@@ -54,6 +54,10 @@ export async function runRecovery(args: {
     episode.workspace,
     gate?.kind,
   );
+  const correctionWorktreePath = candidate
+    ? candidateWorktree(args.state, args.effect.workstream, candidate)
+    : worktreePath;
+  const usesHookStaging = worktreePath !== correctionWorktreePath;
   const handle = await args.subagents.spawn({
     type: args.roles.type,
     role: "recovery",
@@ -70,8 +74,12 @@ export async function runRecovery(args: {
         branchRef: args.state.run.checkout.branchRef,
         startHead: args.state.run.checkout.startHead,
       },
-      permittedMutationBoundary:
-        "The assigned disposable worktree only; the target checkout is read-only.",
+      permittedMutationBoundary: usesHookStaging
+        ? `Ignored/runtime hook repair belongs in ${worktreePath}; tracked candidate corrections belong in ${correctionWorktreePath}. The target checkout is read-only.`
+        : "The assigned disposable worktree only; the target checkout is read-only.",
+      ...(usesHookStaging
+        ? { trackedCorrectionWorktreePath: correctionWorktreePath }
+        : {}),
     }),
     completion: {
       description: "Return one bounded recovery action.",
@@ -154,7 +162,7 @@ export async function runRecovery(args: {
         git: args.git,
       });
       const changedPaths = await changedPathsBetween(
-        args.git.forWorktree(worktreePath),
+        args.git.forWorktree(correctionWorktreePath),
         candidate.commitSha,
         completion.candidateTip,
       );

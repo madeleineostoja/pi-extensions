@@ -23,7 +23,7 @@ export async function runProjection(args: {
   });
   if (outcome.kind === "safety_paused") {
     await args.dispatch({
-      kind: "projection_safety_paused",
+      kind: "safety_paused",
       reason: outcome.reason,
     });
     return;

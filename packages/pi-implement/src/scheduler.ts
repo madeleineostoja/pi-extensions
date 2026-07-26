@@ -230,13 +230,13 @@ export type SchedulerEvent =
   | { kind: "run_paused"; reason?: string }
   | { kind: "resume_requested" }
   | { kind: "safety_blocked"; reason: string }
+  | { kind: "safety_paused"; reason: string }
   | { kind: "run_completed"; targetSha: string; targetTreeSha: string }
   | {
       kind: "projection_debt_recorded";
       debt: RunState["projectionDebt"][number];
     }
-  | { kind: "projection_debt_settled"; debtId: string }
-  | { kind: "projection_safety_paused"; reason: string };
+  | { kind: "projection_debt_settled"; debtId: string };
 
 export type SchedulerEffect =
   | {
@@ -1816,6 +1816,21 @@ export function reduceRunEvent(
       state.terminalReason = event.reason;
       return accept();
 
+    case "safety_paused":
+      if (
+        !["running", "whole_plan_review"].includes(state.phase) ||
+        Object.keys(state.processLeases).length > 0
+      ) {
+        return reject("safety pause requires settled active run processes");
+      }
+      state.pause = {
+        resumePhase:
+          state.phase === "whole_plan_review" ? "whole_plan_review" : "running",
+        reason: event.reason,
+      };
+      state.phase = "paused";
+      return accept();
+
     case "run_completed":
       if (
         state.phase !== "whole_plan_review" ||
@@ -1835,15 +1850,6 @@ export function reduceRunEvent(
         return reject("run still has incomplete workstreams or cleanup debt");
       }
       state.phase = "completed";
-      return accept();
-
-    case "projection_safety_paused":
-      state.pause = {
-        resumePhase:
-          state.phase === "whole_plan_review" ? "whole_plan_review" : "running",
-        reason: event.reason,
-      };
-      state.phase = "paused";
       return accept();
 
     case "projection_debt_recorded":
@@ -2282,19 +2288,6 @@ export class SchedulerActor {
     }
   }
 
-  async blockSafety(reason: string): Promise<void> {
-    this.stopping = true;
-    this.controller.abort();
-    for (const controller of this.processControllers.values()) {
-      controller.abort();
-    }
-    while (this.processes.size > 0) {
-      await Promise.allSettled(this.processes.values());
-    }
-    await this.options.awaitOwnedProcesses?.();
-    await this.dispatch({ kind: "safety_blocked", reason });
-  }
-
   private startPlanner(): void {
     if (!this.options.executePlanner || this.processes.has("planner")) {
       return;
@@ -2479,6 +2472,16 @@ export class SchedulerActor {
           await this.dispatch({
             kind: "whole_plan_review_failed",
             evidence: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+        if (
+          effect.kind === "run_projection" ||
+          effect.kind === "complete_whole_plan_run"
+        ) {
+          await this.dispatch({
+            kind: "safety_paused",
+            reason: error instanceof Error ? error.message : String(error),
           });
           return;
         }
