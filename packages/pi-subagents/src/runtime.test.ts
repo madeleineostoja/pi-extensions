@@ -212,6 +212,23 @@ describe("SubagentRuntime", () => {
     expect(getSubagentRuntimes()).toContain(runtime);
   });
 
+  it("rebinds fresh APIs sharing one event bus while isolating distinct buses", () => {
+    const events = {};
+    const first = { ...fakePi().pi, events };
+    const second = { ...fakePi().pi, events };
+    const child = { ...fakePi().pi, events: {} };
+    const runtime = getSubagentRuntime(first as never);
+    const record = runtime.queue({ owner: "owner", type: "General", description: "reload", cwd: "/workspace" });
+
+    expect(getSubagentRuntime(second as never)).toBe(runtime);
+    expect(runtime.pi).toBe(second);
+    expect(getSubagentRuntime(second as never).snapshot(record.id)).toMatchObject({
+      id: record.id,
+      status: "queued",
+    });
+    expect(getSubagentRuntime(child as never)).not.toBe(runtime);
+  });
+
   it("reuses the existing runtime across module reloads", async () => {
     const { pi } = fakePi();
     const runtime = getSubagentRuntime(pi as never);
@@ -485,6 +502,34 @@ describe("SubagentRuntime", () => {
     unsubscribe();
     publishSessionEvent?.({ toolCall: { name: "read" } });
     expect(listener).toHaveBeenCalledTimes(1);
+    runtime.stop(started.id);
+    promptDone.resolve();
+  });
+
+  it("serializes steering and continues after one rejected delivery", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const first = deferred<void>();
+    const second = deferred<void>();
+    const calls: string[] = [];
+    const session = makeSession();
+    session.prompt = vi.fn(() => promptDone.promise);
+    session.steer = vi.fn((message: string) => {
+      calls.push(message);
+      return message === "first" ? first.promise : second.promise;
+    });
+    const runtime = new SubagentRuntime(pi as never, { createSession: vi.fn(async () => ({ session })) });
+    const started = await runtime.runManagedAgent({ type: "General", prompt: "work", cwd: "/workspace", ctx: makeCtx() as never, mode: "background" });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    const one = runtime.steer(started.id, "first");
+    const two = runtime.steer(started.id, "second");
+    expect(calls).toEqual(["first"]);
+    first.reject(new Error("rejected"));
+    await expect(one).rejects.toThrow("rejected");
+    await vi.waitFor(() => expect(calls).toEqual(["first", "second"]));
+    second.resolve();
+    await expect(two).resolves.toMatchObject({ status: "running" });
+    expect(runtime.snapshot(started.id)?.health?.pendingSteering).toBe(0);
     runtime.stop(started.id);
     promptDone.resolve();
   });
