@@ -87,12 +87,12 @@ Configuration is optional and lives at `~/.pi/agent/extensions/pi-implement/conf
   "workerConcurrency": 3,
   "planner": { "type": "Explore" },
   "implementer": { "model": "provider/model-id" },
-  "reviewer": { "type": "Review", "thinking": "high" },
+  "reviewer": { "type": "Review", "thinking": "max" },
   "recovery": { "model": "provider/model-id", "thinking": "high" }
 }
 ```
 
-Implementers choose and run appropriate verification for their workstream; pi-implement has no configured or auto-detected validation command. Managed agents use Pi's current-session generic subagent runtime. Recovery agents receive the retained gate, candidate, workspace, findings, prior actions, and mutation boundary, then return one typed bounded action. The `recovery` override selects that agent. There is no pi-implement-specific reviewer watchdog; use Pi's generic agent controls for supervision.
+Role thinking accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; Pi may clamp it to the selected model's capability. Implementers choose and run appropriate verification for their workstream; pi-implement has no configured or auto-detected validation command. Managed agents use Pi's current-session generic subagent runtime. Recovery agents receive the retained gate, candidate, workspace, findings, prior actions, and mutation boundary, then return one typed bounded action. The `recovery` override selects that agent. There is no pi-implement-specific reviewer watchdog; use Pi's generic agent controls for supervision.
 
 ## Human follow-up
 

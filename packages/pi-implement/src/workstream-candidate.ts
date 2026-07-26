@@ -63,7 +63,7 @@ export type WorkstreamCandidateLifecycleArgs = {
   roles?: {
     model?: string;
     type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   };
   recoveryObligations?: string[];
   trustedCheckpoint?: string;

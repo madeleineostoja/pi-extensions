@@ -8,7 +8,8 @@ export type ThinkingLevel =
   | "low"
   | "medium"
   | "high"
-  | "xhigh";
+  | "xhigh"
+  | "max";
 export type FooterModel =
   | { name?: string; id?: string; provider?: string }
   | undefined;

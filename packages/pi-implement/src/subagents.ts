@@ -76,7 +76,6 @@ export class RuntimeSubagentClient implements SubagentClient {
     private readonly runId: string,
   ) {
     this.runtime = getSubagentRuntime(pi);
-    registerPiImplementDefinitions(this.runtime);
   }
 
   async spawn<TSchemaValue extends TSchema = TSchema>(
@@ -164,36 +163,5 @@ export class RuntimeSubagentClient implements SubagentClient {
     } finally {
       signal?.removeEventListener("abort", abort);
     }
-  }
-}
-
-function registerPiImplementDefinitions(
-  runtime: ReturnType<typeof getSubagentRuntime>,
-): void {
-  for (const definition of [
-    {
-      type: "pi-implement:implementer",
-      title: "pi-implement implementer",
-      description: "Internal write-capable worker for one pi-implement task.",
-    },
-    {
-      type: "pi-implement:reviewer",
-      title: "pi-implement reviewer",
-      description:
-        "Internal read-only reviewer for pi-implement task candidates.",
-    },
-    {
-      type: "pi-implement:planner",
-      title: "pi-implement planner",
-      description:
-        "Internal read-only execution manifest planner for pi-implement.",
-    },
-    {
-      type: "pi-implement:recovery",
-      title: "pi-implement recovery",
-      description: "Internal write-capable worker for pi-implement recovery.",
-    },
-  ]) {
-    runtime.definitions.register({ ...definition, visibility: "internal" });
   }
 }

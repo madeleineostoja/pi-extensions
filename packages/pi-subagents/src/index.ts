@@ -1,9 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { showAgentsDashboard } from "./agents-dashboard.js";
 import {
   AGENT_PROMPT_GUIDELINES,
-  PUBLIC_AGENT_PROFILES,
+  PUBLIC_BUILTIN_TYPES,
 } from "./agent-profiles.js";
 import { getSubagentRuntime, getSubagentRuntimes } from "./runtime.js";
 import { SubagentRosterController } from "./roster.js";
@@ -24,17 +25,8 @@ export {
   REVIEW_PROMPT,
 } from "./agent-profiles.js";
 export type { AgentProfile, PromptMode } from "./agent-profiles.js";
-export {
-  AgentDefinitionRegistry,
-  createAgentDefinitionRegistry,
-  PUBLIC_BUILTIN_DEFINITIONS,
-  PUBLIC_BUILTIN_TYPES,
-} from "./definitions.js";
-export type {
-  AgentDefinition,
-  AgentDefinitionVisibility,
-  PublicBuiltinType,
-} from "./definitions.js";
+export { PUBLIC_BUILTIN_TYPES } from "./agent-profiles.js";
+export type { PublicBuiltinType } from "./agent-profiles.js";
 export {
   getPublicConfigPath,
   loadPublicConfig,
@@ -70,26 +62,19 @@ export type {
   SubagentRuntimeStatus,
 } from "./runtime.js";
 
-const PublicAgentType = Type.Union([
-  Type.Literal("General", {
-    description: PUBLIC_AGENT_PROFILES.General.description,
-  }),
-  Type.Literal("Explore", {
-    description: PUBLIC_AGENT_PROFILES.Explore.description,
-  }),
-  Type.Literal("Review", {
-    description: PUBLIC_AGENT_PROFILES.Review.description,
-  }),
-]);
+const PublicAgentType = StringEnum(PUBLIC_BUILTIN_TYPES, {
+  description: "General, Explore, or Review subagent type.",
+});
 
-const Thinking = Type.Union([
-  Type.Literal("off"),
-  Type.Literal("minimal"),
-  Type.Literal("low"),
-  Type.Literal("medium"),
-  Type.Literal("high"),
-  Type.Literal("xhigh"),
-]);
+const Thinking = StringEnum([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const);
 
 const PublicAgentParameters = Type.Object({
   subagent_type: PublicAgentType,
@@ -98,7 +83,7 @@ const PublicAgentParameters = Type.Object({
     Type.String({ description: "Short human-readable task summary." }),
   ),
   mode: Type.Optional(
-    Type.Union([Type.Literal("foreground"), Type.Literal("background")], {
+    StringEnum(["foreground", "background"] as const, {
       description:
         "Default foreground. Use background only when independent work can proceed before the result is needed.",
     }),

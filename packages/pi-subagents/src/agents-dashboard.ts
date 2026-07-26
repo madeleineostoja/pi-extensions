@@ -230,7 +230,7 @@ export function formatDetail(
     `Status: ${snapshot.status}`,
     `Description: ${snapshot.description}`,
     `Model: ${snapshot.model ?? "unknown"}`,
-    `Thinking: ${snapshot.thinking ?? "unknown"}`,
+    `Thinking: ${snapshot.effectiveThinking ?? snapshot.thinking ?? "unknown"}`,
     `CWD: ${snapshot.cwd}`,
     `Extension binding: ${snapshot.extensionBinding}`,
     `Elapsed: ${elapsedLabel(snapshot)}`,

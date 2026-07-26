@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { formatListRows, showAgentsDashboard } from "./agents-dashboard.js";
+import {
+  formatDetail,
+  formatListRows,
+  showAgentsDashboard,
+} from "./agents-dashboard.js";
 import type {
   RuntimeInspection,
   RuntimeSnapshot,
@@ -193,6 +197,14 @@ function makeRuntime(
 }
 
 describe("/agents dashboard", () => {
+  it("renders effective thinking when Pi clamps the requested level", () => {
+    expect(
+      formatDetail(
+        snapshot({ id: "agent-1", thinking: "max", effectiveThinking: "low" }),
+      ),
+    ).toContain("Thinking: low");
+  });
+
   it("notifies clearly when no current-session agents exist", async () => {
     const runtime = makeRuntime([]);
     const { ctx, notifications } = makeCtx();

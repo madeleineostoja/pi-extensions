@@ -1,8 +1,7 @@
 import {
-  AuthStorage,
   createAgentSession,
   DefaultResourceLoader,
-  ModelRegistry,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSession,
@@ -109,9 +108,10 @@ async function createRealSessionHarness(responses: FauxResponse) {
     throw new Error("Missing faux test model.");
   }
   faux.setResponses(responses);
-  const authStorage = AuthStorage.inMemory();
-  const modelRegistry = ModelRegistry.inMemory(authStorage);
-  modelRegistry.registerProvider(TEST_PROVIDER, {
+  const modelRuntime = await ModelRuntime.create({
+    allowModelNetwork: false,
+  });
+  modelRuntime.registerProvider(TEST_PROVIDER, {
     api: fauxModel.api,
     baseUrl: fauxModel.baseUrl,
     apiKey: "test-key",
@@ -130,10 +130,17 @@ async function createRealSessionHarness(responses: FauxResponse) {
       },
     ],
   });
-  const model = modelRegistry.find(TEST_PROVIDER, TEST_MODEL);
+  await modelRuntime.setRuntimeApiKey(TEST_PROVIDER, "test-key", {
+    allowNetwork: false,
+  });
+  const model = modelRuntime.getModel(TEST_PROVIDER, TEST_MODEL);
   if (!model) {
     throw new Error("Test model registration failed.");
   }
+  const modelRegistry = {
+    find: (provider: string, modelId: string) =>
+      provider === TEST_PROVIDER && modelId === TEST_MODEL ? model : undefined,
+  };
   const settingsManager = SettingsManager.inMemory({
     compaction: { enabled: false },
     retry: { enabled: false },
@@ -157,10 +164,10 @@ async function createRealSessionHarness(responses: FauxResponse) {
       ...options,
       cwd: TEST_CWD,
       model,
-      modelRegistry,
-      authStorage,
+      modelRuntime,
       settingsManager,
       resourceLoader,
+      sessionManager: SessionManager.inMemory(TEST_CWD),
       noTools: "builtin",
     });
     sessions.push(created.session);
@@ -170,8 +177,8 @@ async function createRealSessionHarness(responses: FauxResponse) {
 }
 
 function realContext(
-  model: NonNullable<ReturnType<ModelRegistry["find"]>>,
-  modelRegistry: ModelRegistry,
+  model: ReturnType<ReturnType<typeof createFauxCore>["getModel"]>,
+  modelRegistry: { find: (provider: string, modelId: string) => typeof model },
 ) {
   return makeCtx({ model, modelRegistry }) as never;
 }

@@ -46,6 +46,7 @@ const THINKING_LEVELS = new Set<ThinkingLevel>([
   "medium",
   "high",
   "xhigh",
+  "max",
 ]);
 
 export function getConfigPath(agentDir: string): string {
@@ -197,7 +198,7 @@ function parseRole(
       role.thinking = input.thinking as ThinkingLevel;
     } else {
       invalid.push(
-        `${name}.thinking must be one of off, minimal, low, medium, high, xhigh`,
+        `${name}.thinking must be one of off, minimal, low, medium, high, xhigh, max`,
       );
     }
   }

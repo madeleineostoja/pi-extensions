@@ -8,28 +8,28 @@ import type {
 import {
   createAgentSession,
   DefaultResourceLoader,
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
   getAgentDir,
   SessionManager,
+  truncateHead,
 } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static, type TSchema } from "typebox";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
 import {
-  createAgentDefinitionRegistry,
+  PUBLIC_AGENT_PROFILES,
   PUBLIC_BUILTIN_TYPES,
-  type AgentDefinitionRegistry,
+  type AgentProfile,
+  type PromptMode,
   type PublicBuiltinType,
-} from "./definitions.js";
+} from "./agent-profiles.js";
 import {
   loadPublicConfig,
   type ResolvedPublicSubagentsConfig,
   type ThinkingLevel,
 } from "./config.js";
-import {
-  PUBLIC_AGENT_PROFILES,
-  type AgentProfile,
-  type PromptMode,
-} from "./agent-profiles.js";
 export type { ThinkingLevel } from "./config.js";
 export type { PromptMode } from "./agent-profiles.js";
 
@@ -101,6 +101,7 @@ export type RuntimeSnapshot<TResult = unknown> = {
   cwd: string;
   model?: string;
   thinking?: ThinkingLevel;
+  effectiveThinking?: ThinkingLevel;
   extensionBinding: ExtensionBindingStatus;
   rosterVisibility: RosterVisibility;
   timestamps: RuntimeTimestamps;
@@ -242,7 +243,8 @@ const readOnlyToolNames = normalizeActiveToolNames(
 const defaultSystemPromptMode: PromptMode = "append";
 const EXPLORE_TOOL_INACTIVITY_MS = 120_000;
 const EXPLORE_TOOL_INACTIVITY_POLL_MS = 10_000;
-const EXPLORE_TOOL_MAX_RESULT_CHARS = 50_000;
+const EXPLORE_OUTPUT_TRUNCATION_NOTICE =
+  "\n\n[Explore output truncated. Continue with direct reads/searches.]";
 export const TERMINAL_MESSAGE_TAIL_LIMIT = 100;
 export const MANAGED_COMPLETION_TOOL_NAME = "pi_managed_complete";
 const exploreEligibleTypes = new Set([
@@ -322,6 +324,9 @@ function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
     cwd: record.cwd,
     ...(record.model === undefined ? {} : { model: record.model }),
     ...(record.thinking === undefined ? {} : { thinking: record.thinking }),
+    ...(record.effectiveThinking === undefined
+      ? {}
+      : { effectiveThinking: record.effectiveThinking }),
     extensionBinding: record.extensionBinding,
     rosterVisibility: record.rosterVisibility,
     timestamps: {
@@ -634,11 +639,11 @@ function findModel(
 
 function buildExplorePrompt(params: ExploreToolParams): string {
   return [
-    "You are a nested read-only Explore child. Answer the parent agent's bounded codebase exploration question.",
+    "You are a repository-preserving nested Explore child. Answer the parent agent's bounded codebase exploration question.",
+    "This is a trusted-model instruction, not a technical sandbox. Use available tools for discovery, including read-only Git or GitHub work, tests, and checks when useful. Do not intentionally modify source files, dependencies, or Git state, spawn agents, or invoke explore recursively.",
     "Use lsp when available for targeted language-semantic relationships that text search may miss. Use search for broad, literal, or non-semantic discovery and reads for surrounding behavior. Combine them when useful, and fall back to search and reads when LSP is unavailable or incomplete.",
-    "Do not edit, write, change repository or system state, spawn agents, or invoke explore recursively.",
     `Breadth: ${params.breadth ?? "medium"}`,
-    "Return concise findings with relevant file paths and enough context for the parent to continue with targeted reads.",
+    "Lead with conclusions, then provide relevant evidence with absolute file paths and enough context for the parent to continue with targeted reads.",
     "",
     `Question: ${params.question.trim()}`,
   ].join("\n");
@@ -659,11 +664,20 @@ function resultText(value: unknown): string {
 }
 
 function truncateText(text: string): { text: string; truncated: boolean } {
-  if (text.length <= EXPLORE_TOOL_MAX_RESULT_CHARS) {
+  const truncation = truncateHead(text, {
+    maxLines: DEFAULT_MAX_LINES,
+    maxBytes: DEFAULT_MAX_BYTES,
+  });
+  if (!truncation.truncated) {
     return { text, truncated: false };
   }
+  const content = truncateHead(text, {
+    maxLines: DEFAULT_MAX_LINES,
+    maxBytes:
+      DEFAULT_MAX_BYTES - Buffer.byteLength(EXPLORE_OUTPUT_TRUNCATION_NOTICE),
+  }).content;
   return {
-    text: `${text.slice(0, EXPLORE_TOOL_MAX_RESULT_CHARS)}\n\n[explore output truncated after ${EXPLORE_TOOL_MAX_RESULT_CHARS} characters; continue with direct reads/searches.]`,
+    text: `${content}${EXPLORE_OUTPUT_TRUNCATION_NOTICE}`,
     truncated: true,
   };
 }
@@ -682,23 +696,26 @@ function exploreToolResult(
       },
     };
   }
-  const reason = snapshot.error ?? `${snapshot.status}.`;
+  const error =
+    snapshot.error === undefined ? undefined : truncateText(snapshot.error);
+  const reason = error?.text ?? `${snapshot.status}.`;
   const text =
     snapshot.status === "stopped"
       ? `explore stopped or timed out: ${reason} Continue with direct reads/searches.`
       : `explore ${snapshot.status}: ${reason} Continue with direct reads/searches.`;
+  const truncated = truncateText(text);
   return {
-    content: [{ type: "text", text }],
+    content: [{ type: "text", text: truncated.text }],
     details: {
       id: snapshot.id,
       status: snapshot.status,
-      error: snapshot.error,
+      error: error?.text,
+      ...(truncated.truncated || error?.truncated ? { truncated: true } : {}),
     },
   };
 }
 
 export class SubagentRuntime {
-  readonly definitions: AgentDefinitionRegistry;
   readonly publicConfig: ResolvedPublicSubagentsConfig;
   #records = new Map<string, RuntimeRecord>();
   #waiters = new Map<string, Waiter[]>();
@@ -718,7 +735,6 @@ export class SubagentRuntime {
     const runtimeManager = getRuntimeManager();
     runtimeManager.runtimes.set(pi, this);
     runtimeManager.runtimeList.add(this);
-    this.definitions = createAgentDefinitionRegistry();
     this.#createSession = options.createSession ?? createAgentSession;
     this.publicConfig =
       options.publicConfig ??
@@ -874,17 +890,13 @@ export class SubagentRuntime {
       name: "explore",
       label: "explore",
       description:
-        "Ask a nested read-only Explore child to answer a bounded codebase discovery question synchronously. Use it for multi-step tracing or mapping where keeping the search trail in separate context is useful, not for one targeted semantic lookup or one or two direct reads. The child combines LSP with search and source reads when useful; it cannot modify state, spawn agents, or invoke explore recursively. Continue with direct discovery if the result is stopped, failed, timed out, or truncated.",
+        "Ask a nested repository-preserving Explore child to answer a bounded codebase discovery question synchronously. Use it for multi-step tracing or mapping where keeping the search trail in separate context is useful, not for one targeted semantic lookup or one or two direct reads. The child follows repository-preserving instructions while combining LSP with search and source reads when useful; it cannot spawn agents or invoke explore recursively. Continue with direct discovery if the result is stopped, failed, timed out, or truncated.",
       parameters: Type.Object({
         question: Type.String({
           description: "Specific codebase exploration question to answer.",
         }),
         breadth: Type.Optional(
-          Type.Union([
-            Type.Literal("quick"),
-            Type.Literal("medium"),
-            Type.Literal("very thorough"),
-          ]),
+          StringEnum(["quick", "medium", "very thorough"] as const),
         ),
       }),
       executionMode: "sequential",
@@ -1240,6 +1252,7 @@ export class SubagentRuntime {
           return projectSnapshot(record);
         }
         record.session = session;
+        record.effectiveThinking = session.thinkingLevel as ThinkingLevel;
         record.unsubscribeSession = session.subscribe((event) => {
           if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
             return;
