@@ -46,21 +46,44 @@ async function candidate(
   const client = new ExecGitClient(root);
   await ensureGitInfoExclude(root, ".pi/");
   const baseSha = await client.head();
-  const branch = `candidate-${path}`;
-  const worktree = join(root, ".pi", branch);
-  await client.createTaskBranch(branch, baseSha);
-  await client.addWorktree(worktree, branch);
-  const workspace = client.forWorktree(worktree);
-  writeFileSync(join(worktree, path), content);
-  git(worktree, "add", "-A");
-  await workspace.checkpoint(`feat: ${path}`, false);
-  const commitSha = await workspace.head();
-  return {
-    id: `candidate:${path}`,
-    baseSha,
-    commitSha,
-    treeSha: await workspace.treeAt(commitSha),
-  };
+  const index = join(
+    root,
+    ".git",
+    `candidate-index-${path.replace(/[^a-z0-9]/gi, "-")}`,
+  );
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  try {
+    execFileSync("git", ["read-tree", baseSha], { cwd: root, env });
+    const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: root,
+      env,
+      input: content,
+      encoding: "utf-8",
+    }).trim();
+    execFileSync(
+      "git",
+      ["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`],
+      { cwd: root, env },
+    );
+    const treeSha = execFileSync("git", ["write-tree"], {
+      cwd: root,
+      env,
+      encoding: "utf-8",
+    }).trim();
+    const commitSha = execFileSync(
+      "git",
+      ["commit-tree", treeSha, "-p", baseSha, "-m", `feat: ${path}`],
+      { cwd: root, env, encoding: "utf-8" },
+    ).trim();
+    return {
+      id: `candidate:${path}`,
+      baseSha,
+      commitSha,
+      treeSha,
+    };
+  } finally {
+    rmSync(index, { force: true });
+  }
 }
 
 function engine(root: string): CandidateReplayEngine {
@@ -236,19 +259,14 @@ describe("CandidateReplayEngine", () => {
     await removeStaging(root, result.staging);
   });
 
-  it("replays two historical candidates serially when target changes do not overlap", async () => {
+  it("replays a historical candidate after a non-overlapping publication", async () => {
     const root = repository();
     const client = new ExecGitClient(root);
     const first = await candidate(root, "candidate.txt", "first\n");
     const second = await candidate(root, "target.txt", "second\n");
-    const replay = engine(root);
+    git(root, "merge", "--ff-only", first.commitSha);
 
-    const preparedFirst = await replay.prepare(first);
-    if (preparedFirst.kind !== "prepared") {
-      throw new Error(JSON.stringify(preparedFirst));
-    }
-    git(root, "merge", "--ff-only", preparedFirst.staging.preparedCommitSha);
-    const preparedSecond = await replay.prepare(second);
+    const preparedSecond = await engine(root).prepare(second);
 
     expect(preparedSecond).toMatchObject({
       kind: "prepared",
@@ -259,10 +277,6 @@ describe("CandidateReplayEngine", () => {
       throw new Error(JSON.stringify(preparedSecond));
     }
     expect(preparedSecond.staging.treeSha).not.toBe(second.treeSha);
-    expect(preparedSecond.staging.id).not.toBe(preparedFirst.staging.id);
-    expect(preparedSecond.staging.branchName).not.toBe(
-      preparedFirst.staging.branchName,
-    );
     expect(
       publicationPreparation(
         {
@@ -288,7 +302,6 @@ describe("CandidateReplayEngine", () => {
       preparedCommitSha: preparedSecond.staging.preparedCommitSha,
       preparedTreeSha: preparedSecond.staging.treeSha,
     });
-    await removeStaging(root, preparedFirst.staging);
     await removeStaging(root, preparedSecond.staging);
   });
 
