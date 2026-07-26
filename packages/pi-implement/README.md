@@ -62,7 +62,7 @@ Tracked source plans become expected working changes after checkbox projection. 
 Running `/implement` opens the run menu. The current session run appears first, followed by retained checkout runs and the action to create a new run. Selecting a run shows only actions valid for its current phase.
 
 ```text
-/implement run <plan.md>
+/implement <plan.md>
 /implement resume <plan.md> <run-id>
 /implement restart <plan.md> <completed-run-id>
 /implement status

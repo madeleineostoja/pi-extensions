@@ -3,7 +3,7 @@ import { parseCommand } from "./parser.js";
 
 describe("parseCommand", () => {
   it("parses a plan execution", () => {
-    expect(parseCommand("run path/to/plan.md")).toEqual({
+    expect(parseCommand("path/to/plan.md")).toEqual({
       kind: "execution",
       planPath: "path/to/plan.md",
     });
@@ -36,8 +36,8 @@ describe("parseCommand", () => {
     });
   });
 
-  it("rejects the legacy syntax", () => {
-    expect(parseCommand("plan.md").kind).toBe("error");
+  it("rejects removed command syntax", () => {
+    expect(parseCommand("run plan.md").kind).toBe("error");
     expect(parseCommand(":status").kind).toBe("error");
     expect(parseCommand("abandon run-1").kind).toBe("error");
   });

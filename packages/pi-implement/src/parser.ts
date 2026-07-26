@@ -14,9 +14,6 @@ export type ParsedCommand =
 export function parseCommand(input: string): ParsedCommand {
   const [subcommand, ...args] = tokenize(input);
 
-  if (subcommand === "run" && args.length === 1) {
-    return { kind: "execution", planPath: args[0]! };
-  }
   if (
     (subcommand === "resume" || subcommand === "restart") &&
     args.length === 2
@@ -39,6 +36,14 @@ export function parseCommand(input: string): ParsedCommand {
   ) {
     return { kind: "control", name: subcommand, runId: args[0] };
   }
+  if (
+    subcommand &&
+    args.length === 0 &&
+    !subcommand.startsWith(":") &&
+    !subcommand.startsWith("-")
+  ) {
+    return { kind: "execution", planPath: subcommand };
+  }
   return { kind: "error", message: usage() };
 }
 
@@ -47,5 +52,5 @@ function tokenize(input: string): string[] {
 }
 
 export function usage(): string {
-  return "Usage: /implement run <plan.md> | resume <plan.md> <run-id> | restart <plan.md> <run-id> | status | inspect <run-id> | cleanup <run-id> | stop";
+  return "Usage: /implement <plan.md> | resume <plan.md> <run-id> | restart <plan.md> <run-id> | status | inspect <run-id> | cleanup <run-id> | stop";
 }

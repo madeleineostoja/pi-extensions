@@ -38,7 +38,7 @@ describe("/implement command", () => {
     writeFileSync(plan, "# Plan\n\n- [x] Finished\n");
     const notifications: Array<{ message: string; level: string }> = [];
 
-    await handler!("run plan.md", {
+    await handler!("plan.md", {
       cwd: root,
       mode: "print",
       ui: {
