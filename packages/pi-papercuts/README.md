@@ -37,9 +37,9 @@ State is stored in the current Git checkout:
 .pi/papercuts.json
 ```
 
-The extension creates the registry on first use and adds `/.pi/papercuts.json` to the checkout's `.git/info/exclude`. It does not modify the committed `.gitignore` or create a global registry. Linked worktrees therefore keep separate queues.
+The extension creates the registry and its checkout-local coordination anchor on first use, and adds both to the checkout's `.git/info/exclude`. It does not modify the committed `.gitignore` or create a global registry. Linked worktrees therefore keep separate queues.
 
-A Git checkout is required. The registry uses versioned JSON, atomic writes, and cross-process locking so proposals from concurrent sessions are serialized safely.
+A Git checkout is required. The registry uses versioned JSON, atomic writes, and an OS-backed file lease so proposals from concurrent sessions are serialized safely.
 
 ## License
 

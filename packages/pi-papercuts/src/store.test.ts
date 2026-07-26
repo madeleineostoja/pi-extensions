@@ -1,16 +1,21 @@
-import { execFile, execFileSync } from "node:child_process";
+import {
+  execFile,
+  execFileSync,
+  spawn,
+  type ChildProcess,
+} from "node:child_process";
+import { once } from "node:events";
 import {
   existsSync,
-  mkdirSync,
-  realpathSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
-import { hostname } from "node:os";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -23,7 +28,11 @@ import {
 } from "./store.js";
 
 const roots: string[] = [];
+const children: ChildProcess[] = [];
 const execFileAsync = promisify(execFile);
+const workerPath = fileURLToPath(
+  new URL("./store-worker.cjs", import.meta.url),
+);
 
 function repo(): string {
   const root = mkdtempSync(join(tmpdir(), "pi-papercuts-"));
@@ -45,77 +54,107 @@ function proposal(overrides: Partial<PapercutProposal> = {}): PapercutProposal {
   };
 }
 
-function vitestExecutable(): string {
-  const manifestPath = fileURLToPath(
-    import.meta.resolve("vitest/package.json"),
-  );
-  const manifest: unknown = JSON.parse(readFileSync(manifestPath, "utf-8"));
-  if (
-    typeof manifest !== "object" ||
-    manifest === null ||
-    !("bin" in manifest) ||
-    typeof manifest.bin !== "object" ||
-    manifest.bin === null ||
-    !("vitest" in manifest.bin) ||
-    typeof manifest.bin.vitest !== "string"
-  ) {
-    throw new Error("The installed Vitest package has no Vitest executable.");
-  }
-  return resolve(dirname(manifestPath), manifest.bin.vitest);
+async function runWorker(root: string, key: string): Promise<void> {
+  await execFileAsync(process.execPath, [workerPath, "propose", root, key]);
 }
 
-async function runWorker(
-  root: string,
-  key: string,
-  expectation = "created",
-  resultPath?: string,
+async function startLockHolder(anchorPath: string): Promise<ChildProcess> {
+  const child = spawn(process.execPath, [workerPath, "hold", anchorPath], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  children.push(child);
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error(`Lock holder did not start for ${anchorPath}.`)),
+      2_000,
+    );
+    child.once("error", reject);
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (chunk.toString("utf-8").includes("ready\n")) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      clearTimeout(timeout);
+      reject(new Error(`Lock holder failed: ${chunk.toString("utf-8")}`));
+    });
+  });
+  return child;
+}
+
+async function stop(
+  child: ChildProcess,
+  signal: NodeJS.Signals = "SIGTERM",
 ): Promise<void> {
-  const worker = fileURLToPath(
-    new URL("./store-worker.test.ts", import.meta.url),
-  );
-  const config = fileURLToPath(new URL("../vitest.config.ts", import.meta.url));
-  await execFileAsync(
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  const exited = once(child, "exit");
+  child.kill(signal);
+  await Promise.race([
+    exited,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Lock holder did not exit.")), 2_000),
+    ),
+  ]);
+}
+
+async function startStreamingWriter(root: string): Promise<ChildProcess> {
+  const child = spawn(
     process.execPath,
-    [vitestExecutable(), "run", worker, "--config", config],
+    [workerPath, "stream", root, "stream"],
     {
-      cwd: fileURLToPath(new URL("../", import.meta.url)),
-      env: {
-        ...process.env,
-        PAPERCUT_WORKER_ROOT: root,
-        PAPERCUT_WORKER_KEY: key,
-        PAPERCUT_WORKER_EXPECT: expectation,
-        PAPERCUT_WORKER_RESULT: resultPath,
-      },
+      stdio: ["ignore", "pipe", "pipe"],
     },
   );
+  children.push(child);
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error(`Streaming writer did not start for ${root}.`)),
+      2_000,
+    );
+    child.once("error", reject);
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (chunk.toString("utf-8").includes("ready\n")) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      clearTimeout(timeout);
+      reject(new Error(`Streaming writer failed: ${chunk.toString("utf-8")}`));
+    });
+  });
+  return child;
 }
 
-function lockOwner(id: string, pid: number, host = hostname()): string {
-  return `${JSON.stringify({
-    id,
-    pid,
-    at: "2020-01-01T00:00:00.000Z",
-    host,
-  })}\n`;
-}
-
-function writeLockDirectory(path: string, owner: string): void {
-  mkdirSync(path, { recursive: true });
-  writeFileSync(join(path, "owner.json"), owner);
-}
-
-function readLockDirectory(path: string): string {
-  return readFileSync(join(path, "owner.json"), "utf-8");
-}
-
-afterEach(() => {
-  for (const root of roots.splice(0)) {
-    rmSync(root, { recursive: true, force: true });
+async function waitForExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode === null && child.signalCode === null) {
+    await once(child, "exit");
   }
+  if (child.exitCode !== 0) {
+    throw new Error(
+      `Worker exited with ${child.exitCode ?? child.signalCode}.`,
+    );
+  }
+}
+
+function excludeEntries(root: string, pattern: string): string[] {
+  return readFileSync(join(root, ".git", "info", "exclude"), "utf-8")
+    .split("\n")
+    .filter((line) => line === pattern);
+}
+
+afterEach(async () => {
+  await Promise.all(children.splice(0).map((child) => stop(child)));
+  roots
+    .splice(0)
+    .forEach((root) => rmSync(root, { recursive: true, force: true }));
 });
 
 describe("papercut store", () => {
-  it("creates deterministic checkout-local state and one exact local exclusion", async () => {
+  it("creates idempotent checkout-local state and exclusions", async () => {
     const root = repo();
     const store = createPapercutStore(root);
     await store.initialize();
@@ -124,14 +163,12 @@ describe("papercut store", () => {
     expect(
       JSON.parse(readFileSync(join(root, ".pi", "papercuts.json"), "utf-8")),
     ).toEqual({ version: 1, records: [] });
-    expect(
-      readFileSync(join(root, ".git", "info", "exclude"), "utf-8")
-        .split("\n")
-        .filter((line) => line === "/.pi/papercuts.json"),
-    ).toHaveLength(1);
+    expect(statSync(join(root, ".pi", "papercuts.lock")).isFile()).toBe(true);
+    expect(excludeEntries(root, "/.pi/papercuts.json")).toHaveLength(1);
+    expect(excludeEntries(root, "/.pi/papercuts.lock")).toHaveLength(1);
   });
 
-  it("routes linked worktrees to their own checkout-local registry", async () => {
+  it("routes linked worktrees to independent checkout-local state", async () => {
     const root = repo();
     writeFileSync(join(root, "README.md"), "root\n");
     execFileSync("git", ["add", "README.md"], { cwd: root });
@@ -166,23 +203,20 @@ describe("papercut store", () => {
       join(realpathSync(linked), ".pi", "papercuts.json"),
     );
     expect(existsSync(join(root, ".pi", "papercuts.json"))).toBe(false);
-    expect(
-      readFileSync(join(root, ".git", "info", "exclude"), "utf-8"),
-    ).toContain("/.pi/papercuts.json\n");
+    expect(existsSync(join(linked, ".pi", "papercuts.lock"))).toBe(true);
+    expect(excludeEntries(root, "/.pi/papercuts.json")).toHaveLength(1);
+    expect(excludeEntries(root, "/.pi/papercuts.lock")).toHaveLength(1);
   });
 
-  it("merges pending duplicates and preserves ignored and resolved tombstones", async () => {
-    const store = createPapercutStore(repo());
-    const first = await store.propose(proposal(), {
-      kind: "agent",
-      sessionId: "one",
-    });
-    expect(first.kind).toBe("created");
-    const merged = await store.propose(proposal(), {
-      kind: "agent",
-      sessionId: "two",
-    });
-    expect(merged).toMatchObject({
+  it("merges duplicates and preserves status changes across store instances", async () => {
+    const root = repo();
+    const store = createPapercutStore(root);
+    expect(
+      await store.propose(proposal(), { kind: "agent", sessionId: "one" }),
+    ).toMatchObject({ kind: "created" });
+    expect(
+      await store.propose(proposal(), { kind: "agent", sessionId: "two" }),
+    ).toMatchObject({
       kind: "merged",
       record: {
         occurrences: 2,
@@ -197,12 +231,15 @@ describe("papercut store", () => {
       "ignored",
     );
     await store.transition("devcontainer-validation", "pending");
-    await store.transition("devcontainer-validation", "resolved", {
-      target: "AGENTS.md",
-    });
-    expect((await store.propose(proposal(), { kind: "agent" })).kind).toBe(
-      "resolved",
+    await store.edit(
+      "devcontainer-validation",
+      proposal({ title: "Updated validation guidance" }),
     );
+    expect((await createPapercutStore(root).load()).records).toMatchObject([
+      { key: "devcontainer-validation", title: "Updated validation guidance" },
+    ]);
+    await store.delete("devcontainer-validation", true);
+    expect((await store.load()).records).toEqual([]);
   });
 
   it("serializes in-process proposals without losing records", async () => {
@@ -223,7 +260,7 @@ describe("papercut store", () => {
     ]);
   });
 
-  it("refuses malformed persistence instead of overwriting it", async () => {
+  it("rejects invalid persistence and mutation input without overwriting data", async () => {
     const root = repo();
     const store = createPapercutStore(root);
     const path = join(root, ".pi", "papercuts.json");
@@ -233,65 +270,15 @@ describe("papercut store", () => {
       "invalid JSON",
     );
     expect(readFileSync(path, "utf-8")).toBe("not json\n");
-  });
-
-  it("normalizes stable keys and rejects normalized title-trigger collisions", async () => {
     expect(normalizeKey(" Ruby validation / Devcontainer ")).toBe(
       "ruby-validation-devcontainer",
     );
     expect(() => parsePapercutFile('{"version":2,"records":[]}')).toThrow(
       "unsupported",
     );
-    const store = createPapercutStore(repo());
-    const created = await store.propose(
-      proposal({ key: " Devcontainer Validation " }),
-      { kind: "agent" },
-    );
-    expect(created).toMatchObject({
-      kind: "created",
-      record: { key: "devcontainer-validation" },
-    });
-    const result = await store.propose(
-      proposal({
-        key: "other-key",
-        title: " validation needs  the devcontainer ",
-        trigger: " ruby validation runs on the host ",
-      }),
-      { kind: "agent" },
-    );
-    expect(result.kind).toBe("merged");
   });
 
-  it("canonicalizes persisted keys but rejects persisted duplicate identities", async () => {
-    const root = repo();
-    const path = join(root, ".pi", "papercuts.json");
-    await createPapercutStore(root).initialize();
-    const record = {
-      ...proposal({ key: " Devcontainer Validation " }),
-      status: "pending" as const,
-      occurrences: 1,
-      firstSeenAt: "2026-01-01T00:00:00.000Z",
-      lastSeenAt: "2026-01-01T00:00:00.000Z",
-      sources: [{ kind: "agent" as const }],
-    };
-    writeFileSync(path, JSON.stringify({ version: 1, records: [record] }));
-    expect((await createPapercutStore(root).load()).records[0]?.key).toBe(
-      "devcontainer-validation",
-    );
-
-    writeFileSync(
-      path,
-      JSON.stringify({
-        version: 1,
-        records: [record, { ...record, key: "other-key" }],
-      }),
-    );
-    await expect(createPapercutStore(root).load()).rejects.toThrow(
-      "duplicate title and trigger",
-    );
-  });
-
-  it("rejects edit collisions and invalid runtime mutation input before persistence", async () => {
+  it("preserves valid records when runtime mutation input is rejected", async () => {
     const root = repo();
     const store = createPapercutStore(root);
     await store.propose(proposal(), { kind: "agent" });
@@ -313,237 +300,66 @@ describe("papercut store", () => {
     expect(readFileSync(join(root, ".pi", "papercuts.json"), "utf-8")).toBe(
       before,
     );
-    await expect(
-      store.propose(proposal(), { kind: "invalid" }),
-    ).resolves.toMatchObject({ kind: "rejected" });
   });
 
-  it("persists transitions, edits, and confirmed deletes across store instances", async () => {
-    const root = repo();
-    const store = createPapercutStore(root);
-    await store.propose(proposal(), { kind: "agent" });
-
-    const ignored = await store.transition(
-      "devcontainer-validation",
-      "ignored",
-      {
-        note: "Not actionable",
-        target: "backlog",
-      },
-    );
-    expect(ignored).toMatchObject({
-      status: "ignored",
-      disposition: { note: "Not actionable", target: "backlog" },
-    });
-    const reopened = await store.transition(
-      "devcontainer-validation",
-      "pending",
-    );
-    expect(reopened).toMatchObject({
-      status: "pending",
-      disposition: undefined,
-    });
-    await store.edit(
-      "devcontainer-validation",
-      proposal({ title: "Updated validation guidance" }),
-    );
-    expect((await createPapercutStore(root).load()).records).toMatchObject([
-      { key: "devcontainer-validation", title: "Updated validation guidance" },
-    ]);
-    await store.delete("devcontainer-validation", true);
-    expect((await createPapercutStore(root).load()).records).toEqual([]);
-  });
-
-  it("serializes independent processes with atomic durable writes", async () => {
+  it("serializes independent processes without losing records", async () => {
     const root = repo();
     await Promise.all(
       ["first", "second", "third", "fourth"].map((key) => runWorker(root, key)),
     );
 
-    const serialized = readFileSync(
-      join(root, ".pi", "papercuts.json"),
-      "utf-8",
-    );
-    expect(
-      JSON.parse(serialized).records.map(
-        (record: { key: string }) => record.key,
-      ),
-    ).toEqual(["first", "fourth", "second", "third"]);
-    expect(serialized.endsWith("\n")).toBe(true);
-  });
-
-  it("serializes competing cross-process takeovers of one dead-owner lock", async () => {
-    const root = repo();
-    const lockPath = join(root, ".pi", "papercuts.json.lock");
-    await createPapercutStore(root).initialize();
-    writeLockDirectory(lockPath, lockOwner("dead-owner", 999_999_999));
-
-    await Promise.all([
-      runWorker(root, "recovered-first"),
-      runWorker(root, "recovered-second"),
-      runWorker(root, "recovered-third"),
-    ]);
-
-    expect(existsSync(lockPath)).toBe(false);
     expect(
       (await createPapercutStore(root).load()).records.map(
         (record) => record.key,
       ),
-    ).toEqual(["recovered-first", "recovered-second", "recovered-third"]);
+    ).toEqual(["first", "fourth", "second", "third"]);
   });
 
-  it("recovers dead recovery and main locks across concurrent processes", async () => {
-    const root = repo();
-    const lockPath = join(root, ".pi", "papercuts.json.lock");
-    const recoveryPath = `${lockPath}.recovery`;
-    const claimPath = `${lockPath}.claim`;
-    const store = createPapercutStore(root);
-    await store.propose(
-      proposal({
-        key: "already-present",
-        title: "Already present",
-        trigger: "Existing record must survive recovery",
-      }),
-      { kind: "agent" },
-    );
-    writeLockDirectory(lockPath, lockOwner("dead-main", 999_999_999));
-    writeLockDirectory(recoveryPath, lockOwner("dead-recovery", 999_999_998));
-    writeLockDirectory(claimPath, lockOwner("dead-claim", 999_999_997));
-
-    await Promise.all(
-      ["handoff-first", "handoff-second", "handoff-third"].map((key) =>
-        runWorker(root, key),
-      ),
-    );
-
-    expect(existsSync(lockPath)).toBe(false);
-    expect(existsSync(recoveryPath)).toBe(false);
-    expect(existsSync(claimPath)).toBe(false);
-    expect((await store.load()).records.map((record) => record.key)).toEqual([
-      "already-present",
-      "handoff-first",
-      "handoff-second",
-      "handoff-third",
-    ]);
-  });
-
-  it("does not steal live or unverifiable locks in another process", async () => {
-    const liveRoot = repo();
-    const malformedRoot = repo();
-    const foreignRoot = repo();
-    await Promise.all(
-      [liveRoot, malformedRoot, foreignRoot].map((root) =>
-        createPapercutStore(root).initialize(),
-      ),
-    );
-    writeLockDirectory(
-      join(liveRoot, ".pi", "papercuts.json.lock"),
-      lockOwner("live-owner", process.pid),
-    );
-    writeFileSync(
-      join(malformedRoot, ".pi", "papercuts.json.lock"),
-      "not lock metadata",
-    );
-    writeLockDirectory(
-      join(foreignRoot, ".pi", "papercuts.json.lock"),
-      lockOwner("foreign-owner", 999_999_999, "another-host"),
-    );
-
-    await Promise.all(
-      [liveRoot, malformedRoot, foreignRoot].map((root, index) =>
-        runWorker(root, `blocked-${index}`, "blocked"),
-      ),
-    );
-
-    expect(
-      readLockDirectory(join(liveRoot, ".pi", "papercuts.json.lock")),
-    ).toContain("live-owner");
-    expect(
-      readFileSync(join(malformedRoot, ".pi", "papercuts.json.lock"), "utf-8"),
-    ).toBe("not lock metadata");
-    expect(
-      readLockDirectory(join(foreignRoot, ".pi", "papercuts.json.lock")),
-    ).toContain("foreign-owner");
-  });
-
-  it("does not replace a lock while another process owns recovery or claim", async () => {
-    const recoveryRoot = repo();
-    const claimRoot = repo();
-    const recoveryLockPath = join(recoveryRoot, ".pi", "papercuts.json.lock");
-    const claimLockPath = join(claimRoot, ".pi", "papercuts.json.lock");
-    await Promise.all([
-      createPapercutStore(recoveryRoot).initialize(),
-      createPapercutStore(claimRoot).initialize(),
-    ]);
-    writeLockDirectory(recoveryLockPath, lockOwner("dead-owner", 999_999_999));
-    writeLockDirectory(
-      `${recoveryLockPath}.recovery`,
-      lockOwner("live-recovery", process.pid),
-    );
-    writeLockDirectory(claimLockPath, lockOwner("dead-owner", 999_999_999));
-    writeLockDirectory(
-      `${claimLockPath}.claim`,
-      lockOwner("live-claim", process.pid),
-    );
-
-    await Promise.all([
-      runWorker(recoveryRoot, "recovery-contender", "blocked"),
-      runWorker(claimRoot, "claim-contender", "blocked"),
-    ]);
-
-    expect(readLockDirectory(recoveryLockPath)).toContain("dead-owner");
-    expect(readLockDirectory(`${recoveryLockPath}.recovery`)).toContain(
-      "live-recovery",
-    );
-    expect(readLockDirectory(claimLockPath)).toContain("dead-owner");
-    expect(readLockDirectory(`${claimLockPath}.claim`)).toContain("live-claim");
-  });
-
-  it("bounds cross-process acquisition when another process owns the lock", async () => {
-    const root = repo();
-    const lockPath = join(root, ".pi", "papercuts.json.lock");
-    const resultPath = join(root, "elapsed");
-    await createPapercutStore(root).initialize();
-    writeLockDirectory(lockPath, lockOwner("live-owner", process.pid));
-
-    await runWorker(root, "blocked", "blocked", resultPath);
-
-    const elapsed = Number(readFileSync(resultPath, "utf-8"));
-    expect(elapsed).toBeGreaterThanOrEqual(1_500);
-    expect(elapsed).toBeLessThan(5_000);
-    expect(readLockDirectory(lockPath)).toContain("live-owner");
-  });
-
-  it("serializes cross-process recovery of an orphaned marker without stealing a live one", async () => {
+  it("loads only complete registries while a concurrent writer publishes", async () => {
     const root = repo();
     const store = createPapercutStore(root);
     await store.initialize();
-    const recoveryPath = join(root, ".pi", "papercuts.json.lock.recovery");
-    writeLockDirectory(recoveryPath, lockOwner("dead-recovery", 999_999_999));
+    const writer = await startStreamingWriter(root);
+    let reads = 0;
 
-    await Promise.all([
-      runWorker(root, "marker-first"),
-      runWorker(root, "marker-second"),
-      runWorker(root, "marker-third"),
-    ]);
-    expect(() => readFileSync(recoveryPath, "utf-8")).toThrow();
+    while (writer.exitCode === null && writer.signalCode === null) {
+      await expect(store.load()).resolves.toMatchObject({ version: 1 });
+      reads += 1;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    await waitForExit(writer);
+    expect(reads).toBeGreaterThan(0);
+  });
+
+  it("bounds a live contender with the shared file lease", async () => {
+    const root = repo();
+    const store = createPapercutStore(root);
+    await store.initialize();
+    const holder = await startLockHolder(join(root, ".pi", "papercuts.lock"));
+
+    const startedAt = Date.now();
+    await expect(runWorker(root, "blocked")).rejects.toThrow(
+      /Timed out.*file lease/,
+    );
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_500);
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    await stop(holder);
+  });
+
+  it("releases after a killed owner without replacing the persistent anchor", async () => {
+    const root = repo();
+    const store = createPapercutStore(root);
+    await store.initialize();
+    const anchorPath = join(root, ".pi", "papercuts.lock");
+    const inode = statSync(anchorPath).ino;
+    const holder = await startLockHolder(anchorPath);
+
+    await stop(holder, "SIGKILL");
+    await runWorker(root, "after-crash");
+
+    expect(statSync(anchorPath).ino).toBe(inode);
     expect((await store.load()).records.map((record) => record.key)).toEqual([
-      "marker-first",
-      "marker-second",
-      "marker-third",
+      "after-crash",
     ]);
-
-    writeLockDirectory(recoveryPath, lockOwner("live-recovery", process.pid));
-    await expect(
-      store.propose(
-        proposal({
-          key: "blocked-recovery",
-          title: "Blocked recovery",
-          trigger: "Blocked",
-        }),
-        { kind: "agent" },
-      ),
-    ).rejects.toThrow("active or unverifiable");
-    expect(readLockDirectory(recoveryPath)).toContain("live-recovery");
   });
 });

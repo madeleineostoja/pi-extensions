@@ -7,21 +7,16 @@ import {
   realpathSync,
   renameSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
-import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { ensureGitInfoExclude } from "@pi-extensions/lib";
+import { acquireFileLease, ensureGitInfoExclude } from "@pi-extensions/lib";
 
 const execFileAsync = promisify(execFile);
 const VERSION = 1 as const;
 const SOURCE_LIMIT = 20;
 const LOCK_WAIT_MS = 2_000;
-const LOCK_RETRY_MS = 25;
-const LOCK_OWNER_FILE = "owner.json";
-const CLAIM_TAKEOVER_DIR = "takeover";
 const queues = new Map<string, Promise<unknown>>();
 const statuses = ["pending", "resolved", "ignored"] as const;
 const destinations = [
@@ -34,17 +29,6 @@ const destinations = [
   "code",
 ] as const;
 const sourceKinds = ["agent", "pi-implement", "user"] as const;
-
-type LockOwner = { id: string; pid: number; at: string; host: string };
-type DirectoryLock =
-  | { kind: "absent" }
-  | { kind: "blocked" }
-  | { kind: "owner"; owner: LockOwner };
-type ClaimState =
-  | { kind: "absent" }
-  | { kind: "blocked" }
-  | { kind: "owner"; owner: LockOwner; path: string };
-type ClaimLease = { root: string; released: boolean };
 
 export type PapercutStatus = (typeof statuses)[number];
 export type PapercutSource = {
@@ -312,327 +296,8 @@ function readRegistry(path: string): PapercutFile {
   return parsePapercutFile(readFileSync(path, "utf-8"));
 }
 
-function isOwnerGone(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return isObject(error) && error.code === "ESRCH";
-  }
-}
-
-function readOwner(path: string): LockOwner | undefined {
-  try {
-    const value: unknown = JSON.parse(readFileSync(path, "utf-8"));
-    if (
-      !isObject(value) ||
-      typeof value.id !== "string" ||
-      typeof value.pid !== "number" ||
-      typeof value.at !== "string" ||
-      typeof value.host !== "string"
-    ) {
-      return undefined;
-    }
-    return value as LockOwner;
-  } catch {
-    return undefined;
-  }
-}
-
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-function readDirectoryLock(path: string): DirectoryLock {
-  if (!existsSync(path)) {
-    return { kind: "absent" };
-  }
-  if (!isDirectory(path)) {
-    return { kind: "blocked" };
-  }
-  const owner = readOwner(join(path, LOCK_OWNER_FILE));
-  return owner ? { kind: "owner", owner } : { kind: "blocked" };
-}
-
-function readClaim(path: string): ClaimState {
-  const root = readDirectoryLock(path);
-  if (root.kind !== "owner") {
-    return root;
-  }
-
-  let currentPath = path;
-  let currentOwner = root.owner;
-  while (existsSync(join(currentPath, CLAIM_TAKEOVER_DIR))) {
-    currentPath = join(currentPath, CLAIM_TAKEOVER_DIR);
-    const takeover = readDirectoryLock(currentPath);
-    if (takeover.kind !== "owner") {
-      return { kind: "blocked" };
-    }
-    currentOwner = takeover.owner;
-  }
-  return { kind: "owner", owner: currentOwner, path: currentPath };
-}
-
-function isStaleOwner(owner: LockOwner | undefined): owner is LockOwner {
-  return (
-    owner !== undefined && owner.host === hostname() && isOwnerGone(owner.pid)
-  );
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function newLockOwner(): LockOwner {
-  return {
-    id: randomUUID(),
-    pid: process.pid,
-    at: new Date().toISOString(),
-    host: hostname(),
-  };
-}
-
-function isErrorCode(error: unknown, code: string): boolean {
-  return isObject(error) && error.code === code;
-}
-
-function createLockDirectory(path: string, owner: LockOwner): void {
-  const pendingPath = `${path}.${owner.id}.pending`;
-  mkdirSync(pendingPath);
-  try {
-    writeFileSync(
-      join(pendingPath, LOCK_OWNER_FILE),
-      `${JSON.stringify(owner)}\n`,
-    );
-    try {
-      renameSync(pendingPath, path);
-    } catch (error) {
-      if (
-        isErrorCode(error, "EEXIST") ||
-        isErrorCode(error, "ENOTEMPTY") ||
-        isErrorCode(error, "ENOTDIR")
-      ) {
-        throw Object.assign(new Error(`Lock already exists: ${path}`), {
-          code: "EEXIST",
-        });
-      }
-      throw error;
-    }
-  } finally {
-    rmSync(pendingPath, { recursive: true, force: true });
-  }
-}
-
-function releaseDirectory(path: string): void {
-  rmSync(path, { recursive: true, force: true });
-}
-
-function releaseMainLock(lockPath: string): () => void {
-  let released = false;
-  return () => {
-    if (!released) {
-      released = true;
-      releaseDirectory(lockPath);
-    }
-  };
-}
-
-function createClaim(claimPath: string): ClaimLease | undefined {
-  const owner = newLockOwner();
-  try {
-    createLockDirectory(claimPath, owner);
-    return { root: claimPath, released: false };
-  } catch (error) {
-    if (isErrorCode(error, "EEXIST")) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-function takeOverClaim(
-  claimPath: string,
-  claim: Extract<ClaimState, { kind: "owner" }>,
-): ClaimLease | undefined {
-  const path = join(claim.path, CLAIM_TAKEOVER_DIR);
-  try {
-    createLockDirectory(path, newLockOwner());
-    return { root: claimPath, released: false };
-  } catch (error) {
-    if (isErrorCode(error, "EEXIST")) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-function releaseClaim(claim: ClaimLease): void {
-  if (!claim.released) {
-    claim.released = true;
-    releaseDirectory(claim.root);
-  }
-}
-
-function moveDirectory(fromPath: string, toPath: string): boolean {
-  try {
-    renameSync(fromPath, toPath);
-    return true;
-  } catch (error) {
-    if (
-      isErrorCode(error, "EEXIST") ||
-      isErrorCode(error, "ENOENT") ||
-      isErrorCode(error, "ENOTEMPTY")
-    ) {
-      return false;
-    }
-    throw error;
-  }
-}
-
-function recoverClaim(
-  lockPath: string,
-  recoveryPath: string,
-  claim: ClaimLease,
-): (() => void) | undefined {
-  const recovery = readDirectoryLock(recoveryPath);
-  if (recovery.kind === "blocked") {
-    releaseClaim(claim);
-    return undefined;
-  }
-  if (recovery.kind === "owner") {
-    if (!isStaleOwner(recovery.owner)) {
-      releaseClaim(claim);
-      return undefined;
-    }
-    releaseDirectory(recoveryPath);
-  }
-
-  const main = readDirectoryLock(lockPath);
-  if (main.kind === "blocked") {
-    releaseClaim(claim);
-    return undefined;
-  }
-  if (main.kind === "owner") {
-    if (!isStaleOwner(main.owner)) {
-      releaseClaim(claim);
-      return undefined;
-    }
-    if (!moveDirectory(lockPath, recoveryPath)) {
-      releaseClaim(claim);
-      return undefined;
-    }
-  }
-
-  const owner = newLockOwner();
-  try {
-    createLockDirectory(lockPath, owner);
-  } catch (error) {
-    releaseClaim(claim);
-    if (isErrorCode(error, "EEXIST")) {
-      return undefined;
-    }
-    throw error;
-  }
-  releaseDirectory(recoveryPath);
-  releaseClaim(claim);
-  return releaseMainLock(lockPath);
-}
-
-function acquireFreshLock(
-  lockPath: string,
-  recoveryPath: string,
-  claimPath: string,
-): (() => void) | undefined {
-  const owner = newLockOwner();
-  try {
-    createLockDirectory(lockPath, owner);
-  } catch (error) {
-    if (isErrorCode(error, "EEXIST")) {
-      return undefined;
-    }
-    throw error;
-  }
-
-  if (
-    readDirectoryLock(recoveryPath).kind !== "absent" ||
-    readDirectoryLock(claimPath).kind !== "absent"
-  ) {
-    releaseDirectory(lockPath);
-    return undefined;
-  }
-  return releaseMainLock(lockPath);
-}
-
-async function acquireLock(lockPath: string): Promise<() => void> {
-  const recoveryPath = `${lockPath}.recovery`;
-  const claimPath = `${lockPath}.claim`;
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  let claimLease: ClaimLease | undefined;
-
-  while (Date.now() < deadline) {
-    if (claimLease) {
-      const release = recoverClaim(lockPath, recoveryPath, claimLease);
-      if (release) {
-        return release;
-      }
-      if (claimLease.released) {
-        claimLease = undefined;
-      }
-      await sleep(LOCK_RETRY_MS);
-      continue;
-    }
-
-    const claim = readClaim(claimPath);
-    if (claim.kind === "blocked") {
-      await sleep(LOCK_RETRY_MS);
-      continue;
-    }
-    if (claim.kind === "owner") {
-      if (isStaleOwner(claim.owner)) {
-        claimLease = takeOverClaim(claimPath, claim);
-      }
-      await sleep(LOCK_RETRY_MS);
-      continue;
-    }
-
-    const recovery = readDirectoryLock(recoveryPath);
-    if (recovery.kind === "blocked") {
-      await sleep(LOCK_RETRY_MS);
-      continue;
-    }
-    if (recovery.kind === "owner") {
-      if (isStaleOwner(recovery.owner)) {
-        claimLease = createClaim(claimPath);
-      }
-      await sleep(LOCK_RETRY_MS);
-      continue;
-    }
-
-    const release = acquireFreshLock(lockPath, recoveryPath, claimPath);
-    if (release) {
-      return release;
-    }
-
-    const main = readDirectoryLock(lockPath);
-    if (main.kind === "owner" && isStaleOwner(main.owner)) {
-      claimLease = createClaim(claimPath);
-    }
-    await sleep(LOCK_RETRY_MS);
-  }
-
-  if (claimLease && !claimLease.released) {
-    releaseClaim(claimLease);
-  }
-  throw new Error(
-    "Papercut registry is locked by another active or unverifiable process.",
-  );
+async function acquireLock(anchorPath: string) {
+  return acquireFileLease(anchorPath, { timeoutMs: LOCK_WAIT_MS });
 }
 
 function atomicWrite(path: string, file: PapercutFile): void {
@@ -694,27 +359,30 @@ function normalizeLookupKey(key: unknown): string {
 export function createPapercutStore(root: string) {
   const canonicalRoot = realpathSync(root);
   const registryPath = join(canonicalRoot, ".pi", "papercuts.json");
-  const lockPath = `${registryPath}.lock`;
+  const lockPath = join(canonicalRoot, ".pi", "papercuts.lock");
 
   async function initialize(): Promise<void> {
     return queue(registryPath, async () => {
       mkdirSync(dirname(registryPath), { recursive: true });
-      const release = await acquireLock(lockPath);
+      const lease = await acquireLock(lockPath);
       try {
-        await ensureGitInfoExclude(root, "/.pi/papercuts.json");
+        await ensureGitInfoExclude(root, [
+          "/.pi/papercuts.json",
+          "/.pi/papercuts.lock",
+        ]);
         if (!existsSync(registryPath)) {
           atomicWrite(registryPath, { version: VERSION, records: [] });
         } else {
           readRegistry(registryPath);
         }
       } finally {
-        release();
+        await lease.release();
       }
     });
   }
 
   async function load(): Promise<PapercutFile> {
-    return queue(registryPath, async () => readRegistry(registryPath));
+    return readRegistry(registryPath);
   }
 
   async function mutate<T>(
@@ -722,7 +390,7 @@ export function createPapercutStore(root: string) {
   ): Promise<T> {
     return queue(registryPath, async () => {
       mkdirSync(dirname(registryPath), { recursive: true });
-      const release = await acquireLock(lockPath);
+      const lease = await acquireLock(lockPath);
       try {
         const current = readRegistry(registryPath);
         const { file, result } = operation(current);
@@ -730,7 +398,7 @@ export function createPapercutStore(root: string) {
         emitPapercutChange({ registryPath });
         return result;
       } finally {
-        release();
+        await lease.release();
       }
     });
   }
