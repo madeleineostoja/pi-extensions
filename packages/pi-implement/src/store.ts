@@ -1768,6 +1768,12 @@ function sameRecoveryEpisodeHistory(
 ): boolean {
   const actionsAppended = next.actions.length > previous.actions.length;
   const resumed = previous.status === "paused" && next.status === "open";
+  const completed =
+    previous.status !== "completed" &&
+    next.status === "completed" &&
+    JSON.stringify(previous.cycle) === JSON.stringify(next.cycle) &&
+    previous.providerFailures === next.providerFailures &&
+    previous.retryAfterMs === next.retryAfterMs;
   const mutableStateChanged =
     previous.status !== next.status ||
     JSON.stringify(previous.cycle) !== JSON.stringify(next.cycle) ||
@@ -1777,7 +1783,7 @@ function sameRecoveryEpisodeHistory(
     previous.id === next.id &&
     previous.gateId === next.gateId &&
     (previous.status !== "completed" || next.status === "completed") &&
-    (!mutableStateChanged || actionsAppended || resumed) &&
+    (!mutableStateChanged || actionsAppended || resumed || completed) &&
     JSON.stringify(previous.workstream) === JSON.stringify(next.workstream) &&
     previous.candidateId === next.candidateId &&
     JSON.stringify(previous.workspace) === JSON.stringify(next.workspace) &&

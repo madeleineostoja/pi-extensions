@@ -6,7 +6,7 @@ export type ParsedCommand =
     }
   | {
       kind: "control";
-      name: "status" | "stop" | "cleanup" | "inspect";
+      name: "status" | "resume" | "stop" | "cleanup" | "inspect";
       runId?: string;
     }
   | { kind: "error"; message: string };
@@ -27,7 +27,12 @@ export function parseCommand(input: string): ParsedCommand {
       },
     };
   }
-  if ((subcommand === "status" || subcommand === "stop") && args.length === 0) {
+  if (
+    (subcommand === "status" ||
+      subcommand === "resume" ||
+      subcommand === "stop") &&
+    args.length === 0
+  ) {
     return { kind: "control", name: subcommand };
   }
   if (
@@ -52,5 +57,5 @@ function tokenize(input: string): string[] {
 }
 
 export function usage(): string {
-  return "Usage: /implement <plan.md> | resume <plan.md> <run-id> | restart <plan.md> <run-id> | status | inspect <run-id> | cleanup <run-id> | stop";
+  return "Usage: /implement <plan.md> | resume | resume <plan.md> <run-id> | restart <plan.md> <run-id> | status | inspect <run-id> | cleanup <run-id> | stop";
 }

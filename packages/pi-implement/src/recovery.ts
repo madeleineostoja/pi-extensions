@@ -63,8 +63,6 @@ export type RecoveryCycle = {
   independentlyEscalated: boolean;
 };
 
-export type RecoveryCycleDisposition = "continue" | "escalate" | "pause";
-
 export function boundedRecoveryOutput(output: string, limit = 12_000): string {
   return output.length <= limit ? output : output.slice(-limit);
 }
@@ -98,39 +96,6 @@ export function recoveryCycleSignature(args: {
       }),
     )
     .digest("hex");
-}
-
-export function advanceNoActionCycle(args: {
-  cycle: RecoveryCycle;
-  signature: string;
-}): { cycle: RecoveryCycle; disposition: RecoveryCycleDisposition } {
-  if (args.cycle.signature !== args.signature) {
-    return {
-      cycle: {
-        signature: args.signature,
-        identicalNoActionCycles: 0,
-        independentlyEscalated: false,
-      },
-      disposition: "continue",
-    };
-  }
-  if (!args.cycle.independentlyEscalated) {
-    return {
-      cycle: {
-        ...args.cycle,
-        identicalNoActionCycles: args.cycle.identicalNoActionCycles + 1,
-        independentlyEscalated: true,
-      },
-      disposition: "escalate",
-    };
-  }
-  return {
-    cycle: {
-      ...args.cycle,
-      identicalNoActionCycles: args.cycle.identicalNoActionCycles + 1,
-    },
-    disposition: "pause",
-  };
 }
 
 export function providerRetryDelayMs(consecutiveFailures: number): number {

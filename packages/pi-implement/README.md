@@ -28,7 +28,7 @@ Pi-implement starts with the plan and recursively follows ordinary local Markdow
 2. An eligible workstream receives an immutable base from the current target only after all of its dependencies have completed. Independent workstreams may implement and review concurrently up to `workerConcurrency`.
 3. Implementers work in disposable owned Git worktrees and retain committed checkpoints and evidence. Already-satisfied tasks receive repository-state review instead of a fabricated change.
 4. Target publication waits until every managed agent is idle. One serialized integration lane replays an approved candidate onto the current target, runs ordinary Git commit hooks, verifies the prepared commit, records a write-ahead publication intent, and updates the target with compare-and-swap protection.
-5. Reconciliation, hook failures, review findings, and recoverable execution failures enter durable recovery episodes. Recovery agents choose bounded actions in owned worktrees; target and projection safety failures stop autonomous mutation instead.
+5. Reconciliation, hook failures, review findings, and recoverable execution failures enter durable recovery episodes. Recovery agents choose bounded actions in owned worktrees; the first `no_safe_action` pauses the run for user intervention.
 6. After publication or reviewed satisfaction, pi-implement atomically projects the corresponding source checkboxes. It then performs a whole-plan review. Findings re-enter the same repair, review, integration, and publication path until the plan closes.
 
 A checkpoint is not completion. Source checkboxes change only after a workstream publishes or an already-satisfied task receives a current-target satisfaction receipt. Successful publication is never rolled back because checkbox projection or owned-resource cleanup needs a later retry.
@@ -53,9 +53,9 @@ One OS-backed lease covers each run and destructive cleanup in that checkout. Li
 
 A new run requires a Git worktree with a resolvable `HEAD`, a named local branch, no active merge, rebase, cherry-pick, or revert, and a clean index and worktree including nonignored untracked files. Tracked plan files are allowed while clean. No upstream, remote, package-manager, validation-command, or hook dry-run preflight is required.
 
-The target checkout remains orchestrator-owned. Managed agents run only while integration and publication are idle; integration and publication run only while managed agents are idle. Before and after every managed agent, pi-implement verifies target identity, Git-operation state, cleanliness outside protected projections, and exact protected-artifact hashes. It safety-blocks rather than attributing unauthorized target changes to an agent.
+The target checkout remains orchestrator-owned. Managed agents run only while integration and publication are idle; integration and publication run only while managed agents are idle. Before and after every managed agent, pi-implement verifies target identity, Git-operation state, cleanliness outside protected projections, and exact protected-artifact hashes. A boundary problem detected before managed work pauses the run without modifying the target and reports the exact Git status paths. A boundary change during managed work remains a terminal safety block because its source cannot be attributed safely.
 
-Tracked source plans become expected working changes after checkbox projection. While the run is active, their exact retained hashes are verified and excluded from target cleanliness checks. Unrelated dirt still blocks lifecycle work. Resume first settles retained publication and projection transactions, then validates the target and protected corpus. Completed and safety-blocked runs cannot resume. Cleaning up an incomplete run requires confirmation, stops active work, preserves already-published target and plan changes, and permanently removes the ability to resume it.
+Tracked source plans become expected working changes after checkbox projection. While the run is active, their exact retained hashes are verified and excluded from target cleanliness checks. Unrelated dirt pauses lifecycle work. After the user cleans or otherwise restores the reported boundary, the active run can resume directly from its menu; a retained paused run can resume after reacquiring its lease. Resume validates the target before leaving the paused phase. Completed and safety-blocked runs cannot resume. Cleaning up an incomplete run requires confirmation, stops active work, preserves already-published target and plan changes, and permanently removes the ability to resume it.
 
 ## Commands
 
@@ -63,6 +63,7 @@ Running `/implement` opens the run menu. The current session run appears first, 
 
 ```text
 /implement <plan.md>
+/implement resume
 /implement resume <plan.md> <run-id>
 /implement restart <plan.md> <completed-run-id>
 /implement status
@@ -74,7 +75,7 @@ Running `/implement` opens the run menu. The current session run appears first, 
 - `status` lists runs in the current checkout with their phase, findings, gates, leases, and projection debt.
 - `inspect` shows a run's durable state and evidence paths.
 - `stop` settles owned processes, pauses the active session run safely, and preserves it for resume.
-- `resume` resumes a nonterminal run from the same checkout after transaction-aware safety checks pass.
+- `resume` resumes the active paused run after target-boundary checks pass. Supplying a plan and run ID resumes a retained nonterminal run from the same checkout after transaction-aware safety checks.
 - `restart` verifies prospective new-run preflight, cleans a completed run, then starts a new run for the supplied plan.
 - `cleanup` conservatively removes a completed, paused, or safety-blocked run's provably owned worktrees and branches. Incomplete runs require confirmation and are stopped first. Cleanup is retryable after partial failure, preserves published target and plan changes, and reports manual recovery paths if ownership cannot be proven. Projected tracked files become ordinary working changes that must be committed or reverted before another run.
 

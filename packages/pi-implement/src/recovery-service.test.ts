@@ -236,7 +236,7 @@ describe(" recovery service", () => {
               action: "rework_candidate" as const,
               summary: "Corrected the hook failure.",
               evidence: "Committed the tracked correction.",
-              candidateTip: correctedTip,
+              candidateTip: correctedTip.slice(0, 12),
               changedPaths: ["correction.txt"],
             },
           } as never;

@@ -210,7 +210,14 @@ function notifyAttentionTransition(
     );
     return;
   }
-  if (event.kind === "safety_paused" || event.kind === "safety_blocked") {
+  if (event.kind === "safety_paused") {
+    ctx.ui.notify(
+      `pi-implement paused for target recovery: ${shorten(event.reason)}`,
+      "warning",
+    );
+    return;
+  }
+  if (event.kind === "safety_blocked") {
     ctx.ui.notify(
       `pi-implement safety blocked: ${shorten(event.reason)}`,
       "warning",

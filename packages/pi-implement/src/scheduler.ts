@@ -2,9 +2,12 @@ import { publicationPreparationId } from "./candidate-replay.js";
 import { RecoverySafetyError } from "./recovery-service.js";
 import { MissingHookEvidenceError } from "./publication.js";
 import type { ExecutionPlan } from "./execution-plan.js";
-import { TargetBoundaryError } from "./workstream-candidate.js";
 import {
-  advanceNoActionCycle,
+  TargetBoundaryError,
+  TargetPreconditionError,
+  WorkstreamCandidateLifecycleError,
+} from "./workstream-candidate.js";
+import {
   boundedRecoveryOutput,
   providerRetryDelayMs,
   recoveryCycleSignature,
@@ -58,6 +61,8 @@ export type SchedulerEvent =
       leaseId: string;
       evidence: string;
       trustedCheckpoint?: string;
+      trustedCandidate?: RunState["candidates"][string];
+      workspace?: RunState["recoveryEpisodes"][string]["workspace"];
     }
   | {
       kind: "effect_failed";
@@ -379,6 +384,7 @@ export function reduceRunEvent(
   if (
     state.phase === "stopping" &&
     event.kind !== "process_abandoned" &&
+    event.kind !== "implementation_completed" &&
     event.kind !== "implementation_failed" &&
     event.kind !== "effect_failed" &&
     event.kind !== "run_paused"
@@ -471,6 +477,44 @@ export function reduceRunEvent(
       }
       delete state.processLeases[lease.id];
       try {
+        const priorEpisode = openRecoveryEpisodeForWorkstream(
+          state,
+          event.workstream,
+        );
+        if (
+          event.trustedCandidate &&
+          priorEpisode &&
+          priorEpisode.candidateId !== event.trustedCandidate.id
+        ) {
+          priorEpisode.status = "completed";
+        }
+        if (event.trustedCandidate) {
+          if (
+            !sameWorkstream(
+              event.trustedCandidate.workstream,
+              event.workstream,
+            ) ||
+            (event.workstream.kind === "source" &&
+              event.trustedCandidate.baseSha !==
+                state.workstreams.source[event.workstream.id]?.baseSha) ||
+            event.trustedCandidate.commitSha !== event.trustedCheckpoint
+          ) {
+            return reject(
+              "Implementation checkpoint does not match its workstream boundary.",
+            );
+          }
+          const existing = state.candidates[event.trustedCandidate.id];
+          if (
+            existing &&
+            JSON.stringify(existing) !== JSON.stringify(event.trustedCandidate)
+          ) {
+            return reject("candidate identity is immutable");
+          }
+          state.candidates[event.trustedCandidate.id] = event.trustedCandidate;
+          workstream.candidateId = event.trustedCandidate.id;
+        }
+        const failureCandidateId =
+          event.trustedCandidate?.id ?? workstream.candidateId;
         recordGateResult(
           state,
           event.workstream,
@@ -478,12 +522,13 @@ export function reduceRunEvent(
             id: `environment:${workstreamId(event.workstream)}:${state.gates.length + 1}`,
             kind: "environment",
             owner: workstreamId(event.workstream),
+            ...(failureCandidateId ? { candidateId: failureCandidateId } : {}),
             attempt: state.gates.length + 1,
             outcome: "failed",
             evidence: event.evidence.slice(0, 12_000),
             outstandingFindingIds: [],
           },
-          {
+          event.workspace ?? {
             id: workstreamId(event.workstream),
             ...(event.trustedCheckpoint
               ? { checkpoint: event.trustedCheckpoint }
@@ -657,7 +702,8 @@ export function reduceRunEvent(
         !lease ||
         !workstream ||
         workstream.phase !== "implementing" ||
-        !processIsAllowed(state, event.workstream)
+        (!processIsAllowed(state, event.workstream) &&
+          state.phase !== "stopping")
       ) {
         return reject("implementation result does not own an active lease");
       }
@@ -975,31 +1021,24 @@ export function reduceRunEvent(
             "no-safe-action recovery must report a no-safe-action outcome",
           );
         }
-        const cycle = advanceNoActionCycle({
-          cycle: episode.cycle,
-          signature: recoverySignatureFor(
-            state,
-            episode,
-            "no_safe_action",
-            event.action.evidence,
-          ),
-        });
-        episode.cycle = cycle.cycle;
+        episode.cycle = {
+          signature: recoverySignatureFor(state, episode, "no_safe_action"),
+          identicalNoActionCycles: episode.cycle.identicalNoActionCycles + 1,
+          independentlyEscalated: true,
+        };
         episode.actions.push(event.action);
         episode.providerFailures = 0;
         delete episode.retryAfterMs;
         delete state.processLeases[lease.id];
-        if (cycle.disposition === "pause") {
-          episode.status = "paused";
-          state.pause = {
-            resumePhase:
-              state.phase === "whole_plan_review"
-                ? "whole_plan_review"
-                : "running",
-            reason: "Recovery repeated an identical no-safe-action cycle.",
-          };
-          state.phase = "paused";
-        }
+        episode.status = "paused";
+        state.pause = {
+          resumePhase:
+            state.phase === "whole_plan_review"
+              ? "whole_plan_review"
+              : "running",
+          reason: event.action.evidence,
+        };
+        state.phase = "stopping";
         return accept();
       }
       if (event.action.outcome !== "completed") {
@@ -1905,6 +1944,7 @@ export class SchedulerActor {
   private drivePromise: Promise<void> | undefined;
   private stopping = false;
   private safetyReason: string | undefined;
+  private pauseReason: string | undefined;
 
   constructor(private readonly options: SchedulerActorOptions) {
     this.now = options.now ?? (() => new Date().toISOString());
@@ -1919,6 +1959,12 @@ export class SchedulerActor {
     if (this.snapshot().wholePlanReview.recovery?.status === "running") {
       await this.persist({ kind: "whole_plan_recovery_abandoned" });
     }
+    if (
+      this.snapshot().phase === "stopping" &&
+      Object.keys(this.snapshot().processLeases).length === 0
+    ) {
+      await this.persist({ kind: "run_paused" });
+    }
     await this.drive();
   }
 
@@ -1927,7 +1973,7 @@ export class SchedulerActor {
       return this.drivePromise;
     }
     this.drivePromise = (async () => {
-      while (!this.stopping) {
+      while (!this.stopping && !this.pauseReason) {
         const next = this.nextDriveStep();
         if (!next) {
           return;
@@ -1962,6 +2008,15 @@ export class SchedulerActor {
 
   async dispatch(event: SchedulerEvent): Promise<SchedulerEffect[]> {
     const effects = await this.persist(event);
+    if (
+      event.kind === "recovery_completed" &&
+      event.action.kind === "no_safe_action"
+    ) {
+      this.pauseReason = event.action.evidence;
+      for (const controller of this.processControllers.values()) {
+        controller.abort();
+      }
+    }
     await this.drive();
     return effects;
   }
@@ -2249,7 +2304,11 @@ export class SchedulerActor {
   }
 
   async resume(): Promise<void> {
+    if (this.options.captureTargetBoundary) {
+      await this.options.captureTargetBoundary();
+    }
     await this.persist({ kind: "resume_requested" });
+    await this.drive();
   }
 
   async stop(reason?: string): Promise<void> {
@@ -2327,7 +2386,7 @@ export class SchedulerActor {
   }
 
   private startEffect(effect: SchedulerEffect): void {
-    if (this.stopping || !this.options.executeEffect) {
+    if (this.stopping || this.pauseReason || !this.options.executeEffect) {
       return;
     }
     const key = effectKey(effect);
@@ -2380,19 +2439,36 @@ export class SchedulerActor {
         } catch (error) {
           executionError = error;
         }
-        if (
-          boundary !== undefined &&
-          boundary !== (await this.options.captureTargetBoundary!())
-        ) {
-          throw new TargetBoundaryError(
-            "A managed agent changed the target checkout boundary.",
-          );
+        if (boundary !== undefined) {
+          let currentBoundary: string;
+          try {
+            currentBoundary = await this.options.captureTargetBoundary!();
+          } catch (error) {
+            if (error instanceof TargetPreconditionError) {
+              throw new TargetBoundaryError(
+                `A managed agent changed the target checkout boundary. ${error.message}`,
+              );
+            }
+            throw error;
+          }
+          if (boundary !== currentBoundary) {
+            throw new TargetBoundaryError(
+              "A managed agent changed the target checkout boundary.",
+            );
+          }
         }
         if (executionError) {
           throw executionError;
         }
       })
       .catch(async (error) => {
+        if (error instanceof TargetPreconditionError) {
+          this.pauseReason = error.message;
+          for (const controller of this.processControllers.values()) {
+            controller.abort();
+          }
+          return;
+        }
         if (error instanceof TargetBoundaryError) {
           this.safetyReason = error.message;
           this.stopping = true;
@@ -2406,19 +2482,24 @@ export class SchedulerActor {
           effect.kind === "run_implementation" &&
           this.snapshot().processLeases[effect.leaseId]
         ) {
-          const checkpoint =
-            error &&
-            typeof error === "object" &&
-            "trustedCheckpoint" in error &&
-            typeof error.trustedCheckpoint === "string"
-              ? error.trustedCheckpoint
+          const lifecycleError =
+            error instanceof WorkstreamCandidateLifecycleError
+              ? error
               : undefined;
           await this.dispatch({
             kind: "implementation_failed",
             workstream: effect.workstream,
             leaseId: effect.leaseId,
             evidence: error instanceof Error ? error.message : String(error),
-            ...(checkpoint ? { trustedCheckpoint: checkpoint } : {}),
+            ...(lifecycleError?.trustedCheckpoint
+              ? { trustedCheckpoint: lifecycleError.trustedCheckpoint }
+              : {}),
+            ...(lifecycleError?.trustedCandidate
+              ? { trustedCandidate: lifecycleError.trustedCandidate }
+              : {}),
+            ...(lifecycleError?.recoveryWorkspace
+              ? { workspace: lifecycleError.recoveryWorkspace }
+              : {}),
           });
           return;
         }
@@ -2530,6 +2611,16 @@ export class SchedulerActor {
             kind: "safety_blocked",
             reason: this.safetyReason,
           });
+          return;
+        }
+        if (this.pauseReason && this.processes.size === 0) {
+          const reason = this.pauseReason;
+          this.pauseReason = undefined;
+          await this.persist(
+            this.snapshot().phase === "stopping"
+              ? { kind: "run_paused", reason }
+              : { kind: "safety_paused", reason },
+          );
           return;
         }
         await this.drive();

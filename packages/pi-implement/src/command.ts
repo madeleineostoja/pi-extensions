@@ -65,6 +65,30 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
   ): Promise<void> {
     try {
       const checkoutRoot = await resolveCheckoutRoot(ctx.cwd);
+      if (parsed.name === "resume") {
+        if (!active) {
+          ctx.ui.notify(
+            "pi-implement has no active paused run in this session; resume a historical run from its menu.",
+            "info",
+          );
+          return;
+        }
+        if (active.store.read().phase !== "paused") {
+          ctx.ui.notify("pi-implement is not paused.", "info");
+          return;
+        }
+        try {
+          await active.actor.resume();
+        } catch (error) {
+          ctx.ui.notify(
+            `pi-implement remains paused: ${error instanceof Error ? error.message : String(error)}`,
+            "warning",
+          );
+          return;
+        }
+        ctx.ui.notify(`pi-implement resumed run ${active.runId}.`, "info");
+        return;
+      }
       if (parsed.name === "stop") {
         if (!active) {
           ctx.ui.notify(
@@ -295,25 +319,7 @@ async function showRunMenu(
   run: Extract<RunListing, { kind: "run" }>,
   current: boolean,
 ): Promise<ParsedCommand | "back" | undefined> {
-  const actions = ["Status", "Inspect"];
-  if (current && run.state.phase !== "completed") {
-    actions.push("Stop");
-  } else if (
-    !current &&
-    !["completed", "blocked_safety", "stopping"].includes(run.state.phase)
-  ) {
-    actions.push("Resume");
-  }
-  if (!current && run.state.phase === "completed") {
-    actions.push("Restart");
-  }
-  if (
-    ["completed", "paused", "blocked_safety"].includes(run.state.phase) ||
-    current
-  ) {
-    actions.push("Clean up");
-  }
-  actions.push("Back");
+  const actions = runMenuActions(run.state.phase, current);
 
   const action = await ctx.ui.select(
     `${run.runId} · ${run.state.phase.replaceAll("_", " ")}`,
@@ -330,6 +336,9 @@ async function showRunMenu(
   }
   if (action === "Inspect") {
     return { kind: "control", name: "inspect", runId: run.runId };
+  }
+  if (action === "Resume" && current) {
+    return { kind: "control", name: "resume" };
   }
   if (action === "Stop") {
     return { kind: "control", name: "stop" };
@@ -349,6 +358,30 @@ async function showRunMenu(
       runId: run.runId,
     },
   };
+}
+
+export function runMenuActions(
+  phase: RunState["phase"],
+  current: boolean,
+): string[] {
+  const actions = ["Status", "Inspect"];
+  if (current) {
+    if (phase === "paused") {
+      actions.push("Resume");
+    }
+    if (phase !== "completed") {
+      actions.push("Stop");
+    }
+  } else if (!["completed", "blocked_safety", "stopping"].includes(phase)) {
+    actions.push("Resume");
+  }
+  if (!current && phase === "completed") {
+    actions.push("Restart");
+  }
+  if (["completed", "paused", "blocked_safety"].includes(phase) || current) {
+    actions.push("Clean up");
+  }
+  return [...actions, "Back"];
 }
 
 function orderedRuns(

@@ -356,6 +356,12 @@ describe("git helpers", () => {
     const client = new ExecGitClient(cwd);
 
     expect(await client.isCleanExcept([join(cwd, "plan.md")])).toBe(false);
+    expect(await client.statusEntriesExcept([join(cwd, "plan.md")])).toEqual([
+      { status: " M", path: "tracked.ts" },
+    ]);
+    expect(await client.resolveCommit((await client.head()).slice(0, 12))).toBe(
+      await client.head(),
+    );
     git(cwd, "checkout", "--", "tracked.ts");
     expect(await client.isCleanExcept([join(cwd, "plan.md")])).toBe(true);
   });

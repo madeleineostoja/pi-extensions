@@ -30,7 +30,7 @@ import { strictExecutionPlanSchema } from "./result-schemas.js";
 import { canonicalPath, sha256 } from "./source-integrity.js";
 import {
   runWorkstreamCandidate,
-  TargetBoundaryError,
+  TargetPreconditionError,
 } from "./workstream-candidate.js";
 import { runOverallRepair } from "./overall-repair.js";
 import { runWorkstreamReview } from "./review.js";
@@ -354,31 +354,68 @@ async function assertResumeTargetBoundary(
   state: RunState,
   git: ExecGitClient,
 ): Promise<void> {
+  await captureTargetBoundary(state, git);
+}
+
+async function captureTargetBoundary(
+  state: RunState,
+  git: ExecGitClient,
+): Promise<string> {
   const protectedPaths = Object.keys(state.protectedArtifactHashes);
-  const [branch, head, operation, clean, protectedIndexDirty] =
+  const [checkout, branch, head, operation, status, protectedIndexDirty] =
     await Promise.all([
+      git.checkoutIdentity(),
       git.currentBranch(),
       git.head(),
       git.activeOperation(),
-      git.isCleanExcept(protectedPaths),
+      git.statusEntriesExcept(protectedPaths),
       git.hasStagedChangesInPaths(protectedPaths),
     ]);
-  if (`refs/heads/${branch}` !== state.run.checkout.branchRef) {
-    throw new Error("Resume requires the retained local target branch.");
+  const protectedMatch = protectedArtifactsMatch(state);
+  const issues: string[] = [];
+  if (checkout !== state.run.checkout.gitDir) {
+    issues.push("the checkout identity changed");
   }
-  if (head !== expectedTargetHead(state)) {
-    throw new Error("Resume requires the target HEAD retained by this run.");
+  if (branch !== state.run.checkout.branchRef.replace("refs/heads/", "")) {
+    issues.push(
+      `expected branch ${state.run.checkout.branchRef}, found ${branch || "detached HEAD"}`,
+    );
+  }
+  const expectedHead = expectedTargetHead(state);
+  if (head !== expectedHead) {
+    issues.push(`expected HEAD ${expectedHead}, found ${head}`);
   }
   if (operation) {
-    throw new Error(
-      `Resume cannot continue during an active ${operation} operation.`,
+    issues.push(`active Git operation: ${operation}`);
+  }
+  if (status.length > 0) {
+    issues.push(
+      `unsanctioned target changes:\n${status
+        .map((entry) => `  ${entry.status} ${entry.path}`)
+        .join("\n")}`,
     );
   }
-  if (!clean || protectedIndexDirty || !protectedArtifactsMatch(state)) {
-    throw new Error(
-      "Resume requires a clean target outside sanctioned projections with exact protected content.",
+  if (protectedIndexDirty) {
+    issues.push("protected source artifacts have staged changes");
+  }
+  if (!protectedMatch) {
+    issues.push(
+      `protected source artifacts changed: ${protectedPaths.join(", ")}`,
     );
   }
+  if (issues.length > 0) {
+    throw new TargetPreconditionError(
+      `Managed work is paused until the target checkout boundary is restored:\n${issues.join("\n")}`,
+    );
+  }
+  return JSON.stringify({
+    checkout,
+    branch,
+    head,
+    operation,
+    status,
+    protected: protectedMatch,
+  });
 }
 
 function expectedTargetHead(state: RunState): string {
@@ -464,40 +501,8 @@ export function createRuntime(args: {
     onTransition: args.onTransition,
     targetHead: () => args.git.head(),
     targetDiff: (from, to) => args.git.diffRange(from, to),
-    captureTargetBoundary: async () => {
-      const state = args.store.read();
-      const protectedPaths = Object.keys(state.protectedArtifactHashes);
-      const [checkout, branch, head, operation, clean, protectedIndexDirty] =
-        await Promise.all([
-          args.git.checkoutIdentity(),
-          args.git.currentBranch(),
-          args.git.head(),
-          args.git.activeOperation(),
-          args.git.isCleanExcept(protectedPaths),
-          args.git.hasStagedChangesInPaths(protectedPaths),
-        ]);
-      const protectedMatch = protectedArtifactsMatch(state);
-      if (
-        checkout !== state.run.checkout.gitDir ||
-        branch !== state.run.checkout.branchRef.replace("refs/heads/", "") ||
-        operation !== undefined ||
-        !clean ||
-        protectedIndexDirty ||
-        !protectedMatch
-      ) {
-        throw new TargetBoundaryError(
-          "Managed work requires an unchanged, clean target checkout boundary.",
-        );
-      }
-      return JSON.stringify({
-        checkout,
-        branch,
-        head,
-        operation,
-        clean,
-        protected: protectedMatch,
-      });
-    },
+    captureTargetBoundary: () =>
+      captureTargetBoundary(args.store.read(), args.git),
     executeEffect: async ({ effect, signal, dispatch }) => {
       const state = args.store.read();
       const artifactsPath = join(

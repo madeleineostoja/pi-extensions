@@ -22,6 +22,21 @@ export type CommandResult = {
   cause?: unknown;
 };
 
+export type GitStatusEntry = {
+  status: string;
+  path: string;
+};
+
+export async function canonicalCommitSha(
+  git: GitClient,
+  revision: string,
+): Promise<string> {
+  if (!/^[0-9a-f]{4,64}$/i.test(revision)) {
+    throw new Error("Commit identity must be a hexadecimal SHA.");
+  }
+  return git.resolveCommit(revision);
+}
+
 export async function changedPathsBetween(
   git: GitClient,
   baseSha: string,
@@ -49,12 +64,14 @@ export type GitClient = {
   currentBranch(): Promise<string>;
   activeOperation(): Promise<string | undefined>;
   head(): Promise<string>;
+  resolveCommit(revision: string): Promise<string>;
   parent(commit: string): Promise<string>;
   tree(): Promise<string>;
   treeAt(commit: string): Promise<string>;
   isAncestor(ancestor: string, descendant: string): Promise<boolean>;
   isClean(): Promise<boolean>;
   isCleanExcept(paths: string[]): Promise<boolean>;
+  statusEntriesExcept(paths: string[]): Promise<GitStatusEntry[]>;
   hasStagedChanges(): Promise<boolean>;
   hasStagedChangesInPaths(paths: string[]): Promise<boolean>;
   stagedNameStatus(): Promise<string>;
@@ -142,6 +159,17 @@ export class ExecGitClient implements GitClient {
     return (await this.run(["rev-parse", "HEAD"])).stdout.trim();
   }
 
+  async resolveCommit(revision: string): Promise<string> {
+    return (
+      await this.run([
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        `${revision}^{commit}`,
+      ])
+    ).stdout.trim();
+  }
+
   async parent(commit: string): Promise<string> {
     return (await this.run(["rev-parse", `${commit}^`])).stdout.trim();
   }
@@ -172,11 +200,34 @@ export class ExecGitClient implements GitClient {
   }
 
   async isCleanExcept(paths: string[]): Promise<boolean> {
+    return (await this.statusEntriesExcept(paths)).length === 0;
+  }
+
+  async statusEntriesExcept(paths: string[]): Promise<GitStatusEntry[]> {
     const excludes = await this.pathspecs(paths, true);
-    const status = (
-      await this.run(["status", "--porcelain", "--", ":/", ...excludes])
-    ).stdout;
-    return isCleanStatus(status);
+    const records = (
+      await this.run([
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--",
+        ":/",
+        ...excludes,
+      ])
+    ).stdout
+      .split("\0")
+      .filter(Boolean);
+    const entries: GitStatusEntry[] = [];
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index]!;
+      const status = record.slice(0, 2);
+      entries.push({ status, path: record.slice(3) });
+      if (/[RC]/.test(status) && records[index + 1]) {
+        entries.push({ status, path: records[++index]! });
+      }
+    }
+    return entries;
   }
 
   async hasStagedChanges(): Promise<boolean> {

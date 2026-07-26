@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { registerImplementCommand } from "./command.js";
+import { registerImplementCommand, runMenuActions } from "./command.js";
 import { assertRunCanResume } from "./run.js";
 
 const temporaryDirectories = new Set<string>();
@@ -15,6 +15,25 @@ afterEach(() => {
 });
 
 describe("/implement command", () => {
+  it("offers direct resume for an active paused run", () => {
+    expect(runMenuActions("paused", true)).toEqual([
+      "Status",
+      "Inspect",
+      "Resume",
+      "Stop",
+      "Clean up",
+      "Back",
+    ]);
+    expect(runMenuActions("paused", false)).toEqual([
+      "Status",
+      "Inspect",
+      "Resume",
+      "Clean up",
+      "Back",
+    ]);
+    expect(runMenuActions("blocked_safety", false)).not.toContain("Resume");
+  });
+
   it("rejects terminal runs before creating a resume actor", () => {
     expect(() => assertRunCanResume("completed")).toThrow("/implement cleanup");
     expect(() => assertRunCanResume("blocked_safety")).toThrow(

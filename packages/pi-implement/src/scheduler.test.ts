@@ -24,6 +24,11 @@ import {
   SchedulerActor,
 } from "./scheduler.js";
 import { buildReviewPacket } from "./review.js";
+import {
+  TargetPreconditionError,
+  WorkstreamCandidateLifecycleError,
+} from "./workstream-candidate.js";
+import { within } from "./test-boundary.js";
 
 const temporaryDirectories = new Set<string>();
 
@@ -506,8 +511,9 @@ describe(" scheduler reducer", () => {
     );
   });
 
-  it("pauses only after an independently escalated identical no-safe-action cycle", async () => {
-    const state = (await store()).read();
+  it("settles concurrent work and pauses after the first no-safe-action result", async () => {
+    let state = (await store(2, true)).read();
+    state.workstreams.source["second-stream"]!.dependsOn = [];
     state.workstreams.source["first-stream"]!.phase = "recovering";
     state.workstreams.source["first-stream"]!.candidateId = "candidate-1";
     state.candidates["candidate-1"] = {
@@ -569,37 +575,97 @@ describe(" scheduler reducer", () => {
       at: "now",
     };
 
-    let current = state;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const requested = reduceRunEvent(current, {
-        kind: "recovery_requested",
-        workstream: { kind: "source", id: "first-stream" },
-        now: `attempt-${attempt}`,
-      });
-      expect(requested.accepted).toBe(true);
-      const effect = requested.effects[0]!;
-      if (effect.kind !== "run_recovery") {
-        throw new Error("Expected recovery effect.");
-      }
-      const completed = reduceRunEvent(requested.state, {
-        kind: "recovery_completed",
-        workstream: { kind: "source", id: "first-stream" },
-        leaseId: effect.leaseId,
-        action,
-      });
-      expect(completed.accepted).toBe(true);
-      current = completed.state;
-      if (attempt === 1) {
-        expect(
-          Object.values(current.recoveryEpisodes)[0]?.cycle
-            .independentlyEscalated,
-        ).toBe(true);
-      }
-    }
-    expect(current.phase).toBe("paused");
-    expect(current.workstreams.source["first-stream"]?.candidateId).toBe(
-      "candidate-1",
-    );
+    const fakeStore = {
+      read: () => structuredClone(state),
+      update: async (
+        expectedRevision: number,
+        update: (current: RunState) => RunState,
+      ) => {
+        expect(expectedRevision).toBe(state.revision);
+        state = {
+          ...update(structuredClone(state)),
+          revision: state.revision + 1,
+        };
+        return structuredClone(state);
+      },
+    } as RunStore;
+    const implementationStarted = deferred();
+    const paused = deferred();
+    const actor = new SchedulerActor({
+      store: fakeStore,
+      targetHead: async () => "base-sha",
+      onTransition: (_state, event) => {
+        if (event.kind === "run_paused") {
+          paused.resolve();
+        }
+      },
+      executeEffect: async ({ effect, signal, dispatch }) => {
+        if (effect.kind === "run_implementation") {
+          implementationStarted.resolve();
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          if (effect.workstream.kind !== "source") {
+            throw new Error("Expected a source implementation.");
+          }
+          await dispatch({
+            kind: "implementation_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            outcome: {
+              kind: "candidate_ready",
+              candidate: {
+                id: "candidate:second-stream:checkpoint-2",
+                workstream: effect.workstream,
+                baseSha: "base-sha",
+                commitSha: "checkpoint-2",
+                treeSha: "tree-2",
+              },
+              checkpoints: { second: "checkpoint-2" },
+              satisfied: {},
+            },
+          });
+          return;
+        }
+        if (effect.kind === "run_recovery") {
+          await implementationStarted.promise;
+          await dispatch({
+            kind: "recovery_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            action,
+          });
+        }
+      },
+    });
+
+    await actor.start();
+    await within("no-safe-action pause", paused.promise, {
+      timeoutMs: 2_000,
+      diagnostics: () => JSON.stringify(state),
+    });
+
+    expect(state).toMatchObject({
+      phase: "paused",
+      pause: {
+        resumePhase: "running",
+        reason: action.evidence,
+      },
+      processLeases: {},
+      workstreams: {
+        source: {
+          "first-stream": { candidateId: "candidate-1" },
+          "second-stream": {
+            phase: "candidate_ready",
+            candidateId: "candidate:second-stream:checkpoint-2",
+          },
+        },
+      },
+      recoveryEpisodes: {
+        "recovery:review": { status: "paused", actions: [action] },
+      },
+    });
+    await actor.stop("test complete");
   });
 
   it("keeps a same-candidate environment repair open for a retried gate", async () => {
@@ -1282,6 +1348,74 @@ describe(" scheduler actor", () => {
     expect(run.read().processLeases).toEqual({});
   });
 
+  it("pauses before managed work on target dirt and resumes after cleanup", async () => {
+    const run = await store();
+    const paused = deferred();
+    const started = deferred();
+    let dirty = true;
+    let attempts = 0;
+    const actor = new SchedulerActor({
+      store: run,
+      targetHead: async () => "base-sha",
+      captureTargetBoundary: async () => {
+        if (dirty) {
+          throw new TargetPreconditionError(
+            "Unsanctioned target changes: M package-lock.json",
+          );
+        }
+        return JSON.stringify({ head: "base-sha" });
+      },
+      onTransition: (_state, event) => {
+        if (event.kind === "safety_paused") {
+          paused.resolve();
+        }
+      },
+      executeEffect: async ({ effect, signal }) => {
+        if (effect.kind !== "run_implementation") {
+          return;
+        }
+        attempts += 1;
+        started.resolve();
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    });
+
+    await actor.start();
+    await within("target-boundary safety pause", paused.promise, {
+      timeoutMs: 2_000,
+      diagnostics: () => JSON.stringify(run.read()),
+    });
+
+    expect(run.read()).toMatchObject({
+      phase: "paused",
+      pause: {
+        resumePhase: "running",
+        reason: "Unsanctioned target changes: M package-lock.json",
+      },
+      processLeases: {},
+    });
+    expect(attempts).toBe(0);
+    await expect(actor.resume()).rejects.toThrow("package-lock.json");
+    expect(run.read().phase).toBe("paused");
+    expect(attempts).toBe(0);
+
+    dirty = false;
+    await actor.resume();
+    await within("resumed implementation", started.promise, {
+      timeoutMs: 2_000,
+      diagnostics: () => JSON.stringify(run.read()),
+    });
+
+    expect(run.read()).toMatchObject({
+      phase: "running",
+      workstreams: { source: { "first-stream": { phase: "implementing" } } },
+    });
+    expect(attempts).toBe(1);
+    await actor.stop("test complete");
+  });
+
   it("pauses a failed projection instead of relaunching it", async () => {
     const run = await store();
     const content =
@@ -1401,9 +1535,11 @@ describe(" scheduler actor", () => {
     await actor.stop("test complete");
   });
 
-  it("retains a failed implementation's trusted checkpoint for recovery", async () => {
+  it("retains a failed checkpoint through a successful implementation retry", async () => {
     const run = await store();
     const failed = deferred();
+    const completed = deferred();
+    let implementationAttempts = 0;
     const actor = new SchedulerActor({
       store: run,
       targetHead: async () => "base-sha",
@@ -1411,16 +1547,63 @@ describe(" scheduler actor", () => {
         if (event.kind === "implementation_failed") {
           failed.resolve();
         }
+        if (event.kind === "implementation_completed") {
+          completed.resolve();
+        }
       },
-      executeEffect: async ({ effect, signal }) => {
+      executeEffect: async ({ effect, dispatch }) => {
         if (effect.kind === "run_implementation") {
-          throw Object.assign(new Error("provider disconnected"), {
-            trustedCheckpoint: "checkpoint-1",
-          });
+          implementationAttempts += 1;
+          if (implementationAttempts > 1) {
+            await dispatch({
+              kind: "implementation_completed",
+              workstream: effect.workstream,
+              leaseId: effect.leaseId,
+              outcome: {
+                kind: "candidate_ready",
+                candidate: {
+                  id: "candidate:first-stream:checkpoint-1",
+                  workstream: { kind: "source", id: "first-stream" },
+                  baseSha: "base-sha",
+                  commitSha: "checkpoint-1",
+                  treeSha: "tree-1",
+                },
+                checkpoints: { first: "checkpoint-1" },
+                satisfied: {},
+              },
+            });
+            return;
+          }
+          throw new WorkstreamCandidateLifecycleError(
+            "provider disconnected",
+            "checkpoint-1",
+            {
+              id: "checkpoint:first-stream:checkpoint-1",
+              workstream: { kind: "source", id: "first-stream" },
+              baseSha: "base-sha",
+              commitSha: "checkpoint-1",
+              treeSha: "tree-1",
+            },
+            {
+              id: "source:first-stream",
+              checkpoint: "checkpoint-1",
+              changedPaths: [],
+              stateEvidence: "Owned workspace is clean at checkpoint-1.",
+            },
+          );
         }
         if (effect.kind === "run_recovery") {
-          await new Promise<void>((resolve) => {
-            signal.addEventListener("abort", () => resolve(), { once: true });
+          await dispatch({
+            kind: "recovery_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            action: {
+              kind: "recreate_workspace",
+              outcome: "completed",
+              summary: "Recreated the owned workspace.",
+              evidence: "The workspace is clean at checkpoint-1.",
+              at: "now",
+            },
           });
         }
       },
@@ -1429,12 +1612,161 @@ describe(" scheduler actor", () => {
     await actor.start();
     await failed.promise;
 
+    expect(run.read()).toMatchObject({
+      workstreams: {
+        source: {
+          "first-stream": {
+            candidateId: "checkpoint:first-stream:checkpoint-1",
+          },
+        },
+      },
+      candidates: {
+        "checkpoint:first-stream:checkpoint-1": {
+          commitSha: "checkpoint-1",
+        },
+      },
+    });
     expect(Object.values(run.read().recoveryEpisodes)).toContainEqual(
       expect.objectContaining({
+        candidateId: "checkpoint:first-stream:checkpoint-1",
         workspace: expect.objectContaining({ checkpoint: "checkpoint-1" }),
       }),
     );
+    await completed.promise;
+    expect(run.read()).toMatchObject({
+      workstreams: {
+        source: {
+          "first-stream": {
+            phase: "candidate_ready",
+            candidateId: "candidate:first-stream:checkpoint-1",
+          },
+        },
+      },
+      recoveryEpisodes: {
+        "recovery:environment:source:first-stream:1": {
+          status: "completed",
+        },
+      },
+    });
     await actor.stop("test complete");
+    const retained = run.read();
+    await expect(
+      run.update(retained.revision, (current) => {
+        const episode =
+          current.recoveryEpisodes[
+            "recovery:environment:source:first-stream:1"
+          ]!;
+        episode.providerFailures += 1;
+        return current;
+      }),
+    ).rejects.toThrow("run state violates lifecycle invariants");
+  });
+
+  it("supersedes an open recovery episode when a retry advances its checkpoint", async () => {
+    const state = (await store()).read();
+    const workstream = { kind: "source" as const, id: "first-stream" };
+    state.workstreams.source["first-stream"] = {
+      ...state.workstreams.source["first-stream"]!,
+      phase: "implementing",
+      baseSha: "base-sha",
+      candidateId: "checkpoint:first-stream:checkpoint-1",
+    };
+    state.candidates["checkpoint:first-stream:checkpoint-1"] = {
+      id: "checkpoint:first-stream:checkpoint-1",
+      workstream,
+      baseSha: "base-sha",
+      commitSha: "checkpoint-1",
+      treeSha: "tree-1",
+    };
+    state.gates.push({
+      id: "environment:source:first-stream:1",
+      kind: "environment",
+      workstream,
+      candidateId: "checkpoint:first-stream:checkpoint-1",
+      attempt: 1,
+      outcome: "failed",
+      evidence: "first validation failure",
+      outstandingFindingIds: [],
+    });
+    state.recoveryEpisodes["recovery:first-checkpoint"] = {
+      id: "recovery:first-checkpoint",
+      gateId: "environment:source:first-stream:1",
+      gateAttempts: ["environment:source:first-stream:1"],
+      workstream,
+      candidateId: "checkpoint:first-stream:checkpoint-1",
+      workspace: {
+        id: "source:first-stream",
+        checkpoint: "checkpoint-1",
+        changedPaths: [],
+        stateEvidence: "First checkpoint retained.",
+      },
+      outstandingFindingIds: [],
+      status: "open",
+      cycle: {
+        signature: "first",
+        identicalNoActionCycles: 0,
+        independentlyEscalated: false,
+      },
+      providerFailures: 0,
+      actions: [
+        {
+          kind: "recreate_workspace",
+          outcome: "completed",
+          summary: "Recreated the workspace.",
+          evidence: "Retrying from checkpoint-1.",
+          at: "now",
+        },
+      ],
+    };
+    state.processLeases["implementation:retry"] = {
+      id: "implementation:retry",
+      workstream,
+      kind: "implementation",
+      candidateId: "checkpoint:first-stream:checkpoint-1",
+      attempt: 2,
+      acquiredAt: "later",
+    };
+
+    const failed = reduceRunEvent(state, {
+      kind: "implementation_failed",
+      workstream,
+      leaseId: "implementation:retry",
+      evidence: "second validation failure",
+      trustedCheckpoint: "checkpoint-2",
+      trustedCandidate: {
+        id: "checkpoint:first-stream:checkpoint-2",
+        workstream,
+        baseSha: "base-sha",
+        commitSha: "checkpoint-2",
+        treeSha: "tree-2",
+      },
+      workspace: {
+        id: "source:first-stream",
+        checkpoint: "checkpoint-2",
+        changedPaths: [],
+        stateEvidence: "Second checkpoint retained.",
+      },
+    });
+
+    expect(failed.accepted).toBe(true);
+    expect(failed.state).toMatchObject({
+      workstreams: {
+        source: {
+          "first-stream": {
+            phase: "recovering",
+            candidateId: "checkpoint:first-stream:checkpoint-2",
+          },
+        },
+      },
+      recoveryEpisodes: {
+        "recovery:first-checkpoint": { status: "completed" },
+        "recovery:environment:source:first-stream:2": {
+          status: "open",
+          candidateId: "checkpoint:first-stream:checkpoint-2",
+          workspace: { checkpoint: "checkpoint-2" },
+        },
+      },
+    });
   });
 
   it("routes a thrown review effect into durable recovery evidence", async () => {
@@ -1826,9 +2158,10 @@ describe(" scheduler actor", () => {
         await new Promise<void>((resolve) => {
           signal.addEventListener("abort", () => resolve(), { once: true });
         });
-        throw Object.assign(new Error("interrupted"), {
-          trustedCheckpoint: "checkpoint-on-stop",
-        });
+        throw new WorkstreamCandidateLifecycleError(
+          "interrupted",
+          "checkpoint-on-stop",
+        );
       },
     });
 

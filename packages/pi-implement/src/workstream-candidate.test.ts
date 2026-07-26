@@ -23,6 +23,7 @@ import {
   buildWorkstreamPacket,
   recreateWorkstreamWorkspace,
   runWorkstreamCandidate,
+  WorkstreamCandidateLifecycleError,
   workstreamWorkspace,
 } from "./workstream-candidate.js";
 import {
@@ -246,6 +247,9 @@ describe("workstream candidate lifecycle", () => {
       subagents: agent(async (cwd) => {
         const result = await changedResult(cwd, ["first"]);
         const completion = result.result as WorkstreamImplementerCompletion;
+        completion.candidateTip = completion.candidateTip!.slice(0, 12);
+        completion.taskCompletions[0]!.checkpoint =
+          completion.taskCompletions[0]!.checkpoint!.slice(0, 12);
         completion.taskCompletions.push({
           taskId: "second",
           kind: "already_satisfied",
@@ -266,7 +270,10 @@ describe("workstream candidate lifecycle", () => {
 
     expect(outcome).toMatchObject({
       kind: "candidate_ready",
-      checkpoints: { first: expect.any(String) },
+      checkpoints: { first: expect.stringMatching(/^[0-9a-f]{40}$/) },
+      candidate: {
+        commitSha: expect.stringMatching(/^[0-9a-f]{40}$/),
+      },
       satisfied: {
         second: "The repository already exposed the required second behavior.",
       },
@@ -441,59 +448,109 @@ describe("workstream candidate lifecycle", () => {
     }
   });
 
-  it("retains committed progress after a failed worker and safely recreates a dirty workspace", async () => {
+  it("durably observes committed progress before rejecting a dirty workspace", async () => {
     const subject = await fixture({
       workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
     });
     const targetGit = new ExecGitClient(subject.root);
-    let trustedCheckpoint = "";
-    await expect(
-      runWorkstreamCandidate({
+    const artifactsPath = join(
+      subject.root,
+      ".pi",
+      "implement",
+      "runs",
+      "run-1",
+      "artifacts",
+    );
+    let failure: WorkstreamCandidateLifecycleError | undefined;
+    try {
+      await runWorkstreamCandidate({
         state: subject.run.read(),
         plan: subject.plan,
         workstreamId: "combined",
         git: targetGit,
         subagents: agent(async (cwd) => {
-          const client = new ExecGitClient(cwd);
-          writeFileSync(join(cwd, "first.txt"), "first\n");
-          git(cwd, "add", "-A");
-          await client.checkpoint("feat: first checkpoint", false);
-          trustedCheckpoint = await client.head();
-          writeFileSync(join(cwd, "second.txt"), "untrusted\n");
-          git(cwd, "add", "-A");
-          await client.checkpoint("feat: untrusted checkpoint", false);
+          const result = await changedResult(cwd, ["first", "second"]);
           writeFileSync(join(cwd, "uncommitted.txt"), "retain as evidence\n");
-          return { status: "failed", error: "provider disconnected" };
+          return result;
         }),
-      }),
-    ).rejects.toThrow("provider disconnected");
+        artifactsPath,
+      });
+    } catch (error) {
+      failure = error as WorkstreamCandidateLifecycleError;
+    }
+
+    expect(failure).toBeInstanceOf(WorkstreamCandidateLifecycleError);
+    expect(failure?.message).toBe("Workstream candidate is dirty.");
+    expect(failure?.trustedCheckpoint).toMatch(/^[0-9a-f]{40}$/);
+    expect(failure?.trustedCandidate).toMatchObject({
+      id: `checkpoint:combined:${failure?.trustedCheckpoint}`,
+      commitSha: failure?.trustedCheckpoint,
+    });
+    expect(failure?.recoveryWorkspace).toMatchObject({
+      checkpoint: failure?.trustedCheckpoint,
+      changedPaths: ["uncommitted.txt"],
+    });
+    expect(
+      JSON.parse(
+        readFileSync(
+          join(artifactsPath, "combined-implementation.json"),
+          "utf-8",
+        ),
+      ),
+    ).toMatchObject({
+      status: "validation_failed",
+      trustedCheckpoint: failure?.trustedCheckpoint,
+      observation: { clean: false, head: failure?.trustedCheckpoint },
+    });
 
     const workspace = workstreamWorkspace(subject.run.read(), "combined");
-    const workspaceGit = targetGit.forWorktree(workspace.worktreePath);
-    expect(await workspaceGit.head()).not.toBe(trustedCheckpoint);
-    expect(await workspaceGit.isClean()).toBe(false);
+    expect(await targetGit.forWorktree(workspace.worktreePath).isClean()).toBe(
+      false,
+    );
     await recreateWorkstreamWorkspace({
       state: subject.run.read(),
       workstreamId: "combined",
       git: targetGit,
-      trustedCheckpoint,
+      trustedCheckpoint: failure!.trustedCheckpoint!,
     });
-    expect(await targetGit.forWorktree(workspace.worktreePath).head()).toBe(
-      trustedCheckpoint,
-    );
-    expect(await targetGit.forWorktree(workspace.worktreePath).isClean()).toBe(
-      true,
-    );
-
     const outcome = await runWorkstreamCandidate({
       state: subject.run.read(),
       plan: subject.plan,
       workstreamId: "combined",
       git: targetGit,
       subagents: agent((cwd) => changedResult(cwd, ["first", "second"])),
-      trustedCheckpoint,
+      trustedCheckpoint: failure!.trustedCheckpoint!,
     });
     expect(outcome).toMatchObject({ kind: "candidate_ready" });
+  });
+
+  it("does not trust a checkpoint committed from a foreign branch", async () => {
+    const subject = await fixture({
+      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
+    });
+    let failure: WorkstreamCandidateLifecycleError | undefined;
+    try {
+      await runWorkstreamCandidate({
+        state: subject.run.read(),
+        plan: subject.plan,
+        workstreamId: "combined",
+        git: new ExecGitClient(subject.root),
+        subagents: agent(async (cwd) => {
+          const result = await changedResult(cwd, ["first", "second"]);
+          git(cwd, "switch", "-c", "foreign-candidate-branch");
+          return result;
+        }),
+      });
+    } catch (error) {
+      failure = error as WorkstreamCandidateLifecycleError;
+    }
+
+    expect(failure).toBeInstanceOf(WorkstreamCandidateLifecycleError);
+    expect(failure?.message).toBe(
+      "Workstream candidate is no longer on its owned branch.",
+    );
+    expect(failure?.trustedCheckpoint).toBeUndefined();
+    expect(failure?.trustedCandidate).toBeUndefined();
   });
 
   it("rejects a candidate that commits protected plan artifacts", async () => {

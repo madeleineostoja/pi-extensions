@@ -23,6 +23,10 @@ describe("parseCommand", () => {
   });
 
   it("parses control subcommands", () => {
+    expect(parseCommand("resume")).toEqual({
+      kind: "control",
+      name: "resume",
+    });
     expect(parseCommand("stop")).toEqual({ kind: "control", name: "stop" });
     expect(parseCommand("inspect run-1")).toEqual({
       kind: "control",

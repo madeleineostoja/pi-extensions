@@ -1,7 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import type { EffectiveRole } from "./config.js";
-import { changedPathsBetween, type GitClient } from "./git.js";
+import {
+  canonicalCommitSha,
+  changedPathsBetween,
+  type GitClient,
+} from "./git.js";
 import { buildRecoveryPrompt } from "./prompts.js";
 import {
   recoveryCompletionSchema,
@@ -126,9 +130,15 @@ export async function runRecovery(args: {
           "Only source workstreams support trusted workspace recreation.",
         );
       }
+      const reportedCheckpoint = completion.trustedCheckpoint
+        ? await canonicalCommitSha(
+            args.git.forWorktree(worktreePath),
+            completion.trustedCheckpoint,
+          )
+        : undefined;
       if (
-        completion.trustedCheckpoint &&
-        completion.trustedCheckpoint !== episode.workspace.checkpoint
+        reportedCheckpoint &&
+        reportedCheckpoint !== episode.workspace.checkpoint
       ) {
         throw new Error(
           "Workspace recreation may use only its retained checkpoint.",
@@ -154,20 +164,24 @@ export async function runRecovery(args: {
           "Tracked recovery requires a retained candidate and candidate tip.",
         );
       }
+      const candidateTip = await canonicalCommitSha(
+        args.git.forWorktree(correctionWorktreePath),
+        completion.candidateTip,
+      );
       result.candidate = await recoveredCandidate({
         state: args.state,
         workstream: args.effect.workstream,
         candidate,
-        candidateTip: completion.candidateTip,
+        candidateTip,
         git: args.git,
       });
       const changedPaths = await changedPathsBetween(
         args.git.forWorktree(correctionWorktreePath),
         candidate.commitSha,
-        completion.candidateTip,
+        candidateTip,
       );
       if (
-        completion.candidateTip === candidate.commitSha ||
+        candidateTip === candidate.commitSha ||
         result.candidate.treeSha === candidate.treeSha ||
         changedPaths.length === 0
       ) {
@@ -218,6 +232,8 @@ async function assertRetainedCandidateWorkspace(args: {
     candidateWorktree(args.state, args.workstream, args.candidate),
   );
   if (
+    (await workspaceGit.currentBranch()) !==
+      candidateBranch(args.state, args.workstream, args.candidate) ||
     (await workspaceGit.head()) !== args.candidate.commitSha ||
     !(await workspaceGit.isClean()) ||
     (await workspaceGit.activeOperation())
@@ -269,6 +285,17 @@ function candidateWorktree(
   ).worktreePath;
 }
 
+function candidateBranch(
+  state: RunState,
+  workstream: RuntimeWorkstream,
+  candidate: RunState["candidates"][string],
+): string {
+  return workstream.kind === "source"
+    ? workstreamWorkspace(state, workstream.id).branchName
+    : overallRepairWorkspace(state, workstream.repairId, candidate.commitSha)
+        .branchName;
+}
+
 async function recoveredCandidate(args: {
   state: RunState;
   workstream: RuntimeWorkstream;
@@ -283,6 +310,8 @@ async function recoveredCandidate(args: {
   );
   const workspaceGit = args.git.forWorktree(worktreePath);
   if (
+    (await workspaceGit.currentBranch()) !==
+      candidateBranch(args.state, args.workstream, args.candidate) ||
     (await workspaceGit.head()) !== args.candidateTip ||
     !(await workspaceGit.isClean()) ||
     (await workspaceGit.activeOperation())

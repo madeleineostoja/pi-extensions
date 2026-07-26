@@ -8,7 +8,11 @@ import {
 } from "./candidate-worker.js";
 import { captureRestoreSnapshot, snapshotChanged } from "./candidate.js";
 import { readExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
-import { changedPathsBetween, type GitClient } from "./git.js";
+import {
+  canonicalCommitSha,
+  changedPathsBetween,
+  type GitClient,
+} from "./git.js";
 import { buildWorkstreamImplementerPrompt } from "./prompts.js";
 import {
   canonicalPath,
@@ -70,16 +74,35 @@ export type WorkstreamCandidateLifecycleArgs = {
   artifactsPath?: string;
 };
 
+type WorkspaceObservation = {
+  branch: string;
+  head: string;
+  tree?: string;
+  clean: boolean;
+  activeOperation?: string;
+  status: Array<{ status: string; path: string }>;
+};
+
+type RecoveryWorkspaceEvidence = {
+  id: string;
+  checkpoint?: string;
+  changedPaths: string[];
+  stateEvidence: string;
+};
+
 export class WorkstreamCandidateLifecycleError extends Error {
   constructor(
     message: string,
     readonly trustedCheckpoint?: string,
+    readonly trustedCandidate?: RunState["candidates"][string],
+    readonly recoveryWorkspace?: RecoveryWorkspaceEvidence,
   ) {
     super(message);
   }
 }
 
 export class TargetBoundaryError extends WorkstreamCandidateLifecycleError {}
+export class TargetPreconditionError extends TargetBoundaryError {}
 
 export async function runWorkstreamCandidate(
   args: WorkstreamCandidateLifecycleArgs,
@@ -108,13 +131,13 @@ export async function runWorkstreamCandidate(
     );
   }
   if ((await args.git.head()) !== runtime.baseSha) {
-    throw new TargetBoundaryError(
+    throw new TargetPreconditionError(
       "Target checkout changed from the assigned workstream base before execution.",
     );
   }
   const protectedPaths = Object.keys(args.state.protectedArtifactHashes);
   if (!(await protectedArtifactsMatch(args.state))) {
-    throw new TargetBoundaryError(
+    throw new TargetPreconditionError(
       "Protected artifacts changed before workstream execution.",
     );
   }
@@ -214,50 +237,108 @@ export async function runWorkstreamCandidate(
       "Implementer changed the target checkout or protected artifacts.",
     );
   }
+  if (result?.status === "completed") {
+    writeEvidence(args.artifactsPath, args.workstreamId, {
+      status: "submitted",
+      completion: result.result,
+    });
+  }
+  const candidateProtectedPaths = protectedPaths
+    .map((path) => protectedPathInWorktree(args.state, path))
+    .filter((path): path is string => path !== undefined);
+  const observation = await observeWorkspace(workspaceGit);
   const trustedCheckpoint = await retainedCheckpoint(
     workspaceGit,
+    workspace.branchName,
     workspace.baseSha,
-    protectedPaths
-      .map((path) => protectedPathInWorktree(args.state, path))
-      .filter((path): path is string => path !== undefined),
+    candidateProtectedPaths,
+    observation,
+  );
+  const trustedCandidate = trustedCheckpoint
+    ? await checkpointCandidate({
+        workstreamId: args.workstreamId,
+        baseSha: workspace.baseSha,
+        checkpoint: trustedCheckpoint,
+        git: workspaceGit,
+      })
+    : undefined;
+  const recoveryWorkspace = workspaceEvidence(
+    args.workstreamId,
+    observation,
+    trustedCheckpoint,
   );
   if (failure) {
+    const evidence = `Workstream implementer failed: ${message(failure)}`;
     writeEvidence(args.artifactsPath, args.workstreamId, {
       status: "failed",
       error: message(failure),
+      observation,
       trustedCheckpoint,
+      trustedCandidate,
     });
     throw new WorkstreamCandidateLifecycleError(
-      `Workstream implementer failed: ${message(failure)}`,
+      evidence,
       trustedCheckpoint,
+      trustedCandidate,
+      { ...recoveryWorkspace, stateEvidence: evidence },
     );
   }
   if (!result || result.status !== "completed") {
+    const evidence = `Workstream implementer ${result?.status}: ${result?.error ?? "no completion"}`;
     writeEvidence(args.artifactsPath, args.workstreamId, {
       ...result,
+      observation,
       trustedCheckpoint,
+      trustedCandidate,
     });
     throw new WorkstreamCandidateLifecycleError(
-      `Workstream implementer ${result?.status}: ${result?.error ?? "no completion"}`,
+      evidence,
       trustedCheckpoint,
+      trustedCandidate,
+      { ...recoveryWorkspace, stateEvidence: evidence },
     );
   }
 
-  const outcome = await validateCompletion({
+  writeEvidence(args.artifactsPath, args.workstreamId, {
+    status: "observed",
     completion: result.result,
-    workstream,
-    workspace,
-    workspaceGit,
-    protectedPaths: protectedPaths
-      .map((path) => protectedPathInWorktree(args.state, path))
-      .filter((path): path is string => path !== undefined),
+    observation,
+    trustedCheckpoint,
+    trustedCandidate,
   });
-  const evidencePath = writeEvidence(args.artifactsPath, args.workstreamId, {
-    status: "completed",
-    completion: result.result,
-    outcome,
-  });
-  return evidencePath ? { ...outcome, evidencePath } : outcome;
+  try {
+    const outcome = await validateCompletion({
+      completion: result.result,
+      workstream,
+      workspace,
+      workspaceGit,
+      observation,
+      protectedPaths: candidateProtectedPaths,
+    });
+    const evidencePath = writeEvidence(args.artifactsPath, args.workstreamId, {
+      status: "completed",
+      completion: result.result,
+      observation,
+      outcome,
+    });
+    return evidencePath ? { ...outcome, evidencePath } : outcome;
+  } catch (error) {
+    const evidence = message(error);
+    writeEvidence(args.artifactsPath, args.workstreamId, {
+      status: "validation_failed",
+      completion: result.result,
+      observation,
+      trustedCheckpoint,
+      trustedCandidate,
+      error: evidence,
+    });
+    throw new WorkstreamCandidateLifecycleError(
+      evidence,
+      trustedCheckpoint,
+      trustedCandidate,
+      { ...recoveryWorkspace, stateEvidence: evidence },
+    );
+  }
 }
 
 export async function recreateWorkstreamWorkspace(args: {
@@ -367,6 +448,7 @@ async function validateCompletion(args: {
   workstream: ExecutionPlan["workstreams"][number];
   workspace: TaskWorkspace;
   workspaceGit: GitClient;
+  observation: WorkspaceObservation;
   protectedPaths: string[];
 }): Promise<WorkstreamCandidateOutcome> {
   const taskIds = new Set(args.workstream.taskIds);
@@ -387,17 +469,17 @@ async function validateCompletion(args: {
       "Workstream completion must map every assigned task exactly once.",
     );
   }
-  if ((await args.workspaceGit.currentBranch()) !== args.workspace.branchName) {
+  if (args.observation.branch !== args.workspace.branchName) {
     throw new WorkstreamCandidateLifecycleError(
       "Workstream candidate is no longer on its owned branch.",
     );
   }
-  if ((await args.workspaceGit.activeOperation()) !== undefined) {
+  if (args.observation.activeOperation !== undefined) {
     throw new WorkstreamCandidateLifecycleError(
       "Workstream candidate has an active Git operation.",
     );
   }
-  if (!(await args.workspaceGit.isClean())) {
+  if (!args.observation.clean) {
     throw new WorkstreamCandidateLifecycleError(
       "Workstream candidate is dirty.",
     );
@@ -416,7 +498,7 @@ async function validateCompletion(args: {
         "An already-satisfied workstream cannot return a candidate tip.",
       );
     }
-    if ((await args.workspaceGit.head()) !== args.workspace.baseSha) {
+    if (args.observation.head !== args.workspace.baseSha) {
       throw new WorkstreamCandidateLifecycleError(
         "An already-satisfied workstream cannot create commits.",
       );
@@ -455,13 +537,17 @@ async function validateCompletion(args: {
       "A changed workstream requires its final candidate tip.",
     );
   }
-  const candidateTip = args.completion.candidateTip;
+  const candidateTip = await canonicalCommit(
+    args.workspaceGit,
+    args.completion.candidateTip,
+    "Candidate tip",
+  );
   if (candidateTip === args.workspace.baseSha) {
     throw new WorkstreamCandidateLifecycleError(
       "A changed workstream must advance beyond its assigned base.",
     );
   }
-  if ((await args.workspaceGit.head()) !== candidateTip) {
+  if (args.observation.head !== candidateTip) {
     throw new WorkstreamCandidateLifecycleError(
       "Candidate tip does not match the workstream worktree HEAD.",
     );
@@ -473,7 +559,7 @@ async function validateCompletion(args: {
       "Candidate does not descend from its assigned base.",
     );
   }
-  const treeSha = await args.workspaceGit.tree();
+  const treeSha = args.observation.tree!;
   if ((await args.workspaceGit.treeAt(args.workspace.baseSha)) === treeSha) {
     throw new WorkstreamCandidateLifecycleError(
       "A changed workstream must change the candidate tree.",
@@ -509,18 +595,23 @@ async function validateCompletion(args: {
         "Changed tasks require a checkpoint or concrete already-satisfied evidence.",
       );
     }
+    const checkpoint = await canonicalCommit(
+      args.workspaceGit,
+      completion.checkpoint,
+      `Task ${taskId} checkpoint`,
+    );
     if (
       !(await args.workspaceGit.isAncestor(
         args.workspace.baseSha,
-        completion.checkpoint,
+        checkpoint,
       )) ||
-      !(await args.workspaceGit.isAncestor(completion.checkpoint, candidateTip))
+      !(await args.workspaceGit.isAncestor(checkpoint, candidateTip))
     ) {
       throw new WorkstreamCandidateLifecycleError(
         `Task ${taskId} checkpoint is not reachable from the candidate tip.`,
       );
     }
-    checkpoints[taskId] = completion.checkpoint;
+    checkpoints[taskId] = checkpoint;
   }
   if (Object.keys(checkpoints).length === 0) {
     throw new WorkstreamCandidateLifecycleError(
@@ -591,24 +682,104 @@ function trustedCheckpointForWorkstream(
 
 async function retainedCheckpoint(
   git: GitClient,
+  expectedBranch: string,
   baseSha: string,
-  protectedPaths: Array<string | undefined>,
+  protectedPaths: string[],
+  observation: WorkspaceObservation,
 ): Promise<string | undefined> {
-  if ((await git.activeOperation()) !== undefined) {
-    return undefined;
-  }
-  const head = await git.head();
-  if (!(await git.isAncestor(baseSha, head))) {
+  if (
+    observation.branch !== expectedBranch ||
+    observation.activeOperation !== undefined ||
+    !(await git.isAncestor(baseSha, observation.head))
+  ) {
     return undefined;
   }
   return (await candidateChangesProtectedPaths(
     git,
     baseSha,
-    head,
-    protectedPaths.filter((path): path is string => path !== undefined),
+    observation.head,
+    protectedPaths,
   ))
     ? undefined
-    : head;
+    : observation.head;
+}
+
+async function observeWorkspace(git: GitClient): Promise<WorkspaceObservation> {
+  const [branch, head, activeOperation, status] = await Promise.all([
+    git.currentBranch(),
+    git.head(),
+    git.activeOperation(),
+    git.statusEntriesExcept([]),
+  ]);
+  const clean = status.length === 0;
+  return {
+    branch,
+    head,
+    clean,
+    activeOperation,
+    status,
+    ...(clean ? { tree: await git.tree() } : {}),
+  };
+}
+
+async function checkpointCandidate(args: {
+  workstreamId: string;
+  baseSha: string;
+  checkpoint: string;
+  git: GitClient;
+}): Promise<RunState["candidates"][string] | undefined> {
+  if (
+    args.checkpoint === args.baseSha ||
+    (await args.git.treeAt(args.checkpoint)) ===
+      (await args.git.treeAt(args.baseSha))
+  ) {
+    return undefined;
+  }
+  return {
+    id: `checkpoint:${args.workstreamId}:${args.checkpoint}`,
+    workstream: { kind: "source", id: args.workstreamId },
+    baseSha: args.baseSha,
+    commitSha: args.checkpoint,
+    treeSha: await args.git.treeAt(args.checkpoint),
+  };
+}
+
+function workspaceEvidence(
+  workstreamId: string,
+  observation: WorkspaceObservation,
+  checkpoint?: string,
+): RecoveryWorkspaceEvidence {
+  const status = observation.status.map(
+    (entry) => `${entry.status} ${entry.path}`,
+  );
+  return {
+    id: `source:${workstreamId}`,
+    ...(checkpoint ? { checkpoint } : {}),
+    changedPaths: [...new Set(observation.status.map((entry) => entry.path))],
+    stateEvidence: [
+      `Owned workspace HEAD: ${observation.head}.`,
+      observation.clean
+        ? "Owned workspace is clean."
+        : `Owned workspace changes: ${status.join(", ")}.`,
+      observation.activeOperation
+        ? `Active Git operation: ${observation.activeOperation}.`
+        : "No active Git operation.",
+    ].join(" "),
+  };
+}
+
+async function canonicalCommit(
+  git: GitClient,
+  revision: string,
+  label: string,
+): Promise<string> {
+  try {
+    return await canonicalCommitSha(git, revision);
+  } catch {
+    throw new WorkstreamCandidateLifecycleError(
+      `${label} does not resolve to a commit.`,
+    );
+  }
 }
 
 function resolveCorpusPath(
