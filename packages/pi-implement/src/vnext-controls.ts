@@ -104,16 +104,32 @@ export function inspectVNextRun(checkoutRoot: string, runId: string): string {
 export async function assertProspectiveVNextRunPreflight(
   git: GitClient,
 ): Promise<void> {
-  const [root, head, branch, operation, clean] = await Promise.all([
-    git.root(),
-    git.head(),
-    git.currentBranch(),
-    git.activeOperation(),
-    git.isClean(),
-  ]);
-  if (!root || !head || !branch || operation || !clean) {
+  try {
+    if (!(await git.root())) {
+      throw new Error("missing root");
+    }
+  } catch {
+    throw new Error("A new run requires a Git worktree.");
+  }
+  try {
+    if (!(await git.head())) {
+      throw new Error("missing HEAD");
+    }
+  } catch {
+    throw new Error("A new run requires a resolvable HEAD.");
+  }
+  if (!(await git.currentBranch())) {
+    throw new Error("A new run requires a named local branch.");
+  }
+  const operation = await git.activeOperation();
+  if (operation) {
     throw new Error(
-      "A new run requires a clean Git worktree with a resolvable HEAD, named branch, and no active Git operation.",
+      `A new run cannot start during an active ${operation} operation.`,
+    );
+  }
+  if (!(await git.isClean())) {
+    throw new Error(
+      "A new run requires a clean target checkout with no nonignored untracked files.",
     );
   }
 }

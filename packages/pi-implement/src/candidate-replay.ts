@@ -192,6 +192,8 @@ export type CandidateReplayOptions = {
   git: GitClient;
   worktreesRoot: string;
   runId: string;
+  protectedPaths?: string[];
+  protectedArtifactsMatch?: () => boolean | Promise<boolean>;
 };
 
 export class CandidateReplayEngine {
@@ -215,7 +217,7 @@ export class CandidateReplayEngine {
     let retainedStaging: ReplayStaging | undefined;
     try {
       const git = this.options.git.withSignal?.(signal) ?? this.options.git;
-      const target = await targetSnapshot(git);
+      const target = await targetSnapshot(git, this.options);
       if (
         (await git.treeAt(candidate.commitSha)) !== candidate.treeSha ||
         !(await git.isAncestor(candidate.baseSha, candidate.commitSha)) ||
@@ -242,7 +244,7 @@ export class CandidateReplayEngine {
       );
       retainedStaging = staging;
       if (staging.preparedCommitSha && staging.treeSha) {
-        await assertTargetUnchanged(git, target);
+        await assertTargetUnchanged(git, target, this.options);
         return {
           kind: "prepared",
           disposition:
@@ -256,7 +258,7 @@ export class CandidateReplayEngine {
         };
       }
       if (candidate.commitSha === candidate.baseSha) {
-        await assertTargetUnchanged(git, target);
+        await assertTargetUnchanged(git, target, this.options);
         if (candidate.baseSha !== target.head) {
           return {
             kind: "repository_assessment_required",
@@ -280,11 +282,11 @@ export class CandidateReplayEngine {
       const patch = candidatePatch;
       const applied = await workspaceGit.applyPatch(patch);
       if (signal?.aborted) {
-        await assertTargetUnchanged(git, target);
+        await assertTargetUnchanged(git, target, this.options);
         return { kind: "cancelled", staging };
       }
       if (applied.exitCode !== 0) {
-        await assertTargetUnchanged(git, target);
+        await assertTargetUnchanged(git, target, this.options);
         return {
           kind: "reconciliation_required",
           disposition: "conflict",
@@ -299,7 +301,7 @@ export class CandidateReplayEngine {
         };
       }
       if (overlaps.length > 0) {
-        await assertTargetUnchanged(git, target);
+        await assertTargetUnchanged(git, target, this.options);
         return {
           kind: "reconciliation_required",
           disposition: "overlap",
@@ -319,7 +321,7 @@ export class CandidateReplayEngine {
         .sort();
       const replayPatch = await workspaceGit.stagedDiff();
       if (normalizePatch(replayPatch) !== normalizePatch(patch)) {
-        await assertTargetUnchanged(git, target);
+        await assertTargetUnchanged(git, target, this.options);
         return {
           kind: "reconciliation_required",
           disposition: "changed_patch",
@@ -566,7 +568,7 @@ export class CandidateReplayEngine {
       if (candidate.commitSha !== candidate.baseSha) {
         throw new Error("Candidate replay unexpectedly has no staged changes.");
       }
-      await assertTargetUnchanged(this.options.git, target);
+      await assertTargetUnchanged(this.options.git, target, this.options);
       return {
         kind: "prepared",
         staging: {
@@ -585,7 +587,7 @@ export class CandidateReplayEngine {
     );
     const command = hookCommandEvidence(commit, staging.worktreePath);
     if (commit.exitCode !== 0) {
-      await assertTargetUnchanged(this.options.git, target);
+      await assertTargetUnchanged(this.options.git, target, this.options);
       return {
         kind: "hook_rejected",
         staging,
@@ -612,7 +614,7 @@ export class CandidateReplayEngine {
       stagingGit.diffRange(staging.targetBaseSha, preparedCommitSha),
       changedPathsBetween(stagingGit, staging.targetBaseSha, preparedCommitSha),
     ]);
-    await assertTargetUnchanged(this.options.git, target);
+    await assertTargetUnchanged(this.options.git, target, this.options);
     if (
       patchHash(actualPatch) !== staging.replayPatchHash ||
       JSON.stringify(actualPaths) !== JSON.stringify(staging.replayPaths)
@@ -657,7 +659,10 @@ function hookCommandEvidence(
   };
 }
 
-async function targetSnapshot(git: GitClient): Promise<{
+async function targetSnapshot(
+  git: GitClient,
+  options: CandidateReplayOptions,
+): Promise<{
   head: string;
   branch: string;
   identity: string;
@@ -665,17 +670,34 @@ async function targetSnapshot(git: GitClient): Promise<{
   operation?: string;
   clean: boolean;
 }> {
-  const [head, branch, identity, tree, operation, clean] = await Promise.all([
+  const protectedPaths = options.protectedPaths ?? [];
+  if (protectedPaths.length > 0 && !options.protectedArtifactsMatch) {
+    throw new Error(
+      "Replay protection requires exact retained hashes for sanctioned artifacts.",
+    );
+  }
+  const [
+    head,
+    branch,
+    identity,
+    tree,
+    operation,
+    clean,
+    protectedIndexDirty,
+    protectedMatch,
+  ] = await Promise.all([
     git.head(),
     git.currentBranch(),
     git.checkoutIdentity(),
     git.tree(),
     git.activeOperation(),
-    git.isClean(),
+    git.isCleanExcept(protectedPaths),
+    git.hasStagedChangesInPaths(protectedPaths),
+    options.protectedArtifactsMatch?.() ?? true,
   ]);
-  if (operation || !clean) {
+  if (operation || !clean || protectedIndexDirty || !protectedMatch) {
     throw new Error(
-      "Target checkout is not clean and idle for replay preparation.",
+      "Target checkout is not clean outside sanctioned artifacts and exact protected content for replay preparation.",
     );
   }
   return { head, branch, identity, tree, operation, clean };
@@ -684,8 +706,9 @@ async function targetSnapshot(git: GitClient): Promise<{
 async function assertTargetUnchanged(
   git: GitClient,
   expected: Awaited<ReturnType<typeof targetSnapshot>>,
+  options: CandidateReplayOptions,
 ): Promise<void> {
-  const actual = await targetSnapshot(git);
+  const actual = await targetSnapshot(git, options);
   if (
     actual.head !== expected.head ||
     actual.branch !== expected.branch ||

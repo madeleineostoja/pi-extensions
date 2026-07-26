@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { registerImplementCommand } from "./command.js";
+import { assertVNextRunCanResume } from "./vnext-command.js";
 
 const temporaryDirectories = new Set<string>();
 
@@ -14,6 +15,12 @@ afterEach(() => {
 });
 
 describe("/implement VNext command", () => {
+  it("rejects terminal runs before creating a resume actor", () => {
+    expect(() => assertVNextRunCanResume("completed")).toThrow(":cleanup");
+    expect(() => assertVNextRunCanResume("blocked_safety")).toThrow(":abandon");
+    expect(() => assertVNextRunCanResume("paused")).not.toThrow();
+  });
+
   it("returns an all-checked plan as a no-op without allocating a run", async () => {
     let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
     const pi = {

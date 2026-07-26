@@ -9,7 +9,9 @@ import {
   type ExecutionPlan,
 } from "./execution-plan-vnext.js";
 import { buildMaterialStore } from "./material-store.js";
+import { recoverProjectionTransactions } from "./vnext-command.js";
 import { parsePlan } from "./plan.js";
+import { createCheckboxProjectionIntent } from "./vnext-projection.js";
 import {
   acquireCheckoutLease,
   checkoutPaths,
@@ -251,6 +253,61 @@ describe("VNext checkout store", () => {
       readFileSync(planPath, "utf-8").replace("Second task", "Changed task"),
     );
     expect(sourceIdentityMatches(store.read())).toBe(false);
+  });
+
+  it("settles a post-write projection debt before normal resume validation", async () => {
+    const directory = root();
+    const plan = planFor(directory);
+    const lease = fakeLease(directory);
+    const store = createPlanningRun({
+      lease,
+      runId: "run-1",
+      checkout: {
+        root: directory,
+        gitDir: join(directory, ".git"),
+        commonGitDir: join(directory, ".git"),
+        branchRef: "refs/heads/main",
+        startHead: "base-sha",
+      },
+      source: sourceIdentityForExecutionPlan(plan),
+      workerConcurrency: 1,
+    });
+    await store.bindExecutionPlan(plan);
+    const planPath = join(directory, "plan.md");
+    const debt = createCheckboxProjectionIntent({
+      id: "projection:run-1:first",
+      checkoutRoot: directory,
+      taskIds: ["first"],
+      checkboxes: [
+        { path: planPath, lineNumber: 5, lineText: "- [ ] First task" },
+      ],
+    });
+    const current = store.read();
+    await store.update(current.revision, (state) => ({
+      ...state,
+      tasks: {
+        ...state.tasks,
+        first: {
+          ...state.tasks.first!,
+          phase: "checkpointed",
+          checkpoint: "first-checkpoint",
+        },
+      },
+      projectionDebt: [
+        {
+          ...debt,
+          reason: "test post-write interruption",
+          artifactPath: debt.canonicalPath,
+        },
+      ],
+    }));
+    writeFileSync(planPath, debt.expectedNewContent);
+
+    await recoverProjectionTransactions({ store });
+
+    expect(store.read().projectionDebt).toEqual([]);
+    expect(protectedArtifactsMatch(store.read())).toBe(true);
+    expect(sourceIdentityMatches(store.read())).toBe(true);
   });
 
   it("keeps leases and state roots checkout-local", async () => {

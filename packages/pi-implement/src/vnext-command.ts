@@ -14,7 +14,10 @@ import {
 import { ExecGitClient } from "./git.js";
 import { RuntimeSubagentClient } from "./subagents.js";
 import { runVNextProjection } from "./vnext-projection-runner.js";
-import { createCheckboxProjectionIntent } from "./vnext-projection.js";
+import {
+  createCheckboxProjectionIntent,
+  resumeCheckboxProjection,
+} from "./vnext-projection.js";
 import { runVNextPublication } from "./vnext-publication.js";
 import {
   completeVNextWholePlanRun,
@@ -24,7 +27,7 @@ import {
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
 import { assertProspectiveVNextRunPreflight } from "./vnext-controls.js";
 import { strictExecutionPlanSchema } from "./result-schemas.js";
-import { sha256 } from "./source-integrity.js";
+import { canonicalPath, sha256 } from "./source-integrity.js";
 import {
   runWorkstreamCandidate,
   TargetBoundaryError,
@@ -69,17 +72,10 @@ export async function startVNextRun(args: {
     return { kind: "no-op" };
   }
   const git = new ExecGitClient(args.ctx.cwd);
-  const [checkoutRoot, checkoutIdentity, baseSha, branch] = await Promise.all([
+  const [checkoutRoot, checkoutIdentity] = await Promise.all([
     git.root(),
     git.checkoutIdentity(),
-    git.head(),
-    git.currentBranch(),
   ]);
-  const materialStore = buildMaterialStore({
-    plan: parsed,
-    planPath,
-    repoRoot: checkoutRoot,
-  });
   const runId = makeVNextRunId();
   const lease = await acquireCheckoutLease({
     checkoutRoot,
@@ -89,6 +85,15 @@ export async function startVNextRun(args: {
   });
   try {
     await assertProspectiveVNextRunPreflight(git);
+    const [baseSha, branch] = await Promise.all([
+      git.head(),
+      git.currentBranch(),
+    ]);
+    const materialStore = buildMaterialStore({
+      plan: parsed,
+      planPath,
+      repoRoot: checkoutRoot,
+    });
     const source = sourceIdentityForPlanning({
       planPath,
       planContent: content,
@@ -166,6 +171,7 @@ export async function resumeVNextRun(args: {
       "Run belongs to a different checkout; inspect it from that checkout.",
     );
   }
+  assertVNextRunCanResume(retained.phase);
   const lease = await acquireCheckoutLease({
     checkoutRoot,
     gitDir: checkoutIdentity,
@@ -177,6 +183,9 @@ export async function resumeVNextRun(args: {
       lease,
       join(lease.paths.runs, args.runId, "run-state.json"),
     );
+    await recoverPublicationTransactions({ store, git });
+    await recoverProjectionTransactions({ store });
+    const current = store.read();
     const content = await readText(planPath);
     const parsed = parsePlan(planPath, content);
     const materialStore = buildMaterialStore({
@@ -184,8 +193,6 @@ export async function resumeVNextRun(args: {
       planPath,
       repoRoot: checkoutRoot,
     });
-    await recoverPublicationTransactions({ store, git });
-    const current = store.read();
     if (current.phase === "planning") {
       const source = sourceIdentityForPlanning({
         planPath,
@@ -202,13 +209,14 @@ export async function resumeVNextRun(args: {
         throw new Error("Plan corpus changed; planning resume is unsafe.");
       }
     } else if (
-      !projectionDebtMatchesIntent(current) &&
-      (!sourceIdentityMatches(current) || !protectedArtifactsMatch(current))
+      !sourceIdentityMatches(current) ||
+      !protectedArtifactsMatch(current)
     ) {
       throw new Error(
         "Plan corpus or protected artifacts changed; resume is unsafe.",
       );
     }
+    await assertVNextResumeTargetBoundary(current, git);
     const plan = readExecutionPlan(runPath);
     if (current.phase !== "planning" && !plan) {
       throw new Error(
@@ -235,6 +243,17 @@ export async function resumeVNextRun(args: {
   } catch (error) {
     await lease.release();
     throw error;
+  }
+}
+
+export function assertVNextRunCanResume(phase: VNextRunState["phase"]): void {
+  if (phase === "completed") {
+    throw new Error("Completed runs cannot resume; use :cleanup instead.");
+  }
+  if (phase === "blocked_safety") {
+    throw new Error(
+      "Safety-blocked runs cannot resume; use :abandon after manual recovery.",
+    );
   }
 }
 
@@ -286,12 +305,98 @@ async function recoverPublicationTransactions(args: {
   }
 }
 
+export async function recoverProjectionTransactions(args: {
+  store: VNextRunStore;
+}): Promise<void> {
+  const initial = args.store.read();
+  if (initial.projectionDebt.length === 0) {
+    return;
+  }
+  if (!projectionDebtMatchesIntent(initial)) {
+    throw new Error(
+      "Projection recovery requires each protected source artifact to match an exact retained intent side.",
+    );
+  }
+  for (const debt of initial.projectionDebt) {
+    const state = args.store.read();
+    if (!state.projectionDebt.some((item) => item.id === debt.id)) {
+      continue;
+    }
+    const outcome = resumeCheckboxProjection(state.run.checkout.root, debt);
+    if (outcome.kind === "safety_paused") {
+      throw new Error(`Projection recovery is unsafe: ${outcome.reason}`);
+    }
+    await args.store.recordProjection(state.revision, debt.taskIds, {
+      ...state.protectedArtifactHashes,
+      [debt.canonicalPath]: outcome.protectedHash,
+    });
+    const recorded = args.store.read();
+    await args.store.update(recorded.revision, (current) => ({
+      ...current,
+      projectionDebt: current.projectionDebt.filter(
+        (item) => item.id !== debt.id,
+      ),
+    }));
+  }
+}
+
+async function assertVNextResumeTargetBoundary(
+  state: VNextRunState,
+  git: ExecGitClient,
+): Promise<void> {
+  const protectedPaths = Object.keys(state.protectedArtifactHashes);
+  const [branch, head, operation, clean, protectedIndexDirty] =
+    await Promise.all([
+      git.currentBranch(),
+      git.head(),
+      git.activeOperation(),
+      git.isCleanExcept(protectedPaths),
+      git.hasStagedChangesInPaths(protectedPaths),
+    ]);
+  if (`refs/heads/${branch}` !== state.run.checkout.branchRef) {
+    throw new Error("Resume requires the retained local target branch.");
+  }
+  if (head !== expectedTargetHead(state)) {
+    throw new Error("Resume requires the target HEAD retained by this run.");
+  }
+  if (operation) {
+    throw new Error(
+      `Resume cannot continue during an active ${operation} operation.`,
+    );
+  }
+  if (!clean || protectedIndexDirty || !protectedArtifactsMatch(state)) {
+    throw new Error(
+      "Resume requires a clean target outside sanctioned projections with exact protected content.",
+    );
+  }
+}
+
+function expectedTargetHead(state: VNextRunState): string {
+  const pending = Object.values(state.publication.intents).filter(
+    (intent) => !state.publication.receipts[intent.id],
+  );
+  if (pending.length === 1) {
+    return pending[0]!.targetBaseSha;
+  }
+  if (pending.length > 1) {
+    throw new Error("Resume found multiple unresolved publication intents.");
+  }
+  const receipts = Object.values(state.publication.receipts);
+  const publishedBases = new Set(
+    receipts.map((receipt) => receipt.targetBaseSha),
+  );
+  const tip = receipts.find(
+    (receipt) => !publishedBases.has(receipt.publishedCommitSha),
+  );
+  return tip?.publishedCommitSha ?? state.run.checkout.startHead;
+}
+
 function projectionDebtMatchesIntent(state: VNextRunState): boolean {
   if (state.projectionDebt.length === 0) {
     return false;
   }
   const projectedPaths = new Set(
-    state.projectionDebt.map((debt) => debt.canonicalPath),
+    state.projectionDebt.map((debt) => canonicalPath(debt.canonicalPath)),
   );
   return (
     state.projectionDebt.every((debt) => {
@@ -308,7 +413,7 @@ function projectionDebtMatchesIntent(state: VNextRunState): boolean {
       }
     }) &&
     state.run.source.corpus
-      .filter((artifact) => !projectedPaths.has(artifact.path))
+      .filter((artifact) => !projectedPaths.has(canonicalPath(artifact.path)))
       .every((artifact) => {
         try {
           return sha256(readFileSync(artifact.path, "utf-8")) === artifact.hash;
@@ -356,19 +461,22 @@ export function createVNextRuntime(args: {
     captureTargetBoundary: async () => {
       const state = args.store.read();
       const protectedPaths = Object.keys(state.protectedArtifactHashes);
-      const [checkout, branch, head, operation, clean] = await Promise.all([
-        args.git.checkoutIdentity(),
-        args.git.currentBranch(),
-        args.git.head(),
-        args.git.activeOperation(),
-        args.git.isCleanExcept(protectedPaths),
-      ]);
+      const [checkout, branch, head, operation, clean, protectedIndexDirty] =
+        await Promise.all([
+          args.git.checkoutIdentity(),
+          args.git.currentBranch(),
+          args.git.head(),
+          args.git.activeOperation(),
+          args.git.isCleanExcept(protectedPaths),
+          args.git.hasStagedChangesInPaths(protectedPaths),
+        ]);
       const protectedMatch = protectedArtifactsMatch(state);
       if (
         checkout !== state.run.checkout.gitDir ||
         branch !== state.run.checkout.branchRef.replace("refs/heads/", "") ||
         operation !== undefined ||
         !clean ||
+        protectedIndexDirty ||
         !protectedMatch
       ) {
         throw new TargetBoundaryError(
@@ -528,6 +636,8 @@ export function createVNextRuntime(args: {
           git: args.git,
           worktreesRoot: join(args.lease.paths.worktrees, state.run.id),
           runId: state.run.id,
+          protectedPaths: Object.keys(state.protectedArtifactHashes),
+          protectedArtifactsMatch: () => protectedArtifactsMatch(state),
         }).prepare(candidate, signal, retainedPreparation);
         const workspace =
           replay.staging === undefined

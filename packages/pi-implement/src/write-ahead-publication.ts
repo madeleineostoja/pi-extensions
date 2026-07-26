@@ -236,16 +236,19 @@ export class WriteAheadPublisher {
     if (identity) {
       return { kind: "safety_paused", reason: identity };
     }
-    const [head, operation, clean, parent, tree] = await Promise.all([
-      this.options.git.head(),
-      this.options.git.activeOperation(),
-      this.options.git.isCleanExcept([
-        ...this.options.protectedPaths,
-        join(this.options.checkoutRoot, ".pi", "implement"),
-      ]),
-      this.options.git.parent(intent.preparedCommitSha),
-      this.options.git.treeAt(intent.preparedCommitSha),
-    ]);
+    const protectedPaths = this.options.protectedPaths;
+    const [head, operation, clean, protectedIndexDirty, parent, tree] =
+      await Promise.all([
+        this.options.git.head(),
+        this.options.git.activeOperation(),
+        this.options.git.isCleanExcept([
+          ...protectedPaths,
+          join(this.options.checkoutRoot, ".pi", "implement"),
+        ]),
+        this.options.git.hasStagedChangesInPaths(protectedPaths),
+        this.options.git.parent(intent.preparedCommitSha),
+        this.options.git.treeAt(intent.preparedCommitSha),
+      ]);
     if (head !== expectedHead) {
       return { kind: "target_moved", expected: expectedHead, actual: head };
     }
@@ -255,7 +258,7 @@ export class WriteAheadPublisher {
         reason: `Target checkout has an active ${operation} operation.`,
       };
     }
-    if (!clean) {
+    if (!clean || protectedIndexDirty) {
       return {
         kind: "safety_paused",
         reason: "Target checkout is dirty outside sanctioned artifacts.",
@@ -276,10 +279,14 @@ export class WriteAheadPublisher {
   }
 
   private async isCleanForSynchronization(): Promise<boolean> {
-    return this.options.git.isCleanExcept([
-      ...this.options.protectedPaths,
-      join(this.options.checkoutRoot, ".pi", "implement"),
+    const [clean, protectedIndexDirty] = await Promise.all([
+      this.options.git.isCleanExcept([
+        ...this.options.protectedPaths,
+        join(this.options.checkoutRoot, ".pi", "implement"),
+      ]),
+      this.options.git.hasStagedChangesInPaths(this.options.protectedPaths),
     ]);
+    return clean && !protectedIndexDirty;
   }
 
   private async identityError(

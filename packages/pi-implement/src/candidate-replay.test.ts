@@ -79,6 +79,54 @@ afterEach(() => {
 });
 
 describe("CandidateReplayEngine", () => {
+  it("allows exact tracked projection dirt but rejects unrelated target dirt", async () => {
+    const root = repository();
+    const plan = join(root, "plan.md");
+    writeFileSync(plan, "- [ ] Task\n");
+    git(root, "add", "plan.md");
+    git(root, "commit", "-m", "docs: add plan");
+    const approved = await candidate(root, "candidate.txt", "candidate\n");
+    writeFileSync(plan, "- [x] Task\n");
+    const protectedEngine = new CandidateReplayEngine({
+      git: new ExecGitClient(root),
+      worktreesRoot: join(root, ".pi", "implement", "worktrees", "run-1"),
+      runId: "run-1",
+      protectedPaths: [plan],
+      protectedArtifactsMatch: () => true,
+    });
+
+    const prepared = await protectedEngine.prepare(approved);
+    expect(prepared).toMatchObject({ kind: "prepared" });
+    if (prepared.kind === "prepared") {
+      await protectedEngine.cleanup(prepared.staging);
+    }
+
+    await expect(
+      new CandidateReplayEngine({
+        git: new ExecGitClient(root),
+        worktreesRoot: join(root, ".pi", "implement", "worktrees", "run-2"),
+        runId: "run-2",
+        protectedPaths: [plan],
+      }).prepare(approved),
+    ).resolves.toMatchObject({
+      kind: "infrastructure_failure",
+      evidence: expect.stringContaining("requires exact retained hashes"),
+    });
+
+    git(root, "add", "plan.md");
+    await expect(protectedEngine.prepare(approved)).resolves.toMatchObject({
+      kind: "infrastructure_failure",
+      evidence: expect.stringContaining("clean outside sanctioned artifacts"),
+    });
+    git(root, "reset", "--", "plan.md");
+
+    writeFileSync(join(root, "unrelated.txt"), "operator change\n");
+    await expect(protectedEngine.prepare(approved)).resolves.toMatchObject({
+      kind: "infrastructure_failure",
+      evidence: expect.stringContaining("clean outside sanctioned artifacts"),
+    });
+  });
+
   it("prepares a clean candidate in disposable staging without touching the target", async () => {
     const root = repository();
     const client = new ExecGitClient(root);

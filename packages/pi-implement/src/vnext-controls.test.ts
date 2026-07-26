@@ -11,7 +11,10 @@ import {
   type VNextRunState,
   type VNextRunStore,
 } from "./vnext-store.js";
-import { listCheckoutVNextRuns } from "./vnext-controls.js";
+import {
+  assertProspectiveVNextRunPreflight,
+  listCheckoutVNextRuns,
+} from "./vnext-controls.js";
 
 const temporaryDirectories = new Set<string>();
 
@@ -37,6 +40,34 @@ function repository(): string {
 }
 
 describe("VNext controls", () => {
+  it("requires a clean named branch with no active Git operation before starting", async () => {
+    const root = repository();
+    const git = new ExecGitClient(root);
+
+    await expect(
+      assertProspectiveVNextRunPreflight(git),
+    ).resolves.toBeUndefined();
+
+    writeFileSync(join(root, "unrelated.txt"), "operator dirt\n");
+    await expect(assertProspectiveVNextRunPreflight(git)).rejects.toThrow(
+      "clean target checkout",
+    );
+    rmSync(join(root, "unrelated.txt"));
+
+    const branch = await git.currentBranch();
+    execFileSync("git", ["checkout", "--detach"], { cwd: root });
+    await expect(assertProspectiveVNextRunPreflight(git)).rejects.toThrow(
+      "named local branch",
+    );
+    execFileSync("git", ["checkout", branch], { cwd: root });
+
+    writeFileSync(join(root, ".git", "MERGE_HEAD"), await git.head());
+    await expect(assertProspectiveVNextRunPreflight(git)).rejects.toThrow(
+      "active merge operation",
+    );
+    rmSync(join(root, ".git", "MERGE_HEAD"));
+  });
+
   it("removes discovered namespaced resources and tolerates a repeated partial cleanup", async () => {
     const root = repository();
     const git = new ExecGitClient(root);

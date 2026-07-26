@@ -121,9 +121,15 @@ export async function runVNextWholePlanReview(args: {
       "Whole-plan review requires settled source workstreams and publication intents.",
     );
   }
-  if (!(await args.git.isClean()) || (await args.git.activeOperation())) {
+  const protectedPaths = Object.keys(args.state.protectedArtifactHashes);
+  if (
+    !(await args.git.isCleanExcept(protectedPaths)) ||
+    (await args.git.hasStagedChangesInPaths(protectedPaths)) ||
+    (await args.git.activeOperation()) ||
+    !protectedArtifactsMatch(args.state)
+  ) {
     throw new Error(
-      "Whole-plan review requires a clean target checkout with no active Git operation.",
+      "Whole-plan review requires a clean target outside sanctioned projections, exact protected content, and no active Git operation.",
     );
   }
   const target = await args.git.head();
@@ -199,9 +205,10 @@ export async function runVNextWholePlanReview(args: {
   if (
     (await args.git.head()) !== target ||
     (await args.git.treeAt(target)) !== targetTree ||
-    !(await args.git.isClean()) ||
+    !(await args.git.isCleanExcept(protectedPaths)) ||
+    (await args.git.hasStagedChangesInPaths(protectedPaths)) ||
     (await args.git.activeOperation()) ||
-    !(await protectedArtifactsMatch(args.state))
+    !protectedArtifactsMatch(args.state)
   ) {
     throw new Error(
       "Whole-plan reviewer changed the target checkout or protected corpus.",
@@ -329,9 +336,14 @@ export async function completeVNextWholePlanRun(args: {
     review.status !== "approved" ||
     !review.reviewedTargetSha ||
     !review.reviewedTargetTreeSha ||
-    !(await args.git.isClean()) ||
+    !(await args.git.isCleanExcept(
+      Object.keys(args.state.protectedArtifactHashes),
+    )) ||
+    (await args.git.hasStagedChangesInPaths(
+      Object.keys(args.state.protectedArtifactHashes),
+    )) ||
     (await args.git.activeOperation()) ||
-    !(await protectedArtifactsMatch(args.state))
+    !protectedArtifactsMatch(args.state)
   ) {
     throw new Error(
       "Whole-plan closure cannot prove the reviewed target boundary.",

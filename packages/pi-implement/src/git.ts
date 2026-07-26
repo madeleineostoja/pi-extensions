@@ -56,6 +56,7 @@ export type GitClient = {
   isClean(): Promise<boolean>;
   isCleanExcept(paths: string[]): Promise<boolean>;
   hasStagedChanges(): Promise<boolean>;
+  hasStagedChangesInPaths(paths: string[]): Promise<boolean>;
   stagedNameStatus(): Promise<string>;
   stagedDiff(): Promise<string>;
   nonignoredUntracked(): Promise<string[]>;
@@ -179,8 +180,13 @@ export class ExecGitClient implements GitClient {
   }
 
   async hasStagedChanges(): Promise<boolean> {
+    return this.hasStagedChangesInPaths([]);
+  }
+
+  async hasStagedChangesInPaths(paths: string[]): Promise<boolean> {
+    const pathspecs = await this.pathspecs(paths, false);
     const result = await this.run(
-      ["diff", "--cached", "--quiet", "HEAD"],
+      ["diff", "--cached", "--quiet", "HEAD", "--", ...pathspecs],
       true,
     );
     if (result.exitCode === 0) {
