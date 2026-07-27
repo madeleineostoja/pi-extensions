@@ -163,7 +163,7 @@ function notifyAttentionTransition(
 ): void {
   if (event.kind === "planner_failed") {
     ctx.ui.notify(
-      `Pipkin Implement planner failed: ${shorten(event.reason)}`,
+      `Implement planner failed: ${shorten(event.reason)}`,
       "warning",
     );
     return;
@@ -189,14 +189,14 @@ function notifyAttentionTransition(
           .join("; ")
       : "whole-plan repair";
     ctx.ui.notify(
-      `Pipkin Implement ${id} failed${titles ? ` (${titles})` : ""}: ${shorten(event.evidence)}`,
+      `Implement ${id} failed${titles ? ` (${titles})` : ""}: ${shorten(event.evidence)}`,
       "warning",
     );
     return;
   }
   if (event.kind === "recovery_provider_failed") {
     ctx.ui.notify(
-      `Pipkin Implement recovery failed: ${shorten(event.error)}`,
+      `Implement recovery failed: ${shorten(event.error)}`,
       "warning",
     );
     return;
@@ -206,27 +206,27 @@ function notifyAttentionTransition(
     event.kind === "whole_plan_recovery_failed"
   ) {
     ctx.ui.notify(
-      `Pipkin Implement review failed: ${shorten(event.evidence)}`,
+      `Implement review failed: ${shorten(event.evidence)}`,
       "warning",
     );
     return;
   }
   if (event.kind === "safety_paused") {
     ctx.ui.notify(
-      `Pipkin Implement paused for target recovery: ${shorten(event.reason)}`,
+      `Implement paused for target recovery: ${shorten(event.reason)}`,
       "warning",
     );
     return;
   }
   if (event.kind === "safety_blocked") {
     ctx.ui.notify(
-      `Pipkin Implement safety blocked: ${shorten(event.reason)}`,
+      `Implement safety blocked: ${shorten(event.reason)}`,
       "warning",
     );
     return;
   }
   if (event.kind === "run_completed") {
-    ctx.ui.notify(`Pipkin Implement completed run ${state.run.id}.`, "info");
+    ctx.ui.notify(`Implement completed run ${state.run.id}.`, "info");
   }
 }
 

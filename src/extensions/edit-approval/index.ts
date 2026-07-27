@@ -73,7 +73,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     nonInteractiveNotified = true;
-    const message = `[Pipkin Edit Approval] ${NON_INTERACTIVE_MSG}`;
+    const message = `[Edit Approval] ${NON_INTERACTIVE_MSG}`;
     pi.sendMessage({
       customType: MESSAGE_TYPE,
       content: message,

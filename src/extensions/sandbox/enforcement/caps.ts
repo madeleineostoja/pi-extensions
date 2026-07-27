@@ -46,7 +46,7 @@ export function escapeSeatbeltString(s: string): string {
   for (let i = 0; i < s.length; i++) {
     if (s.charCodeAt(i) < 0x20) {
       throw new Error(
-        `Pipkin Sandbox: refusing to emit Seatbelt rule for path with control characters: ${JSON.stringify(s)}`,
+        `Sandbox: refusing to emit Seatbelt rule for path with control characters: ${JSON.stringify(s)}`,
       );
     }
   }
@@ -80,7 +80,7 @@ function filterExistingPaths(
       if (!warnedPaths.has(resolved)) {
         warnedPaths.add(resolved);
         ctx.ui.notify(
-          `Pipkin Sandbox: capability manifest: path does not exist and will be skipped: ${resolved}`,
+          `Sandbox: capability manifest: path does not exist and will be skipped: ${resolved}`,
           "warning",
         );
       }

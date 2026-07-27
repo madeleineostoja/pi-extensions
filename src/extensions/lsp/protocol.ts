@@ -332,7 +332,7 @@ export class JsonRpcConnection {
 
 function defaultServerRequest(method: string, params: unknown): unknown {
   if (method === "workspace/applyEdit") {
-    return { applied: false, failureReason: "Pipkin LSP is read-only" };
+    return { applied: false, failureReason: "LSP is read-only" };
   }
   if (method === "workspace/configuration") {
     return Array.isArray((params as { items?: unknown[] } | undefined)?.items)

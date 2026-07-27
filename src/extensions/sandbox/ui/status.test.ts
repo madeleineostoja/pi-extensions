@@ -139,9 +139,9 @@ describe("renderStatus — pure renderer", () => {
     );
   });
 
-  it("fully disabled → ⚠ Pipkin Sandbox: off", () => {
+  it("fully disabled → ⚠ sandbox (off)", () => {
     expect(renderStatus({ ...baseState, enabled: false })).toBe(
-      "⚠ Pipkin Sandbox: off",
+      "⚠ sandbox (off)",
     );
   });
 
@@ -154,7 +154,7 @@ describe("renderStatus — pure renderer", () => {
   it("disabled takes precedence over in-process only", () => {
     expect(
       renderStatus({ ...baseState, enabled: false, inProcessOnly: true }),
-    ).toBe("⚠ Pipkin Sandbox: off");
+    ).toBe("⚠ sandbox (off)");
   });
 
   it("network mode 'off' → sandbox (network)", () => {
@@ -276,7 +276,7 @@ describe("subscribeStatus — integration", () => {
     dispose();
   });
 
-  it("/sandbox off → flips to ⚠ Pipkin Sandbox: off", () => {
+  it("/sandbox off → flips to ⚠ sandbox (off)", () => {
     const policy = makePolicy({
       network: { mode: "always", allow: ["a.com"] },
     });
@@ -298,7 +298,7 @@ describe("subscribeStatus — integration", () => {
     triggerMutation();
 
     const text = calls[calls.length - 1].text;
-    expect(text).toBe("⚠ Pipkin Sandbox: off");
+    expect(text).toBe("⚠ sandbox (off)");
     dispose();
   });
 
@@ -494,11 +494,11 @@ describe("renderStatusThemed", () => {
   it("disabled → warning icon and warning text", () => {
     const { theme, calls } = makeThemeSpy();
     const result = renderStatusThemed({ ...baseState, enabled: false }, theme);
-    expect(result).toContain("Pipkin Sandbox: off");
+    expect(result).toContain("sandbox (off)");
     expect(calls).toContainEqual({ color: "warning", text: "󰒃" });
     expect(calls).toContainEqual({
       color: "warning",
-      text: "Pipkin Sandbox: off",
+      text: "sandbox (off)",
     });
     expect(result).not.toContain("\n");
   });
@@ -515,7 +515,7 @@ describe("renderStatusThemed", () => {
       color: "warning",
       text: "sandbox (degraded)",
     });
-    expect(result).not.toContain("Pipkin Sandbox: off");
+    expect(result).not.toContain("sandbox (off)");
     expect(result).not.toContain("\n");
   });
 

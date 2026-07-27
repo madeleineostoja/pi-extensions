@@ -510,17 +510,17 @@ export function createSlashCommands(
   function handleStatus(ctx: SubcommandContext): void {
     let line: string;
     if (state.sandboxOff) {
-      line = "Pipkin Sandbox: OFF (session override)";
+      line = "Sandbox: OFF (session override)";
     } else if (state.networkOff) {
       const policy = ctx.policyManager.getPolicy();
-      line = `Pipkin Sandbox: ON (network filtering disabled this session) | mode=${policy.network.mode}`;
+      line = `Sandbox: ON (network filtering disabled this session) | mode=${policy.network.mode}`;
     } else {
       const policy = ctx.policyManager.getPolicy();
       const grantCount =
         state.sessionAllowedHosts.size +
         state.sessionAllowedReadPaths.size +
         state.sessionAllowedWritePaths.size;
-      line = `Pipkin Sandbox: ON | mode=${policy.network.mode} | session grants=${grantCount}`;
+      line = `Sandbox: ON | mode=${policy.network.mode} | session grants=${grantCount}`;
     }
     ctx.ui.notify(line);
   }
@@ -1249,7 +1249,7 @@ export function createSlashCommands(
     events?: EventsTarget,
   ): void {
     pi.registerCommand("sandbox", {
-      description: "Inspect and control the Pipkin Sandbox policy",
+      description: "Inspect and control the Sandbox policy",
       getArgumentCompletions: (prefix: string) =>
         getArgumentCompletions(
           prefix,

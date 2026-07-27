@@ -326,7 +326,7 @@ export function wrapPiExec(
       });
       return Promise.reject(
         new Error(
-          "Pipkin Sandbox: exec blocked — kernel sandbox unavailable and degraded.allowExec is false",
+          "Sandbox: exec blocked — kernel sandbox unavailable and degraded.allowExec is false",
         ),
       );
     }
@@ -389,7 +389,7 @@ export function createUserBashHandler(
       return {
         result: {
           output:
-            "Pipkin Sandbox: bash blocked — kernel sandbox unavailable and degraded.allowExec is false",
+            "Sandbox: bash blocked — kernel sandbox unavailable and degraded.allowExec is false",
           exitCode: 1,
           cancelled: false,
           truncated: false,

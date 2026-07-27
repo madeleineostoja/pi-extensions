@@ -61,7 +61,7 @@ export function loadConfig(notify?: Notifier, _readFile?: unknown): Config {
   );
   if (issue && issue.message !== "file does not exist") {
     notify?.(
-      `Pipkin Context: config error in ${snapshot.path}: ${issue.message}`,
+      `Context: config error in ${snapshot.path}: ${issue.message}`,
       "warning",
     );
   }
@@ -111,7 +111,7 @@ export function resolveConfig(
     const val = obj[key];
     if (typeof val !== "number" || !Number.isFinite(val) || val < 0) {
       notify?.(
-        `Pipkin Context: config key "${key}" must be a non-negative number; using default (${DEFAULTS[key]})`,
+        `Context: config key "${key}" must be a non-negative number; using default (${DEFAULTS[key]})`,
         "warning",
       );
     } else {
@@ -141,7 +141,7 @@ export function resolveConfig(
     const val = obj[key];
     if (typeof val !== "boolean") {
       notify?.(
-        `Pipkin Context: config key "${key}" must be a boolean; using default (${DEFAULTS[key]})`,
+        `Context: config key "${key}" must be a boolean; using default (${DEFAULTS[key]})`,
         "warning",
       );
     } else {

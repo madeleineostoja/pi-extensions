@@ -32,7 +32,7 @@ function isNetworkSandboxed(state: StatusState): boolean {
 
 export function renderStatus(state: StatusState): string {
   if (!state.enabled) {
-    return "⚠ Pipkin Sandbox: off";
+    return "⚠ sandbox (off)";
   }
   if (state.inProcessOnly) {
     return "🔒 sandbox (degraded)";
@@ -48,7 +48,7 @@ export function renderStatusThemed(
   theme: Pick<Theme, "fg">,
 ): string {
   if (!state.enabled) {
-    return `${theme.fg("warning", "󰒃")} ${theme.fg("warning", "Pipkin Sandbox: off")}`;
+    return `${theme.fg("warning", "󰒃")} ${theme.fg("warning", "sandbox (off)")}`;
   }
 
   if (state.inProcessOnly) {

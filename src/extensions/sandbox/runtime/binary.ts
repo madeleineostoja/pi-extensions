@@ -178,7 +178,7 @@ export function checkNonoVersion(
 
   if (actualVersion !== pinnedVersion_) {
     notify(
-      `Pipkin Sandbox: nono version mismatch — expected v${pinnedVersion_}, found "${actual}". ` +
+      `Sandbox: nono version mismatch — expected v${pinnedVersion_}, found "${actual}". ` +
         "This may cause compatibility issues. Continuing anyway.",
       "warning",
     );
@@ -380,7 +380,7 @@ export function createBinaryRuntime(): BinaryRuntime {
       }
       missingBinaryWarned = true;
       notify(
-        "Pipkin Sandbox: nono binary not found — subprocess sandboxing is disabled. " +
+        "Sandbox: nono binary not found — subprocess sandboxing is disabled. " +
           "In-process policy enforcement remains active.",
         "warning",
       );

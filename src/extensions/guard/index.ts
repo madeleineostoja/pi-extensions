@@ -45,7 +45,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     nonInteractiveNotified = true;
-    const message = `[Pipkin Shell Guard] ${NON_INTERACTIVE_MSG}`;
+    const message = `[Shell Guard] ${NON_INTERACTIVE_MSG}`;
     pi.sendMessage({
       customType: MESSAGE_TYPE,
       content: message,

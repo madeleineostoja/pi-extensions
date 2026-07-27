@@ -68,33 +68,30 @@ export function registerImplementCommand(
       if (parsed.name === "resume") {
         if (!active) {
           ctx.ui.notify(
-            "Pipkin Implement has no active paused run in this session; resume a historical run from its menu.",
+            "Implement has no active paused run in this session; resume a historical run from its menu.",
             "info",
           );
           return;
         }
         if (active.store.read().phase !== "paused") {
-          ctx.ui.notify("Pipkin Implement is not paused.", "info");
+          ctx.ui.notify("Implement is not paused.", "info");
           return;
         }
         try {
           await active.actor.resume();
         } catch (error) {
           ctx.ui.notify(
-            `Pipkin Implement remains paused: ${error instanceof Error ? error.message : String(error)}`,
+            `Implement remains paused: ${error instanceof Error ? error.message : String(error)}`,
             "warning",
           );
           return;
         }
-        ctx.ui.notify(`Pipkin Implement resumed run ${active.runId}.`, "info");
+        ctx.ui.notify(`Implement resumed run ${active.runId}.`, "info");
         return;
       }
       if (parsed.name === "stop") {
         if (!active) {
-          ctx.ui.notify(
-            "Pipkin Implement has no active run in this session.",
-            "info",
-          );
+          ctx.ui.notify("Implement has no active run in this session.", "info");
           return;
         }
         const stopping = active;
@@ -102,7 +99,7 @@ export function registerImplementCommand(
         activity?.clear();
         activity = undefined;
         await stopRun(stopping);
-        ctx.ui.notify("Pipkin Implement paused safely.", "info");
+        ctx.ui.notify("Implement paused safely.", "info");
         return;
       }
       if (parsed.name === "status") {
@@ -118,7 +115,7 @@ export function registerImplementCommand(
         const runs = listCheckoutRuns(checkoutRoot);
         ctx.ui.notify(
           runs.length === 0
-            ? "Pipkin Implement: no runs in this checkout."
+            ? "Implement: no runs in this checkout."
             : runs.map(formatRunListing).join("\n\n"),
           "info",
         );
@@ -151,10 +148,10 @@ export function registerImplementCommand(
       }
       const projected = await cleanup(parsed.runId, checkoutRoot);
       notifyProjectedChanges(ctx, projected);
-      ctx.ui.notify(`Pipkin Implement cleaned run ${parsed.runId}.`, "info");
+      ctx.ui.notify(`Implement cleaned run ${parsed.runId}.`, "info");
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      ctx.ui.notify(`Pipkin Implement blocked: ${reason}`, "warning");
+      ctx.ui.notify(`Implement blocked: ${reason}`, "warning");
     }
   }
 
@@ -191,7 +188,7 @@ export function registerImplementCommand(
   ): Promise<void> {
     if (active) {
       ctx.ui.notify(
-        "Pipkin Implement already has an active run in this session.",
+        "Implement already has an active run in this session.",
         "warning",
       );
       return;
@@ -232,7 +229,7 @@ export function registerImplementCommand(
           onTransition,
         });
         nextActivity.update(active.store.read());
-        ctx.ui.notify(`Pipkin Implement resumed run ${active.runId}.`, "info");
+        ctx.ui.notify(`Implement resumed run ${active.runId}.`, "info");
         return;
       }
       const result = await startRun({
@@ -254,12 +251,12 @@ export function registerImplementCommand(
       }
       active = result.active;
       nextActivity.update(active.store.read());
-      ctx.ui.notify(`Pipkin Implement started run ${active.runId}.`, "info");
+      ctx.ui.notify(`Implement started run ${active.runId}.`, "info");
     } catch (error) {
       nextActivity.clear();
       activity = undefined;
       const reason = error instanceof Error ? error.message : String(error);
-      ctx.ui.notify(`Pipkin Implement blocked: ${reason}`, "warning");
+      ctx.ui.notify(`Implement blocked: ${reason}`, "warning");
     }
   }
 }
@@ -276,7 +273,7 @@ async function showImplementMenu(
     root = await resolveCheckoutRoot(ctx.cwd);
   } catch (error) {
     ctx.ui.notify(
-      `Pipkin Implement unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      `Implement unavailable: ${error instanceof Error ? error.message : String(error)}`,
       "warning",
     );
     return;

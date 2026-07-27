@@ -121,7 +121,7 @@ describe("createUserBashHandler", () => {
 
     expect(result).not.toBeUndefined();
     expect(result?.result?.exitCode).toBe(1);
-    expect(result?.result?.output).toContain("Pipkin Sandbox: bash blocked");
+    expect(result?.result?.output).toContain("Sandbox: bash blocked");
   });
 
   it("lets pi run normally when nonoPath is null and degraded.allowExec is true", () => {
@@ -334,7 +334,7 @@ describe("wrapPiExec — fallback mode (nonoPath null)", () => {
     wrapPiExec(pi, () => makePolicy(), makeCtx(), null);
 
     await expect(pi.exec!("ls", ["/etc"])).rejects.toThrow(
-      "Pipkin Sandbox: exec blocked",
+      "Sandbox: exec blocked",
     );
 
     expect(originalExec).not.toHaveBeenCalled();
@@ -364,7 +364,7 @@ describe("wrapPiExec — fallback mode (nonoPath null)", () => {
     wrapPiExec(pi, () => makePolicy(), makeCtx(), null, emitAudit);
 
     await expect(pi.exec!("ls", ["/etc"])).rejects.toThrow(
-      "Pipkin Sandbox: exec blocked",
+      "Sandbox: exec blocked",
     );
 
     expect(emitAudit).toHaveBeenCalledOnce();
@@ -417,9 +417,7 @@ describe("initSubprocessSandbox — missing binary (fallback mode)", () => {
     const bashResult = userBashHandler(makeUserBashEvent("ls", "/"));
     expect(bashResult).not.toBeUndefined();
     expect(bashResult?.result?.exitCode).toBe(1);
-    expect(bashResult?.result?.output).toContain(
-      "Pipkin Sandbox: bash blocked",
-    );
+    expect(bashResult?.result?.output).toContain("Sandbox: bash blocked");
   });
 });
 

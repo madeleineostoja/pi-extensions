@@ -334,10 +334,7 @@ function validateOverride(
   } catch (err) {
     const message =
       err instanceof PolicyValidationError ? err.message : String(err);
-    ui?.notify(
-      `Pipkin Sandbox: config error in ${source}: ${message}`,
-      "error",
-    );
+    ui?.notify(`Sandbox: config error in ${source}: ${message}`, "error");
     return null;
   }
 }
@@ -357,7 +354,7 @@ function tryLoadFile(
       ui,
     );
   } catch {
-    ui?.notify(`Pipkin Sandbox: invalid JSON in ${filePath}`, "error");
+    ui?.notify(`Sandbox: invalid JSON in ${filePath}`, "error");
     return null;
   }
 }
@@ -399,7 +396,7 @@ export function createPolicyManager(): PolicyManager {
     );
     if (sandboxIssue && sandboxIssue.message !== "file does not exist") {
       ui?.notify(
-        `Pipkin Sandbox: config error in ${centralPath}: ${sandboxIssue.message}`,
+        `Sandbox: config error in ${centralPath}: ${sandboxIssue.message}`,
         "error",
       );
     }
@@ -426,7 +423,7 @@ export function createPolicyManager(): PolicyManager {
       for (const pattern of policy.fs.denyPatterns) {
         if (literalPrefix(pattern) === null) {
           ui.notify(
-            `Pipkin Sandbox: deny pattern '${pattern}' has no literal prefix and will only be enforced by the in-process gate. Anchor it (e.g. '<cwd>/${pattern}' or '~/${pattern}') for kernel-level enforcement.`,
+            `Sandbox: deny pattern '${pattern}' has no literal prefix and will only be enforced by the in-process gate. Anchor it (e.g. '<cwd>/${pattern}' or '~/${pattern}') for kernel-level enforcement.`,
             "warning",
           );
         }
@@ -435,7 +432,7 @@ export function createPolicyManager(): PolicyManager {
 
     if (policy.network.mode === "always" && policy.network.allow.length === 0) {
       ui?.notify(
-        "Pipkin Sandbox: network mode is 'always' with no allowed hosts — all outbound network from sandboxed subprocesses will be blocked. If unintended, add hosts to network.allow.",
+        "Sandbox: network mode is 'always' with no allowed hosts — all outbound network from sandboxed subprocesses will be blocked. If unintended, add hosts to network.allow.",
         "warning",
       );
     }

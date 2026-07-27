@@ -424,9 +424,7 @@ describe("permission-failure fallback", () => {
       { logFile, onWarning },
     );
 
-    const sandboxWarnings = warnings.filter((w) =>
-      w.includes("Pipkin Sandbox:"),
-    );
+    const sandboxWarnings = warnings.filter((w) => w.includes("Sandbox:"));
     expect(sandboxWarnings).toHaveLength(1);
   });
 
@@ -469,9 +467,7 @@ describe("permission-failure fallback", () => {
       { logFile: logFile2, onWarning },
     );
 
-    const sandboxWarnings = warnings.filter((w) =>
-      w.includes("Pipkin Sandbox:"),
-    );
+    const sandboxWarnings = warnings.filter((w) => w.includes("Sandbox:"));
     expect(sandboxWarnings).toHaveLength(2);
   });
 });

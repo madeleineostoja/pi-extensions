@@ -1855,7 +1855,7 @@ function resolveGitCheckout(cwd: string): { root: string; gitDir: string } {
     return { root: realpathSync(root), gitDir: realpathSync(gitDir) };
   } catch (error) {
     throw new StateError(
-      "Pipkin Implement requires a Git worktree containing the invocation directory.",
+      "Implement requires a Git worktree containing the invocation directory.",
       cwd,
       [error instanceof Error ? error.message : String(error)],
     );

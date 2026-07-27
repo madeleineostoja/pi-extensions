@@ -30,7 +30,7 @@ export default function (pi: ExtensionAPI) {
     }
     warnedThisSession = true;
     if (ctx.mode === "tui") {
-      ctx.ui.notify(`[Pipkin Personality] ${message}`, "warning");
+      ctx.ui.notify(`[Personality] ${message}`, "warning");
     }
   }
 

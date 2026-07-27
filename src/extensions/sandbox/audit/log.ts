@@ -46,7 +46,7 @@ export function createLogWriter(): LogWriter {
     } catch {
       warnOnce(
         logFile,
-        `Pipkin Sandbox: could not create audit log directory ${logDir} — file logging disabled`,
+        `Sandbox: could not create audit log directory ${logDir} — file logging disabled`,
         onWarning,
       );
       return false;
@@ -108,7 +108,7 @@ export function createLogWriter(): LogWriter {
     } catch {
       warnOnce(
         logFile,
-        `Pipkin Sandbox: could not write to audit log ${logFile} — file logging disabled`,
+        `Sandbox: could not write to audit log ${logFile} — file logging disabled`,
         opts.onWarning,
       );
     }
