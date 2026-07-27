@@ -13,12 +13,11 @@ import {
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
+import { INSPECTION_RECORD_LIMIT } from "./inspection.js";
 import {
   getSubagentRuntime,
   MANAGED_COMPLETION_TOOL_NAME,
-  getSubagentRuntimes,
   SubagentRuntime,
-  TERMINAL_MESSAGE_TAIL_LIMIT,
   serializeInspectionForSummary,
 } from "./runtime.js";
 
@@ -205,12 +204,11 @@ function completionTool(options: unknown): {
 }
 
 describe("SubagentRuntime", () => {
-  it("returns a singleton runtime per pi instance and tracks known runtimes", () => {
+  it("returns a singleton runtime per pi instance", () => {
     const { pi } = fakePi();
     const runtime = getSubagentRuntime(pi as never);
 
     expect(runtime).toBe(getSubagentRuntime(pi as never));
-    expect(getSubagentRuntimes()).toContain(runtime);
   });
 
   it("rebinds fresh APIs sharing one event bus while isolating distinct buses", () => {
@@ -235,39 +233,6 @@ describe("SubagentRuntime", () => {
       status: "queued",
     });
     expect(getSubagentRuntime(child as never)).not.toBe(runtime);
-  });
-
-  it("preserves legacy coordinator state while rebinding its API", async () => {
-    const globalScope = globalThis as Record<symbol, unknown>;
-    const managerKey = Symbol.for("pi-subagents:manager");
-    const previousManager = globalScope[managerKey];
-    const events = {};
-    const first = { ...fakePi().pi, events };
-    const second = { ...fakePi().pi, events };
-    const legacyRuntime = {
-      pi: first,
-      scope: "legacy",
-      state: { queued: ["survives reload"] },
-      currentApi() {
-        return this.pi;
-      },
-    };
-
-    globalScope[managerKey] = { runtimeList: new Set([legacyRuntime]) };
-    try {
-      vi.resetModules();
-      const reloaded = await import("./runtime.js");
-      const rebound = reloaded.getSubagentRuntime(second as never);
-
-      expect("rebind" in legacyRuntime).toBe(false);
-      expect(rebound).toBe(legacyRuntime);
-      expect(legacyRuntime.state).toEqual({ queued: ["survives reload"] });
-      expect(legacyRuntime.currentApi()).toBe(second);
-      expect(reloaded.getSubagentRuntimes()).toEqual([legacyRuntime]);
-    } finally {
-      globalScope[managerKey] = previousManager;
-      vi.resetModules();
-    }
   });
 
   it("reuses the existing runtime across module reloads", async () => {
@@ -588,7 +553,51 @@ describe("SubagentRuntime", () => {
     promptDone.resolve();
   });
 
-  it("uses an in-memory session manager and retains an immutable bounded terminal tail", async () => {
+  it("orders interleaved runtime and tool activity chronologically", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession();
+    session.prompt = vi.fn(() => promptDone.promise);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    await runtime.steer(started.id, "first guidance");
+    const toolTimestamp = Date.now() + 10_000;
+    session.messages.push(
+      fauxAssistantMessage(
+        fauxToolCall(
+          "read",
+          { path: "/workspace/file.ts" },
+          { id: "later-tool" },
+        ),
+        { timestamp: toolTimestamp },
+      ),
+      {
+        role: "toolResult",
+        timestamp: toolTimestamp + 1,
+        toolCallId: "later-tool",
+        toolName: "read",
+        content: [{ type: "text", text: "done" }],
+        isError: false,
+      } as AgentSession["messages"][number],
+    );
+
+    expect(
+      runtime.inspect(started.id)?.activity.map((entry) => entry.kind),
+    ).toEqual(["steering", "steering", "tool"]);
+    runtime.stop(started.id);
+    promptDone.resolve();
+  });
+
+  it("uses an in-memory session manager and retains an immutable bounded terminal inspection", async () => {
     const { pi } = fakePi();
     const promptDone = deferred<void>();
     const session = makeSession("done");
@@ -613,7 +622,7 @@ describe("SubagentRuntime", () => {
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
     session.messages.push(
       ...Array.from(
-        { length: TERMINAL_MESSAGE_TAIL_LIMIT + 1 },
+        { length: INSPECTION_RECORD_LIMIT + 1 },
         (_, index) =>
           ({
             role: "assistant",
@@ -629,7 +638,7 @@ describe("SubagentRuntime", () => {
     expect(sessionManager?.getSessionFile()).toBeUndefined();
     const inspection = runtime.inspect(started.id);
     expect(inspection?.snapshot.status).toBe("completed");
-    expect(inspection?.messages).toHaveLength(TERMINAL_MESSAGE_TAIL_LIMIT);
+    expect(inspection?.messages).toHaveLength(INSPECTION_RECORD_LIMIT);
     expect(inspection?.messages[0]).toMatchObject({ text: "message 1" });
     expect(session.dispose).toHaveBeenCalledTimes(1);
     session.messages[session.messages.length - 1] = {
@@ -637,8 +646,65 @@ describe("SubagentRuntime", () => {
       content: [{ type: "text", text: "mutated" }],
     } as AgentSession["messages"][number];
     expect(runtime.inspect(started.id)?.messages.at(-1)).toMatchObject({
-      text: `message ${TERMINAL_MESSAGE_TAIL_LIMIT}`,
+      text: `message ${INSPECTION_RECORD_LIMIT}`,
     });
+  });
+
+  it("captures terminal messages and canonical health after abort settles", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession();
+    session.prompt = vi.fn(() => promptDone.promise);
+    session.messages.push(
+      fauxAssistantMessage(
+        fauxToolCall("bash", { command: "npm test" }, { id: "active-tool" }),
+        { timestamp: Date.now() },
+      ),
+    );
+    session.abort = vi.fn(async () => {
+      session.messages.push({
+        role: "toolResult",
+        timestamp: Date.now(),
+        toolCallId: "active-tool",
+        toolName: "bash",
+        content: [{ type: "text", text: "aborted" }],
+        isError: true,
+      } as AgentSession["messages"][number]);
+      session.getSessionStats = vi.fn(() => ({
+        assistantMessages: 1,
+        toolCalls: 1,
+        tokens: { total: 42 },
+        cost: 0.2,
+        contextUsage: { tokens: 20, contextWindow: 100, percent: 20 },
+      })) as never;
+    });
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+
+    runtime.stop(started.id);
+    await runtime.wait(started.id);
+
+    expect(runtime.inspect(started.id)).toMatchObject({
+      snapshot: { health: { tokensTotal: 42 } },
+      activity: [
+        {
+          kind: "tool",
+          toolCallId: "active-tool",
+          status: "interrupted",
+          error: "aborted",
+        },
+      ],
+    });
+    promptDone.resolve();
   });
 
   it("keeps the summary fallback bounded and delimited when metadata is oversized", () => {
@@ -816,10 +882,7 @@ describe("SubagentRuntime", () => {
     expect(session.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it("unregisters a coordinator after disposing its child sessions", async () => {
-    const globalScope = globalThis as Record<symbol, unknown>;
-    const managerKey = Symbol.for("pi-subagents:manager");
-    const previousManager = globalScope[managerKey];
+  it("does not reuse a disposed runtime after disposing its child sessions", async () => {
     const { pi } = fakePi();
     const promptDone = deferred<void>();
     const session = makeSession("done");
@@ -827,33 +890,23 @@ describe("SubagentRuntime", () => {
     const managedRuntime = new SubagentRuntime(pi as never, {
       createSession: vi.fn(async () => ({ session })),
     });
+    expect(getSubagentRuntime(pi as never)).toBe(managedRuntime);
+    const started = await managedRuntime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
 
-    globalScope[managerKey] = { runtimeList: new Set([managedRuntime]) };
-    try {
-      vi.resetModules();
-      const reloaded = await import("./runtime.js");
-      expect(reloaded.getSubagentRuntime(pi as never)).toBe(managedRuntime);
-      const started = await managedRuntime.runManagedAgent({
-        type: "General",
-        prompt: "work",
-        cwd: "/workspace",
-        ctx: makeCtx() as never,
-        mode: "background",
-      });
-      await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    await managedRuntime.dispose();
 
-      await managedRuntime.dispose();
-
-      expect(session.abort).toHaveBeenCalledOnce();
-      expect(session.dispose).toHaveBeenCalledOnce();
-      expect(reloaded.getSubagentRuntimes()).not.toContain(managedRuntime);
-      expect(reloaded.getSubagentRuntime(pi as never)).not.toBe(managedRuntime);
-      expect(managedRuntime.snapshot(started.id)).toBeUndefined();
-    } finally {
-      promptDone.resolve();
-      globalScope[managerKey] = previousManager;
-      vi.resetModules();
-    }
+    expect(session.abort).toHaveBeenCalledOnce();
+    expect(session.dispose).toHaveBeenCalledOnce();
+    expect(getSubagentRuntime(pi as never)).not.toBe(managedRuntime);
+    expect(managedRuntime.snapshot(started.id)).toBeUndefined();
+    promptDone.resolve();
   });
 
   it("models failed and stopped terminal states", () => {
@@ -1139,6 +1192,15 @@ describe("SubagentRuntime", () => {
           role: "toolResult",
           toolCallId: "valid-completion",
           isError: false,
+        }),
+      ]),
+    );
+    expect(runtime.inspect(final.id)?.activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "tool",
+          toolCallId: "valid-completion",
+          status: "completed",
         }),
       ]),
     );

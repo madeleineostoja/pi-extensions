@@ -214,7 +214,6 @@ type RuntimeRecord = Omit<RuntimeSnapshot, "timestamps"> &
     omittedActivity?: number;
     retainedInspection?: RuntimeInspection;
     unsubscribeSession?: () => void;
-    retainedMessages?: readonly unknown[];
     initialization?: Promise<void>;
     resolveInitialization?: () => void;
     finalization?: Promise<RuntimeSnapshot>;
@@ -246,14 +245,11 @@ type SteeringDelivery = {
 const runtimes = new WeakMap<ExtensionAPI, SubagentRuntime>();
 const runtimeManagerKey = Symbol.for("pi-subagents:manager");
 type RuntimeCoordinator = {
-  bus: object;
   scope: string;
   runtime?: SubagentRuntime;
 };
 type RuntimeManager = {
   coordinators: WeakMap<object, RuntimeCoordinator>;
-  coordinatorRefs: Set<WeakRef<RuntimeCoordinator>>;
-  coordinatorFinalizer: FinalizationRegistry<WeakRef<RuntimeCoordinator>>;
   disposedRuntimes: WeakSet<SubagentRuntime>;
   nextScope: number;
 };
@@ -290,7 +286,6 @@ const EXPLORE_TOOL_INACTIVITY_MS = 120_000;
 const EXPLORE_TOOL_INACTIVITY_POLL_MS = 10_000;
 const EXPLORE_OUTPUT_TRUNCATION_NOTICE =
   "\n\n[Explore output truncated. Continue with direct reads/searches.]";
-export const TERMINAL_MESSAGE_TAIL_LIMIT = 100;
 export const MANAGED_COMPLETION_TOOL_NAME = "pi_managed_complete";
 const exploreEligibleTypes = new Set([
   "General",
@@ -351,14 +346,6 @@ function copyTerminalValue(value: unknown): unknown {
   return value;
 }
 
-function copyTerminalMessages(
-  messages: readonly unknown[],
-): readonly unknown[] {
-  return Object.freeze(
-    messages.slice(-TERMINAL_MESSAGE_TAIL_LIMIT).map(copyTerminalValue),
-  );
-}
-
 function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
   return {
     id: record.id,
@@ -394,6 +381,24 @@ function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
 
 function isTerminal(status: SubagentRuntimeStatus): boolean {
   return status === "completed" || status === "failed" || status === "stopped";
+}
+
+function mergeInspectionActivity(
+  projected: readonly InspectionActivity[],
+  recorded: readonly InspectionActivity[],
+): ReturnType<typeof retainActivity> {
+  const activity = [...projected, ...recorded].sort((left, right) => {
+    const leftTimestamp = timestampMs(left.timestamp);
+    const rightTimestamp = timestampMs(right.timestamp);
+    if (leftTimestamp === undefined) {
+      return rightTimestamp === undefined ? 0 : -1;
+    }
+    if (rightTimestamp === undefined) {
+      return 1;
+    }
+    return leftTimestamp - rightTimestamp;
+  });
+  return retainActivity(activity);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -1203,12 +1208,11 @@ export class SubagentRuntime {
       return record.retainedInspection;
     }
     refreshHealth(record);
-    const messages = record.session?.messages ?? record.retainedMessages ?? [];
-    const projected = projectMessages(messages);
-    const retained = retainActivity([
-      ...projected.activity,
-      ...record.activity,
-    ]);
+    const projected = projectMessages(record.session?.messages ?? []);
+    const retained = mergeInspectionActivity(
+      projected.activity,
+      record.activity,
+    );
     return immutableInspection({
       snapshot: projectSnapshot(record),
       messages: projected.messages,
@@ -1911,28 +1915,6 @@ export class SubagentRuntime {
     record.canSteer = false;
     this.#discardSteering(record);
     const activeSession = record.session;
-    refreshHealth(record);
-    record.retainedMessages = copyTerminalMessages(
-      activeSession?.messages ?? [],
-    );
-    const projected = projectMessages(
-      activeSession?.messages ?? record.retainedMessages,
-    );
-    const retainedActivity = retainActivity([
-      ...projected.activity,
-      ...record.activity,
-    ]);
-    record.retainedInspection = immutableInspection({
-      snapshot: projectSnapshot(record),
-      messages: projected.messages,
-      activity: retainedActivity.activity,
-      omittedMessages: projected.omittedMessages,
-      omittedActivity:
-        (record.omittedActivity ?? 0) +
-        projected.omittedActivity +
-        retainedActivity.omittedActivity,
-      compactedHistory: (record.health?.compactions ?? 0) > 0,
-    });
     record.unsubscribeSession?.();
     record.unsubscribeSession = undefined;
     record.finalization = (async () => {
@@ -1943,14 +1925,30 @@ export class SubagentRuntime {
       }
       await record.initialization;
       const session = record.session;
+      refreshHealth(record);
+      const projected = projectMessages(session?.messages ?? []);
+      const retainedActivity = mergeInspectionActivity(
+        projected.activity,
+        record.activity,
+      );
+      record.retainedInspection = immutableInspection({
+        snapshot: projectSnapshot(record),
+        messages: projected.messages,
+        activity: retainedActivity.activity,
+        omittedMessages: projected.omittedMessages,
+        omittedActivity:
+          (record.omittedActivity ?? 0) +
+          projected.omittedActivity +
+          retainedActivity.omittedActivity,
+        compactedHistory: (record.health?.compactions ?? 0) > 0,
+      });
       if (session) {
         await this.#disposeSession(session);
         if (record.session === session) {
           record.session = undefined;
         }
       }
-      const finalSnapshot =
-        record.retainedInspection?.snapshot ?? projectSnapshot(record);
+      const finalSnapshot = record.retainedInspection.snapshot;
       if (!options.clearInspectListeners) {
         this.#notifyInspectListeners(record, {
           allowRetired: options.allowRetiredNotification,
@@ -1975,11 +1973,6 @@ function getRuntimeManager(): RuntimeManager {
   const globalScope = globalThis as Record<symbol, unknown>;
   const existing = globalScope[runtimeManagerKey];
   if (isRuntimeManager(existing)) {
-    if (!(existing.coordinatorFinalizer instanceof FinalizationRegistry)) {
-      existing.coordinatorFinalizer = new FinalizationRegistry((reference) =>
-        existing.coordinatorRefs.delete(reference),
-      );
-    }
     if (!(existing.disposedRuntimes instanceof WeakSet)) {
       existing.disposedRuntimes = new WeakSet();
     }
@@ -1987,30 +1980,9 @@ function getRuntimeManager(): RuntimeManager {
   }
   const manager: RuntimeManager = {
     coordinators: new WeakMap(),
-    coordinatorRefs: new Set(),
-    coordinatorFinalizer: new FinalizationRegistry((reference) =>
-      manager.coordinatorRefs.delete(reference),
-    ),
     disposedRuntimes: new WeakSet(),
     nextScope: 1,
   };
-  if (isObject(existing) && existing.runtimeList instanceof Set) {
-    for (const runtime of existing.runtimeList) {
-      if (!isRuntimeInstance(runtime)) {
-        continue;
-      }
-      const bus = eventBusFor(runtime.pi as ExtensionAPI);
-      const coordinator: RuntimeCoordinator = {
-        bus,
-        scope: runtime.scope ?? `runtime-${manager.nextScope++}`,
-        runtime,
-      };
-      manager.coordinators.set(bus, coordinator);
-      const reference = new WeakRef(coordinator);
-      manager.coordinatorRefs.add(reference);
-      manager.coordinatorFinalizer.register(bus, reference);
-    }
-  }
   globalScope[runtimeManagerKey] = manager;
   return manager;
 }
@@ -2019,13 +1991,8 @@ function isRuntimeManager(value: unknown): value is RuntimeManager {
   return (
     isObject(value) &&
     value.coordinators instanceof WeakMap &&
-    value.coordinatorRefs instanceof Set &&
     typeof value.nextScope === "number"
   );
-}
-
-function isRuntimeInstance(value: unknown): value is SubagentRuntime {
-  return isObject(value) && "pi" in value;
 }
 
 function rebindRuntime(runtime: SubagentRuntime, pi: ExtensionAPI): void {
@@ -2054,26 +2021,6 @@ function unregisterRuntime(runtime: SubagentRuntime): void {
     return;
   }
   manager.coordinators.delete(bus);
-  for (const reference of manager.coordinatorRefs) {
-    const candidate = reference.deref();
-    if (!candidate || candidate === coordinator) {
-      manager.coordinatorRefs.delete(reference);
-    }
-  }
-}
-
-export function getSubagentRuntimes(): SubagentRuntime[] {
-  const manager = getRuntimeManager();
-  const runtimes: SubagentRuntime[] = [];
-  for (const reference of manager.coordinatorRefs) {
-    const coordinator = reference.deref();
-    if (!coordinator) {
-      manager.coordinatorRefs.delete(reference);
-    } else if (coordinator.runtime) {
-      runtimes.push(coordinator.runtime);
-    }
-  }
-  return runtimes;
 }
 
 export function getSubagentRuntime(pi: ExtensionAPI): SubagentRuntime {
@@ -2086,11 +2033,8 @@ export function getSubagentRuntime(pi: ExtensionAPI): SubagentRuntime {
   const bus = eventBusFor(pi);
   let coordinator = manager.coordinators.get(bus);
   if (!coordinator) {
-    coordinator = { bus, scope: `runtime-${manager.nextScope++}` };
+    coordinator = { scope: `runtime-${manager.nextScope++}` };
     manager.coordinators.set(bus, coordinator);
-    const reference = new WeakRef(coordinator);
-    manager.coordinatorRefs.add(reference);
-    manager.coordinatorFinalizer.register(bus, reference);
   }
   if (!coordinator.runtime) {
     coordinator.runtime = new SubagentRuntime(pi, { scope: coordinator.scope });

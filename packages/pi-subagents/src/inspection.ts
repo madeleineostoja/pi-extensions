@@ -57,18 +57,20 @@ export function truncateUtf8(
   value: string,
   maxBytes = INSPECTION_TEXT_LIMIT_BYTES,
 ): string {
-  if (Buffer.byteLength(value) <= maxBytes) {
+  const encoded = Buffer.from(value);
+  if (encoded.length <= maxBytes) {
     return value;
   }
   const suffix = "…";
-  let end = value.length;
-  while (
-    end > 0 &&
-    Buffer.byteLength(value.slice(0, end) + suffix) > maxBytes
-  ) {
+  const suffixBytes = Buffer.byteLength(suffix);
+  if (maxBytes < suffixBytes) {
+    return ".".repeat(Math.max(0, maxBytes));
+  }
+  let end = maxBytes - suffixBytes;
+  while (end > 0 && (encoded[end]! & 0xc0) === 0x80) {
     end -= 1;
   }
-  return `${value.slice(0, end)}${suffix}`;
+  return `${encoded.subarray(0, end).toString("utf8")}${suffix}`;
 }
 
 export function immutableInspection(

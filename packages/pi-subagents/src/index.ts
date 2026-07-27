@@ -6,7 +6,7 @@ import {
   AGENT_PROMPT_GUIDELINES,
   PUBLIC_BUILTIN_TYPES,
 } from "./agent-profiles.js";
-import { getSubagentRuntime, getSubagentRuntimes } from "./runtime.js";
+import { getSubagentRuntime } from "./runtime.js";
 import { SubagentRosterController } from "./roster.js";
 import {
   renderAgentCall,
@@ -42,7 +42,6 @@ export type {
 } from "./config.js";
 export {
   getSubagentRuntime,
-  getSubagentRuntimes,
   MANAGED_COMPLETION_TOOL_NAME,
   SubagentRuntime,
 } from "./runtime.js";
@@ -119,8 +118,7 @@ export default function (pi: ExtensionAPI): void {
 
   pi.registerCommand("agents", {
     description: "Inspect and stop current-session subagents",
-    handler: async (_args, ctx) =>
-      showAgentsDashboard(runtime, ctx),
+    handler: async (_args, ctx) => showAgentsDashboard(runtime, ctx),
   });
 
   pi.registerTool({
