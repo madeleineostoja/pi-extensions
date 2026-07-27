@@ -23,6 +23,7 @@ import {
   elapsedLabel,
   tokenLabel,
 } from "./formatters.js";
+import { truncateUtf8 } from "./inspection.js";
 
 const terminalStatuses = new Set<SubagentRuntimeStatus>([
   "completed",
@@ -35,17 +36,85 @@ type DashboardEntry = {
   snapshot: RuntimeSnapshot;
 };
 
+type DashboardSelection = {
+  runtime: SubagentRuntime;
+  key: string;
+};
+
 export async function showAgentsDashboard(
   runtimeOrRuntimes: SubagentRuntime | readonly SubagentRuntime[],
   ctx: ExtensionCommandContext,
 ): Promise<void> {
   let filter: "Running" | "All" = "Running";
+  let selected: DashboardSelection | undefined;
   while (true) {
     const all = dashboardEntries(runtimeOrRuntimes);
     if (all.length === 0) {
       ctx.ui.notify("No current-session agents.", "info");
       return;
     }
+    if (selected) {
+      const entry = resolveSelection(all, selected);
+      if (!entry) {
+        selected = undefined;
+        ctx.ui.notify(
+          "Selected agent is no longer available; refreshed.",
+          "warning",
+        );
+        continue;
+      }
+      const inspection = entry.runtime.inspect(entry.snapshot.id);
+      if (!inspection) {
+        selected = undefined;
+        ctx.ui.notify(
+          "Selected agent is no longer available; refreshed.",
+          "warning",
+        );
+        continue;
+      }
+      const action = await ctx.ui.select(
+        `Agent ${inspection.snapshot.id}`,
+        actionsFor(inspection.snapshot),
+      );
+      if (!action || action === "Back") {
+        selected = undefined;
+        continue;
+      }
+      try {
+        if (action === "Inspect activity") {
+          await showAgentDetail(entry.runtime, ctx, inspection.snapshot.id);
+        } else if (action === "Send guidance") {
+          const message = await (
+            ctx.ui as unknown as {
+              input?: (title: string) => Promise<string | undefined>;
+            }
+          ).input?.("Guidance (cooperatively queued after current tool calls)");
+          if (message?.trim()) {
+            await entry.runtime.steer(inspection.snapshot.id, message);
+          }
+        } else if (action === "Stop agent") {
+          const confirm = await (
+            ctx.ui as unknown as {
+              confirm?: (title: string, message: string) => Promise<boolean>;
+            }
+          ).confirm?.("Stop agent", "Stop this running agent?");
+          if (confirm) {
+            entry.runtime.stop(inspection.snapshot.id);
+            selected = undefined;
+          }
+        } else if (action === "Summarise activity") {
+          await showAgentSummary(entry.runtime, ctx, inspection.snapshot.id);
+        }
+      } catch {
+        selected = undefined;
+        ctx.ui.notify(
+          "Selected agent is no longer available; refreshed.",
+          "warning",
+        );
+      }
+      continue;
+    }
+
     const view = await ctx.ui.select("Agent view", ["Running", "All"]);
     if (!view) {
       return;
@@ -67,91 +136,55 @@ export async function showAgentsDashboard(
       );
       return;
     }
-    const choices = new Map(
-      visible.map((entry) => [
-        `${entry.snapshot.key ?? entry.snapshot.id}\t${formatListRow(entry.snapshot)}${
-          nestedChildren(all, entry).length
-            ? `\n  ↳ ${nestedChildren(all, entry)
-                .map((child) => child.snapshot.description)
-                .join(" · ")}`
-            : ""
-        }`,
-        entry,
-      ]),
-    );
-    const selected = await ctx.ui.select(`${filter} agents`, [
-      ...choices.keys(),
-    ]);
-    if (!selected) {
+    const choices = new Map<string, DashboardSelection>();
+    const labels: string[] = [];
+    for (const entry of visible) {
+      const choice = `${entryKey(entry)}\t${formatListRow(entry.snapshot)}${
+        nestedChildren(all, entry).length
+          ? `\n  ↳ ${nestedChildren(all, entry)
+              .map((child) => child.snapshot.description)
+              .join(" · ")}`
+          : ""
+      }`;
+      labels.push(choice);
+      choices.set(choice, selectionFor(entry));
+    }
+    const choice = await ctx.ui.select(`${filter} agents`, labels);
+    if (!choice) {
       return;
     }
-    const entry = choices.get(selected);
-    if (!entry) {
-      continue;
-    }
-    const current = entry.runtime.inspect(entry.snapshot.id);
-    if (!current) {
-      ctx.ui.notify(
-        "Selected agent is no longer available; refreshed.",
-        "warning",
-      );
-      continue;
-    }
-    const actions = ["Inspect activity", "Summarise activity"];
-    if (current.snapshot.status === "running") {
-      actions.push("Stop agent");
-    }
-    if (
-      current.snapshot.status === "running" &&
-      current.snapshot.extensionBinding === "bound"
-    ) {
-      actions.push("Send guidance");
-    }
-    actions.push("Back");
-    const action = await ctx.ui.select(`Agent ${current.snapshot.id}`, actions);
-    if (!action || action === "Back") {
-      continue;
-    }
-    try {
-      if (action === "Inspect activity") {
-        await showAgentDetail(entry.runtime, ctx, current.snapshot.id);
-        return;
-      } else if (action === "Send guidance") {
-        const message = await (
-          ctx.ui as unknown as {
-            input?: (title: string) => Promise<string | undefined>;
-          }
-        ).input?.("Guidance (cooperatively queued after current tool calls)");
-        if (message?.trim()) {
-          await entry.runtime.steer(current.snapshot.id, message);
-        }
-      } else if (action === "Stop agent") {
-        const confirm = await (
-          ctx.ui as unknown as {
-            confirm?: (title: string, message: string) => Promise<boolean>;
-          }
-        ).confirm?.("Stop agent", "Stop this running agent?");
-        if (confirm) {
-          entry.runtime.stop(current.snapshot.id);
-        }
-      } else if (action === "Summarise activity") {
-        const result = await entry.runtime.summarise(
-          current.snapshot.id,
-          (ctx as unknown as { model?: never }).model,
-        );
-        ctx.ui.notify(
-          result.ok ? result.text : (result.message ?? result.reason),
-          result.ok ? "info" : "warning",
-        );
-      }
-    } catch {
-      ctx.ui.notify(
-        "Selected agent is no longer available; refreshed.",
-        "warning",
-      );
-    }
-    continue;
+    selected = choices.get(choice);
   }
+}
+
+function selectionFor(entry: DashboardEntry): DashboardSelection {
+  return { runtime: entry.runtime, key: entryKey(entry) };
+}
+
+function entryKey(entry: DashboardEntry): string {
+  return entry.snapshot.key ?? `${entry.runtime.scope}:${entry.snapshot.id}`;
+}
+
+function resolveSelection(
+  entries: DashboardEntry[],
+  selection: DashboardSelection,
+): DashboardEntry | undefined {
+  return entries.find(
+    (entry) =>
+      entry.runtime === selection.runtime && entryKey(entry) === selection.key,
+  );
+}
+
+function actionsFor(snapshot: RuntimeSnapshot): string[] {
+  const actions = ["Inspect activity", "Summarise activity"];
+  if (snapshot.status === "running" && snapshot.canSteer === true) {
+    actions.push("Send guidance");
+  }
+  if (snapshot.status === "running") {
+    actions.push("Stop agent");
+  }
+  actions.push("Back");
+  return actions;
 }
 
 function dashboardEntries(
@@ -195,7 +228,7 @@ async function showAgentDetail(
     ctx.ui.notify(`Agent ${id} is no longer available.`, "warning");
     return;
   }
-  if (inspection.snapshot.status === "running" && canShowLiveInspector(ctx)) {
+  if (canShowLiveInspector(ctx)) {
     await showLiveInspector(runtime, ctx, id);
     return;
   }
@@ -265,6 +298,57 @@ function showStaticDetail(
     (child) => nestedOwner(child.owner)?.parentId === inspection.snapshot.id,
   );
   ctx.ui.notify(formatDetail(inspection, children), "info");
+}
+
+type SummaryResult = Awaited<ReturnType<SubagentRuntime["summarise"]>>;
+
+async function showAgentSummary(
+  runtime: SubagentRuntime,
+  ctx: ExtensionCommandContext,
+  id: string,
+): Promise<void> {
+  if (!canShowLiveInspector(ctx)) {
+    const result = await runtime.summarise(id, ctx.model);
+    ctx.ui.notify(summaryText(result), result.ok ? "info" : "warning");
+    return;
+  }
+  await ctx.ui.custom<void>(
+    (tui, theme, _kb, done) => {
+      const controller = new AbortController();
+      const overlay = new SummaryOverlay(tui, theme, () => {
+        controller.abort();
+        done();
+      });
+      void runtime
+        .summarise(id, ctx.model, undefined, controller.signal)
+        .then((result) => overlay.setResult(result))
+        .catch(() =>
+          overlay.setResult({
+            ok: false,
+            reason: "error",
+            message: "Unable to summarise this agent activity.",
+          }),
+        );
+      return overlay;
+    },
+    {
+      overlay: true,
+      overlayOptions: { width: "90%", maxHeight: "80%" },
+    },
+  );
+}
+
+function summaryText(result: SummaryResult): string {
+  if (result.ok) {
+    return truncateUtf8(result.text, 12 * 1024);
+  }
+  return truncateUtf8(
+    result.message ??
+      (result.reason === "aborted"
+        ? "Summary cancelled."
+        : "Unable to summarise this agent activity."),
+    12 * 1024,
+  );
 }
 
 export function formatListRow(snapshot: RuntimeSnapshot): string {
@@ -345,24 +429,17 @@ export function formatDetail(
     `Turns/context: ${turnsContextLabel(snapshot)}`,
     usageDetailLabel(snapshot),
     `Last activity: ${snapshot.health?.lastActivity ?? "unknown"}`,
+    compactionLabel(snapshot),
+    `Pending guidance: ${snapshot.health?.pendingSteering ?? 0}`,
+    inspectionDisclosure(inspection),
+    transcriptLabel(snapshot),
   ];
   const preview = previewText(
     snapshot.health?.lastAssistantText ?? snapshot.health?.resultPreview,
   );
   if (preview) {
-    lines.push(`Last assistant/result: ${preview}`);
+    lines.push(`Last assistant/result preview: ${preview}`);
   }
-  const result = previewText(snapshot.health?.resultPreview ?? snapshot.result);
-  if (result) {
-    lines.push(`Result: ${result}`);
-  }
-  if (snapshot.error) {
-    lines.push(`Error: ${previewText(snapshot.error, 2048)}`);
-  }
-  lines.push(transcriptLabel(snapshot));
-  lines.push(
-    `Compactions: ${snapshot.health?.compactions ?? 0} · Pending guidance: ${snapshot.health?.pendingSteering ?? 0}`,
-  );
   const messageTail = formatMessageTail(inspection.messages, 6);
   if (messageTail.length > 0) {
     lines.push("Message tail:", ...messageTail.map((line) => `- ${line}`));
@@ -372,7 +449,7 @@ export function formatDetail(
       "Recent activity:",
       ...inspection.activity
         .slice(-6)
-        .map((activity) => `- ${activity.kind}: ${activity.status}`),
+        .map((activity) => `- ${activityLabel(activity)}`),
     );
   }
   lines.push("Nested explore children:");
@@ -381,7 +458,95 @@ export function formatDetail(
   } else {
     lines.push(...formatListRows(children).map((child) => `- ${child}`));
   }
-  return lines.join("\n");
+  return truncateUtf8(lines.join("\n"), 12 * 1024);
+}
+
+class SummaryOverlay implements Component {
+  private result: SummaryResult | undefined;
+  private scrollOffset = 0;
+  private lastMaxScroll = 0;
+  private lastViewportRows = 1;
+  private closed = false;
+
+  constructor(
+    private tui: TUI,
+    private theme: Theme,
+    private onClose: () => void,
+    private maxRows = Math.floor((tui.terminal.rows ?? 24) * 0.8),
+  ) {}
+
+  invalidate(): void {
+    this.tui.requestRender();
+  }
+
+  dispose(): void {
+    this.close();
+  }
+
+  setResult(result: SummaryResult): void {
+    if (this.closed) {
+      return;
+    }
+    this.result = result;
+    this.tui.requestRender();
+  }
+
+  handleInput(data: string): void {
+    if (isModalCloseInput(data) || matchesKey(data, "q")) {
+      this.close();
+      return;
+    }
+    const nextScroll = nextModalScrollOffset(
+      data,
+      this.scrollOffset,
+      this.lastMaxScroll,
+      this.lastViewportRows,
+    );
+    if (nextScroll !== undefined) {
+      this.scrollOffset = nextScroll;
+      this.tui.requestRender();
+    }
+  }
+
+  render(width: number): string[] {
+    const content = this.contentLines(Math.max(1, width - 4));
+    const rendered = renderModalView({
+      theme: this.theme,
+      width,
+      maxRows: this.maxRows,
+      title: "Agent activity summary",
+      status: this.result
+        ? {
+            label: this.result.ok ? "ready" : this.result.reason,
+            kind: this.result.ok ? "completed" : "warning",
+          }
+        : { label: "summarising", kind: "pending" },
+      contentLines: content,
+      scrollOffset: this.scrollOffset,
+      footerControls: this.result
+        ? "esc/q: close · ↑↓/kj scroll · Pg/Home/End"
+        : "esc/q: cancel",
+    });
+    this.scrollOffset = rendered.scrollOffset;
+    this.lastMaxScroll = rendered.maxScroll;
+    this.lastViewportRows = rendered.viewportRows;
+    return rendered.lines;
+  }
+
+  private contentLines(width: number): string[] {
+    if (!this.result) {
+      return ["Generating a point-in-time, tool-free activity summary…"];
+    }
+    return wrapTextWithAnsi(summaryText(this.result), width);
+  }
+
+  private close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    this.onClose();
+  }
 }
 
 class AgentInspectorOverlay implements Component {
@@ -520,11 +685,16 @@ class AgentInspectorOverlay implements Component {
     const lines = [
       this.theme.fg("dim", "[Status]"),
       `Owner: ${ownerLabel(snapshot.owner)}`,
+      `Model: ${snapshot.model ?? "unknown"}`,
+      `Thinking: ${snapshot.effectiveThinking ?? snapshot.thinking ?? "unknown"}`,
+      `CWD: ${snapshot.cwd}`,
       `Last activity: ${snapshot.health?.lastActivity ?? "unknown"}`,
-      `Compactions: ${snapshot.health?.compactions ?? 0} · Pending guidance: ${snapshot.health?.pendingSteering ?? 0}`,
-      transcriptLabel(snapshot),
       `Elapsed: ${elapsedLabel(snapshot)} · Turns/context: ${turnsContextLabel(snapshot)}`,
       usageDetailLabel(snapshot),
+      compactionLabel(snapshot),
+      `Pending guidance: ${snapshot.health?.pendingSteering ?? 0}`,
+      inspectionDisclosure(inspection),
+      transcriptLabel(snapshot),
     ];
     if (this.stopArmed && !terminalStatuses.has(snapshot.status)) {
       lines.push(
@@ -534,29 +704,19 @@ class AgentInspectorOverlay implements Component {
     }
     const assistant = previewText(snapshot.health?.lastAssistantText, 2000);
     if (assistant) {
-      lines.push("", this.theme.bold("[Assistant]"));
+      lines.push("", this.theme.bold("[Assistant preview]"));
       lines.push(...this.wrap(assistant, width));
     }
-    const result = previewText(
-      snapshot.health?.resultPreview ?? snapshot.result,
-      2000,
-    );
+    const result = previewText(snapshot.health?.resultPreview, 2000);
     if (result) {
-      lines.push("", this.theme.fg("success", "[Result]"));
+      lines.push("", this.theme.fg("success", "[Result preview]"));
       lines.push(...this.wrap(result, width));
     }
-    if (snapshot.error) {
-      lines.push("", this.theme.fg("error", "[Error]"));
-      lines.push(...this.wrap(snapshot.error, width, "error"));
-    }
     if (inspection.activity.length > 0) {
-      lines.push(
-        "",
-        this.theme.fg("dim", "[Recent activity]"),
-        ...inspection.activity
-          .slice(-12)
-          .map((activity) => `${activity.kind}: ${activity.status}`),
-      );
+      lines.push("", this.theme.fg("dim", "[Recent activity]"));
+      for (const activity of inspection.activity.slice(-12)) {
+        lines.push(...this.wrap(activityLabel(activity), width));
+      }
     }
     const transcript = formatTranscriptTail(inspection.messages, width, 12);
     if (transcript.length > 0) {
@@ -640,6 +800,63 @@ function nestedOwner(
   return typeof owner === "object" && owner.kind === "nested"
     ? owner
     : undefined;
+}
+
+function compactionLabel(snapshot: RuntimeSnapshot): string {
+  const compaction = snapshot.health?.compaction;
+  if (!compaction) {
+    return `Compactions: ${snapshot.health?.compactions ?? 0} · Current: none`;
+  }
+  const retry = compaction.retry
+    ? ` · Retry: ${compaction.retry.status}${
+        compaction.retry.error
+          ? ` (${previewText(compaction.retry.error, 240)})`
+          : ""
+      }`
+    : "";
+  const error = compaction.error
+    ? ` · ${previewText(compaction.error, 240)}`
+    : "";
+  return `Compactions: ${snapshot.health?.compactions ?? 0} · Current: ${compaction.status}${
+    compaction.reason ? ` (${compaction.reason})` : ""
+  }${compaction.willRetry ? " · retrying" : ""}${retry}${error}`;
+}
+
+function inspectionDisclosure(inspection: RuntimeInspection): string {
+  const omissions = [
+    inspection.omittedMessages && `${inspection.omittedMessages} messages`,
+    inspection.omittedActivity &&
+      `${inspection.omittedActivity} activity records`,
+  ].filter(Boolean);
+  return `Inspection retention: ${
+    omissions.length > 0
+      ? `omitted ${omissions.join(" and ")}`
+      : "complete retained window"
+  } · Compacted history: ${inspection.compactedHistory ? "yes" : "no"}`;
+}
+
+function activityLabel(
+  activity: RuntimeInspection["activity"][number],
+): string {
+  if (activity.kind === "tool") {
+    const detail = activity.error ?? activity.result ?? activity.arguments;
+    return `Tool ${previewText(activity.toolName, 120) ?? "unknown"}: ${activity.status}${
+      detail ? ` · ${previewText(detail, 480)}` : ""
+    }`;
+  }
+  if (activity.kind === "compaction") {
+    return `Compaction: ${activity.status}${
+      activity.reason ? ` (${previewText(activity.reason, 120)})` : ""
+    }${activity.willRetry ? " · retrying" : ""}${
+      activity.error ? ` · ${previewText(activity.error, 480)}` : ""
+    }`;
+  }
+  if (activity.kind === "retry") {
+    return `Compaction retry: ${activity.status}${
+      activity.error ? ` · ${previewText(activity.error, 480)}` : ""
+    }`;
+  }
+  return `Guidance: ${activity.status} · ${previewText(activity.text, 480) ?? ""}`;
 }
 
 function turnsContextLabel(snapshot: RuntimeSnapshot): string {

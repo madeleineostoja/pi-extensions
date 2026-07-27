@@ -19,6 +19,7 @@ import {
   getSubagentRuntimes,
   SubagentRuntime,
   TERMINAL_MESSAGE_TAIL_LIMIT,
+  serializeInspectionForSummary,
 } from "./runtime.js";
 
 type Message = {
@@ -573,6 +574,7 @@ describe("SubagentRuntime", () => {
       mode: "background",
     });
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    expect(runtime.snapshot(started.id)?.canSteer).toBe(true);
     const one = runtime.steer(started.id, "first");
     const two = runtime.steer(started.id, "second");
     expect(calls).toEqual(["first"]);
@@ -636,6 +638,37 @@ describe("SubagentRuntime", () => {
     } as AgentSession["messages"][number];
     expect(runtime.inspect(started.id)?.messages.at(-1)).toMatchObject({
       text: `message ${TERMINAL_MESSAGE_TAIL_LIMIT}`,
+    });
+  });
+
+  it("keeps the summary fallback bounded and delimited when metadata is oversized", () => {
+    const serialized = serializeInspectionForSummary({
+      snapshot: {
+        id: "agent",
+        status: "completed",
+        owner: "owner".repeat(30_000),
+        type: "General",
+        description: "summary target",
+        cwd: "/workspace",
+        extensionBinding: "bound",
+        rosterVisibility: "show",
+        timestamps: { queuedAt: "now", updatedAt: "now" },
+      },
+      messages: [],
+      activity: [],
+      omittedMessages: 0,
+      omittedActivity: 0,
+      compactedHistory: false,
+    });
+
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(64 * 1024);
+    expect(serialized).toMatch(/^.+\n<inspection>\n[\s\S]*\n<\/inspection>$/);
+    const payload = serialized.slice(
+      serialized.indexOf("\n<inspection>\n") + "\n<inspection>\n".length,
+      -"\n</inspection>".length,
+    );
+    expect(JSON.parse(payload)).toMatchObject({
+      summaryMetadataTruncated: true,
     });
   });
 

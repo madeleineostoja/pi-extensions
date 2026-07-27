@@ -132,6 +132,7 @@ export type RuntimeSnapshot<TResult = unknown> = {
   thinking?: ThinkingLevel;
   effectiveThinking?: ThinkingLevel;
   extensionBinding: ExtensionBindingStatus;
+  canSteer?: boolean;
   rosterVisibility: RosterVisibility;
   timestamps: RuntimeTimestamps;
   health?: RuntimeHealth;
@@ -373,6 +374,7 @@ function projectSnapshot(record: RuntimeRecord): RuntimeSnapshot {
       ? {}
       : { effectiveThinking: record.effectiveThinking }),
     extensionBinding: record.extensionBinding,
+    ...(record.canSteer === undefined ? {} : { canSteer: record.canSteer }),
     rosterVisibility: record.rosterVisibility,
     timestamps: {
       queuedAt: record.queuedAt,
