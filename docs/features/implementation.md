@@ -2,9 +2,9 @@
 
 Implement is Pipkin's autonomous software implementation system and parallel agent orchestrator. Give `/implement` a Markdown plan and it owns the run from planning through reviewed publication.
 
-Before coding starts, a high-reasoning planner reads the complete linked plan material and creates one immutable, dependency-aware schedule. Dedicated implementer and reviewer agents then work in isolated Git worktrees. Independent workstreams proceed concurrently; dependent work receives a base containing the work it relies on. Review findings go back through bounded repair loops, and a final review checks the result as a whole.
+Before coding starts, a high-reasoning planner reads the complete linked plan material and creates one immutable, dependency-aware schedule. It groups work at stable implementation and review boundaries: shared context and cumulative review can justify a multi-task workstream, while a narrower recovery scope can justify a split, including a dependent chain. Dedicated implementer and reviewer agents then work in isolated Git worktrees. Independent workstreams proceed concurrently up to the configured capacity; capacity is useful, not a requirement to split or to fill every slot. Review findings go back through bounded repair loops, and a final review checks the result as a whole.
 
-The target branch has one controlled writer. Pipkin integrates approved work serially, runs ordinary Git hooks, verifies the commit it prepared, and uses compare-and-swap protection when advancing the branch. Durable state and retained evidence make interrupted or blocked runs inspectable and, where safe, resumable.
+The complete source plan is the shipment boundary. An approved intermediate candidate can establish a contract for a dependent workstream, but it must remain coherent and safe to publish. The target branch has one controlled writer. Pipkin integrates approved work serially, runs ordinary Git hooks, verifies the commit it prepared, and uses compare-and-swap protection when advancing the branch. Durable state and retained evidence make interrupted or blocked runs inspectable and, where safe, resumable.
 
 This is not a public-agent fan-out or a prompt loop around a checklist. Implement owns scheduling, workspace isolation, review, recovery, publication, and plan projection as one system.
 
@@ -55,10 +55,10 @@ It does not require an upstream, remote, package manager, configured validation 
 
 1. **Plan once.** A planner produces one strict immutable execution plan that covers every unchecked task exactly once, identifies dependencies, and groups static workstreams.
 2. **Work in isolation.** Eligible workstreams receive disposable owned Git worktrees. Independent streams may implement and review concurrently up to `workerConcurrency`; dependent streams receive bases that already contain completed dependencies.
-3. **Keep evidence.** Implementers retain committed checkpoints and verification evidence. If a task is already satisfied, Pipkin asks for current-repository review instead of manufacturing a change.
-4. **Review before publication.** Candidates are reviewed and findings return through bounded repair and review. A checkpoint is not completion.
+3. **Keep evidence.** Task coverage and commit provenance are distinct: implementers retain committed checkpoints and verification evidence, but tightly coupled tasks may share one reachable checkpoint and later corrections may revise earlier work. If a task is already satisfied, Pipkin asks for current-repository review instead of manufacturing a change.
+4. **Review before publication.** Initial review first assesses every ordered contract, then the cumulative candidate for interactions, regressions, verification, and unnecessary machinery. Findings return through bounded repair and review. A checkpoint is not completion.
 5. **Publish one at a time.** When all managed agents are idle, the serialized integration lane replays an approved candidate onto the current target, runs ordinary commit hooks, verifies the prepared commit, records publication intent, and advances the target with compare-and-swap protection.
-6. **Project completion.** Published or reviewed-as-satisfied tasks update their source checkboxes. Whole-plan review can send further findings through the same repair, review, integration, and publication path.
+6. **Project completion.** Published or reviewed-as-satisfied tasks update their source checkboxes. Whole-plan review can send further findings through the same repair, review, integration, and publication path. The run completes only after its remaining projection debt is settled.
 
 The result is parallel work where it is safe and a single accountable lane where Git history changes.
 

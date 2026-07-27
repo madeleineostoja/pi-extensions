@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
   buildPlannerPacket,
+  buildStrictExecutionPlannerPrompt,
   compileExecutionPlan,
   parsePlannerExecutionPlan,
   planExecution,
@@ -120,6 +121,21 @@ describe("strict execution-plan compiler", () => {
         workerConcurrency: 2,
       },
     });
+    if (!result.ok) {
+      return;
+    }
+
+    const prompt = buildStrictExecutionPlannerPrompt(result.value);
+    expect(prompt).toContain("You are the Pipkin Implement planner");
+    expect(prompt).toContain("Effective worker concurrency: 2");
+    expect(prompt).toContain("capacity is a benefit, not a quota");
+    expect(prompt).toContain("Multi-task workstreams and dependent chains");
+    expect(prompt).toContain("challenge the largest workstream");
+    expect(prompt).toContain("smallest adjacent workstreams");
+    expect(prompt).toContain(
+      "Whole-plan and all-singleton partitions are suspicious but legal",
+    );
+    expect(prompt).toContain("complete source plan is the shipment boundary");
   });
 
   it("deduplicates recursive corpus cycles before invoking the planner", async () => {
@@ -357,6 +373,65 @@ describe("strict execution-plan compiler", () => {
     ];
 
     expect(compileExecutionPlan(plan, input()).ok).toBe(true);
+  });
+
+  it("permits a multi-task isolated workstream without a task-count policy", () => {
+    const plan = plannerPlan();
+    plan.workstreams = [
+      {
+        id: "isolated-contract",
+        taskIds: ["first", "second"],
+        dependsOn: [],
+        rationale: "The shared protocol needs one isolated cumulative review.",
+        risk: "isolated",
+      },
+      {
+        id: "join-work",
+        taskIds: ["join"],
+        dependsOn: ["isolated-contract"],
+        rationale: "It consumes the completed protocol.",
+        risk: "normal",
+      },
+    ];
+
+    expect(compileExecutionPlan(plan, input()).ok).toBe(true);
+  });
+
+  it("permits whole-plan, all-singleton, and sequential dependent partitions", () => {
+    const wholePlan = plannerPlan();
+    wholePlan.workstreams = [
+      {
+        id: "whole-plan",
+        taskIds: ["first", "second", "join"],
+        dependsOn: [],
+        rationale: "One evolving abstraction needs one cumulative review.",
+        risk: "normal",
+      },
+    ];
+    expect(compileExecutionPlan(wholePlan, input()).ok).toBe(true);
+    expect(compileExecutionPlan(plannerPlan(), input()).ok).toBe(true);
+
+    const sequential = plannerPlan();
+    sequential.tasks[1]!.dependsOn = ["first"];
+    sequential.tasks[2]!.dependsOn = ["second"];
+    sequential.workstreams = [
+      {
+        id: "foundation",
+        taskIds: ["first"],
+        dependsOn: [],
+        rationale: "Establishes the contract consumed by the next boundary.",
+        risk: "normal",
+      },
+      {
+        id: "dependent-delivery",
+        taskIds: ["second", "join"],
+        dependsOn: ["foundation"],
+        rationale:
+          "Uses the foundation in one cumulative implementation and review.",
+        risk: "normal",
+      },
+    ];
+    expect(compileExecutionPlan(sequential, input()).ok).toBe(true);
   });
 
   it("rejects unknown nested fields instead of silently accepting incompatible output", () => {

@@ -16,7 +16,6 @@ import { ExecGitClient } from "./git.js";
 import { createRuntime } from "./run.js";
 import { buildMaterialStore } from "./material-store.js";
 import { parsePlan } from "./plan.js";
-import type { WorkstreamImplementerCompletion } from "./result-schemas.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import { within } from "./test-boundary.js";
 import {
@@ -269,20 +268,7 @@ describe("workstream candidate lifecycle", () => {
       workstreamId: "combined",
       git: new ExecGitClient(subject.root),
       roles: subject.roles,
-      subagents: agent(async (cwd) => {
-        const result = await changedResult(cwd, ["first"]);
-        const completion = result.result as WorkstreamImplementerCompletion;
-        completion.candidateTip = completion.candidateTip!.slice(0, 12);
-        completion.taskCompletions[0]!.checkpoint =
-          completion.taskCompletions[0]!.checkpoint!.slice(0, 12);
-        completion.taskCompletions.push({
-          taskId: "second",
-          kind: "already_satisfied",
-          evidence:
-            "The repository already exposed the required second behavior.",
-        });
-        return { ...result, result: completion };
-      }),
+      subagents: agent(async (cwd) => changedResult(cwd, ["first", "second"])),
       artifactsPath: join(
         subject.root,
         ".pi",
@@ -296,18 +282,61 @@ describe("workstream candidate lifecycle", () => {
 
     expect(outcome).toMatchObject({
       kind: "candidate_ready",
-      checkpoints: { first: expect.stringMatching(/^[0-9a-f]{40}$/) },
+      checkpoints: {
+        first: expect.stringMatching(/^[0-9a-f]{40}$/),
+        second: expect.stringMatching(/^[0-9a-f]{40}$/),
+      },
       candidate: {
         commitSha: expect.stringMatching(/^[0-9a-f]{40}$/),
       },
-      satisfied: {
-        second: "The repository already exposed the required second behavior.",
-      },
     });
+    if (outcome.kind !== "candidate_ready") {
+      throw new Error("Expected a candidate-ready outcome.");
+    }
+    expect(outcome.checkpoints.first).toBe(outcome.checkpoints.second);
     expect(readFileSync(join(subject.root, "plan.md"), "utf-8")).toBe(
       subject.planContent,
     );
     expect(outcome.evidencePath).toContain("combined-implementation.json");
+  });
+
+  it("retains already-satisfied evidence beside a changed task checkpoint", async () => {
+    const subject = await fixture({
+      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
+    });
+    const outcome = await runWorkstreamCandidate({
+      state: subject.run.read(),
+      plan: subject.plan,
+      workstreamId: "combined",
+      git: new ExecGitClient(subject.root),
+      roles: subject.roles,
+      subagents: agent(async (cwd) => {
+        const result = await changedResult(cwd, ["first"]);
+        return {
+          ...result,
+          result: {
+            ...result.result,
+            taskCompletions: [
+              ...result.result.taskCompletions,
+              {
+                taskId: "second",
+                kind: "already_satisfied" as const,
+                evidence:
+                  "The repository already exposed the required second behavior.",
+              },
+            ],
+          },
+        };
+      }),
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "candidate_ready",
+      checkpoints: { first: expect.stringMatching(/^[0-9a-f]{40}$/) },
+      satisfied: {
+        second: "The repository already exposed the required second behavior.",
+      },
+    });
   });
 
   it("completes implementation, publication, projection, and whole-plan review through the production runtime", async () => {
