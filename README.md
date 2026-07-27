@@ -1,7 +1,7 @@
 <div align="center">
   <h1>Pipkin</h1>
   <img src="docs/pipkin.png" alt="Pipkin" width="256">
-  <p><strong>A small companion for ambitious <a href="https://github.com/earendil-works/pi">Pi</a> sessions.</strong></p>
+  <p><strong>A small companion for big Pi sessions</p>
   <p>
     <a href="https://github.com/madeleineostoja/pipkin/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/madeleineostoja/pipkin/actions/workflows/ci.yml/badge.svg"></a>
     <img alt="Node.js 24+" src="https://img.shields.io/badge/Node.js-24%2B-339933?logo=nodedotjs&logoColor=white">
@@ -9,9 +9,9 @@
   </p>
 </div>
 
-Pipkin turns the Pi agent harness into a serious engineering tool for heavy workloads. It can orchestrate teams of agents to autonomously implement plans safely, optimise context on the fly, guardrail running processes, and more.
+Pipkin is an extension for the [Pi](https://pi.dev) agent harness that brings a satchel of goodies. It can orchestrate teams of agents to autonomously implement plans, optimise context on the fly, guardrail running processes, and much more.
 
-## Install
+## Getting setup
 
 Pipkin requires Node 24 or later and an existing Pi installation.
 
@@ -32,9 +32,9 @@ Choose the models Pipkin should use in `~/.pi/agent/pipkin/config.json`
 }
 ```
 
-See [Configuration and state](docs/configuration.md) for additional configuration and how these models map to various features.
+See [Configuration](docs/configuration.md) for additional configuration and how these models map to various features.
 
-## Features
+## What Pipkin can help with
 
 ### Implementer
 
