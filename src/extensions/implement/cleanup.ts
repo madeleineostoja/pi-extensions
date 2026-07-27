@@ -27,7 +27,7 @@ export async function sweepOwnedRunResources(args: {
   const state = args.store.read();
   const expected = ownedResources(state);
   const root = runWorktreesRoot(args.lease, state.run.id);
-  const prefix = `pi-implement/${state.run.id}/`;
+  const prefix = `pipkin/implement/${state.run.id}/`;
   const [worktrees, branches] = await Promise.all([
     args.git.listWorktrees(),
     args.git.listBranchesMatching(`${prefix}*`),
@@ -134,6 +134,7 @@ function ownedResources(state: RunState): Map<string, OwnedResource> {
   const root = join(
     state.run.checkout.root,
     ".pi",
+    "pipkin",
     "implement",
     "worktrees",
     state.run.id,
@@ -156,7 +157,7 @@ function ownedResources(state: RunState): Map<string, OwnedResource> {
         ? candidate.workstream.id
         : candidate.workstream.repairId;
     add(
-      `pi-implement/${state.run.id}/${id}`,
+      `pipkin/implement/${state.run.id}/${id}`,
       join(root, id),
       candidate.commitSha,
     );
@@ -187,7 +188,7 @@ function ownedResources(state: RunState): Map<string, OwnedResource> {
       episode.workspace.checkpoint
     ) {
       add(
-        `pi-implement/${state.run.id}/${episode.workspace.id}`,
+        `pipkin/implement/${state.run.id}/${episode.workspace.id}`,
         join(root, episode.workspace.id),
         episode.workspace.checkpoint,
       );

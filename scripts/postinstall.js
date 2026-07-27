@@ -16,8 +16,8 @@ const NONO_VERSION = pkg.nonoVersion;
 const NONO_SHA256SUMS_HASH = pkg.nonoSha256SumsHash;
 const CACHE_ROOT = path.join(
   getAgentDir(),
-  "cache",
-  "pi-sandbox",
+  "pipkin",
+  "sandbox",
   "nono",
   NONO_VERSION,
 );
@@ -44,7 +44,7 @@ function writeStatus(status) {
     );
   } catch (err) {
     console.warn(
-      "pi-sandbox: could not write install-status marker:",
+      "Pipkin Sandbox: could not write install-status marker:",
       err.message,
     );
   }
@@ -162,13 +162,13 @@ async function main() {
 
     if (result.musl) {
       console.log(
-        "pi-sandbox: Linux musl (Alpine/distroless) detected — nono binary is not available for musl. " +
+        "Pipkin Sandbox: Linux musl (Alpine/distroless) detected — nono binary is not available for musl. " +
           "Sandbox will run in in-process-only mode. " +
           "To install nono manually, see https://github.com/always-further/nono/releases.",
       );
     } else {
       console.log(
-        `pi-sandbox: platform ${platform}/${process.arch} is not supported for nono binary download. ` +
+        `Pipkin Sandbox: platform ${platform}/${process.arch} is not supported for nono binary download. ` +
           "Sandbox will run in in-process-only mode.",
       );
     }
@@ -180,14 +180,14 @@ async function main() {
   const { target } = result;
   statusDir = cacheDirForTarget(target);
 
-  if (process.env.PI_SANDBOX_SKIP_DOWNLOAD === "1") {
+  if (process.env.PIPKIN_SANDBOX_SKIP_DOWNLOAD === "1") {
     console.log(
-      "pi-sandbox: PI_SANDBOX_SKIP_DOWNLOAD=1, skipping nono download.",
+      "Pipkin Sandbox: PIPKIN_SANDBOX_SKIP_DOWNLOAD=1, skipping nono download.",
     );
     writeStatus({
       ok: false,
       reason: "download-skipped",
-      detail: "PI_SANDBOX_SKIP_DOWNLOAD=1 was set.",
+      detail: "PIPKIN_SANDBOX_SKIP_DOWNLOAD=1 was set.",
     });
     process.exit(0);
   }
@@ -197,14 +197,16 @@ async function main() {
   const tarballUrl = `${baseUrl}/${tarball}`;
   const sha256Url = `${baseUrl}/SHA256SUMS.txt`;
 
-  console.log(`pi-sandbox: downloading nono v${NONO_VERSION} for ${target}...`);
+  console.log(
+    `Pipkin Sandbox: downloading nono v${NONO_VERSION} for ${target}...`,
+  );
 
   let sha256Content;
   try {
     sha256Content = await httpsGet(sha256Url);
   } catch (err) {
     console.log(
-      `pi-sandbox: could not fetch SHA256SUMS.txt (${err.message}). Skipping nono install.`,
+      `Pipkin Sandbox: could not fetch SHA256SUMS.txt (${err.message}). Skipping nono install.`,
     );
     writeStatus({
       ok: false,
@@ -221,7 +223,7 @@ async function main() {
       .digest("hex");
     if (actualSumsHash !== NONO_SHA256SUMS_HASH) {
       console.error(
-        `pi-sandbox: SHA256SUMS.txt hash mismatch!\n` +
+        `Pipkin Sandbox: SHA256SUMS.txt hash mismatch!\n` +
           `  expected: ${NONO_SHA256SUMS_HASH}\n` +
           `  actual:   ${actualSumsHash}\n` +
           "Refusing to trust SHA256SUMS.txt entries. Skipping nono install.",
@@ -240,7 +242,7 @@ async function main() {
   const expectedHash = sha256Map.get(tarball);
   if (!expectedHash) {
     console.log(
-      `pi-sandbox: no SHA256 entry found for ${tarball}. Skipping nono install.`,
+      `Pipkin Sandbox: no SHA256 entry found for ${tarball}. Skipping nono install.`,
     );
     writeStatus({
       ok: false,
@@ -255,7 +257,7 @@ async function main() {
     tarballData = await httpsGet(tarballUrl);
   } catch (err) {
     console.log(
-      `pi-sandbox: could not fetch nono binary (${err.message}). Skipping nono install.`,
+      `Pipkin Sandbox: could not fetch nono binary (${err.message}). Skipping nono install.`,
     );
     writeStatus({
       ok: false,
@@ -271,7 +273,7 @@ async function main() {
     .digest("hex");
   if (actualHash !== expectedHash) {
     console.error(
-      `pi-sandbox: SHA256 mismatch for ${tarball}!\n` +
+      `Pipkin Sandbox: SHA256 mismatch for ${tarball}!\n` +
         `  expected: ${expectedHash}\n` +
         `  actual:   ${actualHash}\n` +
         "Aborting install.",
@@ -296,7 +298,7 @@ async function main() {
     execFileSync("tar", ["-xzf", tmpTar, "-C", extractDir], { stdio: "pipe" });
   } catch (err) {
     console.log(
-      `pi-sandbox: tar extraction failed (${err.message}). Skipping nono install.`,
+      `Pipkin Sandbox: tar extraction failed (${err.message}). Skipping nono install.`,
     );
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -314,7 +316,7 @@ async function main() {
   const foundBin = findFile(extractDir, "nono");
   if (!foundBin) {
     console.log(
-      "pi-sandbox: nono binary not found in tarball. Skipping nono install.",
+      "Pipkin Sandbox: nono binary not found in tarball. Skipping nono install.",
     );
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -339,7 +341,7 @@ async function main() {
 
   if (!fs.existsSync(binPath)) {
     console.log(
-      "pi-sandbox: binary not found after extraction. Skipping nono install.",
+      "Pipkin Sandbox: binary not found after extraction. Skipping nono install.",
     );
     writeStatus({
       ok: false,
@@ -350,7 +352,7 @@ async function main() {
   }
 
   fs.chmodSync(binPath, 0o755);
-  console.log(`pi-sandbox: nono v${NONO_VERSION} installed at ${binPath}`);
+  console.log(`Pipkin Sandbox: nono v${NONO_VERSION} installed at ${binPath}`);
   writeStatus({ ok: true, version: NONO_VERSION });
 }
 

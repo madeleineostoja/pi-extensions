@@ -40,7 +40,7 @@ export type LspPoolOptions = {
   initializeTimeoutMs?: number;
   spawn?: typeof spawn;
 };
-export const LSP_POOL_MANAGER_KEY = Symbol.for("pi-lsp:pool");
+export const LSP_POOL_MANAGER_KEY = Symbol.for("pipkin:lsp:pool");
 const defaultOptions = {
   maxProcesses: 6,
   idleMs: 5 * 60_000,

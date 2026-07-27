@@ -14,7 +14,7 @@ export {
   tokenLabel,
 } from "./formatters.js";
 
-const WIDGET_KEY = "subagents";
+const WIDGET_KEY = "pipkin.subagents.roster";
 const REFRESH_MS = 350;
 const terminalStatuses = new Set<SubagentRuntimeStatus>([
   "completed",

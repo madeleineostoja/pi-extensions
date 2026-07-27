@@ -255,6 +255,7 @@ function recoveryWorktree(
     const root = resolve(
       state.run.checkout.root,
       ".pi",
+      "pipkin",
       "implement",
       "worktrees",
       state.run.id,

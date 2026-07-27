@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { acquireFileLease } from "./file-lease.js";
 
 const execFileAsync = promisify(execFile);
-const excludeLeaseName = "pi-extensions-info-exclude.lock";
+const excludeLeaseName = "pipkin-info-exclude.lock";
 const excludeLeaseTimeoutMs = 10_000;
 
 let testHooks: GitInfoExcludeTestHooks | undefined;

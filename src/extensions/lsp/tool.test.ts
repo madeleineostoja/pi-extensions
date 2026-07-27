@@ -17,7 +17,7 @@ import { executeLsp, lspStatus } from "./tool.js";
 
 const directories: string[] = [];
 function workspace(): string {
-  const directory = mkdtempSync(join(tmpdir(), "pi-lsp-tool-"));
+  const directory = mkdtempSync(join(tmpdir(), "pipkin-lsp-tool-"));
   directories.push(directory);
   return directory;
 }

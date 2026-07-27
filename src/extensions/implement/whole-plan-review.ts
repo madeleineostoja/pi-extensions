@@ -283,7 +283,7 @@ export async function runWholePlanRecovery(args: {
     throw new Error("Whole-plan recovery has no retained failure evidence.");
   }
   const handle = await args.subagents.spawn({
-    type: args.roles?.type ?? "pi-implement:recovery",
+    type: args.roles?.type ?? "pipkin:implement:recovery",
     role: "recovery",
     model: args.roles?.model,
     thinking: args.roles?.thinking,
@@ -291,7 +291,7 @@ export async function runWholePlanRecovery(args: {
     description: `Recover whole-plan review for ${args.state.run.id}`,
     cwd: args.state.run.checkout.root,
     readOnly: true,
-    prompt: `You are the pi-implement recovery agent for a failed whole-plan review. Diagnose only the retained reviewer/provider failure below. Do not edit files, change Git state, install dependencies, or rerun the review yourself. Return retry when the orchestrator can safely rerun the same immutable assessment, diagnose for additional bounded evidence, or no_safe_action when manual intervention is required.\n\n${JSON.stringify(recovery, null, 2)}`,
+    prompt: `You are the Pipkin Implement recovery agent for a failed whole-plan review. Diagnose only the retained reviewer/provider failure below. Do not edit files, change Git state, install dependencies, or rerun the review yourself. Return retry when the orchestrator can safely rerun the same immutable assessment, diagnose for additional bounded evidence, or no_safe_action when manual intervention is required.\n\n${JSON.stringify(recovery, null, 2)}`,
     completion: {
       description: "Return a bounded whole-plan recovery action.",
       schema: recoveryCompletionSchema,

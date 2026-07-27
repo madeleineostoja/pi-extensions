@@ -194,10 +194,10 @@ export function hasPrivateUseGlyph(text: string): boolean {
 }
 
 const STATUS_ORDER = new Map([
-  ["pi-implement.status", 0],
-  ["pi-papercuts.status", 1],
-  ["pi-readonly.mode", 2],
-  ["sandbox", 3],
+  ["pipkin.implement.status", 0],
+  ["pipkin.papercuts.status", 1],
+  ["pipkin.edit-approval.mode", 2],
+  ["pipkin.sandbox.status", 3],
 ]);
 
 export function buildStatusLine(

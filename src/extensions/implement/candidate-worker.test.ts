@@ -9,7 +9,7 @@ import { ExecGitClient } from "./git.js";
 const temporaryDirectories = new Set<string>();
 
 function repository(): string {
-  const cwd = mkdtempSync(join(tmpdir(), "pi-implement-worker-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pipkin-implement-worker-"));
   temporaryDirectories.add(cwd);
   execFileSync("git", ["init"], { cwd });
   execFileSync("git", ["config", "user.email", "test@example.com"], { cwd });
@@ -35,7 +35,7 @@ describe("TaskWorkspaceManager", () => {
     const worktreesRoot = join(root, ".pi", "worktrees");
     const workspace = {
       taskId: "task-a",
-      branchName: "pi-implement/run/task-a",
+      branchName: "pipkin/implement/run/task-a",
       worktreePath: join(worktreesRoot, "task-a"),
       baseSha,
     };
@@ -67,7 +67,7 @@ describe("TaskWorkspaceManager", () => {
     await expect(
       manager.ensure({
         taskId: "task-a",
-        branchName: "pi-implement/run/task-a",
+        branchName: "pipkin/implement/run/task-a",
         worktreePath: join(root, "outside"),
         baseSha: await client.head(),
       }),

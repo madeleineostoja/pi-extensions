@@ -199,14 +199,14 @@ Windows, Alpine/musl Linux, distroless images, and BSDs do not currently receive
 To skip the install-time download and use your own `nono`:
 
 ```sh
-PI_SANDBOX_SKIP_DOWNLOAD=1 npm install
+PIPKIN_SANDBOX_SKIP_DOWNLOAD=1 npm install
 ```
 
 At runtime, the status bar shows `sandbox (degraded)` when Pi is running without the kernel sandbox.
 
 ## Audit events
 
-Sandbox decisions and policy changes are emitted as `sandbox:audit`. Policy changes are also emitted as `sandbox:policy-changed`. Other extensions can listen to these events for logging or prompts; pi-sandbox itself does not accept grants from events.
+Sandbox decisions and policy changes are emitted as `pipkin.sandbox.audit`. Policy changes are also emitted as `pipkin.sandbox.policy-changed`. Other extensions can listen to these events for logging or prompts; pi-sandbox itself does not accept grants from events.
 
 Audit logs are JSONL when enabled:
 

@@ -245,7 +245,7 @@ describe("non-interactive mode", () => {
     expect(result).toBeUndefined();
     expect(ctx.notifyCalls).toHaveLength(0);
     expect(messageCalls).toHaveLength(1);
-    expect(messageCalls[0]?.customType).toBe("pi-guard.status");
+    expect(messageCalls[0]?.customType).toBe("pipkin.shell-guard.status");
     expect(messageCalls[0]?.display).toBe(true);
     expect(messageCalls[0]?.content).toMatch(/guard auto-disabled/);
     expect(messageCalls[0]?.content).toMatch(/no interactive UI/);

@@ -16,7 +16,7 @@ import {
 } from "./workspace.js";
 const dirs: string[] = [];
 const temp = () => {
-  const value = mkdtempSync(join(tmpdir(), "pi-lsp-"));
+  const value = mkdtempSync(join(tmpdir(), "pipkin-lsp-"));
   dirs.push(value);
   return value;
 };

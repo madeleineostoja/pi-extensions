@@ -12,9 +12,9 @@ import {
 } from "./utils";
 import { decideToolCall, resolveChoice } from "./handler";
 
-const FOOTER_KEY = "pi-readonly.mode";
-const MESSAGE_TYPE = "pi-readonly.status";
-const MODE_EVENT = "pi-readonly.mode:set";
+const FOOTER_KEY = "pipkin.edit-approval.mode";
+const MESSAGE_TYPE = "pipkin.edit-approval.status";
+const MODE_EVENT = "pipkin.edit-approval.mode:set";
 const READONLY_ICON = "󰏯";
 const EDITING_ICON = "󰏫";
 
@@ -73,7 +73,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     nonInteractiveNotified = true;
-    const message = `[pi-readonly] ${NON_INTERACTIVE_MSG}`;
+    const message = `[Pipkin Edit Approval] ${NON_INTERACTIVE_MSG}`;
     pi.sendMessage({
       customType: MESSAGE_TYPE,
       content: message,

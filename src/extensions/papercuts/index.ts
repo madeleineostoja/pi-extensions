@@ -30,7 +30,7 @@ export type {
   ProposalOutcome,
 } from "./store.js";
 
-export const PAPERCUT_STATUS_KEY = "pi-papercuts.status";
+export const PAPERCUT_STATUS_KEY = "pipkin.papercuts.status";
 export const PapercutProposalSchema = Type.Object({
   key: Type.String({
     description:

@@ -7,7 +7,7 @@ import { classifyGitRecoverability, isInsideWorkTree } from "./git";
 
 describe("isInsideWorkTree", () => {
   it("returns false outside a repo", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-guard-"));
+    const dir = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-"));
     try {
       expect(isInsideWorkTree(dir)).toBe(false);
     } finally {
@@ -16,7 +16,7 @@ describe("isInsideWorkTree", () => {
   });
 
   it("returns true inside a repo", () => {
-    const dir = mkdtempSync(join(tmpdir(), "pi-guard-"));
+    const dir = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-"));
     execSync("git init", { cwd: dir });
     try {
       expect(isInsideWorkTree(dir)).toBe(true);
@@ -30,7 +30,7 @@ describe("classifyGitRecoverability", () => {
   let repo: string;
 
   beforeEach(() => {
-    repo = mkdtempSync(join(tmpdir(), "pi-guard-"));
+    repo = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-"));
     execSync("git init", { cwd: repo });
     execSync("git config user.email test@test.com", { cwd: repo });
     execSync("git config user.name Test", { cwd: repo });
@@ -66,7 +66,7 @@ describe("classifyGitRecoverability", () => {
   });
 
   it("classifies path outside repo as not-git", () => {
-    const outside = mkdtempSync(join(tmpdir(), "pi-guard-out-"));
+    const outside = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-out-"));
     try {
       expect(classifyGitRecoverability(repo, outside)).toBe("not-git");
     } finally {

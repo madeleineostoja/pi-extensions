@@ -102,7 +102,7 @@ function task(id: string, planIndex: number, dependsOn: string[]) {
 
 describe("strict execution-plan compiler", () => {
   it("deduplicates recursive corpus cycles before invoking the planner", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "pi-implement-plan-"));
+    const directory = mkdtempSync(join(tmpdir(), "pipkin-implement-plan-"));
     const sourcePath = join(directory, "plan.md");
     try {
       writeFileSync(
@@ -284,7 +284,9 @@ describe("strict execution-plan compiler", () => {
     if (!result.ok) {
       return;
     }
-    const directory = mkdtempSync(join(tmpdir(), "pi-implement-execution-"));
+    const directory = mkdtempSync(
+      join(tmpdir(), "pipkin-implement-execution-"),
+    );
     try {
       writeExecutionPlan(directory, result.value);
       expect(readExecutionPlan(directory)).toEqual(result.value);

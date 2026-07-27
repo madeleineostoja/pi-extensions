@@ -80,7 +80,7 @@ const plan = {
   ],
 } as ExecutionPlan;
 
-describe("temporary pi-implement activity", () => {
+describe("temporary pipkin-implement activity", () => {
   it("shows live task stages, progress, failures, and findings", () => {
     expect(formatTemporaryActivity(state(), plan)).toEqual([
       "implement run-1 · running · 1/2 published",

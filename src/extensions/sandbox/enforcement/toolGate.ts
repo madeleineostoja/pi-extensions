@@ -28,7 +28,7 @@ import { decideFsAccess, type Decision } from "./decide.js";
 
 export { type ToolCallEvent };
 
-export const BLOCK_REASON = "sandbox: path denied";
+export const BLOCK_REASON = "Pipkin Sandbox: path denied";
 
 export type AccessMode = "read" | "write";
 

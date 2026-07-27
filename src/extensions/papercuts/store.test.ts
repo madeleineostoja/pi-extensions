@@ -35,7 +35,7 @@ const workerPath = fileURLToPath(
 );
 
 function repo(): string {
-  const root = mkdtempSync(join(tmpdir(), "pi-papercuts-"));
+  const root = mkdtempSync(join(tmpdir(), "pipkin-papercuts-"));
   roots.push(root);
   execFileSync("git", ["init", "-q"], { cwd: root });
   return root;
@@ -161,11 +161,15 @@ describe("papercut store", () => {
     await store.initialize();
 
     expect(
-      JSON.parse(readFileSync(join(root, ".pi", "papercuts.json"), "utf-8")),
+      JSON.parse(
+        readFileSync(join(root, ".pi", "pipkin", "papercuts.json"), "utf-8"),
+      ),
     ).toEqual({ version: 1, records: [] });
-    expect(statSync(join(root, ".pi", "papercuts.lock")).isFile()).toBe(true);
-    expect(excludeEntries(root, "/.pi/papercuts.json")).toHaveLength(1);
-    expect(excludeEntries(root, "/.pi/papercuts.lock")).toHaveLength(1);
+    expect(
+      statSync(join(root, ".pi", "pipkin", "papercuts.lock")).isFile(),
+    ).toBe(true);
+    expect(excludeEntries(root, "/.pi/pipkin/papercuts.json")).toHaveLength(1);
+    expect(excludeEntries(root, "/.pi/pipkin/papercuts.lock")).toHaveLength(1);
   });
 
   it("routes linked worktrees to independent checkout-local state", async () => {
@@ -185,7 +189,7 @@ describe("papercut store", () => {
       ],
       { cwd: root },
     );
-    const linked = mkdtempSync(join(tmpdir(), "pi-papercuts-linked-"));
+    const linked = mkdtempSync(join(tmpdir(), "pipkin-papercuts-linked-"));
     rmSync(linked, { recursive: true });
     roots.push(linked);
     execFileSync(
@@ -200,12 +204,16 @@ describe("papercut store", () => {
     await store.propose(proposal(), { kind: "agent" });
 
     expect(store.registryPath).toBe(
-      join(realpathSync(linked), ".pi", "papercuts.json"),
+      join(realpathSync(linked), ".pi", "pipkin", "papercuts.json"),
     );
-    expect(existsSync(join(root, ".pi", "papercuts.json"))).toBe(false);
-    expect(existsSync(join(linked, ".pi", "papercuts.lock"))).toBe(true);
-    expect(excludeEntries(root, "/.pi/papercuts.json")).toHaveLength(1);
-    expect(excludeEntries(root, "/.pi/papercuts.lock")).toHaveLength(1);
+    expect(existsSync(join(root, ".pi", "pipkin", "papercuts.json"))).toBe(
+      false,
+    );
+    expect(existsSync(join(linked, ".pi", "pipkin", "papercuts.lock"))).toBe(
+      true,
+    );
+    expect(excludeEntries(root, "/.pi/pipkin/papercuts.json")).toHaveLength(1);
+    expect(excludeEntries(root, "/.pi/pipkin/papercuts.lock")).toHaveLength(1);
   });
 
   it("merges duplicates and preserves status changes across store instances", async () => {
@@ -263,7 +271,7 @@ describe("papercut store", () => {
   it("rejects invalid persistence and mutation input without overwriting data", async () => {
     const root = repo();
     const store = createPapercutStore(root);
-    const path = join(root, ".pi", "papercuts.json");
+    const path = join(root, ".pi", "pipkin", "papercuts.json");
     await store.initialize();
     writeFileSync(path, "not json\n");
     await expect(store.propose(proposal(), { kind: "agent" })).rejects.toThrow(
@@ -286,7 +294,10 @@ describe("papercut store", () => {
       proposal({ key: "other", title: "Other", trigger: "Other trigger" }),
       { kind: "user" },
     );
-    const before = readFileSync(join(root, ".pi", "papercuts.json"), "utf-8");
+    const before = readFileSync(
+      join(root, ".pi", "pipkin", "papercuts.json"),
+      "utf-8",
+    );
 
     await expect(
       store.edit("other", proposal({ key: "other" })),
@@ -297,9 +308,9 @@ describe("papercut store", () => {
     await expect(store.delete("other", "true")).rejects.toThrow(
       "requires confirmation",
     );
-    expect(readFileSync(join(root, ".pi", "papercuts.json"), "utf-8")).toBe(
-      before,
-    );
+    expect(
+      readFileSync(join(root, ".pi", "pipkin", "papercuts.json"), "utf-8"),
+    ).toBe(before);
   });
 
   it("serializes independent processes without losing records", async () => {
@@ -335,7 +346,9 @@ describe("papercut store", () => {
     const root = repo();
     const store = createPapercutStore(root);
     await store.initialize();
-    const holder = await startLockHolder(join(root, ".pi", "papercuts.lock"));
+    const holder = await startLockHolder(
+      join(root, ".pi", "pipkin", "papercuts.lock"),
+    );
 
     const startedAt = Date.now();
     await expect(runWorker(root, "blocked")).rejects.toThrow(
@@ -350,7 +363,7 @@ describe("papercut store", () => {
     const root = repo();
     const store = createPapercutStore(root);
     await store.initialize();
-    const anchorPath = join(root, ".pi", "papercuts.lock");
+    const anchorPath = join(root, ".pi", "pipkin", "papercuts.lock");
     const inode = statSync(anchorPath).ino;
     const holder = await startLockHolder(anchorPath);
 

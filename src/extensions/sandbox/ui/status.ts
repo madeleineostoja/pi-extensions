@@ -32,7 +32,7 @@ function isNetworkSandboxed(state: StatusState): boolean {
 
 export function renderStatus(state: StatusState): string {
   if (!state.enabled) {
-    return "⚠ sandbox: off";
+    return "⚠ Pipkin Sandbox: off";
   }
   if (state.inProcessOnly) {
     return "🔒 sandbox (degraded)";
@@ -48,7 +48,7 @@ export function renderStatusThemed(
   theme: Pick<Theme, "fg">,
 ): string {
   if (!state.enabled) {
-    return `${theme.fg("warning", "󰒃")} ${theme.fg("warning", "sandbox: off")}`;
+    return `${theme.fg("warning", "󰒃")} ${theme.fg("warning", "Pipkin Sandbox: off")}`;
   }
 
   if (state.inProcessOnly) {
@@ -77,7 +77,7 @@ export type StatusSubscribeOptions = {
   getSessionState: () => SessionState;
   mode: SandboxMode;
   ui: StatusUI;
-  /** Subscribe to session mutation events (sandbox:policy-changed). Returns unsubscribe fn. */
+  /** Subscribe to session mutation events (pipkin.sandbox.policy-changed). Returns unsubscribe fn. */
   onSessionMutation: (fn: () => void) => () => void;
   inProcessOnly?: boolean;
   theme?: Pick<Theme, "fg">;
@@ -111,7 +111,7 @@ export function subscribeStatus(opts: StatusSubscribeOptions): () => void {
     : renderStatus;
 
   function update(): void {
-    ui.setStatus("sandbox", render(buildState()));
+    ui.setStatus("pipkin.sandbox.status", render(buildState()));
   }
 
   update();
@@ -122,6 +122,6 @@ export function subscribeStatus(opts: StatusSubscribeOptions): () => void {
   return () => {
     unsubPolicy();
     unsubSession();
-    ui.setStatus("sandbox", undefined);
+    ui.setStatus("pipkin.sandbox.status", undefined);
   };
 }

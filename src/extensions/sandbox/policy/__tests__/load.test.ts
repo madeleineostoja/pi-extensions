@@ -12,7 +12,7 @@ import {
 import { DEFAULT_POLICY, type Policy } from "../defaults.js";
 
 function makeTmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "pi-sandbox-test-"));
+  return fs.mkdtempSync(path.join(os.tmpdir(), "pipkin-sandbox-test-"));
 }
 
 function writeJson(filePath: string, data: unknown): void {
@@ -100,7 +100,7 @@ describe("expandPathsInPolicy", () => {
     },
     audit: {
       ...DEFAULT_POLICY.audit,
-      logFile: "~/.pi/agent/logs/sandbox-audit.jsonl",
+      logFile: "~/.pi/agent/pipkin/logs/sandbox-audit.jsonl",
     },
   };
 
@@ -130,7 +130,7 @@ describe("expandPathsInPolicy", () => {
   it("regression: expands audit.logFile as before", () => {
     const result = expandPathsInPolicy(BASE_POLICY, "/wd", "/home/user");
     expect(result.audit.logFile).toBe(
-      "/home/user/.pi/agent/logs/sandbox-audit.jsonl",
+      "/home/user/.pi/agent/pipkin/logs/sandbox-audit.jsonl",
     );
   });
 });
@@ -280,7 +280,7 @@ describe("loadPolicy", () => {
     expect(DEFAULT_POLICY.fs.allowWrite).toEqual([
       "<cwd>",
       "~/.cache/pi",
-      "~/.pi/agent/logs",
+      path.dirname(DEFAULT_POLICY.audit.logFile),
     ]);
     expect(DEFAULT_POLICY.fs.denyPatterns).toEqual([
       "<cwd>/**/.env",
@@ -310,6 +310,19 @@ describe("loadPolicy", () => {
     expect(policy.fs.allowRead).not.toContain(path.join(tmpHome, ".cache"));
     expect(policy.fs.allowRead).not.toContain(path.join(tmpHome, ".config"));
     expect(policy.fs.allowRead).not.toContain(path.join(tmpHome, ".pi"));
+    expect(policy.fs.allowWrite).toContain(
+      path.join(tmpHome, ".pi", "agent", "pipkin", "logs"),
+    );
+    expect(policy.audit.logFile).toBe(
+      path.join(
+        tmpHome,
+        ".pi",
+        "agent",
+        "pipkin",
+        "logs",
+        "sandbox-audit.jsonl",
+      ),
+    );
     expect(policy.network.mode).toBe("non-interactive-only");
     expect(policy.enabled).toBe(true);
     expect(policy.audit.log).toBe(true);

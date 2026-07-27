@@ -243,7 +243,7 @@ export class WriteAheadPublisher {
         this.options.git.activeOperation(),
         this.options.git.isCleanExcept([
           ...protectedPaths,
-          join(this.options.checkoutRoot, ".pi", "implement"),
+          join(this.options.checkoutRoot, ".pi", "pipkin", "implement"),
         ]),
         this.options.git.hasStagedChangesInPaths(protectedPaths),
         this.options.git.parent(intent.preparedCommitSha),
@@ -282,7 +282,7 @@ export class WriteAheadPublisher {
     const [clean, protectedIndexDirty] = await Promise.all([
       this.options.git.isCleanExcept([
         ...this.options.protectedPaths,
-        join(this.options.checkoutRoot, ".pi", "implement"),
+        join(this.options.checkoutRoot, ".pi", "pipkin", "implement"),
       ]),
       this.options.git.hasStagedChangesInPaths(this.options.protectedPaths),
     ]);

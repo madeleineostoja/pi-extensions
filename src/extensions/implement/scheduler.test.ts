@@ -151,7 +151,7 @@ function fakeLease(directory: string): CheckoutLeaseCapability {
 }
 
 async function store(concurrency = 1, independent = false): Promise<RunStore> {
-  const directory = mkdtempSync(join(tmpdir(), "pi-implement-scheduler-"));
+  const directory = mkdtempSync(join(tmpdir(), "pipkin-implement-scheduler-"));
   temporaryDirectories.add(directory);
   const plan = planFor(directory, concurrency, independent);
   const lease = fakeLease(directory);
@@ -2029,6 +2029,7 @@ describe(" scheduler actor", () => {
             stagingWorktree: join(
               initial.run.checkout.root,
               ".pi",
+              "pipkin",
               "implement",
               "worktrees",
               "run-1",
@@ -2179,7 +2180,7 @@ describe(" scheduler actor", () => {
   });
 
   it("settles a planner before pausing an unbound planning run", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "pi-implement-planner-"));
+    const directory = mkdtempSync(join(tmpdir(), "pipkin-implement-planner-"));
     temporaryDirectories.add(directory);
     const plan = planFor(directory);
     const run = createPlanningRun({

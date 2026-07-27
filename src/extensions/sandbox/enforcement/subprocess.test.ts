@@ -15,7 +15,7 @@ import {
   createUserBashHandler,
   wrapPiExec,
   initSubprocessSandbox,
-  piSandboxWrappedSymbol,
+  pipkinSandboxWrappedSymbol,
   ensurePidDir,
   ensurePidExitHandler,
 } from "./subprocess.js";
@@ -121,7 +121,7 @@ describe("createUserBashHandler", () => {
 
     expect(result).not.toBeUndefined();
     expect(result?.result?.exitCode).toBe(1);
-    expect(result?.result?.output).toContain("sandbox: bash blocked");
+    expect(result?.result?.output).toContain("Pipkin Sandbox: bash blocked");
   });
 
   it("lets pi run normally when nonoPath is null and degraded.allowExec is true", () => {
@@ -278,12 +278,14 @@ describe("createUserBashHandler", () => {
 });
 
 describe("wrapPiExec — re-wrap detection", () => {
-  it("marks the wrapped function with piSandboxWrappedSymbol", () => {
+  it("marks the wrapped function with pipkinSandboxWrappedSymbol", () => {
     const pi = makePi();
     wrapPiExec(pi, () => makePolicy(), makeCtx(), "/usr/bin/nono");
 
     expect(
-      (pi.exec as { [piSandboxWrappedSymbol]?: true })[piSandboxWrappedSymbol],
+      (pi.exec as { [pipkinSandboxWrappedSymbol]?: true })[
+        pipkinSandboxWrappedSymbol
+      ],
     ).toBe(true);
   });
 
@@ -295,9 +297,9 @@ describe("wrapPiExec — re-wrap detection", () => {
       killed: false,
     }) as {
       (...args: unknown[]): Promise<ExecResult>;
-      [piSandboxWrappedSymbol]?: true;
+      [pipkinSandboxWrappedSymbol]?: true;
     };
-    originalExec[piSandboxWrappedSymbol] = true;
+    originalExec[pipkinSandboxWrappedSymbol] = true;
 
     const pi = makePi({ exec: originalExec });
     wrapPiExec(pi, () => makePolicy(), makeCtx(), "/usr/bin/nono");
@@ -332,7 +334,7 @@ describe("wrapPiExec — fallback mode (nonoPath null)", () => {
     wrapPiExec(pi, () => makePolicy(), makeCtx(), null);
 
     await expect(pi.exec!("ls", ["/etc"])).rejects.toThrow(
-      "sandbox: exec blocked",
+      "Pipkin Sandbox: exec blocked",
     );
 
     expect(originalExec).not.toHaveBeenCalled();
@@ -362,7 +364,7 @@ describe("wrapPiExec — fallback mode (nonoPath null)", () => {
     wrapPiExec(pi, () => makePolicy(), makeCtx(), null, emitAudit);
 
     await expect(pi.exec!("ls", ["/etc"])).rejects.toThrow(
-      "sandbox: exec blocked",
+      "Pipkin Sandbox: exec blocked",
     );
 
     expect(emitAudit).toHaveBeenCalledOnce();
@@ -415,7 +417,9 @@ describe("initSubprocessSandbox — missing binary (fallback mode)", () => {
     const bashResult = userBashHandler(makeUserBashEvent("ls", "/"));
     expect(bashResult).not.toBeUndefined();
     expect(bashResult?.result?.exitCode).toBe(1);
-    expect(bashResult?.result?.output).toContain("sandbox: bash blocked");
+    expect(bashResult?.result?.output).toContain(
+      "Pipkin Sandbox: bash blocked",
+    );
   });
 });
 
@@ -434,7 +438,9 @@ describe("initSubprocessSandbox — with nono binary present", () => {
     initSubprocessSandbox(pi, () => makePolicy(), ctx);
 
     expect(
-      (pi.exec as { [piSandboxWrappedSymbol]?: true })[piSandboxWrappedSymbol],
+      (pi.exec as { [pipkinSandboxWrappedSymbol]?: true })[
+        pipkinSandboxWrappedSymbol
+      ],
     ).toBe(true);
   });
 
@@ -446,7 +452,7 @@ describe("initSubprocessSandbox — with nono binary present", () => {
     expect(result.nonoPath).toBe("/usr/bin/nono");
   });
 
-  it("passes emitAudit to userBashHandler so sandbox:audit events are emitted via pi.events.emit", async () => {
+  it("passes emitAudit to userBashHandler so pipkin.sandbox.audit events are emitted via pi.events.emit", async () => {
     const pi = makePi();
     const ctx = makeCtx();
     const { userBashHandler } = initSubprocessSandbox(
@@ -462,7 +468,7 @@ describe("initSubprocessSandbox — with nono binary present", () => {
 
     const emitMock = pi.events.emit as ReturnType<typeof vi.fn>;
     const auditCalls = emitMock.mock.calls.filter(
-      (args: unknown[]) => args[0] === "sandbox:audit",
+      (args: unknown[]) => args[0] === "pipkin.sandbox.audit",
     );
     expect(auditCalls).toHaveLength(1);
     const [, payload] = auditCalls[0] as [string, AuditEntry];
@@ -504,7 +510,7 @@ describe("per-pid manifest dir lifecycle", () => {
   it("ensurePidDir creates the dir and ensurePidExitHandler cleans it up when the listener fires", () => {
     const testDir = path.join(
       os.tmpdir(),
-      `pi-sandbox-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      `pipkin-sandbox-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
 
     try {

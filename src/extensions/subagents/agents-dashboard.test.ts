@@ -272,7 +272,7 @@ describe("/agents dashboard", () => {
         id: "subagent-1",
         status: "running",
         type: "General",
-        owner: { kind: "pi-implement", runId: "run", role: "implementer" },
+        owner: { kind: "pipkin:implement", runId: "run", role: "implementer" },
         description: "no role words here",
         health: {
           turns: 2,
@@ -311,8 +311,8 @@ describe("/agents dashboard", () => {
     });
     const implementAgent = snapshot({
       id: "subagent-1",
-      type: "pi-implement:implementer",
-      owner: { kind: "pi-implement", runId: "run", role: "implementer" },
+      type: "pipkin:implement:implementer",
+      owner: { kind: "pipkin:implement", runId: "run", role: "implementer" },
       description: "implement task",
       status: "completed",
     });
@@ -333,7 +333,7 @@ describe("/agents dashboard", () => {
     expect(selectCalls[1]?.options[0]).toContain("public agent");
     expect(selectCalls[1]?.options[1]).toContain("implement task");
     expect(notifications[0]?.message).toContain(
-      "Type/role: pi-implement:implementer/implementer",
+      "Type/role: pipkin:implement:implementer/implementer",
     );
     expect(implementRuntime.inspect).toHaveBeenCalledWith("subagent-1");
     expect(publicRuntime.inspect).not.toHaveBeenCalled();

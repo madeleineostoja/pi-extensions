@@ -1,3 +1,6 @@
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+
 export type FsPolicy = {
   allowRead: string[];
   allowWrite: string[];
@@ -31,60 +34,65 @@ export type Policy = {
   degraded?: DegradedPolicy;
 };
 
-export const DEFAULT_POLICY: Policy = {
-  enabled: true,
-  fs: {
-    allowRead: [
-      "<cwd>",
-      "/usr",
-      "/etc",
-      "/opt",
-      "/Library/Developer",
-      "/private/etc",
-    ],
-    allowWrite: ["<cwd>", "~/.cache/pi", "~/.pi/agent/logs"],
-    denyPatterns: [
-      "<cwd>/**/.env",
-      "<cwd>/**/.env.*",
-      "~/.ssh/**",
-      "~/.aws/credentials",
-      "~/.aws/config",
-      "~/.gnupg/**",
-      "<cwd>/**/id_rsa",
-      "<cwd>/**/id_ed25519",
-      "<cwd>/**/*.pem",
-      "<cwd>/**/*.key",
-      "<cwd>/**/*.p12",
-      "~/.netrc",
-    ],
-  },
-  network: {
-    mode: "non-interactive-only",
-    allow: [
-      "github.com",
-      "*.github.com",
-      "*.githubusercontent.com",
-      "api.github.com",
-      "registry.npmjs.org",
-      "*.npmjs.org",
-      "pypi.org",
-      "*.pypi.org",
-      "files.pythonhosted.org",
-      "crates.io",
-      "*.crates.io",
-      "static.crates.io",
-      "proxy.golang.org",
-      "sum.golang.org",
-    ],
-  },
-  audit: {
-    log: true,
-    logFile: "~/.pi/agent/logs/sandbox-audit.jsonl",
-  },
-  enforcement: {
-    requireKernelSandbox: false,
-  },
-  degraded: {
-    allowExec: false,
-  },
-};
+export function defaultPolicyFor(agentDir = getAgentDir()): Policy {
+  const logsDir = join(agentDir, "pipkin", "logs");
+  return {
+    enabled: true,
+    fs: {
+      allowRead: [
+        "<cwd>",
+        "/usr",
+        "/etc",
+        "/opt",
+        "/Library/Developer",
+        "/private/etc",
+      ],
+      allowWrite: ["<cwd>", "~/.cache/pi", logsDir],
+      denyPatterns: [
+        "<cwd>/**/.env",
+        "<cwd>/**/.env.*",
+        "~/.ssh/**",
+        "~/.aws/credentials",
+        "~/.aws/config",
+        "~/.gnupg/**",
+        "<cwd>/**/id_rsa",
+        "<cwd>/**/id_ed25519",
+        "<cwd>/**/*.pem",
+        "<cwd>/**/*.key",
+        "<cwd>/**/*.p12",
+        "~/.netrc",
+      ],
+    },
+    network: {
+      mode: "non-interactive-only",
+      allow: [
+        "github.com",
+        "*.github.com",
+        "*.githubusercontent.com",
+        "api.github.com",
+        "registry.npmjs.org",
+        "*.npmjs.org",
+        "pypi.org",
+        "*.pypi.org",
+        "files.pythonhosted.org",
+        "crates.io",
+        "*.crates.io",
+        "static.crates.io",
+        "proxy.golang.org",
+        "sum.golang.org",
+      ],
+    },
+    audit: {
+      log: true,
+      logFile: join(logsDir, "sandbox-audit.jsonl"),
+    },
+    enforcement: {
+      requireKernelSandbox: false,
+    },
+    degraded: {
+      allowExec: false,
+    },
+  };
+}
+
+export const DEFAULT_POLICY = defaultPolicyFor();

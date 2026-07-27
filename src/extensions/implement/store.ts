@@ -580,7 +580,7 @@ export class StaleRevisionError extends StateError {
 const updates = new Map<string, Promise<void>>();
 
 export function checkoutPaths(checkoutRoot: string): CheckoutPaths {
-  const root = join(resolve(checkoutRoot), ".pi", "implement");
+  const root = join(resolve(checkoutRoot), ".pi", "pipkin", "implement");
   return {
     root,
     lock: join(root, "checkout.lock"),
@@ -601,7 +601,7 @@ export async function acquireCheckoutLease(args: {
 }): Promise<CheckoutLeaseCapability> {
   assertSafeRunId(args.runId);
   const checkout = resolveGitCheckout(args.checkoutRoot);
-  await ensureGitInfoExclude(checkout.root, "/.pi/implement/");
+  await ensureGitInfoExclude(checkout.root, "/.pi/pipkin/implement/");
   const paths = checkoutPaths(checkout.root);
   mkdirSync(paths.root, { recursive: true });
   assertPathComponentsAreNotSymlinks(checkout.root, paths.root);
@@ -1615,6 +1615,7 @@ function invariantIssues(
         join(
           state.run.checkout.root,
           ".pi",
+          "pipkin",
           "implement",
           "worktrees",
           state.run.id,
@@ -1854,7 +1855,7 @@ function resolveGitCheckout(cwd: string): { root: string; gitDir: string } {
     return { root: realpathSync(root), gitDir: realpathSync(gitDir) };
   } catch (error) {
     throw new StateError(
-      "Pi-implement requires a Git worktree containing the invocation directory.",
+      "Pipkin Implement requires a Git worktree containing the invocation directory.",
       cwd,
       [error instanceof Error ? error.message : String(error)],
     );

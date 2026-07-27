@@ -188,7 +188,7 @@ function makeSession(result = "done") {
 
 describe("public subagent tools", () => {
   beforeEach(() => {
-    const agentDir = "/tmp/pi-subagents-config";
+    const agentDir = "/tmp/pipkin-subagents-config";
     mkdirSync(join(agentDir, "pipkin"), { recursive: true });
     writeFileSync(
       join(agentDir, "pipkin", "config.json"),
@@ -497,7 +497,7 @@ describe("public subagent tools", () => {
     steerSpy.mockRestore();
   });
 
-  it("runs pi-implement managed background sessions and waits for completion", async () => {
+  it("runs pipkin-implement managed background sessions and waits for completion", async () => {
     const { pi } = makePi(["read", "bash", "Agent", "edit"]);
     const promptDone = deferred<void>();
     const { session } = makeSession("implemented");
@@ -506,7 +506,7 @@ describe("public subagent tools", () => {
     const runtime = new SubagentRuntime(pi as never, { createSession });
 
     const started = await runtime.runManagedAgent({
-      owner: { kind: "internal", name: "pi-implement" },
+      owner: { kind: "internal", name: "pipkin:implement" },
       type: "general-purpose",
       prompt: "implement",
       description: "implement task",
@@ -519,7 +519,7 @@ describe("public subagent tools", () => {
     expect(started).toMatchObject({
       id: "subagent-1",
       status: "running",
-      owner: { kind: "internal", name: "pi-implement" },
+      owner: { kind: "internal", name: "pipkin:implement" },
     });
     const joined = runtime.wait(started.id);
     promptDone.resolve();
@@ -592,7 +592,7 @@ describe("public subagent tools", () => {
       ctx: makeCtx() as never,
     });
     await runtime.runManagedAgent({
-      owner: { kind: "internal", name: "pi-implement" },
+      owner: { kind: "internal", name: "pipkin:implement" },
       type: "custom-internal",
       prompt: "internal",
       cwd: "/workspace",
@@ -639,7 +639,7 @@ describe("public subagent tools", () => {
     const runtime = new SubagentRuntime(pi as never, { createSession });
 
     await runtime.runManagedAgent({
-      owner: { kind: "internal", name: "pi-implement" },
+      owner: { kind: "internal", name: "pipkin:implement" },
       type: "general-purpose",
       prompt: "explicit tools",
       cwd: "/workspace",
@@ -709,12 +709,12 @@ describe("public subagent tools", () => {
     expect(resourceLoaderConstructions).toHaveLength(1);
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
-      agentDir: "/tmp/pi-subagents-config",
+      agentDir: "/tmp/pipkin-subagents-config",
       appendSystemPrompt: [GENERAL_PROMPT],
     });
     expect(reloadMock).toHaveBeenCalledBefore(createSession);
     expect(createSession.mock.calls[0][0]).toMatchObject({
-      agentDir: "/tmp/pi-subagents-config",
+      agentDir: "/tmp/pipkin-subagents-config",
       resourceLoader: resourceLoaderConstructions[0].loader,
     });
   });
@@ -742,12 +742,12 @@ describe("public subagent tools", () => {
     expect(resourceLoaderConstructions).toHaveLength(1);
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
-      agentDir: "/tmp/pi-subagents-config",
+      agentDir: "/tmp/pipkin-subagents-config",
       systemPrompt: EXPLORE_PROMPT,
     });
     expect(reloadMock).toHaveBeenCalledBefore(createSession);
     expect(createSession.mock.calls[0][0]).toMatchObject({
-      agentDir: "/tmp/pi-subagents-config",
+      agentDir: "/tmp/pipkin-subagents-config",
       resourceLoader: resourceLoaderConstructions[0].loader,
       tools: ["read", "bash", "grep", "find", "ls"],
     });
@@ -776,11 +776,11 @@ describe("public subagent tools", () => {
     expect(resourceLoaderConstructions).toHaveLength(1);
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
-      agentDir: "/tmp/pi-subagents-config",
+      agentDir: "/tmp/pipkin-subagents-config",
       appendSystemPrompt: [REVIEW_PROMPT],
     });
     expect(createSession.mock.calls[0][0]).toMatchObject({
-      agentDir: "/tmp/pi-subagents-config",
+      agentDir: "/tmp/pipkin-subagents-config",
       resourceLoader: resourceLoaderConstructions[0].loader,
       tools: ["read", "bash", "grep", "find", "ls", "explore"],
     });
@@ -811,7 +811,7 @@ describe("public subagent tools", () => {
 
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
-      agentDir: "/tmp/pi-subagents-config",
+      agentDir: "/tmp/pipkin-subagents-config",
       systemPrompt: "Internal instructions",
     });
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([

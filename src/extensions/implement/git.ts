@@ -355,7 +355,7 @@ export class ExecGitClient implements GitClient {
   }
 
   async applyPatch(patch: string): Promise<CommandResult> {
-    const tmpDir = mkdtempSync(join(tmpdir(), "pi-implement-transplant-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), "pipkin-implement-transplant-"));
     const patchPath = join(tmpDir, "candidate.patch");
     try {
       writeFileSync(patchPath, patch, "utf-8");

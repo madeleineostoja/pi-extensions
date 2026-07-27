@@ -13,7 +13,7 @@ function fixture(content = "# Plan\n\n- [ ] First\n- [ ] Second\n"): {
   root: string;
   plan: string;
 } {
-  const root = mkdtempSync(join(tmpdir(), "pi-implement-projection-"));
+  const root = mkdtempSync(join(tmpdir(), "pipkin-implement-projection-"));
   temporaryDirectories.add(root);
   const plan = join(root, "plan.md");
   writeFileSync(plan, content);

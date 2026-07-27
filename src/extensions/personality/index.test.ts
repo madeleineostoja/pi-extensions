@@ -112,7 +112,7 @@ describe("automatic session naming", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "pi-auto-name-"));
+    tmpDir = mkdtempSync(join(tmpdir(), "pipkin-personality-"));
     getAgentDirMock.mockReturnValue(tmpDir);
     mkdirSync(join(tmpDir, "pipkin"), { recursive: true });
     writeFileSync(
@@ -258,7 +258,7 @@ describe("automatic session naming", () => {
 
   it("falls back to a local title when no model is configured", async () => {
     rmSync(tmpDir, { recursive: true, force: true });
-    tmpDir = mkdtempSync(join(tmpdir(), "pi-auto-name-"));
+    tmpDir = mkdtempSync(join(tmpdir(), "pipkin-personality-"));
     getAgentDirMock.mockReturnValue(tmpDir);
     const { handlers, setSessionName } = makeFakePi();
     const { ctx, notifications } = makeExtensionCtx();

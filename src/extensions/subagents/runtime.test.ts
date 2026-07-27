@@ -315,7 +315,7 @@ describe("SubagentRuntime", () => {
     const { pi } = fakePi();
     const runtime = new SubagentRuntime(pi as never);
     const queued = runtime.queue({
-      owner: "pi-implement",
+      owner: "pipkin:implement",
       type: "General",
       description: "Do work",
       cwd: "/workspace",
@@ -327,7 +327,7 @@ describe("SubagentRuntime", () => {
     expect(queued).toMatchObject({
       id: "subagent-1",
       status: "queued",
-      owner: "pi-implement",
+      owner: "pipkin:implement",
       type: "General",
       description: "Do work",
       cwd: "/workspace",

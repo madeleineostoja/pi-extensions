@@ -38,7 +38,7 @@ A checkpoint is not completion. Source checkboxes change only after a workstream
 The invoking checkout owns all operational state:
 
 ```text
-<checkout>/.pi/implement/
+<checkout>/.pi/pipkin/implement/
   checkout.lock
   checkout.owner.json
   runs/<run-id>/

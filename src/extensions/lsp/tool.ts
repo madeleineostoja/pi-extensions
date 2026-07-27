@@ -30,7 +30,7 @@ import {
 
 const MAX_TIMEOUT_MS = 15_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
-const warningKey = Symbol.for("pi-lsp:unavailable-warnings");
+const warningKey = Symbol.for("pipkin:lsp:unavailable-warnings");
 type WarningStore = Set<string>;
 
 const Actions = [

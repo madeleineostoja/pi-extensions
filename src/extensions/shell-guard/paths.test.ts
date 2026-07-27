@@ -51,10 +51,10 @@ describe("expandKnownTempEnvVars", () => {
   it("expands known temp env vars", () => {
     const previous = process.env.TMPDIR;
     const base = tmpdir();
-    process.env.TMPDIR = join(base, "pi-guard-env");
+    process.env.TMPDIR = join(base, "pipkin-shell-guard-env");
     try {
       expect(expandKnownTempEnvVars("$TMPDIR/file")).toBe(
-        join(base, "pi-guard-env", "file"),
+        join(base, "pipkin-shell-guard-env", "file"),
       );
     } finally {
       if (previous === undefined) {
@@ -73,7 +73,10 @@ describe("expandKnownTempEnvVars", () => {
 describe("isDisposableTempTarget", () => {
   it("allows children of known temp roots", () => {
     expect(
-      isDisposableTempTarget(join(tmpdir(), "pi-guard-target"), "/home/user"),
+      isDisposableTempTarget(
+        join(tmpdir(), "pipkin-shell-guard-target"),
+        "/home/user",
+      ),
     ).toBe(true);
   });
 
@@ -88,14 +91,14 @@ describe("isDisposableTempTarget", () => {
   });
 
   it("allows cwd-local tmp root and children", () => {
-    const cwd = join(tmpdir(), "pi-guard-repo");
+    const cwd = join(tmpdir(), "pipkin-shell-guard-repo");
     expect(isDisposableTempTarget("tmp", cwd)).toBe(true);
     expect(isDisposableTempTarget("tmp/file.txt", cwd)).toBe(true);
     expect(isDisposableTempTarget("./tmp/nested", cwd)).toBe(true);
   });
 
   it("rejects paths inside protected roots", () => {
-    const cwd = join(tmpdir(), "pi-guard-repo");
+    const cwd = join(tmpdir(), "pipkin-shell-guard-repo");
     expect(isDisposableTempTarget(join(cwd, "file.txt"), cwd)).toBe(false);
   });
 });

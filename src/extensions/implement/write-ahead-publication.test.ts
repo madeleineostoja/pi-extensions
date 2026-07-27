@@ -14,7 +14,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 async function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "pi-implement-publication-"));
+  const root = mkdtempSync(join(tmpdir(), "pipkin-implement-publication-"));
   temporaryDirectories.add(root);
   git(root, "init", "-q");
   git(root, "config", "user.email", "test@example.com");
@@ -25,7 +25,7 @@ async function fixture() {
   git(root, "commit", "-m", "chore: init");
   const client = new ExecGitClient(root);
   const base = await client.head();
-  const branch = "pi-implement/prepared";
+  const branch = "pipkin/implement/prepared";
   const staging = join(root, ".pi", "staging");
   await ensureGitInfoExclude(root, ".pi/");
   await client.createTaskBranch(branch, base);

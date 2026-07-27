@@ -34,7 +34,7 @@ In interactive sessions, the footer shows the number of pending papercuts. In no
 State is stored in the current Git checkout:
 
 ```text
-.pi/papercuts.json
+.pi/pipkin/papercuts.json
 ```
 
 The extension creates the registry and its checkout-local coordination anchor on first use, and adds both to the checkout's `.git/info/exclude`. It does not modify the committed `.gitignore` or create a global registry. Linked worktrees therefore keep separate queues.

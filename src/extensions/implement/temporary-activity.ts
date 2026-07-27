@@ -4,7 +4,8 @@ import { readExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
 import type { SchedulerEvent } from "./scheduler.js";
 import type { RunState } from "./store.js";
 
-export const TEMPORARY_ACTIVITY_WIDGET_KEY = "pi-implement.temporary-activity";
+export const TEMPORARY_ACTIVITY_WIDGET_KEY =
+  "pipkin.implement.temporary-activity";
 
 type TransitionEvent = SchedulerEvent | { kind: "planner_bound" };
 type RuntimeWorkstream =
@@ -162,7 +163,7 @@ function notifyAttentionTransition(
 ): void {
   if (event.kind === "planner_failed") {
     ctx.ui.notify(
-      `pi-implement planner failed: ${shorten(event.reason)}`,
+      `Pipkin Implement planner failed: ${shorten(event.reason)}`,
       "warning",
     );
     return;
@@ -188,14 +189,14 @@ function notifyAttentionTransition(
           .join("; ")
       : "whole-plan repair";
     ctx.ui.notify(
-      `pi-implement ${id} failed${titles ? ` (${titles})` : ""}: ${shorten(event.evidence)}`,
+      `Pipkin Implement ${id} failed${titles ? ` (${titles})` : ""}: ${shorten(event.evidence)}`,
       "warning",
     );
     return;
   }
   if (event.kind === "recovery_provider_failed") {
     ctx.ui.notify(
-      `pi-implement recovery failed: ${shorten(event.error)}`,
+      `Pipkin Implement recovery failed: ${shorten(event.error)}`,
       "warning",
     );
     return;
@@ -205,27 +206,27 @@ function notifyAttentionTransition(
     event.kind === "whole_plan_recovery_failed"
   ) {
     ctx.ui.notify(
-      `pi-implement review failed: ${shorten(event.evidence)}`,
+      `Pipkin Implement review failed: ${shorten(event.evidence)}`,
       "warning",
     );
     return;
   }
   if (event.kind === "safety_paused") {
     ctx.ui.notify(
-      `pi-implement paused for target recovery: ${shorten(event.reason)}`,
+      `Pipkin Implement paused for target recovery: ${shorten(event.reason)}`,
       "warning",
     );
     return;
   }
   if (event.kind === "safety_blocked") {
     ctx.ui.notify(
-      `pi-implement safety blocked: ${shorten(event.reason)}`,
+      `Pipkin Implement safety blocked: ${shorten(event.reason)}`,
       "warning",
     );
     return;
   }
   if (event.kind === "run_completed") {
-    ctx.ui.notify(`pi-implement completed run ${state.run.id}.`, "info");
+    ctx.ui.notify(`Pipkin Implement completed run ${state.run.id}.`, "info");
   }
 }
 

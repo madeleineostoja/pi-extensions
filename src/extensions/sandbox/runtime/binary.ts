@@ -71,8 +71,8 @@ function targetSegment(target: string): string {
 export function cacheDirForTarget(version: string, target: string): string {
   return path.join(
     getAgentDir(),
-    "cache",
-    "pi-sandbox",
+    "pipkin",
+    "sandbox",
     "nono",
     version,
     targetSegment(target),
@@ -178,7 +178,7 @@ export function checkNonoVersion(
 
   if (actualVersion !== pinnedVersion_) {
     notify(
-      `pi-sandbox: nono version mismatch — expected v${pinnedVersion_}, found "${actual}". ` +
+      `Pipkin Sandbox: nono version mismatch — expected v${pinnedVersion_}, found "${actual}". ` +
         "This may cause compatibility issues. Continuing anyway.",
       "warning",
     );
@@ -323,7 +323,7 @@ function statusForExternalBinary(
  * marker so install drift is still reported when no external binary is usable.
  */
 export function getBinaryStatus(): BinaryStatus {
-  const overridePath = process.env.PI_SANDBOX_NONO_PATH;
+  const overridePath = process.env.PIPKIN_SANDBOX_NONO_PATH;
   if (overridePath && isExecutable(overridePath)) {
     return statusForExternalBinary(overridePath, "override");
   }
@@ -380,7 +380,7 @@ export function createBinaryRuntime(): BinaryRuntime {
       }
       missingBinaryWarned = true;
       notify(
-        "pi-sandbox: nono binary not found — subprocess sandboxing is disabled. " +
+        "Pipkin Sandbox: nono binary not found — subprocess sandboxing is disabled. " +
           "In-process policy enforcement remains active.",
         "warning",
       );

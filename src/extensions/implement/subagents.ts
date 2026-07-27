@@ -72,10 +72,10 @@ export function resolveImplementRoles(
     return undefined;
   }
   return {
-    implementer: { type: "pi-implement:implementer", ...medium },
-    reviewer: { type: "Review", ...high },
-    planner: { type: "pi-implement:planner", ...high },
-    recovery: { type: "pi-implement:recovery", ...medium },
+    implementer: { type: "pipkin:implement:implementer", ...medium },
+    reviewer: { type: "pipkin:implement:reviewer", ...high },
+    planner: { type: "pipkin:implement:planner", ...high },
+    recovery: { type: "pipkin:implement:recovery", ...medium },
   };
 }
 
@@ -115,7 +115,7 @@ export class RuntimeSubagentClient implements SubagentClient {
     const role = args.role ?? "implementer";
     const snapshot = await this.runtime.runManagedAgent({
       owner: {
-        kind: "pi-implement",
+        kind: "pipkin:implement",
         runId: this.runId,
         role,
         ...(args.taskId === undefined ? {} : { taskId: args.taskId }),

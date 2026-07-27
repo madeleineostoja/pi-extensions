@@ -28,13 +28,14 @@ export function overallRepairWorkspace(
   const root = join(
     resolve(state.run.checkout.root),
     ".pi",
+    "pipkin",
     "implement",
     "worktrees",
     state.run.id,
   );
   return {
     taskId: repairId,
-    branchName: `pi-implement/${state.run.id}/${repairId}`,
+    branchName: `pipkin/implement/${state.run.id}/${repairId}`,
     worktreePath: join(root, repairId),
     baseSha,
   };
@@ -105,7 +106,7 @@ export async function runOverallRepair(args: {
       finding.status === "open",
   );
   const handle = await args.subagents.spawn({
-    type: args.roles?.type ?? "pi-implement:implementer",
+    type: args.roles?.type ?? "pipkin:implement:implementer",
     role: "implementer",
     model: args.roles?.model,
     thinking: args.roles?.thinking,

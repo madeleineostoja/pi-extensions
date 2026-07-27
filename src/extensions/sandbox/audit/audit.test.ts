@@ -57,10 +57,10 @@ describe("entry schema — kind × decision combinations", () => {
   ];
 
   for (const { kind, decision } of combinations) {
-    it(`kind=${kind} decision=${decision} emits a sandbox:audit event`, () => {
+    it(`kind=${kind} decision=${decision} emits a pipkin.sandbox.audit event`, () => {
       const { target: t, emitted: e } = makeEvents();
       recordAudit({ kind, decision }, { events: t });
-      const auditEvents = e.filter((x) => x.event === "sandbox:audit");
+      const auditEvents = e.filter((x) => x.event === "pipkin.sandbox.audit");
       expect(auditEvents).toHaveLength(1);
       const payload = auditEvents[0].payload as SandboxAuditEvent;
       expect(payload.kind).toBe(kind);
@@ -110,11 +110,11 @@ describe("entry schema — kind × decision combinations", () => {
 });
 
 // ---------------------------------------------------------------------------
-// sandbox:policy-changed event
+// pipkin.sandbox.policy-changed event
 // ---------------------------------------------------------------------------
 
-describe("sandbox:policy-changed event", () => {
-  it("emits sandbox:policy-changed for policy-change kind entries", () => {
+describe("pipkin.sandbox.policy-changed event", () => {
+  it("emits pipkin.sandbox.policy-changed for policy-change kind entries", () => {
     const { target, emitted } = makeEvents();
     recordAudit(
       {
@@ -127,7 +127,7 @@ describe("sandbox:policy-changed event", () => {
     );
 
     const policyChangedEvents = emitted.filter(
-      (x) => x.event === "sandbox:policy-changed",
+      (x) => x.event === "pipkin.sandbox.policy-changed",
     );
     expect(policyChangedEvents).toHaveLength(1);
     const payload = policyChangedEvents[0].payload as SandboxPolicyChangedEvent;
@@ -136,19 +136,19 @@ describe("sandbox:policy-changed event", () => {
     expect(typeof payload.ts).toBe("number");
   });
 
-  it("does NOT emit sandbox:policy-changed for non-policy-change kinds", () => {
+  it("does NOT emit pipkin.sandbox.policy-changed for non-policy-change kinds", () => {
     const { target, emitted } = makeEvents();
     recordAudit({ kind: "fs", decision: "blocked" }, { events: target });
     recordAudit({ kind: "exec", decision: "allowed" }, { events: target });
     recordAudit({ kind: "network", decision: "blocked" }, { events: target });
 
     const policyChangedEvents = emitted.filter(
-      (x) => x.event === "sandbox:policy-changed",
+      (x) => x.event === "pipkin.sandbox.policy-changed",
     );
     expect(policyChangedEvents).toHaveLength(0);
   });
 
-  it("emits both sandbox:audit and sandbox:policy-changed for policy-change entries", () => {
+  it("emits both pipkin.sandbox.audit and pipkin.sandbox.policy-changed for policy-change entries", () => {
     const { target, emitted } = makeEvents();
     recordAudit(
       { kind: "policy-change", decision: "revoked" },
@@ -157,9 +157,11 @@ describe("sandbox:policy-changed event", () => {
       },
     );
 
-    expect(emitted.filter((x) => x.event === "sandbox:audit")).toHaveLength(1);
     expect(
-      emitted.filter((x) => x.event === "sandbox:policy-changed"),
+      emitted.filter((x) => x.event === "pipkin.sandbox.audit"),
+    ).toHaveLength(1);
+    expect(
+      emitted.filter((x) => x.event === "pipkin.sandbox.policy-changed"),
     ).toHaveLength(1);
   });
 });
@@ -247,7 +249,9 @@ describe("JSONL file writer", () => {
       },
     );
 
-    expect(emitted.filter((x) => x.event === "sandbox:audit")).toHaveLength(1);
+    expect(
+      emitted.filter((x) => x.event === "pipkin.sandbox.audit"),
+    ).toHaveLength(1);
     expect(fs.existsSync(logFile)).toBe(false);
   });
 
@@ -385,7 +389,9 @@ describe("permission-failure fallback", () => {
       },
     );
 
-    expect(emitted.filter((x) => x.event === "sandbox:audit")).toHaveLength(1);
+    expect(
+      emitted.filter((x) => x.event === "pipkin.sandbox.audit"),
+    ).toHaveLength(1);
   });
 
   it("emits the warning exactly once even when called multiple times", () => {
@@ -418,7 +424,9 @@ describe("permission-failure fallback", () => {
       { logFile, onWarning },
     );
 
-    const sandboxWarnings = warnings.filter((w) => w.includes("pi-sandbox:"));
+    const sandboxWarnings = warnings.filter((w) =>
+      w.includes("Pipkin Sandbox:"),
+    );
     expect(sandboxWarnings).toHaveLength(1);
   });
 
@@ -461,7 +469,9 @@ describe("permission-failure fallback", () => {
       { logFile: logFile2, onWarning },
     );
 
-    const sandboxWarnings = warnings.filter((w) => w.includes("pi-sandbox:"));
+    const sandboxWarnings = warnings.filter((w) =>
+      w.includes("Pipkin Sandbox:"),
+    );
     expect(sandboxWarnings).toHaveLength(2);
   });
 });

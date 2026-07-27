@@ -36,7 +36,7 @@ export function createAuditEmitter(): AuditEmitter {
     trackBlockedHost(entry);
 
     const auditEvent: SandboxAuditEvent = { ...entry };
-    events.emit("sandbox:audit", auditEvent);
+    events.emit("pipkin.sandbox.audit", auditEvent);
 
     if (entry.kind === "policy-change") {
       const policyChangedEvent: SandboxPolicyChangedEvent = {
@@ -49,7 +49,7 @@ export function createAuditEmitter(): AuditEmitter {
             ? entry.scope
             : undefined,
       };
-      events.emit("sandbox:policy-changed", policyChangedEvent);
+      events.emit("pipkin.sandbox.policy-changed", policyChangedEvent);
     }
   }
 

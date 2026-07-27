@@ -32,7 +32,7 @@ afterEach(async () => {
 });
 
 function workspace(): string {
-  const directory = mkdtempSync(join(tmpdir(), "pi-lsp-pool-"));
+  const directory = mkdtempSync(join(tmpdir(), "pipkin-lsp-pool-"));
   directories.push(directory);
   return directory;
 }

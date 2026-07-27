@@ -45,7 +45,7 @@ vi.mock("./store.js", async (importOriginal) => {
 const roots: string[] = [];
 
 function repo(): string {
-  const root = mkdtempSync(join(tmpdir(), "pi-papercuts-extension-"));
+  const root = mkdtempSync(join(tmpdir(), "pipkin-papercuts-extension-"));
   roots.push(root);
   execFileSync("git", ["init", "-q"], { cwd: root });
   return root;
@@ -68,7 +68,7 @@ const proposal = {
   suggestedDestination: "agents" as const,
 };
 
-describe("pi-papercuts extension", () => {
+describe("pipkin-papercuts extension", () => {
   it("registers a host-only proposal tool with required concrete fields and no guidelines", () => {
     let tool: any;
     const pi = {
@@ -433,7 +433,7 @@ describe("pi-papercuts extension", () => {
     handlers.get("tool_result")(
       {
         toolName: "edit",
-        input: { path: join(root, ".pi", "papercuts.json") },
+        input: { path: join(root, ".pi", "pipkin", "papercuts.json") },
         isError: false,
       },
       startContext,
@@ -468,7 +468,7 @@ describe("pi-papercuts extension", () => {
 
     await handlers.get("session_start")({}, ctx);
     await createPapercutStore(root).propose(proposal, {
-      kind: "pi-implement",
+      kind: "pipkin:implement",
       runId: "run-1",
       role: "implementer",
     });
@@ -692,6 +692,6 @@ describe("pi-papercuts extension", () => {
     ).toBe(
       "pending (1)\n- a: Validation needs the devcontainer (2)\nignored (0)\nresolved (1)\n- z: Validation needs the devcontainer (1)",
     );
-    expect(PAPERCUT_STATUS_KEY).toBe("pi-papercuts.status");
+    expect(PAPERCUT_STATUS_KEY).toBe("pipkin.papercuts.status");
   });
 });

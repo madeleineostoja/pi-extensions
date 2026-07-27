@@ -20,7 +20,7 @@ class Fake extends EventEmitter {
 
 const dirs: string[] = [];
 function temp(): string {
-  const value = mkdtempSync(join(tmpdir(), "pi-lsp-"));
+  const value = mkdtempSync(join(tmpdir(), "pipkin-lsp-"));
   dirs.push(value);
   return value;
 }

@@ -80,7 +80,7 @@ import { createAuditPipeline } from "./audit/audit.js";
 import type { AuditEntry } from "./audit/schema.js";
 import type { ManifestContext } from "./enforcement/caps.js";
 
-const MESSAGE_TYPE = "pi-sandbox.status";
+const MESSAGE_TYPE = "pipkin.sandbox.status";
 
 type StatusDetails = {
   message: string;
@@ -130,7 +130,7 @@ function sandboxExtension(pi: ExtensionAPI): void {
     (_event: SessionStartEvent, ctx: ExtensionContext): void => {
       if (_registered.has(pi)) {
         ctx.ui.notify(
-          "pi-sandbox: sandboxExtension called twice on the same pi instance — ignoring.",
+          "Pipkin Sandbox: sandboxExtension called twice on the same pi instance — ignoring.",
           "warning",
         );
         return;
@@ -143,7 +143,7 @@ function sandboxExtension(pi: ExtensionAPI): void {
         policyManager.loadPolicy(ctx.cwd, { ui: ctx.ui });
       } catch (err) {
         ctx.ui.notify(
-          `pi-sandbox: failed to load policy: ${String(err)}`,
+          `Pipkin Sandbox: failed to load policy: ${String(err)}`,
           "error",
         );
       }
@@ -192,7 +192,7 @@ function sandboxExtension(pi: ExtensionAPI): void {
                 ? "binary missing despite ok status (state drift)"
                 : `unexpected status ${(binaryStatus as { kind: string }).kind}`;
         ctx.ui.notify(
-          `pi-sandbox: enforcement.requireKernelSandbox is true but kernel enforcement is unavailable — ${reasonDetail}. ` +
+          `Pipkin Sandbox: enforcement.requireKernelSandbox is true but kernel enforcement is unavailable — ${reasonDetail}. ` +
             "Install nono: node scripts/postinstall.js (or brew install always-further/tap/nono). " +
             "To run in degraded mode, set enforcement.requireKernelSandbox to false.",
           "error",
@@ -323,7 +323,7 @@ function sandboxExtension(pi: ExtensionAPI): void {
                 ? "binary missing despite ok status (state drift)"
                 : `unexpected status ${(binaryStatus as { kind: string }).kind}`;
         ctx.ui.notify(
-          `pi-sandbox: nono binary unavailable — ${reasonDetail}. ` +
+          `Pipkin Sandbox: nono binary unavailable — ${reasonDetail}. ` +
             "Subprocess sandboxing is disabled; bash/exec will be blocked unless degraded.allowExec is true. " +
             "Install nono: node scripts/postinstall.js (or brew install always-further/tap/nono).",
           "warning",

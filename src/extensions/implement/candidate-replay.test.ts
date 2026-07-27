@@ -26,7 +26,7 @@ function git(cwd: string, ...args: string[]): string {
 const temporaryDirectories = new Set<string>();
 
 function repository(): string {
-  const root = mkdtempSync(join(tmpdir(), "pi-implement-replay-"));
+  const root = mkdtempSync(join(tmpdir(), "pipkin-implement-replay-"));
   temporaryDirectories.add(root);
   git(root, "init", "-q");
   git(root, "config", "user.email", "test@example.com");
@@ -44,7 +44,7 @@ async function candidate(
   content: string,
 ): Promise<ReplayCandidate> {
   const client = new ExecGitClient(root);
-  await ensureGitInfoExclude(root, ".pi/");
+  await ensureGitInfoExclude(root, "/.pi/pipkin/implement/");
   const baseSha = await client.head();
   const index = join(
     root,
@@ -89,7 +89,14 @@ async function candidate(
 function engine(root: string): CandidateReplayEngine {
   return new CandidateReplayEngine({
     git: new ExecGitClient(root),
-    worktreesRoot: join(root, ".pi", "implement", "worktrees", "run-1"),
+    worktreesRoot: join(
+      root,
+      ".pi",
+      "pipkin",
+      "implement",
+      "worktrees",
+      "run-1",
+    ),
     runId: "run-1",
   });
 }
@@ -131,7 +138,14 @@ describe("CandidateReplayEngine", () => {
     writeFileSync(plan, "- [x] Task\n");
     const protectedEngine = new CandidateReplayEngine({
       git: new ExecGitClient(root),
-      worktreesRoot: join(root, ".pi", "implement", "worktrees", "run-1"),
+      worktreesRoot: join(
+        root,
+        ".pi",
+        "pipkin",
+        "implement",
+        "worktrees",
+        "run-1",
+      ),
       runId: "run-1",
       protectedPaths: [plan],
       protectedArtifactsMatch: () => true,
@@ -146,7 +160,14 @@ describe("CandidateReplayEngine", () => {
     await expect(
       new CandidateReplayEngine({
         git: new ExecGitClient(root),
-        worktreesRoot: join(root, ".pi", "implement", "worktrees", "run-2"),
+        worktreesRoot: join(
+          root,
+          ".pi",
+          "pipkin",
+          "implement",
+          "worktrees",
+          "run-2",
+        ),
         runId: "run-2",
         protectedPaths: [plan],
       }).prepare(approved),

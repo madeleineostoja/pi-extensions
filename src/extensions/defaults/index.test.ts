@@ -93,12 +93,12 @@ async function runPendingTimers() {
   await Promise.resolve();
 }
 
-describe("pi-defaults", () => {
+describe("pipkin-defaults", () => {
   let tmpDir: string;
   let cwd: string;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "pi-defaults-"));
+    tmpDir = mkdtempSync(join(tmpdir(), "pipkin-defaults-"));
     cwd = join(tmpDir, "project");
     getAgentDirMock.mockReturnValue(tmpDir);
     vi.useFakeTimers();

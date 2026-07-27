@@ -406,12 +406,14 @@ describe("audit event emission", () => {
     cmds = createSlashCommands(createAuditPipeline());
   });
 
-  it("allow emits sandbox:audit with kind=policy-change decision=granted scope=session", () => {
+  it("allow emits pipkin.sandbox.audit with kind=policy-change decision=granted scope=session", () => {
     const { events, emitted } = makeEvents();
     const { ui } = makeUI();
     const ctx = makeCtx({ ui, events });
     cmds.handleAllow(ctx, ["example.com"], false);
-    const auditEvents = emitted.filter((e) => e.event === "sandbox:audit");
+    const auditEvents = emitted.filter(
+      (e) => e.event === "pipkin.sandbox.audit",
+    );
     expect(auditEvents.length).toBeGreaterThan(0);
     const payload = auditEvents[0].payload as Record<string, unknown>;
     expect(payload.kind).toBe("policy-change");
@@ -420,14 +422,16 @@ describe("audit event emission", () => {
     expect(payload.scope).toBe("session");
   });
 
-  it("revoke emits sandbox:audit with kind=policy-change decision=revoked", () => {
+  it("revoke emits pipkin.sandbox.audit with kind=policy-change decision=revoked", () => {
     const { events, emitted } = makeEvents();
     const { ui } = makeUI();
     const ctx = makeCtx({ ui, events });
     cmds.handleAllow(ctx, ["example.com"], false);
     emitted.length = 0;
     cmds.handleRevoke(ctx, "example.com", false);
-    const auditEvents = emitted.filter((e) => e.event === "sandbox:audit");
+    const auditEvents = emitted.filter(
+      (e) => e.event === "pipkin.sandbox.audit",
+    );
     expect(auditEvents.length).toBeGreaterThan(0);
     const payload = auditEvents[0].payload as Record<string, unknown>;
     expect(payload.kind).toBe("policy-change");
@@ -435,21 +439,21 @@ describe("audit event emission", () => {
     expect(payload.source).toBe("command");
   });
 
-  it("network off emits sandbox:audit", () => {
+  it("network off emits pipkin.sandbox.audit", () => {
     const { events, emitted } = makeEvents();
     const ctx = makeCtx({ events });
     cmds.handleNetworkOff(ctx);
     expect(
-      emitted.filter((e) => e.event === "sandbox:audit").length,
+      emitted.filter((e) => e.event === "pipkin.sandbox.audit").length,
     ).toBeGreaterThan(0);
   });
 
-  it("sandbox off emits sandbox:audit", () => {
+  it("sandbox off emits pipkin.sandbox.audit", () => {
     const { events, emitted } = makeEvents();
     const ctx = makeCtx({ events });
     cmds.handleOff(ctx);
     expect(
-      emitted.filter((e) => e.event === "sandbox:audit").length,
+      emitted.filter((e) => e.event === "pipkin.sandbox.audit").length,
     ).toBeGreaterThan(0);
   });
 });
@@ -813,7 +817,9 @@ describe("per-host audit emission", () => {
 
     cmds.handleAllow(ctx, ["a.com", "b.com", "c.com"], false);
 
-    const auditEvents = emitted.filter((e) => e.event === "sandbox:audit");
+    const auditEvents = emitted.filter(
+      (e) => e.event === "pipkin.sandbox.audit",
+    );
     expect(auditEvents).toHaveLength(3);
     const hosts = auditEvents.map(
       (e) => (e.payload as Record<string, unknown>).host,

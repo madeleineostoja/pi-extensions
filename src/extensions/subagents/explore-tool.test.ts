@@ -98,8 +98,8 @@ describe("runtime-injected explore tool", () => {
       makeSession("general"),
       makeSession("internal"),
       makeSession("reviewer"),
-      makeSession("pi-implement implementer"),
-      makeSession("pi-implement reviewer"),
+      makeSession("pipkin-implement implementer"),
+      makeSession("pipkin-implement reviewer"),
       makeSession("explore"),
     ];
     const createSession = vi.fn(async () => ({ session: sessions.shift()! }));
@@ -115,14 +115,14 @@ describe("runtime-injected explore tool", () => {
       ctx: makeCtx() as never,
     });
     await runtime.runManagedAgent({
-      owner: { kind: "internal", name: "pi-implement:implementer" },
+      owner: { kind: "internal", name: "pipkin:implement:implementer" },
       type: "general-purpose",
       prompt: "implement",
       cwd: "/workspace",
       ctx: makeCtx() as never,
     });
     await runtime.runManagedAgent({
-      owner: { kind: "internal", name: "pi-implement:reviewer" },
+      owner: { kind: "internal", name: "pipkin:implement:reviewer" },
       type: "reviewer",
       prompt: "review",
       cwd: "/workspace",
@@ -130,24 +130,24 @@ describe("runtime-injected explore tool", () => {
     });
     await runtime.runManagedAgent({
       owner: {
-        kind: "pi-implement",
+        kind: "pipkin:implement",
         runId: "r1",
         role: "implementer",
         taskId: "t1",
       },
-      type: "pi-implement:implementer",
+      type: "pipkin:implement:implementer",
       prompt: "implement",
       cwd: "/task-worktree",
       ctx: makeCtx() as never,
     });
     await runtime.runManagedAgent({
       owner: {
-        kind: "pi-implement",
+        kind: "pipkin:implement",
         runId: "r1",
         role: "reviewer",
         taskId: "t1",
       },
-      type: "pi-implement:reviewer",
+      type: "pipkin:implement:reviewer",
       prompt: "review",
       cwd: "/task-worktree",
       ctx: makeCtx() as never,
@@ -201,12 +201,12 @@ describe("runtime-injected explore tool", () => {
 
     await runtime.runManagedAgent({
       owner: {
-        kind: "pi-implement",
+        kind: "pipkin:implement",
         runId: "r1",
         role: "reviewer",
         taskId: "t1",
       },
-      type: "pi-implement:reviewer",
+      type: "pipkin:implement:reviewer",
       prompt: "review",
       cwd: "/task-worktree",
       tools: readOnlyTools,
@@ -280,14 +280,14 @@ describe("runtime-injected explore tool", () => {
       },
     });
     const parentOwner = {
-      kind: "pi-implement" as const,
+      kind: "pipkin:implement" as const,
       runId: "r1",
       role: "implementer" as const,
       taskId: "t1",
     };
     const parent = runtime.queue({
       owner: parentOwner,
-      type: "pi-implement:implementer",
+      type: "pipkin:implement:implementer",
       description: "implement",
       cwd: "/task-worktree",
     });

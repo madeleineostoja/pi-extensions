@@ -111,7 +111,7 @@ export function resolveConfig(
     const val = obj[key];
     if (typeof val !== "number" || !Number.isFinite(val) || val < 0) {
       notify?.(
-        `pi-context-prune: config key "${key}" must be a non-negative number; using default (${DEFAULTS[key]})`,
+        `Pipkin Context: config key "${key}" must be a non-negative number; using default (${DEFAULTS[key]})`,
         "warning",
       );
     } else {
@@ -141,7 +141,7 @@ export function resolveConfig(
     const val = obj[key];
     if (typeof val !== "boolean") {
       notify?.(
-        `pi-context-prune: config key "${key}" must be a boolean; using default (${DEFAULTS[key]})`,
+        `Pipkin Context: config key "${key}" must be a boolean; using default (${DEFAULTS[key]})`,
         "warning",
       );
     } else {

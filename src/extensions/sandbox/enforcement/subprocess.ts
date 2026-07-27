@@ -25,10 +25,10 @@ import { applySessionOverrides } from "../policy/effective.js";
 export type { ExecOptions, ExecResult };
 
 // Symbol used to detect re-wrapping: if pi.exec already carries this marker, skip.
-export const piSandboxWrappedSymbol = Symbol("piSandboxWrapped");
+export const pipkinSandboxWrappedSymbol = Symbol("pipkinSandboxWrapped");
 
 export type PiExecFnWrapped = ExtensionAPI["exec"] & {
-  [piSandboxWrappedSymbol]?: true;
+  [pipkinSandboxWrappedSymbol]?: true;
 };
 
 export type UserBashHandler = (
@@ -222,7 +222,7 @@ function runUserBashUnderNono(
 // Per-process manifest directory — shared across all instances in the same process
 // ---------------------------------------------------------------------------
 
-const pidDir = path.join(os.tmpdir(), `pi-sandbox-${process.pid}`);
+const pidDir = path.join(os.tmpdir(), `pipkin-sandbox-${process.pid}`);
 // Process-scoped resources: there is exactly one pid dir and one exit handler
 // per Node process regardless of how many sandboxExtension instances exist.
 let pidDirReady = false;
@@ -280,7 +280,7 @@ export function wrapPiExec(
   getSession?: () => SessionState,
   caps?: ReturnType<typeof createCaps>,
 ): () => void {
-  if ((pi.exec as PiExecFnWrapped)[piSandboxWrappedSymbol]) {
+  if ((pi.exec as PiExecFnWrapped)[pipkinSandboxWrappedSymbol]) {
     // Already wrapped by a prior session — caller is responsible for not
     // double-wrapping. Return a no-op unwrap so callers can compose safely.
     return () => {};
@@ -326,7 +326,7 @@ export function wrapPiExec(
       });
       return Promise.reject(
         new Error(
-          "sandbox: exec blocked — kernel sandbox unavailable and degraded.allowExec is false",
+          "Pipkin Sandbox: exec blocked — kernel sandbox unavailable and degraded.allowExec is false",
         ),
       );
     }
@@ -343,7 +343,7 @@ export function wrapPiExec(
     return runUnderNono(nonoPath, tmpPath, command, args, opts);
   };
 
-  wrappedExec[piSandboxWrappedSymbol] = true;
+  wrappedExec[pipkinSandboxWrappedSymbol] = true;
   (pi as { exec: PiExecFnWrapped }).exec = wrappedExec;
 
   return () => {
@@ -389,7 +389,7 @@ export function createUserBashHandler(
       return {
         result: {
           output:
-            "sandbox: bash blocked — kernel sandbox unavailable and degraded.allowExec is false",
+            "Pipkin Sandbox: bash blocked — kernel sandbox unavailable and degraded.allowExec is false",
           exitCode: 1,
           cancelled: false,
           truncated: false,

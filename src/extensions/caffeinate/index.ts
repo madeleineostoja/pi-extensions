@@ -1,16 +1,19 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  getAgentDir,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 
 const LOG_PATH = (() => {
-  const dir = join(homedir(), ".pi", "agent", "logs");
+  const dir = join(getAgentDir(), "pipkin", "logs");
   try {
     mkdirSync(dir, { recursive: true });
-    return join(dir, "pi-caffeinate.log");
+    return join(dir, "pipkin-caffeinate.log");
   } catch {
-    return join(tmpdir(), "pi-caffeinate.log");
+    return join(tmpdir(), "pipkin-caffeinate.log");
   }
 })();
 
@@ -26,7 +29,7 @@ const log = (msg: string) => {
 };
 
 /**
- * pi-caffeinate
+ * Pipkin Caffeinate
  * Keeps the host awake for the lifetime of the pi session.
  */
 export default function (pi: ExtensionAPI) {
@@ -55,7 +58,7 @@ export default function (pi: ExtensionAPI) {
       cmd = "systemd-inhibit";
       args = [
         "--what=idle:sleep",
-        "--why=pi session is open",
+        "--why=Pipkin session is open",
         "--",
         "tail",
         "--pid",

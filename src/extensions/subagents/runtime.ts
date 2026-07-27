@@ -69,7 +69,7 @@ export type RuntimeOwner =
       name: string;
     }
   | {
-      kind: "pi-implement";
+      kind: "pipkin:implement";
       runId: string;
       role: string;
       taskId?: string;
@@ -240,7 +240,7 @@ type SteeringDelivery = {
 };
 
 const runtimes = new WeakMap<ExtensionAPI, SubagentRuntime>();
-const runtimeManagerKey = Symbol.for("pi-subagents:manager");
+const runtimeManagerKey = Symbol.for("pipkin:subagents:manager");
 type RuntimeCoordinator = {
   scope: string;
   runtime?: SubagentRuntime;
@@ -291,8 +291,8 @@ const exploreEligibleTypes = new Set([
   "Implement",
   "Reviewer",
   "reviewer",
-  "pi-implement:implementer",
-  "pi-implement:reviewer",
+  "pipkin:implement:implementer",
+  "pipkin:implement:reviewer",
 ]);
 
 function now(): string {
@@ -1017,7 +1017,7 @@ export class SubagentRuntime {
         signal: timeout.signal,
         owner:
           typeof parent.owner === "object" &&
-          parent.owner.kind === "pi-implement"
+          parent.owner.kind === "pipkin:implement"
             ? {
                 kind: "nested",
                 parentId: parent.id,

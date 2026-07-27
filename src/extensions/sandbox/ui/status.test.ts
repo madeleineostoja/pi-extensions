@@ -139,9 +139,9 @@ describe("renderStatus — pure renderer", () => {
     );
   });
 
-  it("fully disabled → ⚠ sandbox: off", () => {
+  it("fully disabled → ⚠ Pipkin Sandbox: off", () => {
     expect(renderStatus({ ...baseState, enabled: false })).toBe(
-      "⚠ sandbox: off",
+      "⚠ Pipkin Sandbox: off",
     );
   });
 
@@ -154,7 +154,7 @@ describe("renderStatus — pure renderer", () => {
   it("disabled takes precedence over in-process only", () => {
     expect(
       renderStatus({ ...baseState, enabled: false, inProcessOnly: true }),
-    ).toBe("⚠ sandbox: off");
+    ).toBe("⚠ Pipkin Sandbox: off");
   });
 
   it("network mode 'off' → sandbox (network)", () => {
@@ -192,7 +192,7 @@ describe("subscribeStatus — integration", () => {
     });
 
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls[calls.length - 1].key).toBe("sandbox");
+    expect(calls[calls.length - 1].key).toBe("pipkin.sandbox.status");
     dispose();
   });
 
@@ -276,7 +276,7 @@ describe("subscribeStatus — integration", () => {
     dispose();
   });
 
-  it("/sandbox off → flips to ⚠ sandbox: off", () => {
+  it("/sandbox off → flips to ⚠ Pipkin Sandbox: off", () => {
     const policy = makePolicy({
       network: { mode: "always", allow: ["a.com"] },
     });
@@ -298,7 +298,7 @@ describe("subscribeStatus — integration", () => {
     triggerMutation();
 
     const text = calls[calls.length - 1].text;
-    expect(text).toBe("⚠ sandbox: off");
+    expect(text).toBe("⚠ Pipkin Sandbox: off");
     dispose();
   });
 
@@ -414,7 +414,7 @@ describe("subscribeStatus — integration", () => {
     dispose();
 
     const lastCall = calls[calls.length - 1];
-    expect(lastCall.key).toBe("sandbox");
+    expect(lastCall.key).toBe("pipkin.sandbox.status");
     expect(lastCall.text).toBeUndefined();
 
     const countBefore = calls.length;
@@ -494,9 +494,12 @@ describe("renderStatusThemed", () => {
   it("disabled → warning icon and warning text", () => {
     const { theme, calls } = makeThemeSpy();
     const result = renderStatusThemed({ ...baseState, enabled: false }, theme);
-    expect(result).toContain("sandbox: off");
+    expect(result).toContain("Pipkin Sandbox: off");
     expect(calls).toContainEqual({ color: "warning", text: "󰒃" });
-    expect(calls).toContainEqual({ color: "warning", text: "sandbox: off" });
+    expect(calls).toContainEqual({
+      color: "warning",
+      text: "Pipkin Sandbox: off",
+    });
     expect(result).not.toContain("\n");
   });
 
@@ -512,7 +515,7 @@ describe("renderStatusThemed", () => {
       color: "warning",
       text: "sandbox (degraded)",
     });
-    expect(result).not.toContain("sandbox: off");
+    expect(result).not.toContain("Pipkin Sandbox: off");
     expect(result).not.toContain("\n");
   });
 

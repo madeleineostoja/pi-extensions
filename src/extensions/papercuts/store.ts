@@ -29,7 +29,7 @@ const destinations = [
   "docs",
   "code",
 ] as const;
-const sourceKinds = ["agent", "pi-implement", "user"] as const;
+const sourceKinds = ["agent", "pipkin:implement", "user"] as const;
 
 export type PapercutStatus = (typeof statuses)[number];
 export type PapercutSource = {
@@ -305,7 +305,7 @@ function atomicWrite(path: string, file: PapercutFile): void {
   mkdirSync(dirname(path), { recursive: true });
   const tempPath = join(
     dirname(path),
-    `.${process.pid}-${randomUUID()}.papercuts.tmp`,
+    `.pipkin-papercuts-${process.pid}-${randomUUID()}.tmp`,
   );
   try {
     writeFileSync(tempPath, serialize(file), "utf-8");
@@ -359,8 +359,8 @@ function normalizeLookupKey(key: unknown): string {
 
 export function createPapercutStore(root: string) {
   const canonicalRoot = realpathSync(root);
-  const registryPath = join(canonicalRoot, ".pi", "papercuts.json");
-  const lockPath = join(canonicalRoot, ".pi", "papercuts.lock");
+  const registryPath = join(canonicalRoot, ".pi", "pipkin", "papercuts.json");
+  const lockPath = join(canonicalRoot, ".pi", "pipkin", "papercuts.lock");
 
   async function initialize(): Promise<void> {
     return queue(registryPath, async () => {
@@ -368,8 +368,8 @@ export function createPapercutStore(root: string) {
       const lease = await acquireLock(lockPath);
       try {
         await ensureGitInfoExclude(root, [
-          "/.pi/papercuts.json",
-          "/.pi/papercuts.lock",
+          "/.pi/pipkin/papercuts.json",
+          "/.pi/pipkin/papercuts.lock",
         ]);
         if (!existsSync(registryPath)) {
           atomicWrite(registryPath, { version: VERSION, records: [] });

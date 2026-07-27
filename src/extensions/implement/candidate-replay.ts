@@ -59,7 +59,7 @@ export function stagingIdentity(args: {
   const id = `staging-${sha256(
     `${args.runId}\0${args.candidateId}\0${args.candidateCommitSha}\0${args.targetBaseSha}`,
   )}`;
-  return { id, branchName: `pi-implement/${args.runId}/${id}` };
+  return { id, branchName: `pipkin/implement/${args.runId}/${id}` };
 }
 
 export function publicationPreparationId(args: {
@@ -559,7 +559,7 @@ async function targetSnapshot(
     git.checkoutIdentity(),
     git.tree(),
     git.activeOperation(),
-    git.isCleanExcept(protectedPaths),
+    git.isCleanExcept([...protectedPaths, options.worktreesRoot]),
     git.hasStagedChangesInPaths(protectedPaths),
     options.protectedArtifactsMatch?.() ?? true,
   ]);

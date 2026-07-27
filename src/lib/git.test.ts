@@ -117,23 +117,25 @@ describe("ensureGitInfoExclude", () => {
     const excludePath = join(root, ".git", "info", "exclude");
     writeFileSync(
       excludePath,
-      "# handwritten comment\n*.cache\n/.pi/implement/\n/.pi/implement/\n",
+      "# handwritten comment\n*.cache\n/.pi/pipkin/implement/\n/.pi/pipkin/implement/\n",
     );
 
     await ensureGitInfoExclude(root, [
-      "/.pi/implement/",
-      "/.pi/papercuts.json",
-      "/.pi/papercuts.json",
+      "/.pi/pipkin/implement/",
+      "/.pi/pipkin/papercuts.json",
+      "/.pi/pipkin/papercuts.json",
     ]);
-    await ensureGitInfoExclude(root, "/.pi/papercuts.json");
+    await ensureGitInfoExclude(root, "/.pi/pipkin/papercuts.json");
 
     const content = readFileSync(excludePath, "utf-8");
     expect(content).toContain("# handwritten comment\n*.cache\n");
     expect(
-      content.split("\n").filter((line) => line === "/.pi/implement/"),
+      content.split("\n").filter((line) => line === "/.pi/pipkin/implement/"),
     ).toHaveLength(1);
     expect(
-      content.split("\n").filter((line) => line === "/.pi/papercuts.json"),
+      content
+        .split("\n")
+        .filter((line) => line === "/.pi/pipkin/papercuts.json"),
     ).toHaveLength(1);
   });
 
@@ -146,14 +148,16 @@ describe("ensureGitInfoExclude", () => {
     );
     const worker = await startWorker(
       linked,
-      "/.pi/papercuts.json",
+      "/.pi/pipkin/papercuts.json",
       releasePath,
     );
 
     let settled = false;
-    const update = ensureGitInfoExclude(root, "/.pi/implement/").finally(() => {
-      settled = true;
-    });
+    const update = ensureGitInfoExclude(root, "/.pi/pipkin/implement/").finally(
+      () => {
+        settled = true;
+      },
+    );
     try {
       await delay(50);
       expect(settled).toBe(false);
@@ -168,14 +172,9 @@ describe("ensureGitInfoExclude", () => {
 
     const excludePath = join(root, ".git", "info", "exclude");
     const content = readFileSync(excludePath, "utf-8");
-    expect(content.split("\n")).toContain("/.pi/papercuts.json");
-    expect(content.split("\n")).toContain("/.pi/implement/");
-    const anchor = join(
-      root,
-      ".git",
-      "info",
-      "pi-extensions-info-exclude.lock",
-    );
+    expect(content.split("\n")).toContain("/.pi/pipkin/papercuts.json");
+    expect(content.split("\n")).toContain("/.pi/pipkin/implement/");
+    const anchor = join(root, ".git", "info", "pipkin-info-exclude.lock");
     expect(statSync(anchor).isFile()).toBe(true);
   });
 
@@ -187,13 +186,17 @@ describe("ensureGitInfoExclude", () => {
       tmpdir(),
       `pi-git-exclude-release-${crypto.randomUUID()}`,
     );
-    const worker = await startWorker(root, "/.pi/papercuts.json", releasePath);
+    const worker = await startWorker(
+      root,
+      "/.pi/pipkin/papercuts.json",
+      releasePath,
+    );
     await stop(worker, "SIGKILL");
 
-    await ensureGitInfoExclude(root, "/.pi/implement/");
+    await ensureGitInfoExclude(root, "/.pi/pipkin/implement/");
 
     const content = readFileSync(excludePath, "utf-8");
-    expect(content).toBe("# preserve me\n*.local\n/.pi/implement/\n");
+    expect(content).toBe("# preserve me\n*.local\n/.pi/pipkin/implement/\n");
     rmSync(releasePath, { force: true });
   });
 });

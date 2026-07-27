@@ -154,7 +154,7 @@ export function registerRecallTool(
     label: "context_recall",
     description:
       "Retrieve the full content of a tool result that was elided from context. " +
-      "When a tool result is large, stale, superseded, duplicated, or compacted after consumption, pi-context-prune replaces it with a reasoned stub that ends with " +
+      "When a tool result is large, stale, superseded, duplicated, or compacted after consumption, Pipkin Context replaces it with a reasoned stub that ends with " +
       '`Call context_recall("TOOL_CALL_ID") to retrieve.`. ' +
       "Call this tool with the toolCallId from the stub to get the original content back while the original tool result is still retained in the active session store. " +
       "Stubs may describe the original size, status, path, or pruning reason, but the recall contract is the same for every form.",

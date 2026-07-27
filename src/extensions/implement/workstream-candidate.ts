@@ -181,7 +181,7 @@ export async function runWorkstreamCandidate(
   let failure: unknown;
   try {
     agentId = await args.subagents.spawn({
-      type: args.roles?.type ?? "pi-implement:implementer",
+      type: args.roles?.type ?? "pipkin:implement:implementer",
       role: "implementer",
       taskId: args.workstreamId,
       prompt: buildWorkstreamImplementerPrompt({
@@ -427,7 +427,7 @@ export function workstreamWorkspace(
   }
   return {
     taskId: workstreamId,
-    branchName: `pi-implement/${state.run.id}/${workstreamId}`,
+    branchName: `pipkin/implement/${state.run.id}/${workstreamId}`,
     worktreePath: join(worktreesRunRoot(state), workstreamId),
     baseSha,
   };
@@ -437,6 +437,7 @@ function worktreesRunRoot(state: RunState): string {
   return join(
     resolve(state.run.checkout.root),
     ".pi",
+    "pipkin",
     "implement",
     "worktrees",
     state.run.id,

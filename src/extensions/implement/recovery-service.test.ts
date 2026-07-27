@@ -24,7 +24,7 @@ afterEach(() => {
 
 describe(" recovery service", () => {
   it("launches the configured recovery role with the retained episode", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "pi-implement-recovery-"));
+    const directory = mkdtempSync(join(tmpdir(), "pipkin-implement-recovery-"));
     directories.add(directory);
     const spawned: Array<Record<string, unknown>> = [];
     const state = {
@@ -120,6 +120,7 @@ describe(" recovery service", () => {
       cwd: join(
         directory,
         ".pi",
+        "pipkin",
         "implement",
         "worktrees",
         "run-1",
@@ -130,7 +131,7 @@ describe(" recovery service", () => {
   });
 
   it("validates tracked hook corrections from the candidate worktree", async () => {
-    const root = mkdtempSync(join(tmpdir(), "pi-implement-hook-recovery-"));
+    const root = mkdtempSync(join(tmpdir(), "pipkin-implement-hook-recovery-"));
     directories.add(root);
     git(root, "init");
     git(root, "config", "user.email", "test@example.com");
@@ -140,10 +141,17 @@ describe(" recovery service", () => {
     git(root, "commit", "-m", "chore: init");
     const client = new ExecGitClient(root);
     const baseSha = await client.head();
-    const worktreesRoot = join(root, ".pi", "implement", "worktrees", "run-1");
+    const worktreesRoot = join(
+      root,
+      ".pi",
+      "pipkin",
+      "implement",
+      "worktrees",
+      "run-1",
+    );
     const candidatePath = join(worktreesRoot, "work");
-    await client.createTaskBranch("pi-implement/run-1/work", baseSha);
-    await client.addWorktree(candidatePath, "pi-implement/run-1/work");
+    await client.createTaskBranch("pipkin/implement/run-1/work", baseSha);
+    await client.addWorktree(candidatePath, "pipkin/implement/run-1/work");
     writeFileSync(join(candidatePath, "candidate.txt"), "candidate\n");
     git(candidatePath, "add", ".");
     git(candidatePath, "commit", "-m", "feat: candidate");
@@ -242,7 +250,7 @@ describe(" recovery service", () => {
           } as never;
         },
       },
-      artifactsPath: join(root, ".pi", "implement", "artifacts"),
+      artifactsPath: join(root, ".pi", "pipkin", "implement", "artifacts"),
       roles: {
         type: "recovery-role",
         model: "test/recovery",

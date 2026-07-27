@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 function repository(): string {
-  const root = mkdtempSync(join(tmpdir(), "pi-implement-controls-git-"));
+  const root = mkdtempSync(join(tmpdir(), "pipkin-implement-controls-git-"));
   temporaryDirectories.add(root);
   execFileSync("git", ["init"], { cwd: root });
   execFileSync("git", ["config", "user.email", "test@example.com"], {
@@ -77,7 +77,7 @@ describe(" controls", () => {
     const paths = checkoutPaths(root);
     const workspace = {
       taskId: "task-a",
-      branchName: "pi-implement/run-1/task-a",
+      branchName: "pipkin/implement/run-1/task-a",
       worktreePath: join(paths.worktrees, "run-1", "task-a"),
       baseSha,
     };
@@ -136,7 +136,9 @@ describe(" controls", () => {
     await sweepOwnedRunResources({ lease, store, git });
     await sweepOwnedRunResources({ lease, store, git });
 
-    expect(await git.listBranchesMatching("pi-implement/run-1/*")).toEqual([]);
+    expect(await git.listBranchesMatching("pipkin/implement/run-1/*")).toEqual(
+      [],
+    );
     expect(
       (await git.listWorktrees()).some(
         (path) => path === workspace.worktreePath,
@@ -157,7 +159,7 @@ describe(" controls", () => {
   });
 
   it("reports malformed retained directories as manual-only historical artifacts", () => {
-    const root = mkdtempSync(join(tmpdir(), "pi-implement-controls-"));
+    const root = mkdtempSync(join(tmpdir(), "pipkin-implement-controls-"));
     temporaryDirectories.add(root);
     const path = join(checkoutPaths(root).runs, "old-run");
     mkdirSync(path, { recursive: true });

@@ -21,7 +21,7 @@ function fixture(path: string, content: string): void {
 }
 
 function temporaryDirectory(): string {
-  const path = mkdtempSync(join(tmpdir(), "pi-implement-material-"));
+  const path = mkdtempSync(join(tmpdir(), "pipkin-implement-material-"));
   temporaryDirectories.add(path);
   return path;
 }

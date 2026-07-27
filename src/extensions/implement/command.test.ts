@@ -65,7 +65,7 @@ describe("/implement command", () => {
       },
     };
     registerImplementCommand(pi as never, config);
-    const root = mkdtempSync(join(tmpdir(), "pi-implement-command-"));
+    const root = mkdtempSync(join(tmpdir(), "pipkin-implement-command-"));
     temporaryDirectories.add(root);
     const plan = join(root, "plan.md");
     writeFileSync(plan, "# Plan\n\n- [x] Finished\n");
@@ -97,7 +97,7 @@ describe("/implement command", () => {
       },
     };
     registerImplementCommand(pi as never, config);
-    const root = mkdtempSync(join(tmpdir(), "pi-implement-menu-"));
+    const root = mkdtempSync(join(tmpdir(), "pipkin-implement-menu-"));
     temporaryDirectories.add(root);
     const plan = join(root, "plan.md");
     writeFileSync(plan, "# Plan\n\n- [x] Finished\n");

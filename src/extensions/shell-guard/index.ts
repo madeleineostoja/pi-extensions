@@ -8,7 +8,7 @@ import { decideToolCall, resolveChoice } from "./handler";
 import { assessBashCommand } from "./assessors";
 import { extractPendingCreations, commitPendingCreations } from "./session";
 
-const MESSAGE_TYPE = "pi-guard.status";
+const MESSAGE_TYPE = "pipkin.shell-guard.status";
 
 type StatusDetails = {
   message: string;
@@ -45,7 +45,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     nonInteractiveNotified = true;
-    const message = `[pi-guard] ${NON_INTERACTIVE_MSG}`;
+    const message = `[Pipkin Shell Guard] ${NON_INTERACTIVE_MSG}`;
     pi.sendMessage({
       customType: MESSAGE_TYPE,
       content: message,

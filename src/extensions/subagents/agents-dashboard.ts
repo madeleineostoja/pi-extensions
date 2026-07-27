@@ -769,13 +769,13 @@ function roleLabel(owner: RuntimeOwner): string {
   if (typeof owner !== "object") {
     return "";
   }
-  if (owner.kind === "pi-implement") {
+  if (owner.kind === "pipkin:implement") {
     return `/${owner.role}`;
   }
   if (owner.kind === "nested") {
     return `/${owner.tool}`;
   }
-  if (owner.kind === "internal" && owner.name === "pi-implement") {
+  if (owner.kind === "internal" && owner.name === "pipkin:implement") {
     return "/worker";
   }
   return "";
@@ -788,8 +788,8 @@ function ownerLabel(owner: RuntimeOwner): string {
   if (owner.kind === "nested") {
     return `nested:${owner.tool} parent=${owner.parentId}`;
   }
-  if (owner.kind === "pi-implement") {
-    return `pi-implement:${owner.runId}/${owner.role}${owner.taskId ? `/${owner.taskId}` : ""}`;
+  if (owner.kind === "pipkin:implement") {
+    return `pipkin:implement:${owner.runId}/${owner.role}${owner.taskId ? `/${owner.taskId}` : ""}`;
   }
   return `${owner.kind}:${owner.name}`;
 }

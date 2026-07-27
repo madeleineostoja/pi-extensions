@@ -132,7 +132,7 @@ describe("subagent roster", () => {
 
       controller.track(ctx);
       expect(ctx.ui.setWidget).toHaveBeenCalledWith(
-        "subagents",
+        "pipkin.subagents.roster",
         expect.any(Function),
         { placement: "aboveEditor" },
       );
@@ -165,7 +165,10 @@ describe("subagent roster", () => {
         },
       });
       vi.advanceTimersByTime(350);
-      expect(ctx.ui.setWidget).toHaveBeenLastCalledWith("subagents", undefined);
+      expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
+        "pipkin.subagents.roster",
+        undefined,
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -183,11 +186,11 @@ describe("subagent roster", () => {
       controller.track(second);
 
       expect(first.ui.setWidget).toHaveBeenLastCalledWith(
-        "subagents",
+        "pipkin.subagents.roster",
         undefined,
       );
       expect(second.ui.setWidget).toHaveBeenCalledWith(
-        "subagents",
+        "pipkin.subagents.roster",
         expect.any(Function),
         { placement: "aboveEditor" },
       );

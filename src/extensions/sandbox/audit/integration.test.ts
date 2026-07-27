@@ -26,10 +26,10 @@ function makeStubListener() {
 }
 
 // ---------------------------------------------------------------------------
-// Integration: stub listener receives sandbox:audit with documented shape
+// Integration: stub listener receives pipkin.sandbox.audit with documented shape
 // ---------------------------------------------------------------------------
 
-describe("stub listener receives sandbox:audit events with documented shape", () => {
+describe("stub listener receives pipkin.sandbox.audit events with documented shape", () => {
   const kindDecisionPairs: Array<{
     kind: "fs" | "network" | "exec" | "policy-change";
     decision: "allowed" | "blocked" | "granted" | "revoked";
@@ -75,7 +75,9 @@ describe("stub listener receives sandbox:audit events with documented shape", ()
 
       recordAudit({ kind, decision, ...extra }, { events: target });
 
-      const auditEvents = received.filter((e) => e.event === "sandbox:audit");
+      const auditEvents = received.filter(
+        (e) => e.event === "pipkin.sandbox.audit",
+      );
       expect(auditEvents).toHaveLength(1);
 
       const payload = auditEvents[0].payload as SandboxAuditEvent;
@@ -133,11 +135,11 @@ describe("stub listener receives sandbox:audit events with documented shape", ()
 });
 
 // ---------------------------------------------------------------------------
-// Integration: policy-change emits both sandbox:audit and sandbox:policy-changed
+// Integration: policy-change emits both pipkin.sandbox.audit and pipkin.sandbox.policy-changed
 // ---------------------------------------------------------------------------
 
 describe("policy-change events — both event types emitted", () => {
-  it("granted: listener receives sandbox:audit and sandbox:policy-changed", () => {
+  it("granted: listener receives pipkin.sandbox.audit and pipkin.sandbox.policy-changed", () => {
     const { target, received } = makeStubListener();
     recordAudit(
       {
@@ -149,9 +151,11 @@ describe("policy-change events — both event types emitted", () => {
       { events: target },
     );
 
-    const auditEvents = received.filter((e) => e.event === "sandbox:audit");
+    const auditEvents = received.filter(
+      (e) => e.event === "pipkin.sandbox.audit",
+    );
     const policyEvents = received.filter(
-      (e) => e.event === "sandbox:policy-changed",
+      (e) => e.event === "pipkin.sandbox.policy-changed",
     );
 
     expect(auditEvents).toHaveLength(1);
@@ -167,7 +171,7 @@ describe("policy-change events — both event types emitted", () => {
     expect(policyPayload.source).toBe("command");
   });
 
-  it("revoked: listener receives sandbox:policy-changed with correct scope", () => {
+  it("revoked: listener receives pipkin.sandbox.policy-changed with correct scope", () => {
     const { target, received } = makeStubListener();
     recordAudit(
       {
@@ -180,7 +184,7 @@ describe("policy-change events — both event types emitted", () => {
     );
 
     const policyPayload = received.find(
-      (e) => e.event === "sandbox:policy-changed",
+      (e) => e.event === "pipkin.sandbox.policy-changed",
     )!.payload as SandboxPolicyChangedEvent;
     expect(policyPayload.scope).toBe("persisted");
     expect(policyPayload.source).toBe("command");
@@ -188,10 +192,10 @@ describe("policy-change events — both event types emitted", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sanity: emitting sandbox:audit from an external source does NOT mutate sandbox state
+// Sanity: emitting pipkin.sandbox.audit from an external source does NOT mutate sandbox state
 // ---------------------------------------------------------------------------
 
-describe("external sandbox:audit emission does not mutate sandbox state", () => {
+describe("external pipkin.sandbox.audit emission does not mutate sandbox state", () => {
   let emitter: ReturnType<typeof createAuditEmitter>;
 
   beforeEach(() => {
@@ -203,10 +207,10 @@ describe("external sandbox:audit emission does not mutate sandbox state", () => 
       emit: (_event: string, _payload: unknown) => {},
     };
 
-    // Simulate an external source emitting a sandbox:audit event directly —
+    // Simulate an external source emitting a pipkin.sandbox.audit event directly —
     // i.e., NOT going through emitter.emitAuditEvents. The ring buffer
     // must remain empty because sandbox has no incoming subscription.
-    externalEmitter.emit("sandbox:audit", {
+    externalEmitter.emit("pipkin.sandbox.audit", {
       ts: Date.now(),
       kind: "network",
       decision: "blocked",
@@ -216,7 +220,7 @@ describe("external sandbox:audit emission does not mutate sandbox state", () => 
     expect(emitter.getRecentBlockedHosts()).toHaveLength(0);
   });
 
-  it("a rogue sandbox:audit event cannot append to the ring buffer", () => {
+  it("a rogue pipkin.sandbox.audit event cannot append to the ring buffer", () => {
     const { target } = makeStubListener();
 
     // Fire a real event to populate the buffer
@@ -233,7 +237,7 @@ describe("external sandbox:audit emission does not mutate sandbox state", () => 
 
     // Now a rogue emitter tries to inject a host by emitting the event directly
     const rogueTarget = { emit: (_e: string, _p: unknown) => {} };
-    rogueTarget.emit("sandbox:audit", {
+    rogueTarget.emit("pipkin.sandbox.audit", {
       ts: Date.now(),
       kind: "network",
       decision: "blocked",
@@ -245,7 +249,7 @@ describe("external sandbox:audit emission does not mutate sandbox state", () => 
     expect(emitter.getRecentBlockedHosts()).toContain("real.example.com");
   });
 
-  it("emitting sandbox:policy-changed from outside has no effect on session state", () => {
+  it("emitting pipkin.sandbox.policy-changed from outside has no effect on session state", () => {
     const { recordAudit: ra, getRecentBlockedHosts } = createAuditPipeline();
     const cmds = createSlashCommands({
       recordAudit: ra,
@@ -259,9 +263,9 @@ describe("external sandbox:audit emission does not mutate sandbox state", () => 
       sandboxOff: getState().sandboxOff,
     });
 
-    // Simulate external emission of sandbox:policy-changed
+    // Simulate external emission of pipkin.sandbox.policy-changed
     const rogueTarget = { emit: (_e: string, _p: unknown) => {} };
-    rogueTarget.emit("sandbox:policy-changed", {
+    rogueTarget.emit("pipkin.sandbox.policy-changed", {
       ts: Date.now(),
       source: "ext:rogue",
       scope: "session",

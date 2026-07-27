@@ -134,12 +134,12 @@ describe("compact footer formatting", () => {
 describe("footer segments", () => {
   it("shows cwd basename and branch when available", () => {
     const result = buildLeftSegment(
-      "/Users/mads/Code/pi-extensions",
+      "/Users/mads/Code/pipkin",
       "main",
       makePlainTheme(),
     );
 
-    expect(result).toBe("pi-extensions on  main");
+    expect(result).toBe("pipkin on  main");
   });
 
   it("formats billable and subscription right segments differently", () => {
@@ -233,11 +233,11 @@ describe("status line sanitization", () => {
     const result = buildStatusLine(
       new Map([
         ["z", "z-status"],
-        ["sandbox", "sandbox-status"],
-        ["pi-implement.status", "implement-status"],
-        ["pi-papercuts.status", "papercuts-status"],
+        ["pipkin.sandbox.status", "sandbox-status"],
+        ["pipkin.implement.status", "implement-status"],
+        ["pipkin.papercuts.status", "papercuts-status"],
         ["a", "a-status"],
-        ["pi-readonly.mode", "readonly-status"],
+        ["pipkin.edit-approval.mode", "readonly-status"],
       ]),
       makePlainTheme(),
     );

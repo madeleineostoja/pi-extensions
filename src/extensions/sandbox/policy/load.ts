@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getConfigPath, loadPipkinConfig } from "#lib/config";
 import {
-  DEFAULT_POLICY,
+  defaultPolicyFor,
   type DegradedPolicy,
   type Policy,
 } from "./defaults.js";
@@ -365,7 +365,7 @@ function tryLoadFile(
 export function createPolicyManager(): PolicyManager {
   type Subscriber = (policy: Policy) => void;
   const subscribers: Set<Subscriber> = new Set();
-  let currentPolicy: Policy = structuredClone(DEFAULT_POLICY);
+  let currentPolicy: Policy = defaultPolicyFor();
 
   function notify(policy: Policy): void {
     for (const fn of subscribers) {
@@ -389,7 +389,7 @@ export function createPolicyManager(): PolicyManager {
     const snapshot = loadPipkinConfig(agentDir);
     const projectPath = getProjectConfigPath(cwd);
 
-    let policy: Policy = structuredClone(DEFAULT_POLICY);
+    let policy: Policy = defaultPolicyFor(agentDir);
 
     const sandboxIssue = snapshot.issues.find(
       (issue) =>
@@ -426,7 +426,7 @@ export function createPolicyManager(): PolicyManager {
       for (const pattern of policy.fs.denyPatterns) {
         if (literalPrefix(pattern) === null) {
           ui.notify(
-            `pi-sandbox: deny pattern '${pattern}' has no literal prefix and will only be enforced by the in-process gate. Anchor it (e.g. '<cwd>/${pattern}' or '~/${pattern}') for kernel-level enforcement.`,
+            `Pipkin Sandbox: deny pattern '${pattern}' has no literal prefix and will only be enforced by the in-process gate. Anchor it (e.g. '<cwd>/${pattern}' or '~/${pattern}') for kernel-level enforcement.`,
             "warning",
           );
         }
@@ -435,7 +435,7 @@ export function createPolicyManager(): PolicyManager {
 
     if (policy.network.mode === "always" && policy.network.allow.length === 0) {
       ui?.notify(
-        "pi-sandbox: network mode is 'always' with no allowed hosts — all outbound network from sandboxed subprocesses will be blocked. If unintended, add hosts to network.allow.",
+        "Pipkin Sandbox: network mode is 'always' with no allowed hosts — all outbound network from sandboxed subprocesses will be blocked. If unintended, add hosts to network.allow.",
         "warning",
       );
     }

@@ -24,7 +24,7 @@ import {
 const roots: string[] = [];
 
 function root(): string {
-  const value = mkdtempSync(join(tmpdir(), "pi-implement-"));
+  const value = mkdtempSync(join(tmpdir(), "pipkin-implement-"));
   roots.push(value);
   return value;
 }

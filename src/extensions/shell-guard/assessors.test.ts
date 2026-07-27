@@ -6,7 +6,7 @@ import { execSync } from "node:child_process";
 import { assessBashCommand } from "./assessors";
 
 function makeRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), "pi-guard-"));
+  const dir = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-"));
   execSync("git init", { cwd: dir });
   execSync("git config user.email test@test.com", { cwd: dir });
   execSync("git config user.name Test", { cwd: dir });
@@ -130,7 +130,7 @@ describe("assessBashCommand — file removal", () => {
   });
 
   it("allows find -delete under disposable temp directory", () => {
-    const d = mkdtempSync(join(tmpdir(), "pi-guard-find-"));
+    const d = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-find-"));
     try {
       expect(
         assessBashCommand(`find ${d} -delete`, repo, new Set()),
@@ -142,7 +142,7 @@ describe("assessBashCommand — file removal", () => {
 
   it("allows find -exec rm under TMPDIR child", () => {
     const previous = process.env.TMPDIR;
-    const d = mkdtempSync(join(tmpdir(), "pi-guard-find-env-"));
+    const d = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-find-env-"));
     process.env.TMPDIR = d;
     try {
       expect(
@@ -173,7 +173,7 @@ describe("assessBashCommand — file removal", () => {
   });
 
   it("prompts when safe temp find is followed by another command", () => {
-    const d = mkdtempSync(join(tmpdir(), "pi-guard-find-compound-"));
+    const d = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-find-compound-"));
     try {
       const action = assessBashCommand(
         `find ${d} -delete && rm important.txt`,
@@ -206,7 +206,7 @@ describe("assessBashCommand — file removal", () => {
   });
 
   it("allows deleting a disposable temp directory", () => {
-    const d = mkdtempSync(join(tmpdir(), "pi-guard-disposable-"));
+    const d = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-disposable-"));
     try {
       expect(assessBashCommand(`rm -rf ${d}`, repo, new Set())).toBeUndefined();
     } finally {
@@ -225,7 +225,7 @@ describe("assessBashCommand — file removal", () => {
 
   it("allows deleting a child of TMPDIR", () => {
     const previous = process.env.TMPDIR;
-    const d = mkdtempSync(join(tmpdir(), "pi-guard-env-"));
+    const d = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-env-"));
     process.env.TMPDIR = d;
     try {
       expect(
@@ -249,7 +249,7 @@ describe("assessBashCommand — file removal", () => {
 
   it("prompts for deleting TMPDIR itself", () => {
     const previous = process.env.TMPDIR;
-    const d = mkdtempSync(join(tmpdir(), "pi-guard-env-root-"));
+    const d = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-env-root-"));
     process.env.TMPDIR = d;
     try {
       const action = assessBashCommand('rm -rf "$TMPDIR"', repo, new Set());
@@ -329,14 +329,14 @@ describe("assessBashCommand — file removal", () => {
 
   it("allows rm after cd into a temp directory", () => {
     expect(
-      assessBashCommand("cd /tmp && rm -rf pi-subagents", repo, new Set()),
+      assessBashCommand("cd /tmp && rm -rf pipkin-subagents", repo, new Set()),
     ).toBeUndefined();
   });
 
   it("allows rm after chained cd into a temp directory", () => {
     expect(
       assessBashCommand(
-        "cd /tmp && cd subdir && rm -rf pi-subagents",
+        "cd /tmp && cd subdir && rm -rf pipkin-subagents",
         repo,
         new Set(),
       ),
@@ -348,7 +348,7 @@ describe("assessBashCommand — file removal", () => {
     // the || branch; the target must resolve against /tmp, not the repo.
     expect(
       assessBashCommand(
-        "cd /tmp && false || rm -rf pi-subagents",
+        "cd /tmp && false || rm -rf pipkin-subagents",
         repo,
         new Set(),
       ),
@@ -357,7 +357,7 @@ describe("assessBashCommand — file removal", () => {
 
   it("does not propagate cd across pipes", () => {
     const action = assessBashCommand(
-      "cd /tmp | rm -rf pi-subagents",
+      "cd /tmp | rm -rf pipkin-subagents",
       repo,
       new Set(),
     );
@@ -367,7 +367,7 @@ describe("assessBashCommand — file removal", () => {
 
   it("does not propagate cd across backgrounding", () => {
     const action = assessBashCommand(
-      "cd /tmp & rm -rf pi-subagents",
+      "cd /tmp & rm -rf pipkin-subagents",
       repo,
       new Set(),
     );
@@ -569,7 +569,7 @@ describe("assessBashCommand — shell overwrite / truncate", () => {
   });
 
   it("allows truncate -s 0 on disposable temp file", () => {
-    const d = mkdtempSync(join(tmpdir(), "pi-guard-truncate-"));
+    const d = mkdtempSync(join(tmpdir(), "pipkin-shell-guard-truncate-"));
     const file = join(d, "file.txt");
     writeFileSync(file, "hello");
     try {
@@ -1144,7 +1144,7 @@ describe("assessBashCommand — destructive CLIs", () => {
 });
 
 describe("assessBashCommand — edit/write pass-through", () => {
-  it("does not assess edit tool calls (handled by pi-readonly)", () => {
+  it("does not assess edit tool calls (handled by pipkin.edit-approval)", () => {
     // assessBashCommand is only called for bash, but verify it doesn't block edit-like bash strings
     expect(assessBashCommand("edit file.ts", "/", new Set())).toBeUndefined();
   });

@@ -109,7 +109,7 @@ describe("Content-Length JSON-RPC protocol", () => {
     const reply = new ContentLengthDecoder().push(liveWrites[0])[0];
     expect(reply.result).toEqual({
       applied: false,
-      failureReason: "pi-lsp is read-only",
+      failureReason: "Pipkin LSP is read-only",
     });
   });
   it("does not write notifications or replies after close races", async () => {

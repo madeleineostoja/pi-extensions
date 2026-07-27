@@ -31,7 +31,7 @@ function temporaryDirectory(prefix: string): string {
 }
 
 function repo(): string {
-  const cwd = temporaryDirectory("pi-implement-git-");
+  const cwd = temporaryDirectory("pipkin-implement-git-");
   git(cwd, "init");
   git(cwd, "config", "user.email", "test@example.com");
   git(cwd, "config", "user.name", "Test");
@@ -68,7 +68,7 @@ function processIsAlive(pid: number): boolean {
 describe("git helpers", () => {
   it("serializes index-sensitive Git commands in one checkout", async () => {
     const cwd = repo();
-    const dir = temporaryDirectory("pi-implement-git-hold-");
+    const dir = temporaryDirectory("pipkin-implement-git-hold-");
     const marker = join(dir, "marker");
     const release = join(dir, "release");
     const script = join(dir, "hold.mjs");
@@ -115,9 +115,12 @@ describe("git helpers", () => {
 
   it("allows separate linked worktree checkout queues to overlap", async () => {
     const cwd = repo();
-    const linked = join(temporaryDirectory("pi-implement-linked-"), "linked");
+    const linked = join(
+      temporaryDirectory("pipkin-implement-linked-"),
+      "linked",
+    );
     git(cwd, "worktree", "add", "-b", "linked", linked);
-    const dir = temporaryDirectory("pi-implement-git-hold-");
+    const dir = temporaryDirectory("pipkin-implement-git-hold-");
     const marker = join(dir, "marker");
     const release = join(dir, "release");
     const script = join(dir, "hold.mjs");
@@ -179,9 +182,12 @@ describe("git helpers", () => {
 
   it("serializes shared worktree metadata operations per common repository", async () => {
     const cwd = repo();
-    const linked = join(temporaryDirectory("pi-implement-linked-"), "linked");
+    const linked = join(
+      temporaryDirectory("pipkin-implement-linked-"),
+      "linked",
+    );
     git(cwd, "worktree", "add", "-b", "linked", linked);
-    const dir = temporaryDirectory("pi-implement-git-hold-");
+    const dir = temporaryDirectory("pipkin-implement-git-hold-");
     const marker = join(dir, "marker");
     const release = join(dir, "release");
     const script = join(dir, "hold.mjs");
@@ -228,7 +234,7 @@ describe("git helpers", () => {
 
   it("cancels an owned Git child before its queue and fixture settle", async () => {
     const cwd = repo();
-    const dir = temporaryDirectory("pi-implement-git-cancel-");
+    const dir = temporaryDirectory("pipkin-implement-git-cancel-");
     const marker = join(dir, "marker");
     const pidPath = join(dir, "pid");
     const release = join(dir, "release");
@@ -301,7 +307,7 @@ describe("git helpers", () => {
 
   it("reports a prematurely exiting Git child without waiting for the suite timeout", async () => {
     const cwd = repo();
-    const dir = temporaryDirectory("pi-implement-git-exit-");
+    const dir = temporaryDirectory("pipkin-implement-git-exit-");
     const script = join(dir, "exit.mjs");
     writeFileSync(
       script,
@@ -391,14 +397,14 @@ describe("git helpers", () => {
     writeFileSync(join(cwd, "tracked.ts"), "export const value = 2;\n");
     git(cwd, "add", "-A");
     expect(
-      (await client.checkpoint("pi-implement: candidate", false)).exitCode,
+      (await client.checkpoint("pipkin:implement: candidate", false)).exitCode,
     ).toBe(0);
     const first = await client.head();
 
     writeFileSync(join(cwd, "next.ts"), "export const next = true;\n");
     git(cwd, "add", "-A");
     expect(
-      (await client.checkpoint("pi-implement: candidate", true)).exitCode,
+      (await client.checkpoint("pipkin:implement: candidate", true)).exitCode,
     ).toBe(0);
 
     expect(await client.head()).not.toBe(first);
@@ -411,10 +417,10 @@ describe("git helpers", () => {
     const client = new ExecGitClient(cwd);
     const baseSha = await client.head();
 
-    await client.createTaskBranch("pi-implement/r1/t001-task", baseSha);
+    await client.createTaskBranch("pipkin/implement/r1/t001-task", baseSha);
 
     const branches = git(cwd, "branch", "--list");
-    expect(branches).toContain("pi-implement/r1/t001-task");
+    expect(branches).toContain("pipkin/implement/r1/t001-task");
   });
 
   it("adds and removes a worktree", async () => {
@@ -424,12 +430,13 @@ describe("git helpers", () => {
     const worktreePath = join(
       cwd,
       ".pi",
+      "pipkin",
       "implement",
       "worktrees",
       "r1",
       "t001-wt-test",
     );
-    const branchName = "pi-implement/r1/t001-wt-test";
+    const branchName = "pipkin/implement/r1/t001-wt-test";
 
     await client.createTaskBranch(branchName, baseSha);
     await client.addWorktree(worktreePath, branchName);
@@ -450,8 +457,10 @@ describe("git helpers", () => {
     const cwd = repo();
     const client = new ExecGitClient(cwd);
     const baseSha = await client.head();
-    const worktreePath = realpathSync(temporaryDirectory("pi-implement-wt2-"));
-    const branchName = "pi-implement/r1/t001-for-wt";
+    const worktreePath = realpathSync(
+      temporaryDirectory("pipkin-implement-wt2-"),
+    );
+    const branchName = "pipkin/implement/r1/t001-for-wt";
 
     await client.createTaskBranch(branchName, baseSha);
     await client.addWorktree(worktreePath, branchName);
@@ -469,9 +478,9 @@ describe("git helpers", () => {
     const client = new ExecGitClient(cwd);
     const baseSha = await client.head();
     const worktreePath = realpathSync(
-      temporaryDirectory("pi-implement-wt-identity-"),
+      temporaryDirectory("pipkin-implement-wt-identity-"),
     );
-    const branchName = "pi-implement/r1/t001-identity";
+    const branchName = "pipkin/implement/r1/t001-identity";
 
     await client.createTaskBranch(branchName, baseSha);
     await client.addWorktree(worktreePath, branchName);
@@ -495,8 +504,10 @@ describe("git helpers", () => {
     git(cwd, "commit", "-m", "chore: add plan");
     const client = new ExecGitClient(cwd);
     const baseSha = await client.head();
-    const worktreePath = realpathSync(temporaryDirectory("pi-implement-wt5-"));
-    const branchName = "pi-implement/r1/t001-plan-exclude";
+    const worktreePath = realpathSync(
+      temporaryDirectory("pipkin-implement-wt5-"),
+    );
+    const branchName = "pipkin/implement/r1/t001-plan-exclude";
 
     await client.createTaskBranch(branchName, baseSha);
     await client.addWorktree(worktreePath, branchName);

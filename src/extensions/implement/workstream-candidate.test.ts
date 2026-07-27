@@ -87,7 +87,7 @@ async function fixture(args: {
   workstreams: Array<{ id: string; taskIds: string[] }>;
   tasks?: Array<{ id: string; title: string }>;
 }): Promise<Fixture> {
-  const root = realpathSync(temporaryDirectory("pi-implement-workstream-"));
+  const root = realpathSync(temporaryDirectory("pipkin-implement-workstream-"));
   git(root, "init");
   git(root, "config", "user.email", "test@example.com");
   git(root, "config", "user.name", "Test");
@@ -261,6 +261,7 @@ describe("workstream candidate lifecycle", () => {
       artifactsPath: join(
         subject.root,
         ".pi",
+        "pipkin",
         "implement",
         "runs",
         "run-1",
@@ -456,6 +457,7 @@ describe("workstream candidate lifecycle", () => {
     const artifactsPath = join(
       subject.root,
       ".pi",
+      "pipkin",
       "implement",
       "runs",
       "run-1",

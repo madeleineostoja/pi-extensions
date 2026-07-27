@@ -450,7 +450,7 @@ describe("non-interactive mode (tool_call handler)", () => {
     expect(result).toBeUndefined();
     expect(ctx.notifyCalls).toHaveLength(0);
     expect(messageCalls).toHaveLength(1);
-    expect(messageCalls[0]?.customType).toBe("pi-readonly.status");
+    expect(messageCalls[0]?.customType).toBe("pipkin.edit-approval.status");
     expect(messageCalls[0]?.display).toBe(true);
     expect(messageCalls[0]?.content).toMatch(/readonly mode auto-disabled/);
     expect(messageCalls[0]?.content).toMatch(/no interactive UI/);
@@ -556,7 +556,7 @@ function makeInteractiveCtx(): ExtensionContext & {
   };
 }
 
-const FOOTER_KEY = "pi-readonly.mode";
+const FOOTER_KEY = "pipkin.edit-approval.mode";
 
 describe("session_start reason handling", () => {
   it('reason "startup" enables readonly and sets footer', async () => {

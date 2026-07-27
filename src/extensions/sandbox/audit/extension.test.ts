@@ -82,7 +82,7 @@ function makeCtx(
 ): ExtensionContext {
   const setStatusFn = vi.fn();
   const notifyFn = vi.fn();
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-sandbox-ctx-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pipkin-sandbox-ctx-"));
   return {
     cwd,
     mode: "rpc",
@@ -255,7 +255,7 @@ describe("sandboxExtension — wiring", () => {
       .calls as unknown[][];
     expect(setStatusCalls.length).toBeGreaterThanOrEqual(1);
     const sandboxStatusCalls = setStatusCalls.filter(
-      (args) => args[0] === "sandbox",
+      (args) => args[0] === "pipkin.sandbox.status",
     );
     expect(sandboxStatusCalls.length).toBeGreaterThanOrEqual(1);
     expect(sandboxStatusCalls[0][1]).toBeDefined();
@@ -342,7 +342,7 @@ describe("sandboxExtension — strict-mode refusal", () => {
 
   it("when requireKernelSandbox=true and binary unavailable, emits error notify and does not register enforcement handlers", () => {
     tmpDir = fs.mkdirSync(
-      path.join(os.tmpdir(), `pi-sandbox-strict-test-${Date.now()}`),
+      path.join(os.tmpdir(), `pipkin-sandbox-strict-test-${Date.now()}`),
       { recursive: true },
     ) as string;
     const piDir = path.join(tmpDir, ".pi", "pipkin");
@@ -433,7 +433,7 @@ describe("sandboxExtension — two-instance isolation", () => {
     const setStatusCalls2 = (ctx2.ui.setStatus as ReturnType<typeof vi.fn>).mock
       .calls as unknown[][];
     const sandboxStatusCalls2 = setStatusCalls2.filter(
-      (args) => args[0] === "sandbox",
+      (args) => args[0] === "pipkin.sandbox.status",
     );
     const lastStatus2 = sandboxStatusCalls2[
       sandboxStatusCalls2.length - 1
@@ -448,7 +448,7 @@ describe("sandboxExtension — two-instance isolation", () => {
     const setStatusCalls2After = (ctx2.ui.setStatus as ReturnType<typeof vi.fn>)
       .mock.calls as unknown[][];
     const sandboxStatusCalls2After = setStatusCalls2After.filter(
-      (args) => args[0] === "sandbox",
+      (args) => args[0] === "pipkin.sandbox.status",
     );
     const lastStatus2After = sandboxStatusCalls2After[
       sandboxStatusCalls2After.length - 1
@@ -469,7 +469,7 @@ describe("sandboxExtension — policy load failure", () => {
 
   it("reports parse failure via ctx.ui.notify at error/warning level and still registers the tool_call handler", () => {
     tmpDir = fs.mkdirSync(
-      path.join(os.tmpdir(), `pi-sandbox-test-${Date.now()}`),
+      path.join(os.tmpdir(), `pipkin-sandbox-test-${Date.now()}`),
       { recursive: true },
     ) as string;
     const piDir = path.join(tmpDir, ".pi", "pipkin");
@@ -520,7 +520,7 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
       mode: "tui",
       signal: controller.signal,
     });
-    const blockedPath = path.join(os.homedir(), ".pi-sandbox-signal.txt");
+    const blockedPath = path.join(os.homedir(), ".pipkin-sandbox-signal.txt");
     (ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       "Allow this path once",
     );
@@ -540,7 +540,7 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
 
   it("allows a TUI read once without mutating session grants or emitting policy-change audit", async () => {
     const { pi, ctx } = startSandbox({ mode: "tui" });
-    const blockedPath = path.join(os.homedir(), ".pi-sandbox-once.txt");
+    const blockedPath = path.join(os.homedir(), ".pipkin-sandbox-once.txt");
     (ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       "Allow this path once",
     );
@@ -554,7 +554,7 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
     expect(result).toBeUndefined();
     expect(ctx.ui.select).toHaveBeenCalledTimes(1);
     const auditEvents = (pi.events.emit as ReturnType<typeof vi.fn>).mock.calls
-      .filter(([event]) => event === "sandbox:audit")
+      .filter(([event]) => event === "pipkin.sandbox.audit")
       .map(([, payload]) => payload as { kind: string; scope?: string });
     expect(auditEvents).toEqual(
       expect.arrayContaining([
@@ -591,7 +591,7 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
 
   it("session read grants suppress a later prompt for the same path", async () => {
     const { pi, ctx } = startSandbox({ mode: "tui" });
-    const blockedPath = path.join(os.homedir(), ".pi-sandbox-session.txt");
+    const blockedPath = path.join(os.homedir(), ".pipkin-sandbox-session.txt");
     (ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       "Allow this path for this session",
     );
@@ -605,7 +605,7 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
 
     expect(ctx.ui.select).toHaveBeenCalledTimes(1);
     expect(pi.events.emit).toHaveBeenCalledWith(
-      "sandbox:audit",
+      "pipkin.sandbox.audit",
       expect.objectContaining({
         kind: "policy-change",
         decision: "granted",
@@ -618,8 +618,8 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
   it("parent-directory grants allow later reads beneath that directory without re-prompting", async () => {
     const { pi, ctx } = startSandbox({ mode: "tui" });
     const dir = fs.realpathSync(os.homedir());
-    const firstPath = path.join(dir, ".pi-sandbox-parent-first.txt");
-    const secondPath = path.join(dir, ".pi-sandbox-parent-second.txt");
+    const firstPath = path.join(dir, ".pipkin-sandbox-parent-first.txt");
+    const secondPath = path.join(dir, ".pipkin-sandbox-parent-second.txt");
     (ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       `Allow parent directory this session (${fs.realpathSync(dir)})`,
     );
@@ -633,7 +633,7 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
 
     expect(ctx.ui.select).toHaveBeenCalledTimes(1);
     expect(pi.events.emit).toHaveBeenCalledWith(
-      "sandbox:audit",
+      "pipkin.sandbox.audit",
       expect.objectContaining({
         kind: "policy-change",
         scope: "parent-session",
@@ -670,7 +670,7 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
 
   it("fails closed without prompting for non-TUI allowlist misses", async () => {
     const { pi, ctx } = startSandbox({ mode: "rpc" });
-    const blockedPath = path.join(os.homedir(), ".pi-sandbox-rpc.txt");
+    const blockedPath = path.join(os.homedir(), ".pipkin-sandbox-rpc.txt");
 
     await expect(
       fireToolCall(pi, ctx, makeToolCallEvent("read", { path: blockedPath })),
@@ -681,7 +681,7 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
 
   it("edit session grants cover both required read and write access", async () => {
     const { pi, ctx } = startSandbox({ mode: "tui" });
-    const editPath = path.join(os.homedir(), ".pi-sandbox-edit.txt");
+    const editPath = path.join(os.homedir(), ".pipkin-sandbox-edit.txt");
     (ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
       "Allow this path for this session",
     );
@@ -695,7 +695,7 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
 
     expect(ctx.ui.select).toHaveBeenCalledTimes(1);
     expect(pi.events.emit).toHaveBeenCalledWith(
-      "sandbox:audit",
+      "pipkin.sandbox.audit",
       expect.objectContaining({
         kind: "policy-change",
         rule: "fs.allowRead",
@@ -703,7 +703,7 @@ describe("sandboxExtension — FS prompt-on-deny", () => {
       }),
     );
     expect(pi.events.emit).toHaveBeenCalledWith(
-      "sandbox:audit",
+      "pipkin.sandbox.audit",
       expect.objectContaining({
         kind: "policy-change",
         rule: "fs.allowWrite",
