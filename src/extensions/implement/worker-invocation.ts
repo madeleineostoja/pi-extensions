@@ -2,8 +2,11 @@ import { isAbsolute } from "node:path";
 import type { Static, TSchema } from "typebox";
 import {
   anchoredWorkstreamReviewSchema,
+  initialOverallReviewSchema,
   initialWorkstreamReviewSchema,
+  overallReworkSchema,
   recoveryCompletionSchema,
+  wholePlanRecoveryCompletionSchema,
   strictExecutionPlanSchema,
   workstreamImplementerResultSchema,
 } from "./result-schemas.js";
@@ -28,6 +31,14 @@ const completionContracts = {
     description: "Report the workstream checkpoints or satisfied evidence.",
     schema: workstreamImplementerResultSchema,
   },
+  "overall-rework": {
+    description: "Report evidence for each whole-plan finding.",
+    schema: overallReworkSchema,
+  },
+  "initial-overall-review": {
+    description: "Approve the complete run or return direct blocking findings.",
+    schema: initialOverallReviewSchema,
+  },
   "initial-review": {
     description: "Approve or return direct blocking findings.",
     schema: initialWorkstreamReviewSchema,
@@ -40,14 +51,21 @@ const completionContracts = {
     description: "Return one bounded recovery action.",
     schema: recoveryCompletionSchema,
   },
+  "whole-plan-recovery": {
+    description: "Return a bounded whole-plan recovery action.",
+    schema: wholePlanRecoveryCompletionSchema,
+  },
 } as const;
 
 export type WorkerCompletionKind =
   | "planner"
   | "implementer"
+  | "overall-rework"
+  | "initial-overall-review"
   | "initial-review"
   | "anchored-review"
-  | "recovery";
+  | "recovery"
+  | "whole-plan-recovery";
 
 type InvocableWorkerPacket = {
   role: PiImplementWorkerRole;
@@ -71,7 +89,9 @@ export async function spawnValidatedWorker<
   render: (packet: TPacket) => string;
 }): Promise<SubagentHandle<Static<TSchemaValue>>> {
   const expectedReadOnly =
-    args.packet.role === "planner" || args.packet.role === "reviewer";
+    args.packet.role === "planner" ||
+    args.packet.role === "reviewer" ||
+    args.packet.completionKind === "whole-plan-recovery";
   if (args.readOnly !== expectedReadOnly) {
     throw new WorkerPacketError(
       `${args.packet.role} packet ${args.packet.identity} has an invalid read-only contract.`,

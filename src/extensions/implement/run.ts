@@ -562,7 +562,7 @@ export function createRuntime(args: {
                   subagents,
                   signal,
                   artifactsPath,
-                  roles: args.roles.implementer,
+                  roles: args.roles,
                 })),
               };
         await dispatch({
@@ -890,7 +890,7 @@ export function createRuntime(args: {
           artifactsPath,
           signal,
           dispatch,
-          roles: args.roles.reviewer,
+          roles: args.roles,
         });
         return;
       }
@@ -899,7 +899,7 @@ export function createRuntime(args: {
           state,
           subagents,
           signal,
-          roles: args.roles.recovery,
+          roles: args.roles,
         });
         await dispatch({ kind: "whole_plan_recovery_completed", action });
         return;

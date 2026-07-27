@@ -95,6 +95,19 @@ export type SourceReviewWorkerPacket =
   | InitialSourceReviewPacket
   | AnchoredSourceReviewPacket;
 
+export type OverallAnchoredReviewPacket = {
+  role: "reviewer";
+  completionKind: "anchored-review";
+  identity: string;
+  workspace: { path: string; mutationBoundary: string };
+  planContext: string;
+  candidateContext: string;
+  previousCandidate: RunState["candidates"][string];
+  candidate: RunState["candidates"][string];
+  outstandingFindings: ReviewFinding[];
+  latestDelta: string;
+};
+
 export type ReviewOutcome =
   | {
       kind: "repository_state";
@@ -538,6 +551,9 @@ async function runOverallAnchoredReview(args: {
       "Overall repair review requires an anchored candidate epoch.",
     );
   }
+  if (!protectedArtifactsMatch(args.state)) {
+    throw new Error("Overall repair review requires intact protected corpus.");
+  }
   const workspace = overallRepairWorkspace(
     args.state,
     args.workstream.repairId,
@@ -556,32 +572,64 @@ async function runOverallAnchoredReview(args: {
     previousCandidate.commitSha,
     candidate.commitSha,
   );
-  const findings = workstreamReviewFindings(args.state, args.workstream).filter(
-    (finding) => review.outstandingIds.includes(finding.id),
+  const available = new Map(
+    workstreamReviewFindings(args.state, args.workstream).map((finding) => [
+      finding.id,
+      finding,
+    ]),
   );
-  const prompt = buildAnchoredOverallReviewPrompt({
+  const findings = review.outstandingIds.map((id) => {
+    const finding = available.get(id);
+    if (!finding || finding.status !== "open") {
+      throw new WorkerPacketError(
+        "Overall repair review has a missing current anchored finding.",
+      );
+    }
+    return finding;
+  });
+  if (new Set(review.outstandingIds).size !== findings.length) {
+    throw new WorkerPacketError(
+      "Overall repair review has duplicate anchored finding references.",
+    );
+  }
+  const packet: OverallAnchoredReviewPacket = {
+    role: "reviewer",
+    completionKind: "anchored-review",
+    identity: `${args.state.run.id}/${args.workstream.repairId}/${candidate.id}`,
+    workspace: {
+      path: workspace.worktreePath,
+      mutationBoundary:
+        "Read-only candidate worktree; do not mutate Git or protected corpus.",
+    },
     planContext: JSON.stringify(args.plan, null, 2),
     candidateContext: `Run base: ${args.state.run.checkout.startHead}\nCandidate: ${candidate.commitSha}`,
-    outstandingFindings: findings as never,
-    previousCandidate: previousCandidate.commitSha,
-    currentCandidate: candidate.commitSha,
+    previousCandidate,
+    candidate,
+    outstandingFindings: findings,
     latestDelta,
-    worktreePath: workspace.worktreePath,
-  });
-  const handle = await args.subagents.spawn({
-    type: args.roles.reviewer.type,
-    role: "reviewer",
-    model: args.roles.reviewer.model,
-    thinking: args.roles.reviewer.thinking,
+  };
+  const handle = await spawnValidatedWorker({
+    packet,
+    subagents: args.subagents,
+    roles: args.roles,
     taskId: args.workstream.repairId,
     description: `Assess overall repair ${args.workstream.repairId}`,
-    cwd: workspace.worktreePath,
-    prompt,
     readOnly: true,
+    completionKind: "anchored-review",
     completion: {
-      description: "Assess every outstanding whole-plan finding.",
+      description: "Assess every outstanding finding.",
       schema: anchoredReviewSchema,
-    } as never,
+    },
+    render: (workerPacket) =>
+      buildAnchoredOverallReviewPrompt({
+        planContext: workerPacket.planContext,
+        candidateContext: workerPacket.candidateContext,
+        outstandingFindings: workerPacket.outstandingFindings as never,
+        previousCandidate: workerPacket.previousCandidate.commitSha,
+        currentCandidate: workerPacket.candidate.commitSha,
+        latestDelta: workerPacket.latestDelta,
+        worktreePath: workerPacket.workspace.path,
+      }),
   });
   const result = await args.subagents.waitFor<unknown>(handle, args.signal);
   if (result.status !== "completed") {

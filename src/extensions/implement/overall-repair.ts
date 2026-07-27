@@ -13,9 +13,22 @@ import {
   overallReworkSchema,
   type OverallReworkCompletion,
 } from "./result-schemas.js";
-import type { SubagentClient } from "./subagents.js";
+import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import type { RuntimeWorkstream } from "./scheduler.js";
 import { protectedArtifactsMatch, type RunState } from "./store.js";
+import { spawnValidatedWorker } from "./worker-invocation.js";
+
+export type OverallRepairPacket = {
+  role: "implementer";
+  completionKind: "overall-rework";
+  identity: string;
+  workspace: { path: string; mutationBoundary: string };
+  runId: string;
+  baseline: RunState["candidates"][string];
+  plan: ExecutionPlan;
+  runDiff: string;
+  findings: RunState["findings"][string][];
+};
 
 export function overallRepairWorkspace(
   state: RunState,
@@ -49,11 +62,7 @@ export async function runOverallRepair(args: {
   subagents: SubagentClient;
   artifactsPath: string;
   signal?: AbortSignal;
-  roles?: {
-    model?: string;
-    type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  };
+  roles: ImplementRoles;
 }): Promise<{
   candidate: RunState["candidates"][string];
   checkpoints: Record<string, string>;
@@ -105,31 +114,40 @@ export async function runOverallRepair(args: {
       finding.workstream.repairId === args.repairId &&
       finding.status === "open",
   );
-  const handle = await args.subagents.spawn({
-    type: args.roles?.type ?? "pipkin:implement:implementer",
+  if (findings.length === 0) {
+    throw new Error("Overall repair requires complete current open findings.");
+  }
+  const packet: OverallRepairPacket = {
     role: "implementer",
-    model: args.roles?.model,
-    thinking: args.roles?.thinking,
+    completionKind: "overall-rework",
+    identity: `${args.state.run.id}/${args.repairId}/${baseline.id}`,
+    workspace: {
+      path: workspace.worktreePath,
+      mutationBoundary:
+        "Commit tracked corrections only in this owned worktree.",
+    },
+    runId: args.state.run.id,
+    baseline,
+    plan: args.plan,
+    runDiff: await args.git.diffRange(
+      args.state.run.checkout.startHead,
+      baseline.commitSha,
+    ),
+    findings,
+  };
+  const handle = await spawnValidatedWorker({
+    packet,
+    subagents: args.subagents,
+    roles: args.roles,
     taskId: args.repairId,
     description: `Repair whole-plan findings for ${args.repairId}`,
-    cwd: workspace.worktreePath,
-    prompt: buildOverallReworkPrompt({
-      planContent: JSON.stringify(args.plan, null, 2),
-      planPath: args.plan.source.planPath,
-      baseSha: baseline.baseSha,
-      headSha: baseline.commitSha,
-      diff: await args.git.diffRange(
-        args.state.run.checkout.startHead,
-        baseline.commitSha,
-      ),
-      runId: args.state.run.id,
-      findings,
-      worktreePath: workspace.worktreePath,
-    }),
+    readOnly: false,
+    completionKind: "overall-rework",
     completion: {
       description: "Report evidence for each whole-plan finding.",
       schema: overallReworkSchema,
-    } as never,
+    },
+    render: buildOverallReworkPrompt,
   });
   const result = await args.subagents.waitFor<unknown>(handle, args.signal);
   if (result.status !== "completed") {

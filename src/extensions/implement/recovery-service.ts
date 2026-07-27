@@ -51,7 +51,14 @@ export async function runRecovery(args: {
   });
   const episode = args.state.recoveryEpisodes[packet.episode.id]!;
   const candidate = packet.candidate;
-  const correctionWorktreePath = packet.workspace.correctionPath;
+  if (candidate && packet.workspace.scope === "candidate") {
+    await assertRetainedCandidateWorkspace({
+      state: args.state,
+      workstream: args.effect.workstream,
+      candidate,
+      git: args.git,
+    });
+  }
   const handle = await spawnValidatedWorker({
     packet,
     subagents: args.subagents,
@@ -75,6 +82,24 @@ export async function runRecovery(args: {
   }
   try {
     const completion = response.result;
+    if (
+      packet.workspace.scope === "runtime" &&
+      !["retry", "repair_environment", "diagnose", "no_safe_action"].includes(
+        completion.action,
+      )
+    ) {
+      throw new Error(
+        "Runtime-scoped hook recovery cannot correct a candidate.",
+      );
+    }
+    if (
+      packet.workspace.scope === "candidate" &&
+      completion.action === "repair_environment"
+    ) {
+      throw new Error(
+        "Candidate-scoped recovery cannot repair hook runtime state.",
+      );
+    }
     const action: RecoveryAction = {
       kind: completion.action,
       outcome:
@@ -141,7 +166,7 @@ export async function runRecovery(args: {
         );
       }
       const candidateTip = await canonicalCommitSha(
-        args.git.forWorktree(correctionWorktreePath),
+        args.git.forWorktree(packet.workspace.path),
         completion.candidateTip,
       );
       result.candidate = await recoveredCandidate({
@@ -152,7 +177,7 @@ export async function runRecovery(args: {
         git: args.git,
       });
       const changedPaths = await changedPathsBetween(
-        args.git.forWorktree(correctionWorktreePath),
+        args.git.forWorktree(packet.workspace.path),
         candidate.commitSha,
         candidateTip,
       );

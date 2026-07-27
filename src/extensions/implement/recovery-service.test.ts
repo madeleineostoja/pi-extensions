@@ -319,7 +319,7 @@ describe(" recovery service", () => {
     expect(prompt).toContain("not readable from the assigned workspace");
   });
 
-  it("validates tracked hook corrections from the candidate worktree", async () => {
+  it("rejects candidate corrections from a staging-scoped hook recovery", async () => {
     const root = mkdtempSync(join(tmpdir(), "pipkin-implement-hook-recovery-"));
     directories.add(root);
     git(root, "init");
@@ -424,50 +424,45 @@ describe(" recovery service", () => {
       protectedArtifactHashes: {},
     } as unknown as RunState;
     let prompt = "";
-    let correctedTip = "";
 
-    const outcome = await runRecovery({
-      state,
-      effect: {
-        kind: "run_recovery",
-        workstream: { kind: "source", id: "work" },
-        leaseId: "lease",
-        episodeId: "episode",
-        independentlyEscalated: false,
-      },
-      git: client,
-      subagents: {
-        stop: async () => undefined,
-        spawn: async (args: SpawnArgs) => {
-          prompt = args.prompt;
-          return "recovery-agent" as never;
+    await expect(
+      runRecovery({
+        state,
+        effect: {
+          kind: "run_recovery",
+          workstream: { kind: "source", id: "work" },
+          leaseId: "lease",
+          episodeId: "episode",
+          independentlyEscalated: false,
         },
-        waitFor: async () => {
-          writeFileSync(join(candidatePath, "correction.txt"), "corrected\n");
-          git(candidatePath, "add", ".");
-          git(candidatePath, "commit", "-m", "fix: correct candidate");
-          correctedTip = await candidateGit.head();
-          return {
-            status: "completed" as const,
-            result: {
-              action: "rework_candidate" as const,
-              summary: "Corrected the hook failure.",
-              evidence: "Committed the tracked correction.",
-              candidateTip: correctedTip.slice(0, 12),
-              changedPaths: ["correction.txt"],
-            },
-          } as never;
+        git: client,
+        subagents: {
+          stop: async () => undefined,
+          spawn: async (args: SpawnArgs) => {
+            prompt = args.prompt;
+            return "recovery-agent" as never;
+          },
+          waitFor: async () =>
+            ({
+              status: "completed" as const,
+              result: {
+                action: "rework_candidate" as const,
+                summary: "Attempted a candidate correction.",
+                evidence:
+                  "The candidate must be corrected in a later scoped turn.",
+                candidateTip: candidateSha,
+                changedPaths: ["correction.txt"],
+              },
+            }) as never,
         },
-      },
-      artifactsPath: join(root, ".pi", "pipkin", "implement", "artifacts"),
-      roles: recoveryRoles(),
-    });
+        artifactsPath: join(root, ".pi", "pipkin", "implement", "artifacts"),
+        roles: recoveryRoles(),
+      }),
+    ).rejects.toThrow(
+      "Runtime-scoped hook recovery cannot correct a candidate",
+    );
 
     expect(prompt).toContain(stagingPath);
-    expect(prompt).toContain(candidatePath);
-    expect(outcome).toMatchObject({
-      candidate: { commitSha: correctedTip },
-      correction: { changedPaths: ["correction.txt"] },
-    });
+    expect(prompt).not.toContain(candidatePath);
   });
 });

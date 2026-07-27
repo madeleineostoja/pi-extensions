@@ -1,7 +1,7 @@
 import { isAbsolute, resolve } from "node:path";
 import { overallRepairWorkspace } from "./overall-repair.js";
 import type { RuntimeWorkstream, SchedulerEffect } from "./scheduler.js";
-import type { RunState } from "./store.js";
+import { protectedArtifactsMatch, type RunState } from "./store.js";
 import { WorkerPacketError } from "./worker-invocation.js";
 import { workstreamWorkspace } from "./workstream-candidate.js";
 
@@ -21,7 +21,7 @@ export type RecoveryWorkerPacket = {
   identity: string;
   workspace: {
     path: string;
-    correctionPath: string;
+    scope: "runtime" | "candidate";
     mutationBoundary: string;
   };
   target: {
@@ -54,6 +54,9 @@ export function buildRecoveryPacket(args: {
   state: RunState;
   effect: Extract<SchedulerEffect, { kind: "run_recovery" }>;
 }): RecoveryWorkerPacket {
+  if (!protectedArtifactsMatch(args.state)) {
+    throw packetError(args.effect, "has changed protected corpus");
+  }
   const episode = args.state.recoveryEpisodes[args.effect.episodeId];
   if (!episode || episode.status !== "open") {
     throw packetError(
@@ -70,6 +73,9 @@ export function buildRecoveryPacket(args: {
   const gate = args.state.gates.find((entry) => entry.id === episode.gateId);
   if (!gate) {
     throw packetError(args.effect, `references missing gate ${episode.gateId}`);
+  }
+  if (gate.kind === "whole_plan") {
+    throw packetError(args.effect, "cannot consume a whole-plan failure");
   }
   if (
     gate.outcome !== "failed" ||
@@ -146,11 +152,6 @@ export function buildRecoveryPacket(args: {
     return finding;
   });
   validateRecoveryWorkspace(args.state, args.effect.workstream);
-  const correctionPath = candidateWorktree(
-    args.state,
-    args.effect.workstream,
-    candidate,
-  );
   const workspacePath = recoveryWorktree(
     args.state,
     args.effect.workstream,
@@ -158,7 +159,10 @@ export function buildRecoveryPacket(args: {
     episode.workspace,
     gate.kind,
   );
-  const usesHookStaging = workspacePath !== correctionPath;
+  const scope =
+    gate.kind === "hook" && episode.workspace.id.startsWith("staging-")
+      ? "runtime"
+      : "candidate";
   const artifactProvenance =
     gate.kind === "review" && isAbsolute(gate.evidence)
       ? { kind: "retained-artifact" as const, path: gate.evidence }
@@ -169,10 +173,11 @@ export function buildRecoveryPacket(args: {
     identity: `${episode.id}/${gate.id}`,
     workspace: {
       path: workspacePath,
-      correctionPath,
-      mutationBoundary: usesHookStaging
-        ? `Ignored/runtime hook repair belongs in ${workspacePath}; tracked candidate corrections belong in ${correctionPath}. The target checkout is read-only.`
-        : "The assigned disposable worktree only; the target checkout is read-only.",
+      scope,
+      mutationBoundary:
+        scope === "runtime"
+          ? "Repair ignored/runtime hook state only in this one staging workspace. The target and candidate worktrees are not available."
+          : "Make committed candidate corrections only in this one owned worktree; the target checkout is read-only.",
     },
     target: {
       branchRef: args.state.run.checkout.branchRef,

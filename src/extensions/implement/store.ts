@@ -1812,6 +1812,17 @@ function sameRecoveryEpisodeHistory(
     JSON.stringify(previous.cycle) !== JSON.stringify(next.cycle) ||
     previous.providerFailures !== next.providerFailures ||
     previous.retryAfterMs !== next.retryAfterMs;
+  const scopeAdvanced =
+    previous.status === "open" &&
+    next.status === "open" &&
+    previous.workspace.id.startsWith("staging-") &&
+    next.workspace.id === workstreamIdentity(previous.workstream) &&
+    previous.gateId === next.gateId &&
+    JSON.stringify(previous.gateAttempts) ===
+      JSON.stringify(next.gateAttempts) &&
+    actionsAppended &&
+    next.actions.length === previous.actions.length + 1 &&
+    next.actions.at(-1)?.kind === "diagnose";
   return (
     previous.id === next.id &&
     (previous.status !== "completed" || next.status === "completed") &&
@@ -1823,6 +1834,7 @@ function sameRecoveryEpisodeHistory(
     JSON.stringify(previous.workstream) === JSON.stringify(next.workstream) &&
     previous.candidateId === next.candidateId &&
     (advancedGate ||
+      scopeAdvanced ||
       (previous.gateId === next.gateId &&
         JSON.stringify(previous.workspace) === JSON.stringify(next.workspace) &&
         JSON.stringify(previous.outstandingFindingIds) ===

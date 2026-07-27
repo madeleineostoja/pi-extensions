@@ -1115,6 +1115,17 @@ export function reduceRunEvent(
         return accept();
       }
       if (event.action.kind === "diagnose") {
+        if (
+          state.gates.find((gate) => gate.id === episode.gateId)?.kind ===
+            "hook" &&
+          episode.workspace.id.startsWith("staging-")
+        ) {
+          episode.workspace = recoveryWorkspace(
+            state,
+            event.workstream,
+            episode.candidateId,
+          );
+        }
         return accept();
       }
       workstream.phase = retryPhaseForGate(episode.gateId);
