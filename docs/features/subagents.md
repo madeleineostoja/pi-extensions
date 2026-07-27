@@ -78,35 +78,25 @@ Use `/agents` to select Running agents (or All to include retained terminal reco
 User-facing public-agent defaults live at:
 
 ```text
-~/.pi/agent/extensions/pi-subagents/config.json
+<agent-dir>/pipkin/config.json
 ```
 
 ```json
 {
-  "agents": {
-    "General": {
-      "model": "provider/model-id",
-      "thinking": "medium"
-    },
-    "Explore": {
-      "model": "provider/model-id",
-      "thinking": "low"
-    },
-    "Review": {
-      "model": "provider/model-id",
-      "thinking": "max"
-    }
+  "models": {
+    "utility": { "model": "provider/utility", "thinking": "minimal" },
+    "low": { "model": "provider/low", "thinking": "low" },
+    "medium": { "model": "provider/medium", "thinking": "medium" },
+    "high": { "model": "provider/high", "thinking": "high" }
   }
 }
 ```
 
-`agents` is optional and keyed by `General`, `Explore`, and `Review`. Each agent can configure `model` and/or `thinking`. Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; Pi may clamp the effective level to the selected model's capability. Invalid keys or values are ignored with a best-effort warning.
-
-An explicit tool-call model override takes precedence over the role configuration; without either, the subagent inherits the current Pi session's model. Autonomous callers are not given an inventory of available models, so a different model is a configuration or orchestration capability rather than a reason for the caller to guess an override.
+All four presets are required. Explore uses `low`, Review uses `high`, and General inherits the active parent model and thinking. Explicit `Agent` model or thinking arguments override the corresponding Explore or Review preset value for that invocation; General accepts explicit values directly. Invalid or missing presets do not select an alternate provider.
 
 ## First-party extension integration
 
-Other bundled extensions can use the same runtime directly. `pi-implement` uses internal managed agents for planner, implementer, and reviewer roles while keeping its own role model/thinking configuration in `~/.pi/agent/extensions/pi-implement/config.json`. Its current recovery lifecycle retains evidence for operator resolution rather than launching an automatic repair agent.
+Other bundled extensions can use the same runtime directly. `/implement` uses internal managed agents with source-owned `high` and `medium` preset routing. Its current recovery lifecycle retains evidence for operator resolution rather than launching an automatic repair agent.
 
 Managed agents may opt into different tool sets. `pi-implement` owns the task-worktree boundaries for its autonomous workers; public `pi-subagents` v1 does not create separate worktrees or provide a scheduler.
 

@@ -1,7 +1,8 @@
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import {
+  getAgentDir,
+  type ExtensionUIContext,
+} from "@earendil-works/pi-coding-agent";
+import { loadPipkinConfig } from "#lib/config";
 
 export type Config = {
   staleTurns: number;
@@ -44,64 +45,38 @@ export const DEFAULTS: Config = {
 };
 
 type Notifier = ExtensionUIContext["notify"];
-type FileReader = (path: string, encoding: "utf8") => string;
 
 export function defaultConfig(): Config {
   return { ...DEFAULTS };
 }
 
-export function loadConfig(
-  notify?: Notifier,
-  _readFile: FileReader = readFileSync as FileReader,
-): Config {
-  const home = homedir();
-  if (!home) {
-    return defaultConfig();
-  }
-
-  const configPath = join(
-    home,
-    ".pi",
-    "agent",
-    "extensions",
-    "pi-context-prune",
-    "config.json",
+export function loadConfig(notify?: Notifier, _readFile?: unknown): Config {
+  const snapshot = loadPipkinConfig(getAgentDir());
+  const issue = snapshot.issues.find(
+    (issue) =>
+      issue.path === snapshot.path ||
+      issue.path === "config" ||
+      issue.path === "context" ||
+      issue.path.startsWith("context."),
   );
-
-  let raw: string;
-  try {
-    raw = _readFile(configPath, "utf8");
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return defaultConfig();
-    }
+  if (issue && issue.message !== "file does not exist") {
     notify?.(
-      `pi-context-prune: could not read config file: ${String(err)}`,
+      `Pipkin Context: config error in ${snapshot.path}: ${issue.message}`,
       "warning",
     );
+  }
+  return resolveConfig(snapshot.config.context, notify);
+}
+
+export function resolveConfig(
+  section: Readonly<Record<string, unknown>> | undefined,
+  notify?: Notifier,
+): Config {
+  if (section === undefined) {
     return defaultConfig();
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    notify?.(
-      "pi-context-prune: config file contains malformed JSON; using defaults",
-      "warning",
-    );
-    return defaultConfig();
-  }
-
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    notify?.(
-      "pi-context-prune: config file must be a JSON object; using defaults",
-      "warning",
-    );
-    return defaultConfig();
-  }
-
-  const obj = parsed as Record<string, unknown>;
+  const obj = section;
   const config = defaultConfig();
 
   const numKeys: Array<

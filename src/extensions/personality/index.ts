@@ -4,11 +4,20 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { CONFIG_RELATIVE_PATH, resolveConfiguredModel } from "./config.js";
 import { completeText } from "#lib/complete";
-import { buildTitlePrompt, parseModelRef, sanitizeTitle } from "./utils.js";
+import {
+  getConfigPath,
+  loadPipkinConfig,
+  presetIssue,
+  type ModelPreset,
+} from "#lib/config";
+import { parseModelRef } from "#lib/model-ref";
+import { buildTitlePrompt, sanitizeTitle } from "./utils.js";
 
 export default function (pi: ExtensionAPI) {
+  const config = loadPipkinConfig(getAgentDir());
+  const utility = config.config.models.utility;
+  const utilityIssue = presetIssue(config, "utility");
   const titlePromptsThisSession: string[] = [];
   let warnedThisSession = false;
   let attemptedThisSession = false;
@@ -61,7 +70,6 @@ export default function (pi: ExtensionAPI) {
     }
     attemptedThisSession = true;
 
-    const agentDir = getAgentDir();
     const generation = sessionGeneration;
     const abortController = new AbortController();
     titleAbortController = abortController;
@@ -71,7 +79,8 @@ export default function (pi: ExtensionAPI) {
 
     void generateNameAsync(
       ctx,
-      agentDir,
+      utility,
+      utilityIssue?.message,
       [...titlePromptsThisSession],
       signal,
     ).then((result) => {
@@ -109,31 +118,35 @@ type GenerateResult =
 
 async function generateNameAsync(
   ctx: ExtensionContext,
-  agentDir: string,
+  utility: ModelPreset | undefined,
+  utilityIssue: string | undefined,
   promptText: string | readonly string[],
   signal: AbortSignal,
 ): Promise<GenerateResult> {
   const localTitle = fallbackTitle(promptText);
 
   try {
-    const configuredModel = resolveConfiguredModel(agentDir);
-    if (!configuredModel) {
+    if (!utility) {
       if (localTitle) {
         return { outcome: "success", title: localTitle };
       }
-      const message = `No model configured. Set ${CONFIG_RELATIVE_PATH} with { "model": "provider/model-id" }.`;
-      return { outcome: "preflight-failure", message };
+      return {
+        outcome: "preflight-failure",
+        message: `Pipkin config ${getConfigPath(getAgentDir())}: utility preset ${utilityIssue ?? "is unavailable"}.`,
+      };
     }
 
-    const parsed = parseModelRef(configuredModel);
+    const parsed = parseModelRef(utility.model);
     if (!parsed) {
-      const message = `Invalid model reference: ${configuredModel}`;
-      return { outcome: "preflight-failure", message };
+      return {
+        outcome: "preflight-failure",
+        message: `Pipkin config ${getConfigPath(getAgentDir())}: utility preset is invalid.`,
+      };
     }
 
     const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
     if (!model) {
-      const message = `Model not found: ${configuredModel}`;
+      const message = `Model not found: ${utility.model}`;
       return { outcome: "preflight-failure", message };
     }
 
@@ -160,7 +173,7 @@ async function generateNameAsync(
         apiKey: auth.apiKey,
         headers: auth.headers,
         maxTokens: 1024,
-        reasoning: "minimal",
+        reasoning: utility.thinking as never,
         signal,
       },
     );

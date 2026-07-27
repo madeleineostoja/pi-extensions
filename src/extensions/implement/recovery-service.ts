@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import type { EffectiveRole } from "./config.js";
+import type { ImplementRole } from "./subagents.js";
 import {
   canonicalCommitSha,
   changedPathsBetween,
@@ -41,7 +41,7 @@ export async function runRecovery(args: {
   subagents: SubagentClient;
   artifactsPath: string;
   signal?: AbortSignal;
-  roles: EffectiveRole;
+  roles: ImplementRole;
 }): Promise<RecoveryResult> {
   const episode = args.state.recoveryEpisodes[args.effect.episodeId];
   if (!episode || episode.workstream.kind !== args.effect.workstream.kind) {

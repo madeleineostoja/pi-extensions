@@ -4,7 +4,11 @@ import * as os from "node:os";
 import * as nodeModule from "node:module";
 import { fileURLToPath } from "node:url";
 
-import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import {
+  getAgentDir,
+  type ExtensionUIContext,
+} from "@earendil-works/pi-coding-agent";
+import { getConfigPath, loadPipkinConfig } from "#lib/config";
 import {
   DEFAULT_POLICY,
   type DegradedPolicy,
@@ -23,17 +27,11 @@ export type LoadPolicyOptions = {
   ui?: NotifyTarget;
   home?: string;
   platform?: NodeJS.Platform;
+  agentDir?: string;
 };
 
-export function getUserConfigPath(homeDir = os.homedir()): string {
-  return path.join(
-    homeDir,
-    ".pi",
-    "agent",
-    "extensions",
-    "pi-sandbox",
-    "config.json",
-  );
+export function getProjectConfigPath(cwd: string): string {
+  return path.join(cwd, ".pi", "pipkin", "sandbox.json");
 }
 
 function getDefaultTempDirs(platform: NodeJS.Platform): string[] {
@@ -326,6 +324,24 @@ function allowHostDocumentation(policy: Policy): void {
   }
 }
 
+function validateOverride(
+  value: unknown,
+  source: string,
+  ui: NotifyTarget | undefined,
+): (PartialPolicy & Pick<Partial<Policy>, "enabled">) | null {
+  try {
+    return validatePolicy(value);
+  } catch (err) {
+    const message =
+      err instanceof PolicyValidationError ? err.message : String(err);
+    ui?.notify(
+      `Pipkin Sandbox: config error in ${source}: ${message}`,
+      "error",
+    );
+    return null;
+  }
+}
+
 function tryLoadFile(
   filePath: string,
   ui: NotifyTarget | undefined,
@@ -334,28 +350,14 @@ function tryLoadFile(
     return null;
   }
 
-  let raw: string;
   try {
-    raw = fs.readFileSync(filePath, "utf8");
+    return validateOverride(
+      JSON.parse(fs.readFileSync(filePath, "utf8")),
+      filePath,
+      ui,
+    );
   } catch {
-    ui?.notify(`pi-sandbox: could not read ${filePath}`, "error");
-    return null;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    ui?.notify(`pi-sandbox: invalid JSON in ${filePath}`, "error");
-    return null;
-  }
-
-  try {
-    return validatePolicy(parsed);
-  } catch (err) {
-    const message =
-      err instanceof PolicyValidationError ? err.message : String(err);
-    ui?.notify(`pi-sandbox: config error in ${filePath}: ${message}`, "error");
+    ui?.notify(`Pipkin Sandbox: invalid JSON in ${filePath}`, "error");
     return null;
   }
 }
@@ -380,13 +382,31 @@ export function createPolicyManager(): PolicyManager {
     const { ui, home } = opts;
     const platform = opts.platform ?? process.platform;
     const homeDir = home ?? os.homedir();
-
-    const globalPath = getUserConfigPath(homeDir);
-    const projectPath = path.join(cwd, ".pi", "sandbox.json");
+    const agentDir =
+      opts.agentDir ??
+      (home === undefined ? getAgentDir() : path.join(homeDir, ".pi", "agent"));
+    const centralPath = getConfigPath(agentDir);
+    const snapshot = loadPipkinConfig(agentDir);
+    const projectPath = getProjectConfigPath(cwd);
 
     let policy: Policy = structuredClone(DEFAULT_POLICY);
 
-    const globalOverride = tryLoadFile(globalPath, ui);
+    const sandboxIssue = snapshot.issues.find(
+      (issue) =>
+        issue.path === centralPath ||
+        issue.path === "sandbox" ||
+        issue.path === "config",
+    );
+    if (sandboxIssue && sandboxIssue.message !== "file does not exist") {
+      ui?.notify(
+        `Pipkin Sandbox: config error in ${centralPath}: ${sandboxIssue.message}`,
+        "error",
+      );
+    }
+    const globalOverride =
+      snapshot.config.sandbox === undefined
+        ? null
+        : validateOverride(snapshot.config.sandbox, centralPath, ui);
     if (globalOverride) {
       policy = deepMerge(policy, globalOverride);
     }

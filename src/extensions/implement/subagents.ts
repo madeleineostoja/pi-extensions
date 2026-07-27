@@ -3,7 +3,8 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { getSubagentRuntime } from "#subagents/runtime";
-import type { RuntimeSnapshot, ThinkingLevel } from "#subagents/runtime";
+import type { RuntimeSnapshot } from "#subagents/runtime";
+import type { ModelPreset, ThinkingLevel } from "#lib/config";
 import type { Static, TSchema } from "typebox";
 
 export type SubagentHandle<TResult = unknown> = string & {
@@ -48,6 +49,35 @@ export type SubagentResult<TResult = any> =
   | { status: "completed"; result: TResult }
   | { status: "failed"; error: string }
   | { status: "stopped"; error: string };
+
+export type ImplementRole = {
+  type: string;
+  model: string;
+  thinking: ThinkingLevel;
+};
+
+export type ImplementRoles = {
+  implementer: ImplementRole;
+  reviewer: ImplementRole;
+  planner: ImplementRole;
+  recovery: ImplementRole;
+};
+
+export function resolveImplementRoles(
+  models: Readonly<Partial<Record<"medium" | "high", ModelPreset>>>,
+): ImplementRoles | undefined {
+  const medium = models.medium;
+  const high = models.high;
+  if (!medium || !high) {
+    return undefined;
+  }
+  return {
+    implementer: { type: "pi-implement:implementer", ...medium },
+    reviewer: { type: "Review", ...high },
+    planner: { type: "pi-implement:planner", ...high },
+    recovery: { type: "pi-implement:recovery", ...medium },
+  };
+}
 
 const READ_ONLY_TOOLS = [
   "read",

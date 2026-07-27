@@ -1,31 +1,33 @@
-# pi-auto-name
+# Personality
 
 Automatically generate a short session name from the first user prompt.
 
-When a new interactive coding session starts from a first user prompt, pi-auto-name generates a concise title using a configured model and sets Pi's canonical session name. Native Pi surfaces—`/resume`, the terminal title, and window title—pick it up automatically.
+Personality uses the Pipkin `utility` model preset and sets Pi's canonical session name. Native Pi surfaces—`/resume`, the terminal title, and window title—pick it up automatically.
 
 ## Usage
 
 Automatic naming happens on the first non-empty agent prompt in an unnamed session. Generation runs asynchronously so the main agent turn is never delayed.
 
-No model is configured by default. Without a configured model, pi-auto-name falls back to a local title derived from the prompt.
-
-Configure the model by editing the global user config at `<agent-dir>/extensions/pi-auto-name/config.json`:
+Configure all Pipkin model presets in `<agent-dir>/pipkin/config.json`; Personality uses only `models.utility`:
 
 ```json
 {
-  "model": "openai/gpt-4.1-nano"
+  "models": {
+    "utility": { "model": "openai/gpt-4.1-nano", "thinking": "minimal" },
+    "low": { "model": "provider/low", "thinking": "low" },
+    "medium": { "model": "provider/medium", "thinking": "medium" },
+    "high": { "model": "provider/high", "thinking": "high" }
+  }
 }
 ```
 
-Model refs use `provider/model-id` format. For best latency and cost, choose a cheap non-reasoning model when available.
+When Utility cannot run, Personality falls back to a local prompt-derived title.
 
 ## Behavior
 
 - Never overwrites an existing or manually set session name.
-- Uses only the configured model; there is no built-in default model.
-- Requests minimal reasoning to support providers that require an explicit reasoning level.
-- Falls back to a local prompt-derived title when no model is configured or the model returns no usable title.
+- Uses only the Utility preset; there is no alternate model route.
+- Uses the preset thinking level.
 - Generated titles are sanitized: trimmed, collapsed, stripped of surrounding quotes/backticks and leading `Title:` / `Name:` style prefixes, truncated to 40 characters on a word boundary, and taken from the first non-empty output line only.
 
 ## License

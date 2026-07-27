@@ -17,6 +17,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { completeText, type CompleteTextDeps } from "#lib/complete";
+import { parseModelRef } from "#lib/model-ref";
+import type { ModelPreset, ThinkingLevel } from "#lib/config";
 import { Type, type Static, type TSchema } from "typebox";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
@@ -28,11 +30,6 @@ import {
   type PublicBuiltinType,
 } from "./agent-profiles.js";
 import {
-  loadPublicConfig,
-  type ResolvedPublicSubagentsConfig,
-  type ThinkingLevel,
-} from "./config.js";
-import {
   immutableInspection,
   projectMessages,
   retainActivity,
@@ -40,7 +37,7 @@ import {
   type InspectionActivity,
   type RuntimeInspection,
 } from "./inspection.js";
-export type { ThinkingLevel } from "./config.js";
+export type { ThinkingLevel } from "#lib/config";
 export type {
   InspectionActivity,
   InspectionMessage,
@@ -547,20 +544,6 @@ function isExploreEligible(type: string): boolean {
   return exploreEligibleTypes.has(type) && type !== "Explore";
 }
 
-function splitModelRef(modelRef: string): {
-  provider: string;
-  modelId: string;
-} {
-  const slash = modelRef.indexOf("/");
-  if (slash <= 0 || slash === modelRef.length - 1) {
-    throw new Error(`Model must be in provider/model format: ${modelRef}`);
-  }
-  return {
-    provider: modelRef.slice(0, slash),
-    modelId: modelRef.slice(slash + 1),
-  };
-}
-
 function resolveSystemPromptInput<TSchemaValue extends TSchema | undefined>(
   input: RunManagedAgentInput<TSchemaValue>,
 ): { prompt: string; mode: PromptMode } | undefined {
@@ -620,8 +603,11 @@ function findModel(
   if (modelRef === undefined) {
     return ctx.model as Model<Api> | undefined;
   }
-  const { provider, modelId } = splitModelRef(modelRef);
-  const model = ctx.modelRegistry.find(provider, modelId);
+  const parsed = parseModelRef(modelRef);
+  if (!parsed) {
+    throw new Error(`Model must be in provider/model format: ${modelRef}`);
+  }
+  const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
   if (!model) {
     throw new Error(`Unknown model ${modelRef}`);
   }
@@ -774,7 +760,7 @@ function exploreToolResult(
 }
 
 export class SubagentRuntime {
-  readonly publicConfig: ResolvedPublicSubagentsConfig;
+  #modelPresets: Partial<Record<"low" | "high", ModelPreset>> = {};
   readonly scope: string;
   #records = new Map<string, RuntimeRecord>();
   #waiters = new Map<string, Waiter[]>();
@@ -787,7 +773,7 @@ export class SubagentRuntime {
   constructor(
     public pi: ExtensionAPI,
     options: {
-      publicConfig?: ResolvedPublicSubagentsConfig;
+      modelPresets?: Partial<Record<"low" | "high", ModelPreset>>;
       createSession?: CreateSession;
       scope?: string;
     } = {},
@@ -795,26 +781,18 @@ export class SubagentRuntime {
     this.scope = options.scope ?? `runtime-${getRuntimeManager().nextScope++}`;
     runtimes.set(pi, this);
     this.#createSession = options.createSession ?? createAgentSession;
-    this.publicConfig =
-      options.publicConfig ??
-      loadPublicConfig({
-        warn: (message) => {
-          try {
-            pi.sendMessage({
-              customType: "pi-subagents.config.warning",
-              content: `[pi-subagents] ${message}`,
-              display: true,
-            });
-          } catch {
-            // best-effort warning for test doubles and early startup
-          }
-        },
-      });
+    this.#modelPresets = { ...options.modelPresets };
   }
 
   rebind(pi: ExtensionAPI): void {
     this.pi = pi;
     runtimes.set(pi, this);
+  }
+
+  setModelPresets(
+    modelPresets: Partial<Record<"low" | "high", ModelPreset>>,
+  ): void {
+    this.#modelPresets = { ...modelPresets };
   }
 
   async dispose(): Promise<void> {
@@ -887,11 +865,8 @@ export class SubagentRuntime {
   queue(input: QueueSubagentInput): RuntimeSnapshot {
     const id = `subagent-${this.#nextId++}`;
     const timestamp = now();
-    const publicAgentConfig = publicTypes.has(input.type)
-      ? this.publicConfig.agents[input.type as PublicBuiltinType]
-      : undefined;
-    const model = input.model ?? publicAgentConfig?.model;
-    const thinking = input.thinking ?? publicAgentConfig?.thinking;
+    const model = input.model;
+    const thinking = input.thinking;
 
     const record: RuntimeRecord = {
       id,
@@ -1026,16 +1001,17 @@ export class SubagentRuntime {
     }
 
     try {
-      const model =
-        this.publicConfig.agents.Explore.model ??
-        resolveModelRef(ctx, undefined).ref;
+      const explore = this.#modelPresets.low;
+      if (!explore) {
+        throw new Error("Pipkin config is missing a valid low model preset.");
+      }
       const started = await this.runPublicAgent({
         type: "Explore",
         prompt: buildExplorePrompt(params),
         description: `explore: ${params.question.trim().slice(0, 100)}`,
         cwd: parent.cwd,
-        ...(model === undefined ? {} : { model }),
-        thinking: this.publicConfig.agents.Explore.thinking,
+        model: explore.model,
+        thinking: explore.thinking,
         mode: "background",
         ctx,
         signal: timeout.signal,
@@ -2023,11 +1999,17 @@ function unregisterRuntime(runtime: SubagentRuntime): void {
   manager.coordinators.delete(bus);
 }
 
-export function getSubagentRuntime(pi: ExtensionAPI): SubagentRuntime {
+export function getSubagentRuntime(
+  pi: ExtensionAPI,
+  modelPresets?: Partial<Record<"low" | "high", ModelPreset>>,
+): SubagentRuntime {
   const manager = getRuntimeManager();
   const direct = runtimes.get(pi);
   if (direct && !manager.disposedRuntimes.has(direct)) {
     rebindRuntime(direct, pi);
+    if (modelPresets) {
+      direct.setModelPresets(modelPresets);
+    }
     return direct;
   }
   const bus = eventBusFor(pi);
@@ -2037,9 +2019,15 @@ export function getSubagentRuntime(pi: ExtensionAPI): SubagentRuntime {
     manager.coordinators.set(bus, coordinator);
   }
   if (!coordinator.runtime) {
-    coordinator.runtime = new SubagentRuntime(pi, { scope: coordinator.scope });
+    coordinator.runtime = new SubagentRuntime(pi, {
+      scope: coordinator.scope,
+      modelPresets,
+    });
   } else {
     rebindRuntime(coordinator.runtime, pi);
+    if (modelPresets) {
+      coordinator.runtime.setModelPresets(modelPresets);
+    }
   }
   runtimes.set(pi, coordinator.runtime);
   return coordinator.runtime;

@@ -19,7 +19,7 @@ If this package is installed through `pi install`, Pi loads the extension automa
 
 Choose **Inspect… → Status** to check the current state.
 
-Add project-specific policy in `.pi/sandbox.json`:
+Add project-specific policy in `.pi/pipkin/sandbox.json`:
 
 ```json
 {
@@ -118,7 +118,7 @@ Argument-bearing commands remain available when inline args or tab completion ar
 
 Host operations use the resource-qualified grammar: `/sandbox allow host <host>` and `/sandbox revoke host <host>`.
 
-Session changes are temporary. Persisted host changes are written to `.pi/sandbox.json` or `~/.pi/agent/extensions/pi-sandbox/config.json`.
+Session changes are temporary. Persisted host changes are written to `.pi/pipkin/sandbox.json` or the `sandbox` section of `<agent-dir>/pipkin/config.json`.
 
 In TUI sessions, in-process filesystem tools prompt on read/write allowlist misses. Deny-pattern matches never prompt. Prompt grants can allow the path once, allow the path for this session, or allow the parent directory for this session; session grants have the same effect as the matching `/sandbox allow read|write <path>` command.
 
@@ -127,8 +127,8 @@ In TUI sessions, in-process filesystem tools prompt on read/write allowlist miss
 Policy is loaded in this order:
 
 1. built-in defaults
-2. `~/.pi/agent/extensions/pi-sandbox/config.json`
-3. `<cwd>/.pi/sandbox.json`
+2. the `sandbox` section of `<agent-dir>/pipkin/config.json`
+3. `<cwd>/.pi/pipkin/sandbox.json`
 
 Project config overrides user config. You only need to specify fields you want to change.
 

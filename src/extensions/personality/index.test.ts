@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -7,7 +7,6 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import registerExtension from "./index.js";
-import { writeConfig } from "./config.js";
 
 const getAgentDirMock = vi.hoisted(() => vi.fn());
 const completeTextMock = vi.hoisted(() => vi.fn());
@@ -115,7 +114,21 @@ describe("automatic session naming", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "pi-auto-name-"));
     getAgentDirMock.mockReturnValue(tmpDir);
-    writeConfig(tmpDir, { model: "openrouter/openai/gpt-oss-20b" });
+    mkdirSync(join(tmpDir, "pipkin"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "pipkin", "config.json"),
+      JSON.stringify({
+        models: {
+          utility: {
+            model: "openrouter/openai/gpt-oss-20b",
+            thinking: "minimal",
+          },
+          low: { model: "openrouter/low", thinking: "low" },
+          medium: { model: "openrouter/medium", thinking: "medium" },
+          high: { model: "openrouter/high", thinking: "high" },
+        },
+      }),
+    );
   });
 
   afterEach(() => {

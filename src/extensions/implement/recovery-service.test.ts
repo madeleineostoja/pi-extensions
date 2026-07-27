@@ -243,7 +243,11 @@ describe(" recovery service", () => {
         },
       },
       artifactsPath: join(root, ".pi", "implement", "artifacts"),
-      roles: { type: "recovery-role" },
+      roles: {
+        type: "recovery-role",
+        model: "test/recovery",
+        thinking: "medium",
+      },
     });
 
     expect(prompt).toContain(stagingPath);

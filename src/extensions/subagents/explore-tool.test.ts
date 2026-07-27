@@ -3,6 +3,8 @@ import {
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
+
+const lowPreset = { low: { model: "ctx/default", thinking: "low" as const } };
 import { SubagentRuntime } from "./runtime.js";
 
 function makePi(activeTools = ["read", "bash", "Agent", "edit"]) {
@@ -101,7 +103,10 @@ describe("runtime-injected explore tool", () => {
       makeSession("explore"),
     ];
     const createSession = vi.fn(async () => ({ session: sessions.shift()! }));
-    const runtime = new SubagentRuntime(pi as never, { createSession });
+    const runtime = new SubagentRuntime(pi as never, {
+      modelPresets: lowPreset,
+      createSession,
+    });
 
     await runtime.runPublicAgent({
       type: "General",
@@ -179,7 +184,10 @@ describe("runtime-injected explore tool", () => {
     const explore = makeSession("explore");
     const sessions = [reviewer, explore];
     const createSession = vi.fn(async () => ({ session: sessions.shift()! }));
-    const runtime = new SubagentRuntime(makePi() as never, { createSession });
+    const runtime = new SubagentRuntime(makePi() as never, {
+      modelPresets: lowPreset,
+      createSession,
+    });
     const readOnlyTools = [
       "read",
       "bash",
@@ -267,12 +275,8 @@ describe("runtime-injected explore tool", () => {
     const createSession = vi.fn(async () => ({ session: child }));
     const runtime = new SubagentRuntime(pi as never, {
       createSession,
-      publicConfig: {
-        agents: {
-          General: {},
-          Explore: { model: "configured/explore", thinking: "low" },
-          Review: {},
-        },
+      modelPresets: {
+        low: { model: "configured/explore", thinking: "low" },
       },
     });
     const parentOwner = {
@@ -350,6 +354,7 @@ describe("runtime-injected explore tool", () => {
   it("truncates large nested Explore output clearly", async () => {
     const pi = makePi();
     const runtime = new SubagentRuntime(pi as never, {
+      modelPresets: lowPreset,
       createSession: vi.fn(async () => ({
         session: makeSession("😀\n".repeat(20_000)),
       })),
@@ -380,6 +385,7 @@ describe("runtime-injected explore tool", () => {
       value: { errorMessage: "😀".repeat(20_000) },
     });
     const runtime = new SubagentRuntime(makePi() as never, {
+      modelPresets: lowPreset,
       createSession: vi.fn(async () => ({ session: child })),
     });
     const parent = runtime.queue({
@@ -418,6 +424,7 @@ describe("runtime-injected explore tool", () => {
       });
     });
     const runtime = new SubagentRuntime(pi as never, {
+      modelPresets: lowPreset,
       createSession: vi.fn(async () => ({ session: child })),
     });
     const parent = runtime.queue({
@@ -467,6 +474,7 @@ describe("runtime-injected explore tool", () => {
         });
       });
       const runtime = new SubagentRuntime(makePi() as never, {
+        modelPresets: lowPreset,
         createSession: vi.fn(async () => ({ session: child })),
       });
       const parent = runtime.queue({
@@ -514,6 +522,7 @@ describe("runtime-injected explore tool", () => {
         });
       });
       const runtime = new SubagentRuntime(makePi() as never, {
+        modelPresets: lowPreset,
         createSession: vi.fn(async () => ({ session: child })),
       });
       const parent = runtime.queue({
@@ -557,6 +566,7 @@ describe("runtime-injected explore tool", () => {
         await promptDone.promise;
       });
       const runtime = new SubagentRuntime(makePi() as never, {
+        modelPresets: lowPreset,
         createSession: vi.fn(async () => ({ session: child })),
       });
       const parent = runtime.queue({
@@ -618,6 +628,7 @@ describe("runtime-injected explore tool", () => {
         await promptDone.promise;
       });
       const runtime = new SubagentRuntime(makePi() as never, {
+        modelPresets: lowPreset,
         createSession: vi.fn(async () => ({ session: child })),
       });
       const parent = runtime.queue({
@@ -671,7 +682,10 @@ describe("runtime-injected explore tool", () => {
   it("prevents recursion from Explore and nested parents", async () => {
     const pi = makePi();
     const createSession = vi.fn(async () => ({ session: makeSession() }));
-    const runtime = new SubagentRuntime(pi as never, { createSession });
+    const runtime = new SubagentRuntime(pi as never, {
+      modelPresets: lowPreset,
+      createSession,
+    });
     const exploreParent = runtime.queue({
       owner: "public-tool",
       type: "Explore",

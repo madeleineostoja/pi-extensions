@@ -379,7 +379,7 @@ describe("handleReload", () => {
   it("surfaces error with file path and reason when reloadPolicy throws", () => {
     const { ui, messages } = makeUI();
     const policy = makePolicy();
-    const configPath = "/home/user/.pi/agent/extensions/pi-sandbox/config.json";
+    const configPath = "/home/user/.pi/agent/pipkin/config.json";
     const policyManager: PolicyManager = {
       getPolicy: () => policy,
       loadPolicy: (_cwd) => policy,
@@ -620,7 +620,7 @@ describe("--persist write preserves comments", () => {
   });
 
   it("writes to project config and merges with existing content", () => {
-    const configDir = path.join(tmpDir, ".pi");
+    const configDir = path.join(tmpDir, ".pi", "pipkin");
     fs.mkdirSync(configDir, { recursive: true });
     const configPath = path.join(configDir, "sandbox.json");
 
@@ -660,7 +660,7 @@ describe("--persist write preserves comments", () => {
 
     cmds.handleAllow(ctx, ["created.com"], "project");
 
-    const configPath = path.join(tmpDir, ".pi", "sandbox.json");
+    const configPath = path.join(tmpDir, ".pi", "pipkin", "sandbox.json");
     expect(fs.existsSync(configPath)).toBe(true);
     const written = fs.readFileSync(configPath, "utf8");
     expect(written).toContain("created.com");

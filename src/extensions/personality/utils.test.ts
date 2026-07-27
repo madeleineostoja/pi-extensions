@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { parseModelRef, sanitizeTitle, buildTitlePrompt } from "./utils.js";
+import { parseModelRef } from "#lib/model-ref";
+import { sanitizeTitle, buildTitlePrompt } from "./utils.js";
 
 describe("parseModelRef", () => {
   it("splits provider/model refs at the first slash", () => {

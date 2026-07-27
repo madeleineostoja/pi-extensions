@@ -13,14 +13,13 @@ import type {
   ExtensionCommandContext,
   ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
+import { getConfigPath } from "#lib/config";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { promptForPermission } from "#lib/permission-prompt";
 import type { AutocompleteItem } from "../types/pi-tui.js";
 import type { AuditPipeline } from "../audit/audit.js";
 import { isValidNetworkAllowEntry, matchHost } from "../policy/schema.js";
-import {
-  getUserConfigPath as getPolicyUserConfigPath,
-  type PolicyManager,
-} from "../policy/load.js";
+import { getProjectConfigPath, type PolicyManager } from "../policy/load.js";
 import type { EventsTarget } from "../audit/events.js";
 import {
   canonicalizeFsGrantPathSync,
@@ -123,16 +122,105 @@ function getPersistedAllowedHosts(filePath: string): string[] {
   return readPersistedConfig(filePath)?.network?.allow ?? [];
 }
 
+function readUserConfig(filePath: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Pipkin config must be a JSON object");
+    }
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return {};
+    }
+    throw error;
+  }
+}
+
+function userSandbox(root: Record<string, unknown>): Record<string, unknown> {
+  const sandbox = root.sandbox;
+  if (sandbox === undefined) {
+    return {};
+  }
+  if (!sandbox || typeof sandbox !== "object" || Array.isArray(sandbox)) {
+    throw new Error("Pipkin config sandbox section must be an object");
+  }
+  return sandbox as Record<string, unknown>;
+}
+
+function userHosts(root: Record<string, unknown>): string[] {
+  const network = userSandbox(root).network;
+  if (network === undefined) {
+    return [];
+  }
+  if (!network || typeof network !== "object" || Array.isArray(network)) {
+    throw new Error("Pipkin config sandbox.network section must be an object");
+  }
+  const allow = (network as Record<string, unknown>).allow;
+  return Array.isArray(allow)
+    ? allow.filter((host): host is string => typeof host === "string")
+    : [];
+}
+
+function writeUserHosts(
+  filePath: string,
+  root: Record<string, unknown>,
+  hosts: string[],
+): void {
+  const sandbox = userSandbox(root);
+  const network =
+    sandbox.network &&
+    typeof sandbox.network === "object" &&
+    !Array.isArray(sandbox.network)
+      ? (sandbox.network as Record<string, unknown>)
+      : {};
+  ensureDir(filePath);
+  fs.writeFileSync(
+    filePath,
+    `${JSON.stringify(
+      {
+        ...root,
+        sandbox: {
+          ...sandbox,
+          network: { ...network, allow: hosts },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+}
+
+function updateUserHosts(filePath: string, hosts: string[]): void {
+  const root = readUserConfig(filePath);
+  writeUserHosts(filePath, root, [...new Set([...userHosts(root), ...hosts])]);
+}
+
+function removeUserHost(filePath: string, host: string): boolean {
+  const root = readUserConfig(filePath);
+  const hosts = userHosts(root);
+  if (!hosts.includes(host)) {
+    return false;
+  }
+  writeUserHosts(
+    filePath,
+    root,
+    hosts.filter((entry) => entry !== host),
+  );
+  return true;
+}
+
+function getUserPersistedAllowedHosts(filePath: string): string[] {
+  return userHosts(readUserConfig(filePath));
+}
+
 // ---------------------------------------------------------------------------
 // Config file paths
 // ---------------------------------------------------------------------------
 
-function getProjectConfigPath(cwd: string): string {
-  return path.join(cwd, ".pi", "sandbox.json");
-}
-
 function getUserConfigPath(): string {
-  return getPolicyUserConfigPath();
+  return getConfigPath(getAgentDir());
 }
 
 // ---------------------------------------------------------------------------
@@ -606,7 +694,19 @@ export function createSlashCommands(
           : getProjectConfigPath(ctx.cwd);
 
       try {
-        writeHostsToPersisted(filePath, hosts);
+        if (persist === "user") {
+          try {
+            updateUserHosts(filePath, hosts);
+          } catch (error) {
+            ctx.ui.notify(
+              `Failed to update ${filePath}: ${String(error)}`,
+              "error",
+            );
+            return;
+          }
+        } else {
+          writeHostsToPersisted(filePath, hosts);
+        }
       } catch (err) {
         ctx.ui.notify(
           `Failed to write to ${filePath}: ${String(err)}`,
@@ -658,7 +758,16 @@ export function createSlashCommands(
       const projectPath = getProjectConfigPath(ctx.cwd);
       const userPath = getUserConfigPath();
       const removedProject = removeHostFromPersistedFile(projectPath, host);
-      const removedUser = removeHostFromPersistedFile(userPath, host);
+      let removedUser = false;
+      try {
+        removedUser = removeUserHost(userPath, host);
+      } catch (error) {
+        ctx.ui.notify(
+          `Failed to update ${userPath}: ${String(error)}`,
+          "error",
+        );
+        return;
+      }
 
       if (removedProject || removedUser) {
         ctx.policyManager.reloadPolicy(ctx.cwd);
@@ -683,7 +792,16 @@ export function createSlashCommands(
         const projectPath = getProjectConfigPath(ctx.cwd);
         const projectHosts = getPersistedAllowedHosts(projectPath);
         const userPath = getUserConfigPath();
-        const userHosts = getPersistedAllowedHosts(userPath);
+        let userHosts: string[];
+        try {
+          userHosts = getUserPersistedAllowedHosts(userPath);
+        } catch (error) {
+          ctx.ui.notify(
+            `Failed to read ${userPath}: ${String(error)}`,
+            "error",
+          );
+          return;
+        }
 
         if (projectHosts.includes(host) || userHosts.includes(host)) {
           ctx.ui.notify(

@@ -2,12 +2,8 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import {
-  readConfig,
-  resolveEffectiveRoles,
-  resolveWorkerConcurrency,
-} from "./config.js";
+import type { ConfigSnapshot } from "#lib/config";
+import { resolveImplementRoles } from "./subagents.js";
 import { parseCommand, usage, type ParsedCommand } from "./parser.js";
 import { stopRun, startRun, resumeRun, type ActiveRun } from "./run.js";
 import {
@@ -24,7 +20,11 @@ import type { RunState } from "./store.js";
 
 type TemporaryActivity = ReturnType<typeof createTemporaryActivity>;
 
-export function registerImplementCommand(pi: ExtensionAPI): void {
+export function registerImplementCommand(
+  pi: ExtensionAPI,
+  config?: ConfigSnapshot,
+): void {
+  const roles = config && resolveImplementRoles(config.config.models);
   let active: ActiveRun | undefined;
   let activity: TemporaryActivity | undefined;
 
@@ -196,11 +196,13 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
       );
       return;
     }
-    const config = readConfig(getAgentDir());
-    if (config.warning) {
-      ctx.ui.notify(`pi-implement config: ${config.warning}`, "warning");
+    if (!roles || !config) {
+      ctx.ui.notify(
+        `Pipkin config ${config?.path ?? "is unavailable"} is missing a valid medium or high model preset.`,
+        "warning",
+      );
+      return;
     }
-    const effective = resolveEffectiveRoles(config.config);
     activity?.clear();
     const nextActivity = createTemporaryActivity(ctx);
     activity = nextActivity;
@@ -226,7 +228,7 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
           ctx,
           planPath: parsed.planPath,
           runId: parsed.recovery.runId,
-          roles: effective.roles,
+          roles,
           onTransition,
         });
         nextActivity.update(active.store.read());
@@ -237,8 +239,8 @@ export function registerImplementCommand(pi: ExtensionAPI): void {
         pi,
         ctx,
         planPath: parsed.planPath,
-        roles: effective.roles,
-        workerConcurrency: resolveWorkerConcurrency(config.config),
+        roles,
+        workerConcurrency: config.config.implement.workerConcurrency,
         onTransition,
       });
       if (result.kind === "no-op") {

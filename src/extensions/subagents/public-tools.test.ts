@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -186,7 +188,20 @@ function makeSession(result = "done") {
 
 describe("public subagent tools", () => {
   beforeEach(() => {
-    getAgentDirMock.mockReturnValue("/agent-dir");
+    const agentDir = "/tmp/pi-subagents-config";
+    mkdirSync(join(agentDir, "pipkin"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "pipkin", "config.json"),
+      JSON.stringify({
+        models: {
+          utility: { model: "ctx/default", thinking: "minimal" },
+          low: { model: "ctx/default", thinking: "low" },
+          medium: { model: "ctx/default", thinking: "medium" },
+          high: { model: "ctx/default", thinking: "high" },
+        },
+      }),
+    );
+    getAgentDirMock.mockReturnValue(agentDir);
     reloadMock.mockClear();
     resourceLoaderConstructions.length = 0;
   });
@@ -694,12 +709,12 @@ describe("public subagent tools", () => {
     expect(resourceLoaderConstructions).toHaveLength(1);
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
-      agentDir: "/agent-dir",
+      agentDir: "/tmp/pi-subagents-config",
       appendSystemPrompt: [GENERAL_PROMPT],
     });
     expect(reloadMock).toHaveBeenCalledBefore(createSession);
     expect(createSession.mock.calls[0][0]).toMatchObject({
-      agentDir: "/agent-dir",
+      agentDir: "/tmp/pi-subagents-config",
       resourceLoader: resourceLoaderConstructions[0].loader,
     });
   });
@@ -727,12 +742,12 @@ describe("public subagent tools", () => {
     expect(resourceLoaderConstructions).toHaveLength(1);
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
-      agentDir: "/agent-dir",
+      agentDir: "/tmp/pi-subagents-config",
       systemPrompt: EXPLORE_PROMPT,
     });
     expect(reloadMock).toHaveBeenCalledBefore(createSession);
     expect(createSession.mock.calls[0][0]).toMatchObject({
-      agentDir: "/agent-dir",
+      agentDir: "/tmp/pi-subagents-config",
       resourceLoader: resourceLoaderConstructions[0].loader,
       tools: ["read", "bash", "grep", "find", "ls"],
     });
@@ -761,11 +776,11 @@ describe("public subagent tools", () => {
     expect(resourceLoaderConstructions).toHaveLength(1);
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
-      agentDir: "/agent-dir",
+      agentDir: "/tmp/pi-subagents-config",
       appendSystemPrompt: [REVIEW_PROMPT],
     });
     expect(createSession.mock.calls[0][0]).toMatchObject({
-      agentDir: "/agent-dir",
+      agentDir: "/tmp/pi-subagents-config",
       resourceLoader: resourceLoaderConstructions[0].loader,
       tools: ["read", "bash", "grep", "find", "ls", "explore"],
     });
@@ -796,7 +811,7 @@ describe("public subagent tools", () => {
 
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
-      agentDir: "/agent-dir",
+      agentDir: "/tmp/pi-subagents-config",
       systemPrompt: "Internal instructions",
     });
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([
@@ -928,9 +943,7 @@ describe("public subagent tools", () => {
     const createSession = vi.fn(async (_options: any) => ({ session }));
     const runtime = new SubagentRuntime(pi as never, {
       createSession,
-      publicConfig: {
-        agents: { General: {}, Explore: {}, Review: {} },
-      },
+      modelPresets: {},
     });
 
     const result = await runtime.runPublicAgent({
@@ -975,12 +988,8 @@ describe("public subagent tools", () => {
     const ctx = makeCtx();
     const runtime = new SubagentRuntime(pi as never, {
       createSession,
-      publicConfig: {
-        agents: {
-          General: {},
-          Explore: { model: "configured/explore", thinking: "max" },
-          Review: {},
-        },
+      modelPresets: {
+        low: { model: "configured/explore", thinking: "max" },
       },
     });
 

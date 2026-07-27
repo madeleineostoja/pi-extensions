@@ -1,4 +1,8 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  getAgentDir,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
+import { loadPipkinConfig, type ModelPreset } from "#lib/config";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { showAgentsDashboard } from "./agents-dashboard.js";
@@ -27,19 +31,7 @@ export {
 export type { AgentProfile, PromptMode } from "./agent-profiles.js";
 export { PUBLIC_BUILTIN_TYPES } from "./agent-profiles.js";
 export type { PublicBuiltinType } from "./agent-profiles.js";
-export {
-  getPublicConfigPath,
-  loadPublicConfig,
-  parsePublicConfig,
-  resolvePublicConfig,
-  THINKING_LEVELS,
-} from "./config.js";
-export type {
-  ParsedPublicSubagentsConfig,
-  PublicSubagentsConfig,
-  ResolvedPublicSubagentsConfig,
-  ThinkingLevel,
-} from "./config.js";
+export type { ThinkingLevel } from "#lib/config";
 export {
   getSubagentRuntime,
   MANAGED_COMPLETION_TOOL_NAME,
@@ -101,8 +93,40 @@ const PublicAgentParameters = Type.Object({
 
 export type PublicAgentParams = Static<typeof PublicAgentParameters>;
 
+function resolveAgentSelection(
+  type: PublicAgentParams["subagent_type"],
+  model: string | undefined,
+  thinking: PublicAgentParams["thinking"] | undefined,
+  configPath: string,
+  presets: Readonly<Partial<Record<"low" | "high", ModelPreset>>>,
+): { model?: string; thinking?: PublicAgentParams["thinking"] } {
+  if (type === "General") {
+    return {
+      ...(model === undefined ? {} : { model }),
+      ...(thinking === undefined ? {} : { thinking }),
+    };
+  }
+  if (model !== undefined && thinking !== undefined) {
+    return { model, thinking };
+  }
+  const preset = presets[type === "Explore" ? "low" : "high"];
+  if (!preset) {
+    throw new Error(
+      `Pipkin config ${configPath} is missing a valid ${type === "Explore" ? "low" : "high"} model preset.`,
+    );
+  }
+  return {
+    model: model ?? preset.model,
+    thinking: thinking ?? preset.thinking,
+  };
+}
+
 export default function (pi: ExtensionAPI): void {
-  const runtime = getSubagentRuntime(pi);
+  const config = loadPipkinConfig(getAgentDir());
+  const runtime = getSubagentRuntime(pi, {
+    low: config.config.models.low,
+    high: config.config.models.high,
+  });
   const roster = new SubagentRosterController(runtime);
 
   pi.on("session_shutdown", async (event: { reason?: string } = {}) => {
@@ -135,8 +159,13 @@ export default function (pi: ExtensionAPI): void {
         prompt: params.prompt,
         description: params.description,
         cwd: params.cwd ?? ctx.cwd,
-        model: params.model,
-        thinking: params.thinking,
+        ...resolveAgentSelection(
+          params.subagent_type,
+          params.model,
+          params.thinking,
+          config.path,
+          config.config.models,
+        ),
         mode,
         ctx,
         signal,

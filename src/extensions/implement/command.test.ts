@@ -5,6 +5,20 @@ import { afterEach, describe, expect, it } from "vitest";
 import { registerImplementCommand, runMenuActions } from "./command.js";
 import { assertRunCanResume } from "./run.js";
 
+const config = {
+  path: "/agent/pipkin/config.json",
+  issues: [],
+  config: {
+    models: {
+      utility: { model: "test/utility", thinking: "minimal" },
+      low: { model: "test/low", thinking: "low" },
+      medium: { model: "test/medium", thinking: "medium" },
+      high: { model: "test/high", thinking: "high" },
+    },
+    implement: { workerConcurrency: 3 },
+  },
+} as const;
+
 const temporaryDirectories = new Set<string>();
 
 afterEach(() => {
@@ -50,7 +64,7 @@ describe("/implement command", () => {
         handler = command.handler;
       },
     };
-    registerImplementCommand(pi as never);
+    registerImplementCommand(pi as never, config);
     const root = mkdtempSync(join(tmpdir(), "pi-implement-command-"));
     temporaryDirectories.add(root);
     const plan = join(root, "plan.md");
@@ -82,7 +96,7 @@ describe("/implement command", () => {
         handler = command.handler;
       },
     };
-    registerImplementCommand(pi as never);
+    registerImplementCommand(pi as never, config);
     const root = mkdtempSync(join(tmpdir(), "pi-implement-menu-"));
     temporaryDirectories.add(root);
     const plan = join(root, "plan.md");

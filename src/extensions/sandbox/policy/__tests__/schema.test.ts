@@ -177,7 +177,11 @@ describe("loadPolicy — darwin unanchored denyPattern warning", () => {
 
   function writeJson(filePath: string, data: unknown): void {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({ sandbox: data }, null, 2),
+      "utf8",
+    );
   }
 
   it("darwin + unanchored pattern → ui.notify warning fires once per unanchored pattern", () => {
@@ -186,8 +190,7 @@ describe("loadPolicy — darwin unanchored denyPattern warning", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, {
@@ -213,8 +216,7 @@ describe("loadPolicy — darwin unanchored denyPattern warning", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, {
@@ -238,8 +240,7 @@ describe("loadPolicy — darwin unanchored denyPattern warning", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, {
@@ -263,8 +264,7 @@ describe("loadPolicy — darwin unanchored denyPattern warning", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, {

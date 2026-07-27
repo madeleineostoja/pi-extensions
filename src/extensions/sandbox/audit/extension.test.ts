@@ -186,9 +186,9 @@ function startSandbox(overrides: Partial<Record<string, unknown>> = {}): {
   const pi = makePi();
   const ctx = makeCtx(overrides);
   ctx.cwd = fs.realpathSync(ctx.cwd);
-  fs.mkdirSync(path.join(ctx.cwd, ".pi"), { recursive: true });
+  fs.mkdirSync(path.join(ctx.cwd, ".pi", "pipkin"), { recursive: true });
   fs.writeFileSync(
-    path.join(ctx.cwd, ".pi", "sandbox.json"),
+    path.join(ctx.cwd, ".pi", "pipkin", "sandbox.json"),
     JSON.stringify({ audit: { log: false } }),
     "utf8",
   );
@@ -345,7 +345,7 @@ describe("sandboxExtension — strict-mode refusal", () => {
       path.join(os.tmpdir(), `pi-sandbox-strict-test-${Date.now()}`),
       { recursive: true },
     ) as string;
-    const piDir = path.join(tmpDir, ".pi");
+    const piDir = path.join(tmpDir, ".pi", "pipkin");
     fs.mkdirSync(piDir, { recursive: true });
     fs.writeFileSync(
       path.join(piDir, "sandbox.json"),
@@ -472,7 +472,7 @@ describe("sandboxExtension — policy load failure", () => {
       path.join(os.tmpdir(), `pi-sandbox-test-${Date.now()}`),
       { recursive: true },
     ) as string;
-    const piDir = path.join(tmpDir, ".pi");
+    const piDir = path.join(tmpDir, ".pi", "pipkin");
     fs.mkdirSync(piDir, { recursive: true });
     fs.writeFileSync(
       path.join(piDir, "sandbox.json"),
@@ -494,8 +494,9 @@ describe("sandboxExtension — policy load failure", () => {
     expect(errorOrWarnCalls.length).toBeGreaterThanOrEqual(1);
     const parseFailureCall = errorOrWarnCalls.find(
       (args) =>
-        typeof args[0] === "string" &&
-        (args[0] as string).toLowerCase().includes("invalid json"),
+        (typeof args[0] === "string" &&
+          (args[0] as string).toLowerCase().includes("invalid json")) ||
+        (args[0] as string).toLowerCase().includes("malformed json"),
     );
     expect(parseFailureCall).toBeDefined();
 

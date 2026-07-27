@@ -53,7 +53,7 @@ import {
   type RunState,
   RunStore,
 } from "./store.js";
-import type { EffectiveRoles } from "./config.js";
+import type { ImplementRoles } from "./subagents.js";
 
 export type ActiveRun = {
   runId: string;
@@ -66,7 +66,7 @@ export async function startRun(args: {
   pi: ExtensionAPI;
   ctx: ExtensionCommandContext;
   planPath: string;
-  roles: EffectiveRoles;
+  roles: ImplementRoles;
   workerConcurrency: number;
   onTransition?: SchedulerActorOptions["onTransition"];
 }): Promise<{ kind: "no-op" } | { kind: "started"; active: ActiveRun }> {
@@ -149,7 +149,7 @@ export async function resumeRun(args: {
   ctx: ExtensionCommandContext;
   planPath: string;
   runId: string;
-  roles: EffectiveRoles;
+  roles: ImplementRoles;
   onTransition?: SchedulerActorOptions["onTransition"];
 }): Promise<ActiveRun> {
   const planPath = resolve(args.ctx.cwd, args.planPath);
@@ -485,7 +485,7 @@ export function createRuntime(args: {
   git: ExecGitClient;
   store: RunStore;
   lease: CheckoutLeaseCapability;
-  roles: EffectiveRoles;
+  roles: ImplementRoles;
   plan: ReturnType<typeof parsePlan>;
   materialStore: ReturnType<typeof buildMaterialStore>;
   checkoutIdentity: string;

@@ -110,7 +110,7 @@ Note: image blocks within a tool result do not count toward `minTokens`. Elision
 pi-context-prune reads optional configuration from:
 
 ```
-~/.pi/agent/extensions/pi-context-prune/config.json
+<agent-dir>/pipkin/config.json under the `context` section
 ```
 
 The file is loaded once at session start. A missing file is silently ignored and defaults are used. A malformed or invalid file emits a warning and defaults are used. To apply config changes, reload the extension.

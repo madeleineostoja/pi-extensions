@@ -1293,12 +1293,8 @@ describe("SubagentRuntime", () => {
       ]);
     const runtime = new SubagentRuntime(pi as never, {
       createSession,
-      publicConfig: {
-        agents: {
-          General: {},
-          Explore: { model: `${TEST_PROVIDER}/${TEST_MODEL}` },
-          Review: {},
-        },
+      modelPresets: {
+        low: { model: `${TEST_PROVIDER}/${TEST_MODEL}`, thinking: "low" },
       },
     });
 
@@ -1715,17 +1711,9 @@ describe("SubagentRuntime", () => {
     expect(final).toMatchObject({ result: { result: "first" } });
   });
 
-  it("uses public config defaults for model and thinking metadata", () => {
+  it("records explicitly supplied model and thinking metadata", () => {
     const { pi } = fakePi();
-    const runtime = new SubagentRuntime(pi as never, {
-      publicConfig: {
-        agents: {
-          General: {},
-          Explore: { model: "provider/explore", thinking: "low" },
-          Review: {},
-        },
-      },
-    });
+    const runtime = new SubagentRuntime(pi as never);
 
     expect(
       runtime.queue({
@@ -1733,6 +1721,8 @@ describe("SubagentRuntime", () => {
         type: "Explore",
         description: "map the codebase",
         cwd: "/workspace",
+        model: "provider/explore",
+        thinking: "low",
       }),
     ).toMatchObject({
       model: "provider/explore",

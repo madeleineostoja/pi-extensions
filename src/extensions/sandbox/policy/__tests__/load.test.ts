@@ -17,7 +17,10 @@ function makeTmpDir(): string {
 
 function writeJson(filePath: string, data: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+  const value = filePath.endsWith(path.join("pipkin", "config.json"))
+    ? { sandbox: data }
+    : data;
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf8");
 }
 
 function writeRaw(filePath: string, content: string): void {
@@ -320,8 +323,7 @@ describe("loadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, { network: { mode: "always" } });
@@ -340,13 +342,12 @@ describe("loadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, { network: { mode: "always" } });
 
-    const projectPath = path.join(tmpCwd, ".pi", "sandbox.json");
+    const projectPath = path.join(tmpCwd, ".pi", "pipkin", "sandbox.json");
     writeJson(projectPath, { network: { mode: "off" } });
 
     const policy = loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
@@ -361,8 +362,7 @@ describe("loadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, { network: { allow: ["custom.example.com"] } });
@@ -379,13 +379,12 @@ describe("loadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, { network: { allow: ["global.example.com"] } });
 
-    const projectPath = path.join(tmpCwd, ".pi", "sandbox.json");
+    const projectPath = path.join(tmpCwd, ".pi", "pipkin", "sandbox.json");
     writeJson(projectPath, { network: { allow: ["project.example.com"] } });
 
     const policy = loadPolicy(tmpCwd, { home: tmpHome, ui: mockUi });
@@ -422,8 +421,7 @@ describe("loadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, {
@@ -450,8 +448,7 @@ describe("loadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeRaw(globalPath, "{ this is not json");
@@ -460,7 +457,7 @@ describe("loadPolicy", () => {
 
     expect(policy.network.mode).toBe(DEFAULT_POLICY.network.mode);
     expect(mockUi.notify).toHaveBeenCalledWith(
-      expect.stringContaining("invalid JSON"),
+      expect.stringContaining("malformed JSON"),
       "error",
     );
   });
@@ -471,8 +468,7 @@ describe("loadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, { unknownField: true });
@@ -492,8 +488,7 @@ describe("loadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, { network: { mode: "bad-mode" } });
@@ -513,8 +508,7 @@ describe("loadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeRaw(globalPath, '"just a string"');
@@ -557,7 +551,7 @@ describe("loadPolicy", () => {
     fs.symlinkSync(piRoot, symlinkRoot, "dir");
     const symlinkDocsPath = path.join(symlinkRoot, "docs");
     const docsRealPath = fs.realpathSync(path.join(piRoot, "docs"));
-    writeJson(path.join(tmpCwd, ".pi", "sandbox.json"), {
+    writeJson(path.join(tmpCwd, ".pi", "pipkin", "sandbox.json"), {
       fs: { allowRead: [symlinkDocsPath] },
     });
 
@@ -582,8 +576,7 @@ describe("loadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, { network: { mode: "always", allow: [] } });
@@ -602,8 +595,7 @@ describe("loadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, {
@@ -640,8 +632,7 @@ describe("reloadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
 
@@ -660,8 +651,7 @@ describe("reloadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, { network: { mode: "always" } });
@@ -687,8 +677,7 @@ describe("reloadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, { network: { mode: "always" } });
@@ -715,8 +704,7 @@ describe("reloadPolicy", () => {
       tmpHome,
       ".pi",
       "agent",
-      "extensions",
-      "pi-sandbox",
+      "pipkin",
       "config.json",
     );
     writeJson(globalPath, { network: { mode: "always" } });
