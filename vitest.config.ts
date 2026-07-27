@@ -44,6 +44,15 @@ export default defineConfig({
           globals: false,
         },
       },
+      {
+        test: {
+          name: "bundle",
+          include: ["test/bundle/**/*.test.ts"],
+          environment: "node",
+          globals: false,
+          fileParallelism: false,
+        },
+      },
     ],
   },
 });
