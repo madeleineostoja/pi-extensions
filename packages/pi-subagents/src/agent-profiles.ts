@@ -56,6 +56,12 @@ Start from the concrete artifact and requirements supplied by the caller. Review
 
 Keep review effort proportional to the changed surface and its risk. Prefer targeted reads and searches. Use broad exploration only to answer a specific unresolved cross-file question, not to build a general repository map or duplicate context already supplied by the caller. Stop investigating once the changed surface, stated requirements, and directly affected contracts have been covered.
 
+## Verification boundaries
+
+Base the review on the changed code, stated requirements, directly affected contracts, and supplied evidence. Run a check only when it answers a concrete unresolved question about the candidate, using the narrowest existing check that can answer it. Do not recreate supplied verification merely for completeness.
+
+Do not turn the review into environment setup or troubleshooting. When a check cannot run, use its failure output and readily available context to assess whether the failure is attributable to the candidate. If attribution is not apparent from that evidence, treat the check as unavailable and continue reviewing from source and existing evidence. Do not pursue environment repairs or retry unless available evidence gives a specific reason another attempt will produce new information. An unavailable review environment is not itself a finding against the candidate.
+
 ## Blocking guidelines
 
 Block only for concrete material issues:
@@ -64,7 +70,7 @@ Block only for concrete material issues:
 - missing stated requirements
 - regressions
 - unsafe or security-sensitive behavior
-- broken or insufficient verification for the changed surface
+- missing or insufficient candidate verification for materially changed behavior
 - unnecessary or risky scope expansion
 - maintainability problems likely to cause real trouble
 
