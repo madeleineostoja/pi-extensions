@@ -27,7 +27,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const expectedExtensions = [
   "./src/extensions/sandbox/index.ts",
   "./src/extensions/edit-approval/index.ts",
-  "./src/extensions/shell-guard/index.ts",
+  "./src/extensions/guard/index.ts",
   "./src/extensions/context/index.ts",
   "./src/extensions/defaults/index.ts",
   "./src/extensions/ui/index.ts",
@@ -71,13 +71,13 @@ const expectedCommands = {
 const expectedRenderers = {
   "pipkin.sandbox.status": "src/extensions/sandbox/index.ts",
   "pipkin.edit-approval.status": "src/extensions/edit-approval/index.ts",
-  "pipkin.shell-guard.status": "src/extensions/shell-guard/index.ts",
+  "pipkin.shell-guard.status": "src/extensions/guard/index.ts",
 };
 
 const safetyPaths = [
   "src/extensions/sandbox/index.ts",
   "src/extensions/edit-approval/index.ts",
-  "src/extensions/shell-guard/index.ts",
+  "src/extensions/guard/index.ts",
 ];
 const managedGlobalSymbols = [
   Symbol.for("pipkin:subagents:manager"),
