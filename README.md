@@ -1,7 +1,7 @@
 <div align="center">
   <h1>Pipkin</h1>
   <img src="docs/pipkin.png" alt="Pipkin" width="256">
-  <p><strong>A small companion for big Pi sessions</p>
+  <p><strong>A small companion for big Pi sessions</strong></p>
   <p>
     <a href="https://github.com/madeleineostoja/pipkin/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/madeleineostoja/pipkin/actions/workflows/ci.yml/badge.svg"></a>
     <img alt="Node.js 24+" src="https://img.shields.io/badge/Node.js-24%2B-339933?logo=nodedotjs&logoColor=white">
