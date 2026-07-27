@@ -29,11 +29,22 @@ export default defineConfig({
       })),
       {
         test: {
-          name: "implement",
+          name: "implement-unit",
           include: ["src/extensions/implement/**/*.test.ts"],
+          exclude: [
+            "src/extensions/implement/**/*.integration.test.ts",
+            "src/extensions/implement/**/*.e2e.test.ts",
+          ],
           environment: "node",
           globals: false,
-          fileParallelism: false,
+        },
+      },
+      {
+        test: {
+          name: "implement-integration",
+          include: ["src/extensions/implement/**/*.integration.test.ts"],
+          environment: "node",
+          globals: false,
         },
       },
       {

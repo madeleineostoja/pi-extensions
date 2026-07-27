@@ -49,7 +49,9 @@
     "check": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --testTimeout 15000",
-    "test:subagents": "vitest run --project subagents"
+    "test:subagents": "vitest run --project subagents",
+    "test:implement:unit": "vitest run --project implement-unit",
+    "test:implement:integration": "vitest run --project implement-integration"
   },
   "dependencies": {
     "execa": "^10.0.0",
