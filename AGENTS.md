@@ -13,6 +13,10 @@
 - Put cross-extension utilities in `lib/src` and export them from `lib/src/index.ts`.
 - Keep package-specific logic inside the owning `packages/pi-*` workspace unless at least two packages need it.
 
+## Functional framing
+
+- This is a collection of Pi extensions for personal use. When carrying out solution design we do not need to account for general user adoption, configurability, maintaining backwards compatibility, etc
+
 ## Common commands
 
 Use `npm` for all installs and scripts in this repo. Run from the repository root unless targeting a workspace.
