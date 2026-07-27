@@ -2,10 +2,10 @@
 import https from "node:https";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.resolve(__dirname, "..");
@@ -14,8 +14,11 @@ const pkg = JSON.parse(
 );
 const NONO_VERSION = pkg.nonoVersion;
 const NONO_SHA256SUMS_HASH = pkg.nonoSha256SumsHash;
+// Mirrors Pi's getAgentDir() without requiring Pi during postinstall.
+const agentDir =
+  process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
 const CACHE_ROOT = path.join(
-  getAgentDir(),
+  agentDir,
   "pipkin",
   "sandbox",
   "nono",
