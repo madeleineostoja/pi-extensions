@@ -1,7 +1,6 @@
 import {
   createAgentSession,
   DefaultResourceLoader,
-  ModelRegistry,
   ModelRuntime,
   SessionManager,
   SettingsManager,
@@ -11,16 +10,15 @@ import {
   createFauxCore,
   fauxAssistantMessage,
   fauxToolCall,
-  InMemoryCredentialStore,
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
+import { INSPECTION_RECORD_LIMIT } from "./inspection.js";
 import {
   getSubagentRuntime,
   MANAGED_COMPLETION_TOOL_NAME,
-  getSubagentRuntimes,
   SubagentRuntime,
-  TERMINAL_MESSAGE_TAIL_LIMIT,
+  serializeInspectionForSummary,
 } from "./runtime.js";
 
 type Message = {
@@ -111,11 +109,9 @@ async function createRealSessionHarness(responses: FauxResponse) {
   }
   faux.setResponses(responses);
   const modelRuntime = await ModelRuntime.create({
-    credentials: new InMemoryCredentialStore(),
-    modelsPath: null,
+    allowModelNetwork: false,
   });
-  const modelRegistry = new ModelRegistry(modelRuntime);
-  modelRegistry.registerProvider(TEST_PROVIDER, {
+  modelRuntime.registerProvider(TEST_PROVIDER, {
     api: fauxModel.api,
     baseUrl: fauxModel.baseUrl,
     apiKey: "test-key",
@@ -134,10 +130,17 @@ async function createRealSessionHarness(responses: FauxResponse) {
       },
     ],
   });
-  const model = modelRegistry.find(TEST_PROVIDER, TEST_MODEL);
+  await modelRuntime.setRuntimeApiKey(TEST_PROVIDER, "test-key", {
+    allowNetwork: false,
+  });
+  const model = modelRuntime.getModel(TEST_PROVIDER, TEST_MODEL);
   if (!model) {
     throw new Error("Test model registration failed.");
   }
+  const modelRegistry = {
+    find: (provider: string, modelId: string) =>
+      provider === TEST_PROVIDER && modelId === TEST_MODEL ? model : undefined,
+  };
   const settingsManager = SettingsManager.inMemory({
     compaction: { enabled: false },
     retry: { enabled: false },
@@ -164,6 +167,7 @@ async function createRealSessionHarness(responses: FauxResponse) {
       modelRuntime,
       settingsManager,
       resourceLoader,
+      sessionManager: SessionManager.inMemory(TEST_CWD),
       noTools: "builtin",
     });
     sessions.push(created.session);
@@ -173,8 +177,8 @@ async function createRealSessionHarness(responses: FauxResponse) {
 }
 
 function realContext(
-  model: NonNullable<ReturnType<ModelRegistry["find"]>>,
-  modelRegistry: ModelRegistry,
+  model: ReturnType<ReturnType<typeof createFauxCore>["getModel"]>,
+  modelRegistry: { find: (provider: string, modelId: string) => typeof model },
 ) {
   return makeCtx({ model, modelRegistry }) as never;
 }
@@ -200,12 +204,35 @@ function completionTool(options: unknown): {
 }
 
 describe("SubagentRuntime", () => {
-  it("returns a singleton runtime per pi instance and tracks known runtimes", () => {
+  it("returns a singleton runtime per pi instance", () => {
     const { pi } = fakePi();
     const runtime = getSubagentRuntime(pi as never);
 
     expect(runtime).toBe(getSubagentRuntime(pi as never));
-    expect(getSubagentRuntimes()).toContain(runtime);
+  });
+
+  it("rebinds fresh APIs sharing one event bus while isolating distinct buses", () => {
+    const events = {};
+    const first = { ...fakePi().pi, events };
+    const second = { ...fakePi().pi, events };
+    const child = { ...fakePi().pi, events: {} };
+    const runtime = getSubagentRuntime(first as never);
+    const record = runtime.queue({
+      owner: "owner",
+      type: "General",
+      description: "reload",
+      cwd: "/workspace",
+    });
+
+    expect(getSubagentRuntime(second as never)).toBe(runtime);
+    expect(runtime.pi).toBe(second);
+    expect(
+      getSubagentRuntime(second as never).snapshot(record.id),
+    ).toMatchObject({
+      id: record.id,
+      status: "queued",
+    });
+    expect(getSubagentRuntime(child as never)).not.toBe(runtime);
   });
 
   it("reuses the existing runtime across module reloads", async () => {
@@ -266,9 +293,12 @@ describe("SubagentRuntime", () => {
     expect(runtime.snapshot(previous.id)).toBeUndefined();
     expect(runtime.snapshot(current.id)).toEqual(current);
     expect(runtime.inspect(previous.id)).toBeUndefined();
-    expect(runtime.inspect(current.id)).toEqual({
+    expect(runtime.inspect(current.id)).toMatchObject({
       snapshot: current,
       messages: [],
+      activity: [],
+      omittedMessages: 0,
+      omittedActivity: 0,
     });
     runtime.subscribe(previous.id, previousListener)();
     const unsubscribeCurrent = runtime.subscribe(current.id, currentListener);
@@ -341,11 +371,13 @@ describe("SubagentRuntime", () => {
     });
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
 
-    session.getContextUsage = vi.fn<AgentSession["getContextUsage"]>(() => ({
-      tokens: 8,
-      contextWindow: 100,
-      percent: 8,
-    }));
+    session.getSessionStats = vi.fn(() => ({
+      assistantMessages: 1,
+      toolCalls: 1,
+      tokens: { total: 10 },
+      cost: 0.25,
+      contextUsage: { tokens: 8, contextWindow: 100, percent: 8 },
+    })) as never;
     Object.assign(session, {
       sessionId: "session-1",
       sessionFile: "/tmp/session.jsonl",
@@ -377,7 +409,6 @@ describe("SubagentRuntime", () => {
       estimatedCost: 0.25,
       contextUsage: { tokens: 8, contextWindow: 100, percent: 8 },
       peakContextTokens: 8,
-      activeTool: "read",
       lastActivity: "2023-11-14T22:13:21.000Z",
       lastAssistantText: "Working on it",
       transcript: {
@@ -386,11 +417,13 @@ describe("SubagentRuntime", () => {
       },
     });
 
-    session.getContextUsage = vi.fn<AgentSession["getContextUsage"]>(() => ({
-      tokens: 20,
-      contextWindow: 100,
-      percent: 20,
-    }));
+    session.getSessionStats = vi.fn(() => ({
+      assistantMessages: 1,
+      toolCalls: 0,
+      tokens: { total: 12 },
+      cost: 0.5,
+      contextUsage: { tokens: 20, contextWindow: 100, percent: 20 },
+    })) as never;
     session.messages = [
       {
         role: "assistant",
@@ -413,18 +446,20 @@ describe("SubagentRuntime", () => {
     ];
     expect(runtime.snapshots()[0]?.health).toMatchObject({
       turns: 1,
-      tokensTotal: 22,
-      estimatedCost: 0.75,
+      tokensTotal: 12,
+      estimatedCost: 0.5,
       contextUsage: { tokens: 20, contextWindow: 100, percent: 20 },
       peakContextTokens: 20,
       lastAssistantText: "Updated answer",
     });
 
-    session.getContextUsage = vi.fn<AgentSession["getContextUsage"]>(() => ({
-      tokens: null,
-      contextWindow: 100,
-      percent: null,
-    }));
+    session.getSessionStats = vi.fn(() => ({
+      assistantMessages: 1,
+      toolCalls: 0,
+      tokens: { total: 12 },
+      cost: 0.5,
+      contextUsage: { tokens: null, contextWindow: 100, percent: null },
+    })) as never;
     expect(runtime.snapshot(started.id)?.health).toMatchObject({
       contextUsage: { tokens: null, contextWindow: 100, percent: null },
       peakContextTokens: 20,
@@ -469,9 +504,9 @@ describe("SubagentRuntime", () => {
     expect(listener).toHaveBeenCalledTimes(1);
     expect(runtime.inspect(started.id)).toMatchObject({
       snapshot: {
-        health: { activeTool: "bash", lastAssistantText: "live update" },
+        health: { lastAssistantText: "live update" },
       },
-      messages: session.messages,
+      messages: [{ role: "assistant", timestamp: "2023-11-14T22:13:20.000Z" }],
     });
 
     unsubscribe();
@@ -481,7 +516,88 @@ describe("SubagentRuntime", () => {
     promptDone.resolve();
   });
 
-  it("uses an in-memory session manager and retains an immutable bounded terminal tail", async () => {
+  it("serializes steering and continues after one rejected delivery", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const first = deferred<void>();
+    const second = deferred<void>();
+    const calls: string[] = [];
+    const session = makeSession();
+    session.prompt = vi.fn(() => promptDone.promise);
+    session.steer = vi.fn((message: string) => {
+      calls.push(message);
+      return message === "first" ? first.promise : second.promise;
+    }) as never;
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    expect(runtime.snapshot(started.id)?.canSteer).toBe(true);
+    const one = runtime.steer(started.id, "first");
+    const two = runtime.steer(started.id, "second");
+    expect(calls).toEqual(["first"]);
+    first.reject(new Error("rejected"));
+    await expect(one).rejects.toThrow("rejected");
+    await vi.waitFor(() => expect(calls).toEqual(["first", "second"]));
+    second.resolve();
+    await expect(two).resolves.toMatchObject({ status: "running" });
+    expect(runtime.snapshot(started.id)?.health?.pendingSteering).toBe(0);
+    runtime.stop(started.id);
+    promptDone.resolve();
+  });
+
+  it("orders interleaved runtime and tool activity chronologically", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession();
+    session.prompt = vi.fn(() => promptDone.promise);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    await runtime.steer(started.id, "first guidance");
+    const toolTimestamp = Date.now() + 10_000;
+    session.messages.push(
+      fauxAssistantMessage(
+        fauxToolCall(
+          "read",
+          { path: "/workspace/file.ts" },
+          { id: "later-tool" },
+        ),
+        { timestamp: toolTimestamp },
+      ),
+      {
+        role: "toolResult",
+        timestamp: toolTimestamp + 1,
+        toolCallId: "later-tool",
+        toolName: "read",
+        content: [{ type: "text", text: "done" }],
+        isError: false,
+      } as AgentSession["messages"][number],
+    );
+
+    expect(
+      runtime.inspect(started.id)?.activity.map((entry) => entry.kind),
+    ).toEqual(["steering", "steering", "tool"]);
+    runtime.stop(started.id);
+    promptDone.resolve();
+  });
+
+  it("uses an in-memory session manager and retains an immutable bounded terminal inspection", async () => {
     const { pi } = fakePi();
     const promptDone = deferred<void>();
     const session = makeSession("done");
@@ -506,7 +622,7 @@ describe("SubagentRuntime", () => {
     await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
     session.messages.push(
       ...Array.from(
-        { length: TERMINAL_MESSAGE_TAIL_LIMIT + 1 },
+        { length: INSPECTION_RECORD_LIMIT + 1 },
         (_, index) =>
           ({
             role: "assistant",
@@ -522,17 +638,103 @@ describe("SubagentRuntime", () => {
     expect(sessionManager?.getSessionFile()).toBeUndefined();
     const inspection = runtime.inspect(started.id);
     expect(inspection?.snapshot.status).toBe("completed");
-    expect(inspection?.messages).toHaveLength(TERMINAL_MESSAGE_TAIL_LIMIT);
-    expect(inspection?.messages[0]).toMatchObject({
-      content: [{ text: "message 1" }],
-    });
+    expect(inspection?.messages).toHaveLength(INSPECTION_RECORD_LIMIT);
+    expect(inspection?.messages[0]).toMatchObject({ text: "message 1" });
     expect(session.dispose).toHaveBeenCalledTimes(1);
     session.messages[session.messages.length - 1] = {
       role: "assistant",
       content: [{ type: "text", text: "mutated" }],
     } as AgentSession["messages"][number];
     expect(runtime.inspect(started.id)?.messages.at(-1)).toMatchObject({
-      content: [{ text: `message ${TERMINAL_MESSAGE_TAIL_LIMIT}` }],
+      text: `message ${INSPECTION_RECORD_LIMIT}`,
+    });
+  });
+
+  it("captures terminal messages and canonical health after abort settles", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession();
+    session.prompt = vi.fn(() => promptDone.promise);
+    session.messages.push(
+      fauxAssistantMessage(
+        fauxToolCall("bash", { command: "npm test" }, { id: "active-tool" }),
+        { timestamp: Date.now() },
+      ),
+    );
+    session.abort = vi.fn(async () => {
+      session.messages.push({
+        role: "toolResult",
+        timestamp: Date.now(),
+        toolCallId: "active-tool",
+        toolName: "bash",
+        content: [{ type: "text", text: "aborted" }],
+        isError: true,
+      } as AgentSession["messages"][number]);
+      session.getSessionStats = vi.fn(() => ({
+        assistantMessages: 1,
+        toolCalls: 1,
+        tokens: { total: 42 },
+        cost: 0.2,
+        contextUsage: { tokens: 20, contextWindow: 100, percent: 20 },
+      })) as never;
+    });
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+
+    runtime.stop(started.id);
+    await runtime.wait(started.id);
+
+    expect(runtime.inspect(started.id)).toMatchObject({
+      snapshot: { health: { tokensTotal: 42 } },
+      activity: [
+        {
+          kind: "tool",
+          toolCallId: "active-tool",
+          status: "interrupted",
+          error: "aborted",
+        },
+      ],
+    });
+    promptDone.resolve();
+  });
+
+  it("keeps the summary fallback bounded and delimited when metadata is oversized", () => {
+    const serialized = serializeInspectionForSummary({
+      snapshot: {
+        id: "agent",
+        status: "completed",
+        owner: "owner".repeat(30_000),
+        type: "General",
+        description: "summary target",
+        cwd: "/workspace",
+        extensionBinding: "bound",
+        rosterVisibility: "show",
+        timestamps: { queuedAt: "now", updatedAt: "now" },
+      },
+      messages: [],
+      activity: [],
+      omittedMessages: 0,
+      omittedActivity: 0,
+      compactedHistory: false,
+    });
+
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(64 * 1024);
+    expect(serialized).toMatch(/^.+\n<inspection>\n[\s\S]*\n<\/inspection>$/);
+    const payload = serialized.slice(
+      serialized.indexOf("\n<inspection>\n") + "\n<inspection>\n".length,
+      -"\n</inspection>".length,
+    );
+    expect(JSON.parse(payload)).toMatchObject({
+      summaryMetadataTruncated: true,
     });
   });
 
@@ -680,6 +882,33 @@ describe("SubagentRuntime", () => {
     expect(session.dispose).toHaveBeenCalledTimes(1);
   });
 
+  it("does not reuse a disposed runtime after disposing its child sessions", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession("done");
+    session.prompt = vi.fn(() => promptDone.promise);
+    const managedRuntime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    expect(getSubagentRuntime(pi as never)).toBe(managedRuntime);
+    const started = await managedRuntime.runManagedAgent({
+      type: "General",
+      prompt: "work",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+
+    await managedRuntime.dispose();
+
+    expect(session.abort).toHaveBeenCalledOnce();
+    expect(session.dispose).toHaveBeenCalledOnce();
+    expect(getSubagentRuntime(pi as never)).not.toBe(managedRuntime);
+    expect(managedRuntime.snapshot(started.id)).toBeUndefined();
+    promptDone.resolve();
+  });
+
   it("models failed and stopped terminal states", () => {
     const { pi } = fakePi();
     const runtime = new SubagentRuntime(pi as never);
@@ -764,7 +993,7 @@ describe("SubagentRuntime", () => {
     unsubscribe();
 
     expect(retired).toHaveLength(1);
-    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(2);
     expect(unsubscribeSession).toHaveBeenCalledTimes(1);
     expect(session.abort).toHaveBeenCalledTimes(1);
     expect(runtime.snapshot(started.id)).toBeUndefined();
@@ -963,6 +1192,15 @@ describe("SubagentRuntime", () => {
           role: "toolResult",
           toolCallId: "valid-completion",
           isError: false,
+        }),
+      ]),
+    );
+    expect(runtime.inspect(final.id)?.activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "tool",
+          toolCallId: "valid-completion",
+          status: "completed",
         }),
       ]),
     );

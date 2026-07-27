@@ -14,7 +14,7 @@ Three built-in public agent types are available:
 | `Explore` | Non-trivial codebase discovery: tracing symbols and usage, mapping unfamiliar areas, and answering multi-step "where/how is this wired?" questions.                                                  |
 | `Review`  | Independent second-pass review of concrete work such as diffs, commits, patches, and staged or unstaged changes.                                                                                     |
 
-Subagents inherit the parent session's extension environment. They bind the configured Pi extensions in their own session and inherit the parent's active tool set, except that `Agent`, `get_subagent_result`, and `steer_subagent` are withheld from all subagents to avoid accidental agent fan-out. `Explore` and `Review` stay read-only by instruction and restricted tool sets.
+Subagents inherit the parent session's extension environment. They bind the configured Pi extensions in their own session and inherit the parent's active tool set, except that `Agent`, `get_subagent_result`, and `steer_subagent` are withheld from all subagents to avoid accidental agent fan-out. `Explore` and `Review` are repository-preserving by trusted-model instruction, not a technical sandbox. They retain `bash` for discovery and verification, including read-only Git/GitHub work, tests, and checks; they must not intentionally mutate source files, dependencies, or Git state.
 
 Explore and Review use separate context deliberately. Explore keeps a disposable search trail out of the caller's context while returning relevant paths, relationships, and evidence. It uses LSP for targeted semantic relationships when available and search and reads for broad, literal, or behavioral discovery. Use `lsp` directly for one known-symbol lookup and direct reads for one or two obvious files; use Explore for multi-step tracing or mapping. Review's fresh context avoids anchoring on the implementer's assumptions. During implementation, prefer Review over self-review when an independent second pass is warranted for large, risky, or multi-file changes. A fresh session whose primary task is already review should review directly.
 
@@ -33,7 +33,7 @@ Starts a public subagent.
   "description": "Trace task review policy",
   "mode": "foreground",
   "model": "provider/model-id",
-  "thinking": "medium",
+  "thinking": "max",
   "cwd": "/path/to/repo"
 }
 ```
@@ -43,7 +43,7 @@ Starts a public subagent.
 - `description` is the short label shown in status views.
 - `mode` defaults to `foreground`. Use `background` only when concrete independent work can proceed before the result is needed or when starting multiple independent agents.
 - `model` is an exact `provider/model` override. Supply it only when the ID is explicitly known; callers should not guess available models.
-- `thinking` and `cwd` override defaults for that run only.
+- `thinking` and `cwd` override defaults for that run only. Valid thinking levels include `max`; Pi may clamp the effective level to the selected model's capability.
 
 Foreground agents block until the child finishes and return its final runtime snapshot and result. Use foreground when the result is the caller's next dependency. Background agents return immediately with a snapshot containing the subagent `id`; if the next action would be an immediate blocking join, foreground should have been used instead.
 
@@ -65,13 +65,13 @@ Sends additional guidance to a running background agent.
 { "id": "subagent-1", "message": "Narrow this to config parsing only." }
 ```
 
-Steering fails for unknown, queued, completed, failed, or stopped agents.
+Steering fails for unknown, queued, completed, failed, or stopped agents. Accepted guidance is cooperatively queued after the current assistant turn's tool calls.
 
 ## Foreground, background, and inspection
 
 Foreground agents are for bounded work where the caller needs the answer before continuing. Background mode is for actual concurrency, not merely long-running work: continue the independent work that justified it, optionally steer the child, then join with `get_subagent_result({ "id": "...", "wait": true })` at the dependency barrier. Do not launch a background agent and immediately join it, and do not poll.
 
-Use `/agents` to inspect current-session subagents and stop running work. Runtime records are session-scoped and include status, owner, type, description, cwd, model/thinking overrides, timestamps, health, and final result or error. Child sessions are in-memory only: they do not appear in `/resume` and cannot be resumed. After a child exits, `/agents` retains a bounded terminal message tail for inspection.
+Use `/agents` to select Running agents (or All to include retained terminal records), inspect activity, cooperatively queue guidance, summarise activity, or stop running work with confirmation. Runtime records are session-scoped and include status, owner, type, description, cwd, requested model/thinking, effective thinking when initialized, timestamps, canonical Pi session health, and final result or error. Inspection is a bounded immutable view: it retains up to 100 sanitized messages and activity records with 2 KiB previews, not a raw transcript. Activity summaries are advisory point-in-time operator output only; they do not change the target agent. Child sessions are in-memory only: they do not appear in `/resume` and cannot be resumed.
 
 ## Configuration
 
@@ -94,13 +94,13 @@ User-facing public-agent defaults live at:
     },
     "Review": {
       "model": "provider/model-id",
-      "thinking": "high"
+      "thinking": "max"
     }
   }
 }
 ```
 
-`agents` is optional and keyed by `General`, `Explore`, and `Review`. Each agent can configure `model` and/or `thinking`. Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Invalid keys or values are ignored with a best-effort warning.
+`agents` is optional and keyed by `General`, `Explore`, and `Review`. Each agent can configure `model` and/or `thinking`. Valid thinking levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; Pi may clamp the effective level to the selected model's capability. Invalid keys or values are ignored with a best-effort warning.
 
 An explicit tool-call model override takes precedence over the role configuration; without either, the subagent inherits the current Pi session's model. Autonomous callers are not given an inventory of available models, so a different model is a configuration or orchestration capability rather than a reason for the caller to guess an override.
 

@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { formatListRows, showAgentsDashboard } from "./agents-dashboard.js";
+import {
+  formatDetail,
+  formatListRows,
+  showAgentsDashboard,
+} from "./agents-dashboard.js";
 import type {
   RuntimeInspection,
   RuntimeSnapshot,
@@ -18,6 +22,7 @@ function snapshot(
     description: "test agent",
     cwd: "/repo",
     extensionBinding: "bound",
+    canSteer: true,
     rosterVisibility: "show",
     timestamps: {
       queuedAt: "2024-01-01T00:00:00.000Z",
@@ -129,12 +134,15 @@ function makeCtx(selects: string[] = [], options: { tui?: boolean } = {}) {
   };
 }
 
+let nextTestScope = 1;
+
 function makeRuntime(
   records: RuntimeSnapshot[],
   messages: readonly unknown[] = [],
 ) {
   const listeners = new Map<string, Set<() => void>>();
   const runtime = {
+    scope: `test-${nextTestScope++}`,
     snapshots: vi.fn(({ includeNested }: { includeNested?: boolean } = {}) =>
       includeNested
         ? records
@@ -149,7 +157,16 @@ function makeRuntime(
     snapshot: vi.fn((id: string) => records.find((record) => record.id === id)),
     inspect: vi.fn((id: string): RuntimeInspection | undefined => {
       const record = records.find((candidate) => candidate.id === id);
-      return record ? { snapshot: record, messages } : undefined;
+      return record
+        ? {
+            snapshot: record,
+            messages: messages as never,
+            activity: [],
+            omittedMessages: 0,
+            omittedActivity: 0,
+            compactedHistory: false,
+          }
+        : undefined;
     }),
     subscribe: vi.fn((id: string, listener: () => void) => {
       const set = listeners.get(id) ?? new Set<() => void>();
@@ -157,6 +174,18 @@ function makeRuntime(
       listeners.set(id, set);
       return vi.fn(() => set.delete(listener));
     }),
+    steer: vi.fn(async (id: string) => {
+      const record = records.find((candidate) => candidate.id === id);
+      if (!record) {
+        throw new Error(`Unknown ${id}`);
+      }
+      return record;
+    }),
+    summarise: vi.fn(async () => ({
+      ok: true as const,
+      text: "summary",
+      stopReason: "stop" as never,
+    })),
     stop: vi.fn((id: string) => {
       const record = records.find((candidate) => candidate.id === id);
       if (!record) {
@@ -193,6 +222,39 @@ function makeRuntime(
 }
 
 describe("/agents dashboard", () => {
+  it("renders effective thinking when Pi clamps the requested level", () => {
+    expect(
+      formatDetail(
+        snapshot({ id: "agent-1", thinking: "max", effectiveThinking: "low" }),
+      ),
+    ).toContain("Thinking: low");
+  });
+
+  it("renders bounded inspection disclosure without authoritative result or error payloads", () => {
+    const detail = formatDetail({
+      snapshot: snapshot({
+        id: "agent-1",
+        result: "authoritative result must not render",
+        error: "authoritative error must not render",
+        health: {
+          resultPreview: "safe result preview",
+          compaction: { status: "failed", error: "safe compaction error" },
+        },
+      }),
+      messages: [],
+      activity: [],
+      omittedMessages: 2,
+      omittedActivity: 3,
+      compactedHistory: true,
+    });
+
+    expect(detail).toContain("safe result preview");
+    expect(detail).toContain("omitted 2 messages and 3 activity records");
+    expect(detail).toContain("Compacted history: yes");
+    expect(detail).not.toContain("authoritative result must not render");
+    expect(detail).not.toContain("authoritative error must not render");
+  });
+
   it("notifies clearly when no current-session agents exist", async () => {
     const runtime = makeRuntime([]);
     const { ctx, notifications } = makeCtx();
@@ -217,7 +279,6 @@ describe("/agents dashboard", () => {
           tokensTotal: 1200,
           estimatedCost: 1.27,
           contextUsage: { tokens: 600, contextWindow: 1000, percent: 60 },
-          activeTool: "read",
         },
       }),
       snapshot({
@@ -235,7 +296,7 @@ describe("/agents dashboard", () => {
     ]);
 
     expect(rows[0]).toMatch(/^subagent-1  running\s+General\/implementer\s+/);
-    expect(rows[0]).toContain("  2/600  read");
+    expect(rows[0]).toContain("  2/600");
     expect(rows[1]).toContain("  1/?");
     expect(rows[1]).toMatch(/^subagent-2  completed\s+Review\s+/);
     expect(rows[1]).not.toContain("Review/reviewer");
@@ -257,23 +318,116 @@ describe("/agents dashboard", () => {
     });
     const publicRuntime = makeRuntime([publicAgent]);
     const implementRuntime = makeRuntime([implementAgent]);
-    const { ctx, notifications, selectCalls } = makeCtx();
-
+    const { ctx, notifications, selectCalls } = makeCtx([], { tui: false });
+    let selection = 0;
     ctx.ui.select = vi.fn(async (title: string, options: string[]) => {
       selectCalls.push({ title, options });
-      return options[1];
+      return ["All", options[1], "Inspect activity", "Back", undefined][
+        selection++
+      ];
     });
 
     await showAgentsDashboard([publicRuntime, implementRuntime], ctx as never);
 
-    expect(selectCalls[0]?.options).toHaveLength(2);
-    expect(selectCalls[0]?.options[0]).toContain("public agent");
-    expect(selectCalls[0]?.options[1]).toContain("implement task");
+    expect(selectCalls[1]?.options).toHaveLength(2);
+    expect(selectCalls[1]?.options[0]).toContain("public agent");
+    expect(selectCalls[1]?.options[1]).toContain("implement task");
     expect(notifications[0]?.message).toContain(
       "Type/role: pi-implement:implementer/implementer",
     );
     expect(implementRuntime.inspect).toHaveBeenCalledWith("subagent-1");
     expect(publicRuntime.inspect).not.toHaveBeenCalled();
+  });
+
+  it("keeps a selected runtime-qualified record through inspection before returning to the action loop", async () => {
+    const first = snapshot({ id: "subagent-1", description: "identical" });
+    const second = snapshot({ id: "subagent-1", description: "identical" });
+    const firstRuntime = makeRuntime([first]);
+    const secondRuntime = makeRuntime([second]);
+    const { ctx } = makeCtx([], { tui: false });
+    let selection = 0;
+    ctx.ui.select = vi.fn(
+      async (_title: string, options: string[]) =>
+        ["Running", options[1], "Inspect activity", "Back", undefined][
+          selection++
+        ],
+    );
+
+    await showAgentsDashboard([firstRuntime, secondRuntime], ctx as never);
+
+    expect(secondRuntime.inspect).toHaveBeenCalledWith("subagent-1");
+    expect(firstRuntime.inspect).not.toHaveBeenCalled();
+    expect(selection).toBe(5);
+  });
+
+  it("refreshes a stale selection without dispatching an action", async () => {
+    const selected = snapshot({ id: "selected" });
+    const remaining = snapshot({ id: "remaining" });
+    const runtime = makeRuntime([selected, remaining]);
+    const { ctx, notifications } = makeCtx([], { tui: false });
+    let selection = 0;
+    ctx.ui.select = vi.fn(async (_title: string, options: string[]) => {
+      if (selection++ === 0) {
+        return "Running";
+      }
+      if (selection === 2) {
+        runtime.retire("selected");
+        return options[0];
+      }
+      return undefined;
+    });
+
+    await showAgentsDashboard(runtime, ctx as never);
+
+    expect(notifications).toContainEqual({
+      message: "Selected agent is no longer available; refreshed.",
+      type: "warning",
+    });
+    expect(runtime.stop).not.toHaveBeenCalled();
+    expect(runtime.steer).not.toHaveBeenCalled();
+  });
+
+  it("offers guidance only for steerable running records", async () => {
+    const running = snapshot({ id: "running", canSteer: false });
+    const runtime = makeRuntime([running]);
+    const { ctx, selectCalls } = makeCtx([], { tui: false });
+    let selection = 0;
+    ctx.ui.select = vi.fn(async (title: string, options: string[]) => {
+      selectCalls.push({ title, options });
+      return ["Running", options[0], "Back", undefined][selection++];
+    });
+
+    await showAgentsDashboard(runtime, ctx as never);
+
+    expect(selectCalls[2]?.options).toEqual([
+      "Inspect activity",
+      "Summarise activity",
+      "Stop agent",
+      "Back",
+    ]);
+  });
+
+  it("does not offer terminal records guidance or stop actions", async () => {
+    const terminal = snapshot({
+      id: "terminal",
+      status: "completed",
+      canSteer: false,
+    });
+    const runtime = makeRuntime([terminal]);
+    const { ctx, selectCalls } = makeCtx([], { tui: false });
+    let selection = 0;
+    ctx.ui.select = vi.fn(async (title: string, options: string[]) => {
+      selectCalls.push({ title, options });
+      return ["All", options[0], "Back", undefined][selection++];
+    });
+
+    await showAgentsDashboard(runtime, ctx as never);
+
+    expect(selectCalls[2]?.options).toEqual([
+      "Inspect activity",
+      "Summarise activity",
+      "Back",
+    ]);
   });
 
   it("hides nested explore children from the top-level list and shows them in static parent detail", async () => {
@@ -290,18 +444,20 @@ describe("/agents dashboard", () => {
       health: { resultPreview: "nested result" },
     });
     const runtime = makeRuntime([parent, child]);
-    const { ctx, notifications, selectCalls } = makeCtx();
-
+    const { ctx, notifications, selectCalls } = makeCtx([], { tui: false });
+    let selection = 0;
     ctx.ui.select = vi.fn(async (title: string, options: string[]) => {
       selectCalls.push({ title, options });
-      return options[0];
+      return ["All", options[0], "Inspect activity", "Back", undefined][
+        selection++
+      ];
     });
 
     await showAgentsDashboard(runtime, ctx as never);
 
-    expect(selectCalls[0]?.options).toHaveLength(1);
-    expect(selectCalls[0]?.options[0]).toContain("parent");
-    expect(selectCalls[0]?.options[0]).not.toContain("child");
+    expect(selectCalls[1]?.options).toHaveLength(1);
+    expect(selectCalls[1]?.options[0]).toContain("parent");
+    expect(selectCalls[1]?.options[0]).not.toContain("child");
     expect(notifications[0]?.message).toContain("Nested explore children:");
     expect(notifications[0]?.message).toContain("child");
   });
@@ -310,8 +466,12 @@ describe("/agents dashboard", () => {
     const running = snapshot({ id: "subagent-1", status: "running" });
     const runtime = makeRuntime([running]);
     const { ctx, notifications, custom } = makeCtx([], { tui: false });
+    let selection = 0;
     ctx.ui.select = vi.fn(
-      async (_title: string, options: string[]) => options[0],
+      async (_title: string, options: string[]) =>
+        [options[0], options[0], "Inspect activity", "Back", undefined][
+          selection++
+        ],
     );
 
     await showAgentsDashboard(runtime, ctx as never);
@@ -330,7 +490,6 @@ describe("/agents dashboard", () => {
         estimatedCost: 0.1,
         contextUsage: { tokens: 8, contextWindow: 100, percent: 8 },
         peakContextTokens: 9,
-        activeTool: "read",
         lastAssistantText: "first",
       },
     });
@@ -339,8 +498,12 @@ describe("/agents dashboard", () => {
     ];
     const runtime = makeRuntime([running], messages);
     const ui = makeCtx();
+    let selection = 0;
     ui.ctx.ui.select = vi.fn(
-      async (_title: string, options: string[]) => options[0],
+      async (_title: string, options: string[]) =>
+        [options[0], options[0], "Inspect activity", "Back", undefined][
+          selection++
+        ],
     );
 
     const dashboard = showAgentsDashboard(runtime, ui.ctx as never);
@@ -353,7 +516,6 @@ describe("/agents dashboard", () => {
 
     running.health = {
       ...running.health,
-      activeTool: "bash",
       turns: 2,
       tokensTotal: 30,
       estimatedCost: 1.27,
@@ -364,18 +526,56 @@ describe("/agents dashboard", () => {
     runtime.emit("subagent-1");
 
     expect(ui.requestRender).toHaveBeenCalled();
+    const recentRendered = ui.component?.render(80).join("\n") ?? "";
+    expect(recentRendered).toContain("second");
+    for (let index = 0; index < 20; index += 1) {
+      ui.component?.handleInput?.("k");
+    }
     const rendered = ui.component?.render(80).join("\n") ?? "";
-    expect(rendered).toContain("Active tool: bash");
+    expect(rendered).not.toContain("Active tool");
     expect(rendered).toContain("Turns/context: 2/20");
     expect(rendered).toContain("Estimated API cost: $1.27");
     expect(rendered).toContain("Peak context: 20");
     expect(rendered).toContain("Cumulative tokens: 30");
-    expect(rendered).toContain("second");
 
     expect(ui.sendTerminalInput("\u001b")).toBe(true);
     await dashboard;
     expect(runtime.listenerCount("subagent-1")).toBe(0);
     expect(ui.terminalInputListenerCount).toBe(0);
+    expect(selection).toBe(5);
+  });
+
+  it("cancels only the TUI summary completion when closed", async () => {
+    const runtime = makeRuntime([snapshot({ id: "subagent-1" })]);
+    let signal: AbortSignal | undefined;
+    runtime.summarise = vi.fn(
+      async (
+        _id: string,
+        _model: unknown,
+        _deps: unknown,
+        requestSignal: AbortSignal,
+      ) => {
+        signal = requestSignal;
+        return new Promise(() => {});
+      },
+    ) as never;
+    const ui = makeCtx();
+    let selection = 0;
+    ui.ctx.ui.select = vi.fn(
+      async (_title: string, options: string[]) =>
+        [options[0], options[0], "Summarise activity", "Back", undefined][
+          selection++
+        ],
+    );
+
+    const dashboard = showAgentsDashboard(runtime, ui.ctx as never);
+    await vi.waitFor(() => expect(runtime.summarise).toHaveBeenCalledOnce());
+
+    ui.closeCustom();
+    await dashboard;
+
+    expect(signal?.aborted).toBe(true);
+    expect(selection).toBe(5);
   });
 
   it("renders retained terminal inspection data when a live inspector completes", async () => {
@@ -389,8 +589,12 @@ describe("/agents dashboard", () => {
     ];
     const runtime = makeRuntime([running], messages);
     const ui = makeCtx();
+    let selection = 0;
     ui.ctx.ui.select = vi.fn(
-      async (_title: string, options: string[]) => options[0],
+      async (_title: string, options: string[]) =>
+        [options[0], options[0], "Inspect activity", "Back", undefined][
+          selection++
+        ],
     );
 
     const dashboard = showAgentsDashboard(runtime, ui.ctx as never);
@@ -421,8 +625,12 @@ describe("/agents dashboard", () => {
     const running = snapshot({ id: "subagent-1", status: "running" });
     const runtime = makeRuntime([running]);
     const ui = makeCtx();
+    let selection = 0;
     ui.ctx.ui.select = vi.fn(
-      async (_title: string, options: string[]) => options[0],
+      async (_title: string, options: string[]) =>
+        [options[0], options[0], "Inspect activity", "Back", undefined][
+          selection++
+        ],
     );
 
     const dashboard = showAgentsDashboard(runtime, ui.ctx as never);
@@ -445,8 +653,10 @@ describe("/agents dashboard", () => {
     const running = snapshot({ id: "subagent-1", status: "running" });
     const runtime = makeRuntime([running]);
     const ui = makeCtx();
+    let selection = 0;
     ui.ctx.ui.select = vi.fn(
-      async (_title: string, options: string[]) => options[0],
+      async (_title: string, options: string[]) =>
+        [options[0], options[0], "Inspect activity", undefined][selection++],
     );
 
     const dashboard = showAgentsDashboard(runtime, ui.ctx as never);

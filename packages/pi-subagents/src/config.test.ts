@@ -22,7 +22,7 @@ describe("public pi-subagents config", () => {
         agents: {
           General: { model: "p/general", thinking: "off" },
           Explore: { model: "p/explore", thinking: "high" },
-          Review: { thinking: "xhigh" },
+          Review: { thinking: "max" },
         },
       }),
     );
@@ -32,7 +32,7 @@ describe("public pi-subagents config", () => {
       agents: {
         General: { model: "p/general", thinking: "off" },
         Explore: { model: "p/explore", thinking: "high" },
-        Review: { thinking: "xhigh" },
+        Review: { thinking: "max" },
       },
     });
   });
@@ -57,7 +57,7 @@ describe("public pi-subagents config", () => {
     });
     expect(parsed.warnings).toEqual([
       "General.model must be a non-empty string",
-      "Explore.thinking must be one of off, minimal, low, medium, high, xhigh",
+      "Explore.thinking must be one of off, minimal, low, medium, high, xhigh, max",
       "Review config must be an object",
       "Ignoring config for unknown public subagent Unknown",
     ]);

@@ -1,4 +1,7 @@
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import {
+  DEFAULT_MAX_BYTES,
+  type AgentSession,
+} from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { SubagentRuntime } from "./runtime.js";
 
@@ -67,6 +70,26 @@ async function flushPromises() {
 }
 
 describe("runtime-injected explore tool", () => {
+  it("uses a provider-portable schema and repository-preserving description", () => {
+    const runtime = new SubagentRuntime(makePi() as never);
+    const parent = runtime.queue({
+      owner: "public-tool",
+      type: "General",
+      description: "general",
+      cwd: "/workspace",
+    });
+
+    const tool = runtime.createExploreTool(parent);
+    const parameters = JSON.parse(JSON.stringify(tool.parameters));
+    expect(parameters.properties.breadth).toMatchObject({
+      type: "string",
+      enum: ["quick", "medium", "very thorough"],
+    });
+    expect(tool.description).toContain("repository-preserving");
+    expect(tool.description).toContain("cannot spawn agents");
+    expect(tool.description).not.toContain("cannot modify state");
+  });
+
   it("injects explore only into eligible non-Explore agents", async () => {
     const pi = makePi(["read", "bash", "Agent", "edit"]);
     const sessions = [
@@ -328,7 +351,7 @@ describe("runtime-injected explore tool", () => {
     const pi = makePi();
     const runtime = new SubagentRuntime(pi as never, {
       createSession: vi.fn(async () => ({
-        session: makeSession("x".repeat(50_100)),
+        session: makeSession("😀\n".repeat(20_000)),
       })),
     });
     const parent = runtime.queue({
@@ -346,8 +369,41 @@ describe("runtime-injected explore tool", () => {
 
     const text =
       result.content[0]?.type === "text" ? result.content[0].text : "";
-    expect(text).toContain("[explore output truncated after 50000 characters");
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+    expect(text).toContain("[Explore output truncated.");
     expect(result.details).toMatchObject({ truncated: true });
+  });
+
+  it("bounds failed nested Explore output and reports truncation", async () => {
+    const child = makeSession();
+    Object.defineProperty(child, "state", {
+      value: { errorMessage: "😀".repeat(20_000) },
+    });
+    const runtime = new SubagentRuntime(makePi() as never, {
+      createSession: vi.fn(async () => ({ session: child })),
+    });
+    const parent = runtime.queue({
+      owner: "public-tool",
+      type: "General",
+      description: "general",
+      cwd: "/workspace",
+    });
+
+    const result = await runtime.runExploreTool(
+      parent,
+      { question: "map files" },
+      makeCtx() as never,
+    );
+
+    const text =
+      result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+    expect(text).toContain("explore failed:");
+    expect(text).toContain("[Explore output truncated.");
+    expect(result.details).toMatchObject({ status: "failed", truncated: true });
+    expect(
+      Buffer.byteLength((result.details as { error?: string }).error ?? ""),
+    ).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
   });
 
   it("propagates parent cancellation to the nested Explore child", async () => {

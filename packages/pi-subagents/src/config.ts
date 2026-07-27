@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { PUBLIC_BUILTIN_TYPES, type PublicBuiltinType } from "./definitions.js";
+import {
+  PUBLIC_BUILTIN_TYPES,
+  type PublicBuiltinType,
+} from "./agent-profiles.js";
 
 export const THINKING_LEVELS = [
   "off",
@@ -10,6 +13,7 @@ export const THINKING_LEVELS = [
   "medium",
   "high",
   "xhigh",
+  "max",
 ] as const;
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
@@ -76,7 +80,7 @@ function parseAgentConfig(
       config.thinking = value.thinking as ThinkingLevel;
     } else {
       warnings.push(
-        `${key}.thinking must be one of off, minimal, low, medium, high, xhigh`,
+        `${key}.thinking must be one of off, minimal, low, medium, high, xhigh, max`,
       );
     }
   }

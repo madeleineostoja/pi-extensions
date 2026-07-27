@@ -28,7 +28,6 @@ import {
   AGENT_PROMPT_GUIDELINES,
   EXPLORE_PROMPT,
   GENERAL_PROMPT,
-  PUBLIC_AGENT_PROFILES,
   REVIEW_PROMPT,
 } from "./agent-profiles.js";
 import { getSubagentRuntime, SubagentRuntime } from "./runtime.js";
@@ -185,22 +184,6 @@ function makeSession(result = "done") {
   };
 }
 
-function collectConstStrings(value: unknown): string[] {
-  if (value === null || typeof value !== "object") {
-    return [];
-  }
-  const object = value as Record<string, unknown>;
-  const current = typeof object.const === "string" ? [object.const] : [];
-  return [
-    ...current,
-    ...Object.values(object).flatMap((entry) =>
-      Array.isArray(entry)
-        ? entry.flatMap(collectConstStrings)
-        : collectConstStrings(entry),
-    ),
-  ];
-}
-
 describe("public subagent tools", () => {
   beforeEach(() => {
     getAgentDirMock.mockReturnValue("/agent-dir");
@@ -245,28 +228,19 @@ describe("public subagent tools", () => {
     expect(tools[1].description).toContain("wait:true");
     expect(tools[1].description).toContain("do not poll");
     expect(tools[2].description).toContain("result becomes a dependency");
-    expect(collectConstStrings(tools[0].parameters)).toEqual([
-      "General",
-      "Explore",
-      "Review",
-      "foreground",
-      "background",
-      "off",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-    ]);
-    expect(JSON.stringify(tools[0].parameters)).toContain(
-      PUBLIC_AGENT_PROFILES.General.description,
-    );
-    expect(JSON.stringify(tools[0].parameters)).toContain(
-      PUBLIC_AGENT_PROFILES.Explore.description,
-    );
-    expect(JSON.stringify(tools[0].parameters)).toContain(
-      PUBLIC_AGENT_PROFILES.Review.description,
-    );
+    const parameters = JSON.parse(JSON.stringify(tools[0].parameters));
+    expect(parameters.properties.subagent_type).toMatchObject({
+      type: "string",
+      enum: ["General", "Explore", "Review"],
+    });
+    expect(parameters.properties.mode).toMatchObject({
+      type: "string",
+      enum: ["foreground", "background"],
+    });
+    expect(parameters.properties.thinking).toMatchObject({
+      type: "string",
+      enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+    });
     expect(JSON.stringify(tools[0].parameters)).toContain(
       "do not guess available models",
     );
@@ -448,14 +422,15 @@ describe("public subagent tools", () => {
       cwd: "/workspace",
     });
     runtime.start(running.id);
-    const steerResult = await steer!.execute(
-      "call-4",
-      { id: running.id, message: "continue" },
-      undefined,
-      undefined,
-      makeCtx(),
-    );
-    expect(steerResult.isError).toBe(false);
+    await expect(
+      steer!.execute(
+        "call-4",
+        { id: running.id, message: "continue" },
+        undefined,
+        undefined,
+        makeCtx(),
+      ),
+    ).rejects.toThrow(/not steerable/);
 
     const failedForSteer = runtime.queue({
       owner: "test",
@@ -730,6 +705,7 @@ describe("public subagent tools", () => {
   });
 
   it("uses replace-mode prompt loading and pinned tools for Explore", async () => {
+    expect(EXPLORE_PROMPT).toContain("trusted-model instruction");
     expect(EXPLORE_PROMPT).toContain("Use lsp when available");
     expect(EXPLORE_PROMPT).toContain("broad, literal, or non-semantic");
     expect(EXPLORE_PROMPT).toContain("fall back to search and reads");
@@ -770,6 +746,10 @@ describe("public subagent tools", () => {
   });
 
   it("uses append-mode prompt loading and pinned tools for Review", async () => {
+    expect(REVIEW_PROMPT).toContain("trusted-model instruction");
+    expect(REVIEW_PROMPT).toContain(
+      "read-only Git or GitHub work, tests, and checks",
+    );
     expect(REVIEW_PROMPT).toContain("proportional to the changed surface");
     expect(REVIEW_PROMPT).toContain("not to build a general repository map");
     expect(REVIEW_PROMPT).toContain("concrete sufficient replacement");
@@ -932,12 +912,11 @@ describe("public subagent tools", () => {
       ctx: makeCtx() as never,
       mode: "background",
     });
-    await expect(runtime.steer(started.id, "look here")).resolves.toMatchObject(
-      { status: "running" },
-    );
+    const steering = runtime.steer(started.id, "look here");
     expect(session.steer).not.toHaveBeenCalled();
 
     sessionReady.resolve({ session });
+    await expect(steering).resolves.toMatchObject({ status: "running" });
     await vi.waitFor(() =>
       expect(session.steer).toHaveBeenCalledWith("look here"),
     );
@@ -996,9 +975,10 @@ describe("public subagent tools", () => {
     });
   });
 
-  it("prefers explicit model and thinking over public config", async () => {
+  it("preserves requested thinking and reports Pi's effective level", async () => {
     const { pi } = makePi(["read"]);
     const { session } = makeSession();
+    Object.defineProperty(session, "thinkingLevel", { value: "low" });
     const createSession = vi.fn(async (_options: any) => ({ session }));
     const ctx = makeCtx();
     const runtime = new SubagentRuntime(pi as never, {
@@ -1006,7 +986,7 @@ describe("public subagent tools", () => {
       publicConfig: {
         agents: {
           General: {},
-          Explore: { model: "configured/explore", thinking: "low" },
+          Explore: { model: "configured/explore", thinking: "max" },
           Review: {},
         },
       },
@@ -1018,15 +998,19 @@ describe("public subagent tools", () => {
       cwd: "/workspace",
       ctx: ctx as never,
       model: "explicit/model",
-      thinking: "high",
+      thinking: "max",
     });
 
     expect(ctx.modelRegistry.find).toHaveBeenCalledWith("explicit", "model");
     expect(createSession).toHaveBeenCalledWith(
       expect.objectContaining({
         model: { provider: "explicit", id: "model" },
-        thinkingLevel: "high",
+        thinkingLevel: "max",
       }),
     );
+    expect(await runtime.result("subagent-1", false)).toMatchObject({
+      thinking: "max",
+      effectiveThinking: "low",
+    });
   });
 });

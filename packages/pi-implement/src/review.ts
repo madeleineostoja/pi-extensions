@@ -211,7 +211,7 @@ export async function runWorkstreamReview(args: {
   roles?: {
     model?: string;
     type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   };
 }): Promise<ReviewOutcome> {
   if (args.workstream.kind !== "source") {
@@ -399,7 +399,7 @@ async function runOverallAnchoredReview(args: {
   roles?: {
     model?: string;
     type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   };
 }): Promise<ReviewOutcome> {
   const runtime = args.state.workstreams.overall[args.workstream.repairId];

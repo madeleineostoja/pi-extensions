@@ -51,7 +51,7 @@ export async function runOverallRepair(args: {
   roles?: {
     model?: string;
     type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   };
 }): Promise<{
   candidate: RunState["candidates"][string];

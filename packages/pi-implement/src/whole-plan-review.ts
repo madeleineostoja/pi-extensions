@@ -103,7 +103,7 @@ export async function runWholePlanReview(args: {
   roles?: {
     model?: string;
     type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   };
 }): Promise<void> {
   if (
@@ -275,7 +275,7 @@ export async function runWholePlanRecovery(args: {
   roles?: {
     model?: string;
     type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   };
 }): Promise<RecoveryAction> {
   const recovery = args.state.wholePlanReview.recovery;
