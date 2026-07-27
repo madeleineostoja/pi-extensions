@@ -1,8 +1,16 @@
 {
   "name": "pipkin",
   "version": "1.0.0",
-  "description": "Personal Pi agent harness.",
+  "description": "A small companion for ambitious Pi sessions",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/madeleineostoja/pipkin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/madeleineostoja/pipkin/issues"
+  },
+  "homepage": "https://github.com/madeleineostoja/pipkin#readme",
   "type": "module",
   "engines": {
     "node": ">=24"

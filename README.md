@@ -1,44 +1,141 @@
-# Pipkin
+<div align="center">
+  <h1>Pipkin</h1>
+  <p><strong>A small companion for ambitious <a href="https://github.com/earendil-works/pi">Pi</a> sessions.</strong></p>
+  <p>
+    <a href="https://github.com/madeleineostoja/pipkin/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/madeleineostoja/pipkin/actions/workflows/ci.yml/badge.svg"></a>
+    <img alt="Node.js 24+" src="https://img.shields.io/badge/Node.js-24%2B-339933?logo=nodedotjs&logoColor=white">
+    <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  </p>
+</div>
 
-Personal [Pi](https://github.com/earendil-works/pi) agent harness.
-
-## Features
-
-| Feature                                         | Description                                                                                                                                 |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Sandbox](docs/features/sandbox.md)             | Limit file, subprocess, and network access with policy gates and `nono` sandboxing.                                                         |
-| [Edit Approval](docs/features/edit-approval.md) | Ask before built-in `edit` and `write` tool calls apply changes.                                                                            |
-| [Shell Guard](docs/features/shell-guard.md)     | Ask before running risky destructive shell commands.                                                                                        |
-| [Context](docs/features/context.md)             | Compact stale or low-value tool results, with `context_recall` for on-demand retrieval.                                                     |
-| [Defaults](docs/features/defaults.md)           | Keep `settings.json` model/provider and thinking defaults stable across sessions.                                                           |
-| [UI](docs/features/ui.md)                       | Replace the built-in footer with a compact status bar for cwd, git, model, cost, and context.                                               |
-| [Personality](docs/features/personality.md)     | Name new sessions from the first prompt using a lightweight model.                                                                          |
-| [LSP](docs/features/lsp.md)                     | Read-only semantic navigation and explicit diagnostics for TypeScript, Svelte, and provisioned Ruby.                                        |
-| [Subagents](docs/features/subagents.md)         | Run foreground or background General, Explore, and Review agents inside the current Pi session.                                             |
-| [Implement](docs/features/implement.md)         | Execute Markdown checkbox plans through strict checkout-owned workstreams, cumulative review, durable recovery, and serialized publication. |
-| [Papercuts](docs/features/papercuts.md)         | Keep a durable, human-reviewed queue of recurring project workflow gaps.                                                                    |
-| [Handoff](docs/features/handoff.md)             | Prompt to compact context when handing an active session from one model to another.                                                         |
-| [BTW](docs/features/btw.md)                     | Ask a side question about the current session without adding it to the main transcript.                                                     |
-| [Caffeinate](docs/features/caffeinate.md)       | Hold an idle-sleep inhibitor for the session lifetime on macOS and Linux.                                                                   |
-
-## Implement run safety
-
-Implement requires Node.js 24+ and scopes each active run to its invoking checkout. A new run requires a clean named-branch checkout with a resolvable `HEAD` and no active Git operation. It accepts one arbitrary or headingless Markdown checkbox section and recursively ingests only ordinary local Markdown links as its plan corpus. Separate linked worktrees may run concurrently; a second run in the same checkout is rejected by its OS-backed lease. Independent workstreams may overlap, while target-quiet integration and publication remain serialized. Dependent workstreams receive bases containing completed dependencies. Publishable staging commits run ordinary Git hooks, and failures route through durable recovery without changing the target. Its revisioned `run-state.json` is authoritative, while UI, evidence, and plan checkboxes are projections. Tracked projected plans retain exact hash protection, recoverable target dirt pauses with exact paths and can resume after cleanup, completed and safety-blocked runs cannot resume, and cleanup or abandonment conservatively removes only provably owned resources. See [Implement](docs/features/implement.md) for operating constraints and the [internal library](docs/features/library.md) for lease and common-Git exclude contracts.
+Pipkin turns the Pi agent harness into a serious engineering tool for heavy workloads. It can orchestrate teams of agents to autonomously implement plans safely, optimise context on the fly, guardrail running processes, and more.
 
 ## Install
 
-Install the complete bundle into Pi:
+Pipkin requires Node 24 or later and an existing Pi installation.
 
-```bash
-pi install git:github.com/madeleineostoja/pi-extensions
+```sh
+pi install git:github.com/madeleineostoja/pipkin
 ```
 
-Pin to a tag:
+Choose the models Pipkin should use in `~/.pi/agent/pipkin/config.json`
 
-```bash
-pi install git:github.com/madeleineostoja/pi-extensions@v0.1.0
+```json
+{
+  "models": {
+    "utility": { "model": "provider/fast-model", "thinking": "minimal" },
+    "low": { "model": "provider/low-cost-model", "thinking": "low" },
+    "medium": { "model": "provider/coding-model", "thinking": "medium" },
+    "high": { "model": "provider/reasoning-model", "thinking": "high" }
+  }
+}
 ```
 
-## License
+See [Configuration and state](docs/configuration.md) for additional configuration and how these models map to various features.
 
-MIT. See [LICENSE](LICENSE).
+## Features
+
+### Implementer
+
+Pipkin is an autonomous engineering runtime and parallel agent orchestrator for implementing anything from small changes to full rewrites while you sleep. Hand it a Markdown plan, with linked specs or design notes, and it drives the implementation run from initial planning to reviewed commits.
+
+```text
+/implement docs/plan.md
+```
+
+**Plan → dependency graph → parallel implementation → review and repair → protected publication**
+
+A planner agent reads the complete plan corpus and designs a dependency graph and workstreams. Pipkin then coordinates multiple implementer and reviewer agents in isolated Git worktrees. It schedules independent streams concurrently, gives dependent work the right completed base, routes findings back through repair, and finishes with a whole-plan review.
+
+The orchestration remains inspectable throughout. The target branch only moves through a serialized integration lane after hooks run, the prepared commit is verified, and compare-and-swap checks still hold. Durable run state lets Pipkin explain a blocked gate, recover work it owns, and resume safe interruptions rather than losing the run.
+
+This makes it practical to give Pipkin a serious implementation plan and let it drive the work without surrendering visibility or Git discipline.
+
+**[Implementation →](docs/features/implementation.md)**
+
+### Safety
+
+Pipkin's first three layers are deliberately about control:
+
+- **Sandbox** limits reads, writes, subprocesses, and subprocess network access. `/sandbox` explains the current policy and lets you grant temporary access without stopping the session.
+- **Edit Approval** puts a checkpoint in front of Pi's built-in `edit` and `write` tools. Toggle it with `Ctrl+R` or `/readonly`.
+- **Shell Guard** pauses high-risk shell commands—force pushes, untracked-file deletion, remote scripts, deploys, infrastructure destruction, and more—without pestering you about routine work.
+
+**[Safety →](docs/features/safety.md)**
+
+### Context
+
+Long sessions collect a remarkable amount of baggage. **Context Prune** spots stale output, superseded and repeated reads, already-consumed command results, and context-pressure candidates. It replaces them with small, reasoned stubs while keeping every original result available through `context_recall`. `/context-prune` shows what it packed away.
+
+When you switch models, **Handoff** shows the context and next-input cost you are carrying. `/handoff` lets the previous model leave a proper continuation summary for the next one instead of making it reread the whole journey.
+
+**[Context and Handoff →](docs/features/context-and-handoff.md)**
+
+### Agents
+
+Pipkin adds three focused subagents through the `Agent` tool:
+
+- **Explore** maps unfamiliar code and follows relationships across a repository.
+- **Review** approaches a concrete change without the implementer's assumptions.
+- **General** takes bounded research or genuinely separate work.
+
+They can run in the foreground or alongside independent parent work, accept steering, and stay visible through `/agents`. Pipkin does not turn every task into multi-agent theatre; delegation is there when a separate context or owner actually helps.
+
+**[Agents →](docs/features/agents.md)**
+
+### Code intelligence and side questions
+
+The read-only **LSP** tool finds definitions, types, implementations, references, symbols, hover information, and diagnostics for TypeScript/JavaScript, Svelte, and provisioned Ruby projects. It follows a pull-only model where the agent uses it deliberately, rather than interrupting turns with noise.
+
+**BTW** handles the small question that would otherwise derail the main thread: `/btw <question>` answers from current session context in a disposable overlay and leaves the transcript alone.
+
+**[Workflow tools →](docs/features/workflow-tools.md)**
+
+### Session details
+
+- **UI** keeps cwd, branch, model, thinking, cost, cache hit rate, context usage, and extension state in one compact footer.
+- **Personality** gives unnamed sessions useful titles, so `/resume` is less of an archaeological dig.
+- **Defaults** stops a temporary model or thinking change from becoming tomorrow's surprise default.
+- **Papercuts** saves recurring project-specific workflow failures for human review instead of letting the lesson vanish with the session.
+- **Caffeinate** keeps supported macOS and Linux machines awake while a Pi session is open.
+
+**[Interface and Personality →](docs/features/interface-and-personality.md)**
+
+**[Workflow tools →](docs/features/workflow-tools.md)**
+
+## Commands
+
+| Surface                           | What it does                                                               |
+| --------------------------------- | -------------------------------------------------------------------------- |
+| `/sandbox`                        | Inspect policy, explain decisions, and manage session or persistent access |
+| `/readonly [on\|off]`             | Toggle approval for built-in edits and writes                              |
+| `/context-prune`                  | Inspect elision, recalls, cache behavior, and adaptive policy              |
+| `context_recall`                  | Recover the original content behind an elision stub                        |
+| `/lsp` / `lsp`                    | Inspect language servers or make semantic source queries                   |
+| `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents                     |
+| `get_subagent_result`             | Inspect or join a background agent                                         |
+| `steer_subagent`                  | Queue guidance for a running background agent                              |
+| `/implement`                      | Start, inspect, resume, stop, or clean up implementation runs              |
+| `/papercuts` / `propose_papercut` | Capture and review durable project workflow gaps                           |
+| `/handoff`                        | Compact with the previous model after switching                            |
+| `/btw <question>`                 | Ask an ephemeral side question from current session context                |
+
+## Limits
+
+Pipkin extensions are trusted code with the permissions of the Pi process. Sandbox does not confine JavaScript-side network calls made by trusted extensions, and language servers run outside it. Edit Approval and Shell Guard step aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
+
+Those are operating constraints, not footnotes. The feature guides spell out where each boundary begins and ends.
+
+## Documentation
+
+- [Configuration and state](docs/configuration.md)
+- [Safety](docs/features/safety.md)
+- [Context and Handoff](docs/features/context-and-handoff.md)
+- [Agents](docs/features/agents.md)
+- [Implementation](docs/features/implementation.md)
+- [Interface and Personality](docs/features/interface-and-personality.md)
+- [Workflow tools](docs/features/workflow-tools.md)
+- [Architecture](docs/architecture.md)
+- [Development](docs/development.md)
+
+MIT [LICENSE](LICENSE).
