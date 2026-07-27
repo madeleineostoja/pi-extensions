@@ -67,21 +67,25 @@ export async function showAgentsDashboard(
       );
       return;
     }
-    const rows = visible.map(
-      (entry) =>
-        `${formatListRow(entry.snapshot)}${
+    const choices = new Map(
+      visible.map((entry) => [
+        `${entry.snapshot.key ?? entry.snapshot.id}\t${formatListRow(entry.snapshot)}${
           nestedChildren(all, entry).length
             ? `\n  ↳ ${nestedChildren(all, entry)
                 .map((child) => child.snapshot.description)
                 .join(" · ")}`
             : ""
         }`,
+        entry,
+      ]),
     );
-    const selected = await ctx.ui.select(`${filter} agents`, rows);
+    const selected = await ctx.ui.select(`${filter} agents`, [
+      ...choices.keys(),
+    ]);
     if (!selected) {
       return;
     }
-    const entry = visible[rows.indexOf(selected)];
+    const entry = choices.get(selected);
     if (!entry) {
       continue;
     }
@@ -176,6 +180,7 @@ function nestedChildren(
 ): DashboardEntry[] {
   return entries.filter(
     (candidate) =>
+      candidate.runtime === entry.runtime &&
       nestedOwner(candidate.snapshot.owner)?.parentId === entry.snapshot.id,
   );
 }

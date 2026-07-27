@@ -101,14 +101,26 @@ export function projectMessages(messages: readonly unknown[]): {
       const toolCallId = stringValue(message.toolCallId);
       const index =
         toolCallId === undefined ? undefined : calls.get(toolCallId);
-      const content = safeText(message.content);
+      const toolName = stringValue(message.toolName);
+      const content =
+        toolName === "edit" || toolName === "write"
+          ? undefined
+          : safeText(message.content);
+      const interrupted =
+        message.isError === true &&
+        /\b(aborted|interrupted|cancelled)\b/i.test(content ?? "");
       const error = message.isError === true ? content : undefined;
       if (index !== undefined) {
         const prior = activity[index];
         if (prior?.kind === "tool") {
           activity[index] = {
             ...prior,
-            status: message.isError === true ? "failed" : "completed",
+            status:
+              message.isError === true
+                ? interrupted
+                  ? "interrupted"
+                  : "failed"
+                : "completed",
             ...(content === undefined
               ? {}
               : message.isError === true
@@ -120,9 +132,7 @@ export function projectMessages(messages: readonly unknown[]): {
       projected.push({
         role,
         ...(timestamp === undefined ? {} : { timestamp }),
-        ...(stringValue(message.toolName) === undefined
-          ? {}
-          : { toolName: stringValue(message.toolName) }),
+        ...(toolName === undefined ? {} : { toolName }),
         ...(toolCallId === undefined ? {} : { toolCallId }),
         ...(content === undefined ? {} : { text: content }),
       });
@@ -215,7 +225,8 @@ function safeToolArguments(name: string, value: unknown): string | undefined {
   const fields = [
     path && `path: ${path}`,
     range && `range: ${range}`,
-    stringValue(value.query) && `query: ${stringValue(value.query)}`,
+    (stringValue(value.query) ?? stringValue(value.pattern)) &&
+      `query: ${stringValue(value.query) ?? stringValue(value.pattern)}`,
     stringValue(value.command) && `command: ${stringValue(value.command)}`,
     stringValue(value.symbol) && `symbol: ${stringValue(value.symbol)}`,
     stringValue(value.action) && `action: ${stringValue(value.action)}`,

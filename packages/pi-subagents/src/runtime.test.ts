@@ -236,6 +236,39 @@ describe("SubagentRuntime", () => {
     expect(getSubagentRuntime(child as never)).not.toBe(runtime);
   });
 
+  it("preserves legacy coordinator state while rebinding its API", async () => {
+    const globalScope = globalThis as Record<symbol, unknown>;
+    const managerKey = Symbol.for("pi-subagents:manager");
+    const previousManager = globalScope[managerKey];
+    const events = {};
+    const first = { ...fakePi().pi, events };
+    const second = { ...fakePi().pi, events };
+    const legacyRuntime = {
+      pi: first,
+      scope: "legacy",
+      state: { queued: ["survives reload"] },
+      currentApi() {
+        return this.pi;
+      },
+    };
+
+    globalScope[managerKey] = { runtimeList: new Set([legacyRuntime]) };
+    try {
+      vi.resetModules();
+      const reloaded = await import("./runtime.js");
+      const rebound = reloaded.getSubagentRuntime(second as never);
+
+      expect("rebind" in legacyRuntime).toBe(false);
+      expect(rebound).toBe(legacyRuntime);
+      expect(legacyRuntime.state).toEqual({ queued: ["survives reload"] });
+      expect(legacyRuntime.currentApi()).toBe(second);
+      expect(reloaded.getSubagentRuntimes()).toEqual([legacyRuntime]);
+    } finally {
+      globalScope[managerKey] = previousManager;
+      vi.resetModules();
+    }
+  });
+
   it("reuses the existing runtime across module reloads", async () => {
     const { pi } = fakePi();
     const runtime = getSubagentRuntime(pi as never);
@@ -750,6 +783,46 @@ describe("SubagentRuntime", () => {
     expect(session.dispose).toHaveBeenCalledTimes(1);
   });
 
+  it("unregisters a coordinator after disposing its child sessions", async () => {
+    const globalScope = globalThis as Record<symbol, unknown>;
+    const managerKey = Symbol.for("pi-subagents:manager");
+    const previousManager = globalScope[managerKey];
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession("done");
+    session.prompt = vi.fn(() => promptDone.promise);
+    const managedRuntime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+
+    globalScope[managerKey] = { runtimeList: new Set([managedRuntime]) };
+    try {
+      vi.resetModules();
+      const reloaded = await import("./runtime.js");
+      expect(reloaded.getSubagentRuntime(pi as never)).toBe(managedRuntime);
+      const started = await managedRuntime.runManagedAgent({
+        type: "General",
+        prompt: "work",
+        cwd: "/workspace",
+        ctx: makeCtx() as never,
+        mode: "background",
+      });
+      await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+
+      await managedRuntime.dispose();
+
+      expect(session.abort).toHaveBeenCalledOnce();
+      expect(session.dispose).toHaveBeenCalledOnce();
+      expect(reloaded.getSubagentRuntimes()).not.toContain(managedRuntime);
+      expect(reloaded.getSubagentRuntime(pi as never)).not.toBe(managedRuntime);
+      expect(managedRuntime.snapshot(started.id)).toBeUndefined();
+    } finally {
+      promptDone.resolve();
+      globalScope[managerKey] = previousManager;
+      vi.resetModules();
+    }
+  });
+
   it("models failed and stopped terminal states", () => {
     const { pi } = fakePi();
     const runtime = new SubagentRuntime(pi as never);
@@ -834,7 +907,7 @@ describe("SubagentRuntime", () => {
     unsubscribe();
 
     expect(retired).toHaveLength(1);
-    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(2);
     expect(unsubscribeSession).toHaveBeenCalledTimes(1);
     expect(session.abort).toHaveBeenCalledTimes(1);
     expect(runtime.snapshot(started.id)).toBeUndefined();
