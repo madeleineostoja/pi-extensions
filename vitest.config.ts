@@ -1,19 +1,49 @@
-import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
-const root = fileURLToPath(new URL("./", import.meta.url));
+const features = [
+  "sandbox",
+  "edit-approval",
+  "shell-guard",
+  "context",
+  "defaults",
+  "ui",
+  "personality",
+  "lsp",
+  "subagents",
+  "papercuts",
+  "handoff",
+  "btw",
+  "caffeinate",
+];
 
 export default defineConfig({
-  resolve: {
-    alias: {
-      "@pi-extensions/lib": `${root}lib/src/index.ts`,
-    },
-  },
   test: {
-    isolate: false,
-    fileParallelism: false,
-    projects: ["packages/*", "lib"],
-    environment: "node",
-    globals: false,
+    projects: [
+      ...features.map((name) => ({
+        test: {
+          name,
+          include: [`src/extensions/${name}/**/*.test.ts`],
+          environment: "node",
+          globals: false,
+        },
+      })),
+      {
+        test: {
+          name: "implement",
+          include: ["src/extensions/implement/**/*.test.ts"],
+          environment: "node",
+          globals: false,
+          fileParallelism: false,
+        },
+      },
+      {
+        test: {
+          name: "lib",
+          include: ["src/lib/**/*.test.ts"],
+          environment: "node",
+          globals: false,
+        },
+      },
+    ],
   },
 });

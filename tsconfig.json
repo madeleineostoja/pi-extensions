@@ -3,13 +3,6 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "baseUrl": ".",
-    "paths": {
-      "@pi-extensions/lib": ["lib/src/index.ts"],
-      "pi-papercuts": ["packages/pi-papercuts/src/index.ts"],
-      "pi-subagents/runtime": ["packages/pi-subagents/src/runtime.ts"],
-      "pi-sandbox/src/*": ["packages/pi-sandbox/src/*"]
-    },
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
@@ -18,5 +11,5 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["packages/*/src", "lib/src"]
+  "include": ["src"]
 }

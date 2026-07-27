@@ -1,45 +1,56 @@
 {
-  "name": "pi-extensions",
+  "name": "pipkin",
   "version": "1.0.0",
-  "description": "Personal extensions for the Pi agent harness.",
+  "description": "Personal Pi agent harness.",
   "license": "MIT",
   "type": "module",
-  "workspaces": [
-    "packages/*",
-    "lib"
-  ],
   "engines": {
     "node": ">=24"
   },
   "keywords": [
     "pi-package",
-    "pi-extensions"
+    "pipkin"
   ],
   "pi": {
     "extensions": [
-      "./packages/pi-caffeinate/src/index.ts",
-      "./packages/pi-context-prune/src/index.ts",
-      "./packages/pi-defaults/src/index.ts",
-      "./packages/pi-readonly/src/index.ts",
-      "./packages/pi-guard/src/index.ts",
-      "./packages/pi-sandbox/src/index.ts",
-      "./packages/pi-footer/src/index.ts",
-      "./packages/pi-auto-name/src/index.ts",
-      "./packages/pi-lsp/src/index.ts",
-      "./packages/pi-subagents/src/index.ts",
-      "./packages/pi-implement/src/index.ts",
-      "./packages/pi-papercuts/src/index.ts",
-      "./packages/pi-model-handoff/src/index.ts",
-      "./packages/pi-btw/src/index.ts"
+      "./src/extensions/sandbox/index.ts",
+      "./src/extensions/edit-approval/index.ts",
+      "./src/extensions/shell-guard/index.ts",
+      "./src/extensions/context/index.ts",
+      "./src/extensions/defaults/index.ts",
+      "./src/extensions/ui/index.ts",
+      "./src/extensions/personality/index.ts",
+      "./src/extensions/lsp/index.ts",
+      "./src/extensions/subagents/index.ts",
+      "./src/extensions/implement/index.ts",
+      "./src/extensions/papercuts/index.ts",
+      "./src/extensions/handoff/index.ts",
+      "./src/extensions/btw/index.ts",
+      "./src/extensions/caffeinate/index.ts"
     ]
   },
+  "imports": {
+    "#lib/*": "./src/lib/*.ts",
+    "#subagents/runtime": "./src/extensions/subagents/runtime.ts"
+  },
   "scripts": {
+    "postinstall": "node scripts/postinstall.js",
     "lint": "oxlint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --testTimeout 15000"
+  },
+  "dependencies": {
+    "execa": "^10.0.0",
+    "fs-native-extensions": "^1.5.0",
+    "p-queue": "^9.3.2",
+    "picomatch": "^4.0.4",
+    "svelte-language-server": "0.17.19",
+    "typescript": "5.7.3",
+    "typescript-language-server": "4.3.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.82.0",
@@ -48,13 +59,13 @@
     "@prettier/plugin-oxc": "^0.1.4",
     "@types/node": "^22.0.0",
     "@types/picomatch": "^4.0.0",
+    "ajv": "^6.12.6",
     "fast-check": "^4.9.0",
     "husky": "^9.1.7",
     "lint-staged": "^15.2.10",
     "oxlint": "^0.15.0",
     "prettier": "^3.4.2",
     "typebox": "^1.1.38",
-    "typescript": "^5.6.0",
     "vitest": "^4.1.0"
   },
   "lint-staged": {
@@ -68,5 +79,7 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
-  }
+  },
+  "nonoVersion": "0.57.0",
+  "nonoSha256SumsHash": "458f571f6d0b59f683e05115d8cc3afa92863bd394f6c57ac8312f791104a1bc"
 }
