@@ -8,6 +8,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  initialWorkstreamReviewSchema,
+  recoveryCompletionSchema,
+} from "./result-schemas.js";
 import { buildRecoveryPacket } from "./recovery-packet.js";
 import type { ImplementRoles } from "./subagents.js";
 import { RunStateSchema, type RunState } from "./store.js";
@@ -48,6 +52,7 @@ describe("worker invocation", () => {
       spawnValidatedWorker({
         packet: {
           role: "recovery" as const,
+          completionKind: "recovery" as const,
           identity: "episode/gate",
           workspace: { path: "/owned/worktree" },
         },
@@ -60,16 +65,58 @@ describe("worker invocation", () => {
           waitFor: async () => ({ status: "failed" as const, error: "unused" }),
         },
         roles,
+        readOnly: false,
+        completionKind: "recovery",
         taskId: "work",
         description: "Recover work",
         completion: {
-          description: "Return an action.",
-          schema: {} as never,
+          description: "Return one bounded recovery action.",
+          schema: recoveryCompletionSchema,
         },
         render: () => "x".repeat(MAX_WORKER_PROMPT_BYTES + 1),
       }),
     ).rejects.toBeInstanceOf(WorkerPacketError);
     expect(spawned).toBe(false);
+  });
+
+  it("pairs fixed roles, read-only tools, and completion contracts", async () => {
+    let spawned: Record<string, unknown> | undefined;
+    await spawnValidatedWorker({
+      packet: {
+        role: "reviewer" as const,
+        completionKind: "initial-review" as const,
+        identity: "run-1/work/candidate",
+        workspace: { path: "/owned/worktree" },
+      },
+      subagents: {
+        stop: async () => undefined,
+        spawn: async (args) => {
+          spawned = args as unknown as Record<string, unknown>;
+          return "worker" as never;
+        },
+        waitFor: async () => ({ status: "failed" as const, error: "unused" }),
+      },
+      roles,
+      taskId: "work",
+      description: "Review work",
+      readOnly: true,
+      completionKind: "initial-review",
+      completion: {
+        description: "Approve or return direct blocking findings.",
+        schema: initialWorkstreamReviewSchema,
+      },
+      render: () => "review assignment",
+    });
+
+    expect(spawned).toMatchObject({
+      type: "pipkin:implement:reviewer",
+      model: "test/high",
+      thinking: "high",
+      role: "reviewer",
+      cwd: "/owned/worktree",
+      readOnly: true,
+      prompt: "review assignment",
+    });
   });
 
   it("materializes a current schema-v1 snapshot without rewriting it", () => {

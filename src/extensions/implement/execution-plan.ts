@@ -111,28 +111,82 @@ export type ExecutionPlanningOutcome =
   | { kind: "no-op" }
   | { kind: "compiled"; plan: ExecutionPlan };
 
+export type PlannerPacket = {
+  role: "planner";
+  completionKind: "planner";
+  identity: string;
+  workspace: {
+    path: string;
+    mutationBoundary: string;
+  };
+  planContent: string;
+  unchecked: UncheckedPlanTask[];
+  corpus: MaterialStore["files"];
+  baseSha: string;
+  workerConcurrency: number;
+};
+
+export function buildPlannerPacket(
+  args: ExecutionPlanCompilerInput & {
+    workspacePath: string;
+    checkoutRoot: string;
+    runId: string;
+  },
+): ExecutionPlanResult<PlannerPacket> {
+  const unchecked = uncheckedPlanTasks(args.plan);
+  if (unchecked.length === 0) {
+    return { ok: false, reason: "Planner packet has no unchecked tasks." };
+  }
+  const inputValidation = validateExecutionPlanInput(args);
+  if (!inputValidation.ok) {
+    return {
+      ok: false,
+      reason: `Planner packet ${args.runId}/planner is invalid: ${inputValidation.reason}`,
+    };
+  }
+  if (resolve(args.workspacePath) !== resolve(args.checkoutRoot)) {
+    return {
+      ok: false,
+      reason: `Planner packet ${args.runId}/planner has an invalid assigned workspace.`,
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      role: "planner",
+      completionKind: "planner",
+      identity: `${args.runId}/planner`,
+      workspace: {
+        path: args.workspacePath,
+        mutationBoundary: "The target checkout is read-only.",
+      },
+      planContent: args.plan.content,
+      unchecked,
+      corpus: args.materialStore.files,
+      baseSha: args.baseSha,
+      workerConcurrency: args.workerConcurrency,
+    },
+  };
+}
+
 export async function planExecution(
   args: ExecutionPlanCompilerInput & {
     runDir: string;
-    requestPlanner(prompt: string): Promise<unknown>;
+    workspacePath: string;
+    checkoutRoot: string;
+    runId: string;
+    requestPlanner(packet: PlannerPacket): Promise<unknown>;
   },
 ): Promise<ExecutionPlanResult<ExecutionPlanningOutcome>> {
   const unchecked = uncheckedPlanTasks(args.plan);
   if (unchecked.length === 0) {
     return { ok: true, value: { kind: "no-op" } };
   }
-  const inputValidation = validateExecutionPlanInput(args);
-  if (!inputValidation.ok) {
-    return inputValidation;
+  const packet = buildPlannerPacket(args);
+  if (!packet.ok) {
+    return packet;
   }
-  const result = await args.requestPlanner(
-    buildStrictExecutionPlannerPrompt({
-      planContent: args.plan.content,
-      unchecked,
-      corpus: args.materialStore,
-      baseSha: args.baseSha,
-    }),
-  );
+  const result = await args.requestPlanner(packet.value);
   const compiled = compileExecutionPlan(result, args);
   if (!compiled.ok) {
     return compiled;
@@ -657,19 +711,16 @@ function hasExactKeys(
   );
 }
 
-export function buildStrictExecutionPlannerPrompt(args: {
-  planContent: string;
-  unchecked: UncheckedPlanTask[];
-  corpus: MaterialStore;
-  baseSha: string;
-}): string {
-  const tasks = args.unchecked
+export function buildStrictExecutionPlannerPrompt(
+  packet: PlannerPacket,
+): string {
+  const tasks = packet.unchecked
     .map((entry) => `- planIndex ${entry.planIndex}: ${entry.task.text}`)
     .join("\n");
-  const corpus = args.corpus.files
+  const corpus = packet.corpus
     .map((file) => `### ${file.absolutePath}\n\n${file.content}`)
     .join("\n\n");
-  return `You are a read-only execution planner. Return only the strict completion object.\n\n## Source plan\n\n${args.planContent}\n\n## Unchecked source tasks\n\n${tasks}\n\n## Immutable corpus\n\n${corpus}\n\nBase SHA: ${args.baseSha}\n\nCreate exactly one task contract for every listed planIndex. Keep uncertain or coherent evolving work together. Split workstreams only for clear independence, high-risk isolation, or an invocation/review scope too broad to handle coherently. Workstream order must respect dependencies. Ground requirements and acceptance criteria in the source corpus, existing repository contracts, or material correctness, safety, data-integrity, or operational risks. Exploration may reveal implementation options and constraints but does not create scope. Prefer existing project, framework, platform, standard-library, or installed-dependency capabilities over new custom mechanisms when they satisfy the contract. Use implementationNotes only for required constraints, decisions, and reuse opportunities, not code choreography. Keep verificationGuidance proportional to changed behavior and material risk. Every provenance quote must be an exact non-empty quote from a corpus file. Do not invent hashes, source anchors, task modes, fallback plans, or runtime IDs.`;
+  return `You are a read-only execution planner working in the assigned target checkout:\n\n  ${packet.workspace.path}\n\n${packet.workspace.mutationBoundary}\n\nReturn only the strict completion object.\n\n## Source plan\n\n${packet.planContent}\n\n## Unchecked source tasks\n\n${tasks}\n\n## Immutable corpus\n\n${corpus}\n\nBase SHA: ${packet.baseSha}\nEffective worker concurrency: ${packet.workerConcurrency}\n\nCreate exactly one task contract for every listed planIndex. Keep uncertain or coherent evolving work together. Split workstreams only for clear independence, high-risk isolation, or an invocation/review scope too broad to handle coherently. Workstream order must respect dependencies. Ground requirements and acceptance criteria in the source corpus, existing repository contracts, or material correctness, safety, data-integrity, or operational risks. Exploration may reveal implementation options and constraints but does not create scope. Prefer existing project, framework, platform, standard-library, or installed-dependency capabilities over new custom mechanisms when they satisfy the contract. Use implementationNotes only for required constraints, decisions, and reuse opportunities, not code choreography. Keep verificationGuidance proportional to changed behavior and material risk. Every provenance quote must be an exact non-empty quote from a corpus file. Do not invent hashes, source anchors, task modes, fallback plans, or runtime IDs.`;
 }
 
 function parsePlannerTask(

@@ -17,6 +17,7 @@ export type ArtifactProvenance = {
 
 export type RecoveryWorkerPacket = {
   role: "recovery";
+  completionKind: "recovery";
   identity: string;
   workspace: {
     path: string;
@@ -164,6 +165,7 @@ export function buildRecoveryPacket(args: {
       : undefined;
   return {
     role: "recovery",
+    completionKind: "recovery",
     identity: `${episode.id}/${gate.id}`,
     workspace: {
       path: workspacePath,

@@ -2480,6 +2480,16 @@ export class SchedulerActor {
           return;
         }
         if (
+          error instanceof WorkerPacketError &&
+          effect.kind !== "run_recovery"
+        ) {
+          this.pauseReason = error.message;
+          for (const controller of this.processControllers.values()) {
+            controller.abort();
+          }
+          return;
+        }
+        if (
           effect.kind === "run_implementation" &&
           this.snapshot().processLeases[effect.leaseId]
         ) {

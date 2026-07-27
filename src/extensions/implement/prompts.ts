@@ -1,4 +1,9 @@
 import type { RecoveryWorkerPacket } from "./recovery-packet.js";
+import type { WorkstreamPacket } from "./workstream-candidate.js";
+import type {
+  AnchoredSourceReviewPacket,
+  InitialSourceReviewPacket,
+} from "./review.js";
 
 export type WorkstreamImplementerPromptTask = {
   id: string;
@@ -20,73 +25,42 @@ type Finding = {
   acceptanceCriteria: string[];
 };
 
-export function buildWorkstreamImplementerPrompt(args: {
-  worktreePath: string;
-  baseSha: string;
-  priorCheckpoints: Record<string, string>;
-  recoveryObligations?: string[];
-  tasks: WorkstreamImplementerPromptTask[];
-  sourceMaterial: Array<{ path: string; content: string }>;
-}): string {
-  const tasks = args.tasks
+export function buildWorkstreamImplementerPrompt(
+  packet: WorkstreamPacket,
+): string {
+  const tasks = packet.tasks
     .map(
       (task, index) =>
-        `### ${index + 1}. ${task.id}: ${task.title}\n\nObjective: ${task.objective}\n\nIn scope:\n${task.inScope.map((item) => `- ${item}`).join("\n")}\n\nAcceptance criteria:\n${task.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}\n\nOut of scope:\n${task.outOfScope.map((item) => `- ${item}`).join("\n")}\n\nProvenance:\n${task.provenance.map((reference) => `- ${reference.path}: ${reference.quote}`).join("\n")}${task.implementationNotes ? `\n\nImplementation notes: ${task.implementationNotes}` : ""}${task.verificationGuidance ? `\n\nVerification guidance: ${task.verificationGuidance}` : ""}`,
+        `### ${index + 1}. ${task.id}: ${task.title}\n\nObjective: ${task.compiledContract.objective}\n\nIn scope:\n${task.compiledContract.inScope.map((item) => `- ${item}`).join("\n")}\n\nAcceptance criteria:\n${task.compiledContract.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}\n\nOut of scope:\n${task.compiledContract.outOfScope.map((item) => `- ${item}`).join("\n")}\n\nEmbedded provenance:\n${task.provenance.map((reference) => `- ${reference.path}: ${reference.quote}`).join("\n")}${task.compiledContract.implementationNotes ? `\n\nImplementation notes: ${task.compiledContract.implementationNotes}` : ""}${task.compiledContract.verificationGuidance ? `\n\nVerification guidance: ${task.compiledContract.verificationGuidance}` : ""}`,
     )
     .join("\n\n");
-  const material = args.sourceMaterial
+  const material = packet.sourceMaterial
     .map(({ path, content }) => `### ${path}\n\n${content}`)
     .join("\n\n");
-  const prior = Object.entries(args.priorCheckpoints)
+  const prior = Object.entries(packet.priorCheckpoints)
     .map(([taskId, checkpoint]) => `- ${taskId}: ${checkpoint}`)
     .join("\n");
-  const obligations = args.recoveryObligations?.length
-    ? args.recoveryObligations.map((item) => `- ${item}`).join("\n")
+  const obligations = packet.recoveryObligations.length
+    ? packet.recoveryObligations.map((item) => `- ${item}`).join("\n")
     : "- Preserve and build on every committed checkpoint listed below.";
-  return `You are the Pipkin Implement implementer for one ordered workstream. Work only in this assigned Git worktree:\n\n  ${args.worktreePath}\n\nThe target checkout is orchestrator-owned. Do not access or mutate it. You may install dependencies, repair ignored/runtime state, run appropriate checks, edit tracked source, and create commits. Do not push, rewrite unrelated history, or leave an active Git operation or uncommitted work behind.\n\nImplement every ordered task contract as one coherent invocation. Satisfy the contracts with the smallest coherent change that fits the repository's existing architecture. Inspect relevant nearby code and available project or ecosystem capabilities before adding custom mechanisms. Do not add speculative flexibility, compatibility, configuration, or adjacent cleanup. Commit valuable progress as you complete each task. Later correction commits may change earlier task work. Your candidate must descend from base ${args.baseSha}. Do not modify source plan or other protected artifacts.\n\n## Prior committed checkpoints\n\n${prior || "None."}\n\n## Recovery obligations\n\n${obligations}\n\n## Ordered task contracts\n\n${tasks}\n\n## Selected immutable source material\n\n${material || "No additional material was selected."}\n\nBefore completion, inspect the cumulative base-to-tip diff and remove abandoned helpers, redundant guards, duplicate tests, temporary compatibility paths, and other implementation residue not needed for the contracts, while preserving required behavior and risk controls.
+  return `You are the Pipkin Implement implementer for one ordered workstream. Work only in this assigned Git worktree:\n\n  ${packet.workspace.path}\n\n${packet.workspace.mutationBoundary}\n\nImplement every ordered task contract as one coherent invocation. Satisfy the contracts with the smallest coherent change that fits the repository's existing architecture. Inspect relevant nearby code and available project or ecosystem capabilities before adding custom mechanisms. Do not add speculative flexibility, compatibility, configuration, or adjacent cleanup. Commit valuable progress as you complete each task. Later correction commits may change earlier task work. Your candidate must descend from base ${packet.baseSha}. Do not modify source plan or other protected artifacts.\n\n## Prior committed checkpoints\n\n${prior || "None."}\n\n## Recovery obligations\n\n${obligations}\n\n## Ordered task contracts\n\n${tasks}\n\n## Selected immutable source material\n\n${material || "No additional material was selected."}\n\nBefore completion, inspect the cumulative base-to-tip diff and remove abandoned helpers, redundant guards, duplicate tests, temporary compatibility paths, and other implementation residue not needed for the contracts, while preserving required behavior and risk controls.
 
 Submit the typed completion as your final action. For every task return exactly one taskCompletions entry: use kind \`checkpoint\` with the reachable commit SHA that covers it, or kind \`already_satisfied\` with concrete repository-state evidence. If any tracked work changed, return outcome \`changed\` and candidateTip equal to the final committed HEAD. If all tasks were already satisfied, return outcome \`already_satisfied\` and omit candidateTip. Include verification evidence and uncertainty when applicable.`;
 }
 
-export function buildInitialWorkstreamReviewPrompt(args: {
-  worktreePath: string;
-  candidate: {
-    id: string;
-    baseSha: string;
-    commitSha: string;
-    treeSha: string;
-  };
-  diff: string;
-  contracts: WorkstreamImplementerPromptTask[];
-  sourceMaterial: Array<{ path: string; content: string }>;
-  checkpoints: Record<string, string>;
-  satisfiedEvidence: Record<string, string>;
-  verification?: Array<{ command: string; result: string; rationale: string }>;
-  uncertainty?: string;
-  repositoryState?: {
-    historicalBaseSha: string;
-    assessedTargetSha: string;
-    priorReviewEvidence: string[];
-  };
-}): string {
-  const repositoryContext = args.repositoryState
-    ? `\nRepository-state assessment:\nHistorical satisfaction base: ${args.repositoryState.historicalBaseSha}\nAssessed target: ${args.repositoryState.assessedTargetSha}\nPrior review evidence: ${JSON.stringify(args.repositoryState.priorReviewEvidence)}`
+export function buildInitialWorkstreamReviewPrompt(
+  packet: InitialSourceReviewPacket,
+): string {
+  const repositoryContext = packet.repositoryState
+    ? `\nRepository-state assessment:\nHistorical satisfaction base: ${packet.repositoryState.historicalBaseSha}\nAssessed target: ${packet.repositoryState.assessedTargetSha}\nPrior review evidence: ${JSON.stringify(packet.repositoryState.priorReviewEvidence)}`
     : "";
-  return `You are the independent reviewer for one cumulative Pipkin Implement workstream. Review read-only in this assigned candidate worktree:\n\n  ${args.worktreePath}\n\nCandidate: ${args.candidate.id}\nBase: ${args.candidate.baseSha}\nTip: ${args.candidate.commitSha}\nTree: ${args.candidate.treeSha}${repositoryContext}\n\nReview every ordered contract as one cumulative candidate. The task checkpoints, already-satisfied claims, implementation verification, and uncertainty are evidence to assess, not proof of correctness. For an already-satisfied claim, inspect repository state even though the candidate diff is empty. Do not edit files, change Git state, install dependencies, or run write-producing commands.\n\n## Ordered contracts\n\n${args.contracts.map((task, index) => `### ${index + 1}. ${task.id}: ${task.title}\nObjective: ${task.objective}\nIn scope: ${task.inScope.join("; ")}\nAcceptance: ${task.acceptanceCriteria.join("; ")}\nOut of scope: ${task.outOfScope.join("; ")}`).join("\n\n")}\n\n## Source material\n\n${args.sourceMaterial.map((material) => `### ${material.path}\n\n${material.content}`).join("\n\n") || "No additional source material."}\n\n## Task evidence\n\nCheckpoints: ${JSON.stringify(args.checkpoints)}\nAlready-satisfied evidence: ${JSON.stringify(args.satisfiedEvidence)}\nVerification: ${JSON.stringify(args.verification ?? [])}\nUncertainty: ${args.uncertainty ?? "none"}\n\n## Cumulative base-to-tip diff\n\n\`\`\`diff\n${args.diff}\n\`\`\`\n\nReturn approved only when the cumulative candidate satisfies every contract. Otherwise return the complete known set of material blocking findings directly. Each finding must state current evidence, the minimum observable correction, and concrete acceptance criteria. An economy finding must identify an unnecessary construct, a concrete sufficient replacement, the behavior and risk controls it preserves, and meaningful maintenance burden. Omit minor, uncertain, or non-material simplifications from this typed result. Exclude style nits, speculative improvements, unrelated audits, and broader redesigns when a narrow correction satisfies the contract.`;
+  return `You are the independent reviewer for one cumulative Pipkin Implement workstream. Review read-only in this assigned candidate worktree:\n\n  ${packet.workspace.path}\n\nCandidate: ${packet.candidate.id}\nBase: ${packet.candidate.baseSha}\nTip: ${packet.candidate.commitSha}\nTree: ${packet.candidate.treeSha}${repositoryContext}\n\nReview every ordered contract as one cumulative candidate. The task checkpoints, already-satisfied claims, implementation verification, and uncertainty are evidence to assess, not proof of correctness. For an already-satisfied claim, inspect repository state even though the candidate diff is empty. Do not edit files, change Git state, install dependencies, or run write-producing commands.\n\n## Ordered contracts\n\n${packet.contracts.map((task, index) => `### ${index + 1}. ${task.id}: ${task.title}\nObjective: ${task.compiledContract.objective}\nIn scope: ${task.compiledContract.inScope.join("; ")}\nAcceptance: ${task.compiledContract.acceptanceCriteria.join("; ")}\nOut of scope: ${task.compiledContract.outOfScope.join("; ")}`).join("\n\n")}\n\n## Source material\n\n${packet.sourceMaterial.map((material) => `### ${material.path}\n\n${material.content}`).join("\n\n") || "No additional source material."}\n\n## Task evidence\n\nCheckpoints: ${JSON.stringify(packet.checkpoints)}\nAlready-satisfied evidence: ${JSON.stringify(packet.satisfiedEvidence)}\nVerification: ${JSON.stringify(packet.verificationEvidence?.verification ?? [])}\nUncertainty: ${packet.uncertainty ?? "none"}\n\n## Cumulative base-to-tip diff\n\n\`\`\`diff\n${packet.baseToTipDiff}\n\`\`\`\n\nReturn approved only when the cumulative candidate satisfies every contract. Otherwise return the complete known set of material blocking findings directly. Each finding must state current evidence, the minimum observable correction, and concrete acceptance criteria. An economy finding must identify an unnecessary construct, a concrete sufficient replacement, the behavior and risk controls it preserves, and meaningful maintenance burden. Omit minor, uncertain, or non-material simplifications from this typed result. Exclude style nits, speculative improvements, unrelated audits, and broader redesigns when a narrow correction satisfies the contract.`;
 }
 
-export function buildAnchoredWorkstreamReviewPrompt(args: {
-  worktreePath: string;
-  candidate: { id: string; commitSha: string };
-  previousCandidate: { id: string; commitSha: string };
-  latestDelta: string;
-  changedPaths: string[];
-  correctionEvidence: string;
-  verification?: Array<{ command: string; result: string; rationale: string }>;
-  uncertainty?: string;
-  outstandingFindings: Finding[];
-}): string {
-  return `You are the independent reviewer for an anchored Pipkin Implement workstream re-review. Review read-only in:\n\n  ${args.worktreePath}\n\nPrevious candidate: ${args.previousCandidate.id} @ ${args.previousCandidate.commitSha}\nCurrent candidate: ${args.candidate.id} @ ${args.candidate.commitSha}\nChanged paths: ${args.changedPaths.join(", ") || "none"}\nCorrection evidence: ${args.correctionEvidence}\nCurrent verification: ${JSON.stringify(args.verification ?? [])}\nCurrent uncertainty: ${args.uncertainty ?? "none"}\n\nAssess every outstanding ID exactly once against the current candidate and the latest correction delta. Do not re-review the complete candidate. A resolved ID cannot reopen. Add a new blocking regression only when this exact latest delta caused it and list a changed path from the latest delta. Put every other concern in observations; observations never block. Do not edit files, change Git state, install dependencies, or run write-producing commands.\n\n## Outstanding findings\n\n${formatFindings(args.outstandingFindings)}\n\n## Latest correction delta\n\n\`\`\`diff\n${args.latestDelta}\n\`\`\`\n\nReturn one resolved or unresolved assessment for each supplied ID, direct causal regressions only, and optional observations.`;
+export function buildAnchoredWorkstreamReviewPrompt(
+  packet: AnchoredSourceReviewPacket,
+): string {
+  return `You are the independent reviewer for an anchored Pipkin Implement workstream re-review. Review read-only in:\n\n  ${packet.workspace.path}\n\nPrevious candidate: ${packet.previousCandidate.id} @ ${packet.previousCandidate.commitSha}\nCurrent candidate: ${packet.candidate.id} @ ${packet.candidate.commitSha}\nChanged paths: ${packet.latestCorrection.changedPaths.join(", ") || "none"}\nCorrection evidence: ${packet.latestCorrection.evidence}\nCurrent verification: ${JSON.stringify(packet.verificationEvidence?.verification ?? [])}\nCurrent uncertainty: ${packet.uncertainty ?? "none"}\n\nAssess every outstanding ID exactly once against the current candidate and the latest correction delta. Do not re-review the complete candidate. A resolved ID cannot reopen. Add a new blocking regression only when this exact latest delta caused it and list a changed path from the latest delta. Put every other concern in observations; observations never block. Do not edit files, change Git state, install dependencies, or run write-producing commands.\n\n## Ordered contracts\n\n${packet.contracts.map((task, index) => `### ${index + 1}. ${task.id}: ${task.title}\nObjective: ${task.compiledContract.objective}\nAcceptance: ${task.compiledContract.acceptanceCriteria.join("; ")}`).join("\n\n")}\n\n## Embedded source material\n\n${packet.sourceMaterial.map((material) => `### ${material.path}\n\n${material.content}`).join("\n\n") || "No additional source material."}\n\n## Outstanding findings\n\n${formatFindings(packet.outstandingFindings)}\n\n## Latest correction delta\n\n\`\`\`diff\n${packet.baseToTipDiff}\n\`\`\`\n\nReturn one resolved or unresolved assessment for each supplied ID, direct causal regressions only, and optional observations.`;
 }
 
 export function buildInitialOverallReviewPrompt(args: {

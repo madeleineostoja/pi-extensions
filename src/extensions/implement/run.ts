@@ -6,13 +6,18 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { buildMaterialStore } from "./material-store.js";
 import { parsePlan } from "./plan.js";
-import { planExecution, readExecutionPlan } from "./execution-plan.js";
+import {
+  buildStrictExecutionPlannerPrompt,
+  planExecution,
+  readExecutionPlan,
+} from "./execution-plan.js";
 import {
   CandidateReplayEngine,
   publicationPreparation,
 } from "./candidate-replay.js";
 import { ExecGitClient } from "./git.js";
 import { RuntimeSubagentClient, type SubagentClient } from "./subagents.js";
+import { spawnValidatedWorker } from "./worker-invocation.js";
 import { runProjection } from "./projection-runner.js";
 import {
   createCheckboxProjectionIntent,
@@ -526,7 +531,7 @@ export function createRuntime(args: {
                 git: args.git,
                 subagents,
                 signal,
-                roles: args.roles.implementer,
+                roles: args.roles,
                 recoveryObligations: Object.values(state.recoveryEpisodes)
                   .filter(
                     (episode) =>
@@ -577,7 +582,7 @@ export function createRuntime(args: {
           subagents,
           signal,
           artifactsPath,
-          roles: args.roles.reviewer,
+          roles: args.roles,
         });
         const projectionDebt =
           outcome.kind !== "repository_state" ||
@@ -943,20 +948,23 @@ export function createRuntime(args: {
         baseSha: args.baseSha,
         workerConcurrency: args.store.read().run.workerConcurrency,
         runDir: join(args.lease.paths.runs, args.store.read().run.id),
-        requestPlanner: async (prompt) => {
-          const handle = await client.spawn({
-            type: args.roles.planner.type,
-            role: "planner",
-            model: args.roles.planner.model,
-            thinking: args.roles.planner.thinking,
+        workspacePath: args.store.read().run.checkout.root,
+        checkoutRoot: args.store.read().run.checkout.root,
+        runId: args.store.read().run.id,
+        requestPlanner: async (packet) => {
+          const handle = await spawnValidatedWorker({
+            packet,
+            subagents: client,
+            roles: args.roles,
+            taskId: "planner",
             description: "Compile strict execution plan",
-            prompt,
-            cwd: args.ctx.cwd,
             readOnly: true,
+            completionKind: "planner",
             completion: {
               description: "Return the strict execution plan.",
               schema: strictExecutionPlanSchema,
             },
+            render: buildStrictExecutionPlannerPrompt,
           });
           const response = await client.waitFor(handle, signal);
           if (response.status !== "completed") {

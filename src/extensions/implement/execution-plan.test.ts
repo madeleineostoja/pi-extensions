@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
+  buildPlannerPacket,
   compileExecutionPlan,
   parsePlannerExecutionPlan,
   planExecution,
@@ -101,6 +102,26 @@ function task(id: string, planIndex: number, dependsOn: string[]) {
 }
 
 describe("strict execution-plan compiler", () => {
+  it("materializes configured worker capacity in the planner packet", () => {
+    const result = buildPlannerPacket({
+      ...input(),
+      workspacePath: "/repo",
+      checkoutRoot: "/repo",
+      runId: "run-1",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        role: "planner",
+        completionKind: "planner",
+        identity: "run-1/planner",
+        workspace: { path: "/repo" },
+        workerConcurrency: 2,
+      },
+    });
+  });
+
   it("deduplicates recursive corpus cycles before invoking the planner", async () => {
     const directory = mkdtempSync(join(tmpdir(), "pipkin-implement-plan-"));
     const sourcePath = join(directory, "plan.md");
@@ -126,6 +147,9 @@ describe("strict execution-plan compiler", () => {
         baseSha: "base-sha",
         workerConcurrency: 1,
         runDir: join(directory, "run"),
+        workspacePath: directory,
+        checkoutRoot: directory,
+        runId: "run-1",
         requestPlanner: async () => {
           calls++;
           return {
@@ -172,6 +196,9 @@ describe("strict execution-plan compiler", () => {
     const result = await planExecution({
       ...input(planContent.replace(/\[ \]/g, "[x]")),
       runDir: "/unused",
+      workspacePath: "/unused",
+      checkoutRoot: "/unused",
+      runId: "run-1",
       requestPlanner: async () => {
         calls++;
         return plannerPlan();

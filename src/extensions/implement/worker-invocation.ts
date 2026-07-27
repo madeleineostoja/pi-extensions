@@ -1,5 +1,12 @@
 import { isAbsolute } from "node:path";
 import type { Static, TSchema } from "typebox";
+import {
+  anchoredWorkstreamReviewSchema,
+  initialWorkstreamReviewSchema,
+  recoveryCompletionSchema,
+  strictExecutionPlanSchema,
+  workstreamImplementerResultSchema,
+} from "./result-schemas.js";
 import type {
   ImplementRoles,
   PiImplementWorkerRole,
@@ -12,8 +19,39 @@ export const MAX_WORKER_PROMPT_BYTES = 524_288;
 
 export class WorkerPacketError extends Error {}
 
+const completionContracts = {
+  planner: {
+    description: "Return the strict execution plan.",
+    schema: strictExecutionPlanSchema,
+  },
+  implementer: {
+    description: "Report the workstream checkpoints or satisfied evidence.",
+    schema: workstreamImplementerResultSchema,
+  },
+  "initial-review": {
+    description: "Approve or return direct blocking findings.",
+    schema: initialWorkstreamReviewSchema,
+  },
+  "anchored-review": {
+    description: "Assess every outstanding finding.",
+    schema: anchoredWorkstreamReviewSchema,
+  },
+  recovery: {
+    description: "Return one bounded recovery action.",
+    schema: recoveryCompletionSchema,
+  },
+} as const;
+
+export type WorkerCompletionKind =
+  | "planner"
+  | "implementer"
+  | "initial-review"
+  | "anchored-review"
+  | "recovery";
+
 type InvocableWorkerPacket = {
   role: PiImplementWorkerRole;
+  completionKind: WorkerCompletionKind;
   workspace: { path: string };
   identity: string;
 };
@@ -27,10 +65,28 @@ export async function spawnValidatedWorker<
   roles: ImplementRoles;
   taskId: string;
   description: string;
-  readOnly?: boolean;
+  readOnly: boolean;
+  completionKind: TPacket["completionKind"];
   completion: NonNullable<SpawnArgs<TSchemaValue>["completion"]>;
   render: (packet: TPacket) => string;
 }): Promise<SubagentHandle<Static<TSchemaValue>>> {
+  const expectedReadOnly =
+    args.packet.role === "planner" || args.packet.role === "reviewer";
+  if (args.readOnly !== expectedReadOnly) {
+    throw new WorkerPacketError(
+      `${args.packet.role} packet ${args.packet.identity} has an invalid read-only contract.`,
+    );
+  }
+  const completion = completionContracts[args.packet.completionKind];
+  if (
+    args.completionKind !== args.packet.completionKind ||
+    args.completion.description !== completion.description ||
+    (args.completion.schema as TSchema) !== completion.schema
+  ) {
+    throw new WorkerPacketError(
+      `${args.packet.role} packet ${args.packet.identity} has a mismatched completion contract.`,
+    );
+  }
   if (!isAbsolute(args.packet.workspace.path)) {
     throw new WorkerPacketError(
       `${args.packet.role} packet ${args.packet.identity} has a non-absolute workspace.`,

@@ -58,6 +58,8 @@ export async function runRecovery(args: {
     roles: args.roles,
     taskId: recoveryTaskId(args.effect.workstream),
     description: `Recover ${packet.gate.id}`,
+    readOnly: false,
+    completionKind: "recovery",
     completion: {
       description: "Return one bounded recovery action.",
       schema: recoveryCompletionSchema,

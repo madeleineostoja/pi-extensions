@@ -17,7 +17,7 @@ import { createRuntime } from "./run.js";
 import { buildMaterialStore } from "./material-store.js";
 import { parsePlan } from "./plan.js";
 import type { WorkstreamImplementerCompletion } from "./result-schemas.js";
-import type { SubagentClient } from "./subagents.js";
+import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import { within } from "./test-boundary.js";
 import {
   buildWorkstreamPacket,
@@ -43,6 +43,30 @@ type Fixture = {
   planContent: string;
   plan: ExecutionPlan;
   run: RunStore;
+  roles: ImplementRoles;
+};
+
+const roles: ImplementRoles = {
+  implementer: {
+    type: "pipkin:implement:implementer",
+    model: "test/medium",
+    thinking: "medium",
+  },
+  reviewer: {
+    type: "pipkin:implement:reviewer",
+    model: "test/high",
+    thinking: "high",
+  },
+  planner: {
+    type: "pipkin:implement:planner",
+    model: "test/high",
+    thinking: "high",
+  },
+  recovery: {
+    type: "pipkin:implement:recovery",
+    model: "test/medium",
+    thinking: "medium",
+  },
 };
 
 function temporaryDirectory(prefix: string): string {
@@ -173,7 +197,7 @@ async function fixture(args: {
       ),
     },
   }));
-  return { root, planPath, planContent, plan: result.value, run };
+  return { root, planPath, planContent, plan: result.value, run, roles };
 }
 
 function agent(
@@ -244,6 +268,7 @@ describe("workstream candidate lifecycle", () => {
       plan: subject.plan,
       workstreamId: "combined",
       git: new ExecGitClient(subject.root),
+      roles: subject.roles,
       subagents: agent(async (cwd) => {
         const result = await changedResult(cwd, ["first"]);
         const completion = result.result as WorkstreamImplementerCompletion;
@@ -329,7 +354,7 @@ describe("workstream candidate lifecycle", () => {
       git: new ExecGitClient(subject.root),
       store: subject.run,
       lease: subject.run.lease,
-      roles: {} as never,
+      roles: subject.roles,
       plan: parsePlan(subject.planPath, subject.planContent),
       materialStore: buildMaterialStore({
         plan: parsePlan(subject.planPath, subject.planContent),
@@ -413,6 +438,7 @@ describe("workstream candidate lifecycle", () => {
       plan: subject.plan,
       workstreamId: "first-stream",
       git: new ExecGitClient(subject.root),
+      roles: subject.roles,
       subagents: worker("first"),
     });
     const secondPromise = runWorkstreamCandidate({
@@ -420,6 +446,7 @@ describe("workstream candidate lifecycle", () => {
       plan: subject.plan,
       workstreamId: "second-stream",
       git: new ExecGitClient(subject.root),
+      roles: subject.roles,
       subagents: worker("second"),
     });
     try {
@@ -470,6 +497,7 @@ describe("workstream candidate lifecycle", () => {
         plan: subject.plan,
         workstreamId: "combined",
         git: targetGit,
+        roles: subject.roles,
         subagents: agent(async (cwd) => {
           const result = await changedResult(cwd, ["first", "second"]);
           writeFileSync(join(cwd, "uncommitted.txt"), "retain as evidence\n");
@@ -520,6 +548,7 @@ describe("workstream candidate lifecycle", () => {
       plan: subject.plan,
       workstreamId: "combined",
       git: targetGit,
+      roles: subject.roles,
       subagents: agent((cwd) => changedResult(cwd, ["first", "second"])),
       trustedCheckpoint: failure!.trustedCheckpoint!,
     });
@@ -537,6 +566,7 @@ describe("workstream candidate lifecycle", () => {
         plan: subject.plan,
         workstreamId: "combined",
         git: new ExecGitClient(subject.root),
+        roles: subject.roles,
         subagents: agent(async (cwd) => {
           const result = await changedResult(cwd, ["first", "second"]);
           git(cwd, "switch", "-c", "foreign-candidate-branch");
@@ -565,6 +595,7 @@ describe("workstream candidate lifecycle", () => {
         plan: subject.plan,
         workstreamId: "combined",
         git: new ExecGitClient(subject.root),
+        roles: subject.roles,
         subagents: agent(async (cwd) => {
           writeFileSync(join(cwd, "plan.md"), "tampered candidate\n");
           return changedResult(cwd, ["first", "second"]);
@@ -584,6 +615,7 @@ describe("workstream candidate lifecycle", () => {
         plan: subject.plan,
         workstreamId: "combined",
         git: new ExecGitClient(subject.root),
+        roles: subject.roles,
         subagents: agent(async (cwd) => {
           writeFileSync(subject.planPath, "tampered\n");
           return changedResult(cwd, ["first", "second"]);

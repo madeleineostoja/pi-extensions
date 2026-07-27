@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ExecutionPlan } from "./execution-plan.js";
 import { changedPathsBetween, type GitClient } from "./git.js";
 import {
@@ -19,7 +19,11 @@ import {
   type DirectReviewFinding,
   type InitialWorkstreamReviewCompletion,
 } from "./result-schemas.js";
-import type { SubagentClient } from "./subagents.js";
+import type { ImplementRoles, SubagentClient } from "./subagents.js";
+import {
+  spawnValidatedWorker,
+  WorkerPacketError,
+} from "./worker-invocation.js";
 import { overallRepairWorkspace } from "./overall-repair.js";
 import { workstreamWorkspace } from "./workstream-candidate.js";
 import { writeAtomicJson } from "./atomic-json.js";
@@ -63,6 +67,33 @@ export type ReviewPacket = {
   latestCorrection?: ReviewState["latestCorrection"];
   baseToTipDiff: string;
 };
+
+export type InitialSourceReviewPacket = ReviewPacket & {
+  role: "reviewer";
+  completionKind: "initial-review";
+  identity: string;
+  workspace: { path: string; mutationBoundary: string };
+  mode: "initial" | "repository_state";
+  repositoryState?: {
+    historicalBaseSha: string;
+    assessedTargetSha: string;
+    priorReviewEvidence: string[];
+  };
+};
+
+export type AnchoredSourceReviewPacket = ReviewPacket & {
+  role: "reviewer";
+  completionKind: "anchored-review";
+  identity: string;
+  workspace: { path: string; mutationBoundary: string };
+  mode: "anchored";
+  previousCandidate: RunState["candidates"][string];
+  latestCorrection: NonNullable<ReviewState["latestCorrection"]>;
+};
+
+export type SourceReviewWorkerPacket =
+  | InitialSourceReviewPacket
+  | AnchoredSourceReviewPacket;
 
 export type ReviewOutcome =
   | {
@@ -122,8 +153,16 @@ export function buildReviewPacket(args: {
   workstream: RuntimeWorkstream;
   baseToTipDiff: string;
 }): ReviewPacket {
+  const identity = `${args.state.run.id}/${reviewKey(args.workstream)}`;
+  if (args.state.executionPlan?.hash !== args.plan.executionPlanHash) {
+    throw new Error(
+      `Reviewer packet ${identity} does not match the immutable execution plan.`,
+    );
+  }
   if (!protectedArtifactsMatch(args.state)) {
-    throw new Error("Review material no longer matches the immutable corpus.");
+    throw new Error(
+      `Reviewer packet ${identity} material no longer matches the immutable corpus.`,
+    );
   }
   const candidateId =
     args.workstream.kind === "source"
@@ -132,9 +171,9 @@ export function buildReviewPacket(args: {
   const candidate = candidateId
     ? args.state.candidates[candidateId]
     : undefined;
-  if (!candidate) {
+  if (!candidate || !sameWorkstream(candidate.workstream, args.workstream)) {
     throw new Error(
-      "A review packet requires the workstream's current candidate.",
+      `Reviewer packet ${identity} requires the workstream's current candidate.`,
     );
   }
   const review = workstreamReviewState(args.state, args.workstream);
@@ -200,6 +239,109 @@ export function buildReviewPacket(args: {
   };
 }
 
+export function buildSourceReviewWorkerPacket(args: {
+  state: RunState;
+  workstream: Extract<RuntimeWorkstream, { kind: "source" }>;
+  workspacePath: string;
+  packet: ReviewPacket;
+  review?: ReviewState;
+  assessment?: RunState["satisfaction"]["assessments"][string];
+  actualChangedPaths?: string[];
+}): SourceReviewWorkerPacket {
+  const expectedWorkspace = workstreamWorkspace(args.state, args.workstream.id);
+  if (resolve(args.workspacePath) !== resolve(expectedWorkspace.worktreePath)) {
+    throw new Error(
+      `Reviewer packet ${args.workstream.id} has an invalid assigned workspace.`,
+    );
+  }
+  if (
+    !sameWorkstream(args.packet.workstream, args.workstream) ||
+    !sameWorkstream(args.packet.candidate.workstream, args.workstream)
+  ) {
+    throw new Error(
+      `Reviewer packet ${args.workstream.id} does not match its source workstream.`,
+    );
+  }
+  const common = {
+    ...args.packet,
+    role: "reviewer" as const,
+    identity: `${args.state.run.id}/${args.workstream.id}/${args.packet.candidate.id}`,
+    workspace: {
+      path: expectedWorkspace.worktreePath,
+      mutationBoundary:
+        "Review is read-only; the target checkout and run artifacts are not readable worker inputs.",
+    },
+  };
+  if (args.assessment) {
+    if (
+      args.assessment.candidateId !== args.packet.candidate.id ||
+      args.assessment.workstream.id !== args.workstream.id
+    ) {
+      throw new Error(
+        `Reviewer packet ${args.workstream.id} has an inconsistent repository-state assessment.`,
+      );
+    }
+    return {
+      ...common,
+      completionKind: "initial-review",
+      mode: "repository_state",
+      repositoryState: {
+        historicalBaseSha: args.assessment.historicalBaseSha,
+        assessedTargetSha: args.assessment.targetSha,
+        priorReviewEvidence: args.review?.evidence ?? [],
+      },
+    };
+  }
+  if (!args.review) {
+    if (args.packet.outstandingFindings.length > 0) {
+      throw new Error(
+        `Reviewer packet ${args.workstream.id} has findings without a review epoch.`,
+      );
+    }
+    return { ...common, completionKind: "initial-review", mode: "initial" };
+  }
+  const outstandingIds = args.packet.outstandingFindings.map(
+    (finding) => finding.id,
+  );
+  if (
+    args.review.candidateId !== args.packet.candidate.id ||
+    !args.review.previousCandidateId ||
+    !args.packet.previousCandidate ||
+    args.packet.previousCandidate.id !== args.review.previousCandidateId ||
+    !sameWorkstream(
+      args.packet.previousCandidate.workstream,
+      args.workstream,
+    ) ||
+    !args.review.latestCorrection ||
+    args.review.latestCorrection.fromCandidateId !==
+      args.packet.previousCandidate.id ||
+    !sameIds(outstandingIds, args.review.outstandingIds) ||
+    !sameIds(
+      args.actualChangedPaths ?? [],
+      args.review.latestCorrection.changedPaths,
+    ) ||
+    args.packet.outstandingFindings.some((finding) => {
+      const retained = args.state.findings[finding.id];
+      return (
+        !retained ||
+        retained.status !== "open" ||
+        !sameWorkstream(retained.workstream, args.workstream)
+      );
+    })
+  ) {
+    throw new Error(
+      `Reviewer packet ${args.workstream.id} does not match its anchored review epoch.`,
+    );
+  }
+  return {
+    ...common,
+    completionKind: "anchored-review",
+    mode: "anchored",
+    previousCandidate: args.packet.previousCandidate,
+    latestCorrection: args.review.latestCorrection,
+  };
+}
+
 export async function runWorkstreamReview(args: {
   state: RunState;
   plan: ExecutionPlan;
@@ -208,11 +350,7 @@ export async function runWorkstreamReview(args: {
   subagents: SubagentClient;
   signal?: AbortSignal;
   artifactsPath: string;
-  roles?: {
-    model?: string;
-    type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  };
+  roles: ImplementRoles;
 }): Promise<ReviewOutcome> {
   if (args.workstream.kind !== "source") {
     return runOverallAnchoredReview({
@@ -220,14 +358,25 @@ export async function runWorkstreamReview(args: {
       workstream: args.workstream,
     });
   }
-  const runtime = args.state.workstreams.source[args.workstream.id];
-  const candidateId = runtime?.candidateId;
-  const candidate = candidateId
-    ? args.state.candidates[candidateId]
-    : undefined;
-  if (!runtime || !candidate) {
-    throw new Error("A workstream review requires a current candidate.");
+  let runtime: RunState["workstreams"]["source"][string];
+  let candidate: RunState["candidates"][string];
+  try {
+    const retained = args.state.workstreams.source[args.workstream.id];
+    const candidateId = retained?.candidateId;
+    const current = candidateId
+      ? args.state.candidates[candidateId]
+      : undefined;
+    if (!retained || !current) {
+      throw new Error("A workstream review requires a current candidate.");
+    }
+    runtime = retained;
+    candidate = current;
+  } catch (error) {
+    throw new WorkerPacketError(
+      `Reviewer packet ${args.state.run.id}/${args.workstream.id} could not be materialized: ${message(error)}`,
+    );
   }
+  const candidateId = candidate.id;
   const assessment = Object.values(args.state.satisfaction.assessments).find(
     (entry) =>
       entry.status === "pending" &&
@@ -239,17 +388,24 @@ export async function runWorkstreamReview(args: {
   const previousCandidate = review?.previousCandidateId
     ? args.state.candidates[review.previousCandidateId]
     : undefined;
-  const packet = buildReviewPacket({
-    state: args.state,
-    plan: args.plan,
-    workstream: args.workstream,
-    baseToTipDiff: assessment
-      ? assessment.interveningDiff
-      : await args.git.diffRange(
-          previousCandidate?.commitSha ?? candidate.baseSha,
-          candidate.commitSha,
-        ),
-  });
+  let packet: ReviewPacket;
+  try {
+    packet = buildReviewPacket({
+      state: args.state,
+      plan: args.plan,
+      workstream: args.workstream,
+      baseToTipDiff: assessment
+        ? assessment.interveningDiff
+        : await args.git.diffRange(
+            previousCandidate?.commitSha ?? candidate.baseSha,
+            candidate.commitSha,
+          ),
+    });
+  } catch (error) {
+    throw new WorkerPacketError(
+      `Reviewer packet ${args.state.run.id}/${args.workstream.id} could not be materialized: ${message(error)}`,
+    );
+  }
   const workspace = workstreamWorkspace(args.state, args.workstream.id);
   const worktreePath = workspace.worktreePath;
   const workspaceGit = args.git.forWorktree(worktreePath);
@@ -266,78 +422,60 @@ export async function runWorkstreamReview(args: {
       "Repository-state assessment target changed before review.",
     );
   }
-  const prompt = assessment
-    ? buildInitialWorkstreamReviewPrompt({
-        worktreePath,
-        candidate,
-        diff: packet.baseToTipDiff,
-        contracts: packet.contracts.map((task) => ({
-          id: task.id,
-          title: task.title,
-          ...task.compiledContract,
-          provenance: task.provenance,
-        })),
-        sourceMaterial: packet.sourceMaterial,
-        checkpoints: packet.checkpoints,
-        satisfiedEvidence: packet.satisfiedEvidence,
-        verification: packet.verificationEvidence?.verification,
-        uncertainty: packet.uncertainty,
-        repositoryState: {
-          historicalBaseSha: assessment.historicalBaseSha,
-          assessedTargetSha: assessment.targetSha,
-          priorReviewEvidence: review?.evidence ?? [],
-        },
-      })
-    : review
-      ? buildAnchoredWorkstreamReviewPrompt({
-          worktreePath,
-          candidate,
-          previousCandidate: packet.previousCandidate!,
-          latestDelta: packet.baseToTipDiff,
-          changedPaths: review.latestCorrection?.changedPaths ?? [],
-          correctionEvidence:
-            review.latestCorrection?.evidence ??
-            "No correction evidence was retained.",
-          verification: packet.verificationEvidence?.verification,
-          uncertainty: packet.uncertainty,
-          outstandingFindings: packet.outstandingFindings,
+  const actualChangedPaths =
+    review && previousCandidate
+      ? await changedPathsBetween(
+          workspaceGit,
+          previousCandidate.commitSha,
+          candidate.commitSha,
+        )
+      : undefined;
+  let workerPacket: SourceReviewWorkerPacket;
+  try {
+    workerPacket = buildSourceReviewWorkerPacket({
+      state: args.state,
+      workstream: args.workstream,
+      workspacePath: worktreePath,
+      packet,
+      review,
+      assessment,
+      actualChangedPaths,
+    });
+  } catch (error) {
+    throw new WorkerPacketError(
+      `Reviewer packet ${args.state.run.id}/${args.workstream.id} could not be materialized: ${message(error)}`,
+    );
+  }
+  const handle =
+    workerPacket.mode === "anchored"
+      ? await spawnValidatedWorker({
+          packet: workerPacket,
+          subagents: args.subagents,
+          roles: args.roles,
+          taskId: args.workstream.id,
+          description: `Review workstream ${args.workstream.id}`,
+          readOnly: true,
+          completionKind: "anchored-review",
+          completion: {
+            description: "Assess every outstanding finding.",
+            schema: anchoredWorkstreamReviewSchema,
+          },
+          render: buildAnchoredWorkstreamReviewPrompt,
         })
-      : buildInitialWorkstreamReviewPrompt({
-          worktreePath,
-          candidate,
-          diff: packet.baseToTipDiff,
-          contracts: packet.contracts.map((task) => ({
-            id: task.id,
-            title: task.title,
-            ...task.compiledContract,
-            provenance: task.provenance,
-          })),
-          sourceMaterial: packet.sourceMaterial,
-          checkpoints: packet.checkpoints,
-          satisfiedEvidence: packet.satisfiedEvidence,
-          verification: packet.verificationEvidence?.verification,
-          uncertainty: packet.uncertainty,
+      : await spawnValidatedWorker({
+          packet: workerPacket,
+          subagents: args.subagents,
+          roles: args.roles,
+          taskId: args.workstream.id,
+          description: `Review workstream ${args.workstream.id}`,
+          readOnly: true,
+          completionKind: "initial-review",
+          completion: {
+            description: "Approve or return direct blocking findings.",
+            schema: initialWorkstreamReviewSchema,
+          },
+          render: buildInitialWorkstreamReviewPrompt,
         });
-  const handle = await args.subagents.spawn({
-    type: args.roles?.type ?? "Review",
-    role: "reviewer",
-    model: args.roles?.model,
-    thinking: args.roles?.thinking,
-    taskId: args.workstream.id,
-    description: `Review workstream ${args.workstream.id}`,
-    cwd: workspace.worktreePath,
-    prompt,
-    readOnly: true,
-    completion: (review && !assessment
-      ? {
-          description: "Assess every outstanding finding.",
-          schema: anchoredWorkstreamReviewSchema,
-        }
-      : {
-          description: "Approve or return direct blocking findings.",
-          schema: initialWorkstreamReviewSchema,
-        }) as never,
-  });
   const result = await args.subagents.waitFor<unknown>(handle, args.signal);
   if (result.status !== "completed") {
     throw new Error(`Workstream reviewer ${result.status}: ${result.error}`);
@@ -348,18 +486,6 @@ export async function runWorkstreamReview(args: {
     (assessment && (await args.git.head()) !== assessment.targetSha)
   ) {
     throw new Error("The reviewer changed the assessed repository state.");
-  }
-  if (review && previousCandidate) {
-    const changedPaths = await changedPathsBetween(
-      workspaceGit,
-      previousCandidate.commitSha,
-      candidate.commitSha,
-    );
-    if (!samePaths(changedPaths, review.latestCorrection?.changedPaths ?? [])) {
-      throw new Error(
-        "The persisted correction paths do not match the candidate delta.",
-      );
-    }
   }
   const evidence = reviewEvidencePath(args.artifactsPath, args.workstream.id, {
     packet,
@@ -396,11 +522,7 @@ async function runOverallAnchoredReview(args: {
   subagents: SubagentClient;
   signal?: AbortSignal;
   artifactsPath: string;
-  roles?: {
-    model?: string;
-    type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  };
+  roles: ImplementRoles;
 }): Promise<ReviewOutcome> {
   const runtime = args.state.workstreams.overall[args.workstream.repairId];
   const candidateId = runtime?.candidateId;
@@ -447,10 +569,10 @@ async function runOverallAnchoredReview(args: {
     worktreePath: workspace.worktreePath,
   });
   const handle = await args.subagents.spawn({
-    type: args.roles?.type ?? "Review",
+    type: args.roles.reviewer.type,
     role: "reviewer",
-    model: args.roles?.model,
-    thinking: args.roles?.thinking,
+    model: args.roles.reviewer.model,
+    thinking: args.roles.reviewer.thinking,
     taskId: args.workstream.repairId,
     description: `Assess overall repair ${args.workstream.repairId}`,
     cwd: workspace.worktreePath,
@@ -650,10 +772,28 @@ function resolveCorpusPath(
   });
 }
 
-function samePaths(left: string[], right: string[]): boolean {
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function sameWorkstream(
+  left: RuntimeWorkstream,
+  right: RuntimeWorkstream,
+): boolean {
   return (
-    [...new Set(left)].sort().join("\0") ===
-    [...new Set(right)].sort().join("\0")
+    left.kind === right.kind &&
+    (left.kind === "source" && right.kind === "source"
+      ? left.id === right.id
+      : left.kind === "overall" && right.kind === "overall"
+        ? left.repairId === right.repairId
+        : false)
+  );
+}
+
+function sameIds(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((id, index) => id === right[index])
   );
 }
 
