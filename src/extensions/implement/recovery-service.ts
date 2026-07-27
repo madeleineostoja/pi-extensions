@@ -1,12 +1,13 @@
 import { mkdirSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
-import type { ImplementRole } from "./subagents.js";
+import { join, relative } from "node:path";
+import type { ImplementRoles } from "./subagents.js";
 import {
   canonicalCommitSha,
   changedPathsBetween,
   type GitClient,
 } from "./git.js";
 import { buildRecoveryPrompt } from "./prompts.js";
+import { buildRecoveryPacket, recoveryTaskId } from "./recovery-packet.js";
 import {
   recoveryCompletionSchema,
   type RecoveryCompletion,
@@ -14,6 +15,7 @@ import {
 import { boundedRecoveryOutput, type RecoveryAction } from "./recovery.js";
 import type { RuntimeWorkstream, SchedulerEffect } from "./scheduler.js";
 import type { SubagentClient } from "./subagents.js";
+import { spawnValidatedWorker } from "./worker-invocation.js";
 import { writeAtomicJson } from "./atomic-json.js";
 import {
   recreateWorkstreamWorkspace,
@@ -41,54 +43,26 @@ export async function runRecovery(args: {
   subagents: SubagentClient;
   artifactsPath: string;
   signal?: AbortSignal;
-  roles: ImplementRole;
+  roles: ImplementRoles;
 }): Promise<RecoveryResult> {
-  const episode = args.state.recoveryEpisodes[args.effect.episodeId];
-  if (!episode || episode.workstream.kind !== args.effect.workstream.kind) {
-    throw new Error("Recovery effect does not own a durable episode.");
-  }
-  const candidate = episode.candidateId
-    ? args.state.candidates[episode.candidateId]
-    : undefined;
-  const gate = args.state.gates.find((entry) => entry.id === episode.gateId);
-  const worktreePath = recoveryWorktree(
-    args.state,
-    args.effect.workstream,
-    candidate,
-    episode.workspace,
-    gate?.kind,
-  );
-  const correctionWorktreePath = candidate
-    ? candidateWorktree(args.state, args.effect.workstream, candidate)
-    : worktreePath;
-  const usesHookStaging = worktreePath !== correctionWorktreePath;
-  const handle = await args.subagents.spawn({
-    type: args.roles.type,
-    role: "recovery",
-    model: args.roles.model,
-    thinking: args.roles.thinking,
+  const packet = buildRecoveryPacket({
+    state: args.state,
+    effect: args.effect,
+  });
+  const episode = args.state.recoveryEpisodes[packet.episode.id]!;
+  const candidate = packet.candidate;
+  const correctionWorktreePath = packet.workspace.correctionPath;
+  const handle = await spawnValidatedWorker({
+    packet,
+    subagents: args.subagents,
+    roles: args.roles,
     taskId: recoveryTaskId(args.effect.workstream),
-    description: `Recover ${episode.gateId}`,
-    cwd: worktreePath,
-    prompt: buildRecoveryPrompt({
-      worktreePath,
-      episode: { ...episode, gate },
-      candidate,
-      target: {
-        branchRef: args.state.run.checkout.branchRef,
-        startHead: args.state.run.checkout.startHead,
-      },
-      permittedMutationBoundary: usesHookStaging
-        ? `Ignored/runtime hook repair belongs in ${worktreePath}; tracked candidate corrections belong in ${correctionWorktreePath}. The target checkout is read-only.`
-        : "The assigned disposable worktree only; the target checkout is read-only.",
-      ...(usesHookStaging
-        ? { trackedCorrectionWorktreePath: correctionWorktreePath }
-        : {}),
-    }),
+    description: `Recover ${packet.gate.id}`,
     completion: {
       description: "Return one bounded recovery action.",
       schema: recoveryCompletionSchema,
     },
+    render: buildRecoveryPrompt,
   });
   const response = await args.subagents.waitFor<RecoveryCompletion>(
     handle,
@@ -132,7 +106,7 @@ export async function runRecovery(args: {
       }
       const reportedCheckpoint = completion.trustedCheckpoint
         ? await canonicalCommitSha(
-            args.git.forWorktree(worktreePath),
+            args.git.forWorktree(packet.workspace.path),
             completion.trustedCheckpoint,
           )
         : undefined;
@@ -244,33 +218,6 @@ async function assertRetainedCandidateWorkspace(args: {
   }
 }
 
-function recoveryWorktree(
-  state: RunState,
-  workstream: RuntimeWorkstream,
-  candidate: RunState["candidates"][string] | undefined,
-  workspace: RunState["recoveryEpisodes"][string]["workspace"],
-  gateKind: RunState["gates"][number]["kind"] | undefined,
-): string {
-  if (gateKind === "hook" && workspace.id.startsWith("staging-")) {
-    const root = resolve(
-      state.run.checkout.root,
-      ".pi",
-      "pipkin",
-      "implement",
-      "worktrees",
-      state.run.id,
-    );
-    const staging = resolve(root, workspace.id);
-    if (!staging.startsWith(`${root}/`)) {
-      throw new RecoverySafetyError(
-        "Hook staging workspace escapes its run root.",
-      );
-    }
-    return staging;
-  }
-  return candidateWorktree(state, workstream, candidate);
-}
-
 function candidateWorktree(
   state: RunState,
   workstream: RuntimeWorkstream,
@@ -358,8 +305,4 @@ async function recoveredCandidate(args: {
         }
       : {}),
   };
-}
-
-function recoveryTaskId(workstream: RuntimeWorkstream): string {
-  return workstream.kind === "source" ? workstream.id : workstream.repairId;
 }

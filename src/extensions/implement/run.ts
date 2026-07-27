@@ -915,7 +915,7 @@ export function createRuntime(args: {
           subagents,
           artifactsPath,
           signal,
-          roles: args.roles.recovery,
+          roles: args.roles,
         });
         await dispatch({
           kind: "recovery_completed",

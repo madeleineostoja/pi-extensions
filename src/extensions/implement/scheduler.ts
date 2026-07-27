@@ -1,5 +1,6 @@
 import { publicationPreparationId } from "./candidate-replay.js";
 import { RecoverySafetyError } from "./recovery-service.js";
+import { WorkerPacketError } from "./worker-invocation.js";
 import { MissingHookEvidenceError } from "./publication.js";
 import type { ExecutionPlan } from "./execution-plan.js";
 import {
@@ -2505,7 +2506,8 @@ export class SchedulerActor {
         }
         if (
           effect.kind === "run_recovery" &&
-          error instanceof RecoverySafetyError &&
+          (error instanceof RecoverySafetyError ||
+            error instanceof WorkerPacketError) &&
           this.snapshot().processLeases[effect.leaseId]
         ) {
           await this.dispatch({
@@ -2516,7 +2518,9 @@ export class SchedulerActor {
               kind: "no_safe_action",
               outcome: "no_safe_action",
               summary:
-                "Recovery output could not satisfy the durable safety boundary.",
+                error instanceof WorkerPacketError
+                  ? "Recovery packet could not satisfy the durable worker boundary."
+                  : "Recovery output could not satisfy the durable safety boundary.",
               evidence: error.message,
               at: this.now(),
             },
@@ -2962,6 +2966,10 @@ function recordGateResult(
       active.status = "completed";
       runtime.phase = "candidate_ready";
     } else {
+      active.gateId = result.id;
+      active.outstandingFindingIds = [...result.outstandingFindingIds];
+      active.workspace = workspace;
+      active.cycle = recoveryCycleForGate(state, active, result);
       runtime.phase = "recovering";
     }
     return;
@@ -2980,22 +2988,16 @@ function recordGateResult(
     workspace,
     outstandingFindingIds: [...result.outstandingFindingIds],
     status: "open",
-    cycle: {
-      signature: recoveryCycleSignature({
+    cycle: recoveryCycleForGate(
+      state,
+      {
         gateId: result.id,
-        candidateTree: candidate?.treeSha,
-        failureEvidence: result.evidence,
-        workspaceEvidence: workspace.stateEvidence,
-        outstandingFindings: result.outstandingFindingIds.map((id) => ({
-          id,
-          evidence: state.findings[id]?.evidence ?? "",
-        })),
-        workspaceId: workspace.id,
-        nextAction: "retry",
-      }),
-      identicalNoActionCycles: 0,
-      independentlyEscalated: false,
-    },
+        candidateId: result.candidateId,
+        workspace,
+        outstandingFindingIds: result.outstandingFindingIds,
+      },
+      result,
+    ),
     providerFailures: 0,
     actions: [],
   };
@@ -3026,6 +3028,34 @@ function openRecoveryEpisodeForWorkstream(
         sameWorkstream(episode.workstream, workstream),
     )
     .at(-1);
+}
+
+function recoveryCycleForGate(
+  state: RunState,
+  episode: Pick<
+    RunState["recoveryEpisodes"][string],
+    "candidateId" | "gateId" | "outstandingFindingIds" | "workspace"
+  >,
+  gate: RecoveryGateResult,
+): RunState["recoveryEpisodes"][string]["cycle"] {
+  return {
+    signature: recoveryCycleSignature({
+      gateId: gate.id,
+      candidateTree: episode.candidateId
+        ? state.candidates[episode.candidateId]?.treeSha
+        : undefined,
+      failureEvidence: gate.evidence,
+      workspaceEvidence: episode.workspace.stateEvidence,
+      outstandingFindings: episode.outstandingFindingIds.map((id) => ({
+        id,
+        evidence: state.findings[id]?.evidence ?? "",
+      })),
+      workspaceId: episode.workspace.id,
+      nextAction: "retry",
+    }),
+    identicalNoActionCycles: 0,
+    independentlyEscalated: false,
+  };
 }
 
 function recoverySignatureFor(

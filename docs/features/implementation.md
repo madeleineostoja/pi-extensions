@@ -97,7 +97,7 @@ Each checkout owns its runs:
 
 One OS-backed lease protects each checkout's active run and destructive cleanup. Linked checkouts have independent state and can run separately. A second run in the same checkout is rejected.
 
-Recoverable failures retain the gate, candidate, workspace, findings, prior actions, and mutation boundary. Recovery agents choose bounded actions in Pipkin-owned workspaces. When no safe action remains, the run pauses for a person rather than improvising on the target.
+Recoverable failures retain the gate, candidate, workspace, complete current findings, prior actions, and mutation boundary. Recovery packets embed actionable findings inline; retained artifacts are diagnostic provenance, not worker-readable input. Recovery agents choose bounded actions in Pipkin-owned workspaces, and each recovery turn starts a new worker conversation. When no safe action remains, the run pauses for a person rather than improvising on the target.
 
 Paused runs can resume after boundary checks and lease reacquisition. Completed and safety-blocked runs cannot resume. Cleanup preserves published target and plan changes and removes only resources Pipkin can prove it owns.
 

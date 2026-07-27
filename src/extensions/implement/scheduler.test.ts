@@ -23,6 +23,8 @@ import {
   selectReadyWorkstreams,
   SchedulerActor,
 } from "./scheduler.js";
+import { buildRecoveryPacket } from "./recovery-packet.js";
+import { WorkerPacketError } from "./worker-invocation.js";
 import { buildReviewPacket } from "./review.js";
 import {
   TargetPreconditionError,
@@ -570,7 +572,7 @@ describe(" scheduler reducer", () => {
     const action = {
       kind: "no_safe_action" as const,
       outcome: "no_safe_action" as const,
-      summary: "No safe mutation is available.",
+      summary: "Recovery packet could not satisfy the durable worker boundary.",
       evidence: "The same candidate and failure remain.",
       at: "now",
     };
@@ -594,6 +596,7 @@ describe(" scheduler reducer", () => {
     const actor = new SchedulerActor({
       store: fakeStore,
       targetHead: async () => "base-sha",
+      now: () => "now",
       onTransition: (_state, event) => {
         if (event.kind === "run_paused") {
           paused.resolve();
@@ -629,12 +632,7 @@ describe(" scheduler reducer", () => {
         }
         if (effect.kind === "run_recovery") {
           await implementationStarted.promise;
-          await dispatch({
-            kind: "recovery_completed",
-            workstream: effect.workstream,
-            leaseId: effect.leaseId,
-            action,
-          });
+          throw new WorkerPacketError(action.evidence);
         }
       },
     });
@@ -662,10 +660,186 @@ describe(" scheduler reducer", () => {
         },
       },
       recoveryEpisodes: {
-        "recovery:review": { status: "paused", actions: [action] },
+        "recovery:review": {
+          status: "paused",
+          providerFailures: 0,
+          actions: [action],
+        },
       },
     });
     await actor.stop("test complete");
+  });
+
+  it("advances an active recovery episode to the narrowed anchored review gate", async () => {
+    const run = await store();
+    let state = run.read();
+    const workstream = { kind: "source" as const, id: "first-stream" };
+    state.workstreams.source[workstream.id]!.phase = "recovering";
+    state.workstreams.source[workstream.id]!.baseSha = "base-sha";
+    state.workstreams.source[workstream.id]!.candidateId = "candidate-2";
+    state.candidates["candidate-1"] = {
+      id: "candidate-1",
+      workstream,
+      baseSha: "base-sha",
+      commitSha: "commit-1",
+      treeSha: "tree-1",
+    };
+    state.candidates["candidate-2"] = {
+      ...state.candidates["candidate-1"],
+      id: "candidate-2",
+      commitSha: "commit-2",
+      treeSha: "tree-2",
+    };
+    for (const id of ["finding-1", "finding-2"]) {
+      state.findings[id] = {
+        id,
+        candidateId: "candidate-1",
+        workstream,
+        summary: `${id} remains`,
+        evidence: `${id} evidence`,
+        requiredChange: `Fix ${id}`,
+        acceptanceCriteria: [`${id} passes`],
+        origin: "initial",
+        introducedRound: 0,
+        status: "open",
+      };
+    }
+    state.reviews["source:first-stream"] = {
+      candidateId: "candidate-2",
+      previousCandidateId: "candidate-1",
+      round: 1,
+      outstandingIds: ["finding-1", "finding-2"],
+      latestCorrection: {
+        fromCandidateId: "candidate-1",
+        changedPaths: ["src/fix.ts"],
+        evidence: "Corrected both findings.",
+      },
+      evidence: ["first review"],
+      observations: [],
+    };
+    state.gates.push({
+      id: "review:source:first-stream:candidate-2:1",
+      kind: "review",
+      workstream,
+      candidateId: "candidate-2",
+      attempt: 1,
+      outcome: "failed",
+      evidence: "Both findings remain open.",
+      outstandingFindingIds: ["finding-1", "finding-2"],
+    });
+    state.recoveryEpisodes.episode = {
+      id: "episode",
+      gateId: "review:source:first-stream:candidate-2:1",
+      gateAttempts: ["review:source:first-stream:candidate-2:1"],
+      workstream,
+      candidateId: "candidate-2",
+      workspace: {
+        id: "source:first-stream",
+        checkpoint: "commit-2",
+        changedPaths: [],
+        stateEvidence: "The first review failed.",
+      },
+      outstandingFindingIds: ["finding-1", "finding-2"],
+      status: "open",
+      cycle: {
+        signature: "first",
+        identicalNoActionCycles: 0,
+        independentlyEscalated: false,
+      },
+      providerFailures: 0,
+      actions: [],
+    };
+
+    await run.update(state.revision, () => state);
+    state = run.read();
+
+    const requested = reduceRunEvent(state, {
+      kind: "recovery_requested",
+      workstream,
+      now: "now",
+    });
+    const recovery = requested.effects[0]!;
+    if (recovery.kind !== "run_recovery") {
+      throw new Error("Expected recovery effect.");
+    }
+    await run.update(state.revision, () => requested.state);
+    state = run.read();
+    const retried = reduceRunEvent(state, {
+      kind: "recovery_completed",
+      workstream,
+      leaseId: recovery.leaseId,
+      action: {
+        kind: "retry",
+        outcome: "completed",
+        summary: "The existing candidate can be reviewed again.",
+        evidence: "No further changes are needed before review.",
+        at: "later",
+      },
+    });
+    await run.update(state.revision, () => retried.state);
+    state = run.read();
+    const reviewed = reduceRunEvent(state, {
+      kind: "review_requested",
+      workstream,
+      now: "later",
+    });
+    const review = reviewed.effects[0]!;
+    if (review.kind !== "run_review") {
+      throw new Error("Expected review effect.");
+    }
+    await run.update(state.revision, () => reviewed.state);
+    state = run.read();
+    const narrowed = reduceRunEvent(state, {
+      kind: "review_completed",
+      workstream,
+      leaseId: review.leaseId,
+      outcome: {
+        kind: "anchored",
+        candidateId: "candidate-2",
+        evidence: "The first finding is resolved; the second remains.",
+        completion: {
+          assessments: [
+            {
+              id: "finding-1",
+              status: "resolved",
+              evidence: "The first behavior now works.",
+            },
+            {
+              id: "finding-2",
+              status: "unresolved",
+              evidence: "The second behavior still fails.",
+            },
+          ],
+          regressions: [],
+        },
+      },
+    });
+
+    expect(narrowed.accepted).toBe(true);
+    await run.update(state.revision, () => narrowed.state);
+    const persisted = run.read();
+    expect(persisted.recoveryEpisodes.episode).toMatchObject({
+      gateId: "review:source:first-stream:candidate-2:3",
+      gateAttempts: [
+        "review:source:first-stream:candidate-2:1",
+        "review:source:first-stream:candidate-2:3",
+      ],
+      outstandingFindingIds: ["finding-2"],
+      status: "open",
+    });
+    expect(persisted.findings["finding-1"]?.status).toBe("resolved");
+    expect(
+      buildRecoveryPacket({
+        state: persisted,
+        effect: {
+          kind: "run_recovery",
+          workstream,
+          leaseId: "next-lease",
+          episodeId: "episode",
+          independentlyEscalated: false,
+        },
+      }).outstandingFindings.map((finding) => finding.id),
+    ).toEqual(["finding-2"]);
   });
 
   it("keeps a same-candidate environment repair open for a retried gate", async () => {

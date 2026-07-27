@@ -1,3 +1,5 @@
+import type { RecoveryWorkerPacket } from "./recovery-packet.js";
+
 export type WorkstreamImplementerPromptTask = {
   id: string;
   title: string;
@@ -120,17 +122,11 @@ export function buildAnchoredOverallReviewPrompt(args: {
   return `You are the independent reviewer for an anchored whole-plan repair. Review read-only in ${args.worktreePath ?? "the repair worktree"}.\n\nPlan context:\n${args.planContext}\n\nCandidate context:\n${args.candidateContext}\n\nPrevious candidate: ${args.previousCandidate}\nCurrent candidate: ${args.currentCandidate}\n\nAssess every outstanding finding exactly once against the current candidate and latest correction delta. Do not re-review the complete candidate. A resolved finding cannot reopen. Add a blocking regression only when the latest delta caused it; place every other concern in observations.\n\n## Outstanding findings\n\n${formatFindings(args.outstandingFindings)}\n\n## Latest correction delta\n\n\`\`\`diff\n${args.latestDelta}\n\`\`\`\n\nDo not edit files, change Git state, install dependencies, or run write-producing commands.`;
 }
 
-export function buildRecoveryPrompt(args: {
-  worktreePath: string;
-  episode: unknown;
-  candidate?: unknown;
-  target: { branchRef: string; startHead: string };
-  permittedMutationBoundary: string;
-  trackedCorrectionWorktreePath?: string;
-}): string {
-  const trackedCorrectionWorktreePath =
-    args.trackedCorrectionWorktreePath ?? args.worktreePath;
-  return `You are the Pipkin Implement recovery agent. Recover only the retained failure episode below.\n\nRuntime repair workspace:\n\n  ${args.worktreePath}\n\nTracked correction worktree:\n\n  ${trackedCorrectionWorktreePath}\n\nThe target checkout and immutable source corpus are orchestrator-owned. Do not access or mutate them. Inspect and repair ignored/runtime state only in the runtime repair workspace. Make tracked changes only when necessary to correct the retained candidate or reconciliation failure, and commit them only in the tracked correction worktree before reporting them. Do not push, rewrite history, bypass hooks, change protected plan artifacts, or leave an active Git operation or uncommitted work.\n\nTarget identity: ${args.target.branchRef} @ ${args.target.startHead}\nPermitted mutation boundary: ${args.permittedMutationBoundary}\nCurrent candidate: ${JSON.stringify(args.candidate ?? null)}\n\n## Durable recovery episode\n\n${JSON.stringify(args.episode, null, 2)}\n\nChoose exactly one typed action. Use \`retry\` only when the retained candidate/workspace identity is unchanged and the failed lifecycle gate can be rerun. Use \`repair_environment\` for ignored or runtime repair in the runtime repair workspace. Use \`recreate_workspace\` only when a trusted checkpoint is retained. Use \`rework_candidate\` or \`reconcile\` only after committing a tracked correction in the tracked correction worktree; include candidateTip and the changed paths. Use \`diagnose\` only to retain a bounded diagnosis before another recovery turn. Use \`no_safe_action\` when no safe bounded action exists. Include concrete evidence for every action.`;
+export function buildRecoveryPrompt(packet: RecoveryWorkerPacket): string {
+  const provenance = packet.gate.artifactProvenance
+    ? `\n\n## Retained artifact provenance\n\nThis provenance is for operator diagnostics only. It is not readable from the assigned workspace; do not open or rely on it.\n\n${JSON.stringify(packet.gate.artifactProvenance, null, 2)}`
+    : "";
+  return `You are the Pipkin Implement recovery agent. Recover only the validated failure packet below.\n\nRuntime repair workspace:\n\n  ${packet.workspace.path}\n\nTracked correction worktree:\n\n  ${packet.workspace.correctionPath}\n\nThe target checkout and immutable source corpus are orchestrator-owned. Do not access or mutate them. Inspect and repair ignored/runtime state only in the runtime repair workspace. Make tracked changes only when necessary to correct the retained candidate or reconciliation failure, and commit them only in the tracked correction worktree before reporting them. Do not push, rewrite history, bypass hooks, change protected plan artifacts, or leave an active Git operation or uncommitted work.\n\nTarget identity: ${packet.target.branchRef} @ ${packet.target.startHead}\nPermitted mutation boundary: ${packet.workspace.mutationBoundary}\nCurrent candidate: ${JSON.stringify(packet.candidate ?? null, null, 2)}\n\n## Failed gate evidence\n\n${JSON.stringify(packet.gate, null, 2)}\n\n## Recovery episode\n\n${JSON.stringify(packet.episode, null, 2)}\n\n## Complete outstanding findings\n\n${formatFindings(packet.outstandingFindings)}${provenance}\n\nChoose exactly one typed action. Use \`retry\` only when the retained candidate/workspace identity is unchanged and the failed lifecycle gate can be rerun. Use \`repair_environment\` for ignored or runtime repair in the runtime repair workspace. Use \`recreate_workspace\` only when a trusted checkpoint is retained. Use \`rework_candidate\` or \`reconcile\` only after committing a tracked correction in the tracked correction worktree; include candidateTip and the changed paths. Use \`diagnose\` only to retain a bounded diagnosis before another recovery turn. Use \`no_safe_action\` when no safe bounded action exists. Include concrete evidence for every action.`;
 }
 
 function formatFindings(findings: Finding[]): string {
