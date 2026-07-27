@@ -89,6 +89,7 @@ export async function runCommand(
     input: options.input,
     timeout: options.timeout,
     cancelSignal: options.signal,
+    killDescendants: true,
     shell: options.shell,
     reject: false,
     stripFinalNewline: false,
