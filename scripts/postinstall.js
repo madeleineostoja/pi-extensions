@@ -179,6 +179,16 @@ async function main() {
 
   const { target } = result;
   statusDir = cacheDirForTarget(target);
+  const binPath = path.join(statusDir, "nono");
+
+  try {
+    fs.accessSync(binPath, fs.constants.X_OK);
+    console.log(
+      `Pipkin Sandbox: nono v${NONO_VERSION} already installed at ${binPath}; skipping download.`,
+    );
+    writeStatus({ ok: true, version: NONO_VERSION });
+    process.exit(0);
+  } catch {}
 
   if (process.env.PIPKIN_SANDBOX_SKIP_DOWNLOAD === "1") {
     console.log(
@@ -331,7 +341,6 @@ async function main() {
     process.exit(0);
   }
 
-  const binPath = path.join(statusDir, "nono");
   fs.renameSync(foundBin, binPath);
   try {
     fs.rmSync(tmpDir, { recursive: true, force: true });
