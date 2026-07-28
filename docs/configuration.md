@@ -40,7 +40,7 @@ Pipkin routes work by role rather than hard-coding a provider. Each preset needs
 | `medium`  | Implement workers and recovery agents                   |
 | `high`    | Review agents, Implement planning, and Implement review |
 
-General agents inherit the active parent model and thinking level. BTW and Handoff use the model associated with the current conversation flow. Explicit `Agent` tool arguments override a public agent's model or thinking for that invocation only; they are not saved.
+General agents inherit the active parent model and thinking level. BTW uses the model associated with the current conversation flow. Explicit `Agent` tool arguments override a public agent's model or thinking for that invocation only; they are not saved.
 
 All four preset keys must be present and no unknown preset keys are accepted. Pipkin does not silently switch provider when a preset is missing or malformed. The presets may all reference one model if tiered routing is not useful for your setup.
 

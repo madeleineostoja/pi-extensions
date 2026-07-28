@@ -68,9 +68,7 @@ Pipkin's first three layers are deliberately about control:
 
 Long sessions collect a remarkable amount of baggage. **Context Prune** uses deterministic, persisted epochs to replace stale output, superseded and repeated reads, and already-consumed command results with small, reasoned stubs while keeping every original result available through `context_recall`. Pi remains responsible for context pressure and compaction.
 
-After switching models, **Handoff** has the recorded source model prepare a reviewed continuation prompt, then switches to a linked, focused child session under the target model. The parent transcript stays intact; the draft is restored to the child editor without being submitted.
-
-**[Context and Handoff →](docs/features/context-and-handoff.md)**
+**[Context →](docs/features/context.md)**
 
 ### Agents
 
@@ -117,8 +115,6 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | `steer_subagent`                  | Queue guidance for a running background agent                              |
 | `/implement`                      | Start, inspect, resume, stop, or clean up implementation runs              |
 | `/papercuts` / `propose_papercut` | Capture and review durable project workflow gaps                           |
-| `/handoff [focus]`                | Create a reviewed focused child session from the latest model transition   |
-| `/handoff-recover`                | Restore an empty child session's handoff draft without submitting it       |
 | `/btw <question>`                 | Ask an ephemeral side question from current session context                |
 
 ## Limits
@@ -131,7 +127,7 @@ Those are operating constraints, not footnotes. The feature guides spell out whe
 
 - [Configuration and state](docs/configuration.md)
 - [Safety](docs/features/safety.md)
-- [Context and Handoff](docs/features/context-and-handoff.md)
+- [Context](docs/features/context.md)
 - [Agents](docs/features/agents.md)
 - [Implementation](docs/features/implementation.md)
 - [Interface and Personality](docs/features/interface-and-personality.md)

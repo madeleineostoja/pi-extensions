@@ -11,7 +11,6 @@ const features = [
   "lsp",
   "subagents",
   "papercuts",
-  "handoff",
   "btw",
   "caffeinate",
 ];

@@ -17,9 +17,8 @@ The root manifest loads the complete bundle in this order:
 9. Subagents
 10. Implement
 11. Papercuts
-12. Handoff
-13. BTW
-14. Caffeinate
+12. BTW
+13. Caffeinate
 
 Order is a runtime contract. Sandbox, Edit Approval, and Shell Guard stay first so tool-call handlers apply in that safety order. Subagents precedes Implement because Implement consumes its managed runtime.
 

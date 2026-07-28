@@ -1,0 +1,33 @@
+# Context
+
+Long coding sessions accumulate tool output that is no longer worth carrying verbatim. Pipkin prunes it without pretending the work never happened.
+
+## Deterministic pruning with recall
+
+Context shows a tool result in full when it is first produced. On a later model request it may replace stale, superseded, repeated, covered, or already-consumed low-risk bash output with a reasoned stub. The original session entry is never changed.
+
+Pruning happens in deterministic branch-local epochs. Context evaluates every eligible unlatched result, chooses at most one earliest qualifying suffix, persists its complete decisions, and only then changes the outgoing message copies. Existing epoch decisions replay after reload, resume, fork, and compaction while their source calls remain in active context. Every stub is stable and includes its source ID:
+
+```text
+[read result elided: covered by a later read of PATH at user entry 8. Call context_recall("TOOL_CALL_ID") to retrieve.]
+```
+
+A successful result can qualify because it is stale after four later user entries and large enough, because a later edit or write supersedes a read, because a later read returns the same or covering lines without an intervening mutation, or because a later assistant consumed low-risk bash output. Read comparisons use Pi's returned-line truncation details, not requested bounds.
+
+Epochs prefer a matching fresh model transition with at least 8k savings, then a qualified warm-cache opportunity with at least 32k savings after eight user entries, then a small changed tail. Context does not measure pressure, invoke compaction, alter Pi's compaction settings, or make a compaction decision. Native Pi compaction remains the sole owner of context-window pressure.
+
+### Recall exactly what you need
+
+Pass the ID printed in a stub:
+
+```json
+{ "id": "TOOL_CALL_ID" }
+```
+
+The full call returns the original stored content blocks unchanged. For one-text-block results, request a positive 1-indexed line or range:
+
+```json
+{ "id": "TOOL_CALL_ID", "lines": "40-80" }
+```
+
+Missing IDs, invalid ranges, non-text or multi-block slices, unavailable content, and empty slices are real tool failures. Recall does not alter the original pruning decision.
