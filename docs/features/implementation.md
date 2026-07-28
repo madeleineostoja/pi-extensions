@@ -133,4 +133,21 @@ Implement uses `high` for planning and review and `medium` for implementation an
 
 Implementers choose appropriate project verification. There is no configured validation command, automatic validation-command discovery, role-specific persistent model override, or Implement-only reviewer watchdog. Use Pipkin's generic `/agents` controls for supervision.
 
+## Development tests
+
+Implement tests are partitioned by the boundary they exercise. `implement-unit` owns packet, parser, reducer, scheduler, model, and scripted worker behavior and does not invoke Git. `implement-integration` owns managed Pi runtime integration and focused real-Git contracts such as worktrees, hooks, replay, index behavior, and publication durability. `implement-e2e` is serial and owns the complete correction/publication journey.
+
+Run the layers independently or together from the repository root:
+
+```sh
+npm run test:subagents
+npm run test:implement:unit
+npm run test:implement:integration
+npm run test:implement:e2e
+npm run test:implement
+npm run test
+```
+
+The root `npm run test` remains authoritative and executes every project once.
+
 See [Configuration](../configuration.md) for model routing and settings.

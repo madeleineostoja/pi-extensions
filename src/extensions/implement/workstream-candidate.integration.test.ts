@@ -19,7 +19,6 @@ import { parsePlan } from "./plan.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import { within } from "./test-boundary.js";
 import {
-  buildWorkstreamPacket,
   recreateWorkstreamWorkspace,
   runWorkstreamCandidate,
   WorkstreamCandidateLifecycleError,
@@ -652,22 +651,5 @@ describe("workstream candidate lifecycle", () => {
       }),
     ).rejects.toThrow("target checkout or protected artifacts");
     expect(readFileSync(subject.planPath, "utf-8")).toBe("tampered\n");
-  });
-
-  it("builds a packet from ordered contracts and selected provenance material", async () => {
-    const subject = await fixture({
-      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
-    });
-    const packet = buildWorkstreamPacket({
-      state: subject.run.read(),
-      plan: subject.plan,
-      workstreamId: "combined",
-      workspace: workstreamWorkspace(subject.run.read(), "combined"),
-    });
-
-    expect(packet.tasks.map((task) => task.id)).toEqual(["first", "second"]);
-    expect(packet.sourceMaterial).toEqual([
-      { path: realpathSync(subject.planPath), content: subject.planContent },
-    ]);
   });
 });

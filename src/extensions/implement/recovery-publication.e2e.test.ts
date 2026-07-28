@@ -4,7 +4,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ScriptedSubagentClient } from "./e2e-test-support.js";
 import { ExecGitClient } from "./git.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
 
@@ -22,21 +21,6 @@ afterEach(() => {
 });
 
 describe("recovery correction publication journey", () => {
-  it("refuses artifact and target reads outside the assigned candidate root", () => {
-    const candidate = "/workspace/candidate";
-    const client = new ScriptedSubagentClient([], [candidate]);
-
-    expect(() =>
-      client.assertReadable("/workspace/candidate/src/app.ts"),
-    ).not.toThrow();
-    expect(() =>
-      client.assertReadable("/workspace/artifacts/review.json"),
-    ).toThrow("outside its assigned roots");
-    expect(() => client.assertReadable("/workspace/target/app.ts")).toThrow(
-      "outside its assigned roots",
-    );
-  });
-
   it("publishes a committed correction from an owned Pipkin branch", async () => {
     const root = mkdtempSync(join(tmpdir(), "pipkin-implement-e2e-"));
     roots.add(root);

@@ -14,11 +14,7 @@ import { TaskWorkspaceManager } from "./candidate-worker.js";
 import { ExecGitClient } from "./git.js";
 import { sweepOwnedRunResources } from "./cleanup.js";
 import { checkoutPaths, type RunState, type RunStore } from "./store.js";
-import {
-  assertProspectiveRunPreflight,
-  cleanupRun,
-  listCheckoutRuns,
-} from "./controls.js";
+import { assertProspectiveRunPreflight, cleanupRun } from "./controls.js";
 
 const temporaryDirectories = new Set<string>();
 
@@ -156,17 +152,5 @@ describe(" controls", () => {
       cleanupRun({ checkoutRoot: root, runId: "run-1" }),
     ).resolves.toEqual([]);
     expect(existsSync(trash)).toBe(false);
-  });
-
-  it("reports malformed retained directories as manual-only historical artifacts", () => {
-    const root = mkdtempSync(join(tmpdir(), "pipkin-implement-controls-"));
-    temporaryDirectories.add(root);
-    const path = join(checkoutPaths(root).runs, "old-run");
-    mkdirSync(path, { recursive: true });
-    writeFileSync(join(path, "run-state.json"), "historical state");
-
-    expect(listCheckoutRuns(root)).toEqual([
-      { kind: "historical", runId: "old-run" },
-    ]);
   });
 });
