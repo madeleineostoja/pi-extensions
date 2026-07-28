@@ -6,7 +6,7 @@ import { resolveChoice } from "./handler";
 import { builtinPreview, DETAIL_LIMIT, unknownBackendPreview } from "./preview";
 import { parseReadonlyArgs } from "./utils";
 
-describe("edit/write approval", () => {
+describe("Readonly", () => {
   it("renders bounded unified patches for existing and new multiline writes", () => {
     const cwd = mkdtempSync(join(tmpdir(), "pipkin-edit-"));
     writeFileSync(join(cwd, "file.ts"), "before\nsecond\n");

@@ -7,7 +7,7 @@ import { resolveChoice } from "./handler";
 import { builtinPreview, unknownBackendPreview } from "./preview";
 import { parseReadonlyArgs, extractToolPath, formatSteerTitle } from "./utils";
 
-const FOOTER_KEY = "pipkin.edit-approval.mode";
+const FOOTER_KEY = "pipkin.readonly.mode";
 const READONLY_ICON = "󰏯";
 const EDITING_ICON = "󰏫";
 
@@ -22,7 +22,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus(
       FOOTER_KEY,
       enabled
-        ? `${theme.fg("success", READONLY_ICON)} ${theme.fg("muted", "edit/write approval")}`
+        ? `${theme.fg("success", READONLY_ICON)} ${theme.fg("muted", "readonly")}`
         : `${theme.fg("warning", EDITING_ICON)} ${theme.fg("warning", "editing")}`,
     );
   }
@@ -35,12 +35,12 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.registerShortcut("ctrl+r", {
-    description: "Toggle edit/write approval",
+    description: "Toggle readonly mode",
     handler: async (ctx) => setEnabled(!enabled, ctx),
   });
 
   pi.registerCommand("readonly", {
-    description: "Toggle edit/write approval",
+    description: "Toggle readonly mode",
     handler: async (args, ctx) => {
       const action = parseReadonlyArgs(args);
       if (action.kind === "invalid") {
@@ -48,14 +48,11 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (action.kind === "set" && action.value === enabled) {
-        ctx.ui.notify(
-          `edit/write approval: already ${enabled ? "on" : "off"}`,
-          "info",
-        );
+        ctx.ui.notify(`readonly: already ${enabled ? "on" : "off"}`, "info");
         return;
       }
       setEnabled(action.kind === "toggle" ? !enabled : action.value, ctx);
-      ctx.ui.notify(`edit/write approval: ${enabled ? "on" : "off"}`, "info");
+      ctx.ui.notify(`readonly: ${enabled ? "on" : "off"}`, "info");
     },
   });
 
@@ -86,7 +83,7 @@ export default function (pi: ExtensionAPI) {
     const permission = await promptForPermission({
       ui: ctx.ui,
       signal: ctx.signal,
-      title: `Edit/write approval: ${event.toolName}${preview.path ? ` ${preview.path}` : ""} — apply?`,
+      title: `Readonly: ${event.toolName}${preview.path ? ` ${preview.path}` : ""} — apply?`,
       detail: preview.detail,
       choices: [
         { value: "Accept", label: "Accept" },

@@ -22,7 +22,7 @@
   "pi": {
     "extensions": [
       "./src/extensions/sandbox/index.ts",
-      "./src/extensions/edit-approval/index.ts",
+      "./src/extensions/readonly/index.ts",
       "./src/extensions/shell-guard/index.ts",
       "./src/extensions/context/index.ts",
       "./src/extensions/defaults/index.ts",

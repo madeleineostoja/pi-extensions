@@ -1,6 +1,6 @@
 # Safety
 
-Pipkin keeps three different kinds of watch while an agent works: Sandbox defines where work may happen, Edit Approval checkpoints resolved tools named `edit` and `write`, and Shell Guard pauses recognized risky built-in `bash` actions. They are loaded in that order and are designed to overlap.
+Pipkin keeps three different kinds of watch while an agent works: Sandbox defines where work may happen, Readonly checkpoints resolved tools named `edit` and `write`, and Shell Guard pauses recognized risky built-in `bash` actions. They are loaded in that order and are designed to overlap.
 
 They are useful guardrails, not a claim that arbitrary local code is safe.
 
@@ -117,9 +117,9 @@ Sandbox is defense in depth:
 - Linux Landlock is allowlist-oriented, so deny globs remain in process;
 - on macOS, only deny patterns with a useful literal prefix can be pushed into Seatbelt.
 
-## Edit/write Approval
+## Readonly
 
-Edit/write Approval prompts only for resolved tools named `edit` and `write`. It is not a universal mutation gate: differently named tools remain outside this boundary. Built-in tools get a bounded local preview when Pi identifies their backend as built-in; same-name overrides and missing provenance stay gated but show their bounded input with an explicit unknown-backend warning.
+Readonly prompts only for resolved tools named `edit` and `write`. It is not a universal mutation gate: differently named tools remain outside this boundary. Built-in tools get a bounded local preview when Pi identifies their backend as built-in; same-name overrides and missing provenance stay gated but show their bounded input with an explicit unknown-backend warning.
 
 `/readonly` and `Ctrl+R` toggle approval for the live extension runtime. Accepting for the session affects only that instance; reload, resume, new sessions, and forks instantiate a fresh enabled gate. TUI and RPC share the same prompt. Print and JSON calls pass without a prompt, notice, or mode change.
 
@@ -131,4 +131,4 @@ The prompt can allow the displayed invocation once, allow all shell risks for th
 
 ## Ordering and limits
 
-Pipkin loads Sandbox, then Edit/write Approval, then Shell Guard. Sandbox runs first so a rejected filesystem call does not reach later approval prompts; the two approval gates see the chained input available at their handler position. Pi has no final read-only handler phase: a third-party extension loaded after Shell Guard can still mutate input. These are useful best-effort guardrails, not security boundaries, and they do not guarantee final approved bytes or discover effects absent from Pi's tool metadata.
+Pipkin loads Sandbox, then Readonly, then Shell Guard. Sandbox runs first so a rejected filesystem call does not reach later approval prompts; the two approval gates see the chained input available at their handler position. Pi has no final read-only handler phase: a third-party extension loaded after Shell Guard can still mutate input. These are useful best-effort guardrails, not security boundaries, and they do not guarantee final approved bytes or discover effects absent from Pi's tool metadata.

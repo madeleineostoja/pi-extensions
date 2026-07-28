@@ -26,7 +26,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const expectedExtensions = [
   "./src/extensions/sandbox/index.ts",
-  "./src/extensions/edit-approval/index.ts",
+  "./src/extensions/readonly/index.ts",
   "./src/extensions/shell-guard/index.ts",
   "./src/extensions/context/index.ts",
   "./src/extensions/defaults/index.ts",
@@ -57,7 +57,7 @@ const expectedTools = {
 };
 
 const expectedCommands = {
-  readonly: "src/extensions/edit-approval/index.ts",
+  readonly: "src/extensions/readonly/index.ts",
   agents: "src/extensions/subagents/index.ts",
   implement: "src/extensions/implement/index.ts",
   papercuts: "src/extensions/papercuts/index.ts",
@@ -70,7 +70,7 @@ const expectedRenderers = {
 
 const safetyPaths = [
   "src/extensions/sandbox/index.ts",
-  "src/extensions/edit-approval/index.ts",
+  "src/extensions/readonly/index.ts",
   "src/extensions/shell-guard/index.ts",
 ];
 const managedGlobalSymbols = [
@@ -408,7 +408,7 @@ describe("Pipkin bundle", () => {
     expect(provenanceMap(safetyExtensions(fixture.result), "commands")).toEqual(
       expectedProvenance({
         sandbox: "src/extensions/sandbox/index.ts",
-        readonly: "src/extensions/edit-approval/index.ts",
+        readonly: "src/extensions/readonly/index.ts",
       }),
     );
 

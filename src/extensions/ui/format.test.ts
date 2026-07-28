@@ -237,7 +237,7 @@ describe("status line sanitization", () => {
         ["pipkin.implement.status", "implement-status"],
         ["pipkin.papercuts.status", "papercuts-status"],
         ["a", "a-status"],
-        ["pipkin.edit-approval.mode", "readonly-status"],
+        ["pipkin.readonly.mode", "readonly-status"],
       ]),
       makePlainTheme(),
     );
