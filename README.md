@@ -59,7 +59,7 @@ This makes it practical to give Pipkin a serious implementation plan and let it 
 Pipkin's first three layers are deliberately about control:
 
 - **Sandbox** limits reads, writes, subprocesses, and subprocess network access. `/sandbox` explains the current policy and lets you grant temporary access without stopping the session.
-- **Edit Approval** checkpoints resolved tools named `edit` and `write`. Built-in tools get a bounded patch preview; same-name overrides are still approved without an invented preview. Toggle it with `Ctrl+R` or `/readonly`.
+- **Readonly** checkpoints resolved tools named `edit` and `write`. Built-in tools get a bounded patch preview; same-name overrides are still approved without an invented preview. Toggle it with `Ctrl+R` or `/readonly`.
 - **Shell Guard** confirms recognized high-risk built-in `bash` effects—such as force pushes, untracked-file deletion, package/system mutation, container deletion, and infrastructure changes—without pestering you about routine local installs.
 
 **[Safety →](docs/features/safety.md)**
@@ -119,7 +119,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 ## Limits
 
-Pipkin extensions are trusted code with the permissions of the Pi process. Sandbox does not confine JavaScript-side network calls made by trusted extensions, and language servers run outside it. Edit Approval and Shell Guard step aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
+Pipkin extensions are trusted code with the permissions of the Pi process. Sandbox does not confine JavaScript-side network calls made by trusted extensions, and language servers run outside it. Readonly and Shell Guard step aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
 
 Those are operating constraints, not footnotes. The feature guides spell out where each boundary begins and ends.
 
