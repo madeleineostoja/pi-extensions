@@ -76,7 +76,8 @@ function cancelled(id = "cancel", commit = "commit") {
 }
 
 describe("handoff transition reduction", () => {
-  it("rejects same-model transitions", () => {
+  it("rejects no transition and same-model transitions", () => {
+    expect(getEligibleTransition([], target)).toBeUndefined();
     const branch = transition("transition", source, source);
     expect(getEligibleTransition(branch, source)).toBeUndefined();
   });
@@ -116,6 +117,28 @@ describe("handoff transition reduction", () => {
             },
           } as SessionEntry,
         ],
+        target,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("rejects malformed and terminal attempt histories", () => {
+    expect(
+      getEligibleTransition(
+        [
+          ...transition(),
+          entry("malformed", ATTEMPT_TYPE, {
+            version: 1,
+            status: "committed",
+            transitionEntryId: "other",
+          }),
+        ],
+        target,
+      ),
+    ).toBeUndefined();
+    expect(
+      getEligibleTransition(
+        [...transition(), committed(), entry("later", "other", {})],
         target,
       ),
     ).toBeUndefined();

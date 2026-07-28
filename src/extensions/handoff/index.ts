@@ -14,6 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   createChildArtifact,
+  findUnresolvedChildArtifacts,
   removeChildArtifact,
   validateChildArtifact,
 } from "./artifact";
@@ -25,6 +26,7 @@ import {
   sameModel,
   TRANSITION_TYPE,
   type DraftData,
+  type AttemptData,
   type EligibleTransition,
   type ModelIdentity,
 } from "./state";
@@ -66,6 +68,20 @@ function appendEntry<T>(
   return entry.id;
 }
 
+function sameBranch(
+  current: ReturnType<SessionManager["getBranch"]>,
+  persisted: ReturnType<SessionManager["getBranch"]>,
+): boolean {
+  return (
+    current.length === persisted.length &&
+    current.every(
+      (entry, index) =>
+        entry.id === persisted[index]?.id &&
+        entry.type === persisted[index]?.type,
+    )
+  );
+}
+
 function currentAndPersistedTransition(
   ctx: ExtensionContext,
   parentPath: string,
@@ -87,16 +103,21 @@ function currentAndPersistedTransition(
     return undefined;
   }
   const persistedHeader = persisted.getHeader();
+  const currentBranch = ctx.sessionManager.getBranch();
+  const persistedBranch = persisted.getBranch();
   if (
     !persistedHeader ||
+    persisted.getSessionFile() !== parentPath ||
     persistedHeader.id !== currentHeader.id ||
-    persistedHeader.cwd !== ctx.cwd
+    persistedHeader.cwd !== ctx.cwd ||
+    persisted.getLeafId() !== ctx.sessionManager.getLeafId() ||
+    !sameBranch(currentBranch, persistedBranch)
   ) {
     return undefined;
   }
   const model = identity(ctx.model);
-  const current = getEligibleTransition(ctx.sessionManager.getBranch(), model);
-  const durable = getEligibleTransition(persisted.getBranch(), model);
+  const current = getEligibleTransition(currentBranch, model);
+  const durable = getEligibleTransition(persistedBranch, model);
   if (!current || !durable || current.entry.id !== durable.entry.id) {
     return undefined;
   }
@@ -107,11 +128,58 @@ async function eligibleTransition(
   ctx: ExtensionContext,
   parentPath: string,
   blockedTransitions: ReadonlySet<string>,
-): Promise<EligibleTransition | undefined> {
+): Promise<{ transition?: EligibleTransition; unresolvedChildren: string[] }> {
   const transition = currentAndPersistedTransition(ctx, parentPath);
-  return transition && !blockedTransitions.has(transition.data.transitionId)
-    ? transition
-    : undefined;
+  if (!transition) {
+    return { unresolvedChildren: [] };
+  }
+  const unresolvedChildren = await findUnresolvedChildArtifacts({
+    cwd: ctx.cwd,
+    sessionDir: ctx.sessionManager.getSessionDir(),
+    parentPath,
+    target: transition.data.target,
+    transitionId: transition.data.transitionId,
+    source: transition.data.source,
+  });
+  return unresolvedChildren.length > 0 ||
+    blockedTransitions.has(transition.data.transitionId)
+    ? { unresolvedChildren }
+    : { transition, unresolvedChildren };
+}
+
+function durableAttempt(
+  ctx: ExtensionContext,
+  parentPath: string,
+  data: AttemptData,
+): string | undefined {
+  try {
+    const parent = SessionManager.open(
+      parentPath,
+      ctx.sessionManager.getSessionDir(),
+    );
+    if (parent.getHeader()?.id !== ctx.sessionManager.getHeader()?.id) {
+      return undefined;
+    }
+    return parent
+      .getBranch()
+      .map(attemptFromEntry)
+      .find((attempt) => attempt && sameData(attempt.data, data))?.entry.id;
+  } catch {
+    return undefined;
+  }
+}
+
+function appendAttempt(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  data: AttemptData,
+): string {
+  const id = appendEntry(pi, ctx, ATTEMPT_TYPE, data);
+  const path = parentSession(ctx);
+  if (!path || durableAttempt(ctx, path, data) !== id) {
+    throw new Error("Handoff attempt could not be durably persisted.");
+  }
+  return id;
 }
 
 async function generatePrompt(
@@ -384,11 +452,19 @@ export default function (pi: ExtensionAPI) {
           );
           return;
         }
-        const transition = await eligibleTransition(
+        const eligibility = await eligibleTransition(
           ctx,
           parentPath,
           blockedTransitions,
         );
+        if (eligibility.unresolvedChildren.length > 0) {
+          ctx.ui.notify(
+            `Handoff transition remains consumed by unresolved child: ${eligibility.unresolvedChildren.join(", ")}. Parent: ${parentPath}.`,
+            "error",
+          );
+          return;
+        }
+        const transition = eligibility.transition;
         if (!transition) {
           ctx.ui.notify(
             "No eligible model transition. Switch to a different model, then try /handoff again.",
@@ -418,7 +494,11 @@ export default function (pi: ExtensionAPI) {
           parentPath,
           blockedTransitions,
         );
-        if (!revalidated || revalidated.entry.id !== transition.entry.id) {
+        if (
+          revalidated.unresolvedChildren.length > 0 ||
+          !revalidated.transition ||
+          revalidated.transition.entry.id !== transition.entry.id
+        ) {
           ctx.ui.notify(
             "Handoff cancelled: the parent session changed during review.",
             "error",
@@ -441,12 +521,12 @@ export default function (pi: ExtensionAPI) {
           draft,
         });
         childPath = child.path;
-        const beforeCommit = await eligibleTransition(
-          ctx,
-          parentPath,
-          blockedTransitions,
-        );
-        if (!beforeCommit || beforeCommit.entry.id !== transition.entry.id) {
+        const beforeCommit = currentAndPersistedTransition(ctx, parentPath);
+        if (
+          blockedTransitions.has(transition.data.transitionId) ||
+          !beforeCommit ||
+          beforeCommit.entry.id !== transition.entry.id
+        ) {
           await removeChildArtifact({
             path: child.path,
             sessionDir,
@@ -465,7 +545,7 @@ export default function (pi: ExtensionAPI) {
         }
         let attemptId: string;
         try {
-          attemptId = appendEntry(pi, ctx, ATTEMPT_TYPE, {
+          attemptId = appendAttempt(pi, ctx, {
             version: 1,
             status: "committed",
             transitionEntryId: transition.entry.id,
@@ -477,6 +557,23 @@ export default function (pi: ExtensionAPI) {
           });
         } catch (error) {
           blockedTransitions.add(transition.data.transitionId);
+          const committed: AttemptData = {
+            version: 1,
+            status: "committed",
+            transitionEntryId: transition.entry.id,
+            childSessionId: child.sessionId,
+            childPath: child.path,
+            childDraftEntryId: child.draftEntryId,
+            target: transition.data.target,
+            draft,
+          };
+          if (durableAttempt(ctx, parentPath, committed)) {
+            ctx.ui.notify(
+              `Handoff commit was persisted but could not be confirmed in the active runtime. Parent: ${parentPath}. Child: ${child.path}.`,
+              "error",
+            );
+            return;
+          }
           try {
             await removeChildArtifact({
               path: child.path,
@@ -522,7 +619,7 @@ export default function (pi: ExtensionAPI) {
             draft,
           });
           try {
-            appendEntry(pi, ctx, ATTEMPT_TYPE, {
+            appendAttempt(pi, ctx, {
               version: 1,
               status: "cancelled",
               committedAttemptId: attemptId,

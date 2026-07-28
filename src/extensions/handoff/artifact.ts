@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { access, mkdir, open, rename, rm } from "node:fs/promises";
-import { dirname, relative, resolve, sep } from "node:path";
+import { access, mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import {
   CURRENT_SESSION_VERSION,
   SessionManager,
@@ -155,6 +155,43 @@ export async function createChildArtifact(options: {
   }
   await rename(temporary, destination);
   return validated;
+}
+
+export async function findUnresolvedChildArtifacts(options: {
+  cwd: string;
+  sessionDir: string;
+  parentPath: string;
+  target: ModelIdentity;
+  transitionId: string;
+  source: ModelIdentity;
+}): Promise<string[]> {
+  const entries = await readdir(options.sessionDir, { withFileTypes: true });
+  const paths: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    const path = join(options.sessionDir, entry.name);
+    try {
+      const child = validateChildArtifact({
+        manager: SessionManager.open(path, options.sessionDir),
+        path,
+        sessionDir: options.sessionDir,
+        parentPath: options.parentPath,
+        cwd: options.cwd,
+        target: options.target,
+      });
+      if (
+        child.draft.transitionId === options.transitionId &&
+        sameModel(child.draft.source, options.source)
+      ) {
+        paths.push(path);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return paths;
 }
 
 export async function removeChildArtifact(options: {

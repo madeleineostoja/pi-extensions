@@ -405,6 +405,17 @@ describe("Pipkin bundle", () => {
     );
   });
 
+  it("registers handoff commands without adding another compactor", async () => {
+    const fixture = await loadBundle();
+    const handoff = fixture.result.extensions.find(
+      (extension) =>
+        relativeExtensionPath(extension) === "src/extensions/handoff/index.ts",
+    );
+    expect(handoff?.commands.has("handoff")).toBe(true);
+    expect(handoff?.commands.has("handoff-recover")).toBe(true);
+    expect(handoff?.handlers.get("session_before_compact")).toBeUndefined();
+  });
+
   it("keeps safety startup and reload handlers ordered and registers Sandbox", async () => {
     const fixture = await loadBundle();
     await assertSafetyOrder(fixture, "startup");
