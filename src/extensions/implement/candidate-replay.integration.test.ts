@@ -235,12 +235,37 @@ describe("CandidateReplayEngine", () => {
     await removeStaging(root, second.staging);
   });
 
+  it("recreates failed staging without carrying ignored hook state into a retry", async () => {
+    const root = repository();
+    writeFileSync(join(root, ".gitignore"), ".hook-state\n");
+    git(root, "add", ".gitignore");
+    git(root, "commit", "-m", "chore: ignore hook state");
+    const approved = await candidate(root, "candidate.txt", "candidate\n");
+    preCommit(
+      root,
+      "if [ -f .hook-state ]; then echo stale hook state >&2; exit 1; fi\ntouch .hook-state",
+    );
+    const replay = engine(root);
+
+    const first = await replay.prepare(approved);
+    expect(first.kind).toBe("prepared");
+    const second = await replay.prepare(approved);
+    expect(second.kind).toBe("prepared");
+    if (second.kind !== "prepared") {
+      throw new Error(JSON.stringify(second));
+    }
+    await removeStaging(root, second.staging);
+  });
+
   it("retains hook rejection evidence without touching the target", async () => {
     const root = repository();
     const client = new ExecGitClient(root);
     const approved = await candidate(root, "candidate.txt", "candidate\n");
     const target = await client.head();
-    preCommit(root, "echo rejected >&2\nexit 1");
+    preCommit(
+      root,
+      "printf hook\\n >> target.txt\ngit add target.txt\necho rejected >&2\nexit 1",
+    );
 
     const result = await engine(root).prepare(approved);
 
@@ -253,6 +278,8 @@ describe("CandidateReplayEngine", () => {
     }
     expect(result.command.command).not.toContain("--no-verify");
     expect(result.command.output).toContain("rejected");
+    expect(result.staging.replayPatch).toContain("+hook");
+    expect(result.staging.replayPaths).toEqual(["candidate.txt", "target.txt"]);
     expect(await client.head()).toBe(target);
     await removeStaging(root, result.staging);
   });

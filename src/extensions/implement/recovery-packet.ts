@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute } from "node:path";
 import { overallRepairWorkspace } from "./overall-repair.js";
 import type { RuntimeWorkstream, SchedulerEffect } from "./scheduler.js";
 import { protectedArtifactsMatch, type RunState } from "./store.js";
@@ -21,7 +21,6 @@ export type RecoveryWorkerPacket = {
   identity: string;
   workspace: {
     path: string;
-    scope: "runtime" | "candidate";
     mutationBoundary: string;
   };
   target: {
@@ -116,10 +115,7 @@ export function buildRecoveryPacket(args: {
         (episode.workstream.kind === "source" &&
           (runtime.kind !== "source" ||
             candidate.baseSha !== runtime.baseSha)) ||
-        (episode.workspace.checkpoint !== undefined &&
-          ![candidate.baseSha, candidate.commitSha].includes(
-            episode.workspace.checkpoint,
-          ))))
+        episode.workspace.checkpoint !== candidate.commitSha))
   ) {
     throw packetError(
       args.effect,
@@ -152,17 +148,6 @@ export function buildRecoveryPacket(args: {
     return finding;
   });
   validateRecoveryWorkspace(args.state, args.effect.workstream);
-  const workspacePath = recoveryWorktree(
-    args.state,
-    args.effect.workstream,
-    candidate,
-    episode.workspace,
-    gate.kind,
-  );
-  const scope =
-    gate.kind === "hook" && episode.workspace.id.startsWith("staging-")
-      ? "runtime"
-      : "candidate";
   const artifactProvenance =
     gate.kind === "review" && isAbsolute(gate.evidence)
       ? { kind: "retained-artifact" as const, path: gate.evidence }
@@ -172,12 +157,9 @@ export function buildRecoveryPacket(args: {
     completionKind: "recovery",
     identity: `${episode.id}/${gate.id}`,
     workspace: {
-      path: workspacePath,
-      scope,
+      path: candidateWorktree(args.state, args.effect.workstream, candidate),
       mutationBoundary:
-        scope === "runtime"
-          ? "Repair ignored/runtime hook state only in this one staging workspace. The target and candidate worktrees are not available."
-          : "Make committed candidate corrections only in this one owned worktree; the target checkout is read-only.",
+        "Make committed candidate corrections only in this one owned worktree; the target checkout is read-only.",
     },
     target: {
       branchRef: args.state.run.checkout.branchRef,
@@ -210,34 +192,6 @@ export function buildRecoveryPacket(args: {
 
 export function recoveryTaskId(workstream: Workstream): string {
   return workstream.kind === "source" ? workstream.id : workstream.repairId;
-}
-
-function recoveryWorktree(
-  state: RunState,
-  workstream: Workstream,
-  candidate: Candidate | undefined,
-  workspace: RunState["recoveryEpisodes"][string]["workspace"],
-  gateKind: Gate["kind"],
-): string {
-  if (gateKind === "hook" && workspace.id.startsWith("staging-")) {
-    const root = resolve(
-      state.run.checkout.root,
-      ".pi",
-      "pipkin",
-      "implement",
-      "worktrees",
-      state.run.id,
-    );
-    const staging = resolve(root, workspace.id);
-    if (!staging.startsWith(`${root}/`)) {
-      throw packetErrorForWorkspace(
-        workstream,
-        "Hook staging workspace escapes its run root",
-      );
-    }
-    return staging;
-  }
-  return candidateWorktree(state, workstream, candidate);
 }
 
 function currentRuntime(state: RunState, workstream: Workstream) {

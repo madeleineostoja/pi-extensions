@@ -3,7 +3,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { stagingIdentity } from "./candidate-replay.js";
 import { ExecGitClient } from "./git.js";
 import { runRecovery } from "./recovery-service.js";
 import type { ImplementRoles, SpawnArgs } from "./subagents.js";
@@ -48,7 +47,7 @@ afterEach(() => {
 });
 
 describe("recovery service Git boundary", () => {
-  it("rejects candidate corrections from a staging-scoped hook recovery", async () => {
+  it("repairs a hook failure only through the retained candidate workspace", async () => {
     const root = mkdtempSync(join(tmpdir(), "pipkin-implement-hook-recovery-"));
     directories.add(root);
     git(root, "init");
@@ -59,15 +58,15 @@ describe("recovery service Git boundary", () => {
     git(root, "commit", "-m", "chore: init");
     const client = new ExecGitClient(root);
     const baseSha = await client.head();
-    const worktreesRoot = join(
+    const candidatePath = join(
       root,
       ".pi",
       "pipkin",
       "implement",
       "worktrees",
       "run-1",
+      "work",
     );
-    const candidatePath = join(worktreesRoot, "work");
     await client.createTaskBranch("pipkin/implement/run-1/work", baseSha);
     await client.addWorktree(candidatePath, "pipkin/implement/run-1/work");
     writeFileSync(join(candidatePath, "candidate.txt"), "candidate\n");
@@ -76,15 +75,6 @@ describe("recovery service Git boundary", () => {
     const candidateGit = client.forWorktree(candidatePath);
     const candidateSha = await candidateGit.head();
     const candidateId = `candidate:work:${candidateSha}`;
-    const staging = stagingIdentity({
-      runId: "run-1",
-      candidateId,
-      candidateCommitSha: candidateSha,
-      targetBaseSha: baseSha,
-    });
-    const stagingPath = join(worktreesRoot, staging.id);
-    await client.createTaskBranch(staging.branchName, baseSha);
-    await client.addWorktree(stagingPath, staging.branchName);
     const state = {
       run: {
         id: "run-1",
@@ -125,10 +115,10 @@ describe("recovery service Git boundary", () => {
           workstream: { kind: "source", id: "work" },
           candidateId,
           workspace: {
-            id: staging.id,
-            checkpoint: baseSha,
-            changedPaths: [],
-            stateEvidence: "hook changed tracked content",
+            id: "source:work",
+            checkpoint: candidateSha,
+            changedPaths: ["generated.txt"],
+            stateEvidence: "Staging diff:\n+generated hook correction",
           },
           outstandingFindingIds: [],
           status: "open",
@@ -137,7 +127,7 @@ describe("recovery service Git boundary", () => {
             identicalNoActionCycles: 0,
             independentlyEscalated: false,
           },
-          providerFailures: 0,
+          executionFailures: 0,
           actions: [],
         },
       },
@@ -152,46 +142,51 @@ describe("recovery service Git boundary", () => {
       },
       protectedArtifactHashes: {},
     } as unknown as RunState;
-    let prompt = "";
+    let spawned: SpawnArgs | undefined;
 
-    await expect(
-      runRecovery({
-        state,
-        effect: {
-          kind: "run_recovery",
-          workstream: { kind: "source", id: "work" },
-          leaseId: "lease",
-          episodeId: "episode",
-          independentlyEscalated: false,
+    const result = await runRecovery({
+      state,
+      effect: {
+        kind: "run_recovery",
+        workstream: { kind: "source", id: "work" },
+        leaseId: "lease",
+        episodeId: "episode",
+        independentlyEscalated: false,
+      },
+      git: client,
+      subagents: {
+        stop: async () => undefined,
+        spawn: async (args: SpawnArgs) => {
+          spawned = args;
+          return "recovery-agent" as never;
         },
-        git: client,
-        subagents: {
-          stop: async () => undefined,
-          spawn: async (args: SpawnArgs) => {
-            prompt = args.prompt;
-            return "recovery-agent" as never;
-          },
-          waitFor: async () =>
-            ({
-              status: "completed" as const,
-              result: {
-                action: "rework_candidate" as const,
-                summary: "Attempted a candidate correction.",
-                evidence:
-                  "The candidate must be corrected in a later scoped turn.",
-                candidateTip: candidateSha,
-                changedPaths: ["correction.txt"],
-              },
-            }) as never,
+        waitFor: async () => {
+          writeFileSync(join(candidatePath, "correction.txt"), "fixed\n");
+          git(candidatePath, "add", ".");
+          git(candidatePath, "commit", "-m", "fix: correct hook output");
+          const candidateTip = await candidateGit.head();
+          return {
+            status: "completed" as const,
+            result: {
+              action: "rework_candidate" as const,
+              summary: "Committed the hook correction.",
+              evidence: "The candidate now includes the tracked correction.",
+              candidateTip,
+              changedPaths: ["correction.txt"],
+            },
+          } as never;
         },
-        artifactsPath: join(root, ".pi", "pipkin", "implement", "artifacts"),
-        roles: recoveryRoles(),
-      }),
-    ).rejects.toThrow(
-      "Runtime-scoped hook recovery cannot correct a candidate",
-    );
+      },
+      artifactsPath: join(root, ".pi", "pipkin", "implement", "artifacts"),
+      roles: recoveryRoles(),
+    });
 
-    expect(prompt).toContain(stagingPath);
-    expect(prompt).not.toContain(candidatePath);
+    expect(spawned).toMatchObject({ cwd: candidatePath });
+    expect(spawned?.prompt).toContain("Staging diff:");
+    expect(spawned?.prompt).not.toContain("staging-");
+    expect(result.correction).toMatchObject({
+      changedPaths: ["correction.txt"],
+    });
+    expect(result.candidate?.commitSha).toBe(await candidateGit.head());
   });
 });

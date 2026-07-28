@@ -13,7 +13,6 @@ export type RecoveryGateKind = (typeof recoveryGateKinds)[number];
 export const recoveryActionKinds = [
   "diagnose",
   "retry",
-  "repair_environment",
   "rework_candidate",
   "reconcile",
   "recreate_workspace",
@@ -24,7 +23,7 @@ export type RecoveryActionKind = (typeof recoveryActionKinds)[number];
 export type RecoveryActionOutcome =
   | "completed"
   | "interrupted"
-  | "provider_failure"
+  | "execution_failure"
   | "no_safe_action";
 
 export type RecoveryGateResult = {
@@ -96,10 +95,6 @@ export function recoveryCycleSignature(args: {
       }),
     )
     .digest("hex");
-}
-
-export function providerRetryDelayMs(consecutiveFailures: number): number {
-  return Math.min(60_000, 1_000 * 2 ** Math.max(0, consecutiveFailures - 1));
 }
 
 function normalize(value: string): string {

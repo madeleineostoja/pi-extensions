@@ -10,7 +10,6 @@ import {
 } from "./workstream-candidate.js";
 import {
   boundedRecoveryOutput,
-  providerRetryDelayMs,
   recoveryCycleSignature,
   type RecoveryAction,
   type RecoveryGateResult,
@@ -24,7 +23,12 @@ import {
   workstreamReviewState,
   type ReviewOutcome,
 } from "./review.js";
-import { StaleRevisionError, type RunState, type RunStore } from "./store.js";
+import {
+  StateError,
+  StaleRevisionError,
+  type RunState,
+  type RunStore,
+} from "./store.js";
 
 export type RuntimeWorkstream = RunState["candidates"][string]["workstream"];
 type ProcessLease = RunState["processLeases"][string];
@@ -64,6 +68,7 @@ export type SchedulerEvent =
       trustedCheckpoint?: string;
       trustedCandidate?: RunState["candidates"][string];
       workspace?: RunState["recoveryEpisodes"][string]["workspace"];
+      executionFailure?: boolean;
     }
   | {
       kind: "effect_failed";
@@ -72,6 +77,7 @@ export type SchedulerEvent =
       workstream: RuntimeWorkstream;
       leaseId: string;
       evidence: string;
+      executionFailure?: boolean;
     }
   | { kind: "whole_plan_review_failed"; evidence: string }
   | { kind: "whole_plan_recovery_requested" }
@@ -110,7 +116,7 @@ export type SchedulerEvent =
       };
     }
   | {
-      kind: "recovery_provider_failed";
+      kind: "recovery_execution_failed";
       workstream: RuntimeWorkstream;
       leaseId: string;
       error: string;
@@ -257,7 +263,6 @@ export type SchedulerEffect =
       leaseId: string;
       episodeId: string;
       independentlyEscalated: boolean;
-      retryAfterMs?: number;
     }
   | {
       kind: "run_reconciliation";
@@ -537,6 +542,7 @@ export function reduceRunEvent(
             changedPaths: [],
             stateEvidence: event.evidence.slice(0, 12_000),
           },
+          event.executionFailure ? 1 : 0,
         );
         return accept();
       } catch (error) {
@@ -578,6 +584,7 @@ export function reduceRunEvent(
             outstandingFindingIds: [],
           },
           recoveryWorkspace(state, event.workstream, candidateId),
+          event.executionFailure ? 1 : 0,
         );
         return accept();
       } catch (error) {
@@ -601,8 +608,7 @@ export function reduceRunEvent(
           ...(priorRecovery?.evidence ?? []),
           boundedRecoveryOutput(event.evidence),
         ],
-        providerFailures: 0,
-        reviewFailures: (priorRecovery?.reviewFailures ?? 0) + 1,
+        executionFailures: (priorRecovery?.executionFailures ?? 0) + 1,
         actions: priorRecovery?.actions ?? [],
       };
       state.wholePlanReview = {
@@ -612,11 +618,10 @@ export function reduceRunEvent(
           : {}),
         recovery,
       };
-      if (recovery.reviewFailures >= 3) {
+      if (recovery.executionFailures >= 3) {
         state.pause = {
           resumePhase: "whole_plan_review",
-          reason:
-            "Whole-plan review failed three times after recovery retries.",
+          reason: "Whole-plan reviewer failed three consecutive times.",
         };
         state.phase = "paused";
       }
@@ -652,7 +657,7 @@ export function reduceRunEvent(
         return reject("whole-plan recovery does not own an active failure");
       }
       recovery.actions.push(event.action);
-      recovery.providerFailures = 0;
+      recovery.executionFailures = 0;
       if (event.action.kind === "no_safe_action") {
         state.pause = {
           resumePhase: "whole_plan_review",
@@ -679,12 +684,12 @@ export function reduceRunEvent(
         return reject("whole-plan recovery failure has no active owner");
       }
       recovery.evidence.push(boundedRecoveryOutput(event.evidence));
-      recovery.providerFailures++;
+      recovery.executionFailures++;
       recovery.status = "open";
-      if (recovery.providerFailures >= 3) {
+      if (recovery.executionFailures >= 3) {
         state.pause = {
           resumePhase: "whole_plan_review",
-          reason: "Whole-plan recovery provider failed three times.",
+          reason: "Whole-plan recovery worker failed three consecutive times.",
         };
         state.phase = "paused";
       }
@@ -1028,8 +1033,7 @@ export function reduceRunEvent(
           independentlyEscalated: true,
         };
         episode.actions.push(event.action);
-        episode.providerFailures = 0;
-        delete episode.retryAfterMs;
+        episode.executionFailures = 0;
         delete state.processLeases[lease.id];
         episode.status = "paused";
         state.pause = {
@@ -1097,8 +1101,7 @@ export function reduceRunEvent(
         workstream.phase = "candidate_ready";
       }
       episode.actions.push(event.action);
-      episode.providerFailures = 0;
-      delete episode.retryAfterMs;
+      episode.executionFailures = 0;
       episode.cycle = {
         signature: recoverySignatureFor(
           state,
@@ -1115,24 +1118,13 @@ export function reduceRunEvent(
         return accept();
       }
       if (event.action.kind === "diagnose") {
-        if (
-          state.gates.find((gate) => gate.id === episode.gateId)?.kind ===
-            "hook" &&
-          episode.workspace.id.startsWith("staging-")
-        ) {
-          episode.workspace = recoveryWorkspace(
-            state,
-            event.workstream,
-            episode.candidateId,
-          );
-        }
         return accept();
       }
       workstream.phase = retryPhaseForGate(episode.gateId);
       return accept();
     }
 
-    case "recovery_provider_failed": {
+    case "recovery_execution_failed": {
       const lease = ownedLease(
         state,
         event.leaseId,
@@ -1144,21 +1136,20 @@ export function reduceRunEvent(
         : undefined;
       if (!lease || !episode) {
         return reject(
-          "provider failure does not own an active recovery episode",
+          "worker execution failure does not own an active recovery episode",
         );
       }
-      const providerFailures = episode.providerFailures + 1;
-      episode.providerFailures = providerFailures;
-      episode.retryAfterMs = providerRetryDelayMs(providerFailures);
+      const executionFailures = episode.executionFailures + 1;
+      episode.executionFailures = executionFailures;
       episode.actions.push({
         kind: "retry",
-        outcome: "provider_failure",
-        summary: "Recovery provider failed before a successful model turn.",
+        outcome: "execution_failure",
+        summary: "Recovery worker failed before a successful model turn.",
         evidence: event.error,
         at: event.now,
       });
       delete state.processLeases[lease.id];
-      if (providerFailures >= 3) {
+      if (executionFailures >= 3) {
         episode.status = "paused";
         state.pause = {
           resumePhase:
@@ -1166,7 +1157,7 @@ export function reduceRunEvent(
               ? "whole_plan_review"
               : "running",
           reason:
-            "Recovery provider failed three times without a successful model turn.",
+            "Recovery worker failed three consecutive times after Pi retries settled.",
         };
         state.phase = "paused";
       }
@@ -1414,7 +1405,12 @@ export function reduceRunEvent(
               : {}),
             outstandingFindingIds: [],
           },
-          event.outcome.workspace,
+          recoveryWorkspace(
+            state,
+            event.workstream,
+            candidateId,
+            event.outcome.workspace,
+          ),
         );
         return accept();
       } catch (error) {
@@ -1647,6 +1643,9 @@ export function reduceRunEvent(
       ) {
         return reject("whole-plan review cannot complete while repairs exist");
       }
+      if (state.wholePlanReview.recovery) {
+        state.wholePlanReview.recovery.executionFailures = 0;
+      }
       if (event.outcome.kind === "approved") {
         if (state.wholePlanReview.epoch) {
           return reject("an anchored whole-plan review requires assessments");
@@ -1852,8 +1851,7 @@ export function reduceRunEvent(
       for (const episode of Object.values(state.recoveryEpisodes)) {
         if (episode.status === "paused") {
           episode.status = "open";
-          episode.providerFailures = 0;
-          delete episode.retryAfterMs;
+          episode.executionFailures = 0;
         }
       }
       delete state.pause;
@@ -2412,9 +2410,6 @@ export class SchedulerActor {
     }
     const process = Promise.resolve()
       .then(async () => {
-        if (effect.kind === "run_recovery" && effect.retryAfterMs) {
-          await abortableDelay(effect.retryAfterMs, controller.signal);
-        }
         const managed =
           effect.kind === "run_implementation" ||
           effect.kind === "run_review" ||
@@ -2491,8 +2486,9 @@ export class SchedulerActor {
           return;
         }
         if (
-          error instanceof WorkerPacketError &&
-          effect.kind !== "run_recovery"
+          error instanceof SchedulerActorError ||
+          error instanceof StateError ||
+          error instanceof WorkerPacketError
         ) {
           this.pauseReason = error.message;
           for (const controller of this.processControllers.values()) {
@@ -2522,13 +2518,13 @@ export class SchedulerActor {
             ...(lifecycleError?.recoveryWorkspace
               ? { workspace: lifecycleError.recoveryWorkspace }
               : {}),
+            ...(!lifecycleError ? { executionFailure: true } : {}),
           });
           return;
         }
         if (
           effect.kind === "run_recovery" &&
-          (error instanceof RecoverySafetyError ||
-            error instanceof WorkerPacketError) &&
+          error instanceof RecoverySafetyError &&
           this.snapshot().processLeases[effect.leaseId]
         ) {
           await this.dispatch({
@@ -2539,9 +2535,7 @@ export class SchedulerActor {
               kind: "no_safe_action",
               outcome: "no_safe_action",
               summary:
-                error instanceof WorkerPacketError
-                  ? "Recovery packet could not satisfy the durable worker boundary."
-                  : "Recovery output could not satisfy the durable safety boundary.",
+                "Recovery output could not satisfy the durable safety boundary.",
               evidence: error.message,
               at: this.now(),
             },
@@ -2553,7 +2547,7 @@ export class SchedulerActor {
           this.snapshot().processLeases[effect.leaseId]
         ) {
           await this.dispatch({
-            kind: "recovery_provider_failed",
+            kind: "recovery_execution_failed",
             workstream: effect.workstream,
             leaseId: effect.leaseId,
             error: error instanceof Error ? error.message : String(error),
@@ -2601,7 +2595,7 @@ export class SchedulerActor {
             kind: "effect_failed",
             ...(error instanceof MissingHookEvidenceError
               ? { gateKind: "hook" }
-              : {}),
+              : { executionFailure: true }),
             effect:
               effect.kind === "run_review"
                 ? "review"
@@ -2808,7 +2802,6 @@ function startRecoveryProcess(
         leaseId: lease.id,
         episodeId: episode.id,
         independentlyEscalated: episode.cycle.independentlyEscalated,
-        ...(episode.retryAfterMs ? { retryAfterMs: episode.retryAfterMs } : {}),
       },
     ],
     accepted: true,
@@ -2937,6 +2930,7 @@ function recordGateResult(
   workstream: RuntimeWorkstream,
   result: RecoveryGateResult,
   workspace: RunState["recoveryEpisodes"][string]["workspace"],
+  executionFailures = 0,
 ): void {
   const runtime = getWorkstream(state, workstream);
   const candidate = result.candidateId
@@ -3019,7 +3013,7 @@ function recordGateResult(
       },
       result,
     ),
-    providerFailures: 0,
+    executionFailures,
     actions: [],
   };
 }
@@ -3028,13 +3022,19 @@ function recoveryWorkspace(
   state: RunState,
   workstream: RuntimeWorkstream,
   candidateId?: string,
+  failedWorkspace?: {
+    changedPaths: string[];
+    stateEvidence: string;
+  },
 ): RunState["recoveryEpisodes"][string]["workspace"] {
   const candidate = candidateId ? state.candidates[candidateId] : undefined;
   return {
     id: workstreamId(workstream),
     ...(candidate ? { checkpoint: candidate.commitSha } : {}),
-    changedPaths: [],
-    stateEvidence: "Workspace state was retained by the failed gate.",
+    changedPaths: failedWorkspace?.changedPaths ?? [],
+    stateEvidence:
+      failedWorkspace?.stateEvidence ??
+      "Workspace state was retained by the failed gate.",
   };
 }
 
@@ -3232,26 +3232,6 @@ function sameWorkstream(
       ? left.id === (right as { id: string }).id
       : left.repairId === (right as { repairId: string }).repairId)
   );
-}
-
-function abortableDelay(
-  milliseconds: number,
-  signal: AbortSignal,
-): Promise<void> {
-  if (signal.aborted || milliseconds === 0) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, milliseconds);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
-  });
 }
 
 function effectKey(effect: SchedulerEffect): string {

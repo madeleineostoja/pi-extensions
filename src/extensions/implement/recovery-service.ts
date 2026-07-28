@@ -8,10 +8,7 @@ import {
 } from "./git.js";
 import { buildRecoveryPrompt } from "./prompts.js";
 import { buildRecoveryPacket, recoveryTaskId } from "./recovery-packet.js";
-import {
-  recoveryCompletionSchema,
-  type RecoveryCompletion,
-} from "./result-schemas.js";
+import { type RecoveryCompletion } from "./result-schemas.js";
 import { boundedRecoveryOutput, type RecoveryAction } from "./recovery.js";
 import type { RuntimeWorkstream, SchedulerEffect } from "./scheduler.js";
 import type { SubagentClient } from "./subagents.js";
@@ -51,7 +48,7 @@ export async function runRecovery(args: {
   });
   const episode = args.state.recoveryEpisodes[packet.episode.id]!;
   const candidate = packet.candidate;
-  if (candidate && packet.workspace.scope === "candidate") {
+  if (candidate) {
     await assertRetainedCandidateWorkspace({
       state: args.state,
       workstream: args.effect.workstream,
@@ -65,12 +62,6 @@ export async function runRecovery(args: {
     roles: args.roles,
     taskId: recoveryTaskId(args.effect.workstream),
     description: `Recover ${packet.gate.id}`,
-    readOnly: false,
-    completionKind: "recovery",
-    completion: {
-      description: "Return one bounded recovery action.",
-      schema: recoveryCompletionSchema,
-    },
     render: buildRecoveryPrompt,
   });
   const response = await args.subagents.waitFor<RecoveryCompletion>(
@@ -82,24 +73,6 @@ export async function runRecovery(args: {
   }
   try {
     const completion = response.result;
-    if (
-      packet.workspace.scope === "runtime" &&
-      !["retry", "repair_environment", "diagnose", "no_safe_action"].includes(
-        completion.action,
-      )
-    ) {
-      throw new Error(
-        "Runtime-scoped hook recovery cannot correct a candidate.",
-      );
-    }
-    if (
-      packet.workspace.scope === "candidate" &&
-      completion.action === "repair_environment"
-    ) {
-      throw new Error(
-        "Candidate-scoped recovery cannot repair hook runtime state.",
-      );
-    }
     const action: RecoveryAction = {
       kind: completion.action,
       outcome:

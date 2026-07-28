@@ -74,7 +74,6 @@
     "@types/node": "^22.0.0",
     "@types/picomatch": "^4.0.0",
     "ajv": "^6.12.6",
-    "fast-check": "^4.9.0",
     "husky": "^9.1.7",
     "lint-staged": "^15.2.10",
     "oxlint": "^0.15.0",

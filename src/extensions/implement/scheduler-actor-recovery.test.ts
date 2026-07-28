@@ -131,7 +131,7 @@ describe("scheduler actor recovery lifecycle", () => {
           current.recoveryEpisodes[
             "recovery:environment:source:first-stream:1"
           ]!;
-        episode.providerFailures += 1;
+        episode.executionFailures += 1;
         return current;
       }),
     ).rejects.toThrow("run state violates lifecycle invariants");
@@ -182,7 +182,7 @@ describe("scheduler actor recovery lifecycle", () => {
         identicalNoActionCycles: 0,
         independentlyEscalated: false,
       },
-      providerFailures: 0,
+      executionFailures: 0,
       actions: [
         {
           kind: "recreate_workspace",
@@ -294,7 +294,7 @@ describe("scheduler actor recovery lifecycle", () => {
             workstream: effect.workstream,
             leaseId: effect.leaseId,
             action: {
-              kind: "repair_environment",
+              kind: "retry",
               outcome: "completed",
               summary: "Restored the review environment.",
               evidence: "Review workspace is unchanged and ready to retry.",

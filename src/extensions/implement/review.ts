@@ -12,9 +12,6 @@ import {
   sha256,
 } from "./source-integrity.js";
 import {
-  anchoredReviewSchema,
-  anchoredWorkstreamReviewSchema,
-  initialWorkstreamReviewSchema,
   type AnchoredWorkstreamReviewCompletion,
   type DirectReviewFinding,
   type InitialWorkstreamReviewCompletion,
@@ -467,12 +464,6 @@ export async function runWorkstreamReview(args: {
           roles: args.roles,
           taskId: args.workstream.id,
           description: `Review workstream ${args.workstream.id}`,
-          readOnly: true,
-          completionKind: "anchored-review",
-          completion: {
-            description: "Assess every outstanding finding.",
-            schema: anchoredWorkstreamReviewSchema,
-          },
           render: buildAnchoredWorkstreamReviewPrompt,
         })
       : await spawnValidatedWorker({
@@ -481,12 +472,6 @@ export async function runWorkstreamReview(args: {
           roles: args.roles,
           taskId: args.workstream.id,
           description: `Review workstream ${args.workstream.id}`,
-          readOnly: true,
-          completionKind: "initial-review",
-          completion: {
-            description: "Approve or return direct blocking findings.",
-            schema: initialWorkstreamReviewSchema,
-          },
           render: buildInitialWorkstreamReviewPrompt,
         });
   const result = await args.subagents.waitFor<unknown>(handle, args.signal);
@@ -614,12 +599,6 @@ async function runOverallAnchoredReview(args: {
     roles: args.roles,
     taskId: args.workstream.repairId,
     description: `Assess overall repair ${args.workstream.repairId}`,
-    readOnly: true,
-    completionKind: "anchored-review",
-    completion: {
-      description: "Assess every outstanding finding.",
-      schema: anchoredReviewSchema,
-    },
     render: (workerPacket) =>
       buildAnchoredOverallReviewPrompt({
         planContext: workerPacket.planContext,

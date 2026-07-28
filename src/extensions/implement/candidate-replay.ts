@@ -332,13 +332,19 @@ export class CandidateReplayEngine {
       targetBaseSha,
     });
     const worktreePath = resolve(this.options.worktreesRoot, id);
+    const workspace = {
+      taskId: id,
+      branchName,
+      worktreePath,
+      baseSha: targetBaseSha,
+    };
+    if (!retainedPreparation) {
+      await this.workspaces.discard(workspace);
+    }
     const existingBranch = (
       await this.options.git.listBranchesMatching(branchName)
     ).includes(branchName);
-    await this.workspaces.ensure(
-      { taskId: id, branchName, worktreePath, baseSha: targetBaseSha },
-      { existingBranch },
-    );
+    await this.workspaces.ensure(workspace, { existingBranch });
     const stagingGit = this.options.git.forWorktree(worktreePath);
     await stagingGit.abortActiveOperation();
     if (retainedPreparation) {
@@ -455,10 +461,25 @@ export class CandidateReplayEngine {
     );
     const command = hookCommandEvidence(commit, staging.worktreePath);
     if (commit.exitCode !== 0) {
+      const [replayPatch, replayPaths] = await Promise.all([
+        stagingGit.stagedDiff(),
+        stagingGit.stagedNameStatus().then((output) =>
+          output
+            .split("\n")
+            .flatMap((line) => line.split("\t").slice(1))
+            .filter(Boolean)
+            .sort(),
+        ),
+      ]);
       await assertTargetUnchanged(this.options.git, target, this.options);
       return {
         kind: "hook_rejected",
-        staging,
+        staging: {
+          ...staging,
+          replayPatch,
+          replayPatchHash: patchHash(replayPatch),
+          replayPaths,
+        },
         evidence: command.output || "The ordinary staging commit was rejected.",
         command,
       };

@@ -31,7 +31,6 @@ import {
 } from "./whole-plan-review.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
 import { assertProspectiveRunPreflight } from "./controls.js";
-import { strictExecutionPlanSchema } from "./result-schemas.js";
 import { canonicalPath, sha256 } from "./source-integrity.js";
 import {
   runWorkstreamCandidate,
@@ -658,7 +657,14 @@ export function createRuntime(args: {
                 id: replay.staging.id,
                 checkpoint: replay.staging.preparedCommitSha,
                 changedPaths: replay.staging.replayPaths ?? [],
-                stateEvidence: replay.kind,
+                stateEvidence:
+                  replay.kind === "hook_rejected" ||
+                  (replay.kind === "reconciliation_required" &&
+                    replay.hookMutated)
+                    ? `${replay.evidence}\n\nStaging diff:\n${replay.staging.replayPatch ?? ""}`.slice(
+                        -12_000,
+                      )
+                    : replay.kind,
               };
         if (replay.kind === "repository_assessment_required") {
           if (effect.workstream.kind !== "source") {
@@ -958,12 +964,6 @@ export function createRuntime(args: {
             roles: args.roles,
             taskId: "planner",
             description: "Compile strict execution plan",
-            readOnly: true,
-            completionKind: "planner",
-            completion: {
-              description: "Return the strict execution plan.",
-              schema: strictExecutionPlanSchema,
-            },
             render: buildStrictExecutionPlannerPrompt,
           });
           const response = await client.waitFor(handle, signal);

@@ -8,9 +8,6 @@ import {
 } from "./prompts.js";
 import { sha256 } from "./source-integrity.js";
 import {
-  anchoredReviewSchema,
-  initialOverallReviewSchema,
-  wholePlanRecoveryCompletionSchema,
   type AnchoredWorkstreamReviewCompletion,
   type InitialOverallReviewCompletion,
   type WholePlanRecoveryCompletion,
@@ -222,18 +219,6 @@ export async function runWholePlanReview(args: {
     description: anchored
       ? `Assess published whole-plan repair for ${args.state.run.id}`
       : `Review complete run ${args.state.run.id}`,
-    readOnly: true,
-    completionKind: packet.completionKind,
-    completion: (anchored
-      ? {
-          description: "Assess every outstanding finding.",
-          schema: anchoredReviewSchema,
-        }
-      : {
-          description:
-            "Approve the complete run or return direct blocking findings.",
-          schema: initialOverallReviewSchema,
-        }) as never,
     render: (workerPacket) =>
       anchored
         ? buildAnchoredOverallReviewPrompt({
@@ -351,12 +336,6 @@ export async function runWholePlanRecovery(args: {
     roles: args.roles,
     taskId: "whole-plan-recovery",
     description: `Recover whole-plan review for ${args.state.run.id}`,
-    readOnly: true,
-    completionKind: "whole-plan-recovery",
-    completion: {
-      description: "Return a bounded whole-plan recovery action.",
-      schema: wholePlanRecoveryCompletionSchema,
-    },
     render: (workerPacket) =>
       `You are the Pipkin Implement recovery agent for a failed whole-plan review. ${workerPacket.workspace.mutationBoundary} Do not edit files, change Git state, install dependencies, or rerun the review yourself. Return retry when the orchestrator can safely rerun the same immutable assessment, diagnose for additional bounded evidence, or no_safe_action when manual intervention is required.\n\n${JSON.stringify(workerPacket.failure, null, 2)}`,
   });

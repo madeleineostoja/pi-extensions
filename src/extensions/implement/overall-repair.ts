@@ -9,10 +9,7 @@ import {
 import type { ExecutionPlan } from "./execution-plan.js";
 import { changedPathsBetween, type GitClient } from "./git.js";
 import { buildOverallReworkPrompt } from "./prompts.js";
-import {
-  overallReworkSchema,
-  type OverallReworkCompletion,
-} from "./result-schemas.js";
+import { type OverallReworkCompletion } from "./result-schemas.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import type { RuntimeWorkstream } from "./scheduler.js";
 import { protectedArtifactsMatch, type RunState } from "./store.js";
@@ -141,12 +138,6 @@ export async function runOverallRepair(args: {
     roles: args.roles,
     taskId: args.repairId,
     description: `Repair whole-plan findings for ${args.repairId}`,
-    readOnly: false,
-    completionKind: "overall-rework",
-    completion: {
-      description: "Report evidence for each whole-plan finding.",
-      schema: overallReworkSchema,
-    },
     render: buildOverallReworkPrompt,
   });
   const result = await args.subagents.waitFor<unknown>(handle, args.signal);

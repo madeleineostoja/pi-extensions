@@ -8,10 +8,6 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  initialWorkstreamReviewSchema,
-  recoveryCompletionSchema,
-} from "./result-schemas.js";
 import { buildRecoveryPacket } from "./recovery-packet.js";
 import type { ImplementRoles } from "./subagents.js";
 import { RunStateSchema, type RunState } from "./store.js";
@@ -65,14 +61,8 @@ describe("worker invocation", () => {
           waitFor: async () => ({ status: "failed" as const, error: "unused" }),
         },
         roles,
-        readOnly: false,
-        completionKind: "recovery",
         taskId: "work",
         description: "Recover work",
-        completion: {
-          description: "Return one bounded recovery action.",
-          schema: recoveryCompletionSchema,
-        },
         render: () => "x".repeat(MAX_WORKER_PROMPT_BYTES + 1),
       }),
     ).rejects.toBeInstanceOf(WorkerPacketError);
@@ -99,12 +89,6 @@ describe("worker invocation", () => {
       roles,
       taskId: "work",
       description: "Review work",
-      readOnly: true,
-      completionKind: "initial-review",
-      completion: {
-        description: "Approve or return direct blocking findings.",
-        schema: initialWorkstreamReviewSchema,
-      },
       render: () => "review assignment",
     });
 
@@ -116,6 +100,36 @@ describe("worker invocation", () => {
       cwd: "/owned/worktree",
       readOnly: true,
       prompt: "review assignment",
+    });
+  });
+
+  it("derives the worker role from completion kind instead of packet data", async () => {
+    let spawned: Record<string, unknown> | undefined;
+    await spawnValidatedWorker({
+      packet: {
+        role: "recovery" as const,
+        completionKind: "initial-review" as const,
+        identity: "run-1/work/candidate",
+        workspace: { path: "/owned/worktree" },
+      },
+      subagents: {
+        stop: async () => undefined,
+        spawn: async (args) => {
+          spawned = args as unknown as Record<string, unknown>;
+          return "worker" as never;
+        },
+        waitFor: async () => ({ status: "failed" as const, error: "unused" }),
+      },
+      roles,
+      taskId: "work",
+      description: "Review work",
+      render: () => "review assignment",
+    });
+
+    expect(spawned).toMatchObject({
+      type: "pipkin:implement:reviewer",
+      role: "reviewer",
+      readOnly: true,
     });
   });
 
@@ -150,6 +164,23 @@ describe("worker invocation", () => {
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }
+  });
+
+  it("retains resolved finding history for a completed recovery episode", () => {
+    const state = recoveryState();
+    state.recoveryEpisodes.episode!.status = "completed";
+    state.recoveryEpisodes.episode!.actions.push({
+      kind: "retry",
+      outcome: "completed",
+      summary: "The candidate passed a later gate.",
+      evidence: "The historical finding is retained for audit.",
+      at: "later",
+    });
+    state.findings["finding-first"]!.status = "resolved";
+    state.findings["finding-second"]!.status = "resolved";
+    state.reviews["source:work"]!.outstandingIds = [];
+
+    expect(RunStateSchema.safeParse(state).success).toBe(true);
   });
 
   it("materializes retained findings in current order and rejects stale references", () => {
@@ -323,7 +354,7 @@ function recoveryState(): RunState {
           identicalNoActionCycles: 0,
           independentlyEscalated: false,
         },
-        providerFailures: 0,
+        executionFailures: 0,
         actions: [],
       },
     },

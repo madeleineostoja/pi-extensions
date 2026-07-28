@@ -184,7 +184,6 @@ export const recoveryCompletionSchema = Type.Object(
     action: Type.Union([
       Type.Literal("diagnose"),
       Type.Literal("retry"),
-      Type.Literal("repair_environment"),
       Type.Literal("rework_candidate"),
       Type.Literal("reconcile"),
       Type.Literal("recreate_workspace"),

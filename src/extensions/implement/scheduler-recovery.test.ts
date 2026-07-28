@@ -7,7 +7,6 @@ import {
   deferred,
 } from "./scheduler-test-support.js";
 import type { RunState, RunStore } from "./store.js";
-import { within } from "./test-boundary.js";
 import { WorkerPacketError } from "./worker-invocation.js";
 
 afterEach(cleanupSchedulerStores);
@@ -192,7 +191,7 @@ describe("scheduler recovery lifecycle", () => {
     );
   });
 
-  it("settles concurrent work and pauses after the first no-safe-action result", async () => {
+  it("safety-pauses a malformed recovery packet before it starts a worker", async () => {
     let state = (await store(2, true)).read();
     state.workstreams.source["second-stream"]!.dependsOn = [];
     state.workstreams.source["first-stream"]!.phase = "recovering";
@@ -245,7 +244,7 @@ describe("scheduler recovery lifecycle", () => {
         identicalNoActionCycles: 0,
         independentlyEscalated: false,
       },
-      providerFailures: 0,
+      executionFailures: 0,
       actions: [],
     };
     const action = {
@@ -271,16 +270,10 @@ describe("scheduler recovery lifecycle", () => {
       },
     } as RunStore;
     const implementationStarted = deferred();
-    const paused = deferred();
     const actor = new SchedulerActor({
       store: fakeStore,
       targetHead: async () => "base-sha",
       now: () => "now",
-      onTransition: (_state, event) => {
-        if (event.kind === "run_paused") {
-          paused.resolve();
-        }
-      },
       executeEffect: async ({ effect, signal, dispatch }) => {
         if (effect.kind === "run_implementation") {
           implementationStarted.resolve();
@@ -317,10 +310,7 @@ describe("scheduler recovery lifecycle", () => {
     });
 
     await actor.start();
-    await within("no-safe-action pause", paused.promise, {
-      timeoutMs: 2_000,
-      diagnostics: () => JSON.stringify(state),
-    });
+    await actor.settle();
 
     expect(state).toMatchObject({
       phase: "paused",
@@ -340,9 +330,14 @@ describe("scheduler recovery lifecycle", () => {
       },
       recoveryEpisodes: {
         "recovery:review": {
-          status: "paused",
-          providerFailures: 0,
-          actions: [action],
+          status: "open",
+          executionFailures: 0,
+          actions: [
+            {
+              kind: "retry",
+              outcome: "interrupted",
+            },
+          ],
         },
       },
     });
@@ -425,7 +420,7 @@ describe("scheduler recovery lifecycle", () => {
         identicalNoActionCycles: 0,
         independentlyEscalated: false,
       },
-      providerFailures: 0,
+      executionFailures: 0,
       actions: [],
     };
 
@@ -566,7 +561,7 @@ describe("scheduler recovery lifecycle", () => {
       workstream: { kind: "source", id: "first-stream" },
       leaseId: effect.leaseId,
       action: {
-        kind: "repair_environment",
+        kind: "retry",
         outcome: "completed",
         summary: "Installed the missing dependencies.",
         evidence: "npm install completed in the owned worktree.",
@@ -579,7 +574,7 @@ describe("scheduler recovery lifecycle", () => {
       "queued",
     );
     expect(Object.values(repaired.state.recoveryEpisodes)).toMatchObject([
-      { status: "open", actions: [{ kind: "repair_environment" }] },
+      { status: "open", actions: [{ kind: "retry" }] },
     ]);
   });
 
@@ -635,7 +630,7 @@ describe("scheduler recovery lifecycle", () => {
       workstream: { kind: "source", id: "first-stream" },
       leaseId: effect.leaseId,
       action: {
-        kind: "repair_environment",
+        kind: "retry",
         outcome: "completed",
         summary: "Repaired the hook runtime.",
         evidence: "Dependency restored in staging.",

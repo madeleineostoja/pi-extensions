@@ -11,7 +11,6 @@ import {
   SubagentRuntime,
 } from "#subagents/runtime";
 import { describe, expect, it } from "vitest";
-import { initialWorkstreamReviewSchema } from "./result-schemas.js";
 import { within } from "./test-boundary.js";
 import {
   resolveImplementRoles,
@@ -101,12 +100,6 @@ describe("Implement managed runtime integration", () => {
       roles: roles(),
       taskId: "work",
       description: "Review candidate",
-      readOnly: true,
-      completionKind: "initial-review",
-      completion: {
-        description: "Approve or return direct blocking findings.",
-        schema: initialWorkstreamReviewSchema,
-      },
       render: () => "Review the assigned candidate.",
     });
     const result = await within(
@@ -163,12 +156,6 @@ describe("Implement managed runtime integration", () => {
         roles: roles(),
         taskId: "work",
         description: "Review candidate",
-        readOnly: true,
-        completionKind: "initial-review",
-        completion: {
-          description: "Approve or return direct blocking findings.",
-          schema: initialWorkstreamReviewSchema,
-        },
         render: () => "x".repeat(MAX_WORKER_PROMPT_BYTES + 1),
       }),
     ).rejects.toBeInstanceOf(WorkerPacketError);

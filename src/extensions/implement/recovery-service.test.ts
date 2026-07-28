@@ -96,7 +96,7 @@ describe("recovery service packets", () => {
             identicalNoActionCycles: 0,
             independentlyEscalated: false,
           },
-          providerFailures: 0,
+          executionFailures: 0,
           actions: [],
         },
       },
@@ -123,7 +123,7 @@ describe("recovery service packets", () => {
         waitFor: async () => ({
           status: "completed" as const,
           result: {
-            action: "repair_environment" as const,
+            action: "retry" as const,
             summary: "Restored ignored dependencies.",
             evidence: "npm install completed in the owned worktree.",
           },
@@ -134,7 +134,7 @@ describe("recovery service packets", () => {
     });
 
     expect(outcome.action).toMatchObject({
-      kind: "repair_environment",
+      kind: "retry",
       outcome: "completed",
     });
     expect(spawned).toHaveLength(1);
@@ -152,7 +152,7 @@ describe("recovery service packets", () => {
         "implement",
         "worktrees",
         "run-1",
-        "staging-test",
+        "work",
       ),
     });
     expect(String(spawned[0]?.prompt)).toContain("pre-commit rejected");
@@ -218,7 +218,7 @@ describe("recovery service packets", () => {
               identicalNoActionCycles: 0,
               independentlyEscalated: false,
             },
-            providerFailures: 0,
+            executionFailures: 0,
             actions: [],
           },
         },

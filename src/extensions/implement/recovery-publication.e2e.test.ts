@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { CandidateReplayEngine } from "./candidate-replay.js";
 import { ExecGitClient } from "./git.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
 
@@ -75,23 +76,30 @@ describe("recovery correction publication journey", () => {
     expect(await candidate.currentBranch()).toBe(branch);
     expect(await candidate.isClean()).toBe(true);
 
-    const preparedBranch = "pipkin/implement/run-1/prepared";
-    const preparedPath = join(
-      root,
-      ".pi",
-      "pipkin",
-      "implement",
-      "worktrees",
-      "run-1",
-      "prepared",
-    );
-    await target.createTaskBranch(preparedBranch, base);
-    await target.addWorktree(preparedPath, preparedBranch);
-    writeFileSync(join(preparedPath, "app.txt"), "corrected\n");
-    git(preparedPath, "add", "app.txt");
-    git(preparedPath, "commit", "-m", "fix: prepare corrected publication");
-    const preparedGit = target.forWorktree(preparedPath);
-    const prepared = await preparedGit.head();
+    const replay = await new CandidateReplayEngine({
+      git: target,
+      worktreesRoot: join(
+        root,
+        ".pi",
+        "pipkin",
+        "implement",
+        "worktrees",
+        "run-1",
+      ),
+      runId: "run-1",
+      protectedPaths: [join(root, "plan.md")],
+      protectedArtifactsMatch: () => true,
+    }).prepare({
+      id: `candidate:work:${corrected}`,
+      baseSha: base,
+      commitSha: corrected,
+      treeSha: await candidate.treeAt(corrected),
+    });
+    if (replay.kind !== "prepared") {
+      throw new Error(`Candidate replay failed: ${JSON.stringify(replay)}`);
+    }
+    const prepared = replay.staging.preparedCommitSha;
+    const preparedGit = target.forWorktree(replay.staging.worktreePath);
 
     const publisher = new WriteAheadPublisher({
       git: target,
@@ -123,5 +131,5 @@ describe("recovery correction publication journey", () => {
     expect(await target.head()).toBe(prepared);
     expect(git(root, "show", "HEAD:app.txt")).toBe("corrected");
     expect(git(candidatePath, "show", "HEAD:app.txt")).toBe("corrected");
-  });
+  }, 15_000);
 });

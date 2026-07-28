@@ -208,12 +208,6 @@ export async function runWorkstreamCandidate(
       roles: args.roles,
       taskId: args.workstreamId,
       description: `Implement workstream ${args.workstreamId}`,
-      readOnly: false,
-      completionKind: "implementer",
-      completion: {
-        description: "Report the workstream checkpoints or satisfied evidence.",
-        schema: workstreamImplementerResultSchema,
-      },
       render: buildWorkstreamImplementerPrompt,
     });
     result = await args.subagents.waitFor(agentId, args.signal);

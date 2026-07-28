@@ -29,8 +29,8 @@ import {
   createPlanningRun,
   protectedArtifactsMatch,
   sourceIdentityForExecutionPlan,
+  RunStore,
   type CheckoutLeaseCapability,
-  type RunStore,
 } from "./store.js";
 
 const temporaryDirectories = new Set<string>();
@@ -430,6 +430,220 @@ describe("workstream candidate lifecycle", () => {
       await runtime.stop("test completed");
     }
   }, 60_000);
+
+  it("publishes a narrowed two-finding correction journey through the production actor", async () => {
+    const subject = await fixture({
+      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
+    });
+    const completed = deferred();
+    const handles = new Map<
+      string,
+      { role: string; cwd: string; description: string }
+    >();
+    let sequence = 0;
+    let workstreamReviews = 0;
+    let corrections = 0;
+    const recoveryPrompts: string[] = [];
+    const reviewPrompts: string[] = [];
+    const subagents: SubagentClient = {
+      async spawn(args) {
+        const id = `agent-${sequence++}`;
+        handles.set(id, {
+          role: args.role ?? "unknown",
+          cwd: args.cwd ?? "",
+          description: args.description,
+        });
+        if (args.role === "recovery") {
+          recoveryPrompts.push(args.prompt);
+        }
+        if (args.description.startsWith("Review workstream")) {
+          reviewPrompts.push(args.prompt);
+        }
+        return id as never;
+      },
+      async stop() {},
+      async waitFor(id) {
+        const handle = handles.get(id as string);
+        if (!handle) {
+          return { status: "failed", error: "Unknown worker handle." } as never;
+        }
+        if (handle.role === "implementer") {
+          return changedResult(handle.cwd, ["first", "second"]) as never;
+        }
+        if (handle.role === "recovery") {
+          corrections++;
+          const path = join(handle.cwd, `correction-${corrections}.txt`);
+          writeFileSync(path, `correction ${corrections}\n`);
+          git(handle.cwd, "add", "-A");
+          const candidateGit = new ExecGitClient(handle.cwd);
+          await candidateGit.checkpoint(
+            `fix: correct finding ${corrections}`,
+            false,
+          );
+          const candidateTip = await candidateGit.head();
+          return {
+            status: "completed",
+            result: {
+              action: "rework_candidate",
+              summary: `Committed correction ${corrections}.`,
+              evidence: `Correction ${corrections} is committed.`,
+              candidateTip,
+              changedPaths: [`correction-${corrections}.txt`],
+            },
+          } as never;
+        }
+        if (handle.description.startsWith("Review workstream")) {
+          workstreamReviews++;
+          if (workstreamReviews === 1) {
+            return {
+              status: "completed",
+              result: {
+                verdict: "changes_requested",
+                findings: [
+                  {
+                    summary: "First correction is required.",
+                    evidence: "The first observable behavior is missing.",
+                    requiredChange: "Implement the first correction.",
+                    acceptanceCriteria: ["The first correction is observable."],
+                  },
+                  {
+                    summary: "Second correction is required.",
+                    evidence: "The second observable behavior is missing.",
+                    requiredChange: "Implement the second correction.",
+                    acceptanceCriteria: [
+                      "The second correction is observable.",
+                    ],
+                  },
+                ],
+              },
+            } as never;
+          }
+          if (workstreamReviews === 2) {
+            return {
+              status: "completed",
+              result: {
+                assessments: [
+                  {
+                    id: "source-combined-r1",
+                    status: "resolved",
+                    evidence: "The first correction is present.",
+                  },
+                  {
+                    id: "source-combined-r2",
+                    status: "unresolved",
+                    evidence: "The second correction is still missing.",
+                  },
+                ],
+                regressions: [],
+              },
+            } as never;
+          }
+          return {
+            status: "completed",
+            result: {
+              assessments: [
+                {
+                  id: "source-combined-r2",
+                  status: "resolved",
+                  evidence: "The second correction is present.",
+                },
+              ],
+              regressions: [],
+            },
+          } as never;
+        }
+        return {
+          status: "completed",
+          result: { verdict: "approved" },
+        } as never;
+      },
+    };
+    const gitClient = new ExecGitClient(subject.root);
+    const runtime = createRuntime({
+      pi: {} as never,
+      ctx: {} as never,
+      git: gitClient,
+      store: subject.run,
+      lease: subject.run.lease,
+      roles: subject.roles,
+      plan: parsePlan(subject.planPath, subject.planContent),
+      materialStore: buildMaterialStore({
+        plan: parsePlan(subject.planPath, subject.planContent),
+        planPath: subject.planPath,
+        repoRoot: subject.root,
+      }),
+      checkoutIdentity: await gitClient.checkoutIdentity(),
+      baseSha: await gitClient.head(),
+      subagents,
+      onTransition: (_state, event) => {
+        if (event.kind === "run_completed") {
+          completed.resolve();
+        }
+      },
+    });
+
+    await runtime.start();
+    try {
+      await within("narrowed correction journey", completed.promise, {
+        timeoutMs: 30_000,
+        diagnostics: () => JSON.stringify(runtime.snapshot()),
+      });
+      await runtime.settle();
+
+      const state = runtime.snapshot();
+      expect(state).toMatchObject({
+        phase: "completed",
+        wholePlanReview: { status: "approved" },
+      });
+      expect(corrections).toBe(2);
+      expect(workstreamReviews).toBe(3);
+      expect(recoveryPrompts).toHaveLength(2);
+      expect(recoveryPrompts[0]).toContain("source-combined-r1");
+      expect(recoveryPrompts[0]).toContain("source-combined-r2");
+      expect(recoveryPrompts[1]).not.toContain("source-combined-r1");
+      expect(recoveryPrompts[1]).toContain("source-combined-r2");
+      expect(reviewPrompts).toHaveLength(3);
+      expect(reviewPrompts[2]).not.toContain("source-combined-r1");
+      expect(reviewPrompts[2]).toContain("source-combined-r2");
+      expect(state.findings["source-combined-r1"]?.status).toBe("resolved");
+      expect(state.findings["source-combined-r2"]?.status).toBe("resolved");
+      const completedEpisode = Object.values(state.recoveryEpisodes)[0];
+      expect(completedEpisode).toMatchObject({
+        status: "completed",
+        outstandingFindingIds: ["source-combined-r1", "source-combined-r2"],
+      });
+      const reloaded = RunStore.open(
+        subject.run.lease,
+        subject.run.path,
+      ).read();
+      expect(reloaded.recoveryEpisodes[completedEpisode!.id]).toMatchObject({
+        status: "completed",
+        outstandingFindingIds: ["source-combined-r1", "source-combined-r2"],
+      });
+      expect(
+        Object.values(reloaded.recoveryEpisodes).find(
+          (episode) =>
+            JSON.stringify(episode.outstandingFindingIds) ===
+            JSON.stringify(["source-combined-r2"]),
+        ),
+      ).toMatchObject({
+        status: "completed",
+        outstandingFindingIds: ["source-combined-r2"],
+      });
+      expect(Object.keys(state.publication.receipts)).toHaveLength(1);
+      expect(
+        readFileSync(join(subject.root, "correction-1.txt"), "utf-8"),
+      ).toBe("correction 1\n");
+      expect(
+        readFileSync(join(subject.root, "correction-2.txt"), "utf-8"),
+      ).toBe("correction 2\n");
+      expect(readFileSync(subject.planPath, "utf-8")).toContain(
+        "- [x] First task\n- [x] Second task",
+      );
+    } finally {
+      await runtime.stop("test completed");
+    }
+  }, 40_000);
 
   it("runs independent workstreams concurrently in isolated worktrees", async () => {
     const subject = await fixture({
