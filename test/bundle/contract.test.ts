@@ -60,7 +60,6 @@ const expectedTools = {
 const expectedCommands = {
   readonly: "src/extensions/edit-approval/index.ts",
   "context-prune": "src/extensions/context/index.ts",
-  lsp: "src/extensions/lsp/index.ts",
   agents: "src/extensions/subagents/index.ts",
   implement: "src/extensions/implement/index.ts",
   papercuts: "src/extensions/papercuts/index.ts",

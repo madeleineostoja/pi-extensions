@@ -103,17 +103,6 @@ const capabilityFor = {
 } as const;
 
 export function registerLsp(pi: ExtensionAPI): void {
-  pi.registerCommand("lsp", {
-    description: "Show lazy LSP server discovery and runtime status",
-    handler: async (args, ctx) => {
-      if (args.trim()) {
-        ctx.ui.notify("usage: /lsp", "warning");
-        return;
-      }
-      ctx.ui.notify(renderStatus(lspStatus(ctx.cwd)), "info");
-    },
-  });
-
   pi.registerTool({
     name: "lsp",
     label: "lsp",

@@ -112,7 +112,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | `/readonly [on\|off]`             | Toggle approval for built-in edits and writes                              |
 | `/context-prune`                  | Inspect elision, recalls, cache behavior, and adaptive policy              |
 | `context_recall`                  | Recover the original content behind an elision stub                        |
-| `/lsp` / `lsp`                    | Inspect language servers or make semantic source queries                   |
+| `lsp`                             | Make semantic source queries or inspect language-server status             |
 | `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents                     |
 | `get_subagent_result`             | Inspect or join a background agent                                         |
 | `steer_subagent`                  | Queue guidance for a running background agent                              |
