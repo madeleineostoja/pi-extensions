@@ -36,7 +36,6 @@ const expectedExtensions = [
   "./src/extensions/subagents/index.ts",
   "./src/extensions/implement/index.ts",
   "./src/extensions/papercuts/index.ts",
-  "./src/extensions/handoff/index.ts",
   "./src/extensions/btw/index.ts",
   "./src/extensions/caffeinate/index.ts",
 ];
@@ -62,8 +61,6 @@ const expectedCommands = {
   agents: "src/extensions/subagents/index.ts",
   implement: "src/extensions/implement/index.ts",
   papercuts: "src/extensions/papercuts/index.ts",
-  handoff: "src/extensions/handoff/index.ts",
-  "handoff-recover": "src/extensions/handoff/index.ts",
   btw: "src/extensions/btw/index.ts",
 };
 
@@ -403,17 +400,6 @@ describe("Pipkin bundle", () => {
     expect(ownerMap(fixture.result.extensions, "messageRenderers")).toEqual(
       expectedProvenance(expectedRenderers),
     );
-  });
-
-  it("registers handoff commands without adding another compactor", async () => {
-    const fixture = await loadBundle();
-    const handoff = fixture.result.extensions.find(
-      (extension) =>
-        relativeExtensionPath(extension) === "src/extensions/handoff/index.ts",
-    );
-    expect(handoff?.commands.has("handoff")).toBe(true);
-    expect(handoff?.commands.has("handoff-recover")).toBe(true);
-    expect(handoff?.handlers.get("session_before_compact")).toBeUndefined();
   });
 
   it("keeps safety startup and reload handlers ordered and registers Sandbox", async () => {
