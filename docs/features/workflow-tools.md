@@ -30,7 +30,7 @@ Use LSP for a focused relationship that literal search may miss. Use text search
 | Svelte                  | `.svelte`                                                    | Packaged `svelte-language-server`                                         |
 | Ruby                    | `.rb`, `.rake`                                               | Project-provisioned `ruby-lsp` from `bin/ruby-lsp` or `PATH`              |
 
-Servers start lazily, are shared per workspace, and retire after idle time. Requests default to five seconds and cap at 15. Results are bounded to 100 locations, symbols, or diagnostics and 2,000 hover characters.
+Servers start lazily, are shared per workspace, and retire after idle time. Requests default to five seconds and cap at 15. Results are bounded to 100 locations, symbols, or diagnostics and 2,000 hover characters. Model-visible lists include paths, positions, names, and diagnostic messages within a 20 KB aggregate output limit.
 
 Unavailable servers and unsupported capabilities return non-fatal fallback results. Use the `status` action to inspect runtime status without eagerly starting every server.
 

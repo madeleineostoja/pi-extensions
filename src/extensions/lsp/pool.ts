@@ -41,6 +41,7 @@ export type LspPoolOptions = {
   spawn?: typeof spawn;
 };
 export const LSP_POOL_MANAGER_KEY = Symbol.for("pipkin:lsp:pool");
+// Parent and in-process subagent sessions share this pool, so one session must not shut it down globally.
 const defaultOptions = {
   maxProcesses: 6,
   idleMs: 5 * 60_000,

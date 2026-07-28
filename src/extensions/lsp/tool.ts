@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
-import { extname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -11,7 +11,9 @@ import {
   normalizeHoverResult,
   normalizeLocations,
   normalizeSymbolsResult,
+  type NormalizedDiagnostic,
   type NormalizedLocation,
+  type NormalizedSymbol,
 } from "./normalize.js";
 import { getLspPool, type LspPool } from "./pool.js";
 import {
@@ -30,6 +32,9 @@ import {
 
 const MAX_TIMEOUT_MS = 15_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
+const MAX_MODEL_OUTPUT_BYTES = 20_000;
+const OMITTED_RESULTS_LINE =
+  "- … Additional results omitted to keep LSP output bounded.";
 const warningKey = Symbol.for("pipkin:lsp:unavailable-warnings");
 type WarningStore = Set<string>;
 
@@ -133,7 +138,11 @@ export async function executeLsp(
   }
   if (input.action === "status") {
     const details = lspStatus(ctx.cwd);
-    return result(renderStatus(details), details);
+    const rendered = renderStatus(details);
+    return result(rendered.text, {
+      ...details,
+      truncation: { content: rendered.truncated },
+    });
   }
   let resolvedRoute: { kind: ServerKind; workspaceRoot: string } | undefined;
   try {
@@ -179,20 +188,34 @@ export async function executeLsp(
         client.capabilities,
         { timeoutMs: remainingTimeout(deadline), signal },
       );
+      const displayedDiagnostics = diagnostics.diagnostics.map((diagnostic) =>
+        displayDiagnostic(diagnostic, target!),
+      );
+      const rendered = renderBoundedList(
+        `${countLabel(displayedDiagnostics.length, diagnostics.truncated)} LSP ${pluralize("diagnostic", displayedDiagnostics.length, diagnostics.truncated)} for ${displayFile(target!, ctx.cwd)}:`,
+        `No LSP diagnostics for ${displayFile(target!, ctx.cwd)}.`,
+        displayedDiagnostics.map((diagnostic) =>
+          renderDiagnostic(diagnostic, ctx.cwd),
+        ),
+        diagnostics.truncated,
+      );
       const details = {
         action: input.action,
         available: true,
         success: diagnostics.fresh,
         server: route.kind,
         workspace: route.workspaceRoot,
-        diagnostics: diagnostics.diagnostics.map(displayDiagnostic),
-        truncation: { diagnostics: diagnostics.truncated },
+        diagnostics: displayedDiagnostics,
+        truncation: {
+          diagnostics: diagnostics.truncated,
+          content: rendered.truncated,
+        },
         ...(diagnostics.stale ? { stale: true } : {}),
         ...(diagnostics.timedOut ? { timedOut: true } : {}),
       };
       return result(
         diagnostics.fresh
-          ? `LSP diagnostics: ${diagnostics.diagnostics.length}${diagnostics.truncated ? "+" : ""} issue(s).`
+          ? rendered.text
           : "LSP diagnostics were not fresh before the timeout; run project validation for authoritative results.",
         details,
       );
@@ -227,7 +250,7 @@ export async function executeLsp(
               : undefined,
             { timeoutMs: remainingTimeout(deadline), signal },
           );
-    return semanticResult(input.action, raw, route);
+    return semanticResult(input.action, raw, route, target, ctx.cwd);
   } catch (error) {
     if (signal?.aborted || error instanceof RequestCancelledError) {
       throw error;
@@ -384,6 +407,8 @@ function semanticResult(
   action: Action,
   raw: unknown,
   route: { kind: ServerKind; workspaceRoot: string },
+  target: string | undefined,
+  displayWorkspace: string,
 ): { content: Array<{ type: "text"; text: string }>; details: ToolDetails } {
   const base = {
     action,
@@ -400,22 +425,47 @@ function semanticResult(
       truncation: { hover: hover.truncated },
     });
   }
-  const normalized =
-    action === "document_symbols" || action === "workspace_symbols"
-      ? normalizeSymbolsResult(raw, 100)
-      : normalizeLocations(raw, 100);
-  const key =
-    action === "document_symbols" || action === "workspace_symbols"
-      ? "symbols"
-      : "locations";
-  return result(
-    `LSP ${action.replaceAll("_", " ")}: ${normalized.items.length}${normalized.truncated ? "+" : ""} ${key}.`,
-    {
+  if (action === "document_symbols" || action === "workspace_symbols") {
+    const normalized = normalizeSymbolsResult(
+      raw,
+      100,
+      action === "document_symbols" && target
+        ? pathToFileURL(target).href
+        : undefined,
+    );
+    const displayed = normalized.items.map(displayLocationOrSymbol);
+    const rendered = renderBoundedList(
+      `${countLabel(displayed.length, normalized.truncated)} LSP ${pluralize(action === "document_symbols" ? "document symbol" : "workspace symbol", displayed.length, normalized.truncated)}:`,
+      `No LSP ${action === "document_symbols" ? "document" : "workspace"} symbols found.`,
+      normalized.items.map((symbol) => renderSymbol(symbol, displayWorkspace)),
+      normalized.truncated,
+    );
+    return result(rendered.text, {
       ...base,
-      [key]: normalized.items.map(displayLocationOrSymbol),
-      truncation: { [key]: normalized.truncated },
-    },
+      symbols: displayed,
+      truncation: {
+        symbols: normalized.truncated,
+        content: rendered.truncated,
+      },
+    });
+  }
+  const normalized = normalizeLocations(raw, 100);
+  const displayed = normalized.items.map(displayLocation);
+  const label = locationLabel(action);
+  const rendered = renderBoundedList(
+    `${countLabel(displayed.length, normalized.truncated)} LSP ${pluralize(label, displayed.length, normalized.truncated)}:`,
+    `No LSP ${pluralize(label, 0, false)} found.`,
+    displayed.map((location) => renderLocation(location, displayWorkspace)),
+    normalized.truncated,
   );
+  return result(rendered.text, {
+    ...base,
+    locations: displayed,
+    truncation: {
+      locations: normalized.truncated,
+      content: rendered.truncated,
+    },
+  });
 }
 
 function displayLocation(location: NormalizedLocation): {
@@ -441,31 +491,30 @@ function displayLocation(location: NormalizedLocation): {
     },
   };
 }
-function displayLocationOrSymbol(value: unknown): unknown {
-  if (value && typeof value === "object" && "name" in value) {
-    const symbol = value as {
-      name: string;
-      kind?: number;
-      location?: NormalizedLocation;
-    };
-    return {
-      name: symbol.name,
-      ...(symbol.kind === undefined ? {} : { kind: symbol.kind }),
-      ...(symbol.location
-        ? { location: displayLocation(symbol.location) }
-        : {}),
-    };
-  }
-  return displayLocation(value as NormalizedLocation);
-}
-function displayDiagnostic(diagnostic: {
-  range: {
-    start: { line: number; character: number };
-    end: { line: number; character: number };
+type DisplayLocation = ReturnType<typeof displayLocation>;
+type DisplayDiagnostic = Omit<NormalizedDiagnostic, "range"> & {
+  file: string;
+  range: DisplayLocation["range"];
+};
+
+function displayLocationOrSymbol(symbol: NormalizedSymbol): {
+  name: string;
+  kind?: number;
+  location?: DisplayLocation;
+} {
+  return {
+    name: symbol.name,
+    ...(symbol.kind === undefined ? {} : { kind: symbol.kind }),
+    ...(symbol.location ? { location: displayLocation(symbol.location) } : {}),
   };
-}): unknown {
+}
+function displayDiagnostic(
+  diagnostic: NormalizedDiagnostic,
+  file: string,
+): DisplayDiagnostic {
   return {
     ...diagnostic,
+    file,
     range: {
       start: {
         line: diagnostic.range.start.line + 1,
@@ -477,6 +526,85 @@ function displayDiagnostic(diagnostic: {
       },
     },
   };
+}
+function renderLocation(location: DisplayLocation, workspace: string): string {
+  return `${displayFile(location.file, workspace)}:${location.range.start.line}:${location.range.start.column}`;
+}
+function renderSymbol(symbol: NormalizedSymbol, workspace: string): string {
+  return symbol.location
+    ? `${symbol.name} — ${renderLocation(displayLocation(symbol.location), workspace)}`
+    : symbol.name;
+}
+function renderDiagnostic(
+  diagnostic: DisplayDiagnostic,
+  workspace: string,
+): string {
+  const severity =
+    ["unknown", "error", "warning", "information", "hint"][
+      diagnostic.severity
+    ] ?? `severity-${diagnostic.severity}`;
+  const origin = [diagnostic.source, diagnostic.code]
+    .filter((value) => value !== undefined)
+    .join(":");
+  return `${severity}${origin ? ` ${origin}` : ""} ${renderLocation({ file: diagnostic.file, range: diagnostic.range }, workspace)} — ${diagnostic.message}`;
+}
+function displayFile(file: string, workspace: string): string {
+  if (!isAbsolute(file) || !isWithin(workspace, file)) {
+    return file;
+  }
+  return (
+    relative(canonicalPath(workspace), canonicalPath(file))
+      .split(sep)
+      .join("/") || "."
+  );
+}
+function renderBoundedList(
+  header: string,
+  empty: string,
+  items: string[],
+  sourceTruncated: boolean,
+): { text: string; truncated: boolean } {
+  if (items.length === 0 && !sourceTruncated) {
+    return { text: empty, truncated: false };
+  }
+  const lines = [header];
+  let outputTruncated = false;
+  for (const [index, item] of items.entries()) {
+    const line = `- ${item}`;
+    const hasMore = index < items.length - 1 || sourceTruncated;
+    const candidate = [
+      ...lines,
+      line,
+      ...(hasMore ? [OMITTED_RESULTS_LINE] : []),
+    ].join("\n");
+    if (Buffer.byteLength(candidate, "utf8") > MAX_MODEL_OUTPUT_BYTES) {
+      outputTruncated = true;
+      break;
+    }
+    lines.push(line);
+  }
+  if (outputTruncated || sourceTruncated) {
+    lines.push(OMITTED_RESULTS_LINE);
+  }
+  return {
+    text: lines.join("\n"),
+    truncated: outputTruncated || sourceTruncated,
+  };
+}
+function countLabel(count: number, truncated: boolean): string {
+  return `${count}${truncated ? "+" : ""}`;
+}
+function pluralize(value: string, count: number, truncated: boolean): string {
+  return count === 1 && !truncated ? value : `${value}s`;
+}
+function locationLabel(action: Action): string {
+  const labels: Partial<Record<Action, string>> = {
+    definition: "definition location",
+    type_definition: "type definition location",
+    implementation: "implementation location",
+    references: "reference location",
+  };
+  return labels[action] ?? "location";
 }
 function boundedTimeout(seconds: number | undefined): number {
   return Math.min(
@@ -572,20 +700,25 @@ export function lspStatus(
     servers: active.length > 0 ? active : discovered,
   };
 }
-function renderStatus(details: ToolDetails): string {
+function renderStatus(details: ToolDetails): {
+  text: string;
+  truncated: boolean;
+} {
   const servers = details.servers as Array<{
     kind: string;
     state: string;
     workspaceRoot?: string;
     reason?: string;
   }>;
-  return [
+  return renderBoundedList(
     "LSP status (discovery does not start servers):",
-    ...servers.map(
+    "No LSP servers discovered.",
+    servers.map(
       (server) =>
-        `- ${server.kind}: ${server.state}${server.workspaceRoot ? ` (${server.workspaceRoot})` : ""}${server.reason ? ` — ${server.reason}` : ""}`,
+        `${server.kind}: ${server.state}${server.workspaceRoot ? ` (${server.workspaceRoot})` : ""}${server.reason ? ` — ${server.reason}` : ""}`,
     ),
-  ].join("\n");
+    false,
+  );
 }
 function conciseError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
