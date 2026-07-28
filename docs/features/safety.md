@@ -117,41 +117,18 @@ Sandbox is defense in depth:
 - Linux Landlock is allowlist-oriented, so deny globs remain in process;
 - on macOS, only deny patterns with a useful literal prefix can be pushed into Seatbelt.
 
-## Edit Approval: keep source changes visible
+## Edit/write Approval
 
-Edit Approval starts on in fresh interactive sessions and intercepts Pi's built-in `edit` and `write` tools. A proposal can be accepted once, accepted for the rest of the session, or blocked with steering feedback.
+Edit/write Approval prompts only for resolved tools named `edit` and `write`. It is not a universal mutation gate: differently named tools remain outside this boundary. Built-in tools get a bounded local preview when Pi identifies their backend as built-in; same-name overrides and missing provenance stay gated but show their bounded input with an explicit unknown-backend warning.
 
-Toggle it with:
+`/readonly` and `Ctrl+R` toggle approval for the live extension runtime. Accepting for the session affects only that instance; reload, resume, new sessions, and forks instantiate a fresh enabled gate. TUI and RPC share the same prompt. Print and JSON calls pass without a prompt, notice, or mode change.
 
-```text
-/readonly
-/readonly on
-/readonly off
-```
+## Shell Guard: best-effort destructive-shell confirmation
 
-`Ctrl+R` is the default shortcut, and the footer shows `readonly` or `editing`.
+Shell Guard inspects directly tokenizable built-in `bash` invocations and makes one confirmation request containing every recognized risk. It supports simple separators, path-qualified executables, a small wrapper set, and one literal `sh -c` or `bash -c` level. Dynamic shell grammar, expansions, substitutions, globs, remote tails, `find -exec`, and xargs tails are not interpreted; an exact destructive marker can produce an explicit uncertain warning instead.
 
-State survives reload and resume but resets to on for startup, new sessions, and forks. There is no configuration file or per-path exemption. Shell redirects and other writes performed through `bash` do not pass through this approval hook.
+The prompt can allow the displayed invocation once, allow all shell risks for the current runtime, or block with feedback. Print and JSON calls pass without state changes or notices. Recoverable clean tracked content and canonical OS-temp descendants outside the working tree may be omitted only when filesystem and Git evidence proves the effect safe. Dirty, untracked, ignored, missing, ambiguous, and inspection-failed targets remain promptable.
 
-Print, RPC, and other non-interactive modes cannot display the prompt, so Edit Approval disables itself and emits a one-time status message.
+## Ordering and limits
 
-## Shell Guard: pause before destructive commands
-
-Shell Guard watches built-in `bash` calls for high-risk actions. A prompt can allow once, allow that risk category for the session, allow everything for the session, or block with feedback.
-
-It covers high-signal cases including:
-
-- untracked or dirty file removal and destructive `find` / `xargs` forms;
-- Git loss, force pushes, remote ref deletion, stash loss, and aggressive cleanup;
-- overwrite and truncation through redirects, `dd`, `truncate`, `sed -i`, `mv`, or `cp`;
-- recursive permission damage and destructive sync;
-- inline interpreter deletion escapes and remote scripts piped to a shell;
-- container, volume, and image cleanup;
-- global or system package mutations;
-- GitHub CLI mutations;
-- Terraform, OpenTofu, Pulumi, and high-signal destructive AWS operations;
-- package publishing and production deploy commands.
-
-Shell Guard is deliberately heuristic. It allows deletion of clean tracked files because Git can restore them and narrowly scoped disposable temp cleanup. Shell variables, globs, substitutions, pipelines, and compound syntax can produce false positives or evade detection. It does not cover every provider CLI, scan secrets, enforce path boundaries, or gate normal `edit` and `write` calls.
-
-Like Edit Approval, it disables itself with a status message when no interactive prompt can be shown.
+Pipkin loads Sandbox, then Edit/write Approval, then Shell Guard. Sandbox runs first so a rejected filesystem call does not reach later approval prompts; the two approval gates see the chained input available at their handler position. Pi has no final read-only handler phase: a third-party extension loaded after Shell Guard can still mutate input. These are useful best-effort guardrails, not security boundaries, and they do not guarantee final approved bytes or discover effects absent from Pi's tool metadata.

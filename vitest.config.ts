@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 const features = [
   "sandbox",
   "edit-approval",
-  "guard",
+  "shell-guard",
   "context",
   "defaults",
   "ui",

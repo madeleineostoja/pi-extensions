@@ -1,44 +1,20 @@
 import { formatSteer } from "./utils";
 
-export type ToolCallDecision = "pass" | "auto-disable" | "prompt";
-
-export type DecideToolCallParams = {
-  readonlyMode: boolean;
-  mode: "tui" | "rpc" | "json" | "print";
-  toolName: string;
-  triggerTools: Set<string>;
-};
-
-export function decideToolCall(params: DecideToolCallParams): ToolCallDecision {
-  const { readonlyMode, mode, toolName, triggerTools } = params;
-  if (!readonlyMode) {
-    return "pass";
-  }
-  if (!triggerTools.has(toolName)) {
-    return "pass";
-  }
-  if (mode !== "tui") {
-    return "auto-disable";
-  }
-  return "prompt";
-}
-
 export type ResolveChoiceResult = {
   block: boolean;
   reason?: string;
-  sideEffect?: "setEditing";
+  disable?: boolean;
 };
 
 export function resolveChoice(params: {
   choice: string | undefined;
   message: string | undefined;
 }): ResolveChoiceResult {
-  const { choice, message } = params;
-  if (choice === "Accept") {
+  if (params.choice === "Accept") {
     return { block: false };
   }
-  if (choice === "Accept for this session") {
-    return { block: false, sideEffect: "setEditing" };
+  if (params.choice === "Accept for this session") {
+    return { block: false, disable: true };
   }
-  return { block: true, reason: formatSteer(message ?? "") };
+  return { block: true, reason: formatSteer(params.message ?? "") };
 }
