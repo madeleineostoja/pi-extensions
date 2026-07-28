@@ -1,6 +1,6 @@
 # Safety
 
-Pipkin keeps three different kinds of watch while an agent works: Sandbox defines where work may happen, Edit Approval keeps ordinary source changes visible, and Shell Guard pauses risky command-line actions. They are loaded in that order and are designed to overlap.
+Pipkin keeps three different kinds of watch while an agent works: Sandbox defines where work may happen, Edit Approval checkpoints resolved tools named `edit` and `write`, and Shell Guard pauses recognized risky built-in `bash` actions. They are loaded in that order and are designed to overlap.
 
 They are useful guardrails, not a claim that arbitrary local code is safe.
 
@@ -125,7 +125,7 @@ Edit/write Approval prompts only for resolved tools named `edit` and `write`. It
 
 ## Shell Guard: best-effort destructive-shell confirmation
 
-Shell Guard inspects directly tokenizable built-in `bash` invocations and makes one confirmation request containing every recognized risk. It supports simple separators, path-qualified executables, a small wrapper set, and one literal `sh -c` or `bash -c` level. Dynamic shell grammar, expansions, substitutions, globs, remote tails, `find -exec`, and xargs tails are not interpreted; an exact destructive marker can produce an explicit uncertain warning instead.
+Shell Guard inspects resolved built-in `bash` invocations that Pi identifies with built-in provenance and makes one confirmation request containing every recognized risk. It supports simple separators, path-qualified executables, supported `sudo`/`doas`/`env`/`command` options, and one literal `sh -c` or `bash -c` level. Dynamic shell grammar, expansions, substitutions, globs, remote tails, `find -exec`, and xargs tails are not interpreted; exact delimiter-bounded destructive markers produce explicit uncertain warnings instead.
 
 The prompt can allow the displayed invocation once, allow all shell risks for the current runtime, or block with feedback. Print and JSON calls pass without state changes or notices. Recoverable clean tracked content and canonical OS-temp descendants outside the working tree may be omitted only when filesystem and Git evidence proves the effect safe. Dirty, untracked, ignored, missing, ambiguous, and inspection-failed targets remain promptable.
 

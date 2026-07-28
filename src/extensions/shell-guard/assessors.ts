@@ -1,6 +1,11 @@
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
-import { createRecoverability, isRecoverable } from "./recoverability";
-import { executable, splitSegments, tokenize } from "./shell";
+import {
+  canonicalCandidates,
+  createRecoverability,
+  isRecoverable,
+} from "./recoverability";
+import { executable, redirectTargets, splitSegments, tokenize } from "./shell";
 
 export type Risk = {
   category: string;
@@ -11,10 +16,13 @@ export type Risk = {
   uncertainty?: string;
   segmentIndex: number;
 };
-
-type Draft = Omit<Risk, "segmentIndex"> & {
-  filesystem?: "remove" | "follow" | "overwrite";
+type Operation = "remove" | "follow" | "overwrite";
+type Draft = Omit<Risk, "segmentIndex" | "targets"> & {
+  targets?: string[];
+  filesystem?: Operation;
 };
+type Marker = { marker: RegExp; category: string; effect: string };
+
 const categoryOrder = [
   "filesystem",
   "git",
@@ -25,143 +33,223 @@ const categoryOrder = [
   "infrastructure",
   "publish",
 ];
-const destructiveMarkers: Array<[RegExp, string, string]> = [
-  [
-    /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:rm|rmdir|unlink|shred)(?:\s|$)/,
-    "filesystem",
-    "unparseable file removal",
-  ],
-  [
-    /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*git\s+(?:clean\s+.*(?:-f|--force)|reset\s+--hard|push\s+.*(?:--force|--delete)|branch\s+-D)(?:\s|$)/,
-    "git",
-    "unparseable Git data loss",
-  ],
-  [
-    /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:docker|podman)\s+(?:system\s+prune|volume\s+(?:rm|remove|prune))(?:\s|$)/,
-    "container",
-    "unparseable container deletion",
-  ],
+const uncertainMarkers: Marker[] = [
+  {
+    marker: /(?:^|\s)(?:rm|rmdir|unlink|shred)(?:\s|$)/,
+    category: "filesystem",
+    effect: "unparseable file removal",
+  },
+  {
+    marker: /(?:^|\s)find\b[\s\S]*?(?:-delete|-exec)(?=\s|$)/,
+    category: "filesystem",
+    effect: "find destructive execution",
+  },
+  {
+    marker: /(?:^|\s)xargs\b[\s\S]*?(?:rm|rmdir|unlink|shred|sh|bash)(?=\s|$)/,
+    category: "filesystem",
+    effect: "xargs destructive execution",
+  },
+  {
+    marker: /(?:^|\s)(?:ssh|scp)\b[\s\S]+/,
+    category: "remote",
+    effect: "remote command requires confirmation",
+  },
+  {
+    marker: /(?:^|\s)(?:curl|wget)\b[\s\S]*?(?:\||sh|bash|python|node)(?=\s|$)/,
+    category: "remote",
+    effect: "remote script execution",
+  },
+  {
+    marker:
+      /(?:^|\s)git\s+(?:clean|reset|restore|push|branch|tag|gc|reflog)(?=\s|$)/,
+    category: "git",
+    effect: "unparseable Git data loss",
+  },
+  {
+    marker:
+      /(?:^|\s)(?:docker|podman)\s+(?:system|volume|image|container)(?=\s|$)/,
+    category: "container",
+    effect: "unparseable container mutation",
+  },
+  {
+    marker:
+      /(?:^|\s)(?:terraform|tofu|pulumi|aws)\s+(?:apply|destroy|delete|terminate|remove)(?=\s|$)/,
+    category: "infrastructure",
+    effect: "unparseable infrastructure mutation",
+  },
+  {
+    marker: /(?:^|\s)(?:npm|pnpm|yarn)\s+(?:publish|unpublish)(?=\s|$)/,
+    category: "publish",
+    effect: "unparseable package publish",
+  },
 ];
 
-function risk(
+function draft(
   category: string,
   effect: string,
   segment: string,
   targets: string[] = [],
-  filesystem?: Draft["filesystem"],
+  filesystem?: Operation,
+  uncertainty?: string,
 ): Draft {
   return {
     category,
-    severity:
-      category === "filesystem" || category === "git" ? "high" : "medium",
     effect,
     segment,
     targets,
     filesystem,
+    uncertainty,
+    severity:
+      category === "filesystem" || category === "git" ? "high" : "medium",
   };
 }
+function plainArgs(args: string[]): string[] {
+  return args.filter(
+    (arg) =>
+      !arg.startsWith("-") &&
+      !/^(?:\d*>{1,2}|\d*[<>].*)$/.test(arg) &&
+      !arg.startsWith("&"),
+  );
+}
+function uncertain(segment: string): Draft[] {
+  return uncertainMarkers
+    .filter(({ marker }) => marker.test(segment))
+    .map(({ category, effect }) =>
+      draft(
+        category,
+        effect,
+        segment,
+        [],
+        undefined,
+        "Unsupported shell syntax; this warning is based only on an exact destructive marker.",
+      ),
+    );
+}
 
-function direct(words: string[], segment: string): Draft[] {
+function direct(words: string[], segment: string, depth = 0): Draft[] {
   const command = executable(words);
   if (!command) {
     return [];
   }
   const { name, args } = command;
-  const plain = args.filter(
-    (arg) => !arg.startsWith("-") && arg !== ">" && arg !== ">>",
-  );
+  const plain = plainArgs(args);
+  const risks: Draft[] = [];
+  const add = (...value: Parameters<typeof draft>) =>
+    risks.push(draft(...value));
+
   if (["rm", "rmdir", "unlink", "shred"].includes(name) && plain.length) {
-    return [risk("filesystem", "file removal", segment, plain, "remove")];
+    add("filesystem", "file removal", segment, plain, "remove");
   }
   if (name === "find" && args.includes("-delete")) {
-    return [
-      risk(
-        "filesystem",
-        "find deletion",
-        segment,
-        plain.length ? plain.slice(0, 1) : ["."],
-        "remove",
-      ),
-    ];
+    add(
+      "filesystem",
+      "find deletion",
+      segment,
+      plain.slice(0, 1).length ? plain.slice(0, 1) : ["."],
+      "remove",
+    );
   }
+  if (name === "find" && args.includes("-exec")) {
+    add(
+      "filesystem",
+      "find destructive execution",
+      segment,
+      plain.slice(0, 1).length ? plain.slice(0, 1) : ["."],
+      undefined,
+      "find -exec is not interpreted; confirmation covers the exact invocation.",
+    );
+  }
+  if (
+    name === "xargs" &&
+    args.some((arg) =>
+      ["rm", "rmdir", "unlink", "shred", "sh", "bash"].includes(arg),
+    )
+  ) {
+    add(
+      "filesystem",
+      "xargs destructive execution",
+      segment,
+      [],
+      undefined,
+      "xargs input is not interpreted; confirmation covers the exact invocation.",
+    );
+  }
+
   if (["cp", "install", "mv"].includes(name) && plain.length >= 2) {
     const destination = plain.at(-1)!;
-    return [
-      risk(
-        "filesystem",
-        `${name} destination overwrite`,
-        segment,
-        [destination],
-        "overwrite",
-      ),
-    ];
+    const ambiguous =
+      plain.length > 2 || args.some((arg) => arg.startsWith("-"));
+    add(
+      "filesystem",
+      `${name} destination replacement`,
+      segment,
+      [destination],
+      "overwrite",
+      ambiguous
+        ? `${name} destination semantics are ambiguous; confirmation covers the exact invocation.`
+        : undefined,
+    );
   }
   if (
     ["truncate", "dd", "sed", "perl"].includes(name) &&
-    (args.some(
-      (arg) =>
-        arg === "-s" ||
-        arg === "-i" ||
-        arg.startsWith("-i") ||
-        arg.startsWith("of=") ||
-        arg.startsWith("--size=0"),
-    ) ||
-      name === "dd")
+    (name === "dd" ||
+      args.some(
+        (arg) =>
+          arg === "-s" ||
+          arg === "-i" ||
+          arg.startsWith("-i") ||
+          arg.startsWith("of=") ||
+          arg.startsWith("--size="),
+      ))
   ) {
     const target =
       name === "dd"
         ? args.find((arg) => arg.startsWith("of="))?.slice(3)
         : plain.at(-1);
-    return target
-      ? [
-          risk(
-            "filesystem",
-            `${name} destructive overwrite`,
-            segment,
-            [target],
-            "follow",
-          ),
-        ]
-      : [];
-  }
-  const redirects = words.flatMap((word, index) =>
-    word === ">" && typeof words[index + 1] === "string"
-      ? [words[index + 1]]
-      : [],
-  );
-  if (redirects.length) {
-    return [
-      risk(
+    if (target) {
+      add(
         "filesystem",
-        "truncating redirection",
+        `${name} destructive overwrite`,
         segment,
-        redirects,
+        [target],
         "follow",
-      ),
-    ];
+      );
+    }
   }
-  if ((name === "sh" || name === "bash") && args[0] === "-c" && args[1]) {
-    return direct(tokenize(args[1]) ?? [], args[1]);
+  const redirects = redirectTargets(words);
+  if (redirects.length) {
+    add("filesystem", "truncating redirection", segment, redirects, "follow");
   }
+
   if (name === "git") {
     const text = args.join(" ");
     if (
-      /\b(clean\b.*(?:-f|--force)|reset\s+--hard|checkout\s+.*(?:-f|--force)|restore\s+\.|stash\s+(?:drop|clear)|branch\s+-[dD]|tag\s+-d|push\b.*(?:--force|--delete|--prune)|gc\s+.*--prune=now)/.test(
+      /\bclean\b.*(?:-f|--force)|\breset\s+--hard|\brestore\b.*(?:--source|--staged)|\bcheckout\b.*(?:-f|--force)|\bstash\s+(?:drop|clear)|\bbranch\s+-[dD]|\btag\s+-d|\bpush\b.*(?:--force|--delete|--prune)|\bgc\b.*--prune|\breflog\s+expire/.test(
         text,
       )
     ) {
-      return [risk("git", "destructive Git operation", segment)];
+      add("git", "destructive Git operation", segment);
     }
   }
   if (
     (name === "chmod" &&
-      (args.some((arg) => arg.includes("R")) || args.includes("777"))) ||
-    (name === "chown" && args.some((arg) => arg.includes("R")))
+      (args.some((arg) => /R/.test(arg)) || args.includes("777"))) ||
+    (name === "chown" && args.some((arg) => /R/.test(arg)))
   ) {
-    return [risk("permissions", "risky recursive permissions change", segment)];
+    add("permissions", "risky recursive permissions change", segment);
   }
-  if (name === "rsync" && args.some((arg) => arg.startsWith("--delete"))) {
-    return [risk("filesystem", "rsync deletion", segment)];
+  if (
+    name === "rsync" &&
+    args.some((arg) => arg === "--delete" || arg.startsWith("--delete="))
+  ) {
+    add(
+      "filesystem",
+      "rsync deletion",
+      segment,
+      plain.at(-1) ? [plain.at(-1)!] : [],
+      undefined,
+      plain.at(-1) ? undefined : "rsync destination is unknown.",
+    );
   }
   if (
     ["docker", "podman"].includes(name) &&
@@ -169,36 +257,40 @@ function direct(words: string[], segment: string): Draft[] {
       args.join(" "),
     )
   ) {
-    return [risk("container", "container data deletion", segment)];
+    add("container", "container data deletion", segment);
   }
   if (
-    [
-      "npm",
-      "pnpm",
-      "yarn",
-      "brew",
-      "apt",
-      "apt-get",
-      "dnf",
-      "yum",
-      "pacman",
-    ].includes(name) &&
-    /\b(?:install|uninstall|remove|purge|upgrade|autoremove|global)\b/.test(
+    ["apt", "apt-get", "dnf", "yum", "pacman", "brew"].includes(name) &&
+    /\b(?:install|uninstall|remove|purge|upgrade|autoremove)\b/.test(
       args.join(" "),
     )
   ) {
-    return [risk("package", "package or system mutation", segment)];
+    add("package", "system package mutation", segment);
   }
   if (
-    ["terraform", "tofu", "pulumi", "aws"].includes(name) &&
-    /\b(?:destroy|apply|delete-|terminate-|remove-|up\s+--yes|sync\s+.*--delete)\b/.test(
+    ["npm", "pnpm", "yarn"].includes(name) &&
+    /(?:^|\s)(?:uninstall|remove|global)(?:\s|$)|(?:^|\s)--global(?:\s|$)/.test(
       args.join(" "),
     )
   ) {
-    return [risk("infrastructure", "infrastructure mutation", segment)];
+    add("package", "global package mutation", segment);
   }
-  if ((name === "npm" || name === "pnpm") && args[0] === "publish") {
-    return [risk("publish", "package publish", segment)];
+  if (
+    ["terraform", "tofu", "pulumi", "aws", "kubectl"].includes(name) &&
+    /\b(?:destroy|apply|delete(?:-|\b)|terminate-|remove-|up\s+--yes|sync\s+.*--delete)\b/.test(
+      args.join(" "),
+    )
+  ) {
+    add("infrastructure", "infrastructure mutation", segment);
+  }
+  if (
+    (["npm", "pnpm"].includes(name) &&
+      ["publish", "unpublish"].includes(args[0] ?? "")) ||
+    (name === "yarn" && args[0] === "npm" && args[1] === "publish") ||
+    (["vercel", "netlify", "fly", "gh"].includes(name) &&
+      /\b(?:deploy|publish|create|delete|destroy|merge)\b/.test(args.join(" ")))
+  ) {
+    add("publish", "remote deploy or publish", segment);
   }
   if (
     name === "gh" &&
@@ -206,31 +298,46 @@ function direct(words: string[], segment: string): Draft[] {
       args.join(" "),
     )
   ) {
-    return [risk("remote", "GitHub mutation", segment)];
+    add("remote", "GitHub mutation", segment);
+  }
+  if (name === "ssh" && args.length > 1) {
+    add(
+      "remote",
+      "remote command requires confirmation",
+      segment,
+      [],
+      undefined,
+      "SSH command tails are not interpreted; confirmation covers the exact invocation.",
+    );
   }
   if (
-    name === "ssh" &&
-    /\b(?:rm|docker\s+.*(?:prune|volume\s+rm)|git\s+(?:clean|reset))\b/.test(
-      args.join(" "),
-    )
+    ["python", "python3", "node", "perl", "ruby"].includes(name) &&
+    args.some((arg) => ["-c", "-e"].includes(arg))
   ) {
-    return [risk("remote", "SSH destructive intent", segment, [], undefined)];
+    add(
+      "remote",
+      "inline interpreter execution",
+      segment,
+      [],
+      undefined,
+      "Inline interpreter content is not interpreted; confirmation covers the exact invocation.",
+    );
   }
-  return [];
-}
-
-function uncertain(segment: string): Draft[] {
-  return destructiveMarkers.flatMap(([marker, category, effect]) =>
-    marker.test(segment)
-      ? [
-          {
-            ...risk(category, effect, segment),
-            uncertainty:
-              "Unsupported shell syntax; this warning is based only on an exact destructive marker.",
-          },
-        ]
-      : [],
-  );
+  if ((name === "sh" || name === "bash") && depth === 0) {
+    const index = args.indexOf("-c");
+    const payload = index >= 0 ? args[index + 1] : undefined;
+    if (payload) {
+      for (const nested of splitSegments(payload)) {
+        const nestedWords = tokenize(nested.text);
+        risks.push(
+          ...(nestedWords
+            ? direct(nestedWords, nested.text, 1)
+            : uncertain(nested.text)),
+        );
+      }
+    }
+  }
+  return risks;
 }
 
 export async function assessBashCommand(
@@ -240,34 +347,80 @@ export async function assessBashCommand(
   const recovery = createRecoverability(cwd);
   let effectiveCwd = cwd;
   const risks: Risk[] = [];
-  for (const segment of splitSegments(command)) {
+  const segments = splitSegments(command);
+  for (const segment of segments) {
     const words = tokenize(segment.text);
     const drafts = words
       ? direct(words, segment.text)
       : uncertain(segment.text);
-    for (const draft of drafts) {
+    const commandInfo = words && executable(words);
+    const nextWords = tokenize(segments[segment.index + 1]?.text ?? "");
+    const next = nextWords && executable(nextWords);
+    if (
+      commandInfo &&
+      ["curl", "wget"].includes(commandInfo.name) &&
+      segment.separator === "|" &&
+      next &&
+      ["sh", "bash", "python", "python3", "node", "perl", "ruby"].includes(
+        next.name,
+      )
+    ) {
+      drafts.push(draft("remote", "remote script execution", segment.text));
+    }
+    for (const item of drafts) {
+      const targets = item.targets ?? [];
+      const directoryDestination =
+        item.effect.endsWith(" destination replacement") &&
+        targets.length === 1 &&
+        (() => {
+          try {
+            return statSync(resolve(effectiveCwd, targets[0]!)).isDirectory();
+          } catch {
+            return false;
+          }
+        })();
+      const uncertainty =
+        item.uncertainty ??
+        (directoryDestination
+          ? "Destination is a directory; replacement semantics are ambiguous."
+          : undefined);
+      const absoluteTargets = await Promise.all(
+        targets.map(async (target) => {
+          const candidates = item.filesystem
+            ? await canonicalCandidates(
+                resolve(effectiveCwd, target),
+                item.filesystem,
+                recovery,
+              )
+            : [];
+          return candidates.at(-1) ?? resolve(effectiveCwd, target);
+        }),
+      );
       if (
-        draft.filesystem &&
-        draft.targets.length &&
-        (await Promise.all(
-          draft.targets.map((target) =>
-            isRecoverable(
-              resolve(effectiveCwd, target),
-              draft.filesystem!,
-              recovery,
+        item.filesystem &&
+        !uncertainty &&
+        targets.length &&
+        (
+          await Promise.all(
+            targets.map((target) =>
+              isRecoverable(
+                resolve(effectiveCwd, target),
+                item.filesystem!,
+                recovery,
+              ),
             ),
-          ),
-        ).then((answers) => answers.every(Boolean)))
+          )
+        ).every(Boolean)
       ) {
         continue;
       }
       risks.push({
-        ...draft,
-        targets: draft.targets.map((target) => resolve(effectiveCwd, target)),
+        ...item,
+        uncertainty,
+        targets: absoluteTargets,
         segmentIndex: segment.index,
       });
     }
-    const commandInfo = words && executable(words);
     if (
       commandInfo?.name === "cd" &&
       commandInfo.args[0] &&

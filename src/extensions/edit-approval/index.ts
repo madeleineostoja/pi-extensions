@@ -47,6 +47,13 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("unknown: /readonly [on|off]", "warning");
         return;
       }
+      if (action.kind === "set" && action.value === enabled) {
+        ctx.ui.notify(
+          `edit/write approval: already ${enabled ? "on" : "off"}`,
+          "info",
+        );
+        return;
+      }
       setEnabled(action.kind === "toggle" ? !enabled : action.value, ctx);
       ctx.ui.notify(`edit/write approval: ${enabled ? "on" : "off"}`, "info");
     },

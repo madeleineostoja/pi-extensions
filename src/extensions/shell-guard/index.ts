@@ -4,21 +4,39 @@ import { assessBashCommand, type Risk } from "./assessors";
 import { resolveChoice } from "./handler";
 
 const DETAIL_LIMIT = 16_384;
-const TRUNCATION = "\n… detail truncated at 16,384 characters";
+const TRUNCATION = "… detail truncated";
 
-function formatRisks(risks: Risk[]): string {
-  const detail = risks
+function excerpt(value: string, limit: number): string {
+  return value.length <= limit
+    ? value
+    : value.slice(0, limit - TRUNCATION.length) + TRUNCATION;
+}
+
+export function formatRisks(risks: Risk[]): string {
+  const summaries = risks.map(
+    (risk, index) =>
+      `${index + 1}. [${risk.severity}] ${risk.category}: ${risk.effect}`,
+  );
+  const reserve = summaries.reduce(
+    (size, summary) => size + summary.length + 3,
+    0,
+  );
+  const available = Math.max(0, DETAIL_LIMIT - reserve);
+  const perRisk = Math.floor(available / Math.max(risks.length, 1));
+  return risks
     .map((risk, index) => {
-      const target = risk.targets.length
-        ? `\nTargets: ${risk.targets.join(", ")}`
-        : "";
-      const uncertainty = risk.uncertainty ? `\n${risk.uncertainty}` : "";
-      return `${index + 1}. [${risk.severity}] ${risk.category}: ${risk.effect}\n${risk.segment}${target}${uncertainty}`;
+      const detail = [
+        risk.segment,
+        risk.targets.length ? `Targets: ${risk.targets.join(", ")}` : "",
+        risk.uncertainty ?? "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      return perRisk
+        ? `${summaries[index]}\n${excerpt(detail, perRisk)}`
+        : summaries[index]!;
     })
     .join("\n\n");
-  return detail.length <= DETAIL_LIMIT
-    ? detail
-    : detail.slice(0, DETAIL_LIMIT - TRUNCATION.length) + TRUNCATION;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -26,6 +44,12 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("tool_call", async (event, ctx) => {
     if (!enabled || event.toolName !== "bash" || !ctx.hasUI) {
+      return undefined;
+    }
+    const tool = pi
+      .getAllTools()
+      .find((candidate) => candidate.name === "bash");
+    if (tool?.sourceInfo.source !== "builtin") {
       return undefined;
     }
     const command = (event.input as { command?: unknown }).command;

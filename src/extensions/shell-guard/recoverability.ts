@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
-const SAFE_DEVICES = new Set([
+const SAFE_PSEUDO_DEVICES = new Set([
   "/dev/null",
   "/dev/zero",
   "/dev/stdin",
@@ -15,18 +15,16 @@ const SAFE_DEVICES = new Set([
   "/dev/random",
 ]);
 
-type Snapshot = {
-  root: string;
-  tracked: Set<string>;
-  changed: Set<string>;
-  failed: boolean;
-};
+type Snapshot = { root: string; tracked: Set<string>; changed: Set<string> };
+type Repository =
+  | { kind: "non-git" }
+  | { kind: "failed" }
+  | { kind: "snapshot"; value: Snapshot };
 
 function inside(root: string, candidate: string): boolean {
   const part = relative(root, candidate);
   return part !== "" && !part.startsWith("..") && !isAbsolute(part);
 }
-
 function insideOrEqual(root: string, candidate: string): boolean {
   return root === candidate || inside(root, candidate);
 }
@@ -63,15 +61,24 @@ async function canonical(
   }
 }
 
-async function snapshotFor(
-  path: string,
-  cache: Map<string, Promise<Snapshot | undefined>>,
-): Promise<Snapshot | undefined> {
-  const start = await nearestExisting(dirname(path));
-  const directory = await canonical(start, true);
-  if (!directory) {
-    return undefined;
+function changedPaths(root: string, output: string): Set<string> {
+  const changed = new Set<string>();
+  const records = output.split("\0");
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index]!;
+    if (record.length < 4) {
+      continue;
+    }
+    const status = record.slice(0, 2);
+    changed.add(resolve(root, record.slice(3)));
+    if ((status[0] === "R" || status[0] === "C") && records[index + 1]) {
+      changed.add(resolve(root, records[++index]!));
+    }
   }
+  return changed;
+}
+
+async function inspectRepository(directory: string): Promise<Repository> {
   let root: string;
   try {
     root = (
@@ -79,37 +86,32 @@ async function snapshotFor(
         timeout: 5000,
       })
     ).stdout.trim();
-  } catch {
-    return undefined;
+  } catch (error) {
+    const stderr = String((error as { stderr?: unknown }).stderr ?? "");
+    return /not a git repository/i.test(stderr)
+      ? { kind: "non-git" }
+      : { kind: "failed" };
   }
-  const existing = cache.get(root);
-  if (existing) {
-    return existing;
-  }
-  const pending = (async () => {
-    try {
-      const [status, files] = await Promise.all([
-        exec(
-          "git",
-          [
-            "-C",
-            root,
-            "status",
-            "--porcelain=v1",
-            "--ignored",
-            "--untracked-files=all",
-          ],
-          { timeout: 5000 },
-        ),
-        exec("git", ["-C", root, "ls-files", "-z"], { timeout: 5000 }),
-      ]);
-      const changed = new Set<string>();
-      for (const line of status.stdout.split("\n")) {
-        if (line.length > 3) {
-          changed.add(resolve(root, line.slice(3)));
-        }
-      }
-      return {
+  try {
+    const [status, files] = await Promise.all([
+      exec(
+        "git",
+        [
+          "-C",
+          root,
+          "status",
+          "--porcelain=v1",
+          "-z",
+          "--ignored",
+          "--untracked-files=all",
+        ],
+        { timeout: 5000 },
+      ),
+      exec("git", ["-C", root, "ls-files", "-z"], { timeout: 5000 }),
+    ]);
+    return {
+      kind: "snapshot",
+      value: {
         root,
         tracked: new Set(
           files.stdout
@@ -117,15 +119,12 @@ async function snapshotFor(
             .filter(Boolean)
             .map((entry) => resolve(root, entry)),
         ),
-        changed,
-        failed: false,
-      };
-    } catch {
-      return undefined;
-    }
-  })();
-  cache.set(root, pending);
-  return pending;
+        changed: changedPaths(root, status.stdout),
+      },
+    };
+  } catch {
+    return { kind: "failed" };
+  }
 }
 
 async function leaves(path: string): Promise<string[] | undefined> {
@@ -146,10 +145,98 @@ async function leaves(path: string): Promise<string[] | undefined> {
 
 export type Recoverability = {
   cwd: string;
-  snapshots: Map<string, Promise<Snapshot | undefined>>;
+  repositories: Map<string, Promise<Repository>>;
+  discoveries: Map<string, Promise<Repository>>;
 };
 export function createRecoverability(cwd: string): Recoverability {
-  return { cwd, snapshots: new Map() };
+  return { cwd, repositories: new Map(), discoveries: new Map() };
+}
+
+async function repositoryFor(
+  path: string,
+  state: Recoverability,
+): Promise<Repository> {
+  for (const pending of state.repositories.values()) {
+    const repository = await pending;
+    if (
+      repository.kind === "snapshot" &&
+      insideOrEqual(repository.value.root, path)
+    ) {
+      return repository;
+    }
+  }
+  const directory = await canonical(await nearestExisting(dirname(path)), true);
+  if (!directory) {
+    return { kind: "failed" };
+  }
+  const existing = state.discoveries.get(directory);
+  if (existing) {
+    return existing;
+  }
+  const pending = inspectRepository(directory).then((repository) => {
+    if (repository.kind === "snapshot") {
+      state.repositories.set(
+        repository.value.root,
+        Promise.resolve(repository),
+      );
+    }
+    return repository;
+  });
+  state.discoveries.set(directory, pending);
+  return pending;
+}
+
+async function temporaryTarget(
+  target: string,
+  state: Recoverability,
+  repository: Repository,
+): Promise<boolean> {
+  if (repository.kind === "failed") {
+    return false;
+  }
+  const cwd = await canonical(state.cwd, true);
+  if (!cwd || insideOrEqual(cwd, target)) {
+    return false;
+  }
+  if (
+    repository.kind === "snapshot" &&
+    insideOrEqual(repository.value.root, target)
+  ) {
+    return false;
+  }
+  const roots = [
+    ...new Set(
+      [
+        tmpdir(),
+        "/tmp",
+        "/var/tmp",
+        process.env.TMPDIR,
+        process.env.TMP,
+        process.env.TEMP,
+      ].filter((root): root is string => !!root),
+    ),
+  ];
+  for (const root of roots) {
+    const canonicalRoot = await canonical(root, true);
+    if (canonicalRoot && inside(canonicalRoot, target)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export async function canonicalCandidates(
+  target: string,
+  operation: "remove" | "follow" | "overwrite",
+  state: Recoverability,
+): Promise<string[]> {
+  const absolute = resolve(state.cwd, target);
+  const entry = await canonical(absolute, false);
+  const followed =
+    operation === "remove" ? undefined : await canonical(absolute, true);
+  return [
+    ...new Set([entry, followed].filter((value): value is string => !!value)),
+  ];
 }
 
 export async function isRecoverable(
@@ -158,43 +245,43 @@ export async function isRecoverable(
   state: Recoverability,
 ): Promise<boolean> {
   const absolute = resolve(state.cwd, target);
-  if (SAFE_DEVICES.has(absolute)) {
+  if (operation !== "remove" && SAFE_PSEUDO_DEVICES.has(absolute)) {
     return true;
   }
+  let exists = true;
   try {
     const stat = await lstat(absolute);
     if (operation === "overwrite" && stat.isSymbolicLink()) {
       return false;
     }
   } catch {
+    exists = false;
+  }
+  if (!exists) {
     return operation === "overwrite";
   }
-  const canonicalTarget = await canonical(absolute, operation !== "remove");
-  if (!canonicalTarget) {
+  const candidates = await canonicalCandidates(absolute, operation, state);
+  if (!candidates.length) {
     return false;
   }
-  const snapshot = await snapshotFor(canonicalTarget, state.snapshots);
-  const cwd = await canonical(state.cwd, true);
-  if (!cwd) {
-    return false;
-  }
-  const temp = await canonical(tmpdir(), true);
-  if (
-    temp &&
-    inside(temp, canonicalTarget) &&
-    !insideOrEqual(cwd, canonicalTarget) &&
-    !(snapshot && insideOrEqual(snapshot.root, canonicalTarget))
-  ) {
+  const targetPath = candidates.at(-1)!;
+  const repository = await repositoryFor(targetPath, state);
+  if (await temporaryTarget(targetPath, state, repository)) {
     return true;
   }
-  if (!snapshot || !inside(snapshot.root, canonicalTarget)) {
+  if (
+    repository.kind !== "snapshot" ||
+    !inside(repository.value.root, targetPath)
+  ) {
     return false;
   }
-  const affected = await leaves(canonicalTarget);
-  if (!affected?.length) {
-    return false;
-  }
-  return affected.every(
-    (leaf) => snapshot.tracked.has(leaf) && !snapshot.changed.has(leaf),
+  const affected = await leaves(targetPath);
+  return (
+    !!affected?.length &&
+    affected.every(
+      (leaf) =>
+        repository.value.tracked.has(leaf) &&
+        !repository.value.changed.has(leaf),
+    )
   );
 }
