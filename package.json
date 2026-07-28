@@ -39,7 +39,8 @@
   },
   "imports": {
     "#lib/*": "./src/lib/*.ts",
-    "#subagents/runtime": "./src/extensions/subagents/runtime.ts"
+    "#subagents/runtime": "./src/extensions/subagents/runtime.ts",
+    "#test/*": "./test/support/*.ts"
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
@@ -48,10 +49,7 @@
     "format:check": "prettier --check .",
     "check": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --testTimeout 15000",
-    "test:subagents": "vitest run --project subagents",
-    "test:implement:unit": "vitest run --project implement-unit",
-    "test:implement:integration": "vitest run --project implement-integration"
+    "test": "vitest run --testTimeout 15000"
   },
   "dependencies": {
     "execa": "^10.0.0",

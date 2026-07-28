@@ -1,16 +1,16 @@
 import {
-  createAgentSession,
-  DefaultResourceLoader,
-  ModelRuntime,
   SessionManager,
-  SettingsManager,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
-  createFauxCore,
-  fauxAssistantMessage,
-  fauxToolCall,
-} from "@earendil-works/pi-ai";
+  createManagedSessionHarness,
+  managedSessionContext,
+  MANAGED_TEST_CWD,
+  MANAGED_TEST_MODEL,
+  MANAGED_TEST_PROVIDER,
+  type FauxResponse,
+} from "#test/managed-session";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { INSPECTION_RECORD_LIMIT } from "./inspection.js";
@@ -89,98 +89,16 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
   };
 }
 
-const TEST_PROVIDER = "managed-completion-test";
-const TEST_MODEL = "managed-completion-model";
-const TEST_CWD = "/managed-completion-workspace";
-
-type FauxResponse = Parameters<
-  ReturnType<typeof createFauxCore>["setResponses"]
->[0];
+const TEST_PROVIDER = MANAGED_TEST_PROVIDER;
+const TEST_MODEL = MANAGED_TEST_MODEL;
+const TEST_CWD = MANAGED_TEST_CWD;
 
 async function createRealSessionHarness(responses: FauxResponse) {
-  const faux = createFauxCore({
-    provider: TEST_PROVIDER,
-    api: "openai-completions",
-    models: [{ id: TEST_MODEL }],
-  });
-  const fauxModel = faux.getModel(TEST_MODEL);
-  if (!fauxModel) {
-    throw new Error("Missing faux test model.");
-  }
-  faux.setResponses(responses);
-  const modelRuntime = await ModelRuntime.create({
-    allowModelNetwork: false,
-  });
-  modelRuntime.registerProvider(TEST_PROVIDER, {
-    api: fauxModel.api,
-    baseUrl: fauxModel.baseUrl,
-    apiKey: "test-key",
-    streamSimple: faux.streamSimple,
-    models: [
-      {
-        id: fauxModel.id,
-        name: fauxModel.name,
-        api: fauxModel.api,
-        baseUrl: fauxModel.baseUrl,
-        reasoning: fauxModel.reasoning,
-        input: fauxModel.input,
-        cost: fauxModel.cost,
-        contextWindow: fauxModel.contextWindow,
-        maxTokens: fauxModel.maxTokens,
-      },
-    ],
-  });
-  await modelRuntime.setRuntimeApiKey(TEST_PROVIDER, "test-key", {
-    allowNetwork: false,
-  });
-  const model = modelRuntime.getModel(TEST_PROVIDER, TEST_MODEL);
-  if (!model) {
-    throw new Error("Test model registration failed.");
-  }
-  const modelRegistry = {
-    find: (provider: string, modelId: string) =>
-      provider === TEST_PROVIDER && modelId === TEST_MODEL ? model : undefined,
-  };
-  const settingsManager = SettingsManager.inMemory({
-    compaction: { enabled: false },
-    retry: { enabled: false },
-  });
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: TEST_CWD,
-    agentDir: TEST_CWD,
-    settingsManager,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-  });
-  await resourceLoader.reload();
-  const sessions: AgentSession[] = [];
-  const createSession = async (
-    options: Parameters<typeof createAgentSession>[0] = {},
-  ) => {
-    const created = await createAgentSession({
-      ...options,
-      cwd: TEST_CWD,
-      model,
-      modelRuntime,
-      settingsManager,
-      resourceLoader,
-      sessionManager: SessionManager.inMemory(TEST_CWD),
-      noTools: "builtin",
-    });
-    sessions.push(created.session);
-    return { session: created.session };
-  };
-  return { createSession, faux, model, modelRegistry, sessions };
+  return createManagedSessionHarness(responses);
 }
 
-function realContext(
-  model: ReturnType<ReturnType<typeof createFauxCore>["getModel"]>,
-  modelRegistry: { find: (provider: string, modelId: string) => typeof model },
-) {
-  return makeCtx({ model, modelRegistry }) as never;
+function realContext(model: unknown, modelRegistry: unknown) {
+  return makeCtx(managedSessionContext({ model, modelRegistry })) as never;
 }
 
 function completionTool(options: unknown): {

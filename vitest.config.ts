@@ -49,6 +49,15 @@ export default defineConfig({
       },
       {
         test: {
+          name: "implement-e2e",
+          include: ["src/extensions/implement/**/*.e2e.test.ts"],
+          environment: "node",
+          globals: false,
+          fileParallelism: false,
+        },
+      },
+      {
+        test: {
           name: "lib",
           include: ["src/lib/**/*.test.ts"],
           environment: "node",
