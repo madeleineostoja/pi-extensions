@@ -23,6 +23,7 @@ export type CommittedAttemptData = {
   childPath: string;
   childDraftEntryId: string;
   target: ModelIdentity;
+  draft: DraftData;
 };
 
 export type CancelledAttemptData = {
@@ -112,7 +113,8 @@ export function attemptFromEntry(
         typeof data.childSessionId === "string" &&
         typeof data.childPath === "string" &&
         typeof data.childDraftEntryId === "string" &&
-        isModelIdentity(data.target)
+        isModelIdentity(data.target) &&
+        isDraftData(data.draft)
       );
     }
     return (
@@ -124,20 +126,21 @@ export function attemptFromEntry(
   });
 }
 
+function isDraftData(data: unknown): data is DraftData {
+  return (
+    isObject(data) &&
+    data.version === 1 &&
+    typeof data.transitionId === "string" &&
+    typeof data.prompt === "string" &&
+    isModelIdentity(data.source) &&
+    isModelIdentity(data.target)
+  );
+}
+
 export function draftFromEntry(
   entry: SessionEntry,
 ): { entry: CustomEntry; data: DraftData } | undefined {
-  return customData(
-    entry,
-    DRAFT_TYPE,
-    (data): data is DraftData =>
-      isObject(data) &&
-      data.version === 1 &&
-      typeof data.transitionId === "string" &&
-      typeof data.prompt === "string" &&
-      isModelIdentity(data.source) &&
-      isModelIdentity(data.target),
-  );
+  return customData(entry, DRAFT_TYPE, isDraftData);
 }
 
 export function deliveryFromEntry(
@@ -172,19 +175,23 @@ export function getEligibleTransition(
   currentModel: ModelIdentity | undefined,
 ): EligibleTransition | undefined {
   let transitionIndex = -1;
-  let transition: EligibleTransition | undefined;
   for (let index = branch.length - 1; index >= 0; index--) {
-    const candidate = transitionFromEntry(branch[index]);
-    if (candidate) {
+    const entry = branch[index];
+    if (entry.type === "custom" && entry.customType === TRANSITION_TYPE) {
       transitionIndex = index;
-      transition = candidate;
       break;
     }
   }
-  if (!transition || !sameModel(currentModel, transition.data.target)) {
+  if (transitionIndex < 0) {
     return undefined;
   }
-  if (branch[transitionIndex - 1]?.id !== transition.data.branchLeafId) {
+  const transition = transitionFromEntry(branch[transitionIndex]);
+  if (
+    !transition ||
+    sameModel(transition.data.source, transition.data.target) ||
+    !sameModel(currentModel, transition.data.target) ||
+    branch[transitionIndex - 1]?.id !== transition.data.branchLeafId
+  ) {
     return undefined;
   }
 
@@ -203,40 +210,43 @@ export function getEligibleTransition(
     }
   }
 
-  const committed = new Map<string, CommittedAttemptData>();
-  const released = new Set<string>();
-  for (const entry of branch) {
-    if (entry.type === "custom" && entry.customType === ATTEMPT_TYPE) {
-      const attempt = attemptFromEntry(entry);
-      if (!attempt) {
-        return undefined;
-      }
-      if (attempt.data.transitionEntryId !== transition.entry.id) {
-        continue;
-      }
-      if (attempt.data.status === "committed") {
-        if (!sameModel(attempt.data.target, transition.data.target)) {
-          return undefined;
-        }
-        committed.set(attempt.entry.id, attempt.data);
-        continue;
-      }
-      const original = committed.get(attempt.data.committedAttemptId);
+  let state: "ready" | "committed" | "released" = "ready";
+  let committed: { id: string; data: CommittedAttemptData } | undefined;
+  for (let index = transitionIndex + 1; index < branch.length; index++) {
+    const entry = branch[index];
+    if (entry.type !== "custom" || entry.customType !== ATTEMPT_TYPE) {
+      continue;
+    }
+    const attempt = attemptFromEntry(entry);
+    if (!attempt || attempt.data.transitionEntryId !== transition.entry.id) {
+      return undefined;
+    }
+    if (attempt.data.status === "committed") {
       if (
-        !original ||
-        released.has(attempt.data.committedAttemptId) ||
-        original.childSessionId !== attempt.data.childSessionId ||
-        original.childPath !== attempt.data.childPath
+        state !== "ready" ||
+        !sameModel(attempt.data.target, transition.data.target) ||
+        attempt.data.draft.transitionId !== transition.data.transitionId ||
+        !sameModel(attempt.data.draft.source, transition.data.source) ||
+        !sameModel(attempt.data.draft.target, transition.data.target)
       ) {
         return undefined;
       }
-      released.add(attempt.data.committedAttemptId);
+      committed = { id: attempt.entry.id, data: attempt.data };
+      state = "committed";
+      continue;
     }
+    if (
+      state !== "committed" ||
+      !committed ||
+      attempt.data.committedAttemptId !== committed.id ||
+      attempt.data.childSessionId !== committed.data.childSessionId ||
+      attempt.data.childPath !== committed.data.childPath
+    ) {
+      return undefined;
+    }
+    state = "released";
   }
-  if ([...committed.keys()].some((attemptId) => !released.has(attemptId))) {
-    return undefined;
-  }
-  return transition;
+  return state === "committed" ? undefined : transition;
 }
 
 export function hasConversationMessages(entries: SessionEntry[]): boolean {

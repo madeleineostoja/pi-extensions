@@ -1,7 +1,6 @@
-import { access } from "node:fs/promises";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
-import { uuidv7 } from "@earendil-works/pi-ai";
-import { complete } from "@earendil-works/pi-ai/compat";
+import { retryAssistantCall, uuidv7 } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -13,15 +12,16 @@ import {
   convertToLlm,
   serializeConversation,
 } from "@earendil-works/pi-coding-agent";
-import { createChildArtifact, removeChildArtifact } from "./artifact";
+import {
+  createChildArtifact,
+  removeChildArtifact,
+  validateChildArtifact,
+} from "./artifact";
 import {
   ATTEMPT_TYPE,
+  attemptFromEntry,
   DELIVERY_TYPE,
-  deliveryFromEntry,
-  draftFromEntry,
-  DRAFT_TYPE,
   getEligibleTransition,
-  hasConversationMessages,
   sameModel,
   TRANSITION_TYPE,
   type DraftData,
@@ -39,36 +39,79 @@ function parentSession(ctx: ExtensionContext): string | undefined {
   return ctx.sessionManager.getSessionFile();
 }
 
+function sameData(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function appendEntry<T>(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   customType: string,
   data: T,
 ): string {
+  const path = parentSession(ctx);
+  if (!path) {
+    throw new Error("Handoff state requires a persisted session.");
+  }
   pi.appendEntry(customType, data);
-  const entry = ctx.sessionManager.getBranch().at(-1);
-  if (entry?.type !== "custom" || entry.customType !== customType) {
-    throw new Error("Handoff state could not be persisted.");
+  const durable = SessionManager.open(path, ctx.sessionManager.getSessionDir());
+  const entry = durable.getBranch().at(-1);
+  if (
+    entry?.type !== "custom" ||
+    entry.customType !== customType ||
+    !sameData(entry.data, data)
+  ) {
+    throw new Error("Handoff state could not be durably persisted.");
   }
   return entry.id;
+}
+
+function currentAndPersistedTransition(
+  ctx: ExtensionContext,
+  parentPath: string,
+): EligibleTransition | undefined {
+  if (parentSession(ctx) !== parentPath || !ctx.model) {
+    return undefined;
+  }
+  const currentHeader = ctx.sessionManager.getHeader();
+  if (!currentHeader || currentHeader.cwd !== ctx.cwd) {
+    return undefined;
+  }
+  let persisted: SessionManager;
+  try {
+    persisted = SessionManager.open(
+      parentPath,
+      ctx.sessionManager.getSessionDir(),
+    );
+  } catch {
+    return undefined;
+  }
+  const persistedHeader = persisted.getHeader();
+  if (
+    !persistedHeader ||
+    persistedHeader.id !== currentHeader.id ||
+    persistedHeader.cwd !== ctx.cwd
+  ) {
+    return undefined;
+  }
+  const model = identity(ctx.model);
+  const current = getEligibleTransition(ctx.sessionManager.getBranch(), model);
+  const durable = getEligibleTransition(persisted.getBranch(), model);
+  if (!current || !durable || current.entry.id !== durable.entry.id) {
+    return undefined;
+  }
+  return durable;
 }
 
 async function eligibleTransition(
   ctx: ExtensionContext,
   parentPath: string,
+  blockedTransitions: ReadonlySet<string>,
 ): Promise<EligibleTransition | undefined> {
-  if (parentSession(ctx) !== parentPath || !ctx.model) {
-    return undefined;
-  }
-  try {
-    await access(parentPath);
-  } catch {
-    return undefined;
-  }
-  return getEligibleTransition(
-    ctx.sessionManager.getBranch(),
-    identity(ctx.model),
-  );
+  const transition = currentAndPersistedTransition(ctx, parentPath);
+  return transition && !blockedTransitions.has(transition.data.transitionId)
+    ? transition
+    : undefined;
 }
 
 async function generatePrompt(
@@ -77,7 +120,8 @@ async function generatePrompt(
   focus: string,
 ): Promise<string | undefined> {
   const sourceModel = ctx.modelRegistry.find(source.provider, source.id);
-  if (!sourceModel) {
+  const provider = ctx.modelRegistry.getProvider(source.provider);
+  if (!sourceModel || !provider) {
     ctx.ui.notify(
       "Handoff cancelled: captured source model is unavailable.",
       "error",
@@ -85,8 +129,11 @@ async function generatePrompt(
     return undefined;
   }
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(sourceModel);
-  if (!auth.ok) {
-    ctx.ui.notify(`Handoff cancelled: ${auth.error}`, "error");
+  if (!auth.ok || !auth.apiKey) {
+    ctx.ui.notify(
+      `Handoff cancelled: ${auth.ok ? "source model has no API key" : auth.error}`,
+      "error",
+    );
     return undefined;
   }
   const sessionContext = buildSessionContext(
@@ -112,29 +159,45 @@ async function generatePrompt(
       theme,
       "Generating handoff prompt...",
     );
-    loader.onAbort = () => {
-      ctx.ui.notify("Handoff cancelled.", "info");
-      done(undefined);
-    };
+    loader.onAbort = () => done(undefined);
     const signal = ctx.signal
       ? AbortSignal.any([ctx.signal, loader.signal])
       : loader.signal;
-    void complete(
-      sourceModel,
-      { systemPrompt: HANDOFF_INSTRUCTIONS, messages: [request] },
-      {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-        env: auth.env,
-        signal,
-        maxTokens: 4096,
-        cacheRetention: "none",
-        sessionId: uuidv7(),
-      },
+    const maxTokens =
+      typeof sourceModel.maxTokens === "number" && sourceModel.maxTokens > 0
+        ? Math.min(4096, sourceModel.maxTokens)
+        : 4096;
+    void retryAssistantCall(
+      () =>
+        provider
+          .streamSimple(
+            sourceModel,
+            { systemPrompt: HANDOFF_INSTRUCTIONS, messages: [request] },
+            {
+              apiKey: auth.apiKey,
+              headers: auth.headers,
+              env: auth.env,
+              signal,
+              maxTokens,
+              cacheRetention: "none",
+              sessionId: uuidv7(),
+            },
+          )
+          .result(),
+      { enabled: true, maxRetries: 2, baseDelayMs: 500 },
+      signal,
     )
       .then((response) => {
         if (response.stopReason === "aborted") {
           ctx.ui.notify("Handoff cancelled.", "info");
+          done(undefined);
+          return;
+        }
+        if (response.stopReason === "error") {
+          ctx.ui.notify(
+            `Handoff cancelled: ${response.errorMessage || "source generation failed"}`,
+            "error",
+          );
           done(undefined);
           return;
         }
@@ -169,36 +232,41 @@ async function generatePrompt(
   });
 }
 
-function latestDraft(ctx: ExtensionContext):
-  | {
-      entryId: string;
-      data: DraftData;
-      delivered: boolean;
-    }
-  | undefined {
+function latestDraft(ctx: ExtensionContext) {
+  const path = parentSession(ctx);
   const header = ctx.sessionManager.getHeader();
-  if (!header?.parentSession || header.cwd !== ctx.cwd || !parentSession(ctx)) {
+  if (!path || !header?.parentSession || !ctx.model) {
     return undefined;
   }
-  const branch = ctx.sessionManager.getBranch();
-  if (hasConversationMessages(branch)) {
-    return undefined;
-  }
-  for (let index = branch.length - 1; index >= 0; index--) {
-    const draft = draftFromEntry(branch[index]);
-    if (
-      !draft ||
-      !sameModel(ctx.model && identity(ctx.model), draft.data.target)
-    ) {
-      continue;
-    }
-    const delivered = branch.some((entry) => {
-      const delivery = deliveryFromEntry(entry);
-      return delivery?.data.draftEntryId === draft.entry.id;
+  try {
+    const child = validateChildArtifact({
+      manager: ctx.sessionManager,
+      path,
+      sessionDir: ctx.sessionManager.getSessionDir(),
+      parentPath: header.parentSession,
+      cwd: ctx.cwd,
+      target: identity(ctx.model),
     });
-    return { entryId: draft.entry.id, data: draft.data, delivered };
+    const parent = SessionManager.open(
+      header.parentSession,
+      ctx.sessionManager.getSessionDir(),
+    );
+    const committed = parent
+      .getBranch()
+      .map(attemptFromEntry)
+      .find(
+        (attempt) =>
+          attempt?.data.status === "committed" &&
+          attempt.data.childSessionId === child.sessionId &&
+          attempt.data.childPath === path &&
+          attempt.data.childDraftEntryId === child.draftEntryId &&
+          sameData(attempt.data.draft, child.draft) &&
+          sameModel(attempt.data.target, child.draft.target),
+      );
+    return committed ? child : undefined;
+  } catch {
+    return undefined;
   }
-  return undefined;
 }
 
 function deliverDraft(
@@ -214,13 +282,13 @@ function deliverDraft(
     return false;
   }
   try {
-    ctx.ui.setEditorText(draft.data.prompt);
+    ctx.ui.setEditorText(draft.draft.prompt);
     if (!draft.delivered) {
       appendEntry(pi, ctx, DELIVERY_TYPE, {
         version: 1,
-        transitionId: draft.data.transitionId,
-        draftEntryId: draft.entryId,
-        target: draft.data.target,
+        transitionId: draft.draft.transitionId,
+        draftEntryId: draft.draftEntryId,
+        target: draft.draft.target,
       });
     }
     return true;
@@ -235,13 +303,14 @@ function deliverDraft(
 
 export default function (pi: ExtensionAPI) {
   let handoffInProgress = false;
+  const blockedTransitions = new Set<string>();
 
   pi.on("model_select", async (event, ctx) => {
     if (
       event.source === "restore" ||
       !event.previousModel ||
-      event.previousModel.provider === event.model.provider ||
-      event.previousModel.id === event.model.id ||
+      (event.previousModel.provider === event.model.provider &&
+        event.previousModel.id === event.model.id) ||
       !parentSession(ctx)
     ) {
       return;
@@ -257,14 +326,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     if (!deliverDraft(pi, ctx, false) && ctx.mode === "tui") {
-      const branch = ctx.sessionManager.getBranch();
-      const hasDraft = branch.some(
-        (entry) => entry.type === "custom" && entry.customType === DRAFT_TYPE,
-      );
-      if (hasDraft && !hasConversationMessages(branch)) {
-        const header = ctx.sessionManager.getHeader();
+      const path = parentSession(ctx);
+      const header = ctx.sessionManager.getHeader();
+      if (path && header?.parentSession) {
         ctx.ui.notify(
-          `Handoff draft was not delivered. Reopen child ${parentSession(ctx) ?? "(ephemeral)"} with its recorded target model, then run /handoff-recover. Parent: ${header?.parentSession ?? "unknown"}.`,
+          `Handoff draft was not delivered. Reopen child ${path} with its recorded target, then run /handoff-recover. Parent: ${header.parentSession}.`,
           "warning",
         );
       }
@@ -302,12 +368,15 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       handoffInProgress = true;
+      let switchStarted = false;
+      let parentPath: string | undefined;
+      let childPath: string | undefined;
       try {
         if (ctx.mode !== "tui") {
           ctx.ui.notify("Handoff requires TUI mode.", "error");
           return;
         }
-        const parentPath = parentSession(ctx);
+        parentPath = parentSession(ctx);
         if (!parentPath) {
           ctx.ui.notify(
             "Handoff requires a persisted parent session.",
@@ -315,7 +384,11 @@ export default function (pi: ExtensionAPI) {
           );
           return;
         }
-        const transition = await eligibleTransition(ctx, parentPath);
+        const transition = await eligibleTransition(
+          ctx,
+          parentPath,
+          blockedTransitions,
+        );
         if (!transition) {
           ctx.ui.notify(
             "No eligible model transition. Switch to a different model, then try /handoff again.",
@@ -340,7 +413,11 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify("Handoff cancelled.", "info");
           return;
         }
-        const revalidated = await eligibleTransition(ctx, parentPath);
+        const revalidated = await eligibleTransition(
+          ctx,
+          parentPath,
+          blockedTransitions,
+        );
         if (!revalidated || revalidated.entry.id !== transition.entry.id) {
           ctx.ui.notify(
             "Handoff cancelled: the parent session changed during review.",
@@ -363,13 +440,22 @@ export default function (pi: ExtensionAPI) {
           target: transition.data.target,
           draft,
         });
-        const beforeCommit = await eligibleTransition(ctx, parentPath);
+        childPath = child.path;
+        const beforeCommit = await eligibleTransition(
+          ctx,
+          parentPath,
+          blockedTransitions,
+        );
         if (!beforeCommit || beforeCommit.entry.id !== transition.entry.id) {
           await removeChildArtifact({
             path: child.path,
             sessionDir,
             parentPath,
+            cwd: ctx.cwd,
             childSessionId: child.sessionId,
+            childDraftEntryId: child.draftEntryId,
+            target: transition.data.target,
+            draft,
           });
           ctx.ui.notify(
             "Handoff cancelled: the parent session changed before commit.",
@@ -377,15 +463,49 @@ export default function (pi: ExtensionAPI) {
           );
           return;
         }
-        const attemptId = appendEntry(pi, ctx, ATTEMPT_TYPE, {
-          version: 1,
-          status: "committed",
-          transitionEntryId: transition.entry.id,
-          childSessionId: child.sessionId,
-          childPath: child.path,
-          childDraftEntryId: child.draftEntryId,
-          target: transition.data.target,
-        });
+        let attemptId: string;
+        try {
+          attemptId = appendEntry(pi, ctx, ATTEMPT_TYPE, {
+            version: 1,
+            status: "committed",
+            transitionEntryId: transition.entry.id,
+            childSessionId: child.sessionId,
+            childPath: child.path,
+            childDraftEntryId: child.draftEntryId,
+            target: transition.data.target,
+            draft,
+          });
+        } catch (error) {
+          blockedTransitions.add(transition.data.transitionId);
+          try {
+            await removeChildArtifact({
+              path: child.path,
+              sessionDir,
+              parentPath,
+              cwd: ctx.cwd,
+              childSessionId: child.sessionId,
+              childDraftEntryId: child.draftEntryId,
+              target: transition.data.target,
+              draft,
+            });
+          } catch (cleanupError) {
+            ctx.ui.notify(
+              `Handoff commit is unresolved. Parent: ${parentPath}. Child: ${child.path}. ${cleanupError instanceof Error ? cleanupError.message : "cleanup failed"}`,
+              "error",
+            );
+            return;
+          }
+          ctx.ui.notify(
+            `Handoff commit was not persisted; its removed child was ${child.path}. Parent: ${parentPath}. ${error instanceof Error ? error.message : "persistence failed"}`,
+            "error",
+          );
+          return;
+        }
+        ctx.ui.notify(
+          `Handoff committed. If replacement cannot start, recover parent ${parentPath} and child ${child.path}; no rollback will occur.`,
+          "warning",
+        );
+        switchStarted = true;
         const result = await ctx.switchSession(child.path);
         if (!result.cancelled) {
           return;
@@ -395,31 +515,46 @@ export default function (pi: ExtensionAPI) {
             path: child.path,
             sessionDir,
             parentPath,
+            cwd: ctx.cwd,
             childSessionId: child.sessionId,
+            childDraftEntryId: child.draftEntryId,
+            target: transition.data.target,
+            draft,
           });
-          appendEntry(pi, ctx, ATTEMPT_TYPE, {
-            version: 1,
-            status: "cancelled",
-            committedAttemptId: attemptId,
-            transitionEntryId: transition.entry.id,
-            childSessionId: child.sessionId,
-            childPath: child.path,
-          });
+          try {
+            appendEntry(pi, ctx, ATTEMPT_TYPE, {
+              version: 1,
+              status: "cancelled",
+              committedAttemptId: attemptId,
+              transitionEntryId: transition.entry.id,
+              childSessionId: child.sessionId,
+              childPath: child.path,
+            });
+          } catch (error) {
+            blockedTransitions.add(transition.data.transitionId);
+            ctx.ui.notify(
+              `Handoff switch cancellation remains consumed because its cancellation record was not persisted. Parent: ${parentPath}. Child: ${child.path}. ${error instanceof Error ? error.message : "persistence failed"}`,
+              "error",
+            );
+            return;
+          }
           ctx.ui.notify(
             "Handoff switch cancelled. The transition is available to retry.",
             "info",
           );
         } catch (error) {
           ctx.ui.notify(
-            `Handoff switch cancelled, but its committed child remains consumed at ${child.path}: ${error instanceof Error ? error.message : "cleanup failed"}`,
+            `Handoff switch cancelled, but its committed child remains consumed. Parent: ${parentPath}. Child: ${child.path}. ${error instanceof Error ? error.message : "cleanup failed"}`,
             "error",
           );
         }
       } catch (error) {
-        ctx.ui.notify(
-          `Handoff stopped. Parent and any committed child remain recoverable: ${error instanceof Error ? error.message : "unexpected failure"}`,
-          "error",
-        );
+        if (!switchStarted) {
+          ctx.ui.notify(
+            `Handoff stopped. Parent: ${parentPath ?? "unknown"}. Child: ${childPath ?? "none"}. ${error instanceof Error ? error.message : "unexpected failure"}`,
+            "error",
+          );
+        }
       } finally {
         handoffInProgress = false;
       }

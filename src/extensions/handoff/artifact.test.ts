@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
-import { createChildArtifact } from "./artifact";
+import { createChildArtifact, removeChildArtifact } from "./artifact";
 import { DRAFT_TYPE, type DraftData } from "./state";
 
 const directories: string[] = [];
@@ -55,5 +55,39 @@ describe("child artifact", () => {
         data: draft,
       }),
     ]);
+  });
+
+  it("refuses to remove a child when its committed target does not match", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pipkin-handoff-"));
+    directories.push(directory);
+    const parentPath = join(directory, "parent.jsonl");
+    const draft: DraftData = {
+      version: 1,
+      transitionId: "transition",
+      source: { provider: "source", id: "one" },
+      target: { provider: "target", id: "two" },
+      prompt: "Continue the task.",
+    };
+    const child = await createChildArtifact({
+      cwd: directory,
+      sessionDir: directory,
+      parentPath,
+      target: draft.target,
+      draft,
+    });
+
+    await expect(
+      removeChildArtifact({
+        path: child.path,
+        sessionDir: directory,
+        parentPath,
+        cwd: directory,
+        childSessionId: child.sessionId,
+        childDraftEntryId: child.draftEntryId,
+        target: { provider: "target", id: "other" },
+        draft,
+      }),
+    ).rejects.toThrow("Handoff child entries are invalid");
+    expect(() => SessionManager.open(child.path, directory)).not.toThrow();
   });
 });

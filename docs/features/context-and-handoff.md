@@ -59,3 +59,7 @@ If editor text is lost, reopen the empty child under its recorded target and run
 Recovery copies the child draft into the editor without submitting it. It refuses children with user or assistant history, a different live model, or no matching draft. A cancelled switch removes its child before releasing the original transition for retry; if cleanup cannot be verified, the committed child path remains the durable recovery path.
 
 Handoff does not compact or delete the parent, infer a source model from history, fall back to the target model, or transfer the parent transcript into the child.
+
+### Persistence boundary
+
+Handoff assumes one Pi runtime is the sole writer for a parent session file while a handoff is in progress. Concurrent, separate Pi processes writing the same parent file are unsupported; use one runtime per parent file.
