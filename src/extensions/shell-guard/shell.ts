@@ -28,7 +28,7 @@ export function splitSegments(command: string): Segment[] {
           ? "&&"
           : char === "|" && next === "|"
             ? "||"
-            : char === "|"
+            : char === "|" && command[i - 1] !== ">"
               ? "|"
               : char === "&" && next !== ">" && command[i - 1] !== ">"
                 ? "&"
@@ -94,7 +94,9 @@ export function tokenize(command: string): string[] | undefined {
       if (!fd) {
         flush();
       }
-      const operator = `${fd}${char}${command[i + 1] === ">" ? command[++i] : ""}`;
+      const operator = `${fd}${char}${
+        command[i + 1] === ">" || command[i + 1] === "|" ? command[++i] : ""
+      }`;
       if (command[i + 1] === "&") {
         let duplication = "&";
         i++;
@@ -149,7 +151,21 @@ export function executable(
         index = consumeWrapperOption(
           words,
           index,
-          new Set(["-u", "-g", "-h", "-C", "-r", "-t"]),
+          new Set([
+            "-u",
+            "--user",
+            "-g",
+            "--group",
+            "-h",
+            "--host",
+            "-C",
+            "--close-from",
+            "-r",
+            "--role",
+            "-t",
+            "-T",
+            "--command-timeout",
+          ]),
         );
       }
       continue;
@@ -164,7 +180,7 @@ export function executable(
           index = consumeWrapperOption(
             words,
             index,
-            new Set(["-u", "-C", "-S"]),
+            new Set(["-u", "--unset", "-C", "--chdir", "-S", "--split-string"]),
           );
         } else {
           break;
@@ -189,7 +205,7 @@ export function executable(
 export function redirectTargets(words: string[]): string[] {
   const targets: string[] = [];
   for (let index = 0; index < words.length; index++) {
-    if (!/^\d*>{1,2}$/.test(words[index] ?? "")) {
+    if (!/^\d*>{1,2}(?:[&|])?$/.test(words[index] ?? "")) {
       continue;
     }
     const target = words[index + 1];

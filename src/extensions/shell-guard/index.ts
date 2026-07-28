@@ -42,6 +42,10 @@ export function formatRisks(risks: Risk[]): string {
 export default function (pi: ExtensionAPI) {
   let enabled = true;
 
+  pi.on("session_start", () => {
+    enabled = true;
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     if (!enabled || event.toolName !== "bash" || !ctx.hasUI) {
       return undefined;

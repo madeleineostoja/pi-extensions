@@ -26,6 +26,21 @@ describe("edit/write approval", () => {
     expect(created).toContain("+first");
   });
 
+  it("resolves the same local paths as Pi built-ins", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "pipkin-edit-"));
+    writeFileSync(join(cwd, "file.ts"), "before\n");
+    writeFileSync(join(cwd, "@file.ts"), "other\n");
+
+    const detail = builtinPreview(
+      "write",
+      { path: "@file.ts", content: "after\n" },
+      cwd,
+    ).detail;
+
+    expect(detail).toContain("-before");
+    expect(detail).not.toContain("-other");
+  });
+
   it("does not claim an exact patch for unreadable or nonprojectable edits", () => {
     const cwd = mkdtempSync(join(tmpdir(), "pipkin-edit-"));
     writeFileSync(join(cwd, "file.ts"), "one two one");
@@ -41,6 +56,24 @@ describe("edit/write approval", () => {
       builtinPreview("write", { path: "unreadable", content: "after" }, cwd)
         .detail,
     ).toContain("could not be read");
+  });
+
+  it("matches Pi edit projections after BOM and line-ending normalization", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "pipkin-edit-"));
+    writeFileSync(join(cwd, "file.ts"), "\uFEFFfirst\r\nsecond\r\n");
+
+    const detail = builtinPreview(
+      "edit",
+      {
+        path: "file.ts",
+        edits: [{ oldText: "first\nsecond", newText: "changed\nsecond" }],
+      },
+      cwd,
+    ).detail;
+
+    expect(detail).toMatch(/@@/);
+    expect(detail).toContain("-first");
+    expect(detail).toContain("+changed");
   });
 
   it("projects non-overlapping multi-edits against the same original content", () => {

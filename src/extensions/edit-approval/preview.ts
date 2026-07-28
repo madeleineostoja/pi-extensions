@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
 
 export const DETAIL_LIMIT = 16_384;
@@ -23,13 +25,33 @@ function inputText(input: unknown): string {
 }
 
 function pathFor(input: unknown, cwd: string): string | undefined {
-  if (input && typeof input === "object") {
-    const path = (input as { path?: unknown }).path;
-    if (typeof path === "string" && path) {
-      return resolve(cwd, path);
-    }
+  if (!input || typeof input !== "object") {
+    return undefined;
   }
-  return undefined;
+  const path = (input as { path?: unknown }).path;
+  if (typeof path !== "string" || !path) {
+    return undefined;
+  }
+  let normalized = path.replace(
+    /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g,
+    " ",
+  );
+  if (normalized.startsWith("@")) {
+    normalized = normalized.slice(1);
+  }
+  if (normalized === "~") {
+    normalized = homedir();
+  } else if (normalized.startsWith("~/")) {
+    normalized = resolve(homedir(), normalized.slice(2));
+  }
+  try {
+    return resolve(
+      cwd,
+      normalized.startsWith("file://") ? fileURLToPath(normalized) : normalized,
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 function replacementBlocks(edits: Edit[]): string {
@@ -157,7 +179,7 @@ export function builtinPreview(
   }
   let before: string;
   try {
-    before = readFileSync(path, "utf8");
+    before = normalizeLineEndings(readFileSync(path, "utf8"));
   } catch {
     return unreadable(path, input, edits);
   }
@@ -176,6 +198,11 @@ export function builtinPreview(
       generateUnifiedPatch(path, projection.before, projection.after),
     ),
   };
+}
+
+function normalizeLineEndings(value: string): string {
+  const withoutBom = value.startsWith("\uFEFF") ? value.slice(1) : value;
+  return withoutBom.replace(/\r\n?/g, "\n");
 }
 
 function isEdit(value: unknown): value is Edit {

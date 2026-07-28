@@ -60,6 +60,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    enabled = true;
     syncFooter(ctx);
   });
 

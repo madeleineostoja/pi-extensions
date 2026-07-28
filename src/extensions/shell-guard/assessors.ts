@@ -35,12 +35,12 @@ const categoryOrder = [
 ];
 const uncertainMarkers: Marker[] = [
   {
-    marker: /(?:^|\s)(?:rm|rmdir|unlink|shred)(?:\s|$)/,
+    marker: /(?:^|[\s(`$=])(?:rm|rmdir|unlink|shred)(?:\s|$)/,
     category: "filesystem",
     effect: "unparseable file removal",
   },
   {
-    marker: /(?:^|\s)find\b[\s\S]*?(?:-delete|-exec)(?=\s|$)/,
+    marker: /(?:^|\s)find\b[\s\S]*?(?:-delete|-exec(?:dir)?)(?=\s|$)/,
     category: "filesystem",
     effect: "find destructive execution",
   },
@@ -146,10 +146,14 @@ function direct(words: string[], segment: string, depth = 0): Draft[] {
       "find deletion",
       segment,
       plain.slice(0, 1).length ? plain.slice(0, 1) : ["."],
-      "remove",
+      undefined,
+      "find search roots are not fully interpreted; confirmation covers the exact invocation.",
     );
   }
-  if (name === "find" && args.includes("-exec")) {
+  if (
+    name === "find" &&
+    (args.includes("-exec") || args.includes("-execdir"))
+  ) {
     add(
       "filesystem",
       "find destructive execution",
@@ -183,8 +187,8 @@ function direct(words: string[], segment: string, depth = 0): Draft[] {
       "filesystem",
       `${name} destination replacement`,
       segment,
-      [destination],
-      "overwrite",
+      name === "mv" ? [plain.at(-2)!, destination] : [destination],
+      name === "mv" ? undefined : "overwrite",
       ambiguous
         ? `${name} destination semantics are ambiguous; confirmation covers the exact invocation.`
         : undefined,
@@ -224,7 +228,7 @@ function direct(words: string[], segment: string, depth = 0): Draft[] {
   if (name === "git") {
     const text = args.join(" ");
     if (
-      /\bclean\b.*(?:-f|--force)|\breset\s+--hard|\brestore\b.*(?:--source|--staged)|\bcheckout\b.*(?:-f|--force)|\bstash\s+(?:drop|clear)|\bbranch\s+-[dD]|\btag\s+-d|\bpush\b.*(?:--force|--delete|--prune)|\bgc\b.*--prune|\breflog\s+expire/.test(
+      /\bclean\b.*(?:-f|--force)|\breset\s+--hard|\brestore\b(?:\s|$)|\bcheckout\b.*(?:-f|--force|\s+--(?:\s|$))|\bstash\s+(?:drop|clear)|\bbranch\s+-[dD]|\btag\s+-d|\bpush\b.*(?:-[A-Za-z]*f[A-Za-z]*\b|--force|--delete|--prune|--mirror)|\bpush\b.*(?:\s:\S|\s\+\S)|\bgc\b.*--prune|\breflog\s+expire/.test(
         text,
       )
     ) {
@@ -253,7 +257,7 @@ function direct(words: string[], segment: string, depth = 0): Draft[] {
   }
   if (
     ["docker", "podman"].includes(name) &&
-    /\b(?:system\s+prune|volume\s+(?:rm|remove|prune)|image\s+prune|container\s+(?:rm|remove))\b/.test(
+    /\b(?:system\s+prune|volume\s+(?:rm|remove|prune)|image\s+(?:rm|remove|prune)|container\s+(?:rm|remove)|compose\b[\s\S]*?\bdown\b.*(?:-v|--volumes))\b/.test(
       args.join(" "),
     )
   ) {
@@ -269,7 +273,7 @@ function direct(words: string[], segment: string, depth = 0): Draft[] {
   }
   if (
     ["npm", "pnpm", "yarn"].includes(name) &&
-    /(?:^|\s)(?:uninstall|remove|global)(?:\s|$)|(?:^|\s)--global(?:\s|$)/.test(
+    /(?:^|\s)(?:uninstall|remove|global)(?:\s|$)|(?:^|\s)(?:--global|-g)(?:\s|$)/.test(
       args.join(" "),
     )
   ) {
@@ -323,6 +327,9 @@ function direct(words: string[], segment: string, depth = 0): Draft[] {
       "Inline interpreter content is not interpreted; confirmation covers the exact invocation.",
     );
   }
+  if (name === "eval") {
+    risks.push(...uncertain(args.join(" ")));
+  }
   if ((name === "sh" || name === "bash") && depth === 0) {
     const index = args.indexOf("-c");
     const payload = index >= 0 ? args[index + 1] : undefined;
@@ -353,6 +360,9 @@ export async function assessBashCommand(
     const drafts = words
       ? direct(words, segment.text)
       : uncertain(segment.text);
+    if (words && (/^\s*\(/.test(segment.text) || /[`$]/.test(segment.text))) {
+      drafts.push(...uncertain(segment.text));
+    }
     const commandInfo = words && executable(words);
     const nextWords = tokenize(segments[segment.index + 1]?.text ?? "");
     const next = nextWords && executable(nextWords);
@@ -421,12 +431,16 @@ export async function assessBashCommand(
         segmentIndex: segment.index,
       });
     }
+    const cdTarget =
+      words?.[0] === "cd"
+        ? commandInfo?.args.find((arg) => arg !== "--")
+        : undefined;
     if (
-      commandInfo?.name === "cd" &&
-      commandInfo.args[0] &&
+      cdTarget &&
+      !cdTarget.startsWith("-") &&
       ["&&", ";", "\n", null].includes(segment.separator)
     ) {
-      effectiveCwd = resolve(effectiveCwd, commandInfo.args[0]);
+      effectiveCwd = resolve(effectiveCwd, cdTarget);
     }
   }
   return risks

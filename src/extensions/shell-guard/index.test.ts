@@ -21,7 +21,7 @@ describe("shell guard", () => {
   });
 
   it("recognizes bounded uncertain families without gating prose", async () => {
-    const find = await assessBashCommand("find . -exec rm {} \\;", "/");
+    const find = await assessBashCommand("find . -execdir chmod 777 {} +", "/");
     const xargs = await assessBashCommand("xargs rm", "/");
     const ssh = await assessBashCommand("ssh host rm file", "/");
     expect(find[0]?.uncertainty).toBeTruthy();
@@ -54,6 +54,44 @@ describe("shell guard", () => {
     );
   });
 
+  it("guards dynamic shell payloads, redirection variants, and extended destructive families", async () => {
+    expect(
+      (
+        await assessBashCommand('echo "$(rm file)" && eval "rm other"', "/")
+      ).map((risk) => risk.effect),
+    ).toEqual(["unparseable file removal", "unparseable file removal"]);
+    expect(
+      (await assessBashCommand("echo ok >| out && echo ok >& log", "/")).map(
+        (risk) => risk.effect,
+      ),
+    ).toEqual(["truncating redirection", "truncating redirection"]);
+    expect(
+      (
+        await assessBashCommand(
+          "sudo --user root rm file && git restore . && git push -uf origin main && docker image rm image && docker compose -f compose.yml down -v",
+          "/",
+        )
+      ).map((risk) => risk.effect),
+    ).toEqual([
+      "file removal",
+      "destructive Git operation",
+      "destructive Git operation",
+      "container data deletion",
+      "container data deletion",
+    ]);
+  });
+
+  it("parses wrapper options before assessing destructive commands", async () => {
+    expect(
+      (
+        await assessBashCommand(
+          "sudo -T 0 rm file && env --unset HOME rm other && git restore file",
+          "/",
+        )
+      ).map((risk) => risk.effect),
+    ).toEqual(["file removal", "file removal", "destructive Git operation"]);
+  });
+
   it("does not exempt dirty or untracked repository data", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pipkin-guard-"));
     try {
@@ -66,6 +104,16 @@ describe("shell guard", () => {
       execFileSync("git", ["add", "clean.txt"], { cwd });
       execFileSync("git", ["commit", "-m", "initial"], { cwd });
       expect(await assessBashCommand("rm clean.txt", cwd)).toEqual([]);
+      expect(await assessBashCommand("cp clean.txt new.txt", cwd)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ effect: "cp destination replacement" }),
+        ]),
+      );
+      expect(await assessBashCommand("mv clean.txt moved.txt", cwd)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ effect: "mv destination replacement" }),
+        ]),
+      );
       writeFileSync(join(cwd, "clean.txt"), "dirty");
       writeFileSync(join(cwd, "untracked file.txt"), "untracked");
       expect(

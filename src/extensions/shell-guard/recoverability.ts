@@ -137,7 +137,14 @@ async function leaves(path: string): Promise<string[] | undefined> {
     const nested = await Promise.all(
       entries.map((entry) => leaves(resolve(path, entry.name))),
     );
-    return nested.flatMap((entry) => entry ?? []);
+    const result: string[] = [];
+    for (const entry of nested) {
+      if (!entry) {
+        return undefined;
+      }
+      result.push(...entry);
+    }
+    return result;
   } catch {
     return undefined;
   }
@@ -258,7 +265,7 @@ export async function isRecoverable(
     exists = false;
   }
   if (!exists) {
-    return operation === "overwrite";
+    return false;
   }
   const candidates = await canonicalCandidates(absolute, operation, state);
   if (!candidates.length) {
