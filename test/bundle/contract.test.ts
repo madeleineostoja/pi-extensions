@@ -357,10 +357,20 @@ async function assertSafetyOrder(
   expect(errors).toEqual([]);
 }
 
+const ignoredProjectDirectories = new Set([
+  join(ROOT, ".git"),
+  join(ROOT, ".pi"),
+  join(ROOT, "node_modules"),
+  join(ROOT, "tmp"),
+]);
+
 function projectFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
-    return entry.isDirectory() ? projectFiles(path) : [path];
+    if (entry.isDirectory()) {
+      return ignoredProjectDirectories.has(path) ? [] : projectFiles(path);
+    }
+    return [path];
   });
 }
 
@@ -434,12 +444,7 @@ describe("Pipkin bundle", () => {
     expect(existsSync(join(ROOT, "packages"))).toBe(false);
     expect(existsSync(join(ROOT, "lib", "src"))).toBe(false);
 
-    const files = projectFiles(ROOT).filter(
-      (path) =>
-        !path.includes(`${join(ROOT, ".git")}/`) &&
-        !path.includes(`${join(ROOT, "node_modules")}/`) &&
-        !path.includes(`${join(ROOT, "tmp")}/`),
-    );
+    const files = projectFiles(ROOT);
     expect(files.filter((path) => path.endsWith("package.json"))).toEqual([
       join(ROOT, "package.json"),
     ]);

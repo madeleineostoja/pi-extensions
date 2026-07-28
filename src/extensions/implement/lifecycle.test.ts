@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RecoverySafetyError } from "./recovery-service.js";
-import {
-  reduceRunEvent,
-  SchedulerActor,
-  SchedulerActorError,
-} from "./scheduler.js";
+import { SchedulerActor, SchedulerActorError } from "./scheduler-actor.js";
+import { reduceRunEvent } from "./scheduler.js";
 import { RunStateSchema } from "./store.js";
 import { createLifecycleFixture } from "./lifecycle-test-support.js";
 import {

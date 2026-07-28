@@ -40,10 +40,10 @@ import { runOverallRepair } from "./overall-repair.js";
 import { runWorkstreamReview } from "./review.js";
 import { runRecovery } from "./recovery-service.js";
 import {
-  reduceRunEvent,
   SchedulerActor,
   type SchedulerActorOptions,
-} from "./scheduler.js";
+} from "./scheduler-actor.js";
+import { reduceRunEvent } from "./scheduler.js";
 import {
   acquireCheckoutLease,
   checkoutPaths,
