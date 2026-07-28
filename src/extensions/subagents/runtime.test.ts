@@ -656,6 +656,39 @@ describe("SubagentRuntime", () => {
     });
   });
 
+  it("passes resolved auth to summary completion", async () => {
+    const { pi } = fakePi();
+    const runtime = new SubagentRuntime(pi as never);
+    const agent = runtime.queue({
+      owner: "owner",
+      type: "General",
+      description: "summary target",
+      cwd: "/workspace",
+    });
+    const completeSimple = vi.fn(async () => fauxAssistantMessage("summary"));
+
+    await runtime.summarise(
+      agent.id,
+      { provider: "openai-codex", id: "gpt-5.3-codex" } as never,
+      {
+        apiKey: "oauth-token",
+        headers: { "x-test": "header" },
+        env: { TEST_AUTH: "value" },
+      },
+      { completeSimple },
+    );
+
+    expect(completeSimple).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai-codex" }),
+      expect.any(Object),
+      expect.objectContaining({
+        apiKey: "oauth-token",
+        headers: { "x-test": "header" },
+        env: { TEST_AUTH: "value" },
+      }),
+    );
+  });
+
   it("waits for stop during async session creation before disposing the eventual child", async () => {
     const { pi } = fakePi();
     const sessionReady = deferred<{ session: AgentSession }>();

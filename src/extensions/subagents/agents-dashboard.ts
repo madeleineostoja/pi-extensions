@@ -45,7 +45,7 @@ export async function showAgentsDashboard(
   runtimeOrRuntimes: SubagentRuntime | readonly SubagentRuntime[],
   ctx: ExtensionCommandContext,
 ): Promise<void> {
-  let filter: "Running" | "All" = "Running";
+  let filter: "Running" | "Stopped" = "Running";
   let selected: DashboardSelection | undefined;
   while (true) {
     const all = dashboardEntries(runtimeOrRuntimes);
@@ -115,31 +115,32 @@ export async function showAgentsDashboard(
       continue;
     }
 
-    const view = await ctx.ui.select("Agent view", ["Running", "All"]);
+    const view = await ctx.ui.select("Agent view", ["Running", "Stopped"]);
     if (!view) {
       return;
     }
-    filter = view === "All" ? "All" : "Running";
+    filter = view === "Stopped" ? "Stopped" : "Running";
     const topLevel = all.filter((entry) => !nestedOwner(entry.snapshot.owner));
-    const visible = topLevel.filter(
-      (entry) =>
-        filter === "All" ||
-        entry.snapshot.status === "running" ||
-        entry.snapshot.status === "queued",
+    const visible = topLevel.filter((entry) =>
+      filter === "Running"
+        ? entry.snapshot.status === "running" ||
+          entry.snapshot.status === "queued"
+        : terminalStatuses.has(entry.snapshot.status),
     );
     if (visible.length === 0) {
       ctx.ui.notify(
         filter === "Running"
-          ? "No running agents. Choose All to inspect retained records."
-          : "No current-session agents.",
+          ? "No running agents. Choose Stopped to inspect retained records."
+          : "No stopped agents.",
         "info",
       );
       return;
     }
     const choices = new Map<string, DashboardSelection>();
     const labels: string[] = [];
-    for (const entry of visible) {
-      const choice = `${entryKey(entry)}\t${formatListRow(entry.snapshot)}${
+    const rows = formatListRows(visible.map((entry) => entry.snapshot));
+    for (const [index, entry] of visible.entries()) {
+      const choice = `${rows[index] ?? ""}${
         nestedChildren(all, entry).length
           ? `\n  ↳ ${nestedChildren(all, entry)
               .map((child) => child.snapshot.description)
@@ -149,7 +150,10 @@ export async function showAgentsDashboard(
       labels.push(choice);
       choices.set(choice, selectionFor(entry));
     }
-    const choice = await ctx.ui.select(`${filter} agents`, labels);
+    const choice = await ctx.ui.select(
+      `${filter} agents · id  status  type  elapsed  turns/context  task`,
+      labels,
+    );
     if (!choice) {
       return;
     }
@@ -307,8 +311,22 @@ async function showAgentSummary(
   ctx: ExtensionCommandContext,
   id: string,
 ): Promise<void> {
+  if (!ctx.model) {
+    ctx.ui.notify("No active model. Set a model first.", "warning");
+    return;
+  }
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+  if (!auth.ok) {
+    ctx.ui.notify(`Unable to summarise activity: ${auth.error}`, "warning");
+    return;
+  }
+  const summaryAuth = {
+    apiKey: auth.apiKey,
+    headers: auth.headers,
+    env: auth.env,
+  };
   if (!canShowLiveInspector(ctx)) {
-    const result = await runtime.summarise(id, ctx.model);
+    const result = await runtime.summarise(id, ctx.model, summaryAuth);
     ctx.ui.notify(summaryText(result), result.ok ? "info" : "warning");
     return;
   }
@@ -320,7 +338,7 @@ async function showAgentSummary(
         done();
       });
       void runtime
-        .summarise(id, ctx.model, undefined, controller.signal)
+        .summarise(id, ctx.model, summaryAuth, undefined, controller.signal)
         .then((result) => overlay.setResult(result))
         .catch(() =>
           overlay.setResult({

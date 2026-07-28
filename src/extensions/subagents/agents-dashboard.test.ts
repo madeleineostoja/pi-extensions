@@ -83,6 +83,14 @@ function makeCtx(selects: string[] = [], options: { tui?: boolean } = {}) {
     ctx: {
       hasUI: options.tui ?? true,
       mode: options.tui === false ? "json" : "tui",
+      model: { provider: "test", id: "model" },
+      modelRegistry: {
+        getApiKeyAndHeaders: vi.fn(async () => ({
+          ok: true as const,
+          apiKey: "test-key",
+          headers: { "x-test": "header" },
+        })),
+      },
       ui: {
         notify: vi.fn((message: string, type?: string) => {
           notifications.push({ message, type });
@@ -322,7 +330,7 @@ describe("/agents dashboard", () => {
     let selection = 0;
     ctx.ui.select = vi.fn(async (title: string, options: string[]) => {
       selectCalls.push({ title, options });
-      return ["All", options[1], "Inspect activity", "Back", undefined][
+      return ["Stopped", options[1], "Inspect activity", "Back", undefined][
         selection++
       ];
     });
@@ -418,7 +426,7 @@ describe("/agents dashboard", () => {
     let selection = 0;
     ctx.ui.select = vi.fn(async (title: string, options: string[]) => {
       selectCalls.push({ title, options });
-      return ["All", options[0], "Back", undefined][selection++];
+      return ["Stopped", options[0], "Back", undefined][selection++];
     });
 
     await showAgentsDashboard(runtime, ctx as never);
@@ -448,7 +456,7 @@ describe("/agents dashboard", () => {
     let selection = 0;
     ctx.ui.select = vi.fn(async (title: string, options: string[]) => {
       selectCalls.push({ title, options });
-      return ["All", options[0], "Inspect activity", "Back", undefined][
+      return ["Stopped", options[0], "Inspect activity", "Back", undefined][
         selection++
       ];
     });
@@ -478,6 +486,30 @@ describe("/agents dashboard", () => {
 
     expect(custom).not.toHaveBeenCalled();
     expect(notifications[0]?.message).toContain("Agent subagent-1");
+  });
+
+  it("resolves active-model auth before summarising", async () => {
+    const runtime = makeRuntime([snapshot({ id: "subagent-1" })]);
+    const { ctx, notifications } = makeCtx([], { tui: false });
+    let selection = 0;
+    ctx.ui.select = vi.fn(
+      async (_title: string, options: string[]) =>
+        [options[0], options[0], "Summarise activity", "Back", undefined][
+          selection++
+        ],
+    );
+
+    await showAgentsDashboard(runtime, ctx as never);
+
+    expect(ctx.modelRegistry.getApiKeyAndHeaders).toHaveBeenCalledWith(
+      ctx.model,
+    );
+    expect(runtime.summarise).toHaveBeenCalledWith("subagent-1", ctx.model, {
+      apiKey: "test-key",
+      headers: { "x-test": "header" },
+      env: undefined,
+    });
+    expect(notifications).toContainEqual({ message: "summary", type: "info" });
   });
 
   it("opens a live TUI inspector, renders fresh inspection data, and cleans up its subscription", async () => {
@@ -552,6 +584,7 @@ describe("/agents dashboard", () => {
       async (
         _id: string,
         _model: unknown,
+        _auth: unknown,
         _deps: unknown,
         requestSignal: AbortSignal,
       ) => {

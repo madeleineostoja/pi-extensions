@@ -20,7 +20,7 @@ import { completeText, type CompleteTextDeps } from "#lib/complete";
 import { parseModelRef } from "#lib/model-ref";
 import type { ModelPreset, ThinkingLevel } from "#lib/config";
 import { Type, type Static, type TSchema } from "typebox";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { Api } from "@earendil-works/pi-ai";
 import {
   PUBLIC_AGENT_PROFILES,
@@ -1205,6 +1205,7 @@ export class SubagentRuntime {
   async summarise(
     id: string,
     model: Model<Api> | undefined,
+    auth: Pick<SimpleStreamOptions, "apiKey" | "headers" | "env"> = {},
     deps?: CompleteTextDeps,
     signal?: AbortSignal,
   ): Promise<Awaited<ReturnType<typeof completeText>>> {
@@ -1220,6 +1221,7 @@ export class SubagentRuntime {
         tools: [],
       } as never,
       {
+        ...auth,
         reasoning: (inspection.snapshot.effectiveThinking ??
           inspection.snapshot.thinking) as never,
         signal,
