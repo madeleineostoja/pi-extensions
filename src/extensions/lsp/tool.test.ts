@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   normalizeDiagnosticsResult,
@@ -32,6 +33,16 @@ const context = (cwd: string) => ({
   cwd,
   ui: { notify: vi.fn() },
 });
+function useClient(client: Record<string, unknown>): void {
+  (globalThis as Record<symbol, unknown>)[LSP_POOL_MANAGER_KEY] = {
+    pool: {
+      closed: false,
+      acquire: async () => client,
+      shutdown() {},
+      status: () => [],
+    },
+  };
+}
 
 describe("lsp tool inputs and bounded render data", () => {
   it("requires a deterministic 1-indexed position", async () => {
@@ -113,6 +124,184 @@ describe("lsp tool inputs and bounded render data", () => {
       available: false,
       server: "ruby",
       workspace: realpathSync(project),
+    });
+  });
+
+  it("returns semantic locations relative to the caller workspace", async () => {
+    const cwd = workspace();
+    const project = join(cwd, "project");
+    mkdirSync(project);
+    writeFileSync(join(project, "tsconfig.json"), "{}");
+    writeFileSync(join(project, "sample.ts"), "const value = 1;\n");
+    writeFileSync(join(project, "target.ts"), "export const value = 1;\n");
+    useClient({
+      capabilities: {},
+      supports: () => true,
+      semantic: async () => [
+        {
+          uri: pathToFileURL(join(project, "target.ts")).href,
+          range: {
+            start: { line: 2, character: 4 },
+            end: { line: 2, character: 9 },
+          },
+        },
+      ],
+    });
+
+    const result = await executeLsp(
+      {
+        action: "definition",
+        file: "project/sample.ts",
+        line: 1,
+        column: 7,
+      },
+      undefined,
+      context(cwd) as never,
+    );
+
+    expect(result.content[0]?.text).toBe(
+      "1 LSP definition location:\n- project/target.ts:3:5",
+    );
+    expect(result.details.locations).toEqual([
+      expect.objectContaining({ file: expect.stringMatching(/target\.ts$/) }),
+    ]);
+  });
+
+  it("preserves document symbol ranges in model-visible content", async () => {
+    const cwd = workspace();
+    writeFileSync(join(cwd, "tsconfig.json"), "{}");
+    writeFileSync(join(cwd, "sample.ts"), "const value = 1;\n");
+    useClient({
+      capabilities: {},
+      supports: () => true,
+      semantic: async () => [
+        {
+          name: "value",
+          kind: 13,
+          selectionRange: {
+            start: { line: 0, character: 6 },
+            end: { line: 0, character: 11 },
+          },
+        },
+      ],
+    });
+
+    const result = await executeLsp(
+      { action: "document_symbols", file: "sample.ts" },
+      undefined,
+      context(cwd) as never,
+    );
+
+    expect(result.content[0]?.text).toBe(
+      "1 LSP document symbol:\n- value — sample.ts:1:7",
+    );
+    expect(result.details.symbols).toEqual([
+      expect.objectContaining({
+        name: "value",
+        location: expect.objectContaining({
+          file: expect.stringMatching(/sample\.ts$/),
+        }),
+      }),
+    ]);
+  });
+
+  it("returns diagnostic messages and positions in model-visible content", async () => {
+    const cwd = workspace();
+    writeFileSync(join(cwd, "tsconfig.json"), "{}");
+    writeFileSync(join(cwd, "sample.ts"), "const value = 1;\n");
+    useClient({
+      capabilities: {},
+      diagnostics: async () => ({
+        diagnostics: [
+          {
+            severity: 1,
+            source: "ts",
+            code: 2322,
+            message: "Type 'number' is not assignable to type 'string'.",
+            range: {
+              start: { line: 0, character: 6 },
+              end: { line: 0, character: 11 },
+            },
+          },
+        ],
+        fresh: true,
+        truncated: false,
+      }),
+    });
+
+    const result = await executeLsp(
+      { action: "diagnostics", file: "sample.ts" },
+      undefined,
+      context(cwd) as never,
+    );
+
+    expect(result.content[0]?.text).toContain(
+      "error ts:2322 sample.ts:1:7 — Type 'number' is not assignable to type 'string'.",
+    );
+    expect(result.details.diagnostics).toEqual([
+      expect.objectContaining({
+        file: expect.stringMatching(/sample\.ts$/),
+        message: "Type 'number' is not assignable to type 'string'.",
+      }),
+    ]);
+  });
+
+  it("bounds aggregate model-visible output", async () => {
+    const cwd = workspace();
+    writeFileSync(join(cwd, "tsconfig.json"), "{}");
+    useClient({
+      capabilities: {},
+      supports: () => true,
+      workspaceSymbols: async () =>
+        Array.from({ length: 100 }, (_, index) => ({
+          name: `${index}-${"x".repeat(2_000)}`,
+          kind: 13,
+        })),
+    });
+
+    const result = await executeLsp(
+      { action: "workspace_symbols", query: "x" },
+      undefined,
+      context(cwd) as never,
+    );
+    const content = result.content[0]?.text ?? "";
+
+    expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(20_000);
+    expect(content).toContain("Additional results omitted");
+    expect(result.details).toMatchObject({
+      truncation: { symbols: false, content: true },
+    });
+  });
+
+  it("bounds aggregate status output", async () => {
+    const cwd = workspace();
+    (globalThis as Record<symbol, unknown>)[LSP_POOL_MANAGER_KEY] = {
+      pool: {
+        closed: false,
+        acquire() {},
+        shutdown() {},
+        status: () => [
+          {
+            kind: "typescript",
+            state: "cooling-down",
+            workspaceRoot: realpathSync(cwd),
+            reason: "x".repeat(30_000),
+          },
+        ],
+      },
+    };
+
+    const result = await executeLsp(
+      { action: "status" },
+      undefined,
+      context(cwd) as never,
+    );
+    const content = result.content[0]?.text ?? "";
+
+    expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(20_000);
+    expect(content).toContain("Additional results omitted");
+    expect(result.details).toMatchObject({
+      truncation: { content: true },
     });
   });
 
