@@ -32,7 +32,7 @@ describe("context_recall", () => {
   it("returns stored full content unchanged", async () => {
     const content = [
       { type: "text" as const, text: "first" },
-      { type: "image" as const, source: { type: "base64", data: "abc" } },
+      { type: "image" as const, data: "abc", mimeType: "image/png" },
     ];
     const result = await recall([toolResult("source", content)])({
       id: "source",
@@ -49,18 +49,19 @@ describe("context_recall", () => {
         { type: "text", text: "two" },
       ]),
     ]);
-    await expect(execute({ id: "missing" })).resolves.toMatchObject({
-      isError: true,
-    });
-    await expect(execute({ id: "text", lines: "0" })).resolves.toMatchObject({
-      isError: true,
-    });
-    await expect(execute({ id: "multi", lines: "1" })).resolves.toMatchObject({
-      isError: true,
-    });
-    await expect(execute({ id: "text", lines: "99" })).resolves.toMatchObject({
-      isError: true,
-    });
+    await expect(execute({ id: "missing" })).rejects.toThrow("no tool result");
+    await expect(execute({ id: "text", lines: "" })).rejects.toThrow(
+      "invalid lines",
+    );
+    await expect(execute({ id: "text", lines: "0" })).rejects.toThrow(
+      "invalid lines",
+    );
+    await expect(execute({ id: "multi", lines: "1" })).rejects.toThrow(
+      "requires one text",
+    );
+    await expect(execute({ id: "text", lines: "99" })).rejects.toThrow(
+      "unavailable",
+    );
   });
 
   it("returns a bounded line slice", async () => {

@@ -104,6 +104,30 @@ describe("context epochs", () => {
     expect(state.decisions.size).toBe(0);
   });
 
+  it("does not treat Pi's initial model record as a known-cold transition", () => {
+    const messages = [
+      toolResult("source", "x".repeat(40_000)),
+      { role: "user" as const, content: "one" },
+      { role: "user" as const, content: "two" },
+      { role: "user" as const, content: "three" },
+      { role: "user" as const, content: "four" },
+    ];
+    const appended: any[] = [];
+    const hook = makeContextHook(createPruningState(), (type, data) =>
+      appended.push({ type, data }),
+    );
+    const input = context(
+      messages,
+      [{ type: "model_change", provider: "test", modelId: "model" }],
+      () => {},
+    );
+    (input.ctx as any).model = { provider: "test", id: "model" };
+
+    hook({ type: "context", messages } as any, input.ctx as any);
+
+    expect(appended).toEqual([]);
+  });
+
   it("rejects an entire repeated epoch while preserving earlier accepted decisions", () => {
     const state = createPruningState();
     const first = {
@@ -152,23 +176,29 @@ describe("context epochs", () => {
         },
       ],
     });
-    const read = (id: string, offset: number, outputLines: number) => ({
+    const read = (id: string, outputLines: number) => ({
       ...toolResult(id, "x".repeat(40_000), "read"),
       details: {
         truncation: {
+          totalLines: outputLines,
+          totalBytes: 40_000,
           outputLines,
-          truncated: true,
-          truncatedBy: "lines",
+          outputBytes: 40_000,
+          truncated: false,
+          truncatedBy: null,
           lastLinePartial: false,
           firstLineExceedsLimit: false,
+          maxLines: 2_000,
+          maxBytes: 50_000,
         },
       },
     });
     const messages = [
       readCall("early", 1, 200),
-      read("early", 1, 2),
+      read("early", 2),
       readCall("late", 1, 200),
-      read("late", 1, 100),
+      read("late", 100),
+      { role: "assistant" as const, content: [] },
     ];
     const appended: any[] = [];
     const hook = makeContextHook(createPruningState(), (type, data) =>
@@ -176,7 +206,10 @@ describe("context epochs", () => {
     );
     const input = context(
       messages,
-      [{ type: "model_change", provider: "test", modelId: "model" }],
+      [
+        { type: "model_change", provider: "other", modelId: "other" },
+        { type: "model_change", provider: "test", modelId: "model" },
+      ],
       () => {},
     );
     (input.ctx as any).model = { provider: "test", id: "model" };

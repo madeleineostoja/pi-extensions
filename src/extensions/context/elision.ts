@@ -65,7 +65,11 @@ function formatCommand(command: string): string {
 
 export function makeContextHook(
   state: PruningState,
-  appendEntry: (customType: string, data: EpochData) => void,
+  appendEntry: (
+    customType: string,
+    data: EpochData,
+    ctx: ExtensionContext,
+  ) => void,
 ) {
   return function handleContext(
     event: ContextEvent,
@@ -103,7 +107,7 @@ export function makeContextHook(
       decisions: epoch.candidates.map((candidate) => candidate.decision),
     };
     try {
-      appendEntry(EPOCH_TYPE, data);
+      appendEntry(EPOCH_TYPE, data, ctx);
     } catch {
       if (!state.reportedAppendFailure) {
         state.reportedAppendFailure = true;
@@ -235,13 +239,13 @@ function buildCandidates(
     let reason: ElisionReason | undefined;
     let details: { path?: string; keptUserTurn?: number; command?: string } =
       {};
-    if (superseded && path) {
+    if (assistantAfter[index] && superseded && path) {
       reason = "superseded-read";
       details = { path };
-    } else if (duplicate) {
+    } else if (assistantAfter[index] && duplicate) {
       reason = "duplicate-read";
       details = duplicate;
-    } else if (covered) {
+    } else if (assistantAfter[index] && covered) {
       reason = "covered-read";
       details = covered;
     } else if (lowRiskBash) {
@@ -429,10 +433,11 @@ function readInterval(
   if (
     !Number.isInteger(offset) ||
     (offset as number) < 1 ||
-    (limit !== undefined && (!Number.isInteger(limit) || (limit as number) < 0))
+    (limit !== undefined && (!Number.isInteger(limit) || (limit as number) < 1))
   ) {
     return undefined;
   }
+  const requestedLimit = limit as number | undefined;
   const truncation = isRecord(
     (message as unknown as { details?: unknown }).details,
   )
@@ -443,7 +448,8 @@ function readInterval(
     !isTruncation(truncation) ||
     truncation.outputLines === 0 ||
     truncation.lastLinePartial ||
-    truncation.firstLineExceedsLimit
+    truncation.firstLineExceedsLimit ||
+    (requestedLimit !== undefined && truncation.outputLines > requestedLimit)
   ) {
     return undefined;
   }
@@ -455,26 +461,85 @@ function readInterval(
 }
 
 function isTruncation(value: unknown): value is {
+  totalLines: number;
+  totalBytes: number;
   outputLines: number;
+  outputBytes: number;
   truncated: boolean;
   truncatedBy: "lines" | "bytes" | null;
   lastLinePartial: boolean;
   firstLineExceedsLimit: boolean;
+  maxLines: number;
+  maxBytes: number;
 } {
-  return (
-    isRecord(value) &&
-    Number.isInteger(value.outputLines) &&
-    (value.outputLines as number) >= 0 &&
-    typeof value.truncated === "boolean" &&
-    (value.truncatedBy === "lines" ||
-      value.truncatedBy === "bytes" ||
-      value.truncatedBy === null) &&
-    (value.truncated
-      ? value.truncatedBy !== null
-      : value.truncatedBy === null) &&
-    typeof value.lastLinePartial === "boolean" &&
-    typeof value.firstLineExceedsLimit === "boolean"
-  );
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "totalLines",
+      "totalBytes",
+      "outputLines",
+      "outputBytes",
+      "truncated",
+      "truncatedBy",
+      "lastLinePartial",
+      "firstLineExceedsLimit",
+      "maxLines",
+      "maxBytes",
+    ]) ||
+    !nonnegativeInteger(value.totalLines) ||
+    !nonnegativeInteger(value.totalBytes) ||
+    !nonnegativeInteger(value.outputLines) ||
+    !nonnegativeInteger(value.outputBytes) ||
+    !positiveInteger(value.maxLines) ||
+    !positiveInteger(value.maxBytes) ||
+    typeof value.truncated !== "boolean" ||
+    (value.truncatedBy !== "lines" &&
+      value.truncatedBy !== "bytes" &&
+      value.truncatedBy !== null) ||
+    typeof value.lastLinePartial !== "boolean" ||
+    typeof value.firstLineExceedsLimit !== "boolean" ||
+    value.outputLines > value.totalLines ||
+    value.outputBytes > value.totalBytes ||
+    value.outputLines > value.maxLines
+  ) {
+    return false;
+  }
+  if (!value.truncated) {
+    return (
+      value.truncatedBy === null &&
+      !value.lastLinePartial &&
+      !value.firstLineExceedsLimit &&
+      value.outputLines === value.totalLines &&
+      value.outputBytes === value.totalBytes
+    );
+  }
+  if (value.truncatedBy === null || value.lastLinePartial) {
+    return false;
+  }
+  return value.firstLineExceedsLimit
+    ? value.truncatedBy === "bytes" &&
+        value.outputLines === 0 &&
+        value.outputBytes === 0
+    : value.truncatedBy === "lines"
+      ? value.outputLines === value.maxLines &&
+        value.totalLines > value.outputLines
+      : value.outputBytes <= value.maxBytes &&
+        value.totalLines > value.outputLines;
+}
+
+function positiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+function nonnegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
 }
 
 function hasLaterMutation(
@@ -604,11 +669,23 @@ function isKnownCold(
       break;
     }
   }
-  if (modelChangeIndex < 0) {
+  if (modelChangeIndex < 1) {
     return false;
   }
   const change = entries[modelChangeIndex] as Record<string, unknown>;
   if (change.provider !== model.provider || change.modelId !== model.id) {
+    return false;
+  }
+  const previousModelChange = entries
+    .slice(0, modelChangeIndex)
+    .reverse()
+    .find((entry) => isRecord(entry) && entry.type === "model_change");
+  if (
+    !previousModelChange ||
+    ((previousModelChange as Record<string, unknown>).provider ===
+      model.provider &&
+      (previousModelChange as Record<string, unknown>).modelId === model.id)
+  ) {
     return false;
   }
   return !entries.slice(modelChangeIndex + 1).some((entry) => {

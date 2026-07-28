@@ -5,6 +5,7 @@ import type {
 import { makeContextHook, restoreEpochs } from "./elision.ts";
 import { createPruningState, resetPruningState } from "./policy.ts";
 import { registerRecallTool } from "./recall.ts";
+import { appendEpochAtomically } from "./session-append.ts";
 
 export default function (pi: ExtensionAPI) {
   const state = createPruningState();
@@ -16,7 +17,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on(
     "context",
-    makeContextHook(state, (type, data) => pi.appendEntry(type, data)),
+    makeContextHook(state, (type, data, ctx) =>
+      appendEpochAtomically(pi, ctx, type, data),
+    ),
   );
   registerRecallTool(pi);
 }

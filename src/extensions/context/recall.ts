@@ -60,11 +60,11 @@ export function registerRecallTool(pi: ExtensionAPI): void {
     ): Promise<any> {
       const result = findToolResult(ctx, params.id);
       if (!result) {
-        return failure(`context_recall: no tool result with id=${params.id}`);
+        throw new Error(`context_recall: no tool result with id=${params.id}`);
       }
-      if (!params.lines) {
+      if (params.lines === undefined) {
         if (!hasContentBlocks(result.content)) {
-          return failure(
+          throw new Error(
             `context_recall: content for id=${params.id} is unavailable`,
           );
         }
@@ -72,19 +72,19 @@ export function registerRecallTool(pi: ExtensionAPI): void {
       }
       const range = parseLineRange(params.lines);
       if (!range) {
-        return failure(
+        throw new Error(
           `context_recall: invalid lines argument "${params.lines}"`,
         );
       }
       const block = sliceableTextBlock(result.content);
       if (!block) {
-        return failure(
+        throw new Error(
           `context_recall: lines slicing requires one text content block for id=${params.id}`,
         );
       }
       const text = sliceLines(block.text, range.start, range.end);
       if (text.length === 0) {
-        return failure(
+        throw new Error(
           `context_recall: requested lines are unavailable for id=${params.id}`,
         );
       }
@@ -132,14 +132,16 @@ function findToolResult(
 
 function hasContentBlocks(
   content: unknown,
-): content is Array<{ type: string }> {
+): content is Array<TextBlock | ImageBlock> {
   return (
     Array.isArray(content) &&
+    content.length > 0 &&
     content.every(
       (block) =>
-        typeof block === "object" &&
-        block !== null &&
-        typeof (block as { type?: unknown }).type === "string",
+        (isTextBlock(block) && block.text.length > 0) ||
+        (isImageBlock(block) &&
+          block.data.length > 0 &&
+          block.mimeType.length > 0),
     )
   );
 }
@@ -157,19 +159,13 @@ function sliceLines(text: string, start: number, end: number): string {
   return lines.slice(start - 1, end).join("\n");
 }
 
-function failure(text: string) {
-  return {
-    content: [{ type: "text" as const, text }],
-    details: { error: text },
-    isError: true,
-  };
-}
-
 function firstText(content: unknown): string {
   return Array.isArray(content) && isTextBlock(content[0])
     ? content[0].text
     : "context_recall failed";
 }
+
+type ImageBlock = { type: "image"; data: string; mimeType: string };
 
 function isTextBlock(value: unknown): value is TextBlock {
   return (
@@ -177,5 +173,15 @@ function isTextBlock(value: unknown): value is TextBlock {
     value !== null &&
     (value as { type?: unknown }).type === "text" &&
     typeof (value as { text?: unknown }).text === "string"
+  );
+}
+
+function isImageBlock(value: unknown): value is ImageBlock {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { type?: unknown }).type === "image" &&
+    typeof (value as { data?: unknown }).data === "string" &&
+    typeof (value as { mimeType?: unknown }).mimeType === "string"
   );
 }
