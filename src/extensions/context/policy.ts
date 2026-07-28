@@ -16,6 +16,7 @@ export type EpochDecision = {
   sourceToolCallId: string;
   reason: ElisionReason;
   stub: string;
+  estimatedTokensSaved?: number;
 };
 
 export type EpochData = {
@@ -71,15 +72,26 @@ export function isEpochKind(value: unknown): value is EpochKind {
 function isDecision(value: unknown): value is EpochDecision {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ["sourceToolCallId", "reason", "stub"]) &&
+    hasOnlyKeys(value, [
+      "sourceToolCallId",
+      "reason",
+      "stub",
+      "estimatedTokensSaved",
+    ]) &&
     typeof value.sourceToolCallId === "string" &&
     value.sourceToolCallId.trim().length > 0 &&
     typeof value.reason === "string" &&
     ELISION_REASONS.includes(value.reason as ElisionReason) &&
     typeof value.stub === "string" &&
     value.stub.length > 0 &&
-    value.stub.includes(`context_recall("${value.sourceToolCallId}")`)
+    value.stub.includes(`context_recall("${value.sourceToolCallId}")`) &&
+    (value.estimatedTokensSaved === undefined ||
+      isPositiveSafeInteger(value.estimatedTokensSaved))
   );
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
 }
 
 function hasOnlyKeys(

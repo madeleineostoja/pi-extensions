@@ -57,6 +57,7 @@ function createContextRuntime(manager = SessionManager.inMemory("/work")) {
       }
     },
     registerTool: () => {},
+    registerEntryRenderer: () => {},
     appendEntry: (customType: string, data: unknown) =>
       manager.appendCustomEntry(customType, data),
   } as never);
@@ -85,6 +86,22 @@ function staleMessages() {
 }
 
 describe("Context registration", () => {
+  it("installs the Context epoch renderer without session side effects", () => {
+    let customType: string | undefined;
+    let renderer: unknown;
+    registerContext({
+      on: () => {},
+      registerTool: () => {},
+      registerEntryRenderer: (type: string, registered: unknown) => {
+        customType = type;
+        renderer = registered;
+      },
+    } as never);
+
+    expect(customType).toBe(EPOCH_TYPE);
+    expect(renderer).toBeTypeOf("function");
+  });
+
   it("does not alter sibling read results before their first provider exposure", () => {
     let contextHandler: any;
     const entries: any[] = [
@@ -98,6 +115,7 @@ describe("Context registration", () => {
         }
       },
       registerTool: () => {},
+      registerEntryRenderer: () => {},
       appendEntry: (customType: string, data: unknown) =>
         entries.push({ type: "custom", id: "epoch", customType, data }),
     } as never);
