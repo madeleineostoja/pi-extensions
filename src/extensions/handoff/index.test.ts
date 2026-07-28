@@ -160,6 +160,7 @@ describe("handoff runtime", () => {
     expect(child.getEntries()).toHaveLength(2);
     expect(harness.ctx.switchSession).toHaveBeenCalledWith(
       attempt.data.childPath,
+      expect.objectContaining({ withSession: expect.any(Function) }),
     );
   });
 

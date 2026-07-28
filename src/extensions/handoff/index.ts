@@ -337,11 +337,28 @@ function latestDraft(ctx: ExtensionContext) {
   }
 }
 
-function deliverDraft(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  allowDelivered: boolean,
-): boolean {
+function appendDelivery(ctx: ExtensionContext, data: unknown): void {
+  const path = parentSession(ctx);
+  if (!path) {
+    throw new Error("Handoff state requires a persisted session.");
+  }
+  (
+    ctx.sessionManager as unknown as {
+      appendCustomEntry(customType: string, value: unknown): void;
+    }
+  ).appendCustomEntry(DELIVERY_TYPE, data);
+  const durable = SessionManager.open(path, ctx.sessionManager.getSessionDir());
+  const entry = durable.getBranch().at(-1);
+  if (
+    entry?.type !== "custom" ||
+    entry.customType !== DELIVERY_TYPE ||
+    !sameData(entry.data, data)
+  ) {
+    throw new Error("Handoff delivery could not be durably persisted.");
+  }
+}
+
+function deliverDraft(ctx: ExtensionContext, allowDelivered: boolean): boolean {
   if (ctx.mode !== "tui") {
     return false;
   }
@@ -352,7 +369,7 @@ function deliverDraft(
   try {
     ctx.ui.setEditorText(draft.draft.prompt);
     if (!draft.delivered) {
-      appendEntry(pi, ctx, DELIVERY_TYPE, {
+      appendDelivery(ctx, {
         version: 1,
         transitionId: draft.draft.transitionId,
         draftEntryId: draft.draftEntryId,
@@ -393,7 +410,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    if (!deliverDraft(pi, ctx, false) && ctx.mode === "tui") {
+    if (!deliverDraft(ctx, false) && ctx.mode === "tui") {
       const path = parentSession(ctx);
       const header = ctx.sessionManager.getHeader();
       if (path && header?.parentSession) {
@@ -413,7 +430,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Handoff recovery requires TUI mode.", "error");
         return;
       }
-      if (!deliverDraft(pi, ctx, true)) {
+      if (!deliverDraft(ctx, true)) {
         ctx.ui.notify(
           "No matching empty handoff child draft is available to recover.",
           "error",
@@ -603,7 +620,11 @@ export default function (pi: ExtensionAPI) {
           "warning",
         );
         switchStarted = true;
-        const result = await ctx.switchSession(child.path);
+        const result = await ctx.switchSession(child.path, {
+          withSession: async (childCtx) => {
+            deliverDraft(childCtx, false);
+          },
+        });
         if (!result.cancelled) {
           return;
         }
