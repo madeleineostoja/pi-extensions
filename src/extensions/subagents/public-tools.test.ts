@@ -129,6 +129,41 @@ function makeCtx(overrides: Partial<any> = {}) {
   };
 }
 
+function makeInteractiveCtx() {
+  const confirm = vi.fn<(...args: any[]) => Promise<boolean>>();
+  const defaultEscape = vi.fn();
+  let editor:
+    | { handleInput(data: string): void; onEscape?: () => void }
+    | undefined;
+  const ctx = makeCtx({
+    mode: "tui",
+    hasUI: true,
+    ui: {
+      confirm,
+      setWidget: vi.fn(),
+      setEditorComponent: vi.fn((factory: (...args: any[]) => any) => {
+        editor = factory(
+          { requestRender: vi.fn() },
+          { borderColor: (text: string) => text, selectList: {} },
+          {
+            matches: (data: string, action: string) =>
+              action === "app.interrupt" && data === "\u001b",
+          },
+        );
+        editor!.onEscape = defaultEscape;
+      }),
+    },
+  });
+  return {
+    ctx,
+    confirm,
+    defaultEscape,
+    send(data: string) {
+      editor?.handleInput(data);
+    },
+  };
+}
+
 function asAgentSession<T>(session: T): T & AgentSession {
   return session as T & AgentSession;
 }
@@ -328,6 +363,108 @@ describe("public subagent tools", () => {
     } finally {
       runPublicAgent.mockRestore();
       promptDone.resolve();
+    }
+  });
+
+  it("confirms one interrupt for all foreground agents without affecting background agents", async () => {
+    const { pi, tools } = makePi(["read"]);
+    registerExtension(pi as never);
+    const agent = tools.find((tool) => tool.name === "Agent");
+    const runtime = SubagentRuntime.prototype;
+    const runs: Array<ReturnType<typeof deferred<any>>> = [];
+    const inputs: any[] = [];
+    const runPublicAgent = vi
+      .spyOn(runtime, "runPublicAgent")
+      .mockImplementation((input) => {
+        inputs.push(input);
+        if (input.mode === "background") {
+          return Promise.resolve({ status: "running" } as never);
+        }
+        const run = deferred<any>();
+        runs.push(run);
+        return run.promise;
+      });
+    const ui = makeInteractiveCtx();
+    const sessionStart = vi
+      .mocked(pi.on)
+      .mock.calls.find(([event]) => event === "session_start")?.[1] as (
+      event: { reason: string },
+      ctx: any,
+    ) => void;
+    sessionStart({ reason: "startup" }, ui.ctx);
+    ui.confirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const parent = new AbortController();
+
+    try {
+      ui.send("\u001b");
+      expect(ui.defaultEscape).toHaveBeenCalledOnce();
+      ui.defaultEscape.mockClear();
+
+      const background = agent!.execute(
+        "call-1",
+        {
+          subagent_type: "Explore",
+          prompt: "background task",
+          mode: "background",
+        },
+        parent.signal,
+        undefined,
+        ui.ctx,
+      );
+      const first = agent!.execute(
+        "call-2",
+        {
+          subagent_type: "General",
+          prompt: "first task",
+          description: "First agent",
+        },
+        parent.signal,
+        undefined,
+        ui.ctx,
+      );
+      const second = agent!.execute(
+        "call-3",
+        {
+          subagent_type: "Review",
+          prompt: "second task",
+          description: "Second agent",
+        },
+        parent.signal,
+        undefined,
+        ui.ctx,
+      );
+
+      ui.send("\u001b");
+      await vi.waitFor(() => expect(ui.confirm).toHaveBeenCalledTimes(1));
+      expect(ui.confirm).toHaveBeenCalledWith(
+        "Stop 2 foreground subagents?",
+        expect.stringMatching(
+          /General: First agent[\s\S]*Review: Second agent/,
+        ),
+        { signal: expect.any(AbortSignal) },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(inputs[1].signal.aborted).toBe(false);
+      expect(inputs[2].signal.aborted).toBe(false);
+      expect(ui.defaultEscape).not.toHaveBeenCalled();
+
+      ui.send("\u001b");
+      await vi.waitFor(() => expect(inputs[1].signal.aborted).toBe(true));
+      expect(inputs[2].signal.aborted).toBe(true);
+      expect(parent.signal.aborted).toBe(false);
+      expect(inputs[0].signal.aborted).toBe(false);
+
+      runs[0]!.resolve({ status: "stopped", error: "Stopped by user." });
+      runs[1]!.resolve({ status: "stopped", error: "Stopped by user." });
+      await Promise.all([background, first, second]);
+
+      ui.send("\u001b");
+      expect(ui.defaultEscape).toHaveBeenCalledOnce();
+    } finally {
+      for (const run of runs) {
+        run.resolve({ status: "stopped", error: "Test cleanup." });
+      }
+      runPublicAgent.mockRestore();
     }
   });
 

@@ -27,7 +27,7 @@ Use `lsp` directly for one known-symbol question and ordinary reads for one or t
 
 `prompt` is the complete task contract. `description` is the short status label. `cwd`, `model`, and `thinking` can override the run's defaults when their exact values are known.
 
-Foreground is the default and the right choice when the result is your next dependency. The tool waits for completion and returns the final snapshot and answer.
+Foreground is the default and the right choice when the result is your next dependency. The tool waits for completion and returns the final snapshot and answer. In the TUI, pressing Escape while foreground agents are active asks for confirmation before aborting them. When a turn has multiple foreground agents, the prompt lists them and confirmation stops them together; background agents keep running.
 
 ## Run real work concurrently
 

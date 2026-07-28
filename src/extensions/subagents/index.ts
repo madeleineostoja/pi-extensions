@@ -6,6 +6,7 @@ import { loadPipkinConfig, type ModelPreset } from "#lib/config";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { showAgentsDashboard } from "./agents-dashboard.js";
+import { ForegroundInterruptGuard } from "./foreground-interrupt.js";
 import {
   AGENT_PROMPT_GUIDELINES,
   PUBLIC_BUILTIN_TYPES,
@@ -128,16 +129,19 @@ export default function (pi: ExtensionAPI): void {
     high: config.config.models.high,
   });
   const roster = new SubagentRosterController(runtime);
+  const foregroundInterrupt = new ForegroundInterruptGuard();
 
   pi.on("session_shutdown", async (event: { reason?: string } = {}) => {
     roster.dispose();
+    foregroundInterrupt.dispose();
     runtime.handleSessionShutdown(event.reason);
     await runtime.waitForShutdown();
   });
 
-  pi.on("session_start", (event: { reason?: string } = {}) => {
+  pi.on("session_start", (event: { reason?: string } = {}, ctx) => {
     roster.dispose();
     runtime.beginSession(event.reason);
+    foregroundInterrupt.install(ctx);
   });
 
   pi.registerCommand("agents", {
@@ -154,22 +158,49 @@ export default function (pi: ExtensionAPI): void {
     parameters: PublicAgentParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const mode = params.mode ?? "foreground";
-      const running = runtime.runPublicAgent({
-        type: params.subagent_type,
-        prompt: params.prompt,
-        description: params.description,
-        cwd: params.cwd ?? ctx.cwd,
-        ...resolveAgentSelection(
-          params.subagent_type,
-          params.model,
-          params.thinking,
-          config.path,
-          config.config.models,
-        ),
-        mode,
-        ctx,
-        signal,
-      });
+      const run = (runSignal = signal) =>
+        runtime.runPublicAgent({
+          type: params.subagent_type,
+          prompt: params.prompt,
+          description: params.description,
+          cwd: params.cwd ?? ctx.cwd,
+          ...resolveAgentSelection(
+            params.subagent_type,
+            params.model,
+            params.thinking,
+            config.path,
+            config.config.models,
+          ),
+          mode,
+          ctx,
+          signal: runSignal,
+        });
+      let running;
+      if (mode === "foreground") {
+        const controller = new AbortController();
+        const relayAbort = () => controller.abort();
+        if (signal?.aborted) {
+          controller.abort();
+        } else {
+          signal?.addEventListener("abort", relayAbort, { once: true });
+        }
+        running = foregroundInterrupt.run(
+          {
+            type: params.subagent_type,
+            description: params.description ?? params.prompt.slice(0, 120),
+            stop: () => controller.abort(),
+          },
+          async () => {
+            try {
+              return await run(controller.signal);
+            } finally {
+              signal?.removeEventListener("abort", relayAbort);
+            }
+          },
+        );
+      } else {
+        running = run();
+      }
       roster.track(ctx);
       const snapshot = await running;
       roster.track(ctx);
