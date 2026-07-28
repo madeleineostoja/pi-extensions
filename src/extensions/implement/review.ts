@@ -222,8 +222,8 @@ export function buildReviewPacket(args: {
       : {}),
     contracts,
     sourceMaterial: contracts.flatMap((task) =>
-      task.provenance.map((reference) => {
-        const path = resolveCorpusPath(args.state, args.plan, reference.path);
+      task.sourcePaths.map((sourcePath) => {
+        const path = resolveCorpusPath(args.state, args.plan, sourcePath);
         return { path, content: readFileSync(path, "utf-8") };
       }),
     ),

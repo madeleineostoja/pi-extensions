@@ -60,14 +60,12 @@ describe("workstream packet", () => {
     const compiled = compileExecutionPlan(
       {
         version: 1,
-        plannerReason: "The tasks share one contract boundary.",
-        plannerConfidence: "high",
         tasks: ["First", "Second"].map((title, index) => ({
           id: title.toLowerCase(),
           planIndex: index + 1,
           title,
           dependsOn: [],
-          provenance: [{ path: planPath, quote: title }],
+          sourcePaths: [planPath],
           compiledContract: {
             objective: `Implement ${title}.`,
             inScope: [title],
@@ -80,8 +78,6 @@ describe("workstream packet", () => {
             id: "combined",
             taskIds: ["first", "second"],
             dependsOn: [],
-            rationale: "The contracts are reviewed cumulatively.",
-            risk: "normal",
           },
         ],
       },

@@ -36,8 +36,6 @@ export async function createLifecycleFixture(): Promise<LifecycleFixture> {
   const compiled = compileExecutionPlan(
     {
       version: 1,
-      plannerReason: "The tasks have a stable implementation boundary.",
-      plannerConfidence: "high",
       tasks: [
         task("first", 1, "First task", planPath),
         task("second", 2, "Second task", planPath, ["first"]),
@@ -47,15 +45,11 @@ export async function createLifecycleFixture(): Promise<LifecycleFixture> {
           id: "first-stream",
           taskIds: ["first"],
           dependsOn: [],
-          rationale: "Establishes the contract used by the second workstream.",
-          risk: "normal",
         },
         {
           id: "second-stream",
           taskIds: ["second"],
           dependsOn: ["first-stream"],
-          rationale: "Consumes the completed first workstream.",
-          risk: "normal",
         },
       ],
     },
@@ -108,7 +102,7 @@ function task(
     planIndex,
     title,
     dependsOn,
-    provenance: [{ path, quote: title }],
+    sourcePaths: [path],
     compiledContract: {
       objective: `Implement ${title}.`,
       inScope: ["Required behavior"],

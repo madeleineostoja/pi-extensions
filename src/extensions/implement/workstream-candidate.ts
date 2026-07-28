@@ -394,8 +394,8 @@ export function buildWorkstreamPacket(args: {
   });
   const materialPaths = new Set(
     tasks.flatMap((task) =>
-      task.provenance.map((reference) =>
-        resolveCorpusPath(plan, args.state, reference.path),
+      task.sourcePaths.map((sourcePath) =>
+        resolveCorpusPath(plan, args.state, sourcePath),
       ),
     ),
   );
@@ -610,14 +610,14 @@ async function validateCompletion(args: {
       satisfied[taskId] = completion.evidence;
       continue;
     }
-    if (completion.kind !== "checkpoint" || !completion.checkpoint) {
+    if (completion.kind !== "checkpoint") {
       throw new WorkstreamCandidateLifecycleError(
         "Changed tasks require a checkpoint or concrete already-satisfied evidence.",
       );
     }
     const checkpoint = await canonicalCommit(
       args.workspaceGit,
-      completion.checkpoint,
+      completion.checkpoint ?? candidateTip,
       `Task ${taskId} checkpoint`,
     );
     if (

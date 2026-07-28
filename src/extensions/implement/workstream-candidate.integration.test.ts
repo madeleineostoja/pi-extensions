@@ -133,14 +133,12 @@ async function fixture(args: {
   const result = compileExecutionPlan(
     {
       version: 1,
-      plannerReason: "The workstreams are independent.",
-      plannerConfidence: "high",
       tasks: tasks.map((task, index) => ({
         id: task.id,
         planIndex: index + 1,
         title: task.title,
         dependsOn: [],
-        provenance: [{ path: planPath, quote: task.title }],
+        sourcePaths: [planPath],
         compiledContract: {
           objective: `Implement ${task.title}.`,
           inScope: [task.title],
@@ -151,8 +149,6 @@ async function fixture(args: {
       workstreams: args.workstreams.map((workstream) => ({
         ...workstream,
         dependsOn: [],
-        rationale: "The task contracts are independent.",
-        risk: "normal" as const,
       })),
     },
     {
@@ -219,7 +215,11 @@ function agent(
   };
 }
 
-async function changedResult(cwd: string, taskIds: string[]) {
+async function changedResult(
+  cwd: string,
+  taskIds: string[],
+  explicitCheckpoints = true,
+) {
   const client = new ExecGitClient(cwd);
   for (const taskId of taskIds) {
     writeFileSync(join(cwd, `${taskId}.txt`), `${taskId}\n`);
@@ -232,17 +232,11 @@ async function changedResult(cwd: string, taskIds: string[]) {
     result: {
       outcome: "changed" as const,
       summary: "Implemented the workstream and repaired local runtime state.",
-      verification: [
-        {
-          command: "npm test",
-          result: "passed",
-          rationale: "Verifies the workstream behavior.",
-        },
-      ],
+      verification: ["Focused workstream tests passed."],
       taskCompletions: taskIds.map((taskId) => ({
         taskId,
         kind: "checkpoint" as const,
-        checkpoint,
+        ...(explicitCheckpoints ? { checkpoint } : {}),
       })),
       candidateTip: checkpoint,
     },
@@ -297,6 +291,40 @@ describe("workstream candidate lifecycle", () => {
       subject.planContent,
     );
     expect(outcome.evidencePath).toContain("combined-implementation.json");
+  });
+
+  it("uses the candidate tip when changed tasks omit explicit checkpoints", async () => {
+    const subject = await fixture({
+      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
+    });
+    const outcome = await runWorkstreamCandidate({
+      state: subject.run.read(),
+      plan: subject.plan,
+      workstreamId: "combined",
+      git: new ExecGitClient(subject.root),
+      roles: subject.roles,
+      subagents: agent(async (cwd) =>
+        changedResult(cwd, ["first", "second"], false),
+      ),
+      artifactsPath: join(
+        subject.root,
+        ".pi",
+        "pipkin",
+        "implement",
+        "runs",
+        "run-1",
+        "artifacts",
+      ),
+    });
+
+    expect(outcome.kind).toBe("candidate_ready");
+    if (outcome.kind !== "candidate_ready") {
+      throw new Error("Expected a candidate-ready outcome.");
+    }
+    expect(outcome.checkpoints).toEqual({
+      first: outcome.candidate.commitSha,
+      second: outcome.candidate.commitSha,
+    });
   });
 
   it("retains already-satisfied evidence beside a changed task checkpoint", async () => {

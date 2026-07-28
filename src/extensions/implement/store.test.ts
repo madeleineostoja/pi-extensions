@@ -51,8 +51,6 @@ function planFor(directory: string): ExecutionPlan {
   const result = compileExecutionPlan(
     {
       version: 1,
-      plannerReason: "The tasks share implementation context.",
-      plannerConfidence: "high",
       tasks: [
         plannerTask("first", 1, "First task", planPath),
         plannerTask("second", 2, "Second task", planPath),
@@ -62,8 +60,6 @@ function planFor(directory: string): ExecutionPlan {
           id: "implementation",
           taskIds: ["first", "second"],
           dependsOn: [],
-          rationale: "The tasks share implementation context.",
-          risk: "normal",
         },
       ],
     },
@@ -85,17 +81,17 @@ function planFor(directory: string): ExecutionPlan {
 function plannerTask(
   id: string,
   planIndex: number,
-  quote: string,
+  title: string,
   path: string,
 ) {
   return {
     id,
     planIndex,
-    title: quote,
+    title,
     dependsOn: [],
-    provenance: [{ path, quote }],
+    sourcePaths: [path],
     compiledContract: {
-      objective: `Implement ${quote}.`,
+      objective: `Implement ${title}.`,
       inScope: ["Required behavior"],
       acceptanceCriteria: ["Observable behavior works"],
       outOfScope: ["Unrelated changes"],

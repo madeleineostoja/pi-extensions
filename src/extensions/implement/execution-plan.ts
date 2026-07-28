@@ -16,17 +16,11 @@ import {
 
 const ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
-export type PlannerProvenance = {
-  path: string;
-  quote: string;
-};
-
 export type StrictCompiledContract = {
   objective: string;
   inScope: string[];
   acceptanceCriteria: string[];
   outOfScope: string[];
-  supportingDesignContext?: string;
   implementationNotes?: string;
   verificationGuidance?: string;
 };
@@ -36,7 +30,7 @@ export type PlannerTask = {
   planIndex: number;
   title: string;
   dependsOn: string[];
-  provenance: PlannerProvenance[];
+  sourcePaths: string[];
   compiledContract: StrictCompiledContract;
 };
 
@@ -44,14 +38,10 @@ export type PlannerWorkstream = {
   id: string;
   taskIds: string[];
   dependsOn: string[];
-  rationale: string;
-  risk: "normal" | "isolated";
 };
 
 export type PlannerExecutionPlan = {
   version: 1;
-  plannerReason: string;
-  plannerConfidence: "high" | "medium" | "low";
   tasks: PlannerTask[];
   workstreams: PlannerWorkstream[];
 };
@@ -81,10 +71,6 @@ export type ExecutionPlan = {
     baseSha: string;
   };
   workerConcurrency: number;
-  planner: {
-    reason: string;
-    confidence: "high" | "medium" | "low";
-  };
   tasks: CompiledExecutionTask[];
   workstreams: PlannerWorkstream[];
 };
@@ -204,7 +190,7 @@ export function parsePlannerExecutionPlan(
   }
   const rootKeys = exactKeys(
     root.value,
-    ["version", "plannerReason", "plannerConfidence", "tasks", "workstreams"],
+    ["version", "tasks", "workstreams"],
     "Execution plan",
   );
   if (!rootKeys.ok) {
@@ -214,17 +200,6 @@ export function parsePlannerExecutionPlan(
     return failure(
       `Execution plan version must be 1, got: ${String(root.value.version)}.`,
     );
-  }
-  const plannerReason = nonBlank(
-    root.value.plannerReason,
-    "Execution plan plannerReason",
-  );
-  if (!plannerReason.ok) {
-    return plannerReason;
-  }
-  const plannerConfidence = confidence(root.value.plannerConfidence);
-  if (!plannerConfidence.ok) {
-    return plannerConfidence;
   }
   const tasks = array(root.value.tasks, "Execution plan tasks");
   if (!tasks.ok) {
@@ -264,8 +239,6 @@ export function parsePlannerExecutionPlan(
     ok: true,
     value: {
       version: 1,
-      plannerReason: plannerReason.value,
-      plannerConfidence: plannerConfidence.value,
       tasks: parsedTasks,
       workstreams: parsedWorkstreams,
     },
@@ -335,10 +308,6 @@ export function compileExecutionPlan(
       baseSha: input.baseSha,
     },
     workerConcurrency: input.workerConcurrency,
-    planner: {
-      reason: planner.value.plannerReason,
-      confidence: planner.value.plannerConfidence,
-    },
     tasks,
     workstreams: planner.value.workstreams,
   };
@@ -404,9 +373,9 @@ export function validatePlannerPlan(
       return failure(`Duplicate planIndex: ${task.planIndex}.`);
     }
     indexes.add(task.planIndex);
-    const provenance = validateProvenance(task, materialStore);
-    if (!provenance.ok) {
-      return provenance;
+    const sourcePaths = validateSourcePaths(task, materialStore);
+    if (!sourcePaths.ok) {
+      return sourcePaths;
     }
   }
   if (indexes.size !== unchecked.length) {
@@ -562,7 +531,6 @@ function parseStoredExecutionPlan(value: unknown): ExecutionPlan | undefined {
       "executionPlanHash",
       "source",
       "workerConcurrency",
-      "planner",
       "tasks",
       "workstreams",
     ]) ||
@@ -574,10 +542,7 @@ function parseStoredExecutionPlan(value: unknown): ExecutionPlan | undefined {
     !Array.isArray(plan.workstreams) ||
     typeof plan.source !== "object" ||
     plan.source === null ||
-    Array.isArray(plan.source) ||
-    typeof plan.planner !== "object" ||
-    plan.planner === null ||
-    Array.isArray(plan.planner)
+    Array.isArray(plan.source)
   ) {
     return undefined;
   }
@@ -600,14 +565,6 @@ function parseStoredExecutionPlan(value: unknown): ExecutionPlan | undefined {
   ) {
     return undefined;
   }
-  const planner = plan.planner as Record<string, unknown>;
-  if (
-    !hasExactKeys(planner, ["reason", "confidence"]) ||
-    typeof planner.reason !== "string" ||
-    planner.reason.trim() === ""
-  ) {
-    return undefined;
-  }
   const plannerTasks: unknown[] = [];
   for (const task of plan.tasks) {
     if (typeof task !== "object" || task === null || Array.isArray(task)) {
@@ -620,7 +577,7 @@ function parseStoredExecutionPlan(value: unknown): ExecutionPlan | undefined {
         "planIndex",
         "title",
         "dependsOn",
-        "provenance",
+        "sourcePaths",
         "compiledContract",
         "taskHash",
         "sourceAnchor",
@@ -639,8 +596,6 @@ function parseStoredExecutionPlan(value: unknown): ExecutionPlan | undefined {
   }
   const parsed = parsePlannerExecutionPlan({
     version: plan.version,
-    plannerReason: planner.reason,
-    plannerConfidence: planner.confidence,
     tasks: plannerTasks,
     workstreams: plan.workstreams,
   });
@@ -653,7 +608,6 @@ function parseStoredExecutionPlan(value: unknown): ExecutionPlan | undefined {
       version: candidate.version,
       source: candidate.source,
       workerConcurrency: candidate.workerConcurrency,
-      planner: candidate.planner,
       tasks: candidate.tasks,
       workstreams: candidate.workstreams,
     })
@@ -715,7 +669,7 @@ export function buildStrictExecutionPlannerPrompt(
   const corpus = packet.corpus
     .map((file) => `### ${file.absolutePath}\n\n${file.content}`)
     .join("\n\n");
-  return `You are the Pipkin Implement planner working read-only in the assigned target checkout:\n\n  ${packet.workspace.path}\n\n${packet.workspace.mutationBoundary}\n\nReturn only the strict completion object.\n\n## Source plan\n\n${packet.planContent}\n\n## Unchecked source tasks\n\n${tasks}\n\n## Immutable corpus\n\n${corpus}\n\nBase SHA: ${packet.baseSha}\nEffective worker concurrency: ${packet.workerConcurrency}\n\nCreate exactly one task contract for every listed planIndex. Choose a small number of substantial workstreams by balancing retained implementation context, cumulative review coherence, bounded review and recovery scope, integration conflict, and useful concurrency up to the effective capacity; capacity is a benefit, not a quota. Group tasks only when shared evolving context, conflict-prone code, invariants, or cumulative review materially helps. Do not group tasks solely because they share a feature, broad topic, checklist order, or serial dependency. Split at a stable implementation and review boundary when it narrows scope, including when a sequential dependent workstream is clearer. Multi-task workstreams and dependent chains are first-class; do not create singletons merely to occupy workers. Workstream order must respect dependencies. Before returning, challenge the largest workstream for a meaningful split and the smallest adjacent workstreams for a useful merge. Whole-plan and all-singleton partitions are suspicious but legal: give each a concrete plan-specific rationale in plannerReason and the relevant workstream rationales. The complete source plan is the shipment boundary: an intermediate candidate may establish a contract for a dependent workstream, but each candidate must remain coherent and safe to publish. Ground requirements and acceptance criteria in the source corpus, existing repository contracts, or material correctness, safety, data-integrity, or operational risks. Exploration may reveal implementation options and constraints but does not create scope. Prefer existing project, framework, platform, standard-library, or installed-dependency capabilities over new custom mechanisms when they satisfy the contract. Use implementationNotes only for required constraints, decisions, and reuse opportunities, not code choreography. Keep verificationGuidance proportional to changed behavior and material risk. Every provenance quote must be an exact non-empty quote from a corpus file. Do not invent hashes, source anchors, task modes, fallback plans, or runtime IDs.`;
+  return `You are the Pipkin Implement planner working read-only in the assigned target checkout:\n\n  ${packet.workspace.path}\n\n${packet.workspace.mutationBoundary}\n\nReturn only the strict completion object.\n\n## Source plan\n\n${packet.planContent}\n\n## Unchecked source tasks\n\n${tasks}\n\n## Immutable corpus\n\n${corpus}\n\nBase SHA: ${packet.baseSha}\nEffective worker concurrency: ${packet.workerConcurrency}\n\nCreate exactly one task contract for every listed planIndex. Choose a small number of substantial workstreams by balancing retained implementation context, cumulative review coherence, bounded review and recovery scope, integration conflict, and useful concurrency up to the effective capacity; capacity is a benefit, not a quota. Group tasks only when shared evolving context, conflict-prone code, invariants, or cumulative review materially helps. Do not group tasks solely because they share a feature, broad topic, checklist order, or serial dependency. Split at a stable implementation and review boundary when it narrows scope, including when a sequential dependent workstream is clearer. Multi-task workstreams and dependent chains are first-class; do not create singletons merely to occupy workers. Workstream order must respect dependencies. Before returning, challenge the largest workstream for a meaningful split and the smallest adjacent workstreams for a useful merge. Whole-plan and all-singleton partitions are suspicious but legal only when concrete plan-specific constraints justify them. The complete source plan is the shipment boundary: an intermediate candidate may establish a contract for a dependent workstream, but each candidate must remain coherent and safe to publish. Ground requirements and acceptance criteria in the source corpus, existing repository contracts, or material correctness, safety, data-integrity, or operational risks. Exploration may reveal implementation options and constraints but does not create scope. Prefer existing project, framework, platform, standard-library, or installed-dependency capabilities over new custom mechanisms when they satisfy the contract. Use implementationNotes only for required constraints, decisions, and reuse opportunities, not code choreography. Keep verificationGuidance proportional to changed behavior and material risk. Every sourcePaths entry must identify a corpus file that downstream workers need. Do not invent hashes, source anchors, task modes, fallback plans, or runtime IDs.`;
 }
 
 function parsePlannerTask(
@@ -731,7 +685,14 @@ function parsePlannerTask(
   }
   const keys = exactKeys(
     task.value,
-    ["id", "planIndex", "title", "dependsOn", "provenance", "compiledContract"],
+    [
+      "id",
+      "planIndex",
+      "title",
+      "dependsOn",
+      "sourcePaths",
+      "compiledContract",
+    ],
     `Execution plan tasks[${index}]`,
   );
   if (!keys.ok) {
@@ -751,7 +712,11 @@ function parsePlannerTask(
     `Execution plan tasks[${index}].dependsOn`,
     false,
   );
-  const provenance = parseProvenance(task.value.provenance, index);
+  const sourcePaths = stringList(
+    task.value.sourcePaths,
+    `Execution plan tasks[${index}].sourcePaths`,
+    true,
+  );
   const compiledContract = parseContract(task.value.compiledContract, index);
   if (!id.ok) {
     return id;
@@ -765,8 +730,8 @@ function parsePlannerTask(
   if (!dependsOn.ok) {
     return dependsOn;
   }
-  if (!provenance.ok) {
-    return provenance;
+  if (!sourcePaths.ok) {
+    return sourcePaths;
   }
   if (!compiledContract.ok) {
     return compiledContract;
@@ -778,7 +743,7 @@ function parsePlannerTask(
       title: title.value,
       planIndex: planIndex.value,
       dependsOn: dependsOn.value,
-      provenance: provenance.value,
+      sourcePaths: sourcePaths.value,
       compiledContract: compiledContract.value,
     },
   };
@@ -797,7 +762,7 @@ function parsePlannerWorkstream(
   }
   const keys = exactKeys(
     stream.value,
-    ["id", "taskIds", "dependsOn", "rationale", "risk"],
+    ["id", "taskIds", "dependsOn"],
     `Execution plan workstreams[${index}]`,
   );
   if (!keys.ok) {
@@ -817,10 +782,6 @@ function parsePlannerWorkstream(
     `Execution plan workstreams[${index}].dependsOn`,
     false,
   );
-  const rationale = nonBlank(
-    stream.value.rationale,
-    `Execution plan workstreams[${index}].rationale`,
-  );
   if (!id.ok) {
     return id;
   }
@@ -830,73 +791,14 @@ function parsePlannerWorkstream(
   if (!dependsOn.ok) {
     return dependsOn;
   }
-  if (!rationale.ok) {
-    return rationale;
-  }
-  if (stream.value.risk !== "normal" && stream.value.risk !== "isolated") {
-    return failure(
-      `Execution plan workstreams[${index}].risk must be "normal" or "isolated".`,
-    );
-  }
   return {
     ok: true,
     value: {
       id: id.value,
       taskIds: taskIds.value,
       dependsOn: dependsOn.value,
-      rationale: rationale.value,
-      risk: stream.value.risk,
     },
   };
-}
-
-function parseProvenance(
-  value: unknown,
-  taskIndex: number,
-): ExecutionPlanResult<PlannerProvenance[]> {
-  const entries = array(value, `Execution plan tasks[${taskIndex}].provenance`);
-  if (!entries.ok) {
-    return entries;
-  }
-  if (entries.value.length === 0) {
-    return failure(
-      `Execution plan tasks[${taskIndex}].provenance must not be empty.`,
-    );
-  }
-  const result: PlannerProvenance[] = [];
-  for (const [index, entry] of entries.value.entries()) {
-    const ref = object(
-      entry,
-      `Execution plan tasks[${taskIndex}].provenance[${index}] must be an object.`,
-    );
-    if (!ref.ok) {
-      return ref;
-    }
-    const keys = exactKeys(
-      ref.value,
-      ["path", "quote"],
-      `Execution plan tasks[${taskIndex}].provenance[${index}]`,
-    );
-    if (!keys.ok) {
-      return keys;
-    }
-    const path = nonBlank(
-      ref.value.path,
-      `Execution plan tasks[${taskIndex}].provenance[${index}].path`,
-    );
-    const quote = exactQuote(
-      ref.value.quote,
-      `Execution plan tasks[${taskIndex}].provenance[${index}].quote`,
-    );
-    if (!path.ok) {
-      return path;
-    }
-    if (!quote.ok) {
-      return quote;
-    }
-    result.push({ path: path.value, quote: quote.value });
-  }
-  return { ok: true, value: result };
 }
 
 function parseContract(
@@ -917,7 +819,6 @@ function parseContract(
       "inScope",
       "acceptanceCriteria",
       "outOfScope",
-      "supportingDesignContext",
       "implementationNotes",
       "verificationGuidance",
     ],
@@ -959,13 +860,9 @@ function parseContract(
   }
   const optional: Pick<
     StrictCompiledContract,
-    "supportingDesignContext" | "implementationNotes" | "verificationGuidance"
+    "implementationNotes" | "verificationGuidance"
   > = {};
-  for (const key of [
-    "supportingDesignContext",
-    "implementationNotes",
-    "verificationGuidance",
-  ] as const) {
+  for (const key of ["implementationNotes", "verificationGuidance"] as const) {
     if (contract.value[key] === undefined) {
       continue;
     }
@@ -990,33 +887,24 @@ function parseContract(
   };
 }
 
-function validateProvenance(
+function validateSourcePaths(
   task: PlannerTask,
   store: MaterialStore,
 ): ExecutionPlanResult<void> {
-  for (const ref of task.provenance) {
-    let path: string;
+  for (const sourcePath of task.sourcePaths) {
     try {
-      path = resolveCorpusPath({
+      resolveCorpusPath({
         planPath: store.entryPath,
         checkoutRoot: store.repoRoot ?? store.planDir,
         corpus: store.files.map((file) => ({
           path: file.absolutePath,
           hash: file.hash,
         })),
-        reference: ref.path,
+        reference: sourcePath,
       });
     } catch {
       return failure(
-        `Task "${task.id}" provenance path is outside the immutable corpus: ${ref.path}.`,
-      );
-    }
-    const file = store.files.find(
-      (candidate) => candidate.absolutePath === path,
-    )!;
-    if (!file.content.includes(ref.quote)) {
-      return failure(
-        `Task "${task.id}" provenance quote is not grounded in ${ref.path}.`,
+        `Task "${task.id}" source path is outside the immutable corpus: ${sourcePath}.`,
       );
     }
   }
@@ -1160,12 +1048,6 @@ function nonBlank(value: unknown, name: string): ExecutionPlanResult<string> {
     : failure(`${name} must be a non-empty string.`);
 }
 
-function exactQuote(value: unknown, name: string): ExecutionPlanResult<string> {
-  return typeof value === "string" && value.trim().length > 0
-    ? { ok: true, value }
-    : failure(`${name} must be a non-empty string.`);
-}
-
 function positiveInteger(
   value: unknown,
   name: string,
@@ -1192,16 +1074,6 @@ function stringList(
     return failure(`${name} must not be empty.`);
   }
   return { ok: true, value: value.map((entry) => entry.trim()) };
-}
-
-function confidence(
-  value: unknown,
-): ExecutionPlanResult<"high" | "medium" | "low"> {
-  return value === "high" || value === "medium" || value === "low"
-    ? { ok: true, value }
-    : failure(
-        'Execution plan plannerConfidence must be "high", "medium", or "low".',
-      );
 }
 
 function failure<T = never>(reason: string): ExecutionPlanResult<T> {
