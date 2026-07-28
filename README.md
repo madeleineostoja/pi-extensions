@@ -66,7 +66,7 @@ Pipkin's first three layers are deliberately about control:
 
 ### Context
 
-Long sessions collect a remarkable amount of baggage. **Context Prune** spots stale output, superseded and repeated reads, already-consumed command results, and context-pressure candidates. It replaces them with small, reasoned stubs while keeping every original result available through `context_recall`. `/context-prune` shows what it packed away.
+Long sessions collect a remarkable amount of baggage. **Context Prune** uses deterministic, persisted epochs to replace stale output, superseded and repeated reads, and already-consumed command results with small, reasoned stubs while keeping every original result available through `context_recall`. Pi remains responsible for context pressure and compaction.
 
 When you switch models, **Handoff** shows the context and next-input cost you are carrying. `/handoff` lets the previous model leave a proper continuation summary for the next one instead of making it reread the whole journey.
 
@@ -110,7 +110,6 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | --------------------------------- | -------------------------------------------------------------------------- |
 | `/sandbox`                        | Inspect policy, explain decisions, and manage session or persistent access |
 | `/readonly [on\|off]`             | Toggle approval for built-in edits and writes                              |
-| `/context-prune`                  | Inspect elision, recalls, cache behavior, and adaptive policy              |
 | `context_recall`                  | Recover the original content behind an elision stub                        |
 | `lsp`                             | Make semantic source queries or inspect language-server status             |
 | `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents                     |

@@ -23,12 +23,11 @@ With Pi's default agent directory, that is `~/.pi/agent/pipkin/config.json`. Pip
   "implement": {
     "workerConcurrency": 3
   },
-  "context": {},
   "sandbox": {}
 }
 ```
 
-Only `models` is needed to unlock the complete model-powered feature set. `implement`, `context`, and `sandbox` are optional.
+Only `models` is needed to unlock the complete model-powered feature set. `implement` and `sandbox` are optional.
 
 ## Model presets
 
@@ -61,32 +60,6 @@ Pi still owns credentials and its `settings.json`. Keep API keys out of this fil
 
 See [Implementation](features/implementation.md).
 
-## Context settings
-
-Every Context setting is optional. The defaults are tuned to preserve recent and high-value results while reclaiming repeated or already-consumed output.
-
-| Setting                               | Default | Purpose                                               |
-| ------------------------------------- | ------: | ----------------------------------------------------- |
-| `staleTurns`                          |     `4` | Age threshold for ordinary stale-result elision       |
-| `minTokens`                           |   `256` | Minimum size for ordinary stale-result elision        |
-| `supersededReadsEnabled`              |  `true` | Elide reads made obsolete by later edits or writes    |
-| `duplicateReadsEnabled`               |  `true` | Elide repeated reads of the same content              |
-| `coveredReadsEnabled`                 |  `true` | Elide reads whose content is included in a later read |
-| `adaptivePolicyEnabled`               |  `true` | Adapt pruning pressure using prompt-cache telemetry   |
-| `afterConsumptionBashEnabled`         |  `true` | Elide successful low-risk command output after use    |
-| `batchPruningEnabled`                 |  `true` | Reclaim a valuable group of older results together    |
-| `emergencyContextReserveTokens`       | `16000` | Reserve to protect near the context limit             |
-| `emergencyOrdinaryReadMinSavedTokens` |  `4000` | Minimum emergency saving from ordinary reads          |
-| `emergencyMaxOrdinaryReads`           |     `2` | Maximum ordinary reads selected in an emergency pass  |
-| `batchMinCandidates`                  |     `2` | Minimum results in a batch pass                       |
-| `batchMinSavedTokens`                 |  `8000` | Minimum gross batch saving                            |
-| `batchMinNetValue`                    |  `3000` | Minimum estimated net batch value                     |
-| `batchMaxCandidates`                  |     `8` | Maximum results selected per batch                    |
-| `batchCooldownTurns`                  |     `2` | Minimum turns between batch passes                    |
-| `batchMaxSemanticRisk`                |   `3.0` | Maximum aggregate semantic-risk score                 |
-
-Invalid Context values fall back to their defaults with a warning. See [Context and Handoff](features/context-and-handoff.md) for how the pruning rules interact.
-
 ## Sandbox settings and project policy
 
 The optional central `sandbox` object uses the same shape as project policy. Sandbox resolves policy in this order:
@@ -101,7 +74,7 @@ See [Safety](features/safety.md) for the complete policy shape, defaults, and in
 
 ## When changes take effect
 
-Configuration is snapshotted when the consuming extension is constructed. Pi's `/reload` rebuilds the bundle and rereads the central file. Sandbox also provides `/sandbox reload` to reread its central and project policy without a full extension reload. Context has no separate reload command.
+Configuration is snapshotted when the consuming extension is constructed. Pi's `/reload` rebuilds the bundle and rereads the central file. Sandbox also provides `/sandbox reload` to reread its central and project policy without a full extension reload.
 
 ## Durable state
 

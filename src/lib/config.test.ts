@@ -18,7 +18,6 @@ describe("Pipkin config", () => {
       JSON.stringify({
         models: { ...models, utility: { model: "bad", thinking: "minimal" } },
         implement: { workerConcurrency: 99 },
-        context: { staleTurns: 6 },
         sandbox: { enabled: false },
       }),
     );
@@ -26,7 +25,6 @@ describe("Pipkin config", () => {
     expect(snapshot.config.models.utility).toBeUndefined();
     expect(snapshot.config.models.low).toEqual(models.low);
     expect(snapshot.config.implement.workerConcurrency).toBe(8);
-    expect(snapshot.config.context).toEqual({ staleTurns: 6 });
     expect(snapshot.config.sandbox).toEqual({ enabled: false });
     expect(presetIssue(snapshot, "utility")?.message).toContain("model");
   });
@@ -56,6 +54,22 @@ describe("Pipkin config", () => {
         "models.high.extra",
         "models.extra",
         "implement.workerConcurrency",
+      ]),
+    );
+  });
+
+  it("rejects removed context policy configuration", () => {
+    const snapshot = parsePipkinConfig(
+      JSON.stringify({ models, context: { staleTurns: 6 } }),
+    );
+
+    expect(snapshot.config).not.toHaveProperty("context");
+    expect(snapshot.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "context",
+          message: "is not supported",
+        }),
       ]),
     );
   });
