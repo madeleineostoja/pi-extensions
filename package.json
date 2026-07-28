@@ -39,7 +39,8 @@
   },
   "imports": {
     "#lib/*": "./src/lib/*.ts",
-    "#subagents/runtime": "./src/extensions/subagents/runtime.ts"
+    "#subagents/runtime": "./src/extensions/subagents/runtime.ts",
+    "#test/*": "./test/support/*.ts"
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
@@ -48,7 +49,12 @@
     "format:check": "prettier --check .",
     "check": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --testTimeout 15000"
+    "test": "vitest run --testTimeout 15000",
+    "test:subagents": "vitest run --project subagents",
+    "test:implement:unit": "vitest run --project implement-unit",
+    "test:implement:integration": "vitest run --project implement-integration",
+    "test:implement:e2e": "vitest run --project implement-e2e",
+    "test:implement": "vitest run --project implement-unit --project implement-integration --project implement-e2e"
   },
   "dependencies": {
     "execa": "^10.0.0",
@@ -68,7 +74,6 @@
     "@types/node": "^22.0.0",
     "@types/picomatch": "^4.0.0",
     "ajv": "^6.12.6",
-    "fast-check": "^4.9.0",
     "husky": "^9.1.7",
     "lint-staged": "^15.2.10",
     "oxlint": "^0.15.0",

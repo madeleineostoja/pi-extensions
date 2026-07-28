@@ -8,32 +8,51 @@ import {
 } from "./prompts.js";
 import { sha256 } from "./source-integrity.js";
 import {
-  anchoredReviewSchema,
-  initialOverallReviewSchema,
-  recoveryCompletionSchema,
   type AnchoredWorkstreamReviewCompletion,
   type InitialOverallReviewCompletion,
-  type RecoveryCompletion,
+  type WholePlanRecoveryCompletion,
 } from "./result-schemas.js";
 import { boundedRecoveryOutput, type RecoveryAction } from "./recovery.js";
 import type { SchedulerEvent } from "./scheduler.js";
-import type { SubagentClient } from "./subagents.js";
+import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import { writeAtomicJson } from "./atomic-json.js";
 import { protectedArtifactsMatch, type RunState } from "./store.js";
+import { spawnValidatedWorker } from "./worker-invocation.js";
 
 export type WholePlanReviewPacket = {
+  role: "reviewer";
+  completionKind: "initial-overall-review" | "anchored-review";
+  identity: string;
+  workspace: { path: string; mutationBoundary: string };
+  target: { commitSha: string; treeSha: string };
   planContext: string;
   candidateContext: string;
   fullDiff: string;
+  latestDelta?: string;
   receipts: RunState["publication"]["receipts"];
   uncertainty: string[];
+  outstandingFindings: NonNullable<
+    RunState["wholePlanReview"]["epoch"]
+  >["findings"];
+};
+
+export type WholePlanRecoveryPacket = {
+  role: "recovery";
+  completionKind: "whole-plan-recovery";
+  identity: string;
+  workspace: { path: string; mutationBoundary: string };
+  failure: NonNullable<RunState["wholePlanReview"]["recovery"]>;
 };
 
 export function buildWholePlanReviewPacket(args: {
   state: RunState;
   plan: ExecutionPlan;
   currentTargetSha: string;
+  currentTargetTreeSha: string;
   fullDiff: string;
+  latestDelta?: string;
+  completionKind: WholePlanReviewPacket["completionKind"];
+  outstandingFindings: WholePlanReviewPacket["outstandingFindings"];
 }): WholePlanReviewPacket {
   if (!protectedArtifactsMatch(args.state)) {
     throw new Error(
@@ -56,6 +75,19 @@ export function buildWholePlanReviewPacket(args: {
     .flatMap((candidate) => candidate.implementationEvidence?.uncertainty ?? [])
     .filter((value, index, all) => all.indexOf(value) === index);
   return {
+    role: "reviewer",
+    completionKind: args.completionKind,
+    identity: `${args.state.run.id}/whole-plan/${args.currentTargetSha}`,
+    workspace: {
+      path: args.state.run.checkout.root,
+      mutationBoundary:
+        "Read-only target checkout; do not mutate Git or protected corpus.",
+    },
+    target: {
+      commitSha: args.currentTargetSha,
+      treeSha: args.currentTargetTreeSha,
+    },
+    outstandingFindings: args.outstandingFindings,
     planContext: [
       "## Immutable execution plan",
       JSON.stringify(args.plan, null, 2),
@@ -70,8 +102,10 @@ export function buildWholePlanReviewPacket(args: {
         completed.map((workstream) => ({
           ...workstream,
           verification: workstream.candidateId
-            ? args.state.candidates[workstream.candidateId]
-                ?.implementationEvidence
+            ? inlineImplementationEvidence(
+                args.state.candidates[workstream.candidateId]
+                  ?.implementationEvidence,
+              )
             : undefined,
         })),
         null,
@@ -87,6 +121,7 @@ export function buildWholePlanReviewPacket(args: {
       `\`\`\`diff\n${args.fullDiff}\n\`\`\``,
     ].join("\n\n"),
     fullDiff: args.fullDiff,
+    ...(args.latestDelta ? { latestDelta: args.latestDelta } : {}),
     receipts: args.state.publication.receipts,
     uncertainty,
   };
@@ -100,11 +135,7 @@ export async function runWholePlanReview(args: {
   artifactsPath: string;
   signal?: AbortSignal;
   dispatch: (event: SchedulerEvent) => Promise<void>;
-  roles?: {
-    model?: string;
-    type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  };
+  roles: ImplementRoles;
 }): Promise<void> {
   if (
     Object.values(args.state.workstreams.source).some(
@@ -143,57 +174,67 @@ export async function runWholePlanReview(args: {
     );
   }
   const fullDiff = await args.git.diffRange(
-    anchored?.targetBaseSha ?? args.state.run.checkout.startHead,
+    args.state.run.checkout.startHead,
     target,
   );
+  const latestDelta = anchored
+    ? await args.git.diffRange(anchored.targetBaseSha, target)
+    : undefined;
+  const outstandingFindings = anchored
+    ? epoch!.outstandingFindingIds.map((id) => {
+        const finding = epoch!.findings.find(
+          (candidate) => candidate.id === id,
+        );
+        if (!finding) {
+          throw new Error(
+            "Whole-plan review has a missing current anchored finding.",
+          );
+        }
+        return finding;
+      })
+    : [];
+  if (
+    new Set(anchored ? epoch!.outstandingFindingIds : []).size !==
+    outstandingFindings.length
+  ) {
+    throw new Error(
+      "Whole-plan review has duplicate anchored finding references.",
+    );
+  }
   const packet = buildWholePlanReviewPacket({
     state: args.state,
     plan: args.plan,
     currentTargetSha: target,
+    currentTargetTreeSha: targetTree,
     fullDiff,
+    ...(latestDelta ? { latestDelta } : {}),
+    completionKind: anchored ? "anchored-review" : "initial-overall-review",
+    outstandingFindings,
   });
-  const outstandingFindings = anchored
-    ? epoch!.findings.filter((finding) =>
-        epoch!.outstandingFindingIds.includes(finding.id),
-      )
-    : [];
-  const handle = await args.subagents.spawn({
-    type: args.roles?.type ?? "Review",
-    role: "reviewer",
-    model: args.roles?.model,
-    thinking: args.roles?.thinking,
+  const handle = await spawnValidatedWorker({
+    packet,
+    subagents: args.subagents,
+    roles: args.roles,
     taskId: "whole-plan",
     description: anchored
       ? `Assess published whole-plan repair for ${args.state.run.id}`
       : `Review complete run ${args.state.run.id}`,
-    cwd: args.state.run.checkout.root,
-    readOnly: true,
-    prompt: anchored
-      ? buildAnchoredOverallReviewPrompt({
-          planContext: packet.planContext,
-          candidateContext: packet.candidateContext,
-          outstandingFindings,
-          previousCandidate: anchored.targetBaseSha,
-          currentCandidate: anchored.publishedCommitSha,
-          latestDelta: fullDiff,
-          worktreePath: args.state.run.checkout.root,
-        })
-      : buildInitialOverallReviewPrompt({
-          planContext: packet.planContext,
-          candidateContext: packet.candidateContext,
-          worktreePath: args.state.run.checkout.root,
-        }),
-    completion: (anchored
-      ? {
-          description:
-            "Assess every outstanding finding and only causal regressions from the published repair.",
-          schema: anchoredReviewSchema,
-        }
-      : {
-          description:
-            "Approve the complete run or return direct blocking findings.",
-          schema: initialOverallReviewSchema,
-        }) as never,
+    render: (workerPacket) =>
+      anchored
+        ? buildAnchoredOverallReviewPrompt({
+            planContext: workerPacket.planContext,
+            candidateContext: workerPacket.candidateContext,
+            outstandingFindings: workerPacket.outstandingFindings as never,
+            previousCandidate: anchored.targetBaseSha,
+            currentCandidate: anchored.publishedCommitSha,
+            latestDelta: workerPacket.latestDelta ?? "",
+            worktreePath: workerPacket.workspace.path,
+          })
+        : buildInitialOverallReviewPrompt({
+            planContext: workerPacket.planContext,
+            candidateContext: workerPacket.candidateContext,
+            worktreePath: workerPacket.workspace.path,
+          }),
   });
   const result = await args.subagents.waitFor<unknown>(handle, args.signal);
   if (result.status !== "completed") {
@@ -272,43 +313,42 @@ export async function runWholePlanRecovery(args: {
   state: RunState;
   subagents: SubagentClient;
   signal?: AbortSignal;
-  roles?: {
-    model?: string;
-    type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  };
+  roles: ImplementRoles;
 }): Promise<RecoveryAction> {
   const recovery = args.state.wholePlanReview.recovery;
   if (!recovery || recovery.status !== "running") {
     throw new Error("Whole-plan recovery has no retained failure evidence.");
   }
-  const handle = await args.subagents.spawn({
-    type: args.roles?.type ?? "pipkin:implement:recovery",
+  const packet: WholePlanRecoveryPacket = {
     role: "recovery",
-    model: args.roles?.model,
-    thinking: args.roles?.thinking,
+    completionKind: "whole-plan-recovery",
+    identity: `${args.state.run.id}/whole-plan-recovery`,
+    workspace: {
+      path: args.state.run.checkout.root,
+      mutationBoundary:
+        "Read-only target checkout; diagnose retained whole-plan failure only.",
+    },
+    failure: recovery,
+  };
+  const handle = await spawnValidatedWorker({
+    packet,
+    subagents: args.subagents,
+    roles: args.roles,
     taskId: "whole-plan-recovery",
     description: `Recover whole-plan review for ${args.state.run.id}`,
-    cwd: args.state.run.checkout.root,
-    readOnly: true,
-    prompt: `You are the Pipkin Implement recovery agent for a failed whole-plan review. Diagnose only the retained reviewer/provider failure below. Do not edit files, change Git state, install dependencies, or rerun the review yourself. Return retry when the orchestrator can safely rerun the same immutable assessment, diagnose for additional bounded evidence, or no_safe_action when manual intervention is required.\n\n${JSON.stringify(recovery, null, 2)}`,
-    completion: {
-      description: "Return a bounded whole-plan recovery action.",
-      schema: recoveryCompletionSchema,
-    } as never,
+    render: (workerPacket) =>
+      `You are the Pipkin Implement recovery agent for a failed whole-plan review. ${workerPacket.workspace.mutationBoundary} Do not edit files, change Git state, install dependencies, or rerun the review yourself. Return retry when the orchestrator can safely rerun the same immutable assessment, diagnose for additional bounded evidence, or no_safe_action when manual intervention is required.\n\n${JSON.stringify(workerPacket.failure, null, 2)}`,
   });
-  const response = await args.subagents.waitFor<unknown>(handle, args.signal);
+  const response = await args.subagents.waitFor<WholePlanRecoveryCompletion>(
+    handle,
+    args.signal,
+  );
   if (response.status !== "completed") {
     throw new Error(
       `Whole-plan recovery agent ${response.status}: ${response.error}`,
     );
   }
-  const completion = response.result as RecoveryCompletion;
-  if (!["retry", "diagnose", "no_safe_action"].includes(completion.action)) {
-    throw new Error(
-      "Whole-plan recovery may only diagnose, retry, or stop safely.",
-    );
-  }
+  const completion = response.result;
   return {
     kind: completion.action,
     outcome:
@@ -352,6 +392,26 @@ export async function completeWholePlanRun(args: {
     targetSha: head,
     targetTreeSha: tree,
   });
+}
+
+function inlineImplementationEvidence(
+  evidence: RunState["candidates"][string]["implementationEvidence"],
+):
+  | Pick<
+      NonNullable<RunState["candidates"][string]["implementationEvidence"]>,
+      "summary" | "verification" | "uncertainty" | "changedPaths"
+    >
+  | undefined {
+  if (!evidence) {
+    return undefined;
+  }
+  const { summary, verification, uncertainty, changedPaths } = evidence;
+  return {
+    summary,
+    verification,
+    ...(uncertainty ? { uncertainty } : {}),
+    ...(changedPaths ? { changedPaths } : {}),
+  };
 }
 
 function nextRepairId(state: RunState): string {

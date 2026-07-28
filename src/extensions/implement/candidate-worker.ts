@@ -50,6 +50,27 @@ export class TaskWorkspaceManager {
     }
   }
 
+  async discard(
+    workspace: Pick<TaskWorkspace, "branchName" | "worktreePath">,
+  ): Promise<void> {
+    this.assertOwnedPath(workspace.worktreePath);
+    const worktrees = await this.git.listWorktrees();
+    const expectedPath = await canonicalPath(workspace.worktreePath);
+    if (
+      (await Promise.all(worktrees.map(canonicalPath))).includes(expectedPath)
+    ) {
+      await this.assertOwnedWorkspace(workspace);
+      await this.git.removeWorktree(workspace.worktreePath);
+    }
+    if (
+      (await this.git.listBranchesMatching(workspace.branchName)).includes(
+        workspace.branchName,
+      )
+    ) {
+      await this.git.deleteTaskBranch(workspace.branchName);
+    }
+  }
+
   async recreate(
     workspace: TaskWorkspace,
     trustedCheckpoint: string,

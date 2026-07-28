@@ -247,7 +247,7 @@ const recoveryActionSchema = z
     outcome: z.enum([
       "completed",
       "interrupted",
-      "provider_failure",
+      "execution_failure",
       "no_safe_action",
     ]),
     summary: nonEmpty,
@@ -283,8 +283,7 @@ const recoverySchema = z
         independentlyEscalated: z.boolean(),
       })
       .strict(),
-    providerFailures: z.number().int().nonnegative(),
-    retryAfterMs: z.number().int().nonnegative().optional(),
+    executionFailures: z.number().int().nonnegative(),
     actions: z.array(recoveryActionSchema),
   })
   .strict();
@@ -394,15 +393,13 @@ const wholePlanReviewSchema = z
       .object({
         status: z.enum(["open", "running", "completed"]),
         evidence: z.array(nonEmpty).min(1),
-        providerFailures: z.number().int().nonnegative(),
-        reviewFailures: z.number().int().positive(),
+        executionFailures: z.number().int().nonnegative(),
         actions: z.array(
           z
             .object({
               kind: z.enum([
                 "diagnose",
                 "retry",
-                "repair_environment",
                 "rework_candidate",
                 "reconcile",
                 "recreate_workspace",
@@ -412,7 +409,7 @@ const wholePlanReviewSchema = z
                 "completed",
                 "no_safe_action",
                 "interrupted",
-                "provider_failure",
+                "execution_failure",
               ]),
               summary: nonEmpty,
               evidence: nonEmpty,
@@ -1510,8 +1507,8 @@ function invariantIssues(
   }
   for (const gate of state.gates.filter((gate) => gate.outcome === "failed")) {
     if (
-      !Object.values(state.recoveryEpisodes).some(
-        (episode) => episode.gateId === gate.id,
+      !Object.values(state.recoveryEpisodes).some((episode) =>
+        episode.gateAttempts.includes(gate.id),
       )
     ) {
       issues.push(`failed gate ${gate.id} has no durable recovery episode`);
@@ -1521,33 +1518,53 @@ function invariantIssues(
     const gate = state.gates.find(
       (candidate) => candidate.id === recovery.gateId,
     );
+    const attempts = recovery.gateAttempts.map((attemptId) =>
+      state.gates.find((candidate) => candidate.id === attemptId),
+    );
+    const currentGate = attempts.at(-1);
+    const references = recovery.outstandingFindingIds.map(
+      (findingId) => state.findings[findingId],
+    );
+    const review = state.reviews[workstreamIdentity(recovery.workstream)];
     if (
       key !== recovery.id ||
       !gate ||
       gate.outcome !== "failed" ||
       !recovery.gateAttempts.includes(recovery.gateId) ||
-      recovery.gateAttempts.some(
-        (attemptId) =>
-          !state.gates.some((candidate) => candidate.id === attemptId),
+      new Set(recovery.gateAttempts).size !== recovery.gateAttempts.length ||
+      attempts.some(
+        (attempt) =>
+          attempt === undefined ||
+          !sameWorkstreamIdentity(attempt.workstream, recovery.workstream) ||
+          attempt.candidateId !== recovery.candidateId,
       ) ||
       !sameWorkstreamIdentity(gate.workstream, recovery.workstream) ||
       gate.candidateId !== recovery.candidateId ||
       JSON.stringify(gate.outstandingFindingIds) !==
-        JSON.stringify(recovery.outstandingFindingIds)
+        JSON.stringify(recovery.outstandingFindingIds) ||
+      (recovery.status === "open" &&
+        (currentGate?.id !== recovery.gateId ||
+          currentGate.outcome !== "failed"))
     ) {
       issues.push(`recovery episode ${key} does not match its failed gate`);
     }
     if (
-      recovery.outstandingFindingIds.some(
-        (findingId) =>
-          !state.findings[findingId] ||
-          !sameWorkstreamIdentity(
-            state.findings[findingId]!.workstream,
-            recovery.workstream,
-          ),
-      )
+      new Set(recovery.outstandingFindingIds).size !==
+        recovery.outstandingFindingIds.length ||
+      references.some(
+        (finding) =>
+          !finding ||
+          !sameWorkstreamIdentity(finding.workstream, recovery.workstream),
+      ) ||
+      ((recovery.status === "open" || recovery.status === "paused") &&
+        (references.some((finding) => finding!.status !== "open") ||
+          (recovery.outstandingFindingIds.length > 0 && !review) ||
+          (review &&
+            (review.candidateId !== recovery.candidateId ||
+              JSON.stringify(review.outstandingIds) !==
+                JSON.stringify(recovery.outstandingFindingIds)))))
     ) {
-      issues.push(`recovery episode ${key} references an unknown finding`);
+      issues.push(`recovery episode ${key} references an inconsistent finding`);
     }
     if (recovery.status === "completed" && recovery.actions.length === 0) {
       issues.push(`completed recovery episode ${key} has no action evidence`);
@@ -1766,31 +1783,50 @@ function sameRecoveryEpisodeHistory(
 ): boolean {
   const actionsAppended = next.actions.length > previous.actions.length;
   const resumed = previous.status === "paused" && next.status === "open";
+  const advancedGate =
+    previous.status === "open" &&
+    next.status === "open" &&
+    next.gateAttempts.length === previous.gateAttempts.length + 1 &&
+    previous.gateAttempts.every(
+      (attempt, index) => attempt === next.gateAttempts[index],
+    ) &&
+    next.gateId === next.gateAttempts.at(-1) &&
+    next.gateId !== previous.gateId &&
+    next.actions.length === previous.actions.length &&
+    previous.actions.every(
+      (action, index) =>
+        JSON.stringify(action) === JSON.stringify(next.actions[index]),
+    ) &&
+    next.executionFailures === 0;
   const completed =
     previous.status !== "completed" &&
     next.status === "completed" &&
     JSON.stringify(previous.cycle) === JSON.stringify(next.cycle) &&
-    previous.providerFailures === next.providerFailures &&
-    previous.retryAfterMs === next.retryAfterMs;
+    previous.executionFailures === next.executionFailures;
   const mutableStateChanged =
     previous.status !== next.status ||
     JSON.stringify(previous.cycle) !== JSON.stringify(next.cycle) ||
-    previous.providerFailures !== next.providerFailures ||
-    previous.retryAfterMs !== next.retryAfterMs;
+    previous.executionFailures !== next.executionFailures;
   return (
     previous.id === next.id &&
-    previous.gateId === next.gateId &&
     (previous.status !== "completed" || next.status === "completed") &&
-    (!mutableStateChanged || actionsAppended || resumed || completed) &&
+    (!mutableStateChanged ||
+      actionsAppended ||
+      resumed ||
+      completed ||
+      advancedGate) &&
     JSON.stringify(previous.workstream) === JSON.stringify(next.workstream) &&
     previous.candidateId === next.candidateId &&
-    JSON.stringify(previous.workspace) === JSON.stringify(next.workspace) &&
-    JSON.stringify(previous.outstandingFindingIds) ===
-      JSON.stringify(next.outstandingFindingIds) &&
-    next.gateAttempts.length >= previous.gateAttempts.length &&
-    previous.gateAttempts.every(
-      (attempt, index) => attempt === next.gateAttempts[index],
-    ) &&
+    (advancedGate ||
+      (previous.gateId === next.gateId &&
+        JSON.stringify(previous.workspace) === JSON.stringify(next.workspace) &&
+        JSON.stringify(previous.outstandingFindingIds) ===
+          JSON.stringify(next.outstandingFindingIds))) &&
+    (advancedGate ||
+      (next.gateAttempts.length >= previous.gateAttempts.length &&
+        previous.gateAttempts.every(
+          (attempt, index) => attempt === next.gateAttempts[index],
+        ))) &&
     next.actions.length >= previous.actions.length &&
     previous.actions.every(
       (action, index) =>

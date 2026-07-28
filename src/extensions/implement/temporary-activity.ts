@@ -194,7 +194,7 @@ function notifyAttentionTransition(
     );
     return;
   }
-  if (event.kind === "recovery_provider_failed") {
+  if (event.kind === "recovery_execution_failed") {
     ctx.ui.notify(
       `Implement recovery failed: ${shorten(event.error)}`,
       "warning",

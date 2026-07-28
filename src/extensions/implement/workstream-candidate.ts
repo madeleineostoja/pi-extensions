@@ -23,12 +23,26 @@ import {
   workstreamImplementerResultSchema,
   type WorkstreamImplementerCompletion,
 } from "./result-schemas.js";
-import type { SubagentClient, SubagentHandle } from "./subagents.js";
+import type {
+  ImplementRoles,
+  SubagentClient,
+  SubagentHandle,
+} from "./subagents.js";
+import {
+  spawnValidatedWorker,
+  WorkerPacketError,
+} from "./worker-invocation.js";
 import type { RunState } from "./store.js";
 
 export type WorkstreamPacket = {
+  role: "implementer";
+  completionKind: "implementer";
+  identity: string;
+  workspace: {
+    path: string;
+    mutationBoundary: string;
+  };
   workstreamId: string;
-  worktreePath: string;
   baseSha: string;
   tasks: ExecutionPlan["tasks"];
   priorCheckpoints: Record<string, string>;
@@ -64,11 +78,7 @@ export type WorkstreamCandidateLifecycleArgs = {
   git: GitClient;
   subagents: SubagentClient;
   signal?: AbortSignal;
-  roles?: {
-    model?: string;
-    type?: string;
-    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  };
+  roles: ImplementRoles;
   recoveryObligations?: string[];
   trustedCheckpoint?: string;
   artifactsPath?: string;
@@ -107,27 +117,32 @@ export class TargetPreconditionError extends TargetBoundaryError {}
 export async function runWorkstreamCandidate(
   args: WorkstreamCandidateLifecycleArgs,
 ): Promise<WorkstreamCandidateOutcome> {
-  const plan = exactPlanForState(args.state, args.plan);
-  const workstream = plan.workstreams.find(
-    (candidate) => candidate.id === args.workstreamId,
-  );
-  const runtime = args.state.workstreams.source[args.workstreamId];
-  if (!workstream || !runtime) {
-    throw new WorkstreamCandidateLifecycleError(
-      `Unknown source workstream: ${args.workstreamId}`,
+  let plan: ExecutionPlan;
+  let workstream: ExecutionPlan["workstreams"][number];
+  let runtime: RunState["workstreams"]["source"][string];
+  try {
+    plan = exactPlanForState(args.state, args.plan);
+    const selected = plan.workstreams.find(
+      (candidate) => candidate.id === args.workstreamId,
     );
-  }
-  if (
-    args.state.executionPlan?.hash !== plan.executionPlanHash ||
-    runtime.taskIds.join("\0") !== workstream.taskIds.join("\0")
-  ) {
-    throw new WorkstreamCandidateLifecycleError(
-      `Workstream ${args.workstreamId} does not match its immutable execution plan.`,
-    );
-  }
-  if (!runtime.baseSha) {
-    throw new WorkstreamCandidateLifecycleError(
-      "Workstream has no assigned runtime base.",
+    const retained = args.state.workstreams.source[args.workstreamId];
+    if (!selected || !retained) {
+      throw new Error(`Unknown source workstream: ${args.workstreamId}`);
+    }
+    if (
+      args.state.executionPlan?.hash !== plan.executionPlanHash ||
+      retained.taskIds.join("\0") !== selected.taskIds.join("\0") ||
+      !retained.baseSha
+    ) {
+      throw new Error(
+        `Workstream ${args.workstreamId} does not match its immutable execution plan.`,
+      );
+    }
+    workstream = selected;
+    runtime = retained;
+  } catch (error) {
+    throw new WorkerPacketError(
+      `Implementer packet ${args.state.run.id}/${args.workstreamId} could not be materialized: ${message(error)}`,
     );
   }
   if ((await args.git.head()) !== runtime.baseSha) {
@@ -165,13 +180,20 @@ export async function runWorkstreamCandidate(
       "Owned workspace does not match its trusted checkpoint; recreate it before retrying.",
     );
   }
-  const packet = buildWorkstreamPacket({
-    state: args.state,
-    plan,
-    workstreamId: args.workstreamId,
-    workspace,
-    recoveryObligations: args.recoveryObligations,
-  });
+  let packet: WorkstreamPacket;
+  try {
+    packet = buildWorkstreamPacket({
+      state: args.state,
+      plan,
+      workstreamId: args.workstreamId,
+      workspace,
+      recoveryObligations: args.recoveryObligations,
+    });
+  } catch (error) {
+    throw new WorkerPacketError(
+      `Implementer packet ${args.state.run.id}/${args.workstreamId} could not be materialized: ${message(error)}`,
+    );
+  }
   const targetBefore = await captureRestoreSnapshot(args.git, protectedPaths);
   let agentId: SubagentHandle<WorkstreamImplementerCompletion> | undefined;
   let result:
@@ -180,36 +202,13 @@ export async function runWorkstreamCandidate(
     | undefined;
   let failure: unknown;
   try {
-    agentId = await args.subagents.spawn({
-      type: args.roles?.type ?? "pipkin:implement:implementer",
-      role: "implementer",
+    agentId = await spawnValidatedWorker({
+      packet,
+      subagents: args.subagents,
+      roles: args.roles,
       taskId: args.workstreamId,
-      prompt: buildWorkstreamImplementerPrompt({
-        worktreePath: packet.worktreePath,
-        baseSha: packet.baseSha,
-        priorCheckpoints: packet.priorCheckpoints,
-        recoveryObligations: packet.recoveryObligations,
-        tasks: packet.tasks.map((task) => ({
-          id: task.id,
-          title: task.title,
-          objective: task.compiledContract.objective,
-          inScope: task.compiledContract.inScope,
-          acceptanceCriteria: task.compiledContract.acceptanceCriteria,
-          outOfScope: task.compiledContract.outOfScope,
-          provenance: task.provenance,
-          implementationNotes: task.compiledContract.implementationNotes,
-          verificationGuidance: task.compiledContract.verificationGuidance,
-        })),
-        sourceMaterial: packet.sourceMaterial,
-      }),
       description: `Implement workstream ${args.workstreamId}`,
-      cwd: workspace.worktreePath,
-      model: args.roles?.model,
-      thinking: args.roles?.thinking,
-      completion: {
-        description: "Report the workstream checkpoints or satisfied evidence.",
-        schema: workstreamImplementerResultSchema,
-      },
+      render: buildWorkstreamImplementerPrompt,
     });
     result = await args.subagents.waitFor(agentId, args.signal);
   } catch (error) {
@@ -267,6 +266,9 @@ export async function runWorkstreamCandidate(
     observation,
     trustedCheckpoint,
   );
+  if (failure instanceof WorkerPacketError) {
+    throw failure;
+  }
   if (failure) {
     const evidence = `Workstream implementer failed: ${message(failure)}`;
     writeEvidence(args.artifactsPath, args.workstreamId, {
@@ -363,6 +365,16 @@ export function buildWorkstreamPacket(args: {
   recoveryObligations?: string[];
 }): WorkstreamPacket {
   const plan = exactPlanForState(args.state, args.plan);
+  const expectedWorkspace = workstreamWorkspace(args.state, args.workstreamId);
+  if (
+    resolve(args.workspace.worktreePath) !==
+      resolve(expectedWorkspace.worktreePath) ||
+    args.workspace.baseSha !== expectedWorkspace.baseSha
+  ) {
+    throw new WorkstreamCandidateLifecycleError(
+      `Implementer packet ${args.state.run.id}/${args.workstreamId} has an invalid assigned workspace.`,
+    );
+  }
   const workstream = plan.workstreams.find(
     (candidate) => candidate.id === args.workstreamId,
   );
@@ -400,9 +412,16 @@ export function buildWorkstreamPacket(args: {
     }),
   );
   return {
+    role: "implementer",
+    completionKind: "implementer",
+    identity: `${args.state.run.id}/${args.workstreamId}`,
+    workspace: {
+      path: expectedWorkspace.worktreePath,
+      mutationBoundary:
+        "Work only in the assigned disposable worktree. The target checkout and source artifacts are orchestrator-owned: do not access or mutate them. Do not push, rewrite unrelated history, bypass hooks, or leave an active Git operation or uncommitted work behind.",
+    },
     workstreamId: args.workstreamId,
-    worktreePath: args.workspace.worktreePath,
-    baseSha: args.workspace.baseSha,
+    baseSha: expectedWorkspace.baseSha,
     tasks,
     priorCheckpoints,
     recoveryObligations: args.recoveryObligations ?? [],

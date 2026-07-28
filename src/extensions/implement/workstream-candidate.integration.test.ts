@@ -16,11 +16,9 @@ import { ExecGitClient } from "./git.js";
 import { createRuntime } from "./run.js";
 import { buildMaterialStore } from "./material-store.js";
 import { parsePlan } from "./plan.js";
-import type { WorkstreamImplementerCompletion } from "./result-schemas.js";
-import type { SubagentClient } from "./subagents.js";
+import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import { within } from "./test-boundary.js";
 import {
-  buildWorkstreamPacket,
   recreateWorkstreamWorkspace,
   runWorkstreamCandidate,
   WorkstreamCandidateLifecycleError,
@@ -31,8 +29,8 @@ import {
   createPlanningRun,
   protectedArtifactsMatch,
   sourceIdentityForExecutionPlan,
+  RunStore,
   type CheckoutLeaseCapability,
-  type RunStore,
 } from "./store.js";
 
 const temporaryDirectories = new Set<string>();
@@ -43,6 +41,30 @@ type Fixture = {
   planContent: string;
   plan: ExecutionPlan;
   run: RunStore;
+  roles: ImplementRoles;
+};
+
+const roles: ImplementRoles = {
+  implementer: {
+    type: "pipkin:implement:implementer",
+    model: "test/medium",
+    thinking: "medium",
+  },
+  reviewer: {
+    type: "pipkin:implement:reviewer",
+    model: "test/high",
+    thinking: "high",
+  },
+  planner: {
+    type: "pipkin:implement:planner",
+    model: "test/high",
+    thinking: "high",
+  },
+  recovery: {
+    type: "pipkin:implement:recovery",
+    model: "test/medium",
+    thinking: "medium",
+  },
 };
 
 function temporaryDirectory(prefix: string): string {
@@ -173,7 +195,7 @@ async function fixture(args: {
       ),
     },
   }));
-  return { root, planPath, planContent, plan: result.value, run };
+  return { root, planPath, planContent, plan: result.value, run, roles };
 }
 
 function agent(
@@ -244,20 +266,8 @@ describe("workstream candidate lifecycle", () => {
       plan: subject.plan,
       workstreamId: "combined",
       git: new ExecGitClient(subject.root),
-      subagents: agent(async (cwd) => {
-        const result = await changedResult(cwd, ["first"]);
-        const completion = result.result as WorkstreamImplementerCompletion;
-        completion.candidateTip = completion.candidateTip!.slice(0, 12);
-        completion.taskCompletions[0]!.checkpoint =
-          completion.taskCompletions[0]!.checkpoint!.slice(0, 12);
-        completion.taskCompletions.push({
-          taskId: "second",
-          kind: "already_satisfied",
-          evidence:
-            "The repository already exposed the required second behavior.",
-        });
-        return { ...result, result: completion };
-      }),
+      roles: subject.roles,
+      subagents: agent(async (cwd) => changedResult(cwd, ["first", "second"])),
       artifactsPath: join(
         subject.root,
         ".pi",
@@ -271,18 +281,61 @@ describe("workstream candidate lifecycle", () => {
 
     expect(outcome).toMatchObject({
       kind: "candidate_ready",
-      checkpoints: { first: expect.stringMatching(/^[0-9a-f]{40}$/) },
+      checkpoints: {
+        first: expect.stringMatching(/^[0-9a-f]{40}$/),
+        second: expect.stringMatching(/^[0-9a-f]{40}$/),
+      },
       candidate: {
         commitSha: expect.stringMatching(/^[0-9a-f]{40}$/),
       },
-      satisfied: {
-        second: "The repository already exposed the required second behavior.",
-      },
     });
+    if (outcome.kind !== "candidate_ready") {
+      throw new Error("Expected a candidate-ready outcome.");
+    }
+    expect(outcome.checkpoints.first).toBe(outcome.checkpoints.second);
     expect(readFileSync(join(subject.root, "plan.md"), "utf-8")).toBe(
       subject.planContent,
     );
     expect(outcome.evidencePath).toContain("combined-implementation.json");
+  });
+
+  it("retains already-satisfied evidence beside a changed task checkpoint", async () => {
+    const subject = await fixture({
+      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
+    });
+    const outcome = await runWorkstreamCandidate({
+      state: subject.run.read(),
+      plan: subject.plan,
+      workstreamId: "combined",
+      git: new ExecGitClient(subject.root),
+      roles: subject.roles,
+      subagents: agent(async (cwd) => {
+        const result = await changedResult(cwd, ["first"]);
+        return {
+          ...result,
+          result: {
+            ...result.result,
+            taskCompletions: [
+              ...result.result.taskCompletions,
+              {
+                taskId: "second",
+                kind: "already_satisfied" as const,
+                evidence:
+                  "The repository already exposed the required second behavior.",
+              },
+            ],
+          },
+        };
+      }),
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "candidate_ready",
+      checkpoints: { first: expect.stringMatching(/^[0-9a-f]{40}$/) },
+      satisfied: {
+        second: "The repository already exposed the required second behavior.",
+      },
+    });
   });
 
   it("completes implementation, publication, projection, and whole-plan review through the production runtime", async () => {
@@ -329,7 +382,7 @@ describe("workstream candidate lifecycle", () => {
       git: new ExecGitClient(subject.root),
       store: subject.run,
       lease: subject.run.lease,
-      roles: {} as never,
+      roles: subject.roles,
       plan: parsePlan(subject.planPath, subject.planContent),
       materialStore: buildMaterialStore({
         plan: parsePlan(subject.planPath, subject.planContent),
@@ -378,6 +431,220 @@ describe("workstream candidate lifecycle", () => {
     }
   }, 60_000);
 
+  it("publishes a narrowed two-finding correction journey through the production actor", async () => {
+    const subject = await fixture({
+      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
+    });
+    const completed = deferred();
+    const handles = new Map<
+      string,
+      { role: string; cwd: string; description: string }
+    >();
+    let sequence = 0;
+    let workstreamReviews = 0;
+    let corrections = 0;
+    const recoveryPrompts: string[] = [];
+    const reviewPrompts: string[] = [];
+    const subagents: SubagentClient = {
+      async spawn(args) {
+        const id = `agent-${sequence++}`;
+        handles.set(id, {
+          role: args.role ?? "unknown",
+          cwd: args.cwd ?? "",
+          description: args.description,
+        });
+        if (args.role === "recovery") {
+          recoveryPrompts.push(args.prompt);
+        }
+        if (args.description.startsWith("Review workstream")) {
+          reviewPrompts.push(args.prompt);
+        }
+        return id as never;
+      },
+      async stop() {},
+      async waitFor(id) {
+        const handle = handles.get(id as string);
+        if (!handle) {
+          return { status: "failed", error: "Unknown worker handle." } as never;
+        }
+        if (handle.role === "implementer") {
+          return changedResult(handle.cwd, ["first", "second"]) as never;
+        }
+        if (handle.role === "recovery") {
+          corrections++;
+          const path = join(handle.cwd, `correction-${corrections}.txt`);
+          writeFileSync(path, `correction ${corrections}\n`);
+          git(handle.cwd, "add", "-A");
+          const candidateGit = new ExecGitClient(handle.cwd);
+          await candidateGit.checkpoint(
+            `fix: correct finding ${corrections}`,
+            false,
+          );
+          const candidateTip = await candidateGit.head();
+          return {
+            status: "completed",
+            result: {
+              action: "rework_candidate",
+              summary: `Committed correction ${corrections}.`,
+              evidence: `Correction ${corrections} is committed.`,
+              candidateTip,
+              changedPaths: [`correction-${corrections}.txt`],
+            },
+          } as never;
+        }
+        if (handle.description.startsWith("Review workstream")) {
+          workstreamReviews++;
+          if (workstreamReviews === 1) {
+            return {
+              status: "completed",
+              result: {
+                verdict: "changes_requested",
+                findings: [
+                  {
+                    summary: "First correction is required.",
+                    evidence: "The first observable behavior is missing.",
+                    requiredChange: "Implement the first correction.",
+                    acceptanceCriteria: ["The first correction is observable."],
+                  },
+                  {
+                    summary: "Second correction is required.",
+                    evidence: "The second observable behavior is missing.",
+                    requiredChange: "Implement the second correction.",
+                    acceptanceCriteria: [
+                      "The second correction is observable.",
+                    ],
+                  },
+                ],
+              },
+            } as never;
+          }
+          if (workstreamReviews === 2) {
+            return {
+              status: "completed",
+              result: {
+                assessments: [
+                  {
+                    id: "source-combined-r1",
+                    status: "resolved",
+                    evidence: "The first correction is present.",
+                  },
+                  {
+                    id: "source-combined-r2",
+                    status: "unresolved",
+                    evidence: "The second correction is still missing.",
+                  },
+                ],
+                regressions: [],
+              },
+            } as never;
+          }
+          return {
+            status: "completed",
+            result: {
+              assessments: [
+                {
+                  id: "source-combined-r2",
+                  status: "resolved",
+                  evidence: "The second correction is present.",
+                },
+              ],
+              regressions: [],
+            },
+          } as never;
+        }
+        return {
+          status: "completed",
+          result: { verdict: "approved" },
+        } as never;
+      },
+    };
+    const gitClient = new ExecGitClient(subject.root);
+    const runtime = createRuntime({
+      pi: {} as never,
+      ctx: {} as never,
+      git: gitClient,
+      store: subject.run,
+      lease: subject.run.lease,
+      roles: subject.roles,
+      plan: parsePlan(subject.planPath, subject.planContent),
+      materialStore: buildMaterialStore({
+        plan: parsePlan(subject.planPath, subject.planContent),
+        planPath: subject.planPath,
+        repoRoot: subject.root,
+      }),
+      checkoutIdentity: await gitClient.checkoutIdentity(),
+      baseSha: await gitClient.head(),
+      subagents,
+      onTransition: (_state, event) => {
+        if (event.kind === "run_completed") {
+          completed.resolve();
+        }
+      },
+    });
+
+    await runtime.start();
+    try {
+      await within("narrowed correction journey", completed.promise, {
+        timeoutMs: 30_000,
+        diagnostics: () => JSON.stringify(runtime.snapshot()),
+      });
+      await runtime.settle();
+
+      const state = runtime.snapshot();
+      expect(state).toMatchObject({
+        phase: "completed",
+        wholePlanReview: { status: "approved" },
+      });
+      expect(corrections).toBe(2);
+      expect(workstreamReviews).toBe(3);
+      expect(recoveryPrompts).toHaveLength(2);
+      expect(recoveryPrompts[0]).toContain("source-combined-r1");
+      expect(recoveryPrompts[0]).toContain("source-combined-r2");
+      expect(recoveryPrompts[1]).not.toContain("source-combined-r1");
+      expect(recoveryPrompts[1]).toContain("source-combined-r2");
+      expect(reviewPrompts).toHaveLength(3);
+      expect(reviewPrompts[2]).not.toContain("source-combined-r1");
+      expect(reviewPrompts[2]).toContain("source-combined-r2");
+      expect(state.findings["source-combined-r1"]?.status).toBe("resolved");
+      expect(state.findings["source-combined-r2"]?.status).toBe("resolved");
+      const completedEpisode = Object.values(state.recoveryEpisodes)[0];
+      expect(completedEpisode).toMatchObject({
+        status: "completed",
+        outstandingFindingIds: ["source-combined-r1", "source-combined-r2"],
+      });
+      const reloaded = RunStore.open(
+        subject.run.lease,
+        subject.run.path,
+      ).read();
+      expect(reloaded.recoveryEpisodes[completedEpisode!.id]).toMatchObject({
+        status: "completed",
+        outstandingFindingIds: ["source-combined-r1", "source-combined-r2"],
+      });
+      expect(
+        Object.values(reloaded.recoveryEpisodes).find(
+          (episode) =>
+            JSON.stringify(episode.outstandingFindingIds) ===
+            JSON.stringify(["source-combined-r2"]),
+        ),
+      ).toMatchObject({
+        status: "completed",
+        outstandingFindingIds: ["source-combined-r2"],
+      });
+      expect(Object.keys(state.publication.receipts)).toHaveLength(1);
+      expect(
+        readFileSync(join(subject.root, "correction-1.txt"), "utf-8"),
+      ).toBe("correction 1\n");
+      expect(
+        readFileSync(join(subject.root, "correction-2.txt"), "utf-8"),
+      ).toBe("correction 2\n");
+      expect(readFileSync(subject.planPath, "utf-8")).toContain(
+        "- [x] First task\n- [x] Second task",
+      );
+    } finally {
+      await runtime.stop("test completed");
+    }
+  }, 40_000);
+
   it("runs independent workstreams concurrently in isolated worktrees", async () => {
     const subject = await fixture({
       tasks: [
@@ -413,6 +680,7 @@ describe("workstream candidate lifecycle", () => {
       plan: subject.plan,
       workstreamId: "first-stream",
       git: new ExecGitClient(subject.root),
+      roles: subject.roles,
       subagents: worker("first"),
     });
     const secondPromise = runWorkstreamCandidate({
@@ -420,6 +688,7 @@ describe("workstream candidate lifecycle", () => {
       plan: subject.plan,
       workstreamId: "second-stream",
       git: new ExecGitClient(subject.root),
+      roles: subject.roles,
       subagents: worker("second"),
     });
     try {
@@ -470,6 +739,7 @@ describe("workstream candidate lifecycle", () => {
         plan: subject.plan,
         workstreamId: "combined",
         git: targetGit,
+        roles: subject.roles,
         subagents: agent(async (cwd) => {
           const result = await changedResult(cwd, ["first", "second"]);
           writeFileSync(join(cwd, "uncommitted.txt"), "retain as evidence\n");
@@ -520,6 +790,7 @@ describe("workstream candidate lifecycle", () => {
       plan: subject.plan,
       workstreamId: "combined",
       git: targetGit,
+      roles: subject.roles,
       subagents: agent((cwd) => changedResult(cwd, ["first", "second"])),
       trustedCheckpoint: failure!.trustedCheckpoint!,
     });
@@ -537,6 +808,7 @@ describe("workstream candidate lifecycle", () => {
         plan: subject.plan,
         workstreamId: "combined",
         git: new ExecGitClient(subject.root),
+        roles: subject.roles,
         subagents: agent(async (cwd) => {
           const result = await changedResult(cwd, ["first", "second"]);
           git(cwd, "switch", "-c", "foreign-candidate-branch");
@@ -565,6 +837,7 @@ describe("workstream candidate lifecycle", () => {
         plan: subject.plan,
         workstreamId: "combined",
         git: new ExecGitClient(subject.root),
+        roles: subject.roles,
         subagents: agent(async (cwd) => {
           writeFileSync(join(cwd, "plan.md"), "tampered candidate\n");
           return changedResult(cwd, ["first", "second"]);
@@ -584,6 +857,7 @@ describe("workstream candidate lifecycle", () => {
         plan: subject.plan,
         workstreamId: "combined",
         git: new ExecGitClient(subject.root),
+        roles: subject.roles,
         subagents: agent(async (cwd) => {
           writeFileSync(subject.planPath, "tampered\n");
           return changedResult(cwd, ["first", "second"]);
@@ -591,22 +865,5 @@ describe("workstream candidate lifecycle", () => {
       }),
     ).rejects.toThrow("target checkout or protected artifacts");
     expect(readFileSync(subject.planPath, "utf-8")).toBe("tampered\n");
-  });
-
-  it("builds a packet from ordered contracts and selected provenance material", async () => {
-    const subject = await fixture({
-      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
-    });
-    const packet = buildWorkstreamPacket({
-      state: subject.run.read(),
-      plan: subject.plan,
-      workstreamId: "combined",
-      workspace: workstreamWorkspace(subject.run.read(), "combined"),
-    });
-
-    expect(packet.tasks.map((task) => task.id)).toEqual(["first", "second"]);
-    expect(packet.sourceMaterial).toEqual([
-      { path: realpathSync(subject.planPath), content: subject.planContent },
-    ]);
   });
 });

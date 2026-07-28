@@ -88,14 +88,29 @@ const READ_ONLY_TOOLS = [
   "explore",
   "lsp",
 ];
+const PUBLIC_AGENT_TOOLS = ["Agent", "get_subagent_result", "steer_subagent"];
 const MUTATING_TOOLS = [
   "edit",
   "write",
   "propose_papercut",
-  "Agent",
-  "get_subagent_result",
-  "steer_subagent",
+  ...PUBLIC_AGENT_TOOLS,
 ];
+
+export function mutableWorkerExcludedTools(): string[] {
+  return ["propose_papercut", ...PUBLIC_AGENT_TOOLS];
+}
+
+export function readOnlyWorkerTools(activeTools?: string[]): {
+  tools: string[];
+  excludeTools: string[];
+} {
+  return {
+    tools: READ_ONLY_TOOLS.filter(
+      (name) => activeTools?.includes(name) ?? name !== "lsp",
+    ),
+    excludeTools: MUTATING_TOOLS,
+  };
+}
 
 export class RuntimeSubagentClient implements SubagentClient {
   private readonly runtime;
@@ -131,14 +146,8 @@ export class RuntimeSubagentClient implements SubagentClient {
       rosterVisibility: "hide",
       completion: args.completion as never,
       ...(args.readOnly || role === "reviewer" || role === "planner"
-        ? {
-            tools: READ_ONLY_TOOLS.filter(
-              (name) =>
-                this.pi.getActiveTools?.().includes(name) ?? name !== "lsp",
-            ),
-            excludeTools: MUTATING_TOOLS,
-          }
-        : { excludeTools: ["propose_papercut"] }),
+        ? readOnlyWorkerTools(this.pi.getActiveTools?.())
+        : { excludeTools: mutableWorkerExcludedTools() }),
     });
     return snapshot.id as SubagentHandle<Static<TSchemaValue>>;
   }

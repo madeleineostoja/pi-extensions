@@ -165,12 +165,25 @@ export const overallReworkSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const wholePlanRecoveryCompletionSchema = Type.Object(
+  {
+    action: Type.Union([
+      Type.Literal("diagnose"),
+      Type.Literal("retry"),
+      Type.Literal("no_safe_action"),
+    ]),
+    summary: nonEmptyString(),
+    evidence: nonEmptyString(),
+    diagnosis: Type.Optional(nonEmptyString()),
+  },
+  { additionalProperties: false },
+);
+
 export const recoveryCompletionSchema = Type.Object(
   {
     action: Type.Union([
       Type.Literal("diagnose"),
       Type.Literal("retry"),
-      Type.Literal("repair_environment"),
       Type.Literal("rework_candidate"),
       Type.Literal("reconcile"),
       Type.Literal("recreate_workspace"),
@@ -200,4 +213,7 @@ export type AnchoredWorkstreamReviewCompletion = Static<
   typeof anchoredWorkstreamReviewSchema
 >;
 export type OverallReworkCompletion = Static<typeof overallReworkSchema>;
+export type WholePlanRecoveryCompletion = Static<
+  typeof wholePlanRecoveryCompletionSchema
+>;
 export type RecoveryCompletion = Static<typeof recoveryCompletionSchema>;

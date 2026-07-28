@@ -6,7 +6,7 @@ import {
   renameSync,
   rmSync,
 } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { stagingIdentity } from "./candidate-replay.js";
 import { sha256 } from "./source-integrity.js";
 import type { GitClient } from "./git.js";
@@ -28,14 +28,39 @@ export async function sweepOwnedRunResources(args: {
   const expected = ownedResources(state);
   const root = runWorktreesRoot(args.lease, state.run.id);
   const prefix = `pipkin/implement/${state.run.id}/`;
-  const [worktrees, branches] = await Promise.all([
+  let [worktrees, branches] = await Promise.all([
     args.git.listWorktrees(),
     args.git.listBranchesMatching(`${prefix}*`),
   ]);
-  const registered = worktrees.filter((path) => isUnder(root, path));
-  const namespacedBranches = branches.filter((branch) =>
+  let registered = worktrees.filter((path) => isUnder(root, path));
+  let namespacedBranches = branches.filter((branch) =>
     branch.startsWith(prefix),
   );
+  for (const path of registered) {
+    if (
+      [...expected.values()].some((resource) =>
+        samePath(resource.worktreePath, path),
+      )
+    ) {
+      continue;
+    }
+    const stagingId = basename(path);
+    const workspace = args.git.forWorktree(path);
+    if (
+      !stagingId.startsWith("staging-") ||
+      (await workspace.currentBranch()) !== `${prefix}${stagingId}`
+    ) {
+      continue;
+    }
+    await args.git.removeWorktree(path);
+    await args.git.deleteTaskBranch(`${prefix}${stagingId}`);
+  }
+  [worktrees, branches] = await Promise.all([
+    args.git.listWorktrees(),
+    args.git.listBranchesMatching(`${prefix}*`),
+  ]);
+  registered = worktrees.filter((path) => isUnder(root, path));
+  namespacedBranches = branches.filter((branch) => branch.startsWith(prefix));
 
   for (const path of registered) {
     const resource = [...expected.values()].find((candidate) =>
@@ -181,18 +206,6 @@ function ownedResources(state: RunState): Map<string, OwnedResource> {
       targetBaseSha: assessment.targetSha,
     });
     add(staging.branchName, join(root, staging.id), assessment.targetSha);
-  }
-  for (const episode of Object.values(state.recoveryEpisodes)) {
-    if (
-      episode.workspace.id.startsWith("staging-") &&
-      episode.workspace.checkpoint
-    ) {
-      add(
-        `pipkin/implement/${state.run.id}/${episode.workspace.id}`,
-        join(root, episode.workspace.id),
-        episode.workspace.checkpoint,
-      );
-    }
   }
   return resources;
 }
