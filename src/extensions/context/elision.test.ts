@@ -1,3 +1,4 @@
+import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { makeContextHook, restoreEpochs } from "./elision.ts";
 import { EPOCH_TYPE, createPruningState } from "./policy.ts";
@@ -164,40 +165,121 @@ describe("context epochs", () => {
     expect([...state.decisions.keys()]).toEqual(["one"]);
   });
 
-  it("uses authoritative returned read intervals instead of request bounds", () => {
-    const readCall = (id: string, offset: number, limit: number) => ({
+  it("rejects byte-limit-inconsistent read metadata for containment", () => {
+    const readCall = (id: string) => ({
       role: "assistant" as const,
       content: [
         {
           type: "toolCall" as const,
           id,
           name: "read",
-          arguments: { path: "a.ts", offset, limit },
+          arguments: { path: "a.ts" },
         },
       ],
     });
-    const read = (id: string, outputLines: number) => ({
-      ...toolResult(id, "x".repeat(40_000), "read"),
+    const early = {
+      ...toolResult("early", "x".repeat(100), "read"),
       details: {
         truncation: {
-          totalLines: outputLines,
+          content: "x".repeat(80),
+          totalLines: 3,
+          totalBytes: 100,
+          outputLines: 2,
+          outputBytes: 80,
+          truncated: true,
+          truncatedBy: "lines",
+          lastLinePartial: false,
+          firstLineExceedsLimit: false,
+          maxLines: 2,
+          maxBytes: 50_000,
+        },
+      },
+    };
+    const late = {
+      ...toolResult("late", "x".repeat(20_000), "read"),
+      details: {
+        truncation: {
+          content: "x".repeat(20_000),
+          totalLines: 100,
           totalBytes: 40_000,
-          outputLines,
-          outputBytes: 40_000,
-          truncated: false,
-          truncatedBy: null,
+          outputLines: 100,
+          outputBytes: 20_000,
+          truncated: true,
+          truncatedBy: "bytes",
           lastLinePartial: false,
           firstLineExceedsLimit: false,
           maxLines: 2_000,
           maxBytes: 50_000,
         },
       },
+    };
+    const messages = [
+      readCall("early"),
+      early,
+      readCall("late"),
+      late,
+      { role: "assistant" as const, content: [] },
+    ];
+    const appended: any[] = [];
+    const hook = makeContextHook(createPruningState(), (type, data) =>
+      appended.push({ type, data }),
+    );
+    const input = context(
+      messages,
+      [
+        { type: "model_change", provider: "other", modelId: "other" },
+        { type: "model_change", provider: "test", modelId: "model" },
+      ],
+      () => {},
+    );
+    (input.ctx as any).model = { provider: "test", id: "model" };
+
+    hook({ type: "context", messages } as any, input.ctx as any);
+
+    expect(appended).toEqual([]);
+  });
+
+  it("uses Pi's returned read intervals for containment", async () => {
+    const definition = createReadToolDefinition("/work", {
+      operations: {
+        access: async () => {},
+        readFile: async () =>
+          Buffer.from(
+            Array.from(
+              { length: 2_001 },
+              (_, index) => `a b c d e f g ${index}`,
+            ).join("\n"),
+          ),
+      },
+    });
+    const result = await definition.execute(
+      "read",
+      { path: "a.ts" },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    const readCall = (id: string) => ({
+      role: "assistant" as const,
+      content: [
+        {
+          type: "toolCall" as const,
+          id,
+          name: "read",
+          arguments: { path: "a.ts" },
+        },
+      ],
+    });
+    const read = (id: string) => ({
+      ...toolResult(id, "", "read"),
+      content: result.content,
+      details: result.details,
     });
     const messages = [
-      readCall("early", 1, 200),
-      read("early", 2),
-      readCall("late", 1, 200),
-      read("late", 100),
+      readCall("early"),
+      read("early"),
+      readCall("late"),
+      read("late"),
       { role: "assistant" as const, content: [] },
     ];
     const appended: any[] = [];
@@ -215,11 +297,18 @@ describe("context epochs", () => {
     (input.ctx as any).model = { provider: "test", id: "model" };
     hook({ type: "context", messages } as any, input.ctx as any);
 
+    expect(result.details?.truncation).toMatchObject({
+      truncated: true,
+      truncatedBy: "lines",
+      outputLines: 2_000,
+    });
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]).toMatchObject({ type: "text" });
     expect(appended[0]?.data.decisions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           sourceToolCallId: "early",
-          reason: "covered-read",
+          reason: "duplicate-read",
         }),
       ]),
     );

@@ -461,6 +461,7 @@ function readInterval(
 }
 
 function isTruncation(value: unknown): value is {
+  content: string;
   totalLines: number;
   totalBytes: number;
   outputLines: number;
@@ -475,6 +476,7 @@ function isTruncation(value: unknown): value is {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, [
+      "content",
       "totalLines",
       "totalBytes",
       "outputLines",
@@ -486,6 +488,7 @@ function isTruncation(value: unknown): value is {
       "maxLines",
       "maxBytes",
     ]) ||
+    typeof value.content !== "string" ||
     !nonnegativeInteger(value.totalLines) ||
     !nonnegativeInteger(value.totalBytes) ||
     !nonnegativeInteger(value.outputLines) ||
@@ -500,7 +503,9 @@ function isTruncation(value: unknown): value is {
     typeof value.firstLineExceedsLimit !== "boolean" ||
     value.outputLines > value.totalLines ||
     value.outputBytes > value.totalBytes ||
-    value.outputLines > value.maxLines
+    value.outputLines > value.maxLines ||
+    value.outputBytes > value.maxBytes ||
+    (value.truncatedBy === "bytes" && value.totalBytes <= value.maxBytes)
   ) {
     return false;
   }
