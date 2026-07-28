@@ -32,34 +32,30 @@ The full call returns the original stored content blocks unchanged. For one-text
 
 Missing IDs, invalid ranges, non-text or multi-block slices, unavailable content, and empty slices are real tool failures. Recall does not alter the original pruning decision.
 
-## Handoff: switch models without dragging the whole transcript
+## Handoff: continue in a focused child session
 
-A model switch can make the next request unexpectedly expensive and leave the new model reading a long conversation optimized for the old one. Handoff makes that cost visible, then lets the previous model summarize its own work.
-
-After a meaningful TUI model switch, Pipkin shows a non-blocking estimate:
+After switching to a different model in a persisted TUI session, run:
 
 ```text
-Switched to Model · 200k context (~$0.12) · /handoff (~6k)
+/handoff [optional focus]
 ```
 
-The notice can include:
+Pipkin records the live source and target of that model transition. The recorded source model—not the selected target—generates a concise continuation prompt from the current session context. Review and edit that prompt before anything changes.
 
-- current context tokens;
-- estimated next-message input cost on the selected model;
-- estimated context size after compaction.
+On approval, Pipkin atomically creates a same-working-directory child session linked to the parent. The child contains only the target model selection and a hidden, recoverable draft; it contains no parent transcript, compaction summary, or retained tail. Pi then switches to that child. When its live model matches the recorded target, the reviewed prompt is placed in the editor for review. It is never submitted automatically.
 
-Cost is omitted for subscription or OAuth usage where token pricing is not applicable. Restore events, same-model changes, empty history, and non-TUI switches stay quiet.
+A handoff is available only for the latest active-branch transition, before the target has responded. Switching again, changing branch, responding with the target, an unavailable source model, failed authentication, cancellation, or an empty generated prompt leaves no child attempt. Handoff requires TUI mode and a persisted parent session.
 
-### Use `/handoff`
+A fixed startup `--model` can override the child's saved target. Pipkin withholds the draft if the live model does not match; reopen the child with its recorded target to recover it. This is also the recovery path for an unexpected replacement failure: both the intact parent and durable child remain available.
 
-After switching models, run:
+### Recover a draft
+
+If editor text is lost, reopen the empty child under its recorded target and run:
 
 ```text
-/handoff
+/handoff-recover
 ```
 
-Pipkin finds the last assistant model. If it differs from the selected model, that previous model produces a continuation-focused summary through Pi's native compaction path. The new model remains selected.
+Recovery copies the child draft into the editor without submitting it. It refuses children with user or assistant history, a different live model, or no matching draft. A cancelled switch removes its child before releasing the original transition for retry; if cleanup cannot be verified, the committed child path remains the durable recovery path.
 
-The summary is instructed to preserve goals, decisions, file paths, symbols, blockers, unresolved questions, and remaining work. Pi still owns cut-point selection, retained recent context, cancellation, progress, and queued input.
-
-Handoff is explicit. It does not automatically compact at a pressure threshold, replay prompts, rewrite session files, or implement a separate input queue.
+Handoff does not compact or delete the parent, infer a source model from history, fall back to the target model, or transfer the parent transcript into the child.

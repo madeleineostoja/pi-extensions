@@ -63,6 +63,7 @@ const expectedCommands = {
   implement: "src/extensions/implement/index.ts",
   papercuts: "src/extensions/papercuts/index.ts",
   handoff: "src/extensions/handoff/index.ts",
+  "handoff-recover": "src/extensions/handoff/index.ts",
   btw: "src/extensions/btw/index.ts",
 };
 
