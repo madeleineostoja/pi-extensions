@@ -31,7 +31,7 @@ function plannerTask(
     planIndex,
     title,
     dependsOn,
-    provenance: [{ path, quote: title }],
+    sourcePaths: [path],
     compiledContract: {
       objective: `Implement ${title}.`,
       inScope: ["Required behavior"],
@@ -58,8 +58,6 @@ export function planFor(
   const result = compileExecutionPlan(
     {
       version: 1,
-      plannerReason: "The tasks are ordered.",
-      plannerConfidence: "high",
       tasks: [
         plannerTask("first", 1, "First task", planPath),
         plannerTask(
@@ -75,15 +73,11 @@ export function planFor(
           id: "first-stream",
           taskIds: ["first"],
           dependsOn: [],
-          rationale: "First change establishes the required base.",
-          risk: "normal",
         },
         {
           id: "second-stream",
           taskIds: ["second"],
           dependsOn: independent ? [] : ["first-stream"],
-          rationale: "Second change depends on the first change.",
-          risk: "normal",
         },
       ],
     },

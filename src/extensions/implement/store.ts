@@ -146,10 +146,6 @@ const taskRuntimeSchema = z.discriminatedUnion("phase", [
     ),
 ]);
 
-const verificationEvidenceSchema = z
-  .object({ command: nonEmpty, result: nonEmpty, rationale: nonEmpty })
-  .strict();
-
 const candidateSchema = z
   .object({
     id: nonEmpty,
@@ -163,7 +159,7 @@ const candidateSchema = z
     implementationEvidence: z
       .object({
         summary: nonEmpty,
-        verification: z.array(verificationEvidenceSchema).min(1),
+        verification: z.array(nonEmpty).min(1),
         uncertainty: nonEmpty.optional(),
         artifactPath: nonEmpty.optional(),
         changedPaths: z.array(nonEmpty).optional(),

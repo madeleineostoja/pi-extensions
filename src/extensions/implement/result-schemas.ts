@@ -1,26 +1,12 @@
 import { Type, type Static } from "typebox";
 
 const nonEmptyString = () => Type.String({ minLength: 1 });
-const verificationStepSchema = Type.Object(
-  {
-    command: nonEmptyString(),
-    result: nonEmptyString(),
-    rationale: nonEmptyString(),
-  },
-  { additionalProperties: false },
-);
-
-const strictProvenanceSchema = Type.Object(
-  { path: nonEmptyString(), quote: nonEmptyString() },
-  { additionalProperties: false },
-);
 const strictCompiledContractSchema = Type.Object(
   {
     objective: nonEmptyString(),
     inScope: Type.Array(nonEmptyString(), { minItems: 1 }),
     acceptanceCriteria: Type.Array(nonEmptyString(), { minItems: 1 }),
     outOfScope: Type.Array(nonEmptyString(), { minItems: 1 }),
-    supportingDesignContext: Type.Optional(nonEmptyString()),
     implementationNotes: Type.Optional(nonEmptyString()),
     verificationGuidance: Type.Optional(nonEmptyString()),
   },
@@ -32,7 +18,7 @@ const strictExecutionTaskSchema = Type.Object(
     planIndex: Type.Integer({ minimum: 1 }),
     title: nonEmptyString(),
     dependsOn: Type.Array(nonEmptyString()),
-    provenance: Type.Array(strictProvenanceSchema, { minItems: 1 }),
+    sourcePaths: Type.Array(nonEmptyString(), { minItems: 1 }),
     compiledContract: strictCompiledContractSchema,
   },
   { additionalProperties: false },
@@ -42,8 +28,6 @@ const strictWorkstreamSchema = Type.Object(
     id: Type.String({ pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" }),
     taskIds: Type.Array(nonEmptyString(), { minItems: 1 }),
     dependsOn: Type.Array(nonEmptyString()),
-    rationale: nonEmptyString(),
-    risk: Type.Union([Type.Literal("normal"), Type.Literal("isolated")]),
   },
   { additionalProperties: false },
 );
@@ -51,12 +35,6 @@ const strictWorkstreamSchema = Type.Object(
 export const strictExecutionPlanSchema = Type.Object(
   {
     version: Type.Literal(1),
-    plannerReason: nonEmptyString(),
-    plannerConfidence: Type.Union([
-      Type.Literal("high"),
-      Type.Literal("medium"),
-      Type.Literal("low"),
-    ]),
     tasks: Type.Array(strictExecutionTaskSchema, { minItems: 1 }),
     workstreams: Type.Array(strictWorkstreamSchema, { minItems: 1 }),
   },
@@ -70,7 +48,7 @@ export const workstreamImplementerResultSchema = Type.Object(
       Type.Literal("already_satisfied"),
     ]),
     summary: nonEmptyString(),
-    verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+    verification: Type.Array(nonEmptyString(), { minItems: 1 }),
     uncertainty: Type.Optional(nonEmptyString()),
     taskCompletions: Type.Array(
       Type.Object(
@@ -134,7 +112,6 @@ const regressionFindingSchema = Type.Object(
     requiredChange: nonEmptyString(),
     acceptanceCriteria: Type.Array(nonEmptyString(), { minItems: 1 }),
     changedPaths: Type.Array(nonEmptyString(), { minItems: 1 }),
-    causalEvidence: nonEmptyString(),
   },
   { additionalProperties: false },
 );
@@ -159,7 +136,7 @@ export const anchoredReviewSchema = anchoredWorkstreamReviewSchema;
 export const overallReworkSchema = Type.Object(
   {
     summary: nonEmptyString(),
-    verification: Type.Array(verificationStepSchema, { minItems: 1 }),
+    verification: Type.Array(nonEmptyString(), { minItems: 1 }),
     commitMessage: Type.Optional(nonEmptyString()),
   },
   { additionalProperties: false },

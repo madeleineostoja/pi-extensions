@@ -77,13 +77,7 @@ describe("scheduler planning and candidate selection", () => {
       treeSha: "base-tree",
       implementationEvidence: {
         summary: "The behavior already exists.",
-        verification: [
-          {
-            command: "npm test",
-            result: "passed",
-            rationale: "Checks behavior.",
-          },
-        ],
+        verification: ["Focused tests passed."],
       },
     };
     state.candidates[candidate.id] = candidate;
@@ -751,7 +745,6 @@ describe("scheduler recovery lifecycle", () => {
               requiredChange: "Repair the route.",
               acceptanceCriteria: ["Both routes work."],
               changedPaths: ["src/other.ts"],
-              causalEvidence: "The route was not changed by this correction.",
             },
           ],
         },

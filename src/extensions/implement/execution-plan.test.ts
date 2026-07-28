@@ -42,9 +42,6 @@ const planContent = `# Plan
 function plannerPlan() {
   return {
     version: 1,
-    plannerReason:
-      "The first two tasks are independent and the third joins them.",
-    plannerConfidence: "high",
     tasks: [
       task("first", 1, []),
       task("second", 2, []),
@@ -55,22 +52,16 @@ function plannerPlan() {
         id: "first-work",
         taskIds: ["first"],
         dependsOn: [],
-        rationale: "Independent branch.",
-        risk: "normal",
       },
       {
         id: "second-work",
         taskIds: ["second"],
         dependsOn: [],
-        rationale: "Independent branch.",
-        risk: "normal",
       },
       {
         id: "join-work",
         taskIds: ["join"],
         dependsOn: ["first-work", "second-work"],
-        rationale: "Requires both branches.",
-        risk: "normal",
       },
     ],
   };
@@ -82,17 +73,7 @@ function task(id: string, planIndex: number, dependsOn: string[]) {
     planIndex,
     title: id,
     dependsOn,
-    provenance: [
-      {
-        path: planPath,
-        quote:
-          id === "first"
-            ? "First branch"
-            : id === "second"
-              ? "Second branch"
-              : "Join branches",
-      },
-    ],
+    sourcePaths: [planPath],
     compiledContract: {
       objective: `Implement ${id}.`,
       inScope: [`${id} behavior`],
@@ -170,15 +151,13 @@ describe("strict execution-plan compiler", () => {
           calls++;
           return {
             version: 1,
-            plannerReason: "One task is sufficient for this cycle fixture.",
-            plannerConfidence: "high",
             tasks: [
               {
                 id: "task",
                 planIndex: 1,
                 title: "Task",
                 dependsOn: [],
-                provenance: [{ path: sourcePath, quote: "Task" }],
+                sourcePaths: [sourcePath],
                 compiledContract: {
                   objective: "Implement the task.",
                   inScope: ["Task behavior"],
@@ -192,8 +171,6 @@ describe("strict execution-plan compiler", () => {
                 id: "task-work",
                 taskIds: ["task"],
                 dependsOn: [],
-                rationale: "Only one task exists.",
-                risk: "normal",
               },
             ],
           };
@@ -309,9 +286,9 @@ describe("strict execution-plan compiler", () => {
       },
     ],
     [
-      "ungrounded provenance",
+      "source path outside corpus",
       (plan: ReturnType<typeof plannerPlan>) => {
-        plan.tasks[0]!.provenance[0]!.quote = "not in corpus";
+        plan.tasks[0]!.sourcePaths[0] = "/repo/not-in-corpus.md";
       },
     ],
   ])("blocks %s before a workstream can be created", (_name, mutate) => {
@@ -353,44 +330,36 @@ describe("strict execution-plan compiler", () => {
     expect(compileExecutionPlan(plan, input()).ok).toBe(false);
   });
 
-  it("accepts a high-risk task as an isolated workstream", () => {
+  it("accepts a task in its own workstream", () => {
     const plan = plannerPlan();
     plan.workstreams = [
       {
         id: "batched",
         taskIds: ["first", "second"],
         dependsOn: [],
-        rationale: "Shared evolving abstraction.",
-        risk: "normal",
       },
       {
         id: "isolated-join",
         taskIds: ["join"],
         dependsOn: ["batched"],
-        rationale: "Protocol migration needs isolated review.",
-        risk: "isolated",
       },
     ];
 
     expect(compileExecutionPlan(plan, input()).ok).toBe(true);
   });
 
-  it("permits a multi-task isolated workstream without a task-count policy", () => {
+  it("permits multi-task workstreams without a task-count policy", () => {
     const plan = plannerPlan();
     plan.workstreams = [
       {
         id: "isolated-contract",
         taskIds: ["first", "second"],
         dependsOn: [],
-        rationale: "The shared protocol needs one isolated cumulative review.",
-        risk: "isolated",
       },
       {
         id: "join-work",
         taskIds: ["join"],
         dependsOn: ["isolated-contract"],
-        rationale: "It consumes the completed protocol.",
-        risk: "normal",
       },
     ];
 
@@ -404,8 +373,6 @@ describe("strict execution-plan compiler", () => {
         id: "whole-plan",
         taskIds: ["first", "second", "join"],
         dependsOn: [],
-        rationale: "One evolving abstraction needs one cumulative review.",
-        risk: "normal",
       },
     ];
     expect(compileExecutionPlan(wholePlan, input()).ok).toBe(true);
@@ -419,16 +386,11 @@ describe("strict execution-plan compiler", () => {
         id: "foundation",
         taskIds: ["first"],
         dependsOn: [],
-        rationale: "Establishes the contract consumed by the next boundary.",
-        risk: "normal",
       },
       {
         id: "dependent-delivery",
         taskIds: ["second", "join"],
         dependsOn: ["foundation"],
-        rationale:
-          "Uses the foundation in one cumulative implementation and review.",
-        risk: "normal",
       },
     ];
     expect(compileExecutionPlan(sequential, input()).ok).toBe(true);
