@@ -1,4 +1,7 @@
-import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+  createReadToolDefinition,
+  estimateTokens,
+} from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { makeContextHook, restoreEpochs } from "./elision.ts";
 import { EPOCH_TYPE, createPruningState } from "./policy.ts";
@@ -63,6 +66,7 @@ describe("context epochs", () => {
             expect.objectContaining({
               sourceToolCallId: "source",
               reason: "standard-stale",
+              estimatedTokensSaved: expect.any(Number),
             }),
           ],
         },
@@ -71,6 +75,14 @@ describe("context epochs", () => {
     expect(result.messages[0]).not.toBe(source);
     expect((result.messages[0] as any).content[0].text).toContain(
       'context_recall("source")',
+    );
+    const decision = appended[0]?.data.decisions[0];
+    expect(decision.estimatedTokensSaved).toBe(
+      estimateTokens(source) -
+        estimateTokens({
+          ...source,
+          content: [{ type: "text", text: decision.stub }],
+        }),
     );
     expect(source.content[0].text).toHaveLength(4_000);
 
@@ -82,6 +94,94 @@ describe("context epochs", () => {
     expect((restored.messages[0] as any).content).toEqual(
       (result.messages[0] as any).content,
     );
+  });
+
+  it("replays a legacy v1 epoch without changing its stored stub", () => {
+    const stub =
+      '[tool result elided: stale. Call context_recall("source") to retrieve.]';
+    const legacy = {
+      kind: "tail",
+      decisions: [
+        {
+          sourceToolCallId: "source",
+          reason: "standard-stale",
+          stub,
+        },
+      ],
+    };
+    const messages = [toolResult("source")];
+    const result = makeContextHook(createPruningState(), () => {})(
+      { type: "context", messages } as any,
+      context(
+        messages,
+        [
+          {
+            type: "custom",
+            id: "legacy",
+            customType: EPOCH_TYPE,
+            data: legacy,
+          },
+        ],
+        () => {},
+      ).ctx as any,
+    );
+
+    expect((result.messages[0] as any).content).toEqual([
+      { type: "text", text: stub },
+    ]);
+  });
+
+  it("persists exact savings for known-cold and warm epochs", () => {
+    const source = toolResult("source", "x".repeat(150_000));
+    const messages = [
+      source,
+      { role: "user" as const, content: "one" },
+      { role: "user" as const, content: "two" },
+      { role: "user" as const, content: "three" },
+      { role: "user" as const, content: "four" },
+    ];
+    const knownCold: any[] = [];
+    const knownColdContext = context(
+      messages,
+      [
+        { type: "model_change", provider: "other", modelId: "other" },
+        { type: "model_change", provider: "test", modelId: "model" },
+      ],
+      () => {},
+    );
+    (knownColdContext.ctx as any).model = { provider: "test", id: "model" };
+    makeContextHook(createPruningState(), (type, data) =>
+      knownCold.push({ type, data }),
+    )({ type: "context", messages } as any, knownColdContext.ctx as any);
+
+    const warm: any[] = [];
+    makeContextHook(createPruningState(), (type, data) =>
+      warm.push({ type, data }),
+    )(
+      { type: "context", messages } as any,
+      context(
+        messages,
+        Array.from({ length: 8 }, (_, index) => ({
+          type: "message",
+          message: { role: "user", content: `turn ${index}` },
+        })),
+        () => {},
+      ).ctx as any,
+    );
+
+    for (const epoch of [knownCold[0], warm[0]]) {
+      const decision = epoch.data.decisions[0];
+      expect(epoch.data.kind).toBe(
+        epoch === knownCold[0] ? "known-cold" : "warm",
+      );
+      expect(decision.estimatedTokensSaved).toBe(
+        estimateTokens(source) -
+          estimateTokens({
+            ...source,
+            content: [{ type: "text", text: decision.stub }],
+          }),
+      );
+    }
   });
 
   it("does not latch or transform a proposed epoch when persistence fails", () => {

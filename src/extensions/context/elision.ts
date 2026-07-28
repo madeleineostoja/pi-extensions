@@ -272,14 +272,19 @@ function buildCandidates(
       content: [{ type: "text" as const, text: stub }],
     };
     const netSavings = estimateTokens(message) - estimateTokens(replacement);
-    if (netSavings <= 0) {
+    if (!Number.isSafeInteger(netSavings) || netSavings <= 0) {
       continue;
     }
     candidates.push({
       index,
       id: message.toolCallId,
       netSavings,
-      decision: { sourceToolCallId: message.toolCallId, reason, stub },
+      decision: {
+        sourceToolCallId: message.toolCallId,
+        reason,
+        stub,
+        estimatedTokensSaved: netSavings,
+      },
     });
   }
   return candidates.sort(

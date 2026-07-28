@@ -16,6 +16,18 @@ A successful result can qualify because it is stale after four later user entrie
 
 Epochs prefer a matching fresh model transition with at least 8k savings, then a qualified warm-cache opportunity with at least 32k savings after eight user entries, then a small changed tail. Context does not measure pressure, invoke compaction, alter Pi's compaction settings, or make a compaction decision. Native Pi compaction remains the sole owner of context-window pressure.
 
+### Durable pruning milestones
+
+Every persisted pruning epoch, including tail epochs, appears in the transcript as a quiet Context-owned milestone. Its collapsed line reports the epoch kind, result count, and approximate reclaimed tokens, for example:
+
+```text
+context · ~18k reclaimed from 6 results · warm
+```
+
+Expanding the entry uses Pi's ordinary transcript expansion state to show its bounded pruning-reason breakdown with result counts and approximate savings. These are custom session entries, not messages: they remain outside model context. Older v1 epochs without per-decision savings stay replayable and render their count and kind without inventing a token total.
+
+New epoch decisions persist their estimated token savings alongside the reason and stable stub. The estimate is the same calculation Context used to select the epoch, including for tail decisions.
+
 ### Recall exactly what you need
 
 Pass the ID printed in a stub:
