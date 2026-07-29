@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -11,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalizeTarget,
   createFilesystemGrant,
+  resolvePiToolPath,
   grantMatches,
   type FilesystemGrant,
 } from "./capabilities.js";
@@ -60,6 +62,36 @@ describe("Guard capabilities", () => {
     expect(canonicalizeTarget(join(alias, "one"), root)).toBe(
       canonicalizeTarget(file, root),
     );
+  });
+
+  it("matches Pi 0.82 path resolution and read fallback", () => {
+    const root = fixture();
+    const screenshotDirectory = join(root, "Screenshot 1\u202fAM.png");
+    const screenshot = join(screenshotDirectory, "Screenshot 2\u202fPM.png");
+    mkdirSync(screenshotDirectory);
+    writeFileSync(screenshot, "image");
+
+    expect(
+      resolvePiToolPath("~\\.ssh\\id_rsa", "C:\\workspace", {
+        platform: "win32",
+        homeDir: "C:\\Users\\pipkin",
+      }),
+    ).toBe("C:\\Users\\pipkin\\.ssh\\id_rsa");
+    expect(
+      isProtectedReadTarget(
+        "C:\\Users\\pipkin\\.ssh\\id_rsa",
+        "C:\\Users\\pipkin\\.ssh\\id_rsa",
+        "C:\\workspace",
+        { platform: "win32", homeDir: "C:\\Users\\pipkin" },
+      ),
+    ).toBe(true);
+    expect(
+      canonicalizeTarget(
+        join(root, "Screenshot 1 AM.png", "Screenshot 2 PM.png"),
+        root,
+        true,
+      ),
+    ).toBe(realpathSync(screenshot));
   });
 
   it("retains every missing path component below root and an existing ancestor", () => {

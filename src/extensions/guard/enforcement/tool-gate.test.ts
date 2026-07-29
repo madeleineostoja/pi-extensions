@@ -13,6 +13,7 @@ import { createGuardRuntimeState } from "../state.js";
 import {
   filesystemPromptDetail,
   gateDirectFilesystemTool,
+  type FilesystemPrompt,
 } from "./tool-gate.js";
 
 const directories: string[] = [];
@@ -60,6 +61,8 @@ async function gate(options: {
   supportedMac?: boolean;
   canPrompt?: boolean;
   choice?: "once" | "similar" | "block";
+  signal?: AbortSignal;
+  prompt?: FilesystemPrompt;
 }) {
   return gateDirectFilesystemTool({
     tool: options.tool ?? "read",
@@ -67,13 +70,16 @@ async function gate(options: {
     cwd: options.cwd,
     supportedMac: options.supportedMac ?? true,
     canPrompt: options.canPrompt ?? true,
+    signal: options.signal,
     state: options.runtime,
-    prompt: async (request) => {
-      expect(filesystemPromptDetail(request)).toContain(
-        `Future ${request.grant.access} access:`,
-      );
-      return options.choice ?? "block";
-    },
+    prompt:
+      options.prompt ??
+      (async (request) => {
+        expect(filesystemPromptDetail(request)).toContain(
+          `Future ${request.grant.access} access:`,
+        );
+        return options.choice ?? "block";
+      }),
   });
 }
 
@@ -161,6 +167,84 @@ describe("direct filesystem tool gate", () => {
     ).toMatchObject({
       block: true,
     });
+  });
+
+  it("blocks affirmative approvals after cancellation or session reset", async () => {
+    const { workspace, outside, runtime } = fixture();
+    const file = join(outside, "file.txt");
+    writeFileSync(file, "file");
+    const cancellation = new AbortController();
+    let resolveChoice!: (choice: "once" | "similar") => void;
+    const pending = new Promise<"once" | "similar">((resolve) => {
+      resolveChoice = resolve;
+    });
+
+    const canceled = gate({
+      runtime,
+      cwd: workspace,
+      path: file,
+      signal: cancellation.signal,
+      prompt: async () => pending,
+    });
+    cancellation.abort();
+    resolveChoice("once");
+    await expect(canceled).resolves.toMatchObject({ block: true });
+
+    let resolveReset!: (choice: "similar") => void;
+    const pendingReset = new Promise<"similar">((resolve) => {
+      resolveReset = resolve;
+    });
+    const reset = gate({
+      runtime,
+      cwd: workspace,
+      path: file,
+      prompt: async () => pendingReset,
+    });
+    runtime.resetSession();
+    resolveReset("similar");
+    await expect(reset).resolves.toMatchObject({ block: true });
+    expect(runtime.filesystemGrants()).toEqual([]);
+    expect(runtime.protectedReadApprovals()).toEqual([]);
+  });
+
+  it("blocks stale approvals across either boundary transition", async () => {
+    const { workspace, outside, runtime } = fixture();
+    const file = join(outside, "file.txt");
+    const protectedFile = join(workspace, ".env");
+    writeFileSync(file, "file");
+    writeFileSync(protectedFile, "secret");
+    let resolveChoice!: (choice: "similar") => void;
+    const pending = new Promise<"similar">((resolve) => {
+      resolveChoice = resolve;
+    });
+
+    const disabled = gate({
+      runtime,
+      cwd: workspace,
+      path: file,
+      prompt: async () => pending,
+    });
+    runtime.setBoundaryEnabled(false);
+    resolveChoice("similar");
+    await expect(disabled).resolves.toMatchObject({ block: true });
+    expect(runtime.filesystemGrants()).toEqual([]);
+
+    let resolveEnabled!: (choice: "similar") => void;
+    const pendingEnabled = new Promise<"similar">((resolve) => {
+      resolveEnabled = resolve;
+    });
+    const enabled = gate({
+      runtime,
+      cwd: workspace,
+      path: protectedFile,
+      supportedMac: false,
+      prompt: async () => pendingEnabled,
+    });
+    runtime.setBoundaryEnabled(true);
+    resolveEnabled("similar");
+    await expect(enabled).resolves.toMatchObject({ block: true });
+    expect(runtime.filesystemGrants()).toEqual([]);
+    expect(runtime.protectedReadApprovals()).toEqual([]);
   });
 
   it("records combined approval effects independently and denies no-UI model calls", async () => {

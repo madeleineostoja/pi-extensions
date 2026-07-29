@@ -1,6 +1,14 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  join,
+  relative,
+  resolve,
+  sep,
+  win32,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   getAgentDir,
@@ -24,6 +32,11 @@ export type FixedCapabilities = Readonly<{
   grants: readonly FilesystemGrant[];
 }>;
 
+export type PiPathCompatibility = Readonly<{
+  platform?: NodeJS.Platform;
+  homeDir?: string;
+}>;
+
 function existingCanonical(path: string): string | null {
   try {
     return realpathSync(path);
@@ -34,43 +47,72 @@ function existingCanonical(path: string): string | null {
 
 const unicodeSpaces = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
-export function resolvePiToolPath(raw: string, cwd: string): string {
-  let path = raw.replace(unicodeSpaces, " ");
-  if (path.startsWith("@")) {
-    path = path.slice(1);
+function pathFor(compatibility: PiPathCompatibility) {
+  return (compatibility.platform ?? process.platform) === "win32"
+    ? win32
+    : { join, resolve, dirname, basename };
+}
+
+export function resolvePiToolPath(
+  raw: string,
+  cwd: string,
+  compatibility: PiPathCompatibility = {},
+): string {
+  const path = pathFor(compatibility);
+  let normalized = raw.replace(unicodeSpaces, " ");
+  if (normalized.startsWith("@")) {
+    normalized = normalized.slice(1);
   }
-  if (path === "~") {
-    path = homedir();
-  } else if (path.startsWith("~/")) {
-    path = join(homedir(), path.slice(2));
+  const home = compatibility.homeDir ?? homedir();
+  if (normalized === "~") {
+    return home;
   }
-  if (path.startsWith("file://")) {
-    path = fileURLToPath(path);
+  if (
+    normalized.startsWith("~/") ||
+    ((compatibility.platform ?? process.platform) === "win32" &&
+      normalized.startsWith("~\\"))
+  ) {
+    return path.join(home, normalized.slice(2));
   }
-  return resolve(cwd, path);
+  if (normalized.startsWith("file://")) {
+    return fileURLToPath(normalized);
+  }
+  return path.resolve(cwd, normalized);
 }
 
 function readFallback(path: string): string {
   if (existsSync(path)) {
     return path;
   }
-  const variants = [
-    path.replace(/ (?=[AaPp][Mm](?:$|\.))/, "\u202f"),
-    path.normalize("NFD"),
-    path.replace(/'/g, "\u2019"),
-  ];
-  variants.push(variants[1]!.replace(/'/g, "\u2019"));
-  return variants.find(existsSync) ?? path;
+  const amPmVariant = path.replace(/ (AM|PM)\./gi, "\u202f$1.");
+  if (amPmVariant !== path && existsSync(amPmVariant)) {
+    return amPmVariant;
+  }
+  const nfdVariant = path.normalize("NFD");
+  if (nfdVariant !== path && existsSync(nfdVariant)) {
+    return nfdVariant;
+  }
+  const curlyVariant = path.replace(/'/g, "\u2019");
+  if (curlyVariant !== path && existsSync(curlyVariant)) {
+    return curlyVariant;
+  }
+  const nfdCurlyVariant = nfdVariant.replace(/'/g, "\u2019");
+  if (nfdCurlyVariant !== path && existsSync(nfdCurlyVariant)) {
+    return nfdCurlyVariant;
+  }
+  return path;
 }
 
 export function canonicalizeTarget(
   path: string,
   cwd: string,
   useReadFallback = false,
+  compatibility: PiPathCompatibility = {},
 ): string {
+  const pathApi = pathFor(compatibility);
   const absolute = useReadFallback
-    ? readFallback(resolvePiToolPath(path, cwd))
-    : resolvePiToolPath(path, cwd);
+    ? readFallback(resolvePiToolPath(path, cwd, compatibility))
+    : resolvePiToolPath(path, cwd, compatibility);
   const existing = existingCanonical(absolute);
   if (existing) {
     return existing;
@@ -81,13 +123,13 @@ export function canonicalizeTarget(
   while (true) {
     const canonical = existingCanonical(ancestor);
     if (canonical) {
-      return join(canonical, ...missing.reverse());
+      return pathApi.join(canonical, ...missing.reverse());
     }
-    const parent = dirname(ancestor);
+    const parent = pathApi.dirname(ancestor);
     if (parent === ancestor) {
       return absolute;
     }
-    missing.push(basename(ancestor));
+    missing.push(pathApi.basename(ancestor));
     ancestor = parent;
   }
 }

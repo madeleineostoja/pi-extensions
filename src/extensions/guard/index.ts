@@ -113,6 +113,7 @@ function guardExtension(pi: ExtensionAPI): void {
       cwd: ctx.cwd,
       supportedMac: isSupportedMac(),
       canPrompt: ctx.mode === "tui" && ctx.hasUI,
+      signal: ctx.signal,
       state,
       prompt: async (request) => {
         const permission = await promptForPermission({

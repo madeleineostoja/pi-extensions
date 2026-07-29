@@ -8,6 +8,7 @@ import type { NonoHealth } from "./runtime/nono.js";
 
 export type GuardRuntimeState = {
   boundaryEnabled: () => boolean;
+  generation: () => number;
   semanticConfirmationEnabled: () => boolean;
   backendHealth: () => NonoHealth | undefined;
   fixedCapabilities: () => FixedCapabilities | undefined;
@@ -26,6 +27,7 @@ export type GuardRuntimeState = {
 
 export function createGuardRuntimeState(): GuardRuntimeState {
   let boundary = true;
+  let generation = 0;
   let semanticConfirmation = true;
   let fixed: FixedCapabilities | undefined;
   let health: NonoHealth | undefined;
@@ -35,6 +37,7 @@ export function createGuardRuntimeState(): GuardRuntimeState {
   return {
     boundaryEnabled: () => boundary,
     backendHealth: () => health,
+    generation: () => generation,
     fixedCapabilities: () => fixed,
     semanticConfirmationEnabled: () => semanticConfirmation,
     filesystemGrants: () => reachability,
@@ -60,6 +63,7 @@ export function createGuardRuntimeState(): GuardRuntimeState {
       protectedApprovals = [];
     },
     resetSession() {
+      generation += 1;
       fixed = undefined;
       health = undefined;
       reachability = [];
@@ -69,6 +73,7 @@ export function createGuardRuntimeState(): GuardRuntimeState {
     setBoundaryEnabled(enabled) {
       if (boundary !== enabled) {
         boundary = enabled;
+        generation += 1;
         reachability = [];
         protectedApprovals = [];
       }

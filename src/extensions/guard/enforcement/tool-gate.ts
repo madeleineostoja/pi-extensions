@@ -38,6 +38,7 @@ export async function gateDirectFilesystemTool(options: {
   cwd: string;
   supportedMac: boolean;
   canPrompt: boolean;
+  signal?: AbortSignal;
   state: GuardRuntimeState;
   prompt: FilesystemPrompt;
 }): Promise<{ block?: boolean; reason?: string }> {
@@ -56,6 +57,7 @@ export async function gateDirectFilesystemTool(options: {
     };
   }
 
+  const generation = options.state.generation();
   let choice: FilesystemPromptChoice;
   try {
     choice = await options.prompt(decision);
@@ -63,6 +65,12 @@ export async function gateDirectFilesystemTool(options: {
     return {
       block: true,
       reason: "Guard: filesystem approval is unavailable.",
+    };
+  }
+  if (options.signal?.aborted || options.state.generation() !== generation) {
+    return {
+      block: true,
+      reason: "Guard: filesystem approval is no longer active.",
     };
   }
   if (choice === "once") {

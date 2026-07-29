@@ -7,6 +7,7 @@ import {
   type AccessMode,
   type FilesystemGrant,
   type GrantKind,
+  type PiPathCompatibility,
 } from "../capabilities.js";
 import { isProtectedReadTarget } from "../protected.js";
 import type { GuardRuntimeState } from "../state.js";
@@ -63,10 +64,11 @@ function isProtectedToolTarget(
   requested: string,
   target: string,
   cwd: string,
+  compatibility: PiPathCompatibility,
 ): boolean {
   return (
     (tool === "read" || (tool === "grep" && kindFor(target) === "file")) &&
-    isProtectedReadTarget(requested, target, cwd)
+    isProtectedReadTarget(requested, target, cwd, compatibility)
   );
 }
 
@@ -83,20 +85,23 @@ export function decideDirectFilesystemTool(options: {
   cwd: string;
   supportedMac: boolean;
   state: GuardRuntimeState;
+  pathCompatibility?: PiPathCompatibility;
 }): DirectFilesystemDecision {
   const requested = pathFor(options.tool, options.input);
   if (!requested) {
     return { kind: "deny", reason: "Guard: filesystem path is required." };
   }
 
+  const compatibility = options.pathCompatibility ?? {};
   let requestedTarget: string;
   let target: string;
   try {
-    requestedTarget = resolvePiToolPath(requested, options.cwd);
+    requestedTarget = resolvePiToolPath(requested, options.cwd, compatibility);
     target = canonicalizeTarget(
       requestedTarget,
       options.cwd,
       options.tool === "read",
+      compatibility,
     );
   } catch {
     return { kind: "deny", reason: "Guard: filesystem path is invalid." };
@@ -123,12 +128,14 @@ export function decideDirectFilesystemTool(options: {
       requestedTarget,
       target,
       options.cwd,
+      compatibility,
     ) ||
       isProtectedToolTarget(
         options.tool,
         requestedTarget,
         target,
         fixed?.cwd ?? options.cwd,
+        compatibility,
       )) &&
     !options.state.allowsProtectedRead(target);
 
@@ -164,6 +171,7 @@ export function prepareExplicitFilesystemGrant(options: {
   access: AccessMode;
   supportedMac: boolean;
   state: GuardRuntimeState;
+  pathCompatibility?: PiPathCompatibility;
 }): FilesystemGrant | null {
   if (!options.supportedMac) {
     return null;
@@ -172,11 +180,21 @@ export function prepareExplicitFilesystemGrant(options: {
   if (!fixed) {
     return null;
   }
+  const compatibility = options.pathCompatibility ?? {};
   let requestedTarget: string;
   let target: string;
   try {
-    requestedTarget = resolvePiToolPath(options.path, options.cwd);
-    target = canonicalizeTarget(requestedTarget, options.cwd);
+    requestedTarget = resolvePiToolPath(
+      options.path,
+      options.cwd,
+      compatibility,
+    );
+    target = canonicalizeTarget(
+      requestedTarget,
+      options.cwd,
+      false,
+      compatibility,
+    );
   } catch {
     return null;
   }
@@ -186,9 +204,14 @@ export function prepareExplicitFilesystemGrant(options: {
   }
   const outsideBoundary = !hasGrant(fixed.grants, target, options.access);
   const protectedRead =
-    kind === "file" &&
-    (isProtectedReadTarget(requestedTarget, target, options.cwd) ||
-      isProtectedReadTarget(requestedTarget, target, fixed.cwd));
+    options.access === "read" &&
+    (isProtectedReadTarget(
+      requestedTarget,
+      target,
+      options.cwd,
+      compatibility,
+    ) ||
+      isProtectedReadTarget(requestedTarget, target, fixed.cwd, compatibility));
   return createFilesystemGrant(target, options.cwd, options.access, [
     ...(outsideBoundary ? (["outside-boundary"] as const) : []),
     ...(protectedRead ? (["protected-read"] as const) : []),

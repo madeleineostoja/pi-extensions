@@ -14,6 +14,7 @@ import {
   decideDirectFilesystemTool,
   prepareExplicitFilesystemGrant,
 } from "./decide.js";
+import { filesystemScope } from "./tool-gate.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -161,6 +162,56 @@ describe("direct filesystem decisions", () => {
     const runtime = state(workspace);
     writeFileSync(join(workspace, ".env"), "secret");
     expect(decide(runtime, workspace, "grep").kind).toBe("allow");
+  });
+
+  it("records protected explicit directory read grants as exact subtrees", () => {
+    const { root, workspace, outside } = fixture();
+    const runtime = state(workspace);
+    const home = join(root, "home");
+    const ssh = join(home, ".ssh");
+    const credential = join(ssh, "id_rsa");
+    mkdirSync(home);
+    mkdirSync(ssh);
+    writeFileSync(credential, "secret");
+
+    const protectedGrant = prepareExplicitFilesystemGrant({
+      path: "~/.ssh",
+      cwd: workspace,
+      access: "read",
+      supportedMac: true,
+      state: runtime,
+      pathCompatibility: { homeDir: home },
+    })!;
+    expect(protectedGrant).toMatchObject({
+      path: canonicalizeTarget(ssh, workspace),
+      kind: "directory",
+      effects: ["outside-boundary", "protected-read"],
+    });
+    expect(filesystemScope(protectedGrant)).toBe(
+      `${canonicalizeTarget(ssh, workspace)}/**`,
+    );
+    const canonicalCredential = canonicalizeTarget(credential, workspace);
+    const canonicalSibling = canonicalizeTarget(
+      join(home, "sibling"),
+      workspace,
+    );
+    runtime.addGrant(protectedGrant);
+    expect(runtime.allowsReachability(canonicalCredential, "read")).toBe(true);
+    expect(runtime.allowsProtectedRead(canonicalCredential)).toBe(true);
+    expect(runtime.allowsReachability(canonicalSibling, "read")).toBe(false);
+    expect(runtime.allowsProtectedRead(canonicalSibling)).toBe(false);
+
+    const ordinary = prepareExplicitFilesystemGrant({
+      path: outside,
+      cwd: workspace,
+      access: "read",
+      supportedMac: true,
+      state: runtime,
+    });
+    expect(ordinary).toMatchObject({
+      kind: "directory",
+      effects: ["outside-boundary"],
+    });
   });
 
   it("only prepares existing exact files or directory scopes for explicit grants", () => {
