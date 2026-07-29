@@ -1,134 +1,33 @@
 # Safety
 
-Pipkin keeps three different kinds of watch while an agent works: Sandbox defines where work may happen, Readonly checkpoints resolved tools named `edit` and `write`, and Shell Guard pauses recognized risky built-in `bash` actions. They are loaded in that order and are designed to overlap.
+Pipkin Guard establishes a fixed filesystem boundary for supported macOS arm64 and x64 hosts. It is a guardrail for Pi filesystem tools and managed Bash, not a claim that arbitrary local code is safe.
 
-They are useful guardrails, not a claim that arbitrary local code is safe.
+## Managed Nono
 
-## Sandbox: set the working boundary
-
-Sandbox checks Pi's filesystem tools in process and places subprocesses under [`nono`](https://github.com/always-further/nono) when a compatible binary is available.
-
-| Pi tool                      | Required access |
-| ---------------------------- | --------------- |
-| `read`, `ls`, `find`, `grep` | read            |
-| `write`                      | write           |
-| `edit`                       | read and write  |
-
-A path must be inside the relevant allowlist and must not match a deny pattern. The gate covers the built-in filesystem tools; `nono` applies corresponding filesystem and network policy to agent `bash`, user `!` / `!!`, and extension subprocesses launched through `pi.exec`.
-
-If `nono` is unavailable, subprocess execution is blocked unless `degraded.allowExec` is explicitly enabled. In-process filesystem protection remains active.
-
-### Start with `/sandbox`
-
-Open the menu to inspect current status and policy, explain a decision, grant or revoke access, toggle enforcement for this session, or reload configuration:
+The root package installs reviewed Nono 0.69.0 releases for supported Macs at:
 
 ```text
-/sandbox
+<agent-dir>/pipkin/guard/nono/0.69.0/<target>/pipkin-nono
 ```
 
-Inline forms are useful when you already know the action:
+Guard resolves `PIPKIN_NONO_PATH` when it is set; otherwise it uses only that managed executable. It never searches `PATH`. To skip root-install download deterministically, set `PIPKIN_SKIP_NONO_DOWNLOAD`. The reviewed archive table is the single source for the release version, host selection, URLs, and digests used by both installation and runtime probing.
 
-```text
-/sandbox status
-/sandbox summary
-/sandbox reload
-/sandbox why .env
-/sandbox why api.github.com
-/sandbox allow host api.example.com
-/sandbox allow host --persist api.example.com
-/sandbox allow host --persist=user api.example.com
-/sandbox allow read ../shared
-/sandbox allow write ./generated
-/sandbox revoke host api.example.com
-/sandbox revoke host --persist api.example.com
-/sandbox revoke read ../shared
-/sandbox revoke write ./generated
-/sandbox network on|off
-/sandbox on|off
-```
+If Nono is unavailable or fails its version/config probe, run `npm install` from the Pipkin root and reload or restart Pi. Guard does not install or repair Nono while Pi is running.
 
-Filesystem grants are session-only. A bare `--persist` writes host changes to `<cwd>/.pi/pipkin/sandbox.json`; `--persist=user` writes additions to the central `sandbox` section. Persistent revoke targets project policy. In a TUI, filesystem allowlist misses can offer one-time, session, or parent-directory access; deny-pattern matches never prompt.
+## Fixed filesystem capabilities
 
-### Policy
+On a supported Mac, Guard starts from the canonical session working directory, ordinary macOS temporary roots, eligible caller cache roots, required system/device/Nix/Node/Pi read roots, narrow agent introspection directories, and the current session file. Optional roots that do not exist are omitted. Guard does not grant the agent directory, `auth.json`, historical sessions, or a home directory by default.
 
-Sandbox merges built-in defaults, agent-level configuration, then checkout policy:
+Nono receives manifest version `0.1.0`, explicit filesystem grants, and unrestricted network mode. There are no profiles, deny entries, host rules, or persistent policy files.
 
-```text
-<agent-dir>/pipkin/config.json#sandbox
-<cwd>/.pi/pipkin/sandbox.json
-```
+Explicit reads of workspace `.env` files, project private-key names/extensions, and the designated home credential paths are protected separately from filesystem reachability. Future Guard interactions can approve exact canonical files or directory subtrees for the live session only.
 
-Later values override earlier ones and arrays replace rather than merge.
+## Shell Guard
 
-```json
-{
-  "enabled": true,
-  "fs": {
-    "allowRead": ["<cwd>", "/usr", "/etc", "/opt"],
-    "allowWrite": ["<cwd>", "~/.cache/pi", "<agent-dir>/pipkin/logs"],
-    "denyPatterns": ["<cwd>/**/.env", "<cwd>/**/.env.*", "~/.ssh/**"]
-  },
-  "network": {
-    "mode": "non-interactive-only",
-    "allow": ["github.com", "*.github.com", "registry.npmjs.org"]
-  },
-  "audit": {
-    "log": true,
-    "logFile": "<agent-dir>/pipkin/logs/sandbox-audit.jsonl"
-  },
-  "enforcement": { "requireKernelSandbox": false },
-  "degraded": { "allowExec": false }
-}
-```
-
-Path fields support `<cwd>`, `~`, and environment variables. The OS temporary directory is always allowed. Built-in defaults also allow common system read paths and package hosts while denying common credentials and private-key patterns; `/sandbox` shows the resolved policy.
-
-`network.mode` has three values:
-
-| Mode                   | Subprocess network behavior                             |
-| ---------------------- | ------------------------------------------------------- |
-| `non-interactive-only` | Enforce the allowlist only outside interactive sessions |
-| `always`               | Enforce it in every session                             |
-| `off`                  | Do not filter subprocess network access                 |
-
-Hosts are exact names or wildcard subdomains. `*.github.com` does not include `github.com`, so allow both when both are needed.
-
-Set `enforcement.requireKernelSandbox: true` to refuse Sandbox startup without `nono`. Set `degraded.allowExec: true` only when unconstrained subprocess execution is acceptable.
-
-### `nono` availability
-
-Pipkin downloads a verified packaged binary at installation time for macOS and glibc Linux on arm64 and x64. Windows, Alpine/musl, distroless Linux, BSD, and other architectures use a compatible `nono` already on `PATH` or fall back to in-process filesystem protection with subprocesses blocked.
-
-Skip the managed download with:
-
-```sh
-PIPKIN_SANDBOX_SKIP_DOWNLOAD=1 npm install
-```
-
-### Audit and limits
-
-When enabled, decisions are written as JSONL and emitted as `pipkin.sandbox.audit`; policy changes also emit `pipkin.sandbox.policy-changed`.
-
-Sandbox is defense in depth:
-
-- extensions are trusted code, and their direct JavaScript network requests are not confined;
-- language servers are trusted subprocesses launched outside Sandbox;
-- the in-process path gate has time-of-check/time-of-use limits;
-- Linux Landlock is allowlist-oriented, so deny globs remain in process;
-- on macOS, only deny patterns with a useful literal prefix can be pushed into Seatbelt.
+Shell Guard retains semantic confirmation for risky built-in Bash commands. It identifies the destructive effects in one command and asks whether to **Allow once**, **Allow all this session**, or **Block**. Session-wide approval resets for every new, resumed, forked, and reloaded session. Without an interactive UI, Shell Guard leaves Bash calls unchanged.
 
 ## Readonly
 
 Readonly prompts only for resolved tools named `edit` and `write`. It is not a universal mutation gate: differently named tools remain outside this boundary. Built-in tools get a bounded local preview when Pi identifies their backend as built-in; same-name overrides and missing provenance stay gated but show their bounded input with an explicit unknown-backend warning.
 
 `/readonly` and `Ctrl+R` toggle approval for the live extension runtime. Accepting for the session affects only that instance; reload, resume, new sessions, and forks instantiate a fresh enabled gate. TUI and RPC share the same prompt. Print and JSON calls pass without a prompt, notice, or mode change.
-
-## Shell Guard: best-effort destructive-shell confirmation
-
-Shell Guard inspects resolved built-in `bash` invocations that Pi identifies with built-in provenance and makes one confirmation request containing every recognized risk. It supports simple separators, path-qualified executables, supported `sudo`/`doas`/`env`/`command` options, and one literal `sh -c` or `bash -c` level. Dynamic shell grammar, expansions, substitutions, globs, remote tails, `find -exec`, and xargs tails are not interpreted; exact delimiter-bounded destructive markers produce explicit uncertain warnings instead.
-
-The prompt can allow the displayed invocation once, allow all shell risks for the current runtime, or block with feedback. Print and JSON calls pass without state changes or notices. Recoverable clean tracked content and canonical OS-temp descendants outside the working tree may be omitted only when filesystem and Git evidence proves the effect safe. Dirty, untracked, ignored, missing, ambiguous, and inspection-failed targets remain promptable.
-
-## Ordering and limits
-
-Pipkin loads Sandbox, then Readonly, then Shell Guard. Sandbox runs first so a rejected filesystem call does not reach later approval prompts; the two approval gates see the chained input available at their handler position. Pi has no final read-only handler phase: a third-party extension loaded after Shell Guard can still mutate input. These are useful best-effort guardrails, not security boundaries, and they do not guarantee final approved bytes or discover effects absent from Pi's tool metadata.

@@ -25,7 +25,6 @@ export type ConfigIssue = Readonly<{
 export type PipkinConfig = Readonly<{
   models: Readonly<Partial<Record<ModelPresetName, ModelPreset>>>;
   implement: Readonly<{ workerConcurrency: number }>;
-  sandbox?: Readonly<Record<string, unknown>>;
 }>;
 export type ConfigSnapshot = Readonly<{
   path: string;
@@ -148,10 +147,9 @@ function parseValue(
     }
   }
 
-  const sandbox = optionalSection(root?.sandbox, "sandbox", issue);
   if (root) {
     for (const key of Object.keys(root)) {
-      if (!["models", "implement", "sandbox"].includes(key)) {
+      if (!["models", "implement"].includes(key)) {
         issue(key, "is not supported");
       }
     }
@@ -162,7 +160,6 @@ function parseValue(
     config: {
       models,
       implement: { workerConcurrency },
-      ...(sandbox === undefined ? {} : { sandbox }),
     },
     issues,
   });
@@ -200,21 +197,6 @@ function parseModelPreset(
   return valid
     ? { model: (model as string).trim(), thinking: thinking as ThinkingLevel }
     : undefined;
-}
-
-function optionalSection(
-  value: unknown,
-  name: "sandbox",
-  issue: (field: string, message: string) => void,
-): Readonly<Record<string, unknown>> | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!isRecord(value)) {
-    issue(name, "must be an object");
-    return undefined;
-  }
-  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

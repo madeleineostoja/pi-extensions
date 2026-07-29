@@ -21,7 +21,7 @@
   ],
   "pi": {
     "extensions": [
-      "./src/extensions/sandbox/index.ts",
+      "./src/extensions/guard/index.ts",
       "./src/extensions/readonly/index.ts",
       "./src/extensions/shell-guard/index.ts",
       "./src/extensions/context/index.ts",
@@ -42,7 +42,7 @@
     "#test/*": "./test/support/*.ts"
   },
   "scripts": {
-    "postinstall": "node scripts/postinstall.js",
+    "postinstall": "node scripts/install-nono.mjs",
     "lint": "oxlint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -59,8 +59,8 @@
     "execa": "^10.0.0",
     "fs-native-extensions": "^1.5.0",
     "p-queue": "^9.3.2",
-    "picomatch": "^4.0.4",
     "svelte-language-server": "0.17.19",
+    "tar": "7.5.22",
     "typescript": "5.7.3",
     "typescript-language-server": "4.3.3",
     "zod": "^4.4.3"
@@ -71,7 +71,6 @@
     "@earendil-works/pi-tui": "^0.82.0",
     "@prettier/plugin-oxc": "^0.1.4",
     "@types/node": "^22.0.0",
-    "@types/picomatch": "^4.0.0",
     "ajv": "^6.12.6",
     "husky": "^9.1.7",
     "lint-staged": "^15.2.10",
@@ -91,7 +90,5 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
-  },
-  "nonoVersion": "0.57.0",
-  "nonoSha256SumsHash": "458f571f6d0b59f683e05115d8cc3afa92863bd394f6c57ac8312f791104a1bc"
+  }
 }

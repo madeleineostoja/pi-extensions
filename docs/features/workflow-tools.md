@@ -34,7 +34,7 @@ Servers start lazily, are shared per workspace, and retire after idle time. Requ
 
 Unavailable servers and unsupported capabilities return non-fatal fallback results. Use the `status` action to inspect runtime status without eagerly starting every server.
 
-The model can choose only Pipkin's fixed read-only actions, supported files, and in-workspace paths. It cannot choose an executable, send arbitrary protocol methods, apply edits, or invoke server commands. The language servers themselves are trusted processes outside Sandbox and inherit Pi's environment.
+The model can choose only Pipkin's fixed read-only actions, supported files, and in-workspace paths. It cannot choose an executable, send arbitrary protocol methods, apply edits, or invoke server commands. The language servers themselves are trusted processes outside Guard and inherit Pi's environment.
 
 ## Papercuts: keep the lesson, not just the scar
 

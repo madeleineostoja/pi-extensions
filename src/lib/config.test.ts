@@ -25,7 +25,10 @@ describe("Pipkin config", () => {
     expect(snapshot.config.models.utility).toBeUndefined();
     expect(snapshot.config.models.low).toEqual(models.low);
     expect(snapshot.config.implement.workerConcurrency).toBe(8);
-    expect(snapshot.config.sandbox).toEqual({ enabled: false });
+    expect(snapshot.config).not.toHaveProperty("sandbox");
+    expect(snapshot.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: "sandbox" })]),
+    );
     expect(presetIssue(snapshot, "utility")?.message).toContain("model");
   });
 

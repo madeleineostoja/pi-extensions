@@ -22,12 +22,11 @@ With Pi's default agent directory, that is `~/.pi/agent/pipkin/config.json`. Pip
   },
   "implement": {
     "workerConcurrency": 3
-  },
-  "sandbox": {}
+  }
 }
 ```
 
-Only `models` is needed to unlock the complete model-powered feature set. `implement` and `sandbox` are optional.
+Only `models` is needed to unlock the complete model-powered feature set. `implement` is optional.
 
 ## Model presets
 
@@ -60,21 +59,9 @@ Pi still owns credentials and its `settings.json`. Keep API keys out of this fil
 
 See [Implementation](features/implementation.md).
 
-## Sandbox settings and project policy
-
-The optional central `sandbox` object uses the same shape as project policy. Sandbox resolves policy in this order:
-
-1. built-in defaults;
-2. `<agent-dir>/pipkin/config.json#sandbox`;
-3. `<cwd>/.pi/pipkin/sandbox.json`.
-
-Later objects override earlier ones, and arrays replace rather than merge. This makes the central section useful for personal defaults and the checkout file useful for project-specific paths and hosts.
-
-See [Safety](features/safety.md) for the complete policy shape, defaults, and interactive grant commands.
-
 ## When changes take effect
 
-Configuration is snapshotted when the consuming extension is constructed. Pi's `/reload` rebuilds the bundle and rereads the central file. Sandbox also provides `/sandbox reload` to reread its central and project policy without a full extension reload.
+Configuration is snapshotted when the consuming extension is constructed. Pi's `/reload` rebuilds the bundle and rereads the central file.
 
 ## Durable state
 
@@ -91,13 +78,12 @@ Pipkin's checkout-owned state lives under `.pi/pipkin/`:
       artifacts/
   papercuts.json
   papercuts.lock
-  sandbox.json
 ```
 
 Implement and Papercuts arrange local Git exclusion through the repository's common `.git/info/exclude`; they do not modify committed `.gitignore`. Linked worktrees retain checkout-specific run and papercut state.
 
-Agent-level logs live under `<agent-dir>/pipkin/logs/`, including Sandbox audit output and the Caffeinate log.
+Agent-level logs live under `<agent-dir>/pipkin/logs/`, including the Caffeinate log.
 
 ## No legacy migration
 
-Current paths are a hard cutover. Pipkin does not read, copy, migrate, or diagnose old `extensions/pi-*` configuration, root `.pi/sandbox.json`, `.pi/implement`, `.pi/papercuts.json`, or `.pi/papercuts.lock`. Existing files at those locations remain available for manual inspection only.
+Current paths are a hard cutover. Pipkin does not read, copy, migrate, or diagnose old `extensions/pi-*` configuration, root `.pi/implement`, `.pi/papercuts.json`, or `.pi/papercuts.lock`. Existing files at those locations remain available for manual inspection only.

@@ -56,11 +56,11 @@ This makes it practical to give Pipkin a serious implementation plan and let it 
 
 ### Safety
 
-Pipkin's first three layers are deliberately about control:
+Pipkin's first layers are deliberately about control:
 
-- **Sandbox** limits reads, writes, subprocesses, and subprocess network access. `/sandbox` explains the current policy and lets you grant temporary access without stopping the session.
+- **Guard** uses fixed filesystem capabilities and managed Nono on supported Macs. It protects explicit credential reads separately from filesystem reachability.
+- **Shell Guard** confirms semantically risky built-in Bash commands, with one-time and session-wide approval.
 - **Readonly** checkpoints resolved tools named `edit` and `write`. Built-in tools get a bounded patch preview; same-name overrides are still approved without an invented preview. Toggle it with `Ctrl+R` or `/readonly`.
-- **Shell Guard** confirms recognized high-risk built-in `bash` effects—such as force pushes, untracked-file deletion, package/system mutation, container deletion, and infrastructure changes—without pestering you about routine local installs.
 
 **[Safety →](docs/features/safety.md)**
 
@@ -104,22 +104,21 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 ## Commands
 
-| Surface                           | What it does                                                               |
-| --------------------------------- | -------------------------------------------------------------------------- |
-| `/sandbox`                        | Inspect policy, explain decisions, and manage session or persistent access |
-| `/readonly [on\|off]`             | Toggle approval for built-in edits and writes                              |
-| `context_recall`                  | Recover the original content behind an elision stub                        |
-| `lsp`                             | Make semantic source queries or inspect language-server status             |
-| `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents                     |
-| `get_subagent_result`             | Inspect or join a background agent                                         |
-| `steer_subagent`                  | Queue guidance for a running background agent                              |
-| `/implement`                      | Start, inspect, resume, stop, or clean up implementation runs              |
-| `/papercuts` / `propose_papercut` | Capture and review durable project workflow gaps                           |
-| `/btw <question>`                 | Ask an ephemeral side question from current session context                |
+| Surface                           | What it does                                                   |
+| --------------------------------- | -------------------------------------------------------------- |
+| `/readonly [on\|off]`             | Toggle approval for built-in edits and writes                  |
+| `context_recall`                  | Recover the original content behind an elision stub            |
+| `lsp`                             | Make semantic source queries or inspect language-server status |
+| `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents         |
+| `get_subagent_result`             | Inspect or join a background agent                             |
+| `steer_subagent`                  | Queue guidance for a running background agent                  |
+| `/implement`                      | Start, inspect, resume, stop, or clean up implementation runs  |
+| `/papercuts` / `propose_papercut` | Capture and review durable project workflow gaps               |
+| `/btw <question>`                 | Ask an ephemeral side question from current session context    |
 
 ## Limits
 
-Pipkin extensions are trusted code with the permissions of the Pi process. Sandbox does not confine JavaScript-side network calls made by trusted extensions, and language servers run outside it. Readonly and Shell Guard step aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
+Pipkin extensions are trusted code with the permissions of the Pi process. Guard does not confine JavaScript-side network calls made by trusted extensions, and language servers run outside it. Readonly steps aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
 
 Those are operating constraints, not footnotes. The feature guides spell out where each boundary begins and ends.
 

@@ -1,7 +1,7 @@
 import { defineConfig } from "vitest/config";
 
 const features = [
-  "sandbox",
+  "guard",
   "readonly",
   "shell-guard",
   "context",
@@ -50,6 +50,15 @@ export default defineConfig({
         test: {
           name: "implement-e2e",
           include: ["src/extensions/implement/**/*.e2e.test.ts"],
+          environment: "node",
+          globals: false,
+          fileParallelism: false,
+        },
+      },
+      {
+        test: {
+          name: "scripts",
+          include: ["scripts/**/*.test.mjs"],
           environment: "node",
           globals: false,
           fileParallelism: false,

@@ -25,7 +25,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const expectedExtensions = [
-  "./src/extensions/sandbox/index.ts",
+  "./src/extensions/guard/index.ts",
   "./src/extensions/readonly/index.ts",
   "./src/extensions/shell-guard/index.ts",
   "./src/extensions/context/index.ts",
@@ -64,12 +64,10 @@ const expectedCommands = {
   btw: "src/extensions/btw/index.ts",
 };
 
-const expectedRenderers = {
-  "pipkin.sandbox.status": "src/extensions/sandbox/index.ts",
-};
+const expectedRenderers = {};
 
 const safetyPaths = [
-  "src/extensions/sandbox/index.ts",
+  "src/extensions/guard/index.ts",
   "src/extensions/readonly/index.ts",
   "src/extensions/shell-guard/index.ts",
 ];
@@ -402,12 +400,11 @@ describe("Pipkin bundle", () => {
     );
   });
 
-  it("keeps safety startup and reload handlers ordered and registers Sandbox", async () => {
+  it("keeps safety startup and reload handlers ordered and registers Guard", async () => {
     const fixture = await loadBundle();
     await assertSafetyOrder(fixture, "startup");
     expect(provenanceMap(safetyExtensions(fixture.result), "commands")).toEqual(
       expectedProvenance({
-        sandbox: "src/extensions/sandbox/index.ts",
         readonly: "src/extensions/readonly/index.ts",
       }),
     );
