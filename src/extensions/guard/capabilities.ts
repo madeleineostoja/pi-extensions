@@ -1,6 +1,7 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   getAgentDir,
   getDocsPath,
@@ -31,8 +32,45 @@ function existingCanonical(path: string): string | null {
   }
 }
 
-export function canonicalizeTarget(path: string, cwd: string): string {
-  const absolute = resolve(cwd, path);
+const unicodeSpaces = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+export function resolvePiToolPath(raw: string, cwd: string): string {
+  let path = raw.replace(unicodeSpaces, " ");
+  if (path.startsWith("@")) {
+    path = path.slice(1);
+  }
+  if (path === "~") {
+    path = homedir();
+  } else if (path.startsWith("~/")) {
+    path = join(homedir(), path.slice(2));
+  }
+  if (path.startsWith("file://")) {
+    path = fileURLToPath(path);
+  }
+  return resolve(cwd, path);
+}
+
+function readFallback(path: string): string {
+  if (existsSync(path)) {
+    return path;
+  }
+  const variants = [
+    path.replace(/ (?=[AaPp][Mm](?:$|\.))/, "\u202f"),
+    path.normalize("NFD"),
+    path.replace(/'/g, "\u2019"),
+  ];
+  variants.push(variants[1]!.replace(/'/g, "\u2019"));
+  return variants.find(existsSync) ?? path;
+}
+
+export function canonicalizeTarget(
+  path: string,
+  cwd: string,
+  useReadFallback = false,
+): string {
+  const absolute = useReadFallback
+    ? readFallback(resolvePiToolPath(path, cwd))
+    : resolvePiToolPath(path, cwd);
   const existing = existingCanonical(absolute);
   if (existing) {
     return existing;

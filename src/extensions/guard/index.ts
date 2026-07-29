@@ -1,6 +1,7 @@
 export {
   canonicalizeTarget,
   createFilesystemGrant,
+  resolvePiToolPath,
   createFixedCapabilities,
   grantMatches,
   hasGrant,
@@ -12,6 +13,20 @@ export {
 } from "./capabilities.js";
 export { isProtectedReadTarget } from "./protected.js";
 export { createGuardRuntimeState, type GuardRuntimeState } from "./state.js";
+export {
+  decideDirectFilesystemTool,
+  isSupportedMac,
+  prepareExplicitFilesystemGrant,
+  type DirectFilesystemDecision,
+  type DirectFilesystemTool,
+} from "./enforcement/decide.js";
+export {
+  filesystemPromptDetail,
+  filesystemScope,
+  gateDirectFilesystemTool,
+  isDirectFilesystemTool,
+  type FilesystemPromptChoice,
+} from "./enforcement/tool-gate.js";
 export {
   buildNonoManifest,
   runNono,
@@ -33,7 +48,14 @@ import type {
   ExtensionContext,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
+import { promptForPermission } from "#lib/permission-prompt";
 import { createFixedCapabilities } from "./capabilities.js";
+import { isSupportedMac } from "./enforcement/decide.js";
+import {
+  filesystemPromptDetail,
+  gateDirectFilesystemTool,
+  isDirectFilesystemTool,
+} from "./enforcement/tool-gate.js";
 import { getNonoHealth, type NonoHealth } from "./runtime/nono.js";
 import { createGuardRuntimeState } from "./state.js";
 
@@ -80,7 +102,35 @@ function guardExtension(pi: ExtensionAPI): void {
     await probe;
     state.resetSession();
   });
-  pi.on("tool_call", () => undefined);
+
+  pi.on("tool_call", async (event, ctx) => {
+    if (!isDirectFilesystemTool(event.toolName)) {
+      return undefined;
+    }
+    const result = await gateDirectFilesystemTool({
+      tool: event.toolName,
+      input: event.input as { path?: unknown },
+      cwd: ctx.cwd,
+      supportedMac: isSupportedMac(),
+      canPrompt: ctx.mode === "tui" && ctx.hasUI,
+      state,
+      prompt: async (request) => {
+        const permission = await promptForPermission({
+          ui: ctx.ui,
+          signal: ctx.signal,
+          title: `Guard: allow ${request.grant.access} access?`,
+          detail: filesystemPromptDetail(request),
+          choices: [
+            { value: "once", label: "Allow once" },
+            { value: "similar", label: "Allow similar this session" },
+            { value: "block", label: "Block" },
+          ],
+        });
+        return permission.kind === "selected" ? permission.value : "block";
+      },
+    });
+    return result.block ? result : undefined;
+  });
 }
 
 export default guardExtension;

@@ -20,7 +20,7 @@ On a supported Mac, Guard starts from the canonical session working directory, o
 
 Nono receives manifest version `0.1.0`, explicit filesystem grants, and unrestricted network mode. It confines filesystem access but does not filter Bash network egress. There are no profiles, deny entries, host rules, or persistent policy files.
 
-Explicit reads of workspace `.env` files, project private-key names/extensions, and the designated home credential paths are protected separately from filesystem reachability. Future Guard interactions can approve exact canonical files or directory subtrees for the live session only.
+Explicit reads of workspace `.env` files, project private-key names/extensions, and the designated home credential paths are protected separately from filesystem reachability. Future Guard interactions can approve exact canonical files or directory subtrees for the live session only. Guard does not pre-enumerate directory `grep` searches, so a reachable directory search may return protected content; file-targeted `grep` remains protected.
 
 ## Shell Guard
 
