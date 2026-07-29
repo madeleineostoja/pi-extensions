@@ -89,10 +89,6 @@ describe("scheduler planning and candidate selection", () => {
     };
 
     const plan = planFor(state.run.checkout.root);
-    plan.tasks[0]!.sourcePaths = [
-      plan.tasks[0]!.sourcePaths[0]!,
-      plan.tasks[0]!.sourcePaths[0]!,
-    ];
     const packet = buildReviewPacket({
       state,
       plan,

@@ -138,7 +138,6 @@ async function fixture(args: {
         planIndex: index + 1,
         title: task.title,
         dependsOn: [],
-        sourcePaths: [planPath],
         compiledContract: {
           objective: `Implement ${task.title}.`,
           inScope: [task.title],

@@ -37,8 +37,8 @@ export async function createLifecycleFixture(): Promise<LifecycleFixture> {
     {
       version: 1,
       tasks: [
-        task("first", 1, "First task", planPath),
-        task("second", 2, "Second task", planPath, ["first"]),
+        task("first", 1, "First task"),
+        task("second", 2, "Second task", ["first"]),
       ],
       workstreams: [
         {
@@ -94,7 +94,6 @@ function task(
   id: string,
   planIndex: number,
   title: string,
-  path: string,
   dependsOn: string[] = [],
 ) {
   return {
@@ -102,7 +101,6 @@ function task(
     planIndex,
     title,
     dependsOn,
-    sourcePaths: [path],
     compiledContract: {
       objective: `Implement ${title}.`,
       inScope: ["Required behavior"],

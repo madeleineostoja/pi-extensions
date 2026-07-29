@@ -8,11 +8,7 @@ import {
 } from "./material-store.js";
 import type { ParsedPlan, PlanTask } from "./plan.js";
 import { writeAtomicJson } from "./atomic-json.js";
-import {
-  normalizeCheckboxMarker,
-  resolveCorpusPath,
-  sha256,
-} from "./source-integrity.js";
+import { normalizeCheckboxMarker, sha256 } from "./source-integrity.js";
 
 const ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
@@ -30,7 +26,7 @@ export type PlannerTask = {
   planIndex: number;
   title: string;
   dependsOn: string[];
-  sourcePaths: string[];
+  supportingDocuments: string[];
   compiledContract: StrictCompiledContract;
 };
 
@@ -57,6 +53,7 @@ export type SourceTaskAnchor = {
 export type CompiledExecutionTask = PlannerTask & {
   taskHash: string;
   sourceAnchor: SourceTaskAnchor;
+  sourceBlock: string;
 };
 
 export type ExecutionPlan = {
@@ -276,11 +273,7 @@ export function compileExecutionPlan(
   if (unchecked.length === 0) {
     return failure("Cannot compile an execution plan with no unchecked tasks.");
   }
-  const validation = validatePlannerPlan(
-    planner.value,
-    unchecked,
-    input.materialStore,
-  );
+  const validation = validatePlannerPlan(planner.value, unchecked);
   if (!validation.ok) {
     return validation;
   }
@@ -295,6 +288,7 @@ export function compileExecutionPlan(
         ...task,
         taskHash: taskHash(sourceTask),
         sourceAnchor: sourceAnchor(input.materialStore.entryPath, sourceTask),
+        sourceBlock: sourceBlock(sourceTask),
       };
     });
   const unsigned = {
@@ -353,7 +347,6 @@ export function uncheckedPlanTasks(plan: ParsedPlan): UncheckedPlanTask[] {
 export function validatePlannerPlan(
   planner: PlannerExecutionPlan,
   unchecked: UncheckedPlanTask[],
-  materialStore: MaterialStore,
 ): ExecutionPlanResult<void> {
   const ids = new Set<string>();
   const indexes = new Set<number>();
@@ -375,10 +368,6 @@ export function validatePlannerPlan(
       return failure(`Duplicate planIndex: ${task.planIndex}.`);
     }
     indexes.add(task.planIndex);
-    const sourcePaths = validateSourcePaths(task, materialStore);
-    if (!sourcePaths.ok) {
-      return sourcePaths;
-    }
   }
   if (indexes.size !== unchecked.length) {
     return failure(
@@ -579,19 +568,22 @@ function parseStoredExecutionPlan(value: unknown): ExecutionPlan | undefined {
         "planIndex",
         "title",
         "dependsOn",
-        "sourcePaths",
+        "supportingDocuments",
         "compiledContract",
         "taskHash",
         "sourceAnchor",
+        "sourceBlock",
       ]) ||
       !/^[a-f0-9]{64}$/.test(String(compiled.taskHash)) ||
-      !validSourceAnchor(compiled.sourceAnchor)
+      !validSourceAnchor(compiled.sourceAnchor) ||
+      !validSourceBlock(compiled.sourceBlock, compiled.sourceAnchor)
     ) {
       return undefined;
     }
     const {
       taskHash: _taskHash,
       sourceAnchor: _sourceAnchor,
+      sourceBlock: _sourceBlock,
       ...plannerTask
     } = compiled;
     plannerTasks.push(plannerTask);
@@ -652,6 +644,23 @@ function validSourceAnchor(value: unknown): boolean {
   );
 }
 
+function validSourceBlock(value: unknown, anchor: unknown): boolean {
+  if (
+    typeof value !== "string" ||
+    typeof anchor !== "object" ||
+    anchor === null ||
+    Array.isArray(anchor)
+  ) {
+    return false;
+  }
+  const [line, ...blockLines] = value.split("\n");
+  return (
+    line !== undefined &&
+    sha256([normalizeCheckboxMarker(line), ...blockLines].join("\n")) ===
+      (anchor as SourceTaskAnchor).blockHash
+  );
+}
+
 function hasExactKeys(
   value: Record<string, unknown>,
   allowed: string[],
@@ -671,7 +680,7 @@ export function buildStrictExecutionPlannerPrompt(
   const corpus = packet.corpus
     .map((file) => `### ${file.absolutePath}\n\n${file.content}`)
     .join("\n\n");
-  return `You are the Pipkin Implement planner working read-only in the assigned target checkout:\n\n  ${packet.workspace.path}\n\n${packet.workspace.mutationBoundary}\n\nReturn only the strict completion object.\n\n## Source plan\n\n${packet.planContent}\n\n## Unchecked source tasks\n\n${tasks}\n\n## Immutable corpus\n\n${corpus}\n\nBase SHA: ${packet.baseSha}\nEffective worker concurrency: ${packet.workerConcurrency}\n\nCreate exactly one task contract for every listed planIndex. Choose a small number of substantial workstreams by balancing retained implementation context, cumulative review coherence, bounded review and recovery scope, integration conflict, and useful concurrency up to the effective capacity; capacity is a benefit, not a quota. Group tasks only when shared evolving context, conflict-prone code, invariants, or cumulative review materially helps. Do not group tasks solely because they share a feature, broad topic, checklist order, or serial dependency. Split at a stable implementation and review boundary when it narrows scope, including when a sequential dependent workstream is clearer. Multi-task workstreams and dependent chains are first-class; do not create singletons merely to occupy workers. Workstream order must respect dependencies. Before returning, challenge the largest workstream for a meaningful split and the smallest adjacent workstreams for a useful merge. Whole-plan and all-singleton partitions are suspicious but legal only when concrete plan-specific constraints justify them. The complete source plan is the shipment boundary: an intermediate candidate may establish a contract for a dependent workstream, but each candidate must remain coherent and safe to publish. Ground requirements and acceptance criteria in the source corpus, existing repository contracts, or material correctness, safety, data-integrity, or operational risks. Exploration may reveal implementation options and constraints but does not create scope. Prefer existing project, framework, platform, standard-library, or installed-dependency capabilities over new custom mechanisms when they satisfy the contract. Use implementationNotes only for required constraints, decisions, and reuse opportunities, not code choreography. Keep verificationGuidance proportional to changed behavior and material risk. Every sourcePaths entry must identify a corpus file that downstream workers need. Do not invent hashes, source anchors, task modes, fallback plans, or runtime IDs.`;
+  return `You are the Pipkin Implement planner working read-only in the assigned target checkout:\n\n  ${packet.workspace.path}\n\n${packet.workspace.mutationBoundary}\n\nReturn only the strict completion object.\n\n## Source plan\n\n${packet.planContent}\n\n## Unchecked source tasks\n\n${tasks}\n\n## Linked requirement documents\n\n${corpus || "None."}\n\nBase SHA: ${packet.baseSha}\nEffective worker concurrency: ${packet.workerConcurrency}\n\nCreate exactly one task contract for every listed planIndex. Choose a small number of substantial workstreams by balancing retained implementation context, cumulative review coherence, bounded review and recovery scope, integration conflict, and useful concurrency up to the effective capacity; capacity is a benefit, not a quota. Group tasks only when shared evolving context, conflict-prone code, invariants, or cumulative review materially helps. Do not group tasks solely because they share a feature, broad topic, checklist order, or serial dependency. Split at a stable implementation and review boundary when it narrows scope, including when a sequential dependent workstream is clearer. Multi-task workstreams and dependent chains are first-class; do not create singletons merely to occupy workers. Workstream order must respect dependencies. Before returning, challenge the largest workstream for a meaningful split and the smallest adjacent workstreams for a useful merge. Whole-plan and all-singleton partitions are suspicious but legal only when concrete plan-specific constraints justify them. The complete source plan is the shipment boundary: an intermediate candidate may establish a contract for a dependent workstream, but each candidate must remain coherent and safe to publish. Ground requirements and acceptance criteria in the source corpus, existing repository contracts, or material correctness, safety, data-integrity, or operational risks. Exploration may reveal implementation options and constraints but does not create scope. Prefer existing project, framework, platform, standard-library, or installed-dependency capabilities over new custom mechanisms when they satisfy the contract. Use implementationNotes only for required constraints, decisions, and reuse opportunities, not code choreography. Keep verificationGuidance proportional to changed behavior and material risk. supportingDocuments is optional and may name only linked requirement documents shown above. It is not for repository paths: mention existing, proposed, or deleted repository paths, symbols, URLs, and tickets freely in the task contract instead. Do not invent hashes, source anchors, task modes, fallback plans, or runtime IDs.`;
 }
 
 function parsePlannerTask(
@@ -692,7 +701,7 @@ function parsePlannerTask(
       "planIndex",
       "title",
       "dependsOn",
-      "sourcePaths",
+      "supportingDocuments",
       "compiledContract",
     ],
     `Execution plan tasks[${index}]`,
@@ -714,11 +723,14 @@ function parsePlannerTask(
     `Execution plan tasks[${index}].dependsOn`,
     false,
   );
-  const sourcePaths = stringList(
-    task.value.sourcePaths,
-    `Execution plan tasks[${index}].sourcePaths`,
-    true,
-  );
+  const supportingDocuments =
+    task.value.supportingDocuments === undefined
+      ? { ok: true as const, value: [] as string[] }
+      : stringList(
+          task.value.supportingDocuments,
+          `Execution plan tasks[${index}].supportingDocuments`,
+          false,
+        );
   const compiledContract = parseContract(task.value.compiledContract, index);
   if (!id.ok) {
     return id;
@@ -732,8 +744,8 @@ function parsePlannerTask(
   if (!dependsOn.ok) {
     return dependsOn;
   }
-  if (!sourcePaths.ok) {
-    return sourcePaths;
+  if (!supportingDocuments.ok) {
+    return supportingDocuments;
   }
   if (!compiledContract.ok) {
     return compiledContract;
@@ -745,7 +757,7 @@ function parsePlannerTask(
       title: title.value,
       planIndex: planIndex.value,
       dependsOn: dependsOn.value,
-      sourcePaths: sourcePaths.value,
+      supportingDocuments: supportingDocuments.value,
       compiledContract: compiledContract.value,
     },
   };
@@ -889,30 +901,6 @@ function parseContract(
   };
 }
 
-function validateSourcePaths(
-  task: PlannerTask,
-  store: MaterialStore,
-): ExecutionPlanResult<void> {
-  for (const sourcePath of task.sourcePaths) {
-    try {
-      resolveCorpusPath({
-        planPath: store.entryPath,
-        checkoutRoot: store.repoRoot ?? store.planDir,
-        corpus: store.files.map((file) => ({
-          path: file.absolutePath,
-          hash: file.hash,
-        })),
-        reference: sourcePath,
-      });
-    } catch {
-      return failure(
-        `Task "${task.id}" source path is outside the immutable corpus: ${sourcePath}.`,
-      );
-    }
-  }
-  return { ok: true, value: undefined };
-}
-
 function validateDependencies(
   id: string,
   dependsOn: string[],
@@ -988,6 +976,10 @@ function sourceAnchor(planPath: string, task: PlanTask): SourceTaskAnchor {
       ),
     ),
   };
+}
+
+function sourceBlock(task: PlanTask): string {
+  return [task.originalLine, ...task.blockLines].join("\n");
 }
 
 function taskHash(task: PlanTask): string {

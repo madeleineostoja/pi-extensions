@@ -73,7 +73,7 @@ function task(id: string, planIndex: number, dependsOn: string[]) {
     planIndex,
     title: id,
     dependsOn,
-    sourcePaths: [planPath],
+    supportingDocuments: [] as string[],
     compiledContract: {
       objective: `Implement ${id}.`,
       inScope: [`${id} behavior`],
@@ -176,7 +176,6 @@ describe("strict execution-plan compiler", () => {
                 planIndex: 1,
                 title: "Task",
                 dependsOn: [],
-                sourcePaths: [sourcePath],
                 compiledContract: {
                   objective: "Implement the task.",
                   inScope: ["Task behavior"],
@@ -219,6 +218,15 @@ describe("strict execution-plan compiler", () => {
 
     expect(result).toEqual({ ok: true, value: { kind: "no-op" } });
     expect(calls).toBe(0);
+  });
+
+  it("accepts optional document hints without treating repository paths as corpus", () => {
+    const plan = plannerPlan();
+    plan.tasks[0]!.supportingDocuments = [
+      "ai/src/evals/scorers/scorer-configuration.ts",
+    ];
+
+    expect(compileExecutionPlan(plan, input()).ok).toBe(true);
   });
 
   it("compiles the parser-selected headingless checkbox section", () => {
@@ -265,6 +273,7 @@ describe("strict execution-plan compiler", () => {
     }
     expect(result.value.tasks.map((task) => task.planIndex)).toEqual([1, 2, 3]);
     expect(result.value.tasks[0]?.sourceAnchor.lineNumber).toBe(6);
+    expect(result.value.tasks[0]?.sourceBlock).toBe("- [ ] First branch");
     expect(result.value.source).toMatchObject({
       planPath,
       planHash: "plan-hash",
@@ -302,12 +311,6 @@ describe("strict execution-plan compiler", () => {
       "unknown planner field",
       (plan: ReturnType<typeof plannerPlan>) => {
         Object.assign(plan, { fallbackGenerated: true });
-      },
-    ],
-    [
-      "source path outside corpus",
-      (plan: ReturnType<typeof plannerPlan>) => {
-        plan.tasks[0]!.sourcePaths[0] = "/repo/not-in-corpus.md";
       },
     ],
   ])("blocks %s before a workstream can be created", (_name, mutate) => {

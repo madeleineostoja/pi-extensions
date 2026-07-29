@@ -392,17 +392,29 @@ export function buildWorkstreamPacket(args: {
     }
     return task;
   });
-  const materialPaths = new Set(
-    tasks.flatMap((task) =>
-      task.sourcePaths.map((sourcePath) =>
-        resolveCorpusPath(plan, args.state, sourcePath),
-      ),
-    ),
-  );
-  const sourceMaterial = [...materialPaths].map((path) => ({
-    path,
-    content: readFileSync(path, "utf-8"),
-  }));
+  const supportingPaths = new Set<string>();
+  for (const task of tasks) {
+    for (const document of task.supportingDocuments ?? []) {
+      try {
+        const path = resolveCorpusPath(plan, args.state, document);
+        if (path !== plan.source.planPath) {
+          supportingPaths.add(path);
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+  const sourceMaterial = [
+    ...tasks.map((task) => ({
+      path: `${task.sourceAnchor.path}:${task.sourceAnchor.lineNumber}`,
+      content: task.sourceBlock,
+    })),
+    ...[...supportingPaths].map((path) => ({
+      path,
+      content: readFileSync(path, "utf-8"),
+    })),
+  ];
   const priorCheckpoints = Object.fromEntries(
     tasks.flatMap((task) => {
       const runtime = args.state.tasks[task.id];

@@ -52,8 +52,8 @@ function planFor(directory: string): ExecutionPlan {
     {
       version: 1,
       tasks: [
-        plannerTask("first", 1, "First task", planPath),
-        plannerTask("second", 2, "Second task", planPath),
+        plannerTask("first", 1, "First task"),
+        plannerTask("second", 2, "Second task"),
       ],
       workstreams: [
         {
@@ -78,18 +78,12 @@ function planFor(directory: string): ExecutionPlan {
   return result.value;
 }
 
-function plannerTask(
-  id: string,
-  planIndex: number,
-  title: string,
-  path: string,
-) {
+function plannerTask(id: string, planIndex: number, title: string) {
   return {
     id,
     planIndex,
     title,
     dependsOn: [],
-    sourcePaths: [path],
     compiledContract: {
       objective: `Implement ${title}.`,
       inScope: ["Required behavior"],

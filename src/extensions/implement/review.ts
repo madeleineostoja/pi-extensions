@@ -218,15 +218,7 @@ export function buildReviewPacket(args: {
       ? { previousCandidate: args.state.candidates[review.previousCandidateId] }
       : {}),
     contracts,
-    sourceMaterial: [
-      ...new Set(
-        contracts.flatMap((task) =>
-          task.sourcePaths.map((sourcePath) =>
-            resolveCorpusPath(args.state, args.plan, sourcePath),
-          ),
-        ),
-      ),
-    ].map((path) => ({ path, content: readFileSync(path, "utf-8") })),
+    sourceMaterial: sourceMaterial(args.state, args.plan, contracts),
     checkpoints,
     satisfiedEvidence,
     ...(candidate.implementationEvidence
@@ -246,6 +238,36 @@ export function buildReviewPacket(args: {
       ? { latestCorrection: review.latestCorrection }
       : {}),
   };
+}
+
+function sourceMaterial(
+  state: RunState,
+  plan: ExecutionPlan,
+  contracts: ExecutionPlan["tasks"],
+): Array<{ path: string; content: string }> {
+  const supportingPaths = new Set<string>();
+  for (const task of contracts) {
+    for (const document of task.supportingDocuments ?? []) {
+      try {
+        const path = resolveCorpusPath(state, plan, document);
+        if (path !== plan.source.planPath) {
+          supportingPaths.add(path);
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+  return [
+    ...contracts.map((task) => ({
+      path: `${task.sourceAnchor.path}:${task.sourceAnchor.lineNumber}`,
+      content: task.sourceBlock,
+    })),
+    ...[...supportingPaths].map((path) => ({
+      path,
+      content: readFileSync(path, "utf-8"),
+    })),
+  ];
 }
 
 export function buildSourceReviewWorkerPacket(args: {

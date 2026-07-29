@@ -45,7 +45,7 @@ function fakeLease(root: string): CheckoutLeaseCapability {
 }
 
 describe("workstream packet", () => {
-  it("materializes ordered contracts and selected source material without Git", async () => {
+  it("embeds task blocks and ignores non-corpus document hints without Git", async () => {
     const root = mkdtempSync(join(tmpdir(), "pipkin-implement-packet-"));
     roots.add(root);
     const planPath = join(root, "plan.md");
@@ -65,7 +65,8 @@ describe("workstream packet", () => {
           planIndex: index + 1,
           title,
           dependsOn: [],
-          sourcePaths: [planPath],
+          supportingDocuments:
+            index === 0 ? ["ai/src/evals/scorers/scorer-configuration.ts"] : [],
           compiledContract: {
             objective: `Implement ${title}.`,
             inScope: [title],
@@ -131,7 +132,8 @@ describe("workstream packet", () => {
 
     expect(packet.tasks.map((task) => task.id)).toEqual(["first", "second"]);
     expect(packet.sourceMaterial).toEqual([
-      { path: realpathSync(planPath), content },
+      { path: `${realpathSync(planPath)}:5`, content: "- [ ] First" },
+      { path: `${realpathSync(planPath)}:6`, content: "- [ ] Second\n" },
     ]);
   });
 });

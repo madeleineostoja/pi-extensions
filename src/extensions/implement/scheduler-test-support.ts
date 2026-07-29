@@ -23,7 +23,6 @@ function plannerTask(
   id: string,
   planIndex: number,
   title: string,
-  path: string,
   dependsOn: string[] = [],
 ) {
   return {
@@ -31,7 +30,6 @@ function plannerTask(
     planIndex,
     title,
     dependsOn,
-    sourcePaths: [path],
     compiledContract: {
       objective: `Implement ${title}.`,
       inScope: ["Required behavior"],
@@ -59,14 +57,8 @@ export function planFor(
     {
       version: 1,
       tasks: [
-        plannerTask("first", 1, "First task", planPath),
-        plannerTask(
-          "second",
-          2,
-          "Second task",
-          planPath,
-          independent ? [] : ["first"],
-        ),
+        plannerTask("first", 1, "First task"),
+        plannerTask("second", 2, "Second task", independent ? [] : ["first"]),
       ],
       workstreams: [
         {

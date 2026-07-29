@@ -18,7 +18,7 @@ const strictExecutionTaskSchema = Type.Object(
     planIndex: Type.Integer({ minimum: 1 }),
     title: nonEmptyString(),
     dependsOn: Type.Array(nonEmptyString()),
-    sourcePaths: Type.Array(nonEmptyString(), { minItems: 1 }),
+    supportingDocuments: Type.Optional(Type.Array(nonEmptyString())),
     compiledContract: strictCompiledContractSchema,
   },
   { additionalProperties: false },

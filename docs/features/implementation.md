@@ -31,7 +31,7 @@ Only unchecked tasks execute. A plan with no unchecked tasks is a no-op.
 
 Pipkin follows ordinary local Markdown links recursively and freezes the reachable documents as the planning and review corpus. This lets a concise checklist point to designs and acceptance criteria without pasting everything into each task.
 
-The corpus is bounded to 50 files and 200,000 characters. Missing, unreadable, empty, escaping, or invalid local Markdown targets block the run. Images, external URLs, fragment-only links, and non-Markdown files are not added to the corpus.
+The corpus is bounded to 50 files and 200,000 characters. Missing, unreadable, empty, escaping, or invalid local Markdown targets block the run. Images, external URLs, fragment-only links, and non-Markdown files are not added to the corpus. Code paths, proposed files, URLs, tickets, and other pointers in plan text remain ordinary task instructions; they do not need to be corpus documents.
 
 ## Start a run
 

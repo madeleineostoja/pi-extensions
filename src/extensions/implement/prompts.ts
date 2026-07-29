@@ -6,18 +6,6 @@ import type {
   InitialSourceReviewPacket,
 } from "./review.js";
 
-export type WorkstreamImplementerPromptTask = {
-  id: string;
-  title: string;
-  objective: string;
-  inScope: string[];
-  acceptanceCriteria: string[];
-  outOfScope: string[];
-  sourcePaths: string[];
-  implementationNotes?: string;
-  verificationGuidance?: string;
-};
-
 type Finding = {
   id: string;
   summary: string;
@@ -32,7 +20,7 @@ export function buildWorkstreamImplementerPrompt(
   const tasks = packet.tasks
     .map(
       (task, index) =>
-        `### ${index + 1}. ${task.id}: ${task.title}\n\nObjective: ${task.compiledContract.objective}\n\nIn scope:\n${task.compiledContract.inScope.map((item) => `- ${item}`).join("\n")}\n\nAcceptance criteria:\n${task.compiledContract.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}\n\nOut of scope:\n${task.compiledContract.outOfScope.map((item) => `- ${item}`).join("\n")}\n\nSelected source files:\n${task.sourcePaths.map((path) => `- ${path}`).join("\n")}${task.compiledContract.implementationNotes ? `\n\nImplementation notes: ${task.compiledContract.implementationNotes}` : ""}${task.compiledContract.verificationGuidance ? `\n\nVerification guidance: ${task.compiledContract.verificationGuidance}` : ""}`,
+        `### ${index + 1}. ${task.id}: ${task.title}\n\nObjective: ${task.compiledContract.objective}\n\nIn scope:\n${task.compiledContract.inScope.map((item) => `- ${item}`).join("\n")}\n\nAcceptance criteria:\n${task.compiledContract.acceptanceCriteria.map((item) => `- ${item}`).join("\n")}\n\nOut of scope:\n${task.compiledContract.outOfScope.map((item) => `- ${item}`).join("\n")}${task.supportingDocuments?.length ? `\n\nSupporting requirement documents:\n${task.supportingDocuments.map((path) => `- ${path}`).join("\n")}` : ""}${task.compiledContract.implementationNotes ? `\n\nImplementation notes: ${task.compiledContract.implementationNotes}` : ""}${task.compiledContract.verificationGuidance ? `\n\nVerification guidance: ${task.compiledContract.verificationGuidance}` : ""}`,
     )
     .join("\n\n");
   const material = packet.sourceMaterial
@@ -45,7 +33,7 @@ export function buildWorkstreamImplementerPrompt(
     ? packet.recoveryObligations.map((item) => `- ${item}`).join("\n")
     : "- Preserve and build on every committed checkpoint listed below.";
   const comparison = `git diff --stat ${packet.baseSha}..HEAD and git diff --name-status ${packet.baseSha}..HEAD, then inspect scoped per-file diffs with git diff ${packet.baseSha}..HEAD -- <path>`;
-  return `You are the Pipkin Implement implementer for one ordered workstream. Work only in this assigned Git worktree:\n\n  ${packet.workspace.path}\n\n${packet.workspace.mutationBoundary}\n\nImplement every ordered task contract as one coherent invocation. Start by running ${comparison}; do not dump the full range into context. Satisfy the contracts with the smallest coherent change that fits the repository's existing architecture. Inspect relevant nearby code and available project or ecosystem capabilities before adding custom mechanisms. Do not add speculative flexibility, compatibility, configuration, or adjacent cleanup. Prefer a checkpoint after a task only when it leaves the workstream coherent; tightly coupled tasks may share one checkpoint, and never manufacture administrative commits. Later correction commits may change earlier task work. Your candidate must descend from base ${packet.baseSha} and remain coherent and safe to publish, even when a dependent workstream will consume its contract. Do not modify source plan or other protected artifacts.\n\n## Prior committed checkpoints\n\n${prior || "None."}\n\n## Recovery obligations\n\n${obligations}\n\n## Ordered task contracts\n\n${tasks}\n\n## Selected immutable source material\n\n${material || "No additional material was selected."}\n\nBefore completion, inspect the scoped cumulative changes and remove abandoned helpers, redundant guards, duplicate tests, temporary compatibility paths, and other implementation residue not needed for the contracts, while preserving required behavior and risk controls.
+  return `You are the Pipkin Implement implementer for one ordered workstream. Work only in this assigned Git worktree:\n\n  ${packet.workspace.path}\n\n${packet.workspace.mutationBoundary}\n\nImplement every ordered task contract as one coherent invocation. Start by running ${comparison}; do not dump the full range into context. Satisfy the contracts with the smallest coherent change that fits the repository's existing architecture. Inspect relevant nearby code and available project or ecosystem capabilities before adding custom mechanisms. Do not add speculative flexibility, compatibility, configuration, or adjacent cleanup. Prefer a checkpoint after a task only when it leaves the workstream coherent; tightly coupled tasks may share one checkpoint, and never manufacture administrative commits. Later correction commits may change earlier task work. Your candidate must descend from base ${packet.baseSha} and remain coherent and safe to publish, even when a dependent workstream will consume its contract. Do not modify source plan or other protected artifacts.\n\n## Prior committed checkpoints\n\n${prior || "None."}\n\n## Recovery obligations\n\n${obligations}\n\n## Ordered task contracts\n\n${tasks}\n\n## Task source material\n\n${material}\n\nBefore completion, inspect the scoped cumulative changes and remove abandoned helpers, redundant guards, duplicate tests, temporary compatibility paths, and other implementation residue not needed for the contracts, while preserving required behavior and risk controls.
 
 Submit the typed completion as your final action. For every task return exactly one taskCompletions entry: use kind \`checkpoint\` for changed tasks and include a reachable checkpoint SHA only when an intermediate commit is useful, or use kind \`already_satisfied\` with concrete repository-state evidence. Changed tasks without an explicit checkpoint use the final candidate tip. If any tracked work changed, return outcome \`changed\` and candidateTip equal to the final committed HEAD. If all tasks were already satisfied, return outcome \`already_satisfied\` and omit candidateTip. Include at least one concise verification statement describing what you checked and the outcome. Verification may use tests, static analysis, direct inspection, or other appropriate evidence; it does not require a shell command. Include uncertainty when applicable.`;
 }
