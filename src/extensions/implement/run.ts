@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type {
   ExtensionAPI,
@@ -19,10 +18,7 @@ import { ExecGitClient } from "./git.js";
 import { RuntimeSubagentClient, type SubagentClient } from "./subagents.js";
 import { spawnValidatedWorker } from "./worker-invocation.js";
 import { runProjection } from "./projection-runner.js";
-import {
-  createCheckboxProjectionIntent,
-  resumeCheckboxProjection,
-} from "./projection.js";
+import { createCheckboxProjectionIntent } from "./projection.js";
 import { runPublication } from "./publication.js";
 import {
   completeWholePlanRun,
@@ -30,8 +26,11 @@ import {
   runWholePlanReview,
 } from "./whole-plan-review.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
-import { assertProspectiveRunPreflight } from "./controls.js";
-import { canonicalPath, sha256 } from "./source-integrity.js";
+import {
+  assertNoFailedRuns,
+  assertProspectiveRunPreflight,
+} from "./controls.js";
+import { sha256 } from "./source-integrity.js";
 import {
   runWorkstreamCandidate,
   TargetPreconditionError,
@@ -43,16 +42,12 @@ import {
   SchedulerActor,
   type SchedulerActorOptions,
 } from "./scheduler-actor.js";
-import { reduceRunEvent } from "./scheduler.js";
 import {
   acquireCheckoutLease,
-  checkoutPaths,
   createPlanningRun,
-  loadRunState,
   makeRunId,
   protectedArtifactsMatch,
   sourceIdentityForPlanning,
-  sourceIdentityMatches,
   type CheckoutLeaseCapability,
   type RunState,
   RunStore,
@@ -94,6 +89,7 @@ export async function startRun(args: {
   });
   try {
     await assertProspectiveRunPreflight(git);
+    assertNoFailedRuns(checkoutRoot);
     const [baseSha, branch] = await Promise.all([
       git.head(),
       git.currentBranch(),
@@ -148,219 +144,6 @@ export async function startRun(args: {
   }
 }
 
-export async function resumeRun(args: {
-  pi: ExtensionAPI;
-  ctx: ExtensionCommandContext;
-  planPath: string;
-  runId: string;
-  roles: ImplementRoles;
-  onTransition?: SchedulerActorOptions["onTransition"];
-}): Promise<ActiveRun> {
-  const planPath = resolve(args.ctx.cwd, args.planPath);
-  const git = new ExecGitClient(args.ctx.cwd);
-  const [checkoutRoot, checkoutIdentity] = await Promise.all([
-    git.root(),
-    git.checkoutIdentity(),
-  ]);
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(args.runId)) {
-    throw new Error(
-      "Run ID is invalid; inspect or remove historical artifacts manually.",
-    );
-  }
-  const runPath = join(checkoutPaths(checkoutRoot).runs, args.runId);
-  if (!existsSync(join(runPath, "run-state.json"))) {
-    throw new Error(
-      `Run ${args.runId} is unavailable in this checkout; inspect or remove its artifacts manually.`,
-    );
-  }
-  const retained = loadRunState(join(runPath, "run-state.json"));
-  if (
-    retained.run.checkout.root !== checkoutRoot ||
-    retained.run.checkout.gitDir !== checkoutIdentity
-  ) {
-    throw new Error(
-      "Run belongs to a different checkout; inspect it from that checkout.",
-    );
-  }
-  assertRunCanResume(retained.phase);
-  const lease = await acquireCheckoutLease({
-    checkoutRoot,
-    gitDir: checkoutIdentity,
-    runId: args.runId,
-    timeoutMs: 10_000,
-  });
-  try {
-    const store = RunStore.open(
-      lease,
-      join(lease.paths.runs, args.runId, "run-state.json"),
-    );
-    await recoverPublicationTransactions({ store, git });
-    await recoverProjectionTransactions({ store });
-    const current = store.read();
-    const content = await readText(planPath);
-    const parsed = parsePlan(planPath, content);
-    const materialStore = buildMaterialStore({
-      plan: parsed,
-      planPath,
-      repoRoot: checkoutRoot,
-    });
-    if (current.phase === "planning") {
-      const source = sourceIdentityForPlanning({
-        planPath,
-        planContent: content,
-        corpusFiles: materialStore.files.map((file) => ({
-          path: file.absolutePath,
-          hash: file.hash,
-        })),
-        uncheckedLineNumbers: parsed.tasks
-          .filter((task) => !task.checked)
-          .map((task) => task.lineNumber),
-      });
-      if (JSON.stringify(source) !== JSON.stringify(current.run.source)) {
-        throw new Error("Plan corpus changed; planning resume is unsafe.");
-      }
-    } else if (
-      !sourceIdentityMatches(current) ||
-      !protectedArtifactsMatch(current)
-    ) {
-      throw new Error(
-        "Plan corpus or protected artifacts changed; resume is unsafe.",
-      );
-    }
-    await assertResumeTargetBoundary(current, git);
-    const plan = readExecutionPlan(runPath);
-    if (current.phase !== "planning" && !plan) {
-      throw new Error(
-        "Bound run is missing execution-plan.json; inspect or remove it manually.",
-      );
-    }
-    const actor = createRuntime({
-      pi: args.pi,
-      ctx: args.ctx,
-      git,
-      store,
-      lease,
-      roles: args.roles,
-      plan: parsed,
-      materialStore,
-      checkoutIdentity,
-      baseSha: store.read().run.checkout.startHead,
-      onTransition: args.onTransition,
-    });
-    if (store.read().phase === "paused") {
-      await actor.resume();
-    }
-    await actor.start();
-    return { runId: args.runId, actor, lease, store };
-  } catch (error) {
-    await lease.release();
-    throw error;
-  }
-}
-
-export function assertRunCanResume(phase: RunState["phase"]): void {
-  if (phase === "completed") {
-    throw new Error(
-      "Completed runs cannot resume; use /implement cleanup <run-id> instead.",
-    );
-  }
-  if (phase === "blocked_safety") {
-    throw new Error(
-      "Safety-blocked runs cannot resume; use /implement cleanup <run-id> after manual recovery.",
-    );
-  }
-}
-
-async function recoverPublicationTransactions(args: {
-  store: RunStore;
-  git: ExecGitClient;
-}): Promise<void> {
-  for (const intent of Object.values(args.store.read().publication.intents)) {
-    const state = args.store.read();
-    const workstream =
-      intent.workstream.kind === "source"
-        ? state.workstreams.source[intent.workstream.id]
-        : state.workstreams.overall[intent.workstream.repairId];
-    if (workstream?.phase === "completed") {
-      continue;
-    }
-    const outcome = await new WriteAheadPublisher({
-      git: args.git,
-      checkoutRoot: state.run.checkout.root,
-      checkoutIdentity: state.run.checkout.gitDir,
-      protectedPaths: Object.keys(state.protectedArtifactHashes),
-    }).recover(intent);
-    if (outcome.kind === "published") {
-      if (!state.publication.receipts[intent.id]) {
-        const transition = reduceRunEvent(args.store.read(), {
-          kind: "publication_receipt_recorded",
-          receipt: outcome.receipt,
-        });
-        if (!transition.accepted) {
-          throw new Error(
-            transition.error ?? "Publication recovery receipt was rejected.",
-          );
-        }
-        const revision = args.store.read().revision;
-        await args.store.update(revision, () => transition.state);
-      }
-      continue;
-    }
-    if (
-      outcome.kind !== "retry_from_base" ||
-      state.publication.receipts[intent.id]
-    ) {
-      throw new Error(
-        outcome.kind === "safety_paused"
-          ? outcome.reason
-          : "Publication recovery could not prove an exact durable transaction state.",
-      );
-    }
-  }
-}
-
-export async function recoverProjectionTransactions(args: {
-  store: RunStore;
-}): Promise<void> {
-  const initial = args.store.read();
-  if (initial.projectionDebt.length === 0) {
-    return;
-  }
-  if (!projectionDebtMatchesIntent(initial)) {
-    throw new Error(
-      "Projection recovery requires each protected source artifact to match an exact retained intent side.",
-    );
-  }
-  for (const debt of initial.projectionDebt) {
-    const state = args.store.read();
-    if (!state.projectionDebt.some((item) => item.id === debt.id)) {
-      continue;
-    }
-    const outcome = resumeCheckboxProjection(state.run.checkout.root, debt);
-    if (outcome.kind === "safety_paused") {
-      throw new Error(`Projection recovery is unsafe: ${outcome.reason}`);
-    }
-    await args.store.recordProjection(state.revision, debt.taskIds, {
-      ...state.protectedArtifactHashes,
-      [debt.canonicalPath]: outcome.protectedHash,
-    });
-    const recorded = args.store.read();
-    await args.store.update(recorded.revision, (current) => ({
-      ...current,
-      projectionDebt: current.projectionDebt.filter(
-        (item) => item.id !== debt.id,
-      ),
-    }));
-  }
-}
-
-async function assertResumeTargetBoundary(
-  state: RunState,
-  git: ExecGitClient,
-): Promise<void> {
-  await captureTargetBoundary(state, git);
-}
-
 async function captureTargetBoundary(
   state: RunState,
   git: ExecGitClient,
@@ -409,7 +192,7 @@ async function captureTargetBoundary(
   }
   if (issues.length > 0) {
     throw new TargetPreconditionError(
-      `Managed work is paused until the target checkout boundary is restored:\n${issues.join("\n")}`,
+      `Managed work cannot continue until the target checkout boundary is restored:\n${issues.join("\n")}`,
     );
   }
   return JSON.stringify({
@@ -442,42 +225,17 @@ function expectedTargetHead(state: RunState): string {
   return tip?.publishedCommitSha ?? state.run.checkout.startHead;
 }
 
-function projectionDebtMatchesIntent(state: RunState): boolean {
-  if (state.projectionDebt.length === 0) {
-    return false;
-  }
-  const projectedPaths = new Set(
-    state.projectionDebt.map((debt) => canonicalPath(debt.canonicalPath)),
-  );
-  return (
-    state.projectionDebt.every((debt) => {
-      try {
-        const content = readFileSync(debt.canonicalPath, "utf-8");
-        const hash = sha256(content);
-        return (
-          (hash === debt.expectedOldHash &&
-            content === debt.expectedOldContent) ||
-          (hash === debt.expectedNewHash && content === debt.expectedNewContent)
-        );
-      } catch {
-        return false;
-      }
-    }) &&
-    state.run.source.corpus
-      .filter((artifact) => !projectedPaths.has(canonicalPath(artifact.path)))
-      .every((artifact) => {
-        try {
-          return sha256(readFileSync(artifact.path, "utf-8")) === artifact.hash;
-        } catch {
-          return false;
-        }
-      })
-  );
-}
-
-export async function stopRun(active: ActiveRun): Promise<void> {
+export async function stopRun(
+  active: ActiveRun,
+  category: NonNullable<RunState["failure"]>["category"] = "stopped",
+): Promise<void> {
   try {
-    await active.actor.stop("Stopped by user.");
+    await active.actor.stop(
+      category === "interrupted"
+        ? "Session ended before run completion."
+        : "Stopped by user.",
+      category,
+    );
   } finally {
     await active.lease.release();
   }
@@ -849,8 +607,10 @@ export function createRuntime(args: {
             leaseId: effect.leaseId,
           });
           await dispatch({
-            kind: "safety_paused",
+            kind: "failure_requested",
+            category: "safety",
             reason: error instanceof Error ? error.message : String(error),
+            now: new Date().toISOString(),
           });
           return;
         }

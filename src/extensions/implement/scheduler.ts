@@ -208,11 +208,13 @@ export type SchedulerEvent =
           };
     }
   | { kind: "process_abandoned"; leaseId: string }
-  | { kind: "stop_requested"; reason?: string }
-  | { kind: "run_paused"; reason?: string }
-  | { kind: "resume_requested" }
-  | { kind: "safety_blocked"; reason: string }
-  | { kind: "safety_paused"; reason: string }
+  | {
+      kind: "failure_requested";
+      category: NonNullable<RunState["failure"]>["category"];
+      reason: string;
+      now: string;
+    }
+  | { kind: "run_failed" }
   | { kind: "run_completed"; targetSha: string; targetTreeSha: string }
   | {
       kind: "projection_debt_recorded";
@@ -334,6 +336,28 @@ export function selectReadyRuntimeWorkstreams(
   return [];
 }
 
+function failRun(
+  state: RunState,
+  category: NonNullable<RunState["failure"]>["category"],
+  reason: string,
+  at: string,
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
+  if (
+    state.phase !== "planning" &&
+    state.phase !== "running" &&
+    state.phase !== "whole_plan_review"
+  ) {
+    return reject("only an active run can enter orderly failure");
+  }
+  state.failure = { category, reason, originPhase: state.phase, at };
+  if (state.wholePlanReview.recovery?.status === "running") {
+    state.wholePlanReview.recovery.status = "open";
+  }
+  state.phase = "stopping";
+  return { state, effects: [], accepted: true };
+}
+
 export function reduceRunEvent(
   input: RunState,
   event: SchedulerEvent,
@@ -351,11 +375,8 @@ export function reduceRunEvent(
     accepted: true,
   });
 
-  if (state.phase === "blocked_safety" || state.phase === "completed") {
+  if (state.phase === "failed" || state.phase === "completed") {
     return reject("terminal runs do not accept lifecycle events");
-  }
-  if (state.phase === "paused" && event.kind !== "resume_requested") {
-    return reject("paused runs must resume before accepting lifecycle events");
   }
   if (state.phase === "stopping" && !isStoppingSettlementEvent(event)) {
     return reject("stopping runs only settle owned processes");
@@ -366,9 +387,13 @@ export function reduceRunEvent(
       if (state.phase !== "planning") {
         return reject("only a planning run can retain a planner failure");
       }
-      state.pause = { resumePhase: "planning", reason: event.reason };
-      state.phase = "paused";
-      return accept();
+      return failRun(
+        state,
+        "runtime",
+        event.reason,
+        new Date().toISOString(),
+        reject,
+      );
 
     case "workstreams_selected": {
       if (hasIntegrationLease(state)) {
@@ -582,11 +607,13 @@ export function reduceRunEvent(
         recovery,
       };
       if (recovery.executionFailures >= 3) {
-        state.pause = {
-          resumePhase: "whole_plan_review",
-          reason: "Whole-plan reviewer failed three consecutive times.",
-        };
-        state.phase = "paused";
+        return failRun(
+          state,
+          "recovery_exhausted",
+          "Whole-plan reviewer failed three consecutive times.",
+          new Date().toISOString(),
+          reject,
+        );
       }
       return accept();
 
@@ -622,13 +649,14 @@ export function reduceRunEvent(
       recovery.actions.push(event.action);
       recovery.executionFailures = 0;
       if (event.action.kind === "no_safe_action") {
-        state.pause = {
-          resumePhase: "whole_plan_review",
-          reason: event.action.evidence,
-        };
-        state.phase = "paused";
-        recovery.status = "open";
-        return accept();
+        recovery.status = "completed";
+        return failRun(
+          state,
+          "recovery_exhausted",
+          event.action.evidence,
+          new Date().toISOString(),
+          reject,
+        );
       }
       if (event.action.kind === "retry") {
         recovery.status = "completed";
@@ -650,11 +678,13 @@ export function reduceRunEvent(
       recovery.executionFailures++;
       recovery.status = "open";
       if (recovery.executionFailures >= 3) {
-        state.pause = {
-          resumePhase: "whole_plan_review",
-          reason: "Whole-plan recovery worker failed three consecutive times.",
-        };
-        state.phase = "paused";
+        return failRun(
+          state,
+          "recovery_exhausted",
+          "Whole-plan recovery worker failed three consecutive times.",
+          new Date().toISOString(),
+          reject,
+        );
       }
       return accept();
     }
@@ -998,16 +1028,14 @@ export function reduceRunEvent(
         episode.actions.push(event.action);
         episode.executionFailures = 0;
         delete state.processLeases[lease.id];
-        episode.status = "paused";
-        state.pause = {
-          resumePhase:
-            state.phase === "whole_plan_review"
-              ? "whole_plan_review"
-              : "running",
-          reason: event.action.evidence,
-        };
-        state.phase = "stopping";
-        return accept();
+        episode.status = "completed";
+        return failRun(
+          state,
+          "recovery_exhausted",
+          event.action.evidence,
+          new Date().toISOString(),
+          reject,
+        );
       }
       if (event.action.outcome !== "completed") {
         return reject("completed recovery requires a completed safe action");
@@ -1113,16 +1141,14 @@ export function reduceRunEvent(
       });
       delete state.processLeases[lease.id];
       if (executionFailures >= 3) {
-        episode.status = "paused";
-        state.pause = {
-          resumePhase:
-            state.phase === "whole_plan_review"
-              ? "whole_plan_review"
-              : "running",
-          reason:
-            "Recovery worker failed three consecutive times after Pi retries settled.",
-        };
-        state.phase = "paused";
+        episode.status = "completed";
+        return failRun(
+          state,
+          "recovery_exhausted",
+          "Recovery worker failed three consecutive times after Pi retries settled.",
+          event.now,
+          reject,
+        );
       }
       return accept();
     }
@@ -1766,7 +1792,7 @@ export function reduceRunEvent(
             outcome: "interrupted",
             summary: "Recovery process settled without a completion result.",
             evidence:
-              "The actor retained the candidate and will resume recovery.",
+              "The actor retained the candidate for the next live recovery attempt.",
             at: lease.acquiredAt,
           });
         }
@@ -1774,69 +1800,17 @@ export function reduceRunEvent(
       return accept();
     }
 
-    case "stop_requested":
-      if (
-        state.phase !== "planning" &&
-        state.phase !== "running" &&
-        state.phase !== "whole_plan_review"
-      ) {
-        return reject("only an active run can stop");
-      }
-      state.pause = {
-        resumePhase: state.phase,
-        ...(event.reason ? { reason: event.reason } : {}),
-      };
-      if (state.wholePlanReview.recovery?.status === "running") {
-        state.wholePlanReview.recovery.status = "open";
-      }
-      state.phase = "stopping";
-      return accept();
+    case "failure_requested":
+      return failRun(state, event.category, event.reason, event.now, reject);
 
-    case "run_paused":
+    case "run_failed":
       if (
         state.phase !== "stopping" ||
         Object.keys(state.processLeases).length > 0
       ) {
-        return reject("run cannot pause before owned processes settle");
+        return reject("run cannot fail before owned processes settle");
       }
-      state.phase = "paused";
-      return accept();
-
-    case "resume_requested":
-      if (state.phase !== "paused") {
-        return reject("only a paused run can resume");
-      }
-      state.phase = state.pause!.resumePhase;
-      for (const episode of Object.values(state.recoveryEpisodes)) {
-        if (episode.status === "paused") {
-          episode.status = "open";
-          episode.executionFailures = 0;
-        }
-      }
-      delete state.pause;
-      return accept();
-
-    case "safety_blocked":
-      if (Object.keys(state.processLeases).length > 0) {
-        return reject("safety block requires owned processes to settle first");
-      }
-      state.phase = "blocked_safety";
-      state.terminalReason = event.reason;
-      return accept();
-
-    case "safety_paused":
-      if (
-        !["running", "whole_plan_review"].includes(state.phase) ||
-        Object.keys(state.processLeases).length > 0
-      ) {
-        return reject("safety pause requires settled active run processes");
-      }
-      state.pause = {
-        resumePhase:
-          state.phase === "whole_plan_review" ? "whole_plan_review" : "running",
-        reason: event.reason,
-      };
-      state.phase = "paused";
+      state.phase = "failed";
       return accept();
 
     case "run_completed":
@@ -2466,7 +2440,7 @@ export function isStoppingSettlementEvent(event: SchedulerEvent): boolean {
     "implementation_completed",
     "implementation_failed",
     "effect_failed",
-    "run_paused",
+    "run_failed",
   ].includes(event.kind);
 }
 

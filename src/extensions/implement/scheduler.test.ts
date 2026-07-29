@@ -333,10 +333,10 @@ describe("scheduler publication and whole-plan lifecycle", () => {
     const interrupted = reduceRunEvent(requested.state, {
       kind: "whole_plan_recovery_abandoned",
     });
-    const resumed = reduceRunEvent(interrupted.state, {
+    const continued = reduceRunEvent(interrupted.state, {
       kind: "whole_plan_recovery_requested",
     });
-    const completed = reduceRunEvent(resumed.state, {
+    const completed = reduceRunEvent(continued.state, {
       kind: "whole_plan_recovery_completed",
       action: {
         kind: "retry",
@@ -348,7 +348,7 @@ describe("scheduler publication and whole-plan lifecycle", () => {
     });
 
     expect(requested.effects).toEqual([{ kind: "run_whole_plan_recovery" }]);
-    expect(resumed.effects).toEqual([{ kind: "run_whole_plan_recovery" }]);
+    expect(continued.effects).toEqual([{ kind: "run_whole_plan_recovery" }]);
     expect(completed.state.wholePlanReview).toMatchObject({
       status: "pending",
       recovery: {

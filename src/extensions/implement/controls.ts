@@ -14,6 +14,11 @@ import {
   type CheckoutLeaseCapability,
   type RunState,
 } from "./store.js";
+import { reduceRunEvent } from "./scheduler.js";
+import {
+  settleProjectionTransactions,
+  settlePublicationTransactions,
+} from "./transaction-settlement.js";
 
 export type RunListing =
   | { kind: "run"; runId: string; state: RunState }
@@ -46,9 +51,6 @@ export function formatStatus(state: RunState): string {
   const activeRecovery = Object.values(state.recoveryEpisodes).filter(
     (episode) => episode.status === "open",
   );
-  const pausedRecovery = Object.values(state.recoveryEpisodes).filter(
-    (episode) => episode.status === "paused",
-  );
   const phases = [
     ...Object.values(state.workstreams.source).map(
       (workstream) => `${workstream.id}: ${workstream.phase}`,
@@ -70,15 +72,18 @@ export function formatStatus(state: RunState): string {
     `Workstreams: ${phases || "none"}`,
     `Active processes: ${activeProcesses || "none"}`,
     `Open findings: ${openFindings}`,
-    `Active recovery: ${state.phase === "paused" ? 0 : activeRecovery.length}`,
-    `Paused recovery: ${pausedRecovery.length}`,
+    `Active recovery: ${state.phase === "failed" ? 0 : activeRecovery.length}`,
     ...(latestGate
       ? [`Latest gate: ${latestGate.kind} ${latestGate.outcome}`]
       : []),
     `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted`,
     `Debt: ${state.projectionDebt.length > 0 ? `projection debt ${state.projectionDebt.length}` : "none"}`,
-    ...(state.pause?.reason ? [`Pause: ${state.pause.reason}`] : []),
-    ...(state.terminalReason ? [`Safety: ${state.terminalReason}`] : []),
+    ...(state.failure
+      ? [
+          `Failure: ${state.failure.category} · ${state.failure.reason}`,
+          `Failure origin: ${state.failure.originPhase} at ${state.failure.at}`,
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -167,19 +172,27 @@ export async function cleanupWithLease(args: {
 }): Promise<string[]> {
   const store = openExactRun(args.lease, args.runId);
   await assertCurrentRunAuthority(store, args.git, args.lease);
+  await terminalizeInterruptedRun(store);
+  await settlePublicationTransactions({
+    store,
+    git: args.git,
+  });
+  await settleProjectionTransactions({ store });
   const state = store.read();
   const allowedPhases = args.allowIncomplete
-    ? ["completed", "paused", "blocked_safety"]
+    ? ["completed", "failed"]
     : ["completed"];
   if (!allowedPhases.includes(state.phase)) {
     throw new Error(
       args.allowIncomplete
-        ? "Only completed, paused, or safety-blocked runs may be cleaned up."
+        ? "Only completed or failed runs may be cleaned up."
         : "Only completed runs may be destructively cleaned.",
     );
   }
   if (Object.keys(state.processLeases).length > 0) {
-    throw new Error("Stop active processes before cleaning up this run.");
+    throw new Error(
+      "Run retains unresolved process ownership and cannot be cleaned up.",
+    );
   }
   await sweepOwnedRunResources({ lease: args.lease, store, git: args.git });
   const projected = projectedArtifactPaths(state);
@@ -212,6 +225,63 @@ export async function cleanupRun(args: {
     });
   } finally {
     await lease.release();
+  }
+}
+
+export async function terminalizeInterruptedRun(
+  store: RunStore,
+): Promise<void> {
+  let state = store.read();
+  if (["planning", "running", "whole_plan_review"].includes(state.phase)) {
+    const transition = reduceRunEvent(state, {
+      kind: "failure_requested",
+      category: "interrupted",
+      reason: "Run was retained after its actor ended.",
+      now: new Date().toISOString(),
+    });
+    if (!transition.accepted) {
+      throw new Error(
+        transition.error ?? "Retained run could not be terminalized.",
+      );
+    }
+    await store.update(state.revision, () => transition.state);
+    state = store.read();
+  }
+  if (state.phase !== "stopping") {
+    return;
+  }
+  for (const lease of Object.values(state.processLeases)) {
+    const transition = reduceRunEvent(store.read(), {
+      kind: "process_abandoned",
+      leaseId: lease.id,
+    });
+    if (!transition.accepted) {
+      throw new Error(
+        transition.error ?? "Retained process lease could not be settled.",
+      );
+    }
+    await store.update(store.read().revision, () => transition.state);
+  }
+  state = store.read();
+  if (state.phase === "stopping") {
+    const transition = reduceRunEvent(state, { kind: "run_failed" });
+    if (!transition.accepted) {
+      throw new Error(
+        transition.error ?? "Retained run could not be finalized.",
+      );
+    }
+    await store.update(state.revision, () => transition.state);
+  }
+}
+
+export function assertNoFailedRuns(checkoutRoot: string): void {
+  const retained = listCheckoutRuns(checkoutRoot).find(
+    (run) => run.kind === "run" && run.state.phase !== "completed",
+  );
+  if (retained) {
+    throw new Error(
+      `Run ${retained.runId} is retained in this checkout; inspect and clean it up before starting a new run.`,
+    );
   }
 }
 

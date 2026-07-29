@@ -2,11 +2,11 @@ export type ParsedCommand =
   | {
       kind: "execution";
       planPath: string;
-      recovery?: { kind: "resume" | "start-over"; runId: string };
+      recovery?: { kind: "start-over"; runId: string };
     }
   | {
       kind: "control";
-      name: "status" | "resume" | "stop" | "cleanup" | "inspect";
+      name: "status" | "stop" | "cleanup" | "inspect";
       runId?: string;
     }
   | { kind: "error"; message: string };
@@ -14,25 +14,14 @@ export type ParsedCommand =
 export function parseCommand(input: string): ParsedCommand {
   const [subcommand, ...args] = tokenize(input);
 
-  if (
-    (subcommand === "resume" || subcommand === "restart") &&
-    args.length === 2
-  ) {
+  if (subcommand === "restart" && args.length === 2) {
     return {
       kind: "execution",
       planPath: args[0]!,
-      recovery: {
-        kind: subcommand === "resume" ? "resume" : "start-over",
-        runId: args[1]!,
-      },
+      recovery: { kind: "start-over", runId: args[1]! },
     };
   }
-  if (
-    (subcommand === "status" ||
-      subcommand === "resume" ||
-      subcommand === "stop") &&
-    args.length === 0
-  ) {
+  if ((subcommand === "status" || subcommand === "stop") && args.length === 0) {
     return { kind: "control", name: subcommand };
   }
   if (
@@ -57,5 +46,5 @@ function tokenize(input: string): string[] {
 }
 
 export function usage(): string {
-  return "Usage: /implement <plan.md> | resume | resume <plan.md> <run-id> | restart <plan.md> <run-id> | status | inspect <run-id> | cleanup <run-id> | stop";
+  return "Usage: /implement <plan.md> | restart <plan.md> <completed-run-id> | status | inspect <run-id> | cleanup <run-id> | stop";
 }

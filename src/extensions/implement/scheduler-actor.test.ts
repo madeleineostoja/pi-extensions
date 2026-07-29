@@ -1,10 +1,6 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  publicationPreparationId,
-  stagingIdentity,
-} from "./candidate-replay.js";
 import { SchedulerActor } from "./scheduler-actor.js";
 import { reduceRunEvent } from "./scheduler.js";
 import {
@@ -14,11 +10,7 @@ import {
   deferred,
 } from "./scheduler-test-support.js";
 import type { RunState, RunStore } from "./store.js";
-import { within } from "./test-boundary.js";
-import {
-  TargetPreconditionError,
-  WorkstreamCandidateLifecycleError,
-} from "./workstream-candidate.js";
+import { WorkstreamCandidateLifecycleError } from "./workstream-candidate.js";
 import { WorkerPacketError } from "./worker-invocation.js";
 
 afterEach(cleanupSchedulerStores);
@@ -72,75 +64,7 @@ describe("scheduler actor safety boundaries", () => {
     expect(run.read().processLeases).toEqual({});
   });
 
-  it("pauses before managed work on target dirt and resumes after cleanup", async () => {
-    const run = await store();
-    const paused = deferred();
-    const started = deferred();
-    let dirty = true;
-    let attempts = 0;
-    const actor = new SchedulerActor({
-      store: run,
-      targetHead: async () => "base-sha",
-      captureTargetBoundary: async () => {
-        if (dirty) {
-          throw new TargetPreconditionError(
-            "Unsanctioned target changes: M package-lock.json",
-          );
-        }
-        return JSON.stringify({ head: "base-sha" });
-      },
-      onTransition: (_state, event) => {
-        if (event.kind === "safety_paused") {
-          paused.resolve();
-        }
-      },
-      executeEffect: async ({ effect, signal }) => {
-        if (effect.kind !== "run_implementation") {
-          return;
-        }
-        attempts += 1;
-        started.resolve();
-        await new Promise<void>((resolve) => {
-          signal.addEventListener("abort", () => resolve(), { once: true });
-        });
-      },
-    });
-
-    await actor.start();
-    await within("target-boundary safety pause", paused.promise, {
-      timeoutMs: 2_000,
-      diagnostics: () => JSON.stringify(run.read()),
-    });
-
-    expect(run.read()).toMatchObject({
-      phase: "paused",
-      pause: {
-        resumePhase: "running",
-        reason: "Unsanctioned target changes: M package-lock.json",
-      },
-      processLeases: {},
-    });
-    expect(attempts).toBe(0);
-    await expect(actor.resume()).rejects.toThrow("package-lock.json");
-    expect(run.read().phase).toBe("paused");
-    expect(attempts).toBe(0);
-
-    dirty = false;
-    await actor.resume();
-    await within("resumed implementation", started.promise, {
-      timeoutMs: 2_000,
-      diagnostics: () => JSON.stringify(run.read()),
-    });
-
-    expect(run.read()).toMatchObject({
-      phase: "running",
-      workstreams: { source: { "first-stream": { phase: "implementing" } } },
-    });
-    expect(attempts).toBe(1);
-    await actor.stop("test complete");
-  });
-
-  it("pauses a failed projection instead of relaunching it", async () => {
+  it("terminally fails a failed projection instead of relaunching it", async () => {
     const run = await store();
     const content =
       "# Plan\n\n## Tasks\n\n- [ ] First task\n- [ ] Second task\n";
@@ -170,13 +94,13 @@ describe("scheduler actor safety boundaries", () => {
         },
       ],
     }));
-    const paused = deferred();
+    const failed = deferred();
     let attempts = 0;
     const actor = new SchedulerActor({
       store: run,
       onTransition: (_state, event) => {
-        if (event.kind === "safety_paused") {
-          paused.resolve();
+        if (event.kind === "failure_requested") {
+          failed.resolve();
         }
       },
       executeEffect: async ({ effect }) => {
@@ -188,21 +112,17 @@ describe("scheduler actor safety boundaries", () => {
     });
 
     await actor.start();
-    await paused.promise;
+    await failed.promise;
 
     expect(run.read()).toMatchObject({
-      phase: "paused",
-      pause: {
-        resumePhase: "running",
-        reason: "projection store write failed",
-      },
+      phase: "stopping",
       projectionDebt: [{ id: "projection:run-1:first" }],
     });
     expect(attempts).toBe(1);
     await actor.stop("test complete");
   });
 
-  it("pauses a failed whole-plan closure instead of relaunching it", async () => {
+  it("terminally fails a failed whole-plan closure instead of relaunching it", async () => {
     let state = (await store()).read();
     state.phase = "whole_plan_review";
     for (const workstream of Object.values(state.workstreams.source)) {
@@ -228,13 +148,13 @@ describe("scheduler actor safety boundaries", () => {
         return structuredClone(state);
       },
     } as RunStore;
-    const paused = deferred();
+    const failed = deferred();
     let attempts = 0;
     const actor = new SchedulerActor({
       store: fakeStore,
       onTransition: (_state, event) => {
-        if (event.kind === "safety_paused") {
-          paused.resolve();
+        if (event.kind === "failure_requested") {
+          failed.resolve();
         }
       },
       executeEffect: async ({ effect }) => {
@@ -246,14 +166,11 @@ describe("scheduler actor safety boundaries", () => {
     });
 
     await actor.start();
-    await paused.promise;
+    await failed.promise;
+    await actor.settle();
 
     expect(state).toMatchObject({
-      phase: "paused",
-      pause: {
-        resumePhase: "whole_plan_review",
-        reason: "reviewed target moved before closure",
-      },
+      phase: "failed",
     });
     expect(attempts).toBe(1);
     await actor.stop("test complete");
@@ -261,7 +178,7 @@ describe("scheduler actor safety boundaries", () => {
 });
 
 describe("scheduler actor stop and reload lifecycle", () => {
-  it("aborts, settles, and pauses with retained workstreams requeued", async () => {
+  it("aborts, settles, and terminally fails with retained workstreams requeued", async () => {
     const run = await store();
     let aborted = false;
     const actor = new SchedulerActor({
@@ -288,7 +205,12 @@ describe("scheduler actor stop and reload lifecycle", () => {
 
     expect(aborted).toBe(true);
     expect(run.read()).toMatchObject({
-      phase: "paused",
+      phase: "failed",
+      failure: {
+        category: "stopped",
+        reason: "operator stopped the run",
+        originPhase: "running",
+      },
       workstreams: { source: { "first-stream": { phase: "queued" } } },
       processLeases: {},
     });
@@ -332,7 +254,7 @@ describe("scheduler actor stop and reload lifecycle", () => {
     await actor.stop("operator stopped the run");
 
     expect(run.read()).toMatchObject({
-      phase: "paused",
+      phase: "failed",
       processLeases: {},
       candidates: {
         "candidate:first-stream": { commitSha: "checkpoint:first-stream" },
@@ -363,7 +285,7 @@ describe("scheduler actor stop and reload lifecycle", () => {
     await actor.start();
     await actor.stop("operator stopped the run");
 
-    expect(run.read().phase).toBe("paused");
+    expect(run.read().phase).toBe("failed");
     expect(Object.values(run.read().recoveryEpisodes)).toContainEqual(
       expect.objectContaining({
         workspace: expect.objectContaining({
@@ -451,8 +373,7 @@ describe("scheduler actor stop and reload lifecycle", () => {
     await actor.settle();
 
     expect(run.read()).toMatchObject({
-      phase: "paused",
-      pause: { reason: "recovery safety boundary failed" },
+      phase: "failed",
       processLeases: {},
       workstreams: {
         source: { "second-stream": { phase: "candidate_ready" } },
@@ -485,64 +406,11 @@ describe("scheduler actor stop and reload lifecycle", () => {
 
     expect(aborted).toBe(true);
     expect(run.read()).toMatchObject({
-      phase: "paused",
-      pause: { resumePhase: "planning", reason: "operator stopped planning" },
+      phase: "failed",
     });
     expect(run.read().executionPlan).toBeUndefined();
   });
 
-  it("reconciles abandoned review leases without discarding their candidate", async () => {
-    const run = await store();
-    const selected = reduceRunEvent(run.read(), {
-      kind: "workstreams_selected",
-      now: "now",
-      baseShas: { "first-stream": "base-sha" },
-    });
-    const effect = selected.effects.find(
-      (effect) => effect.kind === "run_implementation",
-    );
-    if (!effect) {
-      throw new Error("Expected implementation effect.");
-    }
-    const leaseId = effect.leaseId;
-    const candidate = {
-      id: "candidate-1",
-      workstream: { kind: "source" as const, id: "first-stream" },
-      baseSha: "base-sha",
-      commitSha: "commit",
-      treeSha: "tree",
-    };
-    const completed = reduceRunEvent(selected.state, {
-      kind: "implementation_completed",
-      workstream: { kind: "source", id: "first-stream" },
-      leaseId,
-      outcome: {
-        kind: "candidate_ready",
-        candidate,
-        checkpoints: { first: "commit" },
-        satisfied: {},
-      },
-    });
-    const reviewing = reduceRunEvent(completed.state, {
-      kind: "review_requested",
-      workstream: { kind: "source", id: "first-stream" },
-      now: "now",
-    });
-    const revision = run.read().revision;
-    await run.update(revision, () => reviewing.state);
-
-    const actor = new SchedulerActor({ store: run });
-    await actor.start();
-
-    expect(run.read()).toMatchObject({
-      candidates: { "candidate-1": candidate },
-      workstreams: { source: { "first-stream": { phase: "candidate_ready" } } },
-      processLeases: {},
-    });
-  });
-});
-
-describe("scheduler actor recovery lifecycle", () => {
   it("retains a failed checkpoint through a successful implementation retry", async () => {
     const run = await store();
     const failed = deferred();
@@ -957,176 +825,7 @@ describe("scheduler actor scheduling and publication", () => {
     await actor.stop("test complete");
   });
 
-  it("finalizes a receipted publication after its abandoned lease is reconciled", async () => {
-    const run = await store();
-    const initial = run.read();
-    const candidateId = "candidate:first";
-    const intentId = "intent:first";
-    const preparationId = publicationPreparationId({
-      runId: "run-1",
-      candidateId,
-      candidateCommitSha: "commit-1",
-      targetBaseSha: "base-sha",
-    });
-    const staging = stagingIdentity({
-      runId: "run-1",
-      candidateId,
-      candidateCommitSha: "commit-1",
-      targetBaseSha: "base-sha",
-    });
-    const leaseId = "publication:run-1:2:0";
-    await run.update(initial.revision, (state) => ({
-      ...state,
-      tasks: {
-        ...state.tasks,
-        first: {
-          workstreamId: "first-stream",
-          phase: "checkpointed",
-          checkpoint: "checkpoint-1",
-        },
-      },
-      workstreams: {
-        ...state.workstreams,
-        source: {
-          ...state.workstreams.source,
-          "first-stream": {
-            ...state.workstreams.source["first-stream"]!,
-            phase: "publishing",
-            baseSha: "base-sha",
-            candidateId,
-          },
-        },
-      },
-      processLeases: {
-        [leaseId]: {
-          id: leaseId,
-          kind: "publication",
-          workstream: { kind: "source", id: "first-stream" },
-          candidateId,
-          publicationIntentId: intentId,
-          attempt: 1,
-          acquiredAt: "2026-01-01T00:00:00.000Z",
-        },
-      },
-      candidates: {
-        [candidateId]: {
-          id: candidateId,
-          workstream: { kind: "source", id: "first-stream" },
-          baseSha: "base-sha",
-          commitSha: "commit-1",
-          treeSha: "tree-1",
-        },
-      },
-      reviews: {
-        "source:first-stream": {
-          candidateId,
-          round: 0,
-          outstandingIds: [],
-          evidence: ["approved"],
-          observations: [],
-        },
-      },
-      publication: {
-        preparations: {
-          [preparationId]: {
-            id: preparationId,
-            candidateId,
-            candidateCommitSha: "commit-1",
-            targetBaseSha: "base-sha",
-            targetRef: "refs/heads/main",
-            preparedCommitSha: "commit-1",
-            preparedTreeSha: "tree-1",
-            stagingWorktree: join(
-              initial.run.checkout.root,
-              ".pi",
-              "pipkin",
-              "implement",
-              "worktrees",
-              "run-1",
-              staging.id,
-            ),
-            stagingBranch: staging.branchName,
-            replayPatchHash: "a".repeat(64),
-            changedPaths: ["first.txt"],
-            disposition: "same_base",
-            hookEvidence: "git commit completed with retained command evidence",
-            hookCommand: {
-              command: "git commit",
-              cwd: initial.run.checkout.root,
-              timedOut: false,
-              output: "",
-              exitCode: 0,
-            },
-          },
-        },
-        intents: {
-          [intentId]: {
-            id: intentId,
-            workstream: { kind: "source", id: "first-stream" },
-            candidateId,
-            preparationId,
-            targetBaseSha: "base-sha",
-            preparedCommitSha: "commit-1",
-            preparedTreeSha: "tree-1",
-            targetRef: "refs/heads/main",
-            protectedArtifactSnapshots: {},
-            protectedArtifactHashes: {},
-          },
-        },
-        receipts: {
-          [intentId]: {
-            intentId,
-            candidateId,
-            targetBaseSha: "base-sha",
-            publishedCommitSha: "commit-1",
-            publishedTreeSha: "tree-1",
-            targetRef: "refs/heads/main",
-            protectedArtifactHashes: {},
-            publishedAt: "2026-01-01T00:00:00.000Z",
-          },
-        },
-      },
-    }));
-    const finalized = deferred();
-    const actor = new SchedulerActor({
-      store: run,
-      onTransition: (_state, event) => {
-        if (event.kind === "publication_completed") {
-          finalized.resolve();
-        }
-      },
-      executeEffect: async ({ effect, signal, dispatch }) => {
-        if (effect.kind === "run_publication") {
-          await dispatch({
-            kind: "publication_completed",
-            workstream: effect.workstream,
-            leaseId: effect.leaseId,
-            intentId,
-          });
-          return;
-        }
-        if (effect.kind === "run_implementation") {
-          await new Promise<void>((resolve) => {
-            signal.addEventListener("abort", () => resolve(), { once: true });
-          });
-        }
-      },
-    });
-
-    await actor.start();
-    await finalized.promise;
-
-    expect(run.read().workstreams.source["first-stream"]?.phase).toBe(
-      "completed",
-    );
-    expect(run.read().publication.receipts[intentId]).toBeDefined();
-
-    await actor.stop("test complete");
-  });
-});
-
-describe("scheduler actor malformed recovery boundaries", () => {
-  it("safety-pauses a malformed recovery packet before it starts a worker", async () => {
+  it("terminally fails a malformed recovery packet before it starts a worker", async () => {
     let state = (await store(2, true)).read();
     state.workstreams.source["second-stream"]!.dependsOn = [];
     state.workstreams.source["first-stream"]!.phase = "recovering";
@@ -1248,11 +947,7 @@ describe("scheduler actor malformed recovery boundaries", () => {
     await actor.settle();
 
     expect(state).toMatchObject({
-      phase: "paused",
-      pause: {
-        resumePhase: "running",
-        reason: action.evidence,
-      },
+      phase: "failed",
       processLeases: {},
       workstreams: {
         source: {

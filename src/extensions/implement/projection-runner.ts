@@ -1,6 +1,6 @@
 import type { SchedulerEvent } from "./scheduler.js";
 import type { RunStore } from "./store.js";
-import { resumeCheckboxProjection } from "./projection.js";
+import { settleCheckboxProjection } from "./projection.js";
 
 export async function runProjection(args: {
   store: RunStore;
@@ -12,7 +12,7 @@ export async function runProjection(args: {
   if (!debt) {
     throw new Error("Projection effect does not own durable projection debt.");
   }
-  const outcome = resumeCheckboxProjection(state.run.checkout.root, {
+  const outcome = settleCheckboxProjection(state.run.checkout.root, {
     id: debt.id,
     canonicalPath: debt.canonicalPath,
     expectedOldContent: debt.expectedOldContent,
@@ -23,8 +23,10 @@ export async function runProjection(args: {
   });
   if (outcome.kind === "safety_paused") {
     await args.dispatch({
-      kind: "safety_paused",
+      kind: "failure_requested",
+      category: "safety",
       reason: outcome.reason,
+      now: new Date().toISOString(),
     });
     return;
   }

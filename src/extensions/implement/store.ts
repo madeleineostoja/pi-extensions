@@ -275,7 +275,7 @@ const recoverySchema = z
       })
       .strict(),
     outstandingFindingIds: z.array(nonEmpty),
-    status: z.enum(["open", "paused", "completed"]),
+    status: z.enum(["open", "completed"]),
     cycle: z
       .object({
         signature: nonEmpty,
@@ -375,10 +375,18 @@ const projectionDebtSchema = z
   })
   .strict();
 
-const pauseSchema = z
+const failureSchema = z
   .object({
-    resumePhase: z.enum(["planning", "running", "whole_plan_review"]),
-    reason: nonEmpty.optional(),
+    category: z.enum([
+      "stopped",
+      "interrupted",
+      "recovery_exhausted",
+      "safety",
+      "runtime",
+    ]),
+    reason: nonEmpty,
+    originPhase: z.enum(["planning", "running", "whole_plan_review"]),
+    at: nonEmpty,
   })
   .strict();
 
@@ -487,8 +495,7 @@ export const RunStateSchema = z
       "running",
       "whole_plan_review",
       "stopping",
-      "paused",
-      "blocked_safety",
+      "failed",
       "completed",
     ]),
     executionPlan: z.object({ path: nonEmpty, hash }).strict().optional(),
@@ -520,8 +527,7 @@ export const RunStateSchema = z
       .strict(),
     protectedArtifactHashes: z.record(nonEmpty, hash),
     projectionDebt: z.array(projectionDebtSchema),
-    pause: pauseSchema.optional(),
-    terminalReason: nonEmpty.optional(),
+    failure: failureSchema.optional(),
     wholePlanReview: wholePlanReviewSchema,
     createdAt: nonEmpty,
     updatedAt: nonEmpty,
@@ -1155,13 +1161,8 @@ function invariantIssues(
   if (state.phase === "planning" && bound) {
     issues.push("planning cannot bind an execution plan");
   }
-  if (
-    !bound &&
-    !["planning", "stopping", "paused", "blocked_safety"].includes(state.phase)
-  ) {
-    issues.push(
-      "only planning-derived pause, stop, and safety states may be unbound",
-    );
+  if (!bound && !["planning", "stopping", "failed"].includes(state.phase)) {
+    issues.push("only planning-derived stop and failure states may be unbound");
   }
   if (
     !bound &&
@@ -1310,13 +1311,10 @@ function invariantIssues(
     issues.push("publication is serialized to one active process lease");
   }
   if (
-    (state.phase === "stopping" || state.phase === "paused") !==
-    (state.pause !== undefined)
+    (state.phase === "stopping" || state.phase === "failed") !==
+    (state.failure !== undefined)
   ) {
-    issues.push("only stopping and paused runs retain resumable pause state");
-  }
-  if (state.phase === "blocked_safety" && !state.terminalReason) {
-    issues.push("a safety-blocked run requires a terminal reason");
+    issues.push("only stopping and failed runs retain failure metadata");
   }
   if (
     state.phase === "completed" &&
@@ -1555,7 +1553,7 @@ function invariantIssues(
           !finding ||
           !sameWorkstreamIdentity(finding.workstream, recovery.workstream),
       ) ||
-      ((recovery.status === "open" || recovery.status === "paused") &&
+      (recovery.status === "open" &&
         (references.some((finding) => finding!.status !== "open") ||
           (recovery.outstandingFindingIds.length > 0 && !review) ||
           (review &&
@@ -1781,7 +1779,6 @@ function sameRecoveryEpisodeHistory(
   next: RunState["recoveryEpisodes"][string],
 ): boolean {
   const actionsAppended = next.actions.length > previous.actions.length;
-  const resumed = previous.status === "paused" && next.status === "open";
   const advancedGate =
     previous.status === "open" &&
     next.status === "open" &&
@@ -1809,11 +1806,7 @@ function sameRecoveryEpisodeHistory(
   return (
     previous.id === next.id &&
     (previous.status !== "completed" || next.status === "completed") &&
-    (!mutableStateChanged ||
-      actionsAppended ||
-      resumed ||
-      completed ||
-      advancedGate) &&
+    (!mutableStateChanged || actionsAppended || completed || advancedGate) &&
     JSON.stringify(previous.workstream) === JSON.stringify(next.workstream) &&
     previous.candidateId === next.candidateId &&
     (advancedGate ||

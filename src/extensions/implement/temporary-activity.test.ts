@@ -140,7 +140,7 @@ describe("temporary pipkin-implement activity", () => {
 
     activity.update(state());
     activity.clear();
-    activity.update(state(), { kind: "run_paused", reason: "stopped" });
+    activity.update(state(), { kind: "run_failed" });
 
     expect(widgets).toHaveLength(2);
     expect(widgets.at(-1)).toBeUndefined();

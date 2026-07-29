@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { registerImplementCommand, runMenuActions } from "./command.js";
-import { assertRunCanResume } from "./run.js";
 
 const config = {
   path: "/agent/pipkin/config.json",
@@ -29,31 +28,31 @@ afterEach(() => {
 });
 
 describe("/implement command", () => {
-  it("offers direct resume for an active paused run", () => {
-    expect(runMenuActions("paused", true)).toEqual([
+  it("offers terminal and interrupted retained runs cleanup without continue", () => {
+    expect(runMenuActions("failed", true)).toEqual([
       "Status",
       "Inspect",
-      "Resume",
-      "Stop",
       "Clean up",
       "Back",
     ]);
-    expect(runMenuActions("paused", false)).toEqual([
+    expect(runMenuActions("failed", false)).toEqual([
       "Status",
       "Inspect",
-      "Resume",
       "Clean up",
       "Back",
     ]);
-    expect(runMenuActions("blocked_safety", false)).not.toContain("Resume");
-  });
-
-  it("rejects terminal runs before creating a resume actor", () => {
-    expect(() => assertRunCanResume("completed")).toThrow("/implement cleanup");
-    expect(() => assertRunCanResume("blocked_safety")).toThrow(
-      "/implement cleanup",
-    );
-    expect(() => assertRunCanResume("paused")).not.toThrow();
+    expect(runMenuActions("running", false)).toEqual([
+      "Status",
+      "Inspect",
+      "Clean up",
+      "Back",
+    ]);
+    expect(runMenuActions("stopping", false)).toEqual([
+      "Status",
+      "Inspect",
+      "Clean up",
+      "Back",
+    ]);
   });
 
   it("returns an all-checked plan as a no-op without allocating a run", async () => {

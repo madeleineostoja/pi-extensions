@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { compileExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
 import { buildMaterialStore } from "./material-store.js";
-import { recoverProjectionTransactions } from "./run.js";
+import { settleProjectionTransactions } from "./transaction-settlement.js";
 import { parsePlan } from "./plan.js";
 import { createCheckboxProjectionIntent } from "./projection.js";
 import {
@@ -182,8 +182,8 @@ describe("checkout store transitions", () => {
     await expect(interrupted.bindExecutionPlan(plan)).rejects.toThrow(
       "interrupted state replacement",
     );
-    const resumed = RunStore.open(lease, initial.path);
-    await expect(resumed.bindExecutionPlan(plan)).resolves.toMatchObject({
+    const continued = RunStore.open(lease, initial.path);
+    await expect(continued.bindExecutionPlan(plan)).resolves.toMatchObject({
       phase: "running",
       executionPlan: { hash: plan.executionPlanHash },
     });
@@ -246,7 +246,7 @@ describe("checkout store transitions", () => {
     expect(sourceIdentityMatches(store.read())).toBe(false);
   });
 
-  it("settles a post-write projection debt before normal resume validation", async () => {
+  it("settles retained post-write projection debt", async () => {
     const directory = root();
     const plan = planFor(directory);
     const lease = fakeLease(directory);
@@ -294,7 +294,7 @@ describe("checkout store transitions", () => {
     }));
     writeFileSync(planPath, debt.expectedNewContent);
 
-    await recoverProjectionTransactions({ store });
+    await settleProjectionTransactions({ store });
 
     expect(store.read().projectionDebt).toEqual([]);
     expect(protectedArtifactsMatch(store.read())).toBe(true);

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createCheckboxProjectionIntent,
-  resumeCheckboxProjection,
+  settleCheckboxProjection,
 } from "./projection.js";
 
 const temporaryDirectories = new Set<string>();
@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 describe(" checkbox projection", () => {
-  it("atomically projects only anchored top-level checkbox markers and resumes after a post-write crash", () => {
+  it("atomically projects only anchored top-level checkbox markers and settles after a post-write crash", () => {
     const { root, plan } = fixture();
     const intent = createCheckboxProjectionIntent({
       id: "projection-1",
@@ -40,11 +40,11 @@ describe(" checkbox projection", () => {
       ],
     });
 
-    expect(resumeCheckboxProjection(root, intent)).toMatchObject({
+    expect(settleCheckboxProjection(root, intent)).toMatchObject({
       kind: "written",
       protectedHash: intent.expectedNewHash,
     });
-    expect(resumeCheckboxProjection(root, intent)).toMatchObject({
+    expect(settleCheckboxProjection(root, intent)).toMatchObject({
       kind: "already_written",
       protectedHash: intent.expectedNewHash,
     });
@@ -62,12 +62,12 @@ describe(" checkbox projection", () => {
       ],
     });
 
-    expect(resumeCheckboxProjection(root, intent)).toMatchObject({
+    expect(settleCheckboxProjection(root, intent)).toMatchObject({
       kind: "written",
     });
   });
 
-  it("safety-pauses rather than overwriting third-party source changes", () => {
+  it("refuses to overwrite third-party source changes", () => {
     const { root, plan } = fixture();
     const intent = createCheckboxProjectionIntent({
       id: "projection-1",
@@ -77,7 +77,7 @@ describe(" checkbox projection", () => {
     });
     writeFileSync(plan, "# Plan\n\n- [ ] Changed\n- [ ] Second\n");
 
-    expect(resumeCheckboxProjection(root, intent)).toMatchObject({
+    expect(settleCheckboxProjection(root, intent)).toMatchObject({
       kind: "safety_paused",
       reason: expect.stringMatching(/neither durable intent side/),
     });
@@ -96,7 +96,7 @@ describe(" checkbox projection", () => {
     rmSync(plan);
     symlinkSync(replacement, plan);
 
-    expect(resumeCheckboxProjection(root, intent)).toMatchObject({
+    expect(settleCheckboxProjection(root, intent)).toMatchObject({
       kind: "safety_paused",
     });
   });

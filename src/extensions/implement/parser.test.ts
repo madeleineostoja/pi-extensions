@@ -9,12 +9,8 @@ describe("parseCommand", () => {
     });
   });
 
-  it("parses resume and restart", () => {
-    expect(parseCommand("resume plan.md run-1")).toEqual({
-      kind: "execution",
-      planPath: "plan.md",
-      recovery: { kind: "resume", runId: "run-1" },
-    });
+  it("rejects continue and parses restart", () => {
+    expect(parseCommand("continue plan.md run-1").kind).toBe("error");
     expect(parseCommand("restart plan.md run-1")).toEqual({
       kind: "execution",
       planPath: "plan.md",
@@ -23,9 +19,9 @@ describe("parseCommand", () => {
   });
 
   it("parses control subcommands", () => {
-    expect(parseCommand("resume")).toEqual({
-      kind: "control",
-      name: "resume",
+    expect(parseCommand("continue")).toEqual({
+      kind: "execution",
+      planPath: "continue",
     });
     expect(parseCommand("stop")).toEqual({ kind: "control", name: "stop" });
     expect(parseCommand("inspect run-1")).toEqual({

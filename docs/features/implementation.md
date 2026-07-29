@@ -4,7 +4,7 @@ Implement is Pipkin's autonomous software implementation system and parallel age
 
 Before coding starts, a high-reasoning planner reads the complete linked plan material and creates one immutable, dependency-aware schedule. It groups work at stable implementation and review boundaries: shared context and cumulative review can justify a multi-task workstream, while a narrower recovery scope can justify a split, including a dependent chain. Dedicated implementer and reviewer agents then work in isolated Git worktrees. Independent workstreams proceed concurrently up to the configured capacity; capacity is useful, not a requirement to split or to fill every slot. Review findings go back through bounded repair loops, and a final review checks the result as a whole.
 
-The complete source plan is the shipment boundary. An approved intermediate candidate can establish a contract for a dependent workstream, but it must remain coherent and safe to publish. The target branch has one controlled writer. Pipkin integrates approved work serially, runs ordinary Git hooks, verifies the commit it prepared, and uses compare-and-swap protection when advancing the branch. Durable state and retained evidence make interrupted or blocked runs inspectable and, where safe, resumable.
+The complete source plan is the shipment boundary. An approved intermediate candidate can establish a contract for a dependent workstream, but it must remain coherent and safe to publish. The target branch has one controlled writer. Pipkin integrates approved work serially, runs ordinary Git hooks, verifies the commit it prepared, and uses compare-and-swap protection when advancing the branch. Durable state and retained evidence make interrupted and failed runs inspectable and safely cleanable.
 
 This is not a public-agent fan-out or a prompt loop around a checklist. Implement owns scheduling, workspace isolation, review, recovery, publication, and plan projection as one system.
 
@@ -73,7 +73,7 @@ Before and after managed work, Pipkin verifies:
 - cleanliness outside protected plan projections;
 - exact hashes of protected source material and projected plans.
 
-A boundary problem discovered before managed work pauses safely and reports the exact paths. A boundary change during managed work becomes a terminal safety block because Pipkin cannot safely attribute its source.
+A boundary problem reports the exact paths and terminally fails the run. A boundary change during managed work is a safety failure because Pipkin cannot safely attribute its source.
 
 Published commits are never rolled back just because a later checkbox projection or owned-resource cleanup needs another attempt. Plan checkbox changes are expected dirt while the run is active and ordinary working changes after it completes.
 
@@ -97,17 +97,15 @@ Each checkout owns its runs:
 
 One OS-backed lease protects each checkout's active run and destructive cleanup. Linked checkouts have independent state and can run separately. A second run in the same checkout is rejected.
 
-Recoverable failures retain the gate, candidate, workspace, complete current findings, prior actions, and mutation boundary. Recovery packets embed actionable findings inline; retained artifacts are diagnostic provenance, not worker-readable input. Recovery agents choose bounded actions in Pipkin-owned workspaces, and each recovery turn starts a new worker conversation. When no safe action remains, the run pauses for a person rather than improvising on the target.
+Live recovery retains the gate, candidate, workspace, complete current findings, prior actions, and mutation boundary while the current actor remains alive. Recovery packets embed actionable findings inline; retained artifacts are diagnostic provenance, not worker-readable input. When recovery is exhausted, the run fails rather than reconstructing workers later.
 
-Paused runs can resume after boundary checks and lease reacquisition. Completed and safety-blocked runs cannot resume. Cleanup preserves published target and plan changes and removes only resources Pipkin can prove it owns.
+Stopping is transient while owned processes settle. Failed and completed runs are terminal. A crash-retained active run is terminalized as interrupted under the checkout lease without launching workers. Cleanup settles exact durable publication and projection transactions first, preserves published target and plan changes, and removes only resources Pipkin can prove it owns.
 
 ## Commands
 
 ```text
 /implement
 /implement <plan.md>
-/implement resume
-/implement resume <plan.md> <run-id>
 /implement restart <plan.md> <completed-run-id>
 /implement status
 /implement status <run-id>
@@ -116,14 +114,13 @@ Paused runs can resume after boundary checks and lease reacquisition. Completed 
 /implement stop
 ```
 
-| Command   | Purpose                                                                   |
-| --------- | ------------------------------------------------------------------------- |
-| `status`  | Show phases, findings, gates, leases, and projection debt                 |
-| `inspect` | Show durable state and evidence paths for one run                         |
-| `resume`  | Continue a paused current or retained run after safety checks             |
-| `stop`    | Settle owned processes and pause the active run safely                    |
-| `restart` | Clean a completed run after new-run preflight and start again             |
-| `cleanup` | Remove provably owned run resources; incomplete runs require confirmation |
+| Command   | Purpose                                                                                        |
+| --------- | ---------------------------------------------------------------------------------------------- |
+| `status`  | Show phases, findings, gates, leases, and projection debt                                      |
+| `inspect` | Show durable state and evidence paths for one run                                              |
+| `stop`    | Settle owned processes and terminally fail the active run safely                               |
+| `restart` | Clean a completed run after new-run preflight and start again                                  |
+| `cleanup` | Terminalize interrupted runs, settle durable transactions, and remove provably owned resources |
 
 The active session also shows a diagnostic widget with overall progress, workstream stages, recent failures, and open findings.
 

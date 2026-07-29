@@ -1,6 +1,6 @@
 import { RecoverySafetyError } from "./recovery-service.js";
 import { WorkerPacketError } from "./worker-invocation.js";
-import { MissingHookEvidenceError } from "./publication.js";
+import { MissingHookEvidenceError, PublicationError } from "./publication.js";
 import type { ExecutionPlan } from "./execution-plan.js";
 import {
   TargetBoundaryError,
@@ -64,8 +64,6 @@ export class SchedulerActor {
   private queue = Promise.resolve();
   private drivePromise: Promise<void> | undefined;
   private stopping = false;
-  private safetyReason: string | undefined;
-  private pauseReason: string | undefined;
 
   constructor(private readonly options: SchedulerActorOptions) {
     this.now = options.now ?? (() => new Date().toISOString());
@@ -76,15 +74,9 @@ export class SchedulerActor {
   }
 
   async start(): Promise<void> {
-    await this.reconcileAbandonedProcesses();
-    if (this.snapshot().wholePlanReview.recovery?.status === "running") {
-      await this.persist({ kind: "whole_plan_recovery_abandoned" });
-    }
-    if (
-      this.snapshot().phase === "stopping" &&
-      Object.keys(this.snapshot().processLeases).length === 0
-    ) {
-      await this.persist({ kind: "run_paused" });
+    if (this.snapshot().phase === "stopping") {
+      await this.finalizeFailure();
+      return;
     }
     await this.drive();
   }
@@ -94,7 +86,7 @@ export class SchedulerActor {
       return this.drivePromise;
     }
     this.drivePromise = (async () => {
-      while (!this.stopping && !this.pauseReason) {
+      while (!this.stopping) {
         const next = this.nextDriveStep();
         if (!next) {
           return;
@@ -136,11 +128,16 @@ export class SchedulerActor {
       persistedEvent?.kind === "recovery_completed" &&
       persistedEvent.action.kind === "no_safe_action"
     ) {
-      this.pauseReason = persistedEvent.action.evidence;
+      await this.fail("recovery_exhausted", persistedEvent.action.evidence);
+    }
+    if (this.snapshot().phase === "stopping") {
+      this.stopping = true;
+      this.controller.abort();
       for (const controller of this.processControllers.values()) {
         controller.abort();
       }
     }
+    await this.finalizeFailure();
     await this.drive();
     return effects;
   }
@@ -454,37 +451,17 @@ export class SchedulerActor {
     return undefined;
   }
 
-  async resume(): Promise<void> {
-    if (this.options.captureTargetBoundary) {
-      await this.options.captureTargetBoundary();
-    }
-    await this.persist({ kind: "resume_requested" });
-    await this.drive();
-  }
-
-  async stop(reason?: string): Promise<void> {
-    if (!this.stopping) {
-      this.stopping = true;
-      if (
-        ["planning", "running", "whole_plan_review"].includes(
-          this.snapshot().phase,
-        )
-      ) {
-        await this.dispatch({ kind: "stop_requested", reason });
-      }
-      this.controller.abort();
-      for (const controller of this.processControllers.values()) {
-        controller.abort();
-      }
-    }
+  async stop(
+    reason = "Stopped by user.",
+    category: NonNullable<RunState["failure"]>["category"] = "stopped",
+  ): Promise<void> {
+    await this.fail(category, reason);
     while (this.processes.size > 0) {
       await Promise.allSettled(this.processes.values());
     }
     await this.options.awaitOwnedProcesses?.();
     await this.reconcileAbandonedProcesses();
-    if (this.snapshot().phase === "stopping") {
-      await this.dispatch({ kind: "run_paused", reason });
-    }
+    await this.finalizeFailure();
   }
 
   async settle(): Promise<void> {
@@ -529,15 +506,16 @@ export class SchedulerActor {
           });
         }
       })
-      .finally(() => {
+      .finally(async () => {
         this.processes.delete("planner");
         this.processControllers.delete("planner");
+        await this.finalizeFailure();
       });
     this.processes.set("planner", process);
   }
 
   private startEffect(effect: SchedulerEffect): void {
-    if (this.stopping || this.pauseReason || !this.options.executeEffect) {
+    if (this.stopping || !this.options.executeEffect) {
       return;
     }
     const key = effectKey(effect);
@@ -610,20 +588,11 @@ export class SchedulerActor {
         }
       })
       .catch(async (error) => {
-        if (error instanceof TargetPreconditionError) {
-          this.pauseReason = error.message;
-          for (const controller of this.processControllers.values()) {
-            controller.abort();
-          }
-          return;
-        }
-        if (error instanceof TargetBoundaryError) {
-          this.safetyReason = error.message;
-          this.stopping = true;
-          this.controller.abort();
-          for (const controller of this.processControllers.values()) {
-            controller.abort();
-          }
+        if (
+          error instanceof TargetPreconditionError ||
+          error instanceof TargetBoundaryError
+        ) {
+          await this.fail("safety", error.message);
           return;
         }
         if (
@@ -631,10 +600,15 @@ export class SchedulerActor {
           error instanceof StateError ||
           error instanceof WorkerPacketError
         ) {
-          this.pauseReason = error.message;
-          for (const controller of this.processControllers.values()) {
-            controller.abort();
-          }
+          await this.fail("runtime", error.message);
+          return;
+        }
+        if (
+          error instanceof PublicationError &&
+          (error.outcome.kind === "safety_paused" ||
+            error.outcome.kind === "target_moved")
+        ) {
+          await this.fail("safety", error.message);
           return;
         }
         if (
@@ -720,10 +694,10 @@ export class SchedulerActor {
           effect.kind === "run_projection" ||
           effect.kind === "complete_whole_plan_run"
         ) {
-          await this.dispatch({
-            kind: "safety_paused",
-            reason: error instanceof Error ? error.message : String(error),
-          });
+          await this.fail(
+            "safety",
+            error instanceof Error ? error.message : String(error),
+          );
           return;
         }
         if (
@@ -766,26 +740,43 @@ export class SchedulerActor {
         ) {
           await this.persist({ kind: "whole_plan_recovery_abandoned" });
         }
-        if (this.safetyReason && this.processes.size === 0) {
-          await this.persist({
-            kind: "safety_blocked",
-            reason: this.safetyReason,
-          });
-          return;
-        }
-        if (this.pauseReason && this.processes.size === 0) {
-          const reason = this.pauseReason;
-          this.pauseReason = undefined;
-          await this.persist(
-            this.snapshot().phase === "stopping"
-              ? { kind: "run_paused", reason }
-              : { kind: "safety_paused", reason },
-          );
-          return;
-        }
+        await this.finalizeFailure();
         await this.drive();
       });
     this.processes.set(key, process);
+  }
+
+  private async fail(
+    category: NonNullable<RunState["failure"]>["category"],
+    reason: string,
+  ): Promise<void> {
+    const phase = this.snapshot().phase;
+    if (["failed", "completed"].includes(phase)) {
+      return;
+    }
+    this.stopping = true;
+    if (phase !== "stopping") {
+      await this.persist({
+        kind: "failure_requested",
+        category,
+        reason,
+        now: this.now(),
+      });
+    }
+    this.controller.abort();
+    for (const controller of this.processControllers.values()) {
+      controller.abort();
+    }
+  }
+
+  private async finalizeFailure(): Promise<void> {
+    if (
+      this.snapshot().phase === "stopping" &&
+      this.processes.size === 0 &&
+      Object.keys(this.snapshot().processLeases).length === 0
+    ) {
+      await this.persist({ kind: "run_failed" });
+    }
   }
 
   private async reconcileAbandonedProcesses(): Promise<void> {

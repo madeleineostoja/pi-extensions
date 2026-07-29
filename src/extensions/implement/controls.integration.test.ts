@@ -149,7 +149,7 @@ describe(" controls", () => {
     ).toBe(false);
   });
 
-  it("keeps the checkout lease through paused-run cleanup", async () => {
+  it("keeps the checkout lease through failed-run cleanup", async () => {
     const root = repository();
     const git = new ExecGitClient(root);
     const runId = "run-1";
@@ -182,8 +182,13 @@ describe(" controls", () => {
     const state = store.read();
     await store.update(state.revision, (current) => ({
       ...current,
-      phase: "paused",
-      pause: { resumePhase: "planning", reason: "Planner failed." },
+      phase: "failed",
+      failure: {
+        category: "runtime",
+        reason: "Planner failed.",
+        originPhase: "planning",
+        at: new Date().toISOString(),
+      },
     }));
     await lease.release();
 

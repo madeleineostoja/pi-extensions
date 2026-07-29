@@ -111,11 +111,10 @@ export function formatTemporaryActivity(
       `  whole-plan recovery · ${recovery.status} · ${shorten(recovery.evidence.at(-1) ?? "retrying review")}`,
     );
   }
-  if (state.pause?.reason) {
-    lines.push(`  paused · ${shorten(state.pause.reason)}`);
-  }
-  if (state.terminalReason) {
-    lines.push(`  blocked · ${shorten(state.terminalReason)}`);
+  if (state.failure) {
+    lines.push(
+      `  failed · ${state.failure.category} · ${shorten(state.failure.reason)}`,
+    );
   }
   return lines;
 }
@@ -211,16 +210,9 @@ function notifyAttentionTransition(
     );
     return;
   }
-  if (event.kind === "safety_paused") {
+  if (event.kind === "failure_requested") {
     ctx.ui.notify(
-      `Implement paused for target recovery: ${shorten(event.reason)}`,
-      "warning",
-    );
-    return;
-  }
-  if (event.kind === "safety_blocked") {
-    ctx.ui.notify(
-      `Implement safety blocked: ${shorten(event.reason)}`,
+      `Implement failed safely: ${shorten(event.reason)}`,
       "warning",
     );
     return;

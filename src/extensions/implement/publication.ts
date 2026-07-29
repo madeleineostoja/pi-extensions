@@ -32,7 +32,6 @@ export async function runPublication(args: {
   publisher: WriteAheadPublisher;
   dispatch: (event: SchedulerEvent) => Promise<void>;
   projectionDebt?: RunState["projectionDebt"][number];
-  resume?: boolean;
 }): Promise<void> {
   const intent = args.state.publication.intents[args.effect.intentId];
   if (!intent || intent.candidateId !== args.effect.candidateId) {
@@ -66,9 +65,7 @@ export async function runPublication(args: {
     return;
   }
   const writeAheadIntent = toWriteAheadIntent(intent);
-  const initial = args.resume
-    ? await args.publisher.recover(writeAheadIntent)
-    : await args.publisher.publish(writeAheadIntent);
+  const initial = await args.publisher.publish(writeAheadIntent);
   const outcome =
     initial.kind === "published" || initial.kind === "safety_paused"
       ? initial

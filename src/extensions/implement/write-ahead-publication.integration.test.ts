@@ -116,7 +116,7 @@ describe("WriteAheadPublisher", () => {
     expect(await setup.client.head()).toBe(setup.prepared);
   });
 
-  it("restores the base and sanctioned artifacts when resuming before ref update", async () => {
+  it("restores the base and sanctioned artifacts when settling before ref update", async () => {
     const setup = await fixture();
     const publisher = new WriteAheadPublisher({
       git: setup.client,
@@ -143,7 +143,7 @@ describe("WriteAheadPublisher", () => {
     );
   });
 
-  it("safety-pauses when protected artifacts change after the intent", async () => {
+  it("refuses publication when protected artifacts change after the intent", async () => {
     const setup = await fixture();
     const publisher = new WriteAheadPublisher({
       git: setup.client,

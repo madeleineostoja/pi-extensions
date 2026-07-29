@@ -61,7 +61,7 @@ export function createCheckboxProjectionIntent(args: {
   };
 }
 
-export function resumeCheckboxProjection(
+export function settleCheckboxProjection(
   checkoutRoot: string,
   intent: CheckboxProjectionIntent,
 ): ProjectionOutcome {

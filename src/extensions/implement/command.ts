@@ -5,7 +5,7 @@ import type {
 import type { ConfigSnapshot } from "#lib/config";
 import { resolveImplementRoles } from "./subagents.js";
 import { parseCommand, usage, type ParsedCommand } from "./parser.js";
-import { stopRun, startRun, resumeRun, type ActiveRun } from "./run.js";
+import { stopRun, startRun, type ActiveRun } from "./run.js";
 import {
   cleanupCompletedRun,
   cleanupRun,
@@ -34,7 +34,7 @@ export function registerImplementCommand(
     const stopping = active;
     active = undefined;
     if (stopping) {
-      await stopRun(stopping);
+      await stopRun(stopping, "interrupted");
     }
   });
 
@@ -65,30 +65,6 @@ export function registerImplementCommand(
   ): Promise<void> {
     try {
       const checkoutRoot = await resolveCheckoutRoot(ctx.cwd);
-      if (parsed.name === "resume") {
-        if (!active) {
-          ctx.ui.notify(
-            "Implement has no active paused run in this session; resume a historical run from its menu.",
-            "info",
-          );
-          return;
-        }
-        if (active.store.read().phase !== "paused") {
-          ctx.ui.notify("Implement is not paused.", "info");
-          return;
-        }
-        try {
-          await active.actor.resume();
-        } catch (error) {
-          ctx.ui.notify(
-            `Implement remains paused: ${error instanceof Error ? error.message : String(error)}`,
-            "warning",
-          );
-          return;
-        }
-        ctx.ui.notify(`Implement resumed run ${active.runId}.`, "info");
-        return;
-      }
       if (parsed.name === "stop") {
         if (!active) {
           ctx.ui.notify("Implement has no active run in this session.", "info");
@@ -99,7 +75,7 @@ export function registerImplementCommand(
         activity?.clear();
         activity = undefined;
         await stopRun(stopping);
-        ctx.ui.notify("Implement paused safely.", "info");
+        ctx.ui.notify("Implement stopped and failed safely.", "info");
         return;
       }
       if (parsed.name === "status") {
@@ -140,7 +116,7 @@ export function registerImplementCommand(
         }
         const confirmed = await ctx.ui.confirm(
           "Clean up incomplete run",
-          `Run ${parsed.runId} is ${state.phase.replaceAll("_", " ")}. Cleaning it up stops active work, preserves already-published target and plan changes, removes owned resources, and makes the run impossible to resume. Continue?`,
+          `Run ${parsed.runId} is ${state.phase.replaceAll("_", " ")}. Cleaning it up terminalizes interrupted work if needed, settles exact durable transactions, preserves already-published target and plan changes, and removes only proven owned resources. Continue?`,
         );
         if (!confirmed) {
           return;
@@ -218,19 +194,6 @@ export function registerImplementCommand(
           runId: parsed.recovery.runId,
           prospectiveStart: true,
         });
-      }
-      if (parsed.recovery?.kind === "resume") {
-        active = await resumeRun({
-          pi,
-          ctx,
-          planPath: parsed.planPath,
-          runId: parsed.recovery.runId,
-          roles,
-          onTransition,
-        });
-        nextActivity.update(active.store.read());
-        ctx.ui.notify(`Implement resumed run ${active.runId}.`, "info");
-        return;
       }
       const result = await startRun({
         pi,
@@ -336,9 +299,6 @@ async function showRunMenu(
   if (action === "Inspect") {
     return { kind: "control", name: "inspect", runId: run.runId };
   }
-  if (action === "Resume" && current) {
-    return { kind: "control", name: "resume" };
-  }
   if (action === "Stop") {
     return { kind: "control", name: "stop" };
   }
@@ -352,10 +312,7 @@ async function showRunMenu(
   return {
     kind: "execution",
     planPath: planPath.trim(),
-    recovery: {
-      kind: action === "Resume" ? "resume" : "start-over",
-      runId: run.runId,
-    },
+    recovery: { kind: "start-over", runId: run.runId },
   };
 }
 
@@ -364,22 +321,13 @@ export function runMenuActions(
   current: boolean,
 ): string[] {
   const actions = ["Status", "Inspect"];
-  if (current) {
-    if (phase === "paused") {
-      actions.push("Resume");
-    }
-    if (phase !== "completed") {
-      actions.push("Stop");
-    }
-  } else if (!["completed", "blocked_safety", "stopping"].includes(phase)) {
-    actions.push("Resume");
+  if (current && !["completed", "failed"].includes(phase)) {
+    actions.push("Stop");
   }
   if (!current && phase === "completed") {
     actions.push("Restart");
   }
-  if (["completed", "paused", "blocked_safety"].includes(phase) || current) {
-    actions.push("Clean up");
-  }
+  actions.push("Clean up");
   return [...actions, "Back"];
 }
 

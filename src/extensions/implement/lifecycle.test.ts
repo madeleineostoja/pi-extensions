@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { RecoverySafetyError } from "./recovery-service.js";
 import { SchedulerActor, SchedulerActorError } from "./scheduler-actor.js";
 import { reduceRunEvent } from "./scheduler.js";
 import { RunStateSchema } from "./store.js";
@@ -66,18 +65,18 @@ describe("durable lifecycle", () => {
     }
   });
 
-  it("safety-pauses a local actor invariant without opening recovery", async () => {
+  it("terminally fails a local actor invariant without opening recovery", async () => {
     const fixture = await createLifecycleFixture();
     try {
-      let paused!: () => void;
-      const pausedTransition = new Promise<void>((resolve) => {
-        paused = resolve;
+      let failed!: () => void;
+      const failedTransition = new Promise<void>((resolve) => {
+        failed = resolve;
       });
       const actor = new SchedulerActor({
         store: fixture.store,
         onTransition: (_state, event) => {
-          if (event.kind === "safety_paused") {
-            paused();
+          if (event.kind === "failure_requested") {
+            failed();
           }
         },
         executeEffect: async () => {
@@ -86,50 +85,11 @@ describe("durable lifecycle", () => {
       });
 
       await actor.start();
-      await pausedTransition;
+      await failedTransition;
       await actor.settle();
 
-      expect(actor.snapshot()).toMatchObject({ phase: "paused" });
+      expect(actor.snapshot()).toMatchObject({ phase: "failed" });
       expect(actor.snapshot().recoveryEpisodes).toEqual({});
-    } finally {
-      fixture.dispose();
-    }
-  });
-
-  it("abandons persisted work then safety-pauses an unsafe recovery", async () => {
-    const fixture = await createLifecycleFixture();
-    try {
-      const selected = reduceRunEvent(fixture.store.read(), {
-        kind: "workstreams_selected",
-        now: "2026-01-01T00:00:00.000Z",
-        baseShas: { "first-stream": "base-sha" },
-      });
-      expect(selected.accepted).toBe(true);
-      await fixture.store.update(
-        fixture.store.read().revision,
-        () => selected.state,
-      );
-      const effects: string[] = [];
-      const actor = new SchedulerActor({
-        store: await fixture.reopen(),
-        executeEffect: async ({ effect }) => {
-          effects.push(effect.kind);
-          if (effect.kind === "run_implementation") {
-            throw new Error("provider interrupted");
-          }
-          if (effect.kind === "run_recovery") {
-            throw new RecoverySafetyError("no safe correction");
-          }
-        },
-      });
-
-      await actor.start();
-      await actor.settle();
-
-      expect(effects).toEqual(["run_implementation", "run_recovery"]);
-      expect(actor.snapshot()).toMatchObject({ phase: "paused" });
-      expect(actor.snapshot().processLeases).toEqual({});
-      expect(Object.values(actor.snapshot().recoveryEpisodes)).toHaveLength(1);
     } finally {
       fixture.dispose();
     }
