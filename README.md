@@ -59,7 +59,7 @@ This makes it practical to give Pipkin a serious implementation plan and let it 
 Pipkin's first three layers are deliberately about control:
 
 - **Sandbox** limits reads, writes, subprocesses, and subprocess network access. `/sandbox` explains the current policy and lets you grant temporary access without stopping the session.
-- **Readonly** checkpoints resolved tools named `edit` and `write`. Built-in tools get a bounded patch preview; same-name overrides are still approved without an invented preview. Toggle it with `Ctrl+R` or `/readonly`.
+- **Readonly** checkpoints resolved tools named `edit` and `write` while leaving their registered Pi renderers responsible for previews. Same-name overrides are still approved. Toggle it with `Ctrl+R` or `/readonly`.
 - **Shell Guard** confirms recognized high-risk built-in `bash` effects—such as force pushes, untracked-file deletion, package/system mutation, container deletion, and infrastructure changes—without pestering you about routine local installs.
 
 **[Safety →](docs/features/safety.md)**
@@ -107,7 +107,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | Surface                           | What it does                                                               |
 | --------------------------------- | -------------------------------------------------------------------------- |
 | `/sandbox`                        | Inspect policy, explain decisions, and manage session or persistent access |
-| `/readonly [on\|off]`             | Toggle approval for built-in edits and writes                              |
+| `/readonly [on\|off]`             | Toggle approval for resolved `edit` and `write` tools                      |
 | `context_recall`                  | Recover the original content behind an elision stub                        |
 | `lsp`                             | Make semantic source queries or inspect language-server status             |
 | `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents                     |

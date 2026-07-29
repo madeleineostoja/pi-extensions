@@ -119,7 +119,7 @@ Sandbox is defense in depth:
 
 ## Readonly
 
-Readonly prompts only for resolved tools named `edit` and `write`. It is not a universal mutation gate: differently named tools remain outside this boundary. Built-in tools get a bounded local preview when Pi identifies their backend as built-in; same-name overrides and missing provenance stay gated but show their bounded input with an explicit unknown-backend warning.
+Readonly prompts only for resolved tools named `edit` and `write`. It is not a universal mutation gate: differently named tools remain outside this boundary. The approval gate stays concise and leaves the resolved tool's registered Pi renderer responsible for showing its proposed change; same-name overrides and missing provenance remain gated without Readonly inventing a second preview.
 
 `/readonly` and `Ctrl+R` toggle approval for the live extension runtime. Accepting for the session affects only that instance; reload, resume, new sessions, and forks instantiate a fresh enabled gate. TUI and RPC share the same prompt. Print and JSON calls pass without a prompt, notice, or mode change.
 

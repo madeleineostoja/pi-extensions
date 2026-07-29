@@ -4,7 +4,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { promptForPermission } from "#lib/permission-prompt";
 import { resolveChoice } from "./handler";
-import { builtinPreview, unknownBackendPreview } from "./preview";
 import { parseReadonlyArgs, extractToolPath, formatSteerTitle } from "./utils";
 
 const FOOTER_KEY = "pipkin.readonly.mode";
@@ -70,21 +69,11 @@ export default function (pi: ExtensionAPI) {
       return undefined;
     }
 
-    const tool = pi
-      .getAllTools()
-      .find((candidate) => candidate.name === event.toolName);
-    const builtin = tool?.sourceInfo.source === "builtin";
-    const preview = builtin
-      ? builtinPreview(event.toolName, event.input, ctx.cwd)
-      : {
-          path: extractToolPath(event.input),
-          detail: unknownBackendPreview(event.input),
-        };
+    const path = extractToolPath(event.input);
     const permission = await promptForPermission({
       ui: ctx.ui,
       signal: ctx.signal,
-      title: `Readonly: ${event.toolName}${preview.path ? ` ${preview.path}` : ""} — apply?`,
-      detail: preview.detail,
+      title: `Readonly: apply proposed ${event.toolName}?`,
       choices: [
         { value: "Accept", label: "Accept" },
         { value: "Accept for this session", label: "Accept for this session" },
@@ -92,7 +81,7 @@ export default function (pi: ExtensionAPI) {
           value: "Steer",
           label: "Steer",
           input: {
-            title: formatSteerTitle(preview.path),
+            title: formatSteerTitle(path),
             placeholder: "what should the agent do differently?",
           },
         },
