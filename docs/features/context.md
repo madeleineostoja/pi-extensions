@@ -18,10 +18,10 @@ Epochs prefer a matching fresh model transition with at least 8k savings, then a
 
 ### Durable pruning milestones
 
-Every persisted pruning epoch, including tail epochs, appears in the transcript as a quiet Context-owned milestone. Its collapsed line reports the epoch kind, result count, and approximate reclaimed tokens, for example:
+Every persisted pruning epoch, including tail epochs, appears in the transcript as a quiet Context-owned milestone. Its collapsed line reports the epoch kind, result count, and approximate pruned tokens, for example:
 
 ```text
-context · ~18k reclaimed from 6 results · warm
+context · pruned 6 results (~18k tokens) · warm
 ```
 
 Expanding the entry uses Pi's ordinary transcript expansion state to show its bounded pruning-reason breakdown with result counts and approximate savings. These are custom session entries, not messages: they remain outside model context. Older v1 epochs without per-decision savings stay replayable and render their count and kind without inventing a token total.

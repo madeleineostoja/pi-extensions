@@ -23,8 +23,8 @@ export const renderEpochEntry: EntryRenderer<EpochData> = (
   const count = entry.data.decisions.length;
   const collapsed =
     savings === undefined
-      ? `context · ${count} ${resultLabel(count)} pruned · ${entry.data.kind}`
-      : `context · ${tokenEstimate(savings)} reclaimed from ${count} ${resultLabel(count)} · ${entry.data.kind}`;
+      ? `context · pruned ${count} ${resultLabel(count)} · ${entry.data.kind}`
+      : `context · pruned ${count} ${resultLabel(count)} (${tokenEstimate(savings)} tokens) · ${entry.data.kind}`;
   if (!expanded) {
     return new Text(theme.fg("muted", collapsed), 0, 0);
   }

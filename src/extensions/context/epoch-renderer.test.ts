@@ -35,7 +35,7 @@ describe("Context epoch rendering", () => {
           decision("standard-stale", 9_200),
         ],
       }),
-    ).toBe("context · ~18k reclaimed from 2 results · warm");
+    ).toBe("context · pruned 2 results (~18k tokens) · warm");
   });
 
   it("renders legacy epochs without fabricating a token total", () => {
@@ -44,7 +44,7 @@ describe("Context epoch rendering", () => {
         kind: "tail",
         decisions: [decision("standard-stale")],
       }),
-    ).toBe("context · 1 result pruned · tail");
+    ).toBe("context · pruned 1 result · tail");
   });
 
   it("expands to a reason/count/savings breakdown", () => {
@@ -62,7 +62,7 @@ describe("Context epoch rendering", () => {
       ),
     ).toBe(
       [
-        "context · ~18k reclaimed from 3 results · known-cold",
+        "context · pruned 3 results (~18k tokens) · known-cold",
         "  superseded reads · 2 results · ~17k",
         "  consumed bash · 1 result · ~1k",
       ].join("\n"),
