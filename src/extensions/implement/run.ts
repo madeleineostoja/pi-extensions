@@ -504,7 +504,6 @@ export function createRuntime(args: {
     store: args.store,
     onTransition: args.onTransition,
     targetHead: () => args.git.head(),
-    targetDiff: (from, to) => args.git.diffRange(from, to),
     captureTargetBoundary: () =>
       captureTargetBoundary(args.store.read(), args.git),
     executeEffect: async ({ effect, signal, dispatch }) => {
@@ -658,13 +657,15 @@ export function createRuntime(args: {
                 checkpoint: replay.staging.preparedCommitSha,
                 changedPaths: replay.staging.replayPaths ?? [],
                 stateEvidence:
-                  replay.kind === "hook_rejected" ||
-                  (replay.kind === "reconciliation_required" &&
-                    replay.hookMutated)
-                    ? `${replay.evidence}\n\nStaging diff:\n${replay.staging.replayPatch ?? ""}`.slice(
-                        -12_000,
-                      )
-                    : replay.kind,
+                  "evidence" in replay ? replay.evidence : replay.kind,
+                ...(replay.staging.treeSha
+                  ? {
+                      stagingComparison: {
+                        baseSha: replay.staging.targetBaseSha,
+                        treeSha: replay.staging.treeSha,
+                      },
+                    }
+                  : {}),
               };
         if (replay.kind === "repository_assessment_required") {
           if (effect.workstream.kind !== "source") {
@@ -675,10 +676,6 @@ export function createRuntime(args: {
             workstream: effect.workstream,
             leaseId: effect.leaseId,
             targetSha: replay.staging.targetBaseSha,
-            interveningDiff: await args.git.diffRange(
-              candidate.baseSha,
-              replay.staging.targetBaseSha,
-            ),
             evidence: replay.evidence,
           });
           return;

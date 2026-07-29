@@ -12,7 +12,6 @@ import { buildRecoveryPacket } from "./recovery-packet.js";
 import type { ImplementRoles } from "./subagents.js";
 import { RunStateSchema, type RunState } from "./store.js";
 import {
-  MAX_WORKER_PROMPT_BYTES,
   spawnValidatedWorker,
   WorkerPacketError,
 } from "./worker-invocation.js";
@@ -41,32 +40,31 @@ const roles: ImplementRoles = {
 };
 
 describe("worker invocation", () => {
-  it("rejects an oversized rendered packet before spawning", async () => {
-    let spawned = false;
+  it("allows a large rendered packet to reach the worker", async () => {
+    let spawned: Record<string, unknown> | undefined;
 
-    await expect(
-      spawnValidatedWorker({
-        packet: {
-          role: "recovery" as const,
-          completionKind: "recovery" as const,
-          identity: "episode/gate",
-          workspace: { path: "/owned/worktree" },
+    await spawnValidatedWorker({
+      packet: {
+        role: "recovery" as const,
+        completionKind: "recovery" as const,
+        identity: "episode/gate",
+        workspace: { path: "/owned/worktree" },
+      },
+      subagents: {
+        stop: async () => undefined,
+        spawn: async (args) => {
+          spawned = args as unknown as Record<string, unknown>;
+          return "worker" as never;
         },
-        subagents: {
-          stop: async () => undefined,
-          spawn: async () => {
-            spawned = true;
-            return "worker" as never;
-          },
-          waitFor: async () => ({ status: "failed" as const, error: "unused" }),
-        },
-        roles,
-        taskId: "work",
-        description: "Recover work",
-        render: () => "x".repeat(MAX_WORKER_PROMPT_BYTES + 1),
-      }),
-    ).rejects.toBeInstanceOf(WorkerPacketError);
-    expect(spawned).toBe(false);
+        waitFor: async () => ({ status: "failed" as const, error: "unused" }),
+      },
+      roles,
+      taskId: "work",
+      description: "Recover work",
+      render: () => "x".repeat(524_289),
+    });
+
+    expect(spawned?.prompt).toHaveLength(524_289);
   });
 
   it("pairs fixed roles, read-only tools, and completion contracts", async () => {

@@ -25,10 +25,10 @@ export type WholePlanReviewPacket = {
   identity: string;
   workspace: { path: string; mutationBoundary: string };
   target: { commitSha: string; treeSha: string };
+  baseSha: string;
+  previousSha?: string;
   planContext: string;
   candidateContext: string;
-  fullDiff: string;
-  latestDelta?: string;
   receipts: RunState["publication"]["receipts"];
   uncertainty: string[];
   outstandingFindings: NonNullable<
@@ -49,8 +49,7 @@ export function buildWholePlanReviewPacket(args: {
   plan: ExecutionPlan;
   currentTargetSha: string;
   currentTargetTreeSha: string;
-  fullDiff: string;
-  latestDelta?: string;
+  previousSha?: string;
   completionKind: WholePlanReviewPacket["completionKind"];
   outstandingFindings: WholePlanReviewPacket["outstandingFindings"];
 }): WholePlanReviewPacket {
@@ -87,6 +86,8 @@ export function buildWholePlanReviewPacket(args: {
       commitSha: args.currentTargetSha,
       treeSha: args.currentTargetTreeSha,
     },
+    baseSha: args.state.run.checkout.startHead,
+    ...(args.previousSha ? { previousSha: args.previousSha } : {}),
     outstandingFindings: args.outstandingFindings,
     planContext: [
       "## Immutable execution plan",
@@ -117,11 +118,7 @@ export function buildWholePlanReviewPacket(args: {
       uncertainty.length > 0
         ? uncertainty.map((item) => `- ${item}`).join("\n")
         : "None retained.",
-      "## Complete run diff",
-      `\`\`\`diff\n${args.fullDiff}\n\`\`\``,
     ].join("\n\n"),
-    fullDiff: args.fullDiff,
-    ...(args.latestDelta ? { latestDelta: args.latestDelta } : {}),
     receipts: args.state.publication.receipts,
     uncertainty,
   };
@@ -173,13 +170,6 @@ export async function runWholePlanReview(args: {
       "Anchored whole-plan review target no longer matches its published repair.",
     );
   }
-  const fullDiff = await args.git.diffRange(
-    args.state.run.checkout.startHead,
-    target,
-  );
-  const latestDelta = anchored
-    ? await args.git.diffRange(anchored.targetBaseSha, target)
-    : undefined;
   const outstandingFindings = anchored
     ? epoch!.outstandingFindingIds.map((id) => {
         const finding = epoch!.findings.find(
@@ -206,8 +196,7 @@ export async function runWholePlanReview(args: {
     plan: args.plan,
     currentTargetSha: target,
     currentTargetTreeSha: targetTree,
-    fullDiff,
-    ...(latestDelta ? { latestDelta } : {}),
+    ...(anchored ? { previousSha: anchored.targetBaseSha } : {}),
     completionKind: anchored ? "anchored-review" : "initial-overall-review",
     outstandingFindings,
   });
@@ -224,15 +213,17 @@ export async function runWholePlanReview(args: {
         ? buildAnchoredOverallReviewPrompt({
             planContext: workerPacket.planContext,
             candidateContext: workerPacket.candidateContext,
+            baseSha: workerPacket.baseSha,
             outstandingFindings: workerPacket.outstandingFindings as never,
-            previousCandidate: anchored.targetBaseSha,
-            currentCandidate: anchored.publishedCommitSha,
-            latestDelta: workerPacket.latestDelta ?? "",
+            previousCandidate: workerPacket.previousSha!,
+            currentCandidate: workerPacket.target.commitSha,
             worktreePath: workerPacket.workspace.path,
           })
         : buildInitialOverallReviewPrompt({
             planContext: workerPacket.planContext,
             candidateContext: workerPacket.candidateContext,
+            baseSha: workerPacket.baseSha,
+            currentSha: workerPacket.target.commitSha,
             worktreePath: workerPacket.workspace.path,
           }),
   });

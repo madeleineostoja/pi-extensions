@@ -88,20 +88,24 @@ describe("scheduler planning and candidate selection", () => {
       evidence: "Existing endpoint satisfies the contract.",
     };
 
+    const plan = planFor(state.run.checkout.root);
+    plan.tasks[0]!.sourcePaths = [
+      plan.tasks[0]!.sourcePaths[0]!,
+      plan.tasks[0]!.sourcePaths[0]!,
+    ];
     const packet = buildReviewPacket({
       state,
-      plan: planFor(state.run.checkout.root),
+      plan,
       workstream: { kind: "source", id: "first-stream" },
-      baseToTipDiff: "",
     });
 
     expect(packet.contracts.map((task) => task.id)).toEqual(["first"]);
     expect(packet.satisfiedEvidence).toEqual({
       first: "Existing endpoint satisfies the contract.",
     });
-    expect(packet.sourceMaterial[0]).toMatchObject({
-      path: expect.any(String),
-    });
+    expect(packet.sourceMaterial).toEqual([
+      expect.objectContaining({ path: expect.any(String) }),
+    ]);
     expect(packet.verificationEvidence?.verification).toHaveLength(1);
   });
 
@@ -189,7 +193,6 @@ describe("scheduler publication and whole-plan lifecycle", () => {
       workstream: { kind: "source", id: "first-stream" },
       historicalBaseSha: "base",
       targetSha: "current-target",
-      interveningDiff: "diff --git a/x b/x",
       evidence: "Target advanced after the original review.",
       status: "pending",
     };
@@ -292,6 +295,10 @@ describe("scheduler publication and whole-plan lifecycle", () => {
           checkpoint: "commit",
           changedPaths: ["src/conflict.ts"],
           stateEvidence: "Conflict markers remain in owned staging.",
+          stagingComparison: {
+            baseSha: "target-base",
+            treeSha: "staged-tree",
+          },
         },
       },
     });
@@ -303,6 +310,10 @@ describe("scheduler publication and whole-plan lifecycle", () => {
       kind: "reconciliation",
       outcome: "failed",
     });
+    expect(
+      Object.values(failed.state.recoveryEpisodes).at(-1)?.workspace
+        .stagingComparison,
+    ).toEqual({ baseSha: "target-base", treeSha: "staged-tree" });
   });
 
   it("routes a failed whole-plan assessment through the recovery role before retrying", async () => {

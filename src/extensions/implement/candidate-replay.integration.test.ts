@@ -280,6 +280,10 @@ describe("CandidateReplayEngine", () => {
     expect(result.command.output).toContain("rejected");
     expect(result.staging.replayPatch).toContain("+hook");
     expect(result.staging.replayPaths).toEqual(["candidate.txt", "target.txt"]);
+    expect(result.staging.treeSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(
+      git(root, "diff", target, result.staging.treeSha!, "--", "target.txt"),
+    ).toContain("+hook");
     expect(await client.head()).toBe(target);
     await removeStaging(root, result.staging);
   });

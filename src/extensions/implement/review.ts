@@ -62,7 +62,6 @@ export type ReviewPacket = {
   uncertainty?: string;
   outstandingFindings: ReviewFinding[];
   latestCorrection?: ReviewState["latestCorrection"];
-  baseToTipDiff: string;
 };
 
 export type InitialSourceReviewPacket = ReviewPacket & {
@@ -102,7 +101,6 @@ export type OverallAnchoredReviewPacket = {
   previousCandidate: RunState["candidates"][string];
   candidate: RunState["candidates"][string];
   outstandingFindings: ReviewFinding[];
-  latestDelta: string;
 };
 
 export type ReviewOutcome =
@@ -161,7 +159,6 @@ export function buildReviewPacket(args: {
   state: RunState;
   plan: ExecutionPlan;
   workstream: RuntimeWorkstream;
-  baseToTipDiff: string;
 }): ReviewPacket {
   const identity = `${args.state.run.id}/${reviewKey(args.workstream)}`;
   if (args.state.executionPlan?.hash !== args.plan.executionPlanHash) {
@@ -221,12 +218,15 @@ export function buildReviewPacket(args: {
       ? { previousCandidate: args.state.candidates[review.previousCandidateId] }
       : {}),
     contracts,
-    sourceMaterial: contracts.flatMap((task) =>
-      task.sourcePaths.map((sourcePath) => {
-        const path = resolveCorpusPath(args.state, args.plan, sourcePath);
-        return { path, content: readFileSync(path, "utf-8") };
-      }),
-    ),
+    sourceMaterial: [
+      ...new Set(
+        contracts.flatMap((task) =>
+          task.sourcePaths.map((sourcePath) =>
+            resolveCorpusPath(args.state, args.plan, sourcePath),
+          ),
+        ),
+      ),
+    ].map((path) => ({ path, content: readFileSync(path, "utf-8") })),
     checkpoints,
     satisfiedEvidence,
     ...(candidate.implementationEvidence
@@ -245,7 +245,6 @@ export function buildReviewPacket(args: {
     ...(review?.latestCorrection
       ? { latestCorrection: review.latestCorrection }
       : {}),
-    baseToTipDiff: args.baseToTipDiff,
   };
 }
 
@@ -404,12 +403,6 @@ export async function runWorkstreamReview(args: {
       state: args.state,
       plan: args.plan,
       workstream: args.workstream,
-      baseToTipDiff: assessment
-        ? assessment.interveningDiff
-        : await args.git.diffRange(
-            previousCandidate?.commitSha ?? candidate.baseSha,
-            candidate.commitSha,
-          ),
     });
   } catch (error) {
     throw new WorkerPacketError(
@@ -553,10 +546,6 @@ async function runOverallAnchoredReview(args: {
       "The overall repair workspace does not match its current candidate.",
     );
   }
-  const latestDelta = await args.git.diffRange(
-    previousCandidate.commitSha,
-    candidate.commitSha,
-  );
   const available = new Map(
     workstreamReviewFindings(args.state, args.workstream).map((finding) => [
       finding.id,
@@ -591,7 +580,6 @@ async function runOverallAnchoredReview(args: {
     previousCandidate,
     candidate,
     outstandingFindings: findings,
-    latestDelta,
   };
   const handle = await spawnValidatedWorker({
     packet,
@@ -603,10 +591,10 @@ async function runOverallAnchoredReview(args: {
       buildAnchoredOverallReviewPrompt({
         planContext: workerPacket.planContext,
         candidateContext: workerPacket.candidateContext,
+        baseSha: workerPacket.candidate.baseSha,
         outstandingFindings: workerPacket.outstandingFindings as never,
         previousCandidate: workerPacket.previousCandidate.commitSha,
         currentCandidate: workerPacket.candidate.commitSha,
-        latestDelta: workerPacket.latestDelta,
         worktreePath: workerPacket.workspace.path,
       }),
   });
@@ -628,7 +616,6 @@ async function runOverallAnchoredReview(args: {
     {
       previousCandidate,
       candidate,
-      latestDelta,
       completion: result.result,
     },
   );

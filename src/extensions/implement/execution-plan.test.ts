@@ -119,6 +119,25 @@ describe("strict execution-plan compiler", () => {
     expect(prompt).toContain("complete source plan is the shipment boundary");
   });
 
+  it("embeds the source plan once and keeps linked corpus material", () => {
+    const result = buildPlannerPacket({
+      ...input(),
+      workspacePath: "/repo",
+      checkoutRoot: "/repo",
+      runId: "run-1",
+    });
+    if (!result.ok) {
+      throw new Error(result.reason);
+    }
+
+    const prompt = buildStrictExecutionPlannerPrompt(result.value);
+
+    expect(prompt.split(planContent).length - 1).toBe(1);
+    expect(result.value.corpus).not.toContainEqual(
+      expect.objectContaining({ absolutePath: planPath }),
+    );
+  });
+
   it("deduplicates recursive corpus cycles before invoking the planner", async () => {
     const directory = mkdtempSync(join(tmpdir(), "pipkin-implement-plan-"));
     const sourcePath = join(directory, "plan.md");

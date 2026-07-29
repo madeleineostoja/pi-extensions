@@ -268,6 +268,10 @@ const recoverySchema = z
         checkpoint: nonEmpty.optional(),
         changedPaths: z.array(nonEmpty),
         stateEvidence: nonEmpty,
+        stagingComparison: z
+          .object({ baseSha: nonEmpty, treeSha: nonEmpty })
+          .strict()
+          .optional(),
       })
       .strict(),
     outstandingFindingIds: z.array(nonEmpty),
@@ -302,7 +306,6 @@ const satisfactionAssessmentSchema = z
     workstream: z.object({ kind: z.literal("source"), id }).strict(),
     historicalBaseSha: nonEmpty,
     targetSha: nonEmpty,
-    interveningDiff: z.string(),
     evidence: nonEmpty,
     status: z.enum(["pending", "approved", "rejected"]),
   })

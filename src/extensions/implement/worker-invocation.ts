@@ -17,8 +17,6 @@ import type {
   SubagentHandle,
 } from "./subagents.js";
 
-export const MAX_WORKER_PROMPT_BYTES = 524_288;
-
 export class WorkerPacketError extends Error {}
 
 const completionContracts = {
@@ -109,12 +107,6 @@ export async function spawnValidatedWorker<
     );
   }
   const prompt = args.render(packet);
-  const actualBytes = Buffer.byteLength(prompt, "utf8");
-  if (actualBytes > MAX_WORKER_PROMPT_BYTES) {
-    throw new WorkerPacketError(
-      `${roleName} packet ${packet.identity} is ${actualBytes} bytes; maximum is ${MAX_WORKER_PROMPT_BYTES}.`,
-    );
-  }
   return args.subagents.spawn({
     type: role.type,
     role: roleName,

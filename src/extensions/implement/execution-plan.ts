@@ -148,7 +148,9 @@ export function buildPlannerPacket(
       },
       planContent: args.plan.content,
       unchecked,
-      corpus: args.materialStore.files,
+      corpus: args.materialStore.files.filter(
+        (file) => file.absolutePath !== args.materialStore.entryPath,
+      ),
       baseSha: args.baseSha,
       workerConcurrency: args.workerConcurrency,
     },

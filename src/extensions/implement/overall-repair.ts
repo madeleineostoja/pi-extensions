@@ -21,9 +21,9 @@ export type OverallRepairPacket = {
   identity: string;
   workspace: { path: string; mutationBoundary: string };
   runId: string;
+  runBaseSha: string;
   baseline: RunState["candidates"][string];
   plan: ExecutionPlan;
-  runDiff: string;
   findings: RunState["findings"][string][];
 };
 
@@ -124,12 +124,9 @@ export async function runOverallRepair(args: {
         "Commit tracked corrections only in this owned worktree.",
     },
     runId: args.state.run.id,
+    runBaseSha: args.state.run.checkout.startHead,
     baseline,
     plan: args.plan,
-    runDiff: await args.git.diffRange(
-      args.state.run.checkout.startHead,
-      baseline.commitSha,
-    ),
     findings,
   };
   const handle = await spawnValidatedWorker({

@@ -51,7 +51,6 @@ export type SchedulerActorOptions = {
   ) => void;
   awaitOwnedProcesses?: () => Promise<void>;
   targetHead?: () => Promise<string>;
-  targetDiff?: (from: string, to: string) => Promise<string>;
   captureTargetBoundary?: () => Promise<string>;
   now?: () => string;
 };
@@ -259,15 +258,10 @@ export class SchedulerActor {
         );
       });
     if (staleDependency) {
-      const dependency = state.workstreams.source[staleDependency]!;
-      const candidate = state.candidates[dependency.candidateId!]!;
       return {
         kind: "satisfaction_reassessment_requested",
         workstream: { kind: "source", id: staleDependency },
         targetSha: baseSha,
-        interveningDiff: this.options.targetDiff
-          ? await this.options.targetDiff(candidate.baseSha, baseSha)
-          : "",
       };
     }
     return {

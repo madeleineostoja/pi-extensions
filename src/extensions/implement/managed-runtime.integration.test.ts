@@ -17,11 +17,7 @@ import {
   RuntimeSubagentClient,
   type ImplementRoles,
 } from "./subagents.js";
-import {
-  MAX_WORKER_PROMPT_BYTES,
-  spawnValidatedWorker,
-  WorkerPacketError,
-} from "./worker-invocation.js";
+import { spawnValidatedWorker } from "./worker-invocation.js";
 
 function roles(): ImplementRoles {
   const resolved = resolveImplementRoles({
@@ -132,8 +128,16 @@ describe("Implement managed runtime integration", () => {
     await runtime.dispose();
   });
 
-  it("rejects an invalid packet before creating a managed child or provider request", async () => {
-    const harness = await createManagedSessionHarness([]);
+  it("passes a large rendered prompt to a managed child", async () => {
+    const harness = await createManagedSessionHarness([
+      fauxAssistantMessage(
+        fauxToolCall(
+          MANAGED_COMPLETION_TOOL_NAME,
+          { verdict: "approved" },
+          { id: "completion" },
+        ),
+      ),
+    ]);
     const extension = pi();
     const runtime = new SubagentRuntime(extension as never, {
       createSession: harness.createSession,
@@ -144,24 +148,26 @@ describe("Implement managed runtime integration", () => {
       "run-1",
     );
 
-    await expect(
-      spawnValidatedWorker({
-        packet: {
-          role: "reviewer" as const,
-          completionKind: "initial-review" as const,
-          identity: "run-1/work/candidate",
-          workspace: { path: MANAGED_TEST_CWD },
-        },
-        subagents: client,
-        roles: roles(),
-        taskId: "work",
-        description: "Review candidate",
-        render: () => "x".repeat(MAX_WORKER_PROMPT_BYTES + 1),
-      }),
-    ).rejects.toBeInstanceOf(WorkerPacketError);
+    const handle = await spawnValidatedWorker({
+      packet: {
+        role: "reviewer" as const,
+        completionKind: "initial-review" as const,
+        identity: "run-1/work/candidate",
+        workspace: { path: MANAGED_TEST_CWD },
+      },
+      subagents: client,
+      roles: roles(),
+      taskId: "work",
+      description: "Review candidate",
+      render: () => "x".repeat(524_289),
+    });
 
-    expect(harness.sessions).toHaveLength(0);
-    expect(harness.faux.state.callCount).toBe(0);
+    await expect(client.waitFor(handle)).resolves.toEqual({
+      status: "completed",
+      result: { verdict: "approved" },
+    });
+    expect(harness.sessions).toHaveLength(1);
+    expect(harness.faux.state.callCount).toBe(1);
     await runtime.dispose();
   });
 });

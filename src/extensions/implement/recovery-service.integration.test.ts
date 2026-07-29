@@ -74,6 +74,7 @@ describe("recovery service Git boundary", () => {
     git(candidatePath, "commit", "-m", "feat: candidate");
     const candidateGit = client.forWorktree(candidatePath);
     const candidateSha = await candidateGit.head();
+    const candidateTreeSha = await candidateGit.treeAt(candidateSha);
     const candidateId = `candidate:work:${candidateSha}`;
     const state = {
       run: {
@@ -118,7 +119,11 @@ describe("recovery service Git boundary", () => {
             id: "source:work",
             checkpoint: candidateSha,
             changedPaths: ["generated.txt"],
-            stateEvidence: "Staging diff:\n+generated hook correction",
+            stateEvidence: "The commit hook changed tracked content.",
+            stagingComparison: {
+              baseSha,
+              treeSha: candidateTreeSha,
+            },
           },
           outstandingFindingIds: [],
           status: "open",
@@ -137,7 +142,7 @@ describe("recovery service Git boundary", () => {
           workstream: { kind: "source", id: "work" },
           baseSha,
           commitSha: candidateSha,
-          treeSha: await candidateGit.treeAt(candidateSha),
+          treeSha: candidateTreeSha,
         },
       },
       protectedArtifactHashes: {},
@@ -182,7 +187,12 @@ describe("recovery service Git boundary", () => {
     });
 
     expect(spawned).toMatchObject({ cwd: candidatePath });
-    expect(spawned?.prompt).toContain("Staging diff:");
+    expect(spawned?.prompt).not.toContain("Staging diff:");
+    expect(spawned?.prompt).not.toContain("generated hook correction");
+    expect(spawned?.prompt).toContain("Retained failed staging state");
+    expect(spawned?.prompt).toContain(
+      `git diff --stat ${baseSha} ${candidateTreeSha}`,
+    );
     expect(spawned?.prompt).not.toContain("staging-");
     expect(result.correction).toMatchObject({
       changedPaths: ["correction.txt"],

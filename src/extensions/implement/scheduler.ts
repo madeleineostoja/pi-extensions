@@ -18,6 +18,7 @@ import type { RunState } from "./store.js";
 
 export type RuntimeWorkstream = RunState["candidates"][string]["workstream"];
 type ProcessLease = RunState["processLeases"][string];
+type RecoveryWorkspace = RunState["recoveryEpisodes"][string]["workspace"];
 
 type ImplementationOutcome =
   | {
@@ -74,12 +75,7 @@ export type SchedulerEvent =
       kind: "gate_recorded";
       workstream: RuntimeWorkstream;
       result: RecoveryGateResult;
-      workspace: {
-        id: string;
-        checkpoint?: string;
-        changedPaths: string[];
-        stateEvidence: string;
-      };
+      workspace: RecoveryWorkspace;
     }
   | {
       kind: "review_completed";
@@ -117,7 +113,6 @@ export type SchedulerEvent =
       kind: "satisfaction_reassessment_requested";
       workstream: Extract<RuntimeWorkstream, { kind: "source" }>;
       targetSha: string;
-      interveningDiff: string;
     }
   | {
       kind: "satisfaction_completed";
@@ -132,7 +127,6 @@ export type SchedulerEvent =
       workstream: Extract<RuntimeWorkstream, { kind: "source" }>;
       leaseId: string;
       targetSha: string;
-      interveningDiff: string;
       evidence: string;
     }
   | {
@@ -143,12 +137,7 @@ export type SchedulerEvent =
         | {
             kind: "prepared";
             evidence: string;
-            workspace: {
-              id: string;
-              checkpoint?: string;
-              changedPaths: string[];
-              stateEvidence: string;
-            };
+            workspace: RecoveryWorkspace;
           }
         | {
             kind:
@@ -157,12 +146,7 @@ export type SchedulerEvent =
               | "hook_rejected";
             evidence: string;
             command?: RecoveryGateResult["command"];
-            workspace: {
-              id: string;
-              checkpoint?: string;
-              changedPaths: string[];
-              stateEvidence: string;
-            };
+            workspace: RecoveryWorkspace;
           };
     }
   | {
@@ -1172,7 +1156,6 @@ export function reduceRunEvent(
         workstream: event.workstream,
         historicalBaseSha: candidate.baseSha,
         targetSha: event.targetSha,
-        interveningDiff: "",
         evidence: event.evidence,
         status: "approved",
       };
@@ -1234,7 +1217,6 @@ export function reduceRunEvent(
             workstream: event.workstream,
             historicalBaseSha: candidate.baseSha,
             targetSha: event.targetSha,
-            interveningDiff: event.interveningDiff,
             evidence: event.evidence,
             status: "pending",
           })
@@ -1247,7 +1229,6 @@ export function reduceRunEvent(
         workstream: event.workstream,
         historicalBaseSha: candidate.baseSha,
         targetSha: event.targetSha,
-        interveningDiff: event.interveningDiff,
         evidence: event.evidence,
         status: "pending",
       };
@@ -1283,7 +1264,6 @@ export function reduceRunEvent(
         workstream: event.workstream,
         historicalBaseSha: candidate.baseSha,
         targetSha: event.targetSha,
-        interveningDiff: event.interveningDiff,
         evidence:
           "A later target publication made the satisfaction receipt stale.",
         status: "pending",
@@ -2267,6 +2247,7 @@ function recoveryWorkspace(
   failedWorkspace?: {
     changedPaths: string[];
     stateEvidence: string;
+    stagingComparison?: { baseSha: string; treeSha: string };
   },
 ): RunState["recoveryEpisodes"][string]["workspace"] {
   const candidate = candidateId ? state.candidates[candidateId] : undefined;
@@ -2277,6 +2258,9 @@ function recoveryWorkspace(
     stateEvidence:
       failedWorkspace?.stateEvidence ??
       "Workspace state was retained by the failed gate.",
+    ...(failedWorkspace?.stagingComparison
+      ? { stagingComparison: failedWorkspace.stagingComparison }
+      : {}),
   };
 }
 

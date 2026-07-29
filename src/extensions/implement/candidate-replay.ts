@@ -461,7 +461,7 @@ export class CandidateReplayEngine {
     );
     const command = hookCommandEvidence(commit, staging.worktreePath);
     if (commit.exitCode !== 0) {
-      const [replayPatch, replayPaths] = await Promise.all([
+      const [replayPatch, replayPaths, treeSha] = await Promise.all([
         stagingGit.stagedDiff(),
         stagingGit.stagedNameStatus().then((output) =>
           output
@@ -470,6 +470,7 @@ export class CandidateReplayEngine {
             .filter(Boolean)
             .sort(),
         ),
+        stagingGit.tree(),
       ]);
       await assertTargetUnchanged(this.options.git, target, this.options);
       return {
@@ -479,6 +480,7 @@ export class CandidateReplayEngine {
           replayPatch,
           replayPatchHash: patchHash(replayPatch),
           replayPaths,
+          treeSha,
         },
         evidence: command.output || "The ordinary staging commit was rejected.",
         command,
