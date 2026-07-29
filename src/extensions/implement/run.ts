@@ -305,6 +305,7 @@ export function createRuntime(args: {
                     episode.workstream.id === sourceWorkstreamId,
                 )?.workspace.checkpoint,
                 artifactsPath,
+                artifactLeaseId: effect.leaseId,
               })
             : {
                 kind: "candidate_ready" as const,

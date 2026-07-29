@@ -1,6 +1,5 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import type { Static } from "typebox";
 import { writeAtomicJson } from "./atomic-json.js";
 import {
   TaskWorkspaceManager,
@@ -8,21 +7,14 @@ import {
 } from "./candidate-worker.js";
 import { captureRestoreSnapshot, snapshotChanged } from "./candidate.js";
 import { readExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
-import {
-  canonicalCommitSha,
-  changedPathsBetween,
-  type GitClient,
-} from "./git.js";
+import { changedPathsBetween, type GitClient } from "./git.js";
 import { buildWorkstreamImplementerPrompt } from "./prompts.js";
 import {
   canonicalPath,
   protectedArtifactsMatch as artifactHashesMatch,
   resolveCorpusPath as resolveImmutableCorpusPath,
 } from "./source-integrity.js";
-import {
-  workstreamImplementerResultSchema,
-  type WorkstreamImplementerCompletion,
-} from "./result-schemas.js";
+import { type WorkstreamImplementerCompletion } from "./result-schemas.js";
 import type {
   ImplementRoles,
   SubagentClient,
@@ -82,6 +74,7 @@ export type WorkstreamCandidateLifecycleArgs = {
   recoveryObligations?: string[];
   trustedCheckpoint?: string;
   artifactsPath?: string;
+  artifactLeaseId?: string;
 };
 
 type WorkspaceObservation = {
@@ -229,18 +222,13 @@ export async function runWorkstreamCandidate(
     protectedPaths,
   );
   if (targetChanged || !(await protectedArtifactsMatch(args.state))) {
-    writeEvidence(args.artifactsPath, args.workstreamId, {
+    writeEvidence(args, {
       status: "target_changed",
+      ...(result?.status === "completed" ? { completion: result.result } : {}),
     });
     throw new TargetBoundaryError(
       "Implementer changed the target checkout or protected artifacts.",
     );
-  }
-  if (result?.status === "completed") {
-    writeEvidence(args.artifactsPath, args.workstreamId, {
-      status: "submitted",
-      completion: result.result,
-    });
   }
   const candidateProtectedPaths = protectedPaths
     .map((path) => protectedPathInWorktree(args.state, path))
@@ -271,7 +259,7 @@ export async function runWorkstreamCandidate(
   }
   if (failure) {
     const evidence = `Workstream implementer failed: ${message(failure)}`;
-    writeEvidence(args.artifactsPath, args.workstreamId, {
+    writeEvidence(args, {
       status: "failed",
       error: message(failure),
       observation,
@@ -287,7 +275,7 @@ export async function runWorkstreamCandidate(
   }
   if (!result || result.status !== "completed") {
     const evidence = `Workstream implementer ${result?.status}: ${result?.error ?? "no completion"}`;
-    writeEvidence(args.artifactsPath, args.workstreamId, {
+    writeEvidence(args, {
       ...result,
       observation,
       trustedCheckpoint,
@@ -301,13 +289,6 @@ export async function runWorkstreamCandidate(
     );
   }
 
-  writeEvidence(args.artifactsPath, args.workstreamId, {
-    status: "observed",
-    completion: result.result,
-    observation,
-    trustedCheckpoint,
-    trustedCandidate,
-  });
   try {
     const outcome = await validateCompletion({
       completion: result.result,
@@ -317,7 +298,7 @@ export async function runWorkstreamCandidate(
       observation,
       protectedPaths: candidateProtectedPaths,
     });
-    const evidencePath = writeEvidence(args.artifactsPath, args.workstreamId, {
+    const evidencePath = writeEvidence(args, {
       status: "completed",
       completion: result.result,
       observation,
@@ -326,7 +307,7 @@ export async function runWorkstreamCandidate(
     return evidencePath ? { ...outcome, evidencePath } : outcome;
   } catch (error) {
     const evidence = message(error);
-    writeEvidence(args.artifactsPath, args.workstreamId, {
+    writeEvidence(args, {
       status: "validation_failed",
       completion: result.result,
       observation,
@@ -483,24 +464,6 @@ async function validateCompletion(args: {
   observation: WorkspaceObservation;
   protectedPaths: string[];
 }): Promise<WorkstreamCandidateOutcome> {
-  const taskIds = new Set(args.workstream.taskIds);
-  const completions = new Map<
-    string,
-    Static<typeof workstreamImplementerResultSchema>["taskCompletions"][number]
-  >();
-  for (const completion of args.completion.taskCompletions) {
-    if (!taskIds.has(completion.taskId) || completions.has(completion.taskId)) {
-      throw new WorkstreamCandidateLifecycleError(
-        "Workstream completion must map every assigned task exactly once.",
-      );
-    }
-    completions.set(completion.taskId, completion);
-  }
-  if (completions.size !== taskIds.size) {
-    throw new WorkstreamCandidateLifecycleError(
-      "Workstream completion must map every assigned task exactly once.",
-    );
-  }
   if (args.observation.branch !== args.workspace.branchName) {
     throw new WorkstreamCandidateLifecycleError(
       "Workstream candidate is no longer on its owned branch.",
@@ -525,26 +488,21 @@ async function validateCompletion(args: {
       : {}),
   };
   if (args.completion.outcome === "already_satisfied") {
-    if (args.completion.candidateTip !== undefined) {
-      throw new WorkstreamCandidateLifecycleError(
-        "An already-satisfied workstream cannot return a candidate tip.",
-      );
-    }
     if (args.observation.head !== args.workspace.baseSha) {
       throw new WorkstreamCandidateLifecycleError(
         "An already-satisfied workstream cannot create commits.",
       );
     }
-    const evidence: Record<string, string> = {};
-    for (const taskId of args.workstream.taskIds) {
-      const completion = completions.get(taskId)!;
-      if (completion.kind !== "already_satisfied" || !completion.evidence) {
-        throw new WorkstreamCandidateLifecycleError(
-          "Already-satisfied tasks require concrete repository-state evidence.",
-        );
-      }
-      evidence[taskId] = completion.evidence;
+    const satisfactionEvidence =
+      "evidence" in args.completion ? args.completion.evidence : undefined;
+    if (!satisfactionEvidence) {
+      throw new WorkstreamCandidateLifecycleError(
+        "An already-satisfied workstream requires concrete repository-state evidence.",
+      );
     }
+    const evidence = Object.fromEntries(
+      args.workstream.taskIds.map((taskId) => [taskId, satisfactionEvidence]),
+    );
     return {
       kind: "satisfaction_claimed",
       candidate: {
@@ -564,24 +522,10 @@ async function validateCompletion(args: {
     };
   }
 
-  if (!args.completion.candidateTip) {
-    throw new WorkstreamCandidateLifecycleError(
-      "A changed workstream requires its final candidate tip.",
-    );
-  }
-  const candidateTip = await canonicalCommit(
-    args.workspaceGit,
-    args.completion.candidateTip,
-    "Candidate tip",
-  );
+  const candidateTip = args.observation.head;
   if (candidateTip === args.workspace.baseSha) {
     throw new WorkstreamCandidateLifecycleError(
       "A changed workstream must advance beyond its assigned base.",
-    );
-  }
-  if (args.observation.head !== candidateTip) {
-    throw new WorkstreamCandidateLifecycleError(
-      "Candidate tip does not match the workstream worktree HEAD.",
     );
   }
   if (
@@ -597,11 +541,6 @@ async function validateCompletion(args: {
       "A changed workstream must change the candidate tree.",
     );
   }
-  if ((await args.workspaceGit.treeAt(candidateTip)) !== treeSha) {
-    throw new WorkstreamCandidateLifecycleError(
-      "Candidate tip tree does not match its clean worktree.",
-    );
-  }
   if (
     await candidateChangesProtectedPaths(
       args.workspaceGit,
@@ -614,42 +553,9 @@ async function validateCompletion(args: {
       "Candidate changes protected plan artifacts.",
     );
   }
-  const checkpoints: Record<string, string> = {};
-  const satisfied: Record<string, string> = {};
-  for (const taskId of args.workstream.taskIds) {
-    const completion = completions.get(taskId)!;
-    if (completion.kind === "already_satisfied" && completion.evidence) {
-      satisfied[taskId] = completion.evidence;
-      continue;
-    }
-    if (completion.kind !== "checkpoint") {
-      throw new WorkstreamCandidateLifecycleError(
-        "Changed tasks require a checkpoint or concrete already-satisfied evidence.",
-      );
-    }
-    const checkpoint = await canonicalCommit(
-      args.workspaceGit,
-      completion.checkpoint ?? candidateTip,
-      `Task ${taskId} checkpoint`,
-    );
-    if (
-      !(await args.workspaceGit.isAncestor(
-        args.workspace.baseSha,
-        checkpoint,
-      )) ||
-      !(await args.workspaceGit.isAncestor(checkpoint, candidateTip))
-    ) {
-      throw new WorkstreamCandidateLifecycleError(
-        `Task ${taskId} checkpoint is not reachable from the candidate tip.`,
-      );
-    }
-    checkpoints[taskId] = checkpoint;
-  }
-  if (Object.keys(checkpoints).length === 0) {
-    throw new WorkstreamCandidateLifecycleError(
-      "A changed workstream requires at least one checkpointed task.",
-    );
-  }
+  const checkpoints = Object.fromEntries(
+    args.workstream.taskIds.map((taskId) => [taskId, candidateTip]),
+  );
   return {
     kind: "candidate_ready",
     candidate: {
@@ -661,7 +567,7 @@ async function validateCompletion(args: {
       implementationEvidence,
     },
     checkpoints,
-    satisfied,
+    satisfied: {},
     summary: args.completion.summary,
     verification: args.completion.verification,
     ...(args.completion.uncertainty
@@ -800,20 +706,6 @@ function workspaceEvidence(
   };
 }
 
-async function canonicalCommit(
-  git: GitClient,
-  revision: string,
-  label: string,
-): Promise<string> {
-  try {
-    return await canonicalCommitSha(git, revision);
-  } catch {
-    throw new WorkstreamCandidateLifecycleError(
-      `${label} does not resolve to a commit.`,
-    );
-  }
-}
-
 function resolveCorpusPath(
   plan: ExecutionPlan,
   state: RunState,
@@ -865,15 +757,19 @@ async function protectedArtifactsMatch(state: RunState): Promise<boolean> {
 }
 
 function writeEvidence(
-  artifactsPath: string | undefined,
-  workstreamId: string,
+  args: WorkstreamCandidateLifecycleArgs,
   evidence: unknown,
 ): string | undefined {
-  if (!artifactsPath) {
+  if (!args.artifactsPath || !args.artifactLeaseId) {
     return undefined;
   }
-  mkdirSync(artifactsPath, { recursive: true });
-  const path = join(artifactsPath, `${workstreamId}-implementation.json`);
+  const path = join(
+    args.artifactsPath,
+    "implementation",
+    args.workstreamId,
+    `${args.artifactLeaseId}.json`,
+  );
+  mkdirSync(dirname(path), { recursive: true });
   writeAtomicJson(path, evidence);
   return path;
 }

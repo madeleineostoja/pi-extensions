@@ -41,34 +41,27 @@ export const strictExecutionPlanSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export const workstreamImplementerResultSchema = Type.Object(
-  {
-    outcome: Type.Union([
-      Type.Literal("changed"),
-      Type.Literal("already_satisfied"),
-    ]),
-    summary: nonEmptyString(),
-    verification: Type.Array(nonEmptyString(), { minItems: 1 }),
-    uncertainty: Type.Optional(nonEmptyString()),
-    taskCompletions: Type.Array(
-      Type.Object(
-        {
-          taskId: nonEmptyString(),
-          kind: Type.Union([
-            Type.Literal("checkpoint"),
-            Type.Literal("already_satisfied"),
-          ]),
-          checkpoint: Type.Optional(nonEmptyString()),
-          evidence: Type.Optional(nonEmptyString()),
-        },
-        { additionalProperties: false },
-      ),
-      { minItems: 1 },
-    ),
-    candidateTip: Type.Optional(nonEmptyString()),
-  },
-  { additionalProperties: false },
-);
+export const workstreamImplementerResultSchema = Type.Union([
+  Type.Object(
+    {
+      outcome: Type.Literal("changed"),
+      summary: nonEmptyString(),
+      verification: Type.Array(nonEmptyString(), { minItems: 1 }),
+      uncertainty: Type.Optional(nonEmptyString()),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      outcome: Type.Literal("already_satisfied"),
+      evidence: nonEmptyString(),
+      summary: nonEmptyString(),
+      verification: Type.Array(nonEmptyString(), { minItems: 1 }),
+      uncertainty: Type.Optional(nonEmptyString()),
+    },
+    { additionalProperties: false },
+  ),
+]);
 
 export const directReviewFindingSchema = Type.Object(
   {

@@ -214,30 +214,19 @@ function agent(
   };
 }
 
-async function changedResult(
-  cwd: string,
-  taskIds: string[],
-  explicitCheckpoints = true,
-) {
+async function changedResult(cwd: string, taskIds: string[]) {
   const client = new ExecGitClient(cwd);
   for (const taskId of taskIds) {
     writeFileSync(join(cwd, `${taskId}.txt`), `${taskId}\n`);
   }
   git(cwd, "add", "-A");
   await client.checkpoint("feat: implement workstream", false);
-  const checkpoint = await client.head();
   return {
     status: "completed" as const,
     result: {
       outcome: "changed" as const,
       summary: "Implemented the workstream and repaired local runtime state.",
       verification: ["Focused workstream tests passed."],
-      taskCompletions: taskIds.map((taskId) => ({
-        taskId,
-        kind: "checkpoint" as const,
-        ...(explicitCheckpoints ? { checkpoint } : {}),
-      })),
-      candidateTip: checkpoint,
     },
   };
 }
@@ -250,7 +239,7 @@ afterEach(() => {
 });
 
 describe("workstream candidate lifecycle", () => {
-  it("runs ordered tasks in one workspace and retains their checkpoint mapping", async () => {
+  it("derives every changed task checkpoint from the observed candidate", async () => {
     const subject = await fixture({
       workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
     });
@@ -270,6 +259,7 @@ describe("workstream candidate lifecycle", () => {
         "run-1",
         "artifacts",
       ),
+      artifactLeaseId: "lease-combined",
     });
 
     expect(outcome).toMatchObject({
@@ -285,48 +275,130 @@ describe("workstream candidate lifecycle", () => {
     if (outcome.kind !== "candidate_ready") {
       throw new Error("Expected a candidate-ready outcome.");
     }
-    expect(outcome.checkpoints.first).toBe(outcome.checkpoints.second);
-    expect(readFileSync(join(subject.root, "plan.md"), "utf-8")).toBe(
-      subject.planContent,
-    );
-    expect(outcome.evidencePath).toContain("combined-implementation.json");
-  });
-
-  it("uses the candidate tip when changed tasks omit explicit checkpoints", async () => {
-    const subject = await fixture({
-      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
-    });
-    const outcome = await runWorkstreamCandidate({
-      state: subject.run.read(),
-      plan: subject.plan,
-      workstreamId: "combined",
-      git: new ExecGitClient(subject.root),
-      roles: subject.roles,
-      subagents: agent(async (cwd) =>
-        changedResult(cwd, ["first", "second"], false),
-      ),
-      artifactsPath: join(
-        subject.root,
-        ".pi",
-        "pipkin",
-        "implement",
-        "runs",
-        "run-1",
-        "artifacts",
-      ),
-    });
-
-    expect(outcome.kind).toBe("candidate_ready");
-    if (outcome.kind !== "candidate_ready") {
-      throw new Error("Expected a candidate-ready outcome.");
-    }
     expect(outcome.checkpoints).toEqual({
       first: outcome.candidate.commitSha,
       second: outcome.candidate.commitSha,
     });
+    expect(readFileSync(join(subject.root, "plan.md"), "utf-8")).toBe(
+      subject.planContent,
+    );
+    expect(outcome.evidencePath).toContain(
+      "implementation/combined/lease-combined.json",
+    );
   });
 
-  it("retains already-satisfied evidence beside a changed task checkpoint", async () => {
+  it("rejects an already-satisfied outcome after creating commits", async () => {
+    const subject = await fixture({
+      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
+    });
+    await expect(
+      runWorkstreamCandidate({
+        state: subject.run.read(),
+        plan: subject.plan,
+        workstreamId: "combined",
+        git: new ExecGitClient(subject.root),
+        roles: subject.roles,
+        subagents: agent(async (cwd) => {
+          await changedResult(cwd, ["first", "second"]);
+          return {
+            status: "completed" as const,
+            result: {
+              outcome: "already_satisfied" as const,
+              evidence: "The repository already exposes both behaviors.",
+              summary: "Confirmed the workstream is already satisfied.",
+              verification: ["Inspected the repository state."],
+            },
+          };
+        }),
+      }),
+    ).rejects.toThrow("An already-satisfied workstream cannot create commits.");
+  });
+
+  it("retains evidence from a failed lease after a retry succeeds", async () => {
+    const subject = await fixture({
+      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
+    });
+    const artifactsPath = join(
+      subject.root,
+      ".pi",
+      "pipkin",
+      "implement",
+      "runs",
+      "run-1",
+      "artifacts",
+    );
+    await expect(
+      runWorkstreamCandidate({
+        state: subject.run.read(),
+        plan: subject.plan,
+        workstreamId: "combined",
+        git: new ExecGitClient(subject.root),
+        roles: subject.roles,
+        subagents: agent(async () => ({
+          status: "completed",
+          result: {
+            outcome: "changed",
+            summary: "No changes were needed.",
+            verification: ["Inspected the repository."],
+          },
+        })),
+        artifactsPath,
+        artifactLeaseId: "lease-first",
+      }),
+    ).rejects.toThrow(
+      "A changed workstream must advance beyond its assigned base.",
+    );
+    await runWorkstreamCandidate({
+      state: subject.run.read(),
+      plan: subject.plan,
+      workstreamId: "combined",
+      git: new ExecGitClient(subject.root),
+      roles: subject.roles,
+      subagents: agent(async (cwd) => changedResult(cwd, ["first", "second"])),
+      artifactsPath,
+      artifactLeaseId: "lease-retry",
+    });
+
+    const attemptPath = (leaseId: string) =>
+      join(artifactsPath, "implementation", "combined", `${leaseId}.json`);
+    expect(
+      JSON.parse(readFileSync(attemptPath("lease-first"), "utf-8")),
+    ).toMatchObject({
+      status: "validation_failed",
+    });
+    expect(
+      JSON.parse(readFileSync(attemptPath("lease-retry"), "utf-8")),
+    ).toMatchObject({
+      status: "completed",
+    });
+  });
+
+  it("rejects a changed outcome without a changed candidate tree", async () => {
+    const subject = await fixture({
+      workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
+    });
+    await expect(
+      runWorkstreamCandidate({
+        state: subject.run.read(),
+        plan: subject.plan,
+        workstreamId: "combined",
+        git: new ExecGitClient(subject.root),
+        roles: subject.roles,
+        subagents: agent(async () => ({
+          status: "completed",
+          result: {
+            outcome: "changed",
+            summary: "No changes were needed.",
+            verification: ["Inspected the repository."],
+          },
+        })),
+      }),
+    ).rejects.toThrow(
+      "A changed workstream must advance beyond its assigned base.",
+    );
+  });
+
+  it("maps already-satisfied evidence to every assigned task", async () => {
     const subject = await fixture({
       workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
     });
@@ -336,31 +408,22 @@ describe("workstream candidate lifecycle", () => {
       workstreamId: "combined",
       git: new ExecGitClient(subject.root),
       roles: subject.roles,
-      subagents: agent(async (cwd) => {
-        const result = await changedResult(cwd, ["first"]);
-        return {
-          ...result,
-          result: {
-            ...result.result,
-            taskCompletions: [
-              ...result.result.taskCompletions,
-              {
-                taskId: "second",
-                kind: "already_satisfied" as const,
-                evidence:
-                  "The repository already exposed the required second behavior.",
-              },
-            ],
-          },
-        };
-      }),
+      subagents: agent(async () => ({
+        status: "completed",
+        result: {
+          outcome: "already_satisfied",
+          evidence: "The repository already exposes both required behaviors.",
+          summary: "Confirmed the workstream is already satisfied.",
+          verification: ["Inspected the repository state."],
+        },
+      })),
     });
 
     expect(outcome).toMatchObject({
-      kind: "candidate_ready",
-      checkpoints: { first: expect.stringMatching(/^[0-9a-f]{40}$/) },
-      satisfied: {
-        second: "The repository already exposed the required second behavior.",
+      kind: "satisfaction_claimed",
+      evidence: {
+        first: "The repository already exposes both required behaviors.",
+        second: "The repository already exposes both required behaviors.",
       },
     });
   });
@@ -773,6 +836,7 @@ describe("workstream candidate lifecycle", () => {
           return result;
         }),
         artifactsPath,
+        artifactLeaseId: "lease-dirty",
       });
     } catch (error) {
       failure = error as WorkstreamCandidateLifecycleError;
@@ -792,7 +856,7 @@ describe("workstream candidate lifecycle", () => {
     expect(
       JSON.parse(
         readFileSync(
-          join(artifactsPath, "combined-implementation.json"),
+          join(artifactsPath, "implementation", "combined", "lease-dirty.json"),
           "utf-8",
         ),
       ),

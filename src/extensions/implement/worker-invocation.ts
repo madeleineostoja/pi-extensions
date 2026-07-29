@@ -29,7 +29,7 @@ const completionContracts = {
   implementer: {
     role: "implementer",
     readOnly: false,
-    description: "Report the workstream checkpoints or satisfied evidence.",
+    description: "Report the workstream outcome and evidence.",
     schema: workstreamImplementerResultSchema,
   },
   "overall-rework": {
