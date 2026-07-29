@@ -153,7 +153,7 @@ export async function cleanupCompletedRun(args: {
     if (removeRetainedTrash(lease, args.runId)) {
       return [];
     }
-    return cleanupWithLease({ lease, git, runId: args.runId });
+    return await cleanupWithLease({ lease, git, runId: args.runId });
   } finally {
     await lease.release();
   }
@@ -204,7 +204,7 @@ export async function cleanupRun(args: {
     if (removeRetainedTrash(lease, args.runId)) {
       return [];
     }
-    return cleanupWithLease({
+    return await cleanupWithLease({
       lease,
       git,
       runId: args.runId,

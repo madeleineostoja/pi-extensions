@@ -13,7 +13,14 @@ import { stagingIdentity } from "./candidate-replay.js";
 import { TaskWorkspaceManager } from "./candidate-worker.js";
 import { ExecGitClient } from "./git.js";
 import { sweepOwnedRunResources } from "./cleanup.js";
-import { checkoutPaths, type RunState, type RunStore } from "./store.js";
+import { sha256 } from "./source-integrity.js";
+import {
+  acquireCheckoutLease,
+  checkoutPaths,
+  createPlanningRun,
+  type RunState,
+  type RunStore,
+} from "./store.js";
 import { assertProspectiveRunPreflight, cleanupRun } from "./controls.js";
 
 const temporaryDirectories = new Set<string>();
@@ -140,6 +147,50 @@ describe(" controls", () => {
         (path) => path === workspace.worktreePath,
       ),
     ).toBe(false);
+  });
+
+  it("keeps the checkout lease through paused-run cleanup", async () => {
+    const root = repository();
+    const git = new ExecGitClient(root);
+    const runId = "run-1";
+    const gitDir = await git.checkoutIdentity();
+    const sourcePath = join(root, "file.txt");
+    const sourceHash = sha256("base\n");
+    const lease = await acquireCheckoutLease({
+      checkoutRoot: root,
+      gitDir,
+      runId,
+      timeoutMs: 1_000,
+    });
+    const store = createPlanningRun({
+      lease,
+      runId,
+      checkout: {
+        root: lease.owner.checkoutRoot,
+        gitDir: lease.owner.gitDir,
+        commonGitDir: lease.owner.gitDir,
+        branchRef: `refs/heads/${await git.currentBranch()}`,
+        startHead: await git.head(),
+      },
+      source: {
+        entry: { path: sourcePath, normalizedHash: sourceHash },
+        corpus: [{ path: sourcePath, hash: sourceHash }],
+        protectedArtifactHashes: { [sourcePath]: sourceHash },
+      },
+      workerConcurrency: 1,
+    });
+    const state = store.read();
+    await store.update(state.revision, (current) => ({
+      ...current,
+      phase: "paused",
+      pause: { resumePhase: "planning", reason: "Planner failed." },
+    }));
+    await lease.release();
+
+    await expect(cleanupRun({ checkoutRoot: root, runId })).resolves.toEqual(
+      [],
+    );
+    expect(existsSync(join(checkoutPaths(root).runs, runId))).toBe(false);
   });
 
   it("finishes a cleanup interrupted after moving the run to trash", async () => {
