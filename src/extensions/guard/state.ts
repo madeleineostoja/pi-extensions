@@ -4,10 +4,12 @@ import {
   type FixedCapabilities,
   hasGrant,
 } from "./capabilities.js";
+import type { NonoHealth } from "./runtime/nono.js";
 
 export type GuardRuntimeState = {
   boundaryEnabled: () => boolean;
   semanticConfirmationEnabled: () => boolean;
+  backendHealth: () => NonoHealth | undefined;
   fixedCapabilities: () => FixedCapabilities | undefined;
   filesystemGrants: () => readonly FilesystemGrant[];
   protectedReadApprovals: () => readonly FilesystemGrant[];
@@ -17,6 +19,7 @@ export type GuardRuntimeState = {
   clearFilesystemState: () => void;
   resetSession: () => void;
   setBoundaryEnabled: (enabled: boolean) => void;
+  setBackendHealth: (health: NonoHealth | undefined) => void;
   setFixedCapabilities: (capabilities: FixedCapabilities) => void;
   setSemanticConfirmationEnabled: (enabled: boolean) => void;
 };
@@ -25,11 +28,13 @@ export function createGuardRuntimeState(): GuardRuntimeState {
   let boundary = true;
   let semanticConfirmation = true;
   let fixed: FixedCapabilities | undefined;
+  let health: NonoHealth | undefined;
   let reachability: FilesystemGrant[] = [];
   let protectedApprovals: FilesystemGrant[] = [];
 
   return {
     boundaryEnabled: () => boundary,
+    backendHealth: () => health,
     fixedCapabilities: () => fixed,
     semanticConfirmationEnabled: () => semanticConfirmation,
     filesystemGrants: () => reachability,
@@ -56,6 +61,7 @@ export function createGuardRuntimeState(): GuardRuntimeState {
     },
     resetSession() {
       fixed = undefined;
+      health = undefined;
       reachability = [];
       protectedApprovals = [];
       semanticConfirmation = true;
@@ -66,6 +72,9 @@ export function createGuardRuntimeState(): GuardRuntimeState {
         reachability = [];
         protectedApprovals = [];
       }
+    },
+    setBackendHealth(nextHealth) {
+      health = nextHealth;
     },
     setFixedCapabilities(capabilities) {
       fixed = capabilities;

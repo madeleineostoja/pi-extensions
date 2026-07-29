@@ -12,13 +12,13 @@ The root package installs reviewed Nono 0.69.0 releases for supported Macs at:
 
 Guard resolves `PIPKIN_NONO_PATH` when it is set; otherwise it uses only that managed executable. It never searches `PATH`. To skip root-install download deterministically, set `PIPKIN_SKIP_NONO_DOWNLOAD`. The reviewed archive table is the single source for the release version, host selection, URLs, and digests used by both installation and runtime probing.
 
-If Nono is unavailable or fails its version/config probe, run `npm install` from the Pipkin root and reload or restart Pi. Guard does not install or repair Nono while Pi is running.
+If Nono is unavailable, rejects Guard's unrestricted manifest, or fails its filesystem-confinement probe, run `npm install` (or `npm run postinstall`) from the Pipkin root and reload or restart Pi. Guard does not install or repair Nono while Pi is running.
 
 ## Fixed filesystem capabilities
 
 On a supported Mac, Guard starts from the canonical session working directory, ordinary macOS temporary roots, eligible caller cache roots, required system/device/Nix/Node/Pi read roots, narrow agent introspection directories, and the current session file. Optional roots that do not exist are omitted. Guard does not grant the agent directory, `auth.json`, historical sessions, or a home directory by default.
 
-Nono receives manifest version `0.1.0`, explicit filesystem grants, and unrestricted network mode. There are no profiles, deny entries, host rules, or persistent policy files.
+Nono receives manifest version `0.1.0`, explicit filesystem grants, and unrestricted network mode. It confines filesystem access but does not filter Bash network egress. There are no profiles, deny entries, host rules, or persistent policy files.
 
 Explicit reads of workspace `.env` files, project private-key names/extensions, and the designated home credential paths are protected separately from filesystem reachability. Future Guard interactions can approve exact canonical files or directory subtrees for the live session only.
 

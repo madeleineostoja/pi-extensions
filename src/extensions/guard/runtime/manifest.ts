@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,6 +13,15 @@ export type NonoManifest = Readonly<{
   version: "0.1.0";
   filesystem: { grants: NonoManifestGrant[] };
   network: { mode: "unrestricted" };
+}>;
+export type NonoRunResult =
+  | { kind: "exited"; exitCode: number | null; stdout: string; stderr: string }
+  | { kind: "spawn-error" }
+  | { kind: "timeout" }
+  | { kind: "cancelled" };
+export type NonoRunOptions = Readonly<{
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }>;
 
 function manifestGrants(
@@ -62,33 +71,155 @@ export type NonoManifestFile = Readonly<{
 export function writeNonoManifest(manifest: NonoManifest): NonoManifestFile {
   const directory = mkdtempSync(join(tmpdir(), "pipkin-nono-run-"));
   const path = join(directory, "pipkin-nono-manifest.json");
-  writeFileSync(path, JSON.stringify(manifest), { mode: 0o600 });
+  try {
+    writeFileSync(path, JSON.stringify(manifest), { mode: 0o600 });
+  } catch (error) {
+    cleanupDirectory(directory);
+    throw error;
+  }
   let removed = false;
   return {
     path,
     cleanup() {
       if (!removed) {
         removed = true;
-        rmSync(directory, { recursive: true, force: true });
+        cleanupDirectory(directory);
       }
     },
   };
 }
 
-export function runNono(
+function cleanupDirectory(directory: string): void {
+  try {
+    rmSync(directory, { recursive: true, force: true });
+  } catch {}
+}
+
+function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      process.kill(pid, signal);
+    } catch {}
+  }
+}
+
+async function terminateProcessTree(pid: number | undefined): Promise<void> {
+  if (pid === undefined) {
+    return;
+  }
+  signalProcessGroup(pid, "SIGTERM");
+  await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  signalProcessGroup(pid, "SIGKILL");
+}
+
+async function runNonoProcess(
+  binary: string,
+  commandArgs: readonly string[],
+  options: NonoRunOptions,
+): Promise<NonoRunResult> {
+  if (options.signal?.aborted) {
+    return { kind: "cancelled" };
+  }
+  try {
+    return await new Promise<NonoRunResult>((settle) => {
+      let settled = false;
+      let stdout = "";
+      let stderr = "";
+      let timeout: NodeJS.Timeout | undefined;
+      let terminating = false;
+      let abort: () => void = () => undefined;
+      let closed: () => void = () => undefined;
+      const childClosed = new Promise<void>((resolve) => {
+        closed = resolve;
+      });
+      const finish = (result: NonoRunResult) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        options.signal?.removeEventListener("abort", abort);
+        settle(result);
+      };
+      const child = spawn(resolve(binary), commandArgs, {
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const terminate = (result: NonoRunResult) => {
+        if (settled || terminating) {
+          return;
+        }
+        terminating = true;
+        void terminateProcessTree(child.pid).then(
+          async () => {
+            await childClosed;
+            finish(result);
+          },
+          () => finish(result),
+        );
+      };
+      child.stdout.on("data", (chunk: Buffer) => {
+        if (stdout.length < 4096) {
+          stdout += chunk.toString().slice(0, 4096 - stdout.length);
+        }
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        if (stderr.length < 4096) {
+          stderr += chunk.toString().slice(0, 4096 - stderr.length);
+        }
+      });
+      abort = () => terminate({ kind: "cancelled" });
+      options.signal?.addEventListener("abort", abort, { once: true });
+      if (options.timeoutMs !== undefined) {
+        timeout = setTimeout(
+          () => terminate({ kind: "timeout" }),
+          options.timeoutMs,
+        );
+      }
+      child.once("error", () => {
+        closed();
+        if (!terminating) {
+          finish({ kind: "spawn-error" });
+        }
+      });
+      child.once("close", (exitCode) => {
+        closed();
+        if (!terminating) {
+          finish({ kind: "exited", exitCode, stdout, stderr });
+        }
+      });
+    });
+  } catch {
+    return { kind: "spawn-error" };
+  }
+}
+
+export function runNonoCommand(
+  binary: string,
+  args: readonly string[],
+  options: NonoRunOptions = {},
+): Promise<NonoRunResult> {
+  return runNonoProcess(binary, args, options);
+}
+
+export async function runNono(
   binary: string,
   manifest: NonoManifestFile,
   command: string,
   args: readonly string[],
-): ReturnType<typeof execFile> {
-  return execFile(
-    resolve(binary),
-    ["run", "--config", manifest.path, "--", command, ...args],
-    (error) => {
-      manifest.cleanup();
-      if (error) {
-        return;
-      }
-    },
-  );
+  options: NonoRunOptions = {},
+): Promise<NonoRunResult> {
+  try {
+    return await runNonoProcess(
+      binary,
+      ["run", "--config", manifest.path, "--", command, ...args],
+      options,
+    );
+  } finally {
+    manifest.cleanup();
+  }
 }
