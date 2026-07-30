@@ -165,6 +165,21 @@ export async function executeLsp(
       );
     }
     resolvedRoute = route;
+    let position: { line: number; character: number } | undefined;
+    if (positionActions.has(input.action)) {
+      try {
+        position = positionFor(input, target!);
+      } catch (error) {
+        return result(conciseError(error), {
+          action: input.action,
+          available: true,
+          success: false,
+          server: route.kind,
+          workspace: route.workspaceRoot,
+          invalidPosition: true,
+        });
+      }
+    }
     const deadline = Date.now() + boundedTimeout(input.timeout);
     const client = await getLspPool().acquire(
       route.server,
@@ -245,9 +260,7 @@ export async function executeLsp(
             capability as Exclude<typeof capability, "workspaceSymbol">,
             target!,
             languageId(route.kind, target!),
-            positionActions.has(input.action)
-              ? positionFor(input, target!)
-              : undefined,
+            position,
             { timeoutMs: remainingTimeout(deadline), signal },
           );
     return semanticResult(input.action, raw, route, target, ctx.cwd);

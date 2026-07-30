@@ -57,6 +57,44 @@ describe("lsp tool inputs and bounded render data", () => {
     expect(result.content[0]?.text).toContain("requires column or symbol");
   });
 
+  it("reports stale symbol positions without marking the server unavailable", async () => {
+    const cwd = workspace();
+    writeFileSync(join(cwd, "tsconfig.json"), "{}");
+    writeFileSync(join(cwd, "sample.ts"), "const value = 1;\n");
+    const acquire = vi.fn();
+    const notify = vi.fn();
+    (globalThis as Record<symbol, unknown>)[LSP_POOL_MANAGER_KEY] = {
+      pool: {
+        closed: false,
+        acquire,
+        shutdown() {},
+        status: () => [],
+      },
+    };
+
+    const result = await executeLsp(
+      {
+        action: "references",
+        file: "sample.ts",
+        line: 1,
+        symbol: "missing",
+      },
+      undefined,
+      { cwd, ui: { notify } } as never,
+    );
+
+    expect(result.content[0]?.text).toContain(
+      'symbol "missing" occurrence 1 was not found on line 1',
+    );
+    expect(result.details).toMatchObject({
+      available: true,
+      success: false,
+      invalidPosition: true,
+    });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
   it("rejects targets outside the caller workspace without starting a server", async () => {
     const cwd = workspace();
     const outside = workspace();
