@@ -4,9 +4,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CandidateReplayEngine } from "./candidate-replay.js";
-import { ExecGitClient } from "./git.js";
-import { WriteAheadPublisher } from "./write-ahead-publication.js";
+import { CandidateReplayEngine } from "../candidate-replay.js";
+import { ExecGitClient } from "../git.js";
+import { WriteAheadPublisher } from "../write-ahead-publication.js";
 
 const roots = new Set<string>();
 

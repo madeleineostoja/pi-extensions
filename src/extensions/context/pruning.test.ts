@@ -1,7 +1,7 @@
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import registerContext from "./index.ts";
 import { EPOCH_TYPE } from "./policy.ts";
+import { createPruningFlow } from "./pruning.ts";
 
 function readCall(id: string) {
   return {
@@ -44,20 +44,8 @@ function readResult(id: string, lines: number, text = "x".repeat(40_000)) {
 }
 
 function createContextRuntime(manager = SessionManager.inMemory("/work")) {
-  let contextHandler: any;
-  let sessionStartHandler: any;
   const notifications: string[] = [];
-  registerContext({
-    on: (event: string, handler: unknown) => {
-      if (event === "context") {
-        contextHandler = handler;
-      }
-      if (event === "session_start") {
-        sessionStartHandler = handler;
-      }
-    },
-    registerTool: () => {},
-    registerEntryRenderer: () => {},
+  const pruning = createPruningFlow({
     appendEntry: (customType: string, data: unknown) =>
       manager.appendCustomEntry(customType, data),
   } as never);
@@ -67,10 +55,10 @@ function createContextRuntime(manager = SessionManager.inMemory("/work")) {
     sessionManager: manager,
     ui: { notify: (message: string) => notifications.push(message) },
   };
-  sessionStartHandler({ type: "session_start", reason: "startup" }, ctx);
+  pruning.sessionStart(ctx as never);
   return {
     context: (messages: any[]) =>
-      contextHandler({ type: "context", messages }, ctx),
+      (pruning.context as any)({ type: "context", messages }, ctx),
     notifications,
   };
 }
@@ -85,37 +73,13 @@ function staleMessages() {
   ];
 }
 
-describe("Context registration", () => {
-  it("installs the Context epoch renderer without session side effects", () => {
-    let customType: string | undefined;
-    let renderer: unknown;
-    registerContext({
-      on: () => {},
-      registerTool: () => {},
-      registerEntryRenderer: (type: string, registered: unknown) => {
-        customType = type;
-        renderer = registered;
-      },
-    } as never);
-
-    expect(customType).toBe(EPOCH_TYPE);
-    expect(renderer).toBeTypeOf("function");
-  });
-
+describe("pruning flow", () => {
   it("does not alter sibling read results before their first provider exposure", () => {
-    let contextHandler: any;
     const entries: any[] = [
       { type: "model_change", provider: "other", modelId: "other" },
       { type: "model_change", provider: "test", modelId: "model" },
     ];
-    registerContext({
-      on: (event: string, handler: unknown) => {
-        if (event === "context") {
-          contextHandler = handler;
-        }
-      },
-      registerTool: () => {},
-      registerEntryRenderer: () => {},
+    const pruning = createPruningFlow({
       appendEntry: (customType: string, data: unknown) =>
         entries.push({ type: "custom", id: "epoch", customType, data }),
     } as never);
@@ -137,7 +101,10 @@ describe("Context registration", () => {
       ui: { notify: () => {} },
     };
 
-    const first = contextHandler({ type: "context", messages }, ctx);
+    const first: any = (pruning.context as any)(
+      { type: "context", messages },
+      ctx,
+    );
 
     expect(first.messages).toEqual(messages);
     expect(entries).not.toEqual(
@@ -147,7 +114,10 @@ describe("Context registration", () => {
     );
 
     messages.push({ role: "assistant", content: [] });
-    const exposed = contextHandler({ type: "context", messages }, ctx);
+    const exposed: any = (pruning.context as any)(
+      { type: "context", messages },
+      ctx,
+    );
 
     expect((exposed.messages[1] as any).content[0]?.text).toContain(
       'context_recall("early")',

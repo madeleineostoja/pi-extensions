@@ -1,9 +1,12 @@
 import { isAbsolute } from "node:path";
-import { overallRepairWorkspace } from "./overall-repair.js";
-import type { RuntimeWorkstream, SchedulerEffect } from "./scheduler.js";
-import { protectedArtifactsMatch, type RunState } from "./store.js";
-import { WorkerPacketError } from "./worker-invocation.js";
-import { workstreamWorkspace } from "./workstream-candidate.js";
+import { overallRepairWorkspace } from "../overall-repair.js";
+import type {
+  RuntimeWorkstream,
+  SchedulerEffect,
+} from "../scheduler/scheduler.js";
+import { protectedArtifactsMatch, type RunState } from "../store.js";
+import { WorkerPacketError } from "../worker-invocation.js";
+import { workstreamWorkspace } from "../workstream-candidate.js";
 
 type Workstream = RuntimeWorkstream;
 type Candidate = RunState["candidates"][string];

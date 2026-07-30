@@ -1,25 +1,28 @@
 import { mkdirSync } from "node:fs";
 import { join, relative } from "node:path";
-import type { ImplementRoles } from "./subagents.js";
+import type { ImplementRoles } from "../subagents.js";
 import {
   canonicalCommitSha,
   changedPathsBetween,
   type GitClient,
-} from "./git.js";
-import { buildRecoveryPrompt } from "./prompts.js";
+} from "../git.js";
+import { buildRecoveryPrompt } from "../prompts.js";
 import { buildRecoveryPacket, recoveryTaskId } from "./recovery-packet.js";
-import { type RecoveryCompletion } from "./result-schemas.js";
+import { type RecoveryCompletion } from "../result-schemas.js";
 import { boundedRecoveryOutput, type RecoveryAction } from "./recovery.js";
-import type { RuntimeWorkstream, SchedulerEffect } from "./scheduler.js";
-import type { SubagentClient } from "./subagents.js";
-import { spawnValidatedWorker } from "./worker-invocation.js";
-import { writeAtomicJson } from "./atomic-json.js";
+import type {
+  RuntimeWorkstream,
+  SchedulerEffect,
+} from "../scheduler/scheduler.js";
+import type { SubagentClient } from "../subagents.js";
+import { spawnValidatedWorker } from "../worker-invocation.js";
+import { writeAtomicJson } from "../atomic-json.js";
 import {
   recreateWorkstreamWorkspace,
   workstreamWorkspace,
-} from "./workstream-candidate.js";
-import { overallRepairWorkspace } from "./overall-repair.js";
-import type { RunState } from "./store.js";
+} from "../workstream-candidate.js";
+import { overallRepairWorkspace } from "../overall-repair.js";
+import type { RunState } from "../store.js";
 
 export class RecoverySafetyError extends Error {}
 

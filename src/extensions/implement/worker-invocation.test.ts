@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildRecoveryPacket } from "./recovery-packet.js";
+import { buildRecoveryPacket } from "./recovery/recovery-packet.js";
 import type { ImplementRoles } from "./subagents.js";
 import { RunStateSchema, type RunState } from "./store.js";
 import {

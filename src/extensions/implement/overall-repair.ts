@@ -11,7 +11,7 @@ import { changedPathsBetween, type GitClient } from "./git.js";
 import { buildOverallReworkPrompt } from "./prompts.js";
 import { type OverallReworkCompletion } from "./result-schemas.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
-import type { RuntimeWorkstream } from "./scheduler.js";
+import type { RuntimeWorkstream } from "./scheduler/scheduler.js";
 import { protectedArtifactsMatch, type RunState } from "./store.js";
 import { spawnValidatedWorker } from "./worker-invocation.js";
 

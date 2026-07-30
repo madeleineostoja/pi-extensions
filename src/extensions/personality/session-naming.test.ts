@@ -6,7 +6,8 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import registerExtension from "./index.js";
+import { getConfigPath, loadPipkinConfig, presetIssue } from "#lib/config";
+import { registerSessionNaming } from "./session-naming.js";
 
 const getAgentDirMock = vi.hoisted(() => vi.fn());
 const completeTextMock = vi.hoisted(() => vi.fn());
@@ -52,7 +53,13 @@ function makeFakePi() {
     setSessionName,
   } as unknown as ExtensionAPI;
 
-  registerExtension(pi);
+  const agentDir = getAgentDirMock();
+  const config = loadPipkinConfig(agentDir);
+  registerSessionNaming(pi, {
+    utility: config.config.models.utility,
+    utilityIssue: presetIssue(config, "utility")?.message,
+    configPath: getConfigPath(agentDir),
+  });
   return { handlers, getSessionName, setSessionName };
 }
 

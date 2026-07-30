@@ -1,28 +1,14 @@
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
-import { makeContextHook, restoreEpochs } from "./elision.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { renderEpochEntry } from "./epoch-renderer.ts";
-import { EPOCH_TYPE, createPruningState, resetPruningState } from "./policy.ts";
+import { EPOCH_TYPE } from "./policy.ts";
+import { createPruningFlow } from "./pruning.ts";
 import { registerRecallTool } from "./recall.ts";
-import { appendEpochAtomically } from "./session-append.ts";
 
-export default function (pi: ExtensionAPI) {
-  const state = createPruningState();
+export default function (pi: ExtensionAPI): void {
+  const pruning = createPruningFlow(pi);
 
   pi.registerEntryRenderer(EPOCH_TYPE, renderEpochEntry);
-
-  pi.on("session_start", (_event, ctx: ExtensionContext) => {
-    resetPruningState(state);
-    restoreEpochs(state, ctx.sessionManager.getBranch());
-  });
-
-  pi.on(
-    "context",
-    makeContextHook(state, (type, data, ctx) =>
-      appendEpochAtomically(pi, ctx, type, data),
-    ),
-  );
+  pi.on("session_start", (_event, ctx) => pruning.sessionStart(ctx));
+  pi.on("context", pruning.context);
   registerRecallTool(pi);
 }

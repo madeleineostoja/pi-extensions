@@ -25,17 +25,40 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
   };
 });
 
-import registerExtension from "./index.js";
+import { loadPipkinConfig } from "#lib/config";
 import {
   AGENT_PROMPT_GUIDELINES,
   EXPLORE_PROMPT,
   GENERAL_PROMPT,
   REVIEW_PROMPT,
 } from "./agent-profiles.js";
+import { ForegroundInterruptGuard } from "./foreground-interrupt.js";
+import { registerSubagentLifecycle } from "./lifecycle.js";
+import { registerPublicAgentTools } from "./public-tools.js";
+import { SubagentRosterController } from "./roster.js";
 import { getSubagentRuntime, SubagentRuntime } from "./runtime.js";
 import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 
 vi.mocked(DefaultResourceLoader).prototype.reload = reloadMock;
+
+function registerExtension(pi: any): void {
+  const config = loadPipkinConfig(getAgentDirMock());
+  const runtime = getSubagentRuntime(pi, {
+    low: config.config.models.low,
+    high: config.config.models.high,
+  });
+  const roster = new SubagentRosterController(runtime);
+  const foregroundInterrupt = new ForegroundInterruptGuard();
+  registerSubagentLifecycle({ pi, runtime, roster, foregroundInterrupt });
+  registerPublicAgentTools({
+    pi,
+    runtime,
+    roster,
+    foregroundInterrupt,
+    configPath: config.path,
+    modelPresets: config.config.models,
+  });
+}
 
 type ToolDef = {
   name: string;

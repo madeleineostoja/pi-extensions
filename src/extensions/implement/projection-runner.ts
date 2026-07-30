@@ -1,4 +1,4 @@
-import type { SchedulerEvent } from "./scheduler.js";
+import type { SchedulerEvent } from "./scheduler/scheduler.js";
 import type { RunStore } from "./store.js";
 import { settleCheckboxProjection } from "./projection.js";
 

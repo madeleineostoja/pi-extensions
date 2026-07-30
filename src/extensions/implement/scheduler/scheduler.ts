@@ -1,11 +1,11 @@
-import { publicationPreparationId } from "./candidate-replay.js";
+import { publicationPreparationId } from "../candidate-replay.js";
 import {
   boundedRecoveryOutput,
   recoveryCycleSignature,
   type RecoveryAction,
   type RecoveryGateResult,
-} from "./recovery.js";
-import type { AnchoredWorkstreamReviewCompletion } from "./result-schemas.js";
+} from "../recovery/recovery.js";
+import type { AnchoredWorkstreamReviewCompletion } from "../result-schemas.js";
 import {
   applyAnchoredWorkstreamReview,
   applyInitialWorkstreamReview,
@@ -13,8 +13,8 @@ import {
   reviewKey,
   workstreamReviewState,
   type ReviewOutcome,
-} from "./review.js";
-import type { RunState } from "./store.js";
+} from "../review.js";
+import type { RunState } from "../store.js";
 
 export type RuntimeWorkstream = RunState["candidates"][string]["workstream"];
 type ProcessLease = RunState["processLeases"][string];

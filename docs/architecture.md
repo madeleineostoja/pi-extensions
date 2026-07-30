@@ -24,7 +24,9 @@ The bundle integration suite loads the actual manifest through Pi's loader. It c
 
 ## Source ownership
 
-Each feature owns a Pi-only registration root at `src/extensions/<feature>/index.ts`. Feature code uses relative imports internally and does not import another feature's registration root.
+Each feature owns a Pi-only registration root at `src/extensions/<feature>/index.ts`. It only constructs dependencies, performs Pi registration, attaches lifecycle/event handlers, and provides simple wiring. Business behavior and substantial handlers live in responsibility-named feature modules. Feature code uses relative imports internally and does not import another feature's registration root.
+
+Feature subfolders represent established cohesive clusters rather than a universal template. Implement currently has only `scheduler/` and `recovery/` clusters; features do not gain generic `internal/`, `src/`, `api/`, or wrapper layers for symmetry.
 
 Generic modules shared by at least two features live in `src/lib/`. There is no barrel: consumers import the concrete capability through `#lib/*`, which keeps dependencies visible.
 
@@ -57,4 +59,4 @@ See [Configuration and state](configuration.md) for concrete paths.
 
 ## Testing boundaries
 
-Feature and generic-library tests stay adjacent to their source. Root Vitest projects isolate suites and preserve Implement's serialized execution policy. `test/bundle/` is the integration contract for the assembled product and catches failures that isolated imports cannot: loader resolution, registration provenance, bundle inventory, lifecycle order, and unsupported package-era topology.
+Feature and generic-library tests stay adjacent to their behavior owner and never import an entrypoint. Root Vitest projects isolate suites and preserve Implement's serialized execution policy. `test/bundle/` is the integration contract for the assembled product and owns entrypoint loading and registration provenance; it catches failures that isolated imports cannot: loader resolution, bundle inventory, lifecycle order, and unsupported package-era topology.

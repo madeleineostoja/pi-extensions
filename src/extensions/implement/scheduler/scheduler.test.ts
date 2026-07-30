@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { buildRecoveryPacket } from "./recovery-packet.js";
-import { buildReviewPacket } from "./review.js";
+import { buildRecoveryPacket } from "../recovery/recovery-packet.js";
+import { buildReviewPacket } from "../review.js";
 import { reduceRunEvent, selectReadyWorkstreams } from "./scheduler.js";
 import {
   cleanupSchedulerStores,

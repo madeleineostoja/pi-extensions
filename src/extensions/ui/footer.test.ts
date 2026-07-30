@@ -4,7 +4,7 @@ import type {
   ExtensionContext,
   SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import registerExtension from "./index.js";
+import { installFooter } from "./footer.js";
 
 function makeFakePi() {
   const handlers = new Map<
@@ -99,7 +99,7 @@ function makeFakeFooterData() {
 describe("footer extension", () => {
   it("preserves subscription hiding behaviour", async () => {
     const { pi, handlers } = makeFakePi();
-    registerExtension(pi);
+    installFooter(pi);
 
     const { ctx, footerCallbacks } = makeFakeCtx({
       branch: [

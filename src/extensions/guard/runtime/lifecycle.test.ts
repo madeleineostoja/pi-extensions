@@ -11,17 +11,21 @@ const { confirmBashCommand, getNonoHealth, isSupportedMac } = vi.hoisted(
   }),
 );
 
-vi.mock("./enforcement/decide.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./enforcement/decide.js")>()),
+vi.mock("../enforcement/decide.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../enforcement/decide.js")>()),
   isSupportedMac,
 }));
-vi.mock("./runtime/nono.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./runtime/nono.js")>()),
+vi.mock("./nono.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./nono.js")>()),
   getNonoHealth,
 }));
-vi.mock("./semantic/confirmation.js", () => ({ confirmBashCommand }));
+vi.mock("../semantic/confirmation.js", () => ({ confirmBashCommand }));
 
-import registerGuard from "./index.ts";
+import { registerGuardCommand } from "../command.js";
+import { createDirectFilesystemToolHandler } from "../enforcement/handler.js";
+import { createGuardRuntimeState } from "../state.js";
+import { createGuardBashRuntime } from "./bash.js";
+import { createGuardSessionController } from "./controller.js";
 
 const directories: string[] = [];
 
@@ -79,7 +83,25 @@ function fixture(beforeGuardToolCallHandler?: Handler) {
   if (beforeGuardToolCallHandler) {
     pi.on("tool_call", beforeGuardToolCallHandler);
   }
-  registerGuard(pi as never);
+  const state = createGuardRuntimeState();
+  const supportedMac = isSupportedMac();
+  const bash = createGuardBashRuntime({ state, supportedMac });
+  const session = createGuardSessionController({ state, bash, supportedMac });
+  registerGuardCommand({ pi: pi as never, state, supportedMac });
+  pi.on("session_start", (event, ctx) => {
+    const { bashTool } = session.sessionStart(event, ctx as never);
+    if (bashTool) {
+      pi.registerTool(bashTool);
+    }
+  });
+  pi.on("session_shutdown", (_event, ctx) =>
+    session.sessionShutdown(ctx as never),
+  );
+  pi.on(
+    "tool_call",
+    createDirectFilesystemToolHandler({ state, supportedMac }),
+  );
+  pi.on("user_bash", (_event, ctx) => session.userBash(ctx as never));
   const emit = async (event: string, payload: unknown, ctx: unknown) => {
     let result: unknown;
     for (const handler of handlers.get(event) ?? []) {

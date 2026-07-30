@@ -12,8 +12,11 @@ import {
   type InitialOverallReviewCompletion,
   type WholePlanRecoveryCompletion,
 } from "./result-schemas.js";
-import { boundedRecoveryOutput, type RecoveryAction } from "./recovery.js";
-import type { SchedulerEvent } from "./scheduler.js";
+import {
+  boundedRecoveryOutput,
+  type RecoveryAction,
+} from "./recovery/recovery.js";
+import type { SchedulerEvent } from "./scheduler/scheduler.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import { writeAtomicJson } from "./atomic-json.js";
 import { protectedArtifactsMatch, type RunState } from "./store.js";

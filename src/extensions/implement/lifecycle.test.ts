@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { SchedulerActor, SchedulerActorError } from "./scheduler-actor.js";
-import { reduceRunEvent } from "./scheduler.js";
+import {
+  SchedulerActor,
+  SchedulerActorError,
+} from "./scheduler/scheduler-actor.js";
+import { reduceRunEvent } from "./scheduler/scheduler.js";
 import { RunStateSchema } from "./store.js";
 import { createLifecycleFixture } from "./lifecycle-test-support.js";
 import {

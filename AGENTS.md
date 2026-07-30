@@ -3,7 +3,9 @@
 ## Product and structure
 
 - Pipkin is one root npm package and one complete ordered `package.json#pi.extensions` bundle. Features are runtime owners, not independently distributed products; filtered entrypoint subsets are unsupported.
-- Feature source and adjacent tests live in `src/extensions/<feature>/`. Each feature has a Pi-only `index.ts` registration root.
+- Feature source and adjacent tests live in `src/extensions/<feature>/`. Each feature has a Pi-only `index.ts` registration root containing only dependency construction, registration, lifecycle/event hookup, and simple wiring.
+- Business behavior and substantial handlers belong in responsibility-named feature modules. Feature tests import those owners, never an `index.ts`; `test/bundle/` owns entrypoint loading and registration provenance.
+- Keep tests beside their behavior owner. Add a feature subfolder only for an established cohesive cluster; do not impose universal `internal/`, `src/`, `api/`, or wrapper layers.
 - Shared generic modules and adjacent tests live in `src/lib/`. It is a bottom layer with no barrel.
 - Bundle integration tests live in `test/bundle/`. User-facing documentation is concept-oriented under `docs/` and `docs/features/`.
 

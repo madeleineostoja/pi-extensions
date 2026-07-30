@@ -5,7 +5,7 @@ import type {
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import registerExtension from "./index.js";
+import { registerBtwCommand } from "./command.js";
 import { clearHistory, getHistory, getSessionKey } from "./state.js";
 
 const completeTextMock = vi.hoisted(() => vi.fn());
@@ -54,7 +54,7 @@ function makeFakePi() {
     appendEntry,
   } as unknown as ExtensionAPI;
 
-  registerExtension(pi);
+  registerBtwCommand(pi);
   return { commands, sendMessage, sendUserMessage, appendEntry };
 }
 
