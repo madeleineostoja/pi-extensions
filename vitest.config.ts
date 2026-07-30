@@ -11,7 +11,6 @@ const features = [
   "subagents",
   "papercuts",
   "btw",
-  "caffeinate",
 ];
 
 export default defineConfig({

@@ -94,7 +94,6 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 - **UI** keeps cwd, branch, model, thinking, cost, cache hit rate, context usage, and extension state in one compact footer.
 - **Personality** gives unnamed sessions useful titles, so `/resume` is less of an archaeological dig.
 - **Papercuts** saves recurring project-specific workflow failures for human review instead of letting the lesson vanish with the session.
-- **Caffeinate** keeps supported macOS and Linux machines awake while a Pi session is open.
 
 **[Interface and Personality →](docs/features/interface-and-personality.md)**
 

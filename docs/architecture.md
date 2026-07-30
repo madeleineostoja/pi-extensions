@@ -16,7 +16,6 @@ The root manifest loads the complete bundle in this order:
 8. Implement
 9. Papercuts
 10. BTW
-11. Caffeinate
 
 Order is a runtime contract. Guard then Readonly form the safety prefix: Guard owns Bash, filesystem/protected decisions, and semantic confirmation; Readonly retains the independent edit/write workflow. Subagents precedes Implement because Implement consumes its managed runtime.
 

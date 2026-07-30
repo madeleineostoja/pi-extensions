@@ -30,8 +30,7 @@
       "./src/extensions/subagents/index.ts",
       "./src/extensions/implement/index.ts",
       "./src/extensions/papercuts/index.ts",
-      "./src/extensions/btw/index.ts",
-      "./src/extensions/caffeinate/index.ts"
+      "./src/extensions/btw/index.ts"
     ]
   },
   "imports": {

@@ -35,7 +35,6 @@ const expectedExtensions = [
   "./src/extensions/implement/index.ts",
   "./src/extensions/papercuts/index.ts",
   "./src/extensions/btw/index.ts",
-  "./src/extensions/caffeinate/index.ts",
 ];
 const expectedExtensionPaths = expectedExtensions.map((path) => path.slice(2));
 const manifest = JSON.parse(

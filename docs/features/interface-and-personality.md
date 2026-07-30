@@ -1,6 +1,6 @@
 # Interface and Personality
 
-Pipkin's interface features are intentionally quiet. They keep important state visible, name sessions so they can be found again, and keep the machine awake while a session is open.
+Pipkin's interface features are intentionally quiet. They keep important state visible and name sessions so they can be found again.
 
 ## UI: a footer that answers operational questions
 
@@ -26,15 +26,3 @@ Naming runs asynchronously and never delays the main agent turn. Up to three ear
 If the utility model cannot run, Pipkin derives a local fallback from the initial prompt. Titles use the first non-empty generated line, strip labels and surrounding quotes, collapse whitespace, and stop at 40 characters on a word boundary.
 
 See [Configuration](../configuration.md#model-presets) for the `utility` route.
-
-## Caffeinate: keep long work from sleeping halfway through
-
-Caffeinate holds an idle-sleep inhibitor for the lifetime of an open Pi session:
-
-- macOS uses `caffeinate -i -w <pi-pid>`;
-- Linux uses `systemd-inhibit` with a process watcher;
-- unsupported platforms do nothing.
-
-It starts at `session_start`, stops at `session_shutdown`, and the child watches Pi's PID so the inhibitor is released if normal extension cleanup does not run. Missing platform commands degrade to a no-op. It does not override laptop lid-close behavior.
-
-Logs are written to `<agent-dir>/pipkin/logs/pipkin-caffeinate.log`, falling back to the system temporary directory if the agent log directory cannot be created.

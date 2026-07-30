@@ -82,8 +82,6 @@ Pipkin's checkout-owned state lives under `.pi/pipkin/`:
 
 Implement and Papercuts arrange local Git exclusion through the repository's common `.git/info/exclude`; they do not modify committed `.gitignore`. Linked worktrees retain checkout-specific run and papercut state.
 
-Agent-level logs live under `<agent-dir>/pipkin/logs/`, including the Caffeinate log.
-
 ## No legacy migration
 
 Current paths are a hard cutover. Pipkin does not read, copy, migrate, or diagnose old `extensions/pi-*` configuration, root `.pi/implement`, `.pi/papercuts.json`, or `.pi/papercuts.lock`. Existing files at those locations remain available for manual inspection only.
