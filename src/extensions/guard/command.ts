@@ -4,7 +4,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { filesystemScope } from "./enforcement/tool-gate.js";
 import { prepareExplicitFilesystemGrant } from "./enforcement/decide.js";
-import { NONO_VERSION, nonoRecoveryMessage } from "./runtime/nono.js";
+import {
+  managedNonoPath,
+  NONO_VERSION,
+  nonoRecoveryMessage,
+} from "./runtime/nono.js";
 import type { GuardRuntimeState } from "./state.js";
 import { guardStatus, syncGuardStatus } from "./status.js";
 
@@ -18,23 +22,37 @@ function grantLabel(grant: {
   }`;
 }
 
-function boundaryDetail(
+export function guardMenuDetail(
   state: GuardRuntimeState,
   supportedMac: boolean,
 ): string {
+  const approvals = state.protectedReadApprovals().length;
+  const shared = [
+    `Protected-read approvals: ${approvals ? approvals : "none"}.`,
+    `Semantic confirmation: ${state.semanticConfirmationEnabled() ? "enabled" : "disabled"}.`,
+  ];
   if (!supportedMac) {
-    return "Guard uses local Bash here because Nono confinement supports only macOS arm64 and x64.";
+    return [
+      "Guard uses local Bash here because Nono confinement supports only macOS arm64 and x64.",
+      ...shared,
+    ].join("\n");
   }
-  if (!state.boundaryEnabled()) {
-    return "Filesystem boundary is off: Bash runs locally. Protected explicit reads and semantic confirmation remain active.";
-  }
+
+  const location = managedNonoPath() ?? "the managed Nono location";
   const health = state.backendHealth();
-  if (health?.kind === "healthy") {
-    return `Boundary enabled with managed Nono ${NONO_VERSION} at ${health.path}.`;
-  }
-  return health?.kind === "tools-only"
-    ? `${nonoRecoveryMessage(health)} Agent Bash is blocked; trusted ! and !! Bash run locally.`
-    : "Checking managed Nono health.";
+  const backend =
+    health?.kind === "healthy"
+      ? `Managed Nono ${NONO_VERSION} at ${health.path}: healthy.`
+      : health?.kind === "tools-only"
+        ? `Managed Nono ${NONO_VERSION} at ${location}: unhealthy. ${nonoRecoveryMessage(health)}`
+        : `Managed Nono ${NONO_VERSION} at ${location}: checking health.`;
+  return [
+    state.boundaryEnabled()
+      ? "Filesystem boundary is on."
+      : "Filesystem boundary is off: Bash runs locally.",
+    backend,
+    ...shared,
+  ].join("\n");
 }
 
 async function addGrant(
@@ -148,7 +166,7 @@ export function registerGuardCommand(options: {
           "Close",
         ];
         const selected = await ctx.ui.select(
-          `Guard: ${guardStatus(options.state, options.supportedMac)}\n${boundaryDetail(options.state, options.supportedMac)}`,
+          `Guard: ${guardStatus(options.state, options.supportedMac)}\n${guardMenuDetail(options.state, options.supportedMac)}`,
           choices,
         );
         if (!selected || selected === "Close") {

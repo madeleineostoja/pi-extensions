@@ -162,7 +162,7 @@ function guardExtension(pi: ExtensionAPI): void {
     state.resetSession();
     probeAbort?.abort();
     probeAbort = undefined;
-    bash.dispose();
+    await bash.dispose();
     clearGuardStatus(ctx);
     await probe;
   });
@@ -176,7 +176,7 @@ function guardExtension(pi: ExtensionAPI): void {
       input: event.input as { path?: unknown },
       cwd: state.fixedCapabilities()?.cwd ?? ctx.cwd,
       supportedMac,
-      canPrompt: ctx.hasUI,
+      canPrompt: ctx.mode === "tui" && ctx.hasUI,
       signal: ctx.signal,
       state,
       prompt: async (request) => {

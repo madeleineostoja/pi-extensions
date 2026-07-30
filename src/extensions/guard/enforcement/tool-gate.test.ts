@@ -333,6 +333,34 @@ describe("direct filesystem tool gate", () => {
     expect(runtime.protectedReadApprovals()).toEqual([]);
   });
 
+  it("denies non-interactive direct calls without prompting or changing grants", async () => {
+    const { workspace, outside, runtime } = fixture();
+    const env = join(outside, "secret");
+    const alias = join(workspace, ".env");
+    writeFileSync(env, "secret");
+    symlinkSync(env, alias);
+    let prompts = 0;
+
+    await expect(
+      gate({
+        runtime,
+        cwd: workspace,
+        path: alias,
+        canPrompt: false,
+        prompt: async () => {
+          prompts += 1;
+          return "similar";
+        },
+      }),
+    ).resolves.toMatchObject({
+      block: true,
+      reason: expect.stringContaining("interactive TUI"),
+    });
+    expect(prompts).toBe(0);
+    expect(runtime.filesystemGrants()).toEqual([]);
+    expect(runtime.protectedReadApprovals()).toEqual([]);
+  });
+
   it("records combined approval effects independently and denies no-UI model calls", async () => {
     const { workspace, outside, runtime } = fixture();
     const env = join(outside, "secret");

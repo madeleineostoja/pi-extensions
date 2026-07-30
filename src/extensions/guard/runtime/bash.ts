@@ -39,10 +39,15 @@ function terminate(child: ChildProcess): void {
   }
 }
 
+type ActiveInvocation = {
+  terminate: () => void;
+  settled: Promise<void>;
+};
+
 export type GuardBashRuntime = {
   agentOperations: BashOperations;
   userOperations: BashOperations;
-  dispose: () => void;
+  dispose: () => Promise<void>;
 };
 
 export function createGuardBashRuntime(options: {
@@ -50,7 +55,9 @@ export function createGuardBashRuntime(options: {
   supportedMac: boolean;
 }): GuardBashRuntime {
   const local = createLocalBashOperations();
-  const active = new Set<ChildProcess>();
+  const active = new Set<ActiveInvocation>();
+  let disposed = false;
+  let disposing: Promise<void> | undefined;
 
   const nono: BashOperations = {
     async exec(command, cwd, execution) {
@@ -59,87 +66,123 @@ export function createGuardBashRuntime(options: {
       if (!fixed || health?.kind !== "healthy") {
         throw new Error("Guard: Nono Bash boundary is unavailable.");
       }
+      if (disposed) {
+        throw new Error("Guard: Nono Bash boundary is shutting down.");
+      }
+      const timeout = timeoutMs(execution.timeout);
+      if (execution.signal?.aborted) {
+        throw new Error("aborted");
+      }
+
+      const shell = getShellConfig();
+      const commandArgs = [
+        "run",
+        "--config",
+        "",
+        "--",
+        shell.shell,
+        ...shell.args,
+      ];
+      const commandFromStdin = shell.commandTransport === "stdin";
+      if (!commandFromStdin) {
+        commandArgs.push(command);
+      }
       const manifest = writeNonoManifest(
         buildNonoManifest(fixed, options.state.filesystemGrants()),
       );
-      let timer: NodeJS.Timeout | undefined;
-      let onAbort: (() => void) | undefined;
+      commandArgs[2] = manifest.path;
+
       try {
-        if (execution.signal?.aborted) {
-          throw new Error("aborted");
-        }
-        const shell = getShellConfig();
-        const commandArgs = [
-          "run",
-          "--config",
-          manifest.path,
-          "--",
-          shell.shell,
-          ...shell.args,
-        ];
-        const commandFromStdin = shell.commandTransport === "stdin";
-        if (!commandFromStdin) {
-          commandArgs.push(command);
-        }
-        const child = spawn(health.path, commandArgs, {
-          cwd,
-          detached: process.platform !== "win32",
-          env: execution.env,
-          stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
-          windowsHide: true,
-        });
-        active.add(child);
-        if (commandFromStdin) {
-          child.stdin?.on("error", () => undefined);
-          child.stdin?.end(command);
-        }
-        const result = await new Promise<{ exitCode: number | null }>(
+        return await new Promise<{ exitCode: number | null }>(
           (resolve, reject) => {
-            let done = false;
-            const finish = (callback: () => void) => {
-              if (done) {
-                return;
-              }
-              done = true;
+            let child: ChildProcess;
+            let timer: NodeJS.Timeout | undefined;
+            let abort: (() => void) | undefined;
+            let finished = false;
+            let terminationError: Error | undefined;
+            let invocation: ActiveInvocation | undefined;
+            let settleInvocation: () => void = () => undefined;
+
+            const cleanup = () => {
               if (timer) {
                 clearTimeout(timer);
               }
-              if (onAbort) {
-                execution.signal?.removeEventListener("abort", onAbort);
+              if (abort) {
+                execution.signal?.removeEventListener("abort", abort);
               }
-              active.delete(child);
-              callback();
+              if (invocation) {
+                active.delete(invocation);
+              }
             };
-            onAbort = () => {
+            const finish = (result: { exitCode: number | null } | Error) => {
+              if (finished) {
+                return;
+              }
+              finished = true;
+              cleanup();
+              manifest.cleanup();
+              settleInvocation();
+              if (result instanceof Error) {
+                reject(result);
+              } else {
+                resolve(result);
+              }
+            };
+            const stop = (error: Error) => {
+              if (terminationError) {
+                return;
+              }
+              terminationError = error;
               terminate(child);
-              finish(() => reject(new Error("aborted")));
             };
-            execution.signal?.addEventListener("abort", onAbort, {
-              once: true,
-            });
-            const ms = timeoutMs(execution.timeout);
-            if (ms !== undefined) {
-              timer = setTimeout(() => {
-                terminate(child);
-                finish(() => reject(new Error(`timeout:${execution.timeout}`)));
-              }, ms);
+
+            try {
+              child = spawn(health.path, commandArgs, {
+                cwd,
+                detached: process.platform !== "win32",
+                env: execution.env,
+                stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
+                windowsHide: true,
+              });
+            } catch (error) {
+              finish(error instanceof Error ? error : new Error(String(error)));
+              return;
             }
+
+            invocation = {
+              terminate: () => stop(new Error("aborted")),
+              settled: new Promise<void>((settle) => {
+                settleInvocation = settle;
+              }),
+            };
+            active.add(invocation);
             child.stdout?.on("data", execution.onData);
             child.stderr?.on("data", execution.onData);
-            child.once("error", (error) => finish(() => reject(error)));
+            child.once("error", (error) => {
+              if (child.pid) {
+                stop(terminationError ?? error);
+                return;
+              }
+              finish(error);
+            });
             child.once("close", (exitCode) =>
-              finish(() => resolve({ exitCode })),
+              finish(terminationError ?? { exitCode }),
             );
+            abort = () => stop(new Error("aborted"));
+            execution.signal?.addEventListener("abort", abort, { once: true });
+            if (timeout !== undefined) {
+              timer = setTimeout(
+                () => stop(new Error(`timeout:${execution.timeout}`)),
+                timeout,
+              );
+            }
+            if (commandFromStdin) {
+              child.stdin?.on("error", () => undefined);
+              child.stdin?.end(command);
+            }
           },
         );
-        return result;
       } finally {
-        if (timer) {
-          clearTimeout(timer);
-        }
-        if (onAbort) {
-          execution.signal?.removeEventListener("abort", onAbort);
-        }
         manifest.cleanup();
       }
     },
@@ -167,11 +210,18 @@ export function createGuardBashRuntime(options: {
   return {
     agentOperations: select("agent"),
     userOperations: select("user"),
-    dispose() {
-      for (const child of active) {
-        terminate(child);
+    async dispose() {
+      if (!disposing) {
+        disposed = true;
+        const invocations = [...active];
+        for (const invocation of invocations) {
+          invocation.terminate();
+        }
+        disposing = Promise.allSettled(
+          invocations.map((invocation) => invocation.settled),
+        ).then(() => undefined);
       }
-      active.clear();
+      await disposing;
     },
   };
 }
