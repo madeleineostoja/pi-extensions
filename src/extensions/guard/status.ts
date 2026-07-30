@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { GuardRuntimeState } from "./state.js";
 
 const STATUS_KEY = "pipkin.guard";
+const SANDBOX_ICON = "󰒃";
 
 export function guardStatus(
   state: GuardRuntimeState,
@@ -24,8 +25,12 @@ export function syncGuardStatus(
     return;
   }
   const status = guardStatus(state, supportedMac);
-  const color = status === "guard" ? "success" : "warning";
-  ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, status));
+  const warning = status !== "guard";
+  const theme = ctx.ui.theme;
+  ctx.ui.setStatus(
+    STATUS_KEY,
+    `${theme.fg(warning ? "warning" : "success", SANDBOX_ICON)} ${theme.fg(warning ? "warning" : "muted", status)}`,
+  );
 }
 
 export function clearGuardStatus(ctx: ExtensionContext): void {

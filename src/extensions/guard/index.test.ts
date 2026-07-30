@@ -123,7 +123,7 @@ describe("Guard extension registration", () => {
     const tui = context("tui", true);
     await emit("session_start", { type: "session_start" }, tui);
 
-    expect(status).toHaveBeenLastCalledWith("pipkin.guard", "guard: local");
+    expect(status).toHaveBeenLastCalledWith("pipkin.guard", "󰒃 guard: local");
     await expect(
       emit(
         "tool_call",
