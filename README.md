@@ -58,9 +58,8 @@ This makes it practical to give Pipkin a serious implementation plan and let it 
 
 Pipkin's first layers are deliberately about control:
 
-- **Guard** uses fixed filesystem capabilities and managed Nono on supported Macs. It protects explicit credential reads separately from filesystem reachability.
-- **Shell Guard** confirms semantically risky built-in Bash commands, with one-time and session-wide approval.
-- **Readonly** checkpoints resolved tools named `edit` and `write`. Built-in tools get a bounded patch preview; same-name overrides are still approved without an invented preview. Toggle it with `Ctrl+R` or `/readonly`.
+- **Guard** is the sole Bash, filesystem, protected-read, and semantic-confirmation owner. Supported Macs use managed Nono capabilities; unsupported or explicitly local sessions retain semantic and protected-read checks without a confinement claim.
+- **Edit Approval** separately checkpoints resolved tools named `edit` and `write`. Toggle its established workflow with `Ctrl+R` or `/readonly`.
 
 **[Safety →](docs/features/safety.md)**
 
@@ -106,6 +105,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 | Surface                           | What it does                                                   |
 | --------------------------------- | -------------------------------------------------------------- |
+| `/guard`                          | Review Guard mode and session capabilities                     |
 | `/readonly [on\|off]`             | Toggle approval for built-in edits and writes                  |
 | `context_recall`                  | Recover the original content behind an elision stub            |
 | `lsp`                             | Make semantic source queries or inspect language-server status |
@@ -118,7 +118,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 ## Limits
 
-Pipkin extensions are trusted code with the permissions of the Pi process. Guard does not confine JavaScript-side network calls made by trusted extensions, and language servers run outside it. Readonly steps aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
+Pipkin extensions are trusted code with the permissions of the Pi process. Guard does not confine JavaScript-side network calls made by trusted extensions, provider traffic, Web Fetch, direct RPC Bash, or language servers. Nono-managed Bash networking is unrestricted. Edit Approval steps aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
 
 Those are operating constraints, not footnotes. The feature guides spell out where each boundary begins and ends.
 

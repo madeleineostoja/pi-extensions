@@ -17,6 +17,8 @@ export type GuardRuntimeState = {
   allowsReachability: (path: string, access: AccessMode) => boolean;
   allowsProtectedRead: (path: string) => boolean;
   addGrant: (grant: FilesystemGrant) => void;
+  removeFilesystemGrant: (grant: FilesystemGrant) => void;
+  removeProtectedReadApproval: (grant: FilesystemGrant) => void;
   clearFilesystemState: () => void;
   resetSession: () => void;
   setBoundaryEnabled: (enabled: boolean) => void;
@@ -57,6 +59,14 @@ export function createGuardRuntimeState(): GuardRuntimeState {
       ) {
         protectedApprovals.push({ ...grant, access: "read" });
       }
+    },
+    removeFilesystemGrant(grant) {
+      reachability = reachability.filter((current) => current !== grant);
+    },
+    removeProtectedReadApproval(grant) {
+      protectedApprovals = protectedApprovals.filter(
+        (current) => current !== grant,
+      );
     },
     clearFilesystemState() {
       reachability = [];

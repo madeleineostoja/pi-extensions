@@ -196,7 +196,7 @@ export function hasPrivateUseGlyph(text: string): boolean {
 const STATUS_ORDER = new Map([
   ["pipkin.implement.status", 0],
   ["pipkin.papercuts.status", 1],
-  ["pipkin.readonly.mode", 2],
+  ["pipkin.edit-approval.mode", 2],
   ["pipkin.guard", 3],
 ]);
 

@@ -3,11 +3,15 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { promptForPermission } from "#lib/permission-prompt";
-import { resolveChoice } from "./handler";
-import { builtinPreview, unknownBackendPreview } from "./preview";
-import { parseReadonlyArgs, extractToolPath, formatSteerTitle } from "./utils";
+import { resolveChoice } from "./handler.js";
+import { builtinPreview, unknownBackendPreview } from "./preview.js";
+import {
+  parseReadonlyArgs,
+  extractToolPath,
+  formatSteerTitle,
+} from "./utils.js";
 
-const FOOTER_KEY = "pipkin.readonly.mode";
+const FOOTER_KEY = "pipkin.edit-approval.mode";
 const READONLY_ICON = "󰏯";
 const EDITING_ICON = "󰏫";
 
@@ -22,7 +26,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus(
       FOOTER_KEY,
       enabled
-        ? `${theme.fg("success", READONLY_ICON)} ${theme.fg("muted", "readonly")}`
+        ? `${theme.fg("success", READONLY_ICON)} ${theme.fg("muted", "edit approval")}`
         : `${theme.fg("warning", EDITING_ICON)} ${theme.fg("warning", "editing")}`,
     );
   }
@@ -35,12 +39,12 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.registerShortcut("ctrl+r", {
-    description: "Toggle readonly mode",
+    description: "Toggle edit approval",
     handler: async (ctx) => setEnabled(!enabled, ctx),
   });
 
   pi.registerCommand("readonly", {
-    description: "Toggle readonly mode",
+    description: "Toggle edit approval",
     handler: async (args, ctx) => {
       const action = parseReadonlyArgs(args);
       if (action.kind === "invalid") {
@@ -48,11 +52,14 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (action.kind === "set" && action.value === enabled) {
-        ctx.ui.notify(`readonly: already ${enabled ? "on" : "off"}`, "info");
+        ctx.ui.notify(
+          `edit approval: already ${enabled ? "on" : "off"}`,
+          "info",
+        );
         return;
       }
       setEnabled(action.kind === "toggle" ? !enabled : action.value, ctx);
-      ctx.ui.notify(`readonly: ${enabled ? "on" : "off"}`, "info");
+      ctx.ui.notify(`edit approval: ${enabled ? "on" : "off"}`, "info");
     },
   });
 
@@ -83,7 +90,7 @@ export default function (pi: ExtensionAPI) {
     const permission = await promptForPermission({
       ui: ctx.ui,
       signal: ctx.signal,
-      title: `Readonly: ${event.toolName}${preview.path ? ` ${preview.path}` : ""} — apply?`,
+      title: `Edit approval: ${event.toolName}${preview.path ? ` ${preview.path}` : ""} — apply?`,
       detail: preview.detail,
       choices: [
         { value: "Accept", label: "Accept" },

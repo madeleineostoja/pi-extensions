@@ -3,11 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { assessBashCommand } from "./assessors";
-import { resolveChoice } from "./handler";
-import { formatRisks } from "./index";
+import { assessBashCommand } from "./semantic/assessors.js";
+import { formatRisks } from "./semantic/format.js";
+import { resolveChoice } from "./semantic/handler.js";
 
-describe("shell guard", () => {
+describe("Guard semantic confirmation", () => {
   it("collects every direct risk in deterministic segment and category order", async () => {
     const risks = await assessBashCommand(
       "docker system prune > out && git push --force origin main",

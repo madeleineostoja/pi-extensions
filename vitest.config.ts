@@ -2,8 +2,7 @@ import { defineConfig } from "vitest/config";
 
 const features = [
   "guard",
-  "readonly",
-  "shell-guard",
+  "edit-approval",
   "context",
   "defaults",
   "ui",

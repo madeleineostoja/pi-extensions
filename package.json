@@ -22,8 +22,7 @@
   "pi": {
     "extensions": [
       "./src/extensions/guard/index.ts",
-      "./src/extensions/readonly/index.ts",
-      "./src/extensions/shell-guard/index.ts",
+      "./src/extensions/edit-approval/index.ts",
       "./src/extensions/context/index.ts",
       "./src/extensions/defaults/index.ts",
       "./src/extensions/ui/index.ts",

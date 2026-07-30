@@ -1,4 +1,4 @@
-import { formatBlockReason } from "./utils";
+import { formatBlockReason } from "./utils.js";
 
 export function resolveChoice(
   choice: string | undefined,

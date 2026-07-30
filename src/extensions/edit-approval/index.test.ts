@@ -2,9 +2,13 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveChoice } from "./handler";
-import { builtinPreview, DETAIL_LIMIT, unknownBackendPreview } from "./preview";
-import { parseReadonlyArgs } from "./utils";
+import { resolveChoice } from "./handler.js";
+import {
+  builtinPreview,
+  DETAIL_LIMIT,
+  unknownBackendPreview,
+} from "./preview.js";
+import { parseReadonlyArgs } from "./utils.js";
 
 describe("Readonly", () => {
   it("renders bounded unified patches for existing and new multiline writes", () => {

@@ -237,7 +237,7 @@ describe("status line sanitization", () => {
         ["pipkin.implement.status", "implement-status"],
         ["pipkin.papercuts.status", "papercuts-status"],
         ["a", "a-status"],
-        ["pipkin.readonly.mode", "readonly-status"],
+        ["pipkin.edit-approval.mode", "edit-approval-status"],
       ]),
       makePlainTheme(),
     );
@@ -246,9 +246,9 @@ describe("status line sanitization", () => {
       result.indexOf("papercuts-status"),
     );
     expect(result.indexOf("papercuts-status")).toBeLessThan(
-      result.indexOf("readonly-status"),
+      result.indexOf("edit-approval-status"),
     );
-    expect(result.indexOf("readonly-status")).toBeLessThan(
+    expect(result.indexOf("edit-approval-status")).toBeLessThan(
       result.indexOf("guard-status"),
     );
     expect(result.indexOf("guard-status")).toBeLessThan(

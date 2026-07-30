@@ -4,8 +4,13 @@ import {
   canonicalCandidates,
   createRecoverability,
   isRecoverable,
-} from "./recoverability";
-import { executable, redirectTargets, splitSegments, tokenize } from "./shell";
+} from "./recoverability.js";
+import {
+  executable,
+  redirectTargets,
+  splitSegments,
+  tokenize,
+} from "./shell.js";
 
 export type Risk = {
   category: string;

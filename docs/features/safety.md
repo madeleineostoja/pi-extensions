@@ -1,33 +1,33 @@
 # Safety
 
-Pipkin Guard establishes a fixed filesystem boundary for supported macOS arm64 and x64 hosts. It is a guardrail for Pi filesystem tools and managed Bash, not a claim that arbitrary local code is safe.
+Guard is Pipkin's sole owner of Bash, filesystem reachability, protected explicit reads, and semantic Bash confirmation. Edit Approval remains a separate confirmation owner for `edit` and `write`.
 
-## Managed Nono
+## Guard modes
 
-The root package installs reviewed Nono 0.69.0 releases for supported Macs at:
+On supported macOS arm64 and x64 hosts, Guard runs agent Bash and trusted user `!` / `!!` Bash through managed Nono when its health probe succeeds. Nono receives a capability manifest with explicit file or directory grants and **unrestricted networking**. It confines filesystem reachability; it does not prevent network exfiltration.
 
-```text
-<agent-dir>/pipkin/guard/nono/0.69.0/<target>/pipkin-nono
-```
+`guard` means the Nono boundary is active. `guard: tools-only` means Nono is unhealthy: agent Bash is blocked, while trusted `!` and `!!` commands run locally with one bounded warning. `guard: local` means either an unsupported platform or an explicitly disabled supported-Mac boundary. Local mode makes no confinement claim, but semantic confirmation and protected explicit-read checks still apply. Run `npm install` (or `npm run postinstall`) from the Pipkin root and reload or restart Pi to recover managed Nono; Guard does not install or repair it at runtime.
 
-Guard resolves `PIPKIN_NONO_PATH` when it is set; otherwise it uses only that managed executable. It never searches `PATH`. To skip root-install download deterministically, set `PIPKIN_SKIP_NONO_DOWNLOAD`. The reviewed archive table is the single source for the release version, host selection, URLs, and digests used by both installation and runtime probing.
+Unsupported hosts never use Nono. Their UI-backed agent Bash still receives semantic confirmation, and protected explicit reads remain guarded.
 
-If Nono is unavailable, rejects Guard's unrestricted manifest, or fails its filesystem-confinement probe, run `npm install` (or `npm run postinstall`) from the Pipkin root and reload or restart Pi. Guard does not install or repair Nono while Pi is running.
+## Filesystem capabilities
 
-## Fixed filesystem capabilities
+On a supported Mac, Guard begins with the canonical session cwd, ordinary temporary/cache roots, required system and device roots, and narrow read-only Pi introspection roots. The current session file is an exact read grant. Existing `<agent-dir>/pipkin`, `bin`, `extensions`, `skills`, `prompts`, and `themes` roots are read-only introspection grants. Guard never grants the agent root, `auth.json`, or sibling sessions by default.
 
-On a supported Mac, Guard starts from the canonical session working directory, ordinary macOS temporary roots, eligible caller cache roots, required system/device/Nix/Node/Pi read roots, narrow agent introspection directories, and the current session file. Optional roots that do not exist are omitted. Guard does not grant the agent directory, `auth.json`, historical sessions, or a home directory by default.
+Use `/guard` to add an existing canonical path for this session. A file grant is exact; a directory grant covers that directory and its descendants. Read and write are distinct. Grants are memory-only, apply to later direct-tool decisions and later Nono manifests, and are never promoted to a parent, persisted, inherited, inferred from command text, or created after a failed Bash command. Failed Bash commands are never retried.
 
-Nono receives manifest version `0.1.0`, explicit filesystem grants, and unrestricted network mode. It confines filesystem access but does not filter Bash network egress. There are no profiles, deny entries, host rules, or persistent policy files.
+Guard protects explicit reads of workspace `.env` files, project private-key names/extensions, and designated home credential files. Outside and protected effects are collected into one direct-tool prompt. Directory `grep` and Bash can still read protected content inside their filesystem grants; Guard is not a per-file Bash secret filter. File-targeted `grep` and explicit `read` remain protected.
 
-Explicit reads of workspace `.env` files, project private-key names/extensions, and the designated home credential paths are protected separately from filesystem reachability. Future Guard interactions can approve exact canonical files or directory subtrees for the live session only. Guard does not pre-enumerate directory `grep` searches, so a reachable directory search may return protected content; file-targeted `grep` remains protected.
+## Bash confirmation
 
-## Shell Guard
+Before agent Bash starts, Guard assesses the final command and shows one ordered prompt for every recognized risk: **Allow once**, **Allow all this session**, or **Block**. Allowing all suppresses only later semantic prompts for that session; it changes neither Nono capabilities, filesystem/protected approvals, nor Edit Approval. No-UI calls pass semantic prompting without waiting, but supported-Mac workers remain Nono/direct constrained and protected direct reads stay closed without approval.
 
-Shell Guard retains semantic confirmation for risky built-in Bash commands. It identifies the destructive effects in one command and asks whether to **Allow once**, **Allow all this session**, or **Block**. Session-wide approval resets for every new, resumed, forked, and reloaded session. Without an interactive UI, Shell Guard leaves Bash calls unchanged.
+Trusted `!` and `!!` commands share the same live Nono capabilities and grants when healthy, while preserving Pi's context behavior. They do not receive model-origin semantic prompts.
 
-## Readonly
+## Scope limits
 
-Readonly prompts only for resolved tools named `edit` and `write`. It is not a universal mutation gate: differently named tools remain outside this boundary. Built-in tools get a bounded local preview when Pi identifies their backend as built-in; same-name overrides and missing provenance stay gated but show their bounded input with an explicit unknown-backend warning.
+Guard mediates Pi's Bash definition and selected direct filesystem tools. It does not mediate extension JavaScript, provider traffic, Web Fetch, direct RPC `{type:"bash"}`, or subprocesses owned by other extensions. Use an outer VM, container, or restricted environment when network isolation or broader process isolation is required.
 
-`/readonly` and `Ctrl+R` toggle approval for the live extension runtime. Accepting for the session affects only that instance; reload, resume, new sessions, and forks instantiate a fresh enabled gate. TUI and RPC share the same prompt. Print and JSON calls pass without a prompt, notice, or mode change.
+## Edit Approval
+
+Edit Approval keeps the established `/readonly` and `Ctrl+R` workflow for resolved `edit` and `write` calls. It is independent from Guard: accepting an edit does not grant filesystem reachability or Bash approval, and a Guard grant does not approve an edit.
