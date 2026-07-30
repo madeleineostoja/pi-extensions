@@ -28,7 +28,6 @@ const expectedExtensions = [
   "./src/extensions/guard/index.ts",
   "./src/extensions/readonly/index.ts",
   "./src/extensions/context/index.ts",
-  "./src/extensions/defaults/index.ts",
   "./src/extensions/ui/index.ts",
   "./src/extensions/personality/index.ts",
   "./src/extensions/lsp/index.ts",

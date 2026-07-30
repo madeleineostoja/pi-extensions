@@ -1,6 +1,6 @@
 # Interface and Personality
 
-Pipkin's interface features are intentionally quiet. They keep important state visible, stop temporary choices from becoming accidental defaults, name sessions so they can be found again, and keep the machine awake while a session is open.
+Pipkin's interface features are intentionally quiet. They keep important state visible, name sessions so they can be found again, and keep the machine awake while a session is open.
 
 ## UI: a footer that answers operational questions
 
@@ -16,12 +16,6 @@ Pipkin replaces Pi's footer with a compact display of:
 Cost includes assistant usage and prompt-cache read/write pricing on the active branch. Subscription-auth responses are excluded, and cost disappears when the branch contains only subscription usage. Cache hit rate appears after cache activity exists.
 
 The footer adapts to terminal width rather than forcing every metric onto one crowded line.
-
-## Defaults: experiment without rewriting tomorrow
-
-Defaults preserves Pi's persisted `settings.json` values for `defaultModel`, `defaultProvider`, and `defaultThinkingLevel`.
-
-Switching model or thinking during a session—or launching with `pi --model`—changes that session without silently rewriting the persisted defaults used for the next one. Pi continues to own `settings.json`; Pipkin's configuration file remains separate.
 
 ## Personality: sessions you can recognize later
 
