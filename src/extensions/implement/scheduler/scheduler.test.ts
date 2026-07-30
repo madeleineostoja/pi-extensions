@@ -44,6 +44,7 @@ describe("scheduler planning and candidate selection", () => {
       treeSha: "tree:first",
     };
     selected.state.publication.receipts["intent:first"] = {
+      operationId: "publication:first",
       intentId: "intent:first",
       candidateId: "candidate:first",
       targetBaseSha: "base-sha",
@@ -138,6 +139,61 @@ describe("scheduler planning and candidate selection", () => {
     });
 
     expect(result.accepted).toBe(false);
+  });
+
+  it("retains one operation settlement and only recognizes an equivalent duplicate", async () => {
+    const initial = (await store()).read();
+    const selected = reduceRunEvent(initial, {
+      kind: "workstreams_selected",
+      now: "now",
+      baseShas: { "first-stream": "base" },
+    });
+    const effect = selected.effects.find(
+      (candidate) => candidate.kind === "run_implementation",
+    );
+    if (!effect || effect.kind !== "run_implementation") {
+      throw new Error("Expected implementation effect.");
+    }
+    const event = {
+      kind: "implementation_completed" as const,
+      workstream: effect.workstream,
+      leaseId: effect.leaseId,
+      outcome: {
+        kind: "satisfaction_claimed" as const,
+        candidate: {
+          id: "satisfied:first-stream:base",
+          workstream: effect.workstream,
+          baseSha: "base",
+          commitSha: "base",
+          treeSha: "tree",
+        },
+        evidence: { first: "The target already satisfies this task." },
+      },
+    };
+
+    const settled = reduceRunEvent(selected.state, event);
+    expect(settled.accepted).toBe(true);
+    expect(settled.state.operationSettlements[effect.leaseId]).toMatchObject({
+      operationId: effect.leaseId,
+      outcome: "implementation_completed",
+    });
+
+    const duplicate = reduceRunEvent(settled.state, event);
+    expect(duplicate).toEqual({
+      state: settled.state,
+      effects: [],
+      accepted: true,
+    });
+
+    const conflict = reduceRunEvent(settled.state, {
+      ...event,
+      outcome: {
+        ...event.outcome,
+        evidence: { first: "Contradictory completion evidence." },
+      },
+    });
+    expect(conflict.accepted).toBe(false);
+    expect(conflict.error).toContain("already settled");
   });
 
   it("rejects a stale process result without changing canonical state", async () => {

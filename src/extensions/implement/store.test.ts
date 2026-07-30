@@ -15,6 +15,7 @@ import {
   protectedArtifactsMatch,
   sourceIdentityForExecutionPlan,
   RunStore,
+  StateError,
   sourceIdentityMatches,
   type CheckoutLeaseCapability,
 } from "./store.js";
@@ -147,6 +148,35 @@ describe("checkout store transitions", () => {
     ).toContain(plan.executionPlanHash);
     await expect(store.bindExecutionPlan(plan)).rejects.toThrow(
       "Only an unbound",
+    );
+  });
+
+  it("rejects legacy state rather than interpreting it as an active operation", () => {
+    const directory = root();
+    const lease = fakeLease(directory);
+    const store = createPlanningRun({
+      lease,
+      runId: "run-1",
+      checkout: {
+        root: directory,
+        gitDir: join(directory, ".git"),
+        commonGitDir: join(directory, ".git"),
+        branchRef: "main",
+        startHead: "base-sha",
+      },
+      source: {
+        entry: { path: join(directory, "plan.md"), normalizedHash: sha256("") },
+        corpus: [{ path: join(directory, "plan.md"), hash: sha256("") }],
+        protectedArtifactHashes: { [join(directory, "plan.md")]: sha256("") },
+      },
+      workerConcurrency: 1,
+    });
+    const legacy = { ...store.read(), version: 1 };
+    writeFileSync(store.path, JSON.stringify(legacy));
+
+    expect(() => RunStore.open(lease, store.path)).toThrow(StateError);
+    expect(() => RunStore.open(lease, store.path)).toThrow(
+      "legacy schema version 1",
     );
   });
 

@@ -32,7 +32,10 @@ export async function settlePublicationTransactions(args: {
             ...current.publication,
             receipts: {
               ...current.publication.receipts,
-              [intent.id]: outcome.receipt,
+              [intent.id]: {
+                ...outcome.receipt,
+                operationId: intent.operationId,
+              },
             },
           },
         }));

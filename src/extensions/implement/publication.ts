@@ -75,7 +75,9 @@ export async function runPublication(args: {
   }
   await args.dispatch({
     kind: "publication_receipt_recorded",
+    operationId: args.effect.leaseId,
     receipt: {
+      operationId: args.effect.leaseId,
       intentId: intent.id,
       candidateId: intent.candidateId,
       targetBaseSha: intent.targetBaseSha,

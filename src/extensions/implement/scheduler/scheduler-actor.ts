@@ -527,6 +527,7 @@ export class SchedulerActor {
     if ("workstream" in effect) {
       this.processWorkstreams.set(key, effect.workstream);
     }
+    let finalSettlementAttempted = false;
     const process = Promise.resolve()
       .then(async () => {
         const managed =
@@ -559,6 +560,9 @@ export class SchedulerActor {
             effect,
             signal: controller.signal,
             dispatch: async (event) => {
+              if (isFinalSettlementForEffect(event, effect)) {
+                finalSettlementAttempted = true;
+              }
               await this.dispatch(event, effect);
             },
           });
@@ -731,7 +735,12 @@ export class SchedulerActor {
         const lease = leaseId
           ? this.snapshot().processLeases[leaseId]
           : undefined;
-        if (leaseId && lease && lease.kind === effectLeaseKind(effect)) {
+        if (
+          !finalSettlementAttempted &&
+          leaseId &&
+          lease &&
+          lease.kind === effectLeaseKind(effect)
+        ) {
           await this.persist({ kind: "process_abandoned", leaseId });
         }
         if (
@@ -817,6 +826,40 @@ function effectLeaseKind(
     return "publication";
   }
   return undefined;
+}
+
+function isFinalSettlementForEffect(
+  event: SchedulerEvent,
+  effect: SchedulerEffect,
+): boolean {
+  if (!("leaseId" in effect) || !("leaseId" in event)) {
+    return false;
+  }
+  if (event.leaseId !== effect.leaseId) {
+    return false;
+  }
+  if (effect.kind === "run_implementation") {
+    return ["implementation_completed", "implementation_failed"].includes(
+      event.kind,
+    );
+  }
+  if (effect.kind === "run_review") {
+    return event.kind === "review_completed" || event.kind === "effect_failed";
+  }
+  if (effect.kind === "run_recovery") {
+    return ["recovery_completed", "recovery_execution_failed"].includes(
+      event.kind,
+    );
+  }
+  if (effect.kind === "run_reconciliation") {
+    return (
+      event.kind === "reconciliation_completed" ||
+      event.kind === "effect_failed"
+    );
+  }
+  return (
+    event.kind === "publication_completed" || event.kind === "effect_failed"
+  );
 }
 
 function linkedAbortController(parent: AbortSignal): AbortController {

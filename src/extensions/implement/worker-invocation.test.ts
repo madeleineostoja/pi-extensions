@@ -260,7 +260,7 @@ function recoveryState(): RunState {
       },
       workerConcurrency: 1,
     },
-    version: 1,
+    version: 2,
     revision: 1,
     phase: "running",
     executionPlan: {
@@ -285,6 +285,7 @@ function recoveryState(): RunState {
       task: { workstreamId: "work", phase: "checkpointed", checkpoint: "tip" },
     },
     processLeases: {},
+    operationSettlements: {},
     candidates: {
       [candidateId]: {
         id: candidateId,

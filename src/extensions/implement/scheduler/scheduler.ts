@@ -151,10 +151,12 @@ export type SchedulerEvent =
     }
   | {
       kind: "publication_preparation_recorded";
+      operationId: string;
       preparation: RunState["publication"]["preparations"][string];
     }
   | {
       kind: "publication_intent_recorded";
+      operationId: string;
       intent: RunState["publication"]["intents"][string];
     }
   | {
@@ -165,6 +167,7 @@ export type SchedulerEvent =
     }
   | {
       kind: "publication_receipt_recorded";
+      operationId: string;
       receipt: RunState["publication"]["receipts"][string];
     }
   | {
@@ -362,6 +365,21 @@ export function reduceRunEvent(
   input: RunState,
   event: SchedulerEvent,
 ): SchedulerTransition {
+  const priorOperationId = "leaseId" in event ? event.leaseId : undefined;
+  if (priorOperationId) {
+    const settlement = input.operationSettlements[priorOperationId];
+    if (settlement) {
+      if (settlement.eventFingerprint === JSON.stringify(event)) {
+        return { state: input, effects: [], accepted: true };
+      }
+      return {
+        state: input,
+        effects: [],
+        accepted: false,
+        error: `operation ${priorOperationId} is already settled`,
+      };
+    }
+  }
   const state = structuredClone(input);
   const reject = (error: string): SchedulerTransition => ({
     state: input,
@@ -469,7 +487,7 @@ export function reduceRunEvent(
       if (!lease || !workstream || workstream.phase !== "implementing") {
         return reject("implementation failure does not own an active lease");
       }
-      delete state.processLeases[lease.id];
+      settleLease(state, lease, event.kind, event);
       try {
         const priorEpisode = openRecoveryEpisodeForWorkstream(
           state,
@@ -556,7 +574,7 @@ export function reduceRunEvent(
         return reject("failed effect does not own its active lease");
       }
       const candidateId = workstream.candidateId;
-      delete state.processLeases[lease.id];
+      settleLease(state, lease, event.kind, event);
       try {
         recordGateResult(
           state,
@@ -800,7 +818,7 @@ export function reduceRunEvent(
         }
         workstream.phase = "candidate_ready";
       }
-      delete state.processLeases[lease.id];
+      settleLease(state, lease, event.kind, event);
       for (const episode of Object.values(state.recoveryEpisodes)) {
         if (
           episode.status === "open" &&
@@ -936,7 +954,7 @@ export function reduceRunEvent(
       } catch (error) {
         return reject(error instanceof Error ? error.message : String(error));
       }
-      delete state.processLeases[lease.id];
+      settleLease(state, lease, event.kind, event);
       const outstandingFindingIds = state.reviews[key]!.outstandingIds;
       recordGateResult(
         state,
@@ -1027,7 +1045,7 @@ export function reduceRunEvent(
         };
         episode.actions.push(event.action);
         episode.executionFailures = 0;
-        delete state.processLeases[lease.id];
+        settleLease(state, lease, event.kind, event);
         episode.status = "completed";
         return failRun(
           state,
@@ -1103,7 +1121,7 @@ export function reduceRunEvent(
         identicalNoActionCycles: 0,
         independentlyEscalated: false,
       };
-      delete state.processLeases[lease.id];
+      settleLease(state, lease, event.kind, event);
       if (event.candidate) {
         episode.status = "completed";
         return accept();
@@ -1139,7 +1157,7 @@ export function reduceRunEvent(
         evidence: event.error,
         at: event.now,
       });
-      delete state.processLeases[lease.id];
+      settleLease(state, lease, event.kind, event);
       if (executionFailures >= 3) {
         episode.status = "completed";
         return failRun(
@@ -1194,7 +1212,7 @@ export function reduceRunEvent(
         evidence: event.evidence,
         assessedAt: new Date().toISOString(),
       };
-      delete state.processLeases[lease.id];
+      settleLease(state, lease, event.kind, event);
       workstream.phase = "completed";
       if (
         event.projectionDebt &&
@@ -1258,7 +1276,7 @@ export function reduceRunEvent(
         evidence: event.evidence,
         status: "pending",
       };
-      delete state.processLeases[lease.id];
+      settleLease(state, lease, event.kind, event);
       workstream.phase = "candidate_ready";
       return accept();
     }
@@ -1348,9 +1366,17 @@ export function reduceRunEvent(
               "prepared reconciliation requires a durable publication intent",
             );
           }
-          state.processLeases[lease.id] = {
-            ...lease,
-            kind: "publication",
+          settleLease(state, lease, event.kind, event);
+          const publicationLease = createLease(
+            state,
+            event.workstream,
+            "publication",
+            new Date().toISOString(),
+            0,
+          );
+          state.processLeases[publicationLease.id] = {
+            ...publicationLease,
+            candidateId,
             publicationIntentId: intent.id,
           };
           workstream.phase = "publishing";
@@ -1358,7 +1384,7 @@ export function reduceRunEvent(
             {
               kind: "run_publication",
               workstream: event.workstream,
-              leaseId: lease.id,
+              leaseId: publicationLease.id,
               candidateId,
               intentId: intent.id,
             },
@@ -1368,7 +1394,7 @@ export function reduceRunEvent(
         }
       }
       try {
-        delete state.processLeases[lease.id];
+        settleLease(state, lease, event.kind, event);
         recordGateResult(
           state,
           event.workstream,
@@ -1404,9 +1430,17 @@ export function reduceRunEvent(
     }
 
     case "publication_preparation_recorded": {
+      const lease = state.processLeases[event.operationId];
       const candidate = state.candidates[event.preparation.candidateId];
       const existing = state.publication.preparations[event.preparation.id];
       if (
+        !lease ||
+        lease.kind !== "reconciliation" ||
+        lease.id !== event.preparation.operationId ||
+        !sameWorkstream(
+          lease.workstream,
+          candidate?.workstream ?? lease.workstream,
+        ) ||
         !candidate ||
         event.preparation.id !==
           publicationPreparationId({
@@ -1433,10 +1467,15 @@ export function reduceRunEvent(
     }
 
     case "publication_intent_recorded": {
+      const lease = state.processLeases[event.operationId];
       const candidate = state.candidates[event.intent.candidateId];
       const preparation =
         state.publication.preparations[event.intent.preparationId];
       if (
+        !lease ||
+        lease.kind !== "reconciliation" ||
+        lease.id !== event.intent.operationId ||
+        preparation?.operationId !== event.operationId ||
         !candidate ||
         !preparation ||
         !sameWorkstream(candidate.workstream, event.intent.workstream) ||
@@ -1506,8 +1545,13 @@ export function reduceRunEvent(
     }
 
     case "publication_receipt_recorded": {
+      const lease = state.processLeases[event.operationId];
       const intent = state.publication.intents[event.receipt.intentId];
       if (
+        !lease ||
+        lease.kind !== "publication" ||
+        lease.id !== event.receipt.operationId ||
+        lease.publicationIntentId !== event.receipt.intentId ||
         !intent ||
         intent.preparedCommitSha !== event.receipt.publishedCommitSha
       ) {
@@ -1550,7 +1594,7 @@ export function reduceRunEvent(
       ) {
         return reject("publication result does not own a receipted intent");
       }
-      delete state.processLeases[lease.id];
+      settleLease(state, lease, event.kind, event);
       workstream.phase = "completed";
       if (
         event.projectionDebt &&
@@ -1782,7 +1826,7 @@ export function reduceRunEvent(
       if (!workstream) {
         return reject("process lease references an unknown workstream");
       }
-      delete state.processLeases[lease.id];
+      settleLease(state, lease, "abandoned", event);
       workstream.phase = abandonedPhase(lease.kind);
       if (lease.kind === "recovery" && lease.recoveryEpisodeId) {
         const episode = state.recoveryEpisodes[lease.recoveryEpisodeId];
@@ -2048,12 +2092,16 @@ function createLease(
   index: number,
 ): ProcessLease {
   const attempt =
-    Object.values(state.processLeases).filter(
-      (lease) =>
-        sameWorkstream(lease.workstream, workstream) && lease.kind === kind,
+    [
+      ...Object.values(state.processLeases),
+      ...Object.values(state.operationSettlements),
+    ].filter(
+      (operation) =>
+        sameWorkstream(operation.workstream, workstream) &&
+        operation.kind === kind,
     ).length + 1;
   return {
-    id: `${kind}:${state.run.id}:${state.revision + 1}:${index}`,
+    id: `${kind}:${state.run.id}:${state.revision + 1}:${Object.keys(state.operationSettlements).length + index}`,
     workstream,
     kind,
     ...(getWorkstream(state, workstream)?.candidateId
@@ -2062,6 +2110,39 @@ function createLease(
     attempt,
     acquiredAt,
   };
+}
+
+function settleLease(
+  state: RunState,
+  lease: ProcessLease,
+  outcome: string,
+  event: SchedulerEvent,
+): void {
+  const settlement = {
+    operationId: lease.id,
+    workstream: lease.workstream,
+    kind: lease.kind,
+    ...(lease.candidateId ? { candidateId: lease.candidateId } : {}),
+    ...(lease.publicationIntentId
+      ? { publicationIntentId: lease.publicationIntentId }
+      : {}),
+    ...(lease.recoveryEpisodeId
+      ? { recoveryEpisodeId: lease.recoveryEpisodeId }
+      : {}),
+    attempt: lease.attempt,
+    acquiredAt: lease.acquiredAt,
+    outcome,
+    eventFingerprint: JSON.stringify(event),
+    settledAt: new Date().toISOString(),
+  };
+  const previous = state.operationSettlements[lease.id];
+  if (previous && JSON.stringify(previous) !== JSON.stringify(settlement)) {
+    throw new Error(
+      `operation ${lease.id} already has a conflicting settlement`,
+    );
+  }
+  state.operationSettlements[lease.id] = settlement;
+  delete state.processLeases[lease.id];
 }
 
 function ownedLease(

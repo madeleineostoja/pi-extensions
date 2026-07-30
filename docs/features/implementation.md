@@ -95,7 +95,9 @@ Each checkout owns its runs:
   trash/
 ```
 
-`run-state.json` is authoritative. UI, evidence, status output, and Markdown checkboxes are projections of it.
+`run-state.json` is authoritative. UI, evidence, status output, and Markdown checkboxes are projections of it. Every worker attempt remains durably owned until its exact terminal result settles; completed attempts retain their settlement identity so late or conflicting worker output cannot affect a newer attempt.
+
+Implement state is versioned. Before upgrading to an incompatible lifecycle version, settle and clean retained runs with the previously loaded runtime. A newer runtime rejects legacy run state rather than guessing how to resume it.
 
 One OS-backed lease protects each checkout's active run and destructive cleanup. Linked checkouts have independent state and can run separately. A second run in the same checkout is rejected.
 

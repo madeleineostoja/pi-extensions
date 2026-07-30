@@ -555,7 +555,8 @@ export function createRuntime(args: {
         );
         await dispatch({
           kind: "publication_preparation_recorded",
-          preparation,
+          operationId: effect.leaseId,
+          preparation: { ...preparation, operationId: effect.leaseId },
         });
         const intent = new WriteAheadPublisher({
           git: args.git,
@@ -572,8 +573,10 @@ export function createRuntime(args: {
         });
         await dispatch({
           kind: "publication_intent_recorded",
+          operationId: effect.leaseId,
           intent: {
             ...intent,
+            operationId: effect.leaseId,
             workstream: effect.workstream,
             preparationId: preparation.id,
           },

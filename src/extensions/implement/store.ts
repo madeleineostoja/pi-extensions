@@ -110,6 +110,22 @@ const processLeaseSchema = z
   })
   .strict();
 
+const operationSettlementSchema = z
+  .object({
+    operationId: nonEmpty,
+    workstream: processWorkstreamSchema,
+    kind: processLeaseSchema.shape.kind,
+    candidateId: nonEmpty.optional(),
+    publicationIntentId: nonEmpty.optional(),
+    recoveryEpisodeId: nonEmpty.optional(),
+    attempt: z.number().int().positive(),
+    acquiredAt: nonEmpty,
+    outcome: nonEmpty,
+    eventFingerprint: nonEmpty,
+    settledAt: nonEmpty,
+  })
+  .strict();
+
 const taskRuntimeSchema = z.discriminatedUnion("phase", [
   z.object({ workstreamId: id, phase: z.literal("pending") }).strict(),
   z
@@ -315,6 +331,7 @@ const satisfactionAssessmentSchema = z
 const publicationPreparationSchema = z
   .object({
     id: nonEmpty,
+    operationId: nonEmpty,
     candidateId: nonEmpty,
     candidateCommitSha: nonEmpty,
     targetBaseSha: nonEmpty,
@@ -334,6 +351,7 @@ const publicationPreparationSchema = z
 const publicationIntentSchema = z
   .object({
     id: nonEmpty,
+    operationId: nonEmpty,
     workstream: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("source"), id }).strict(),
       z.object({ kind: z.literal("overall"), repairId: id }).strict(),
@@ -351,6 +369,7 @@ const publicationIntentSchema = z
 
 const publicationReceiptSchema = z
   .object({
+    operationId: nonEmpty,
     intentId: nonEmpty,
     candidateId: nonEmpty,
     targetBaseSha: nonEmpty,
@@ -473,7 +492,7 @@ const wholePlanReviewSchema = z
 
 export const RunStateSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -508,6 +527,7 @@ export const RunStateSchema = z
       .strict(),
     tasks: z.record(id, taskRuntimeSchema),
     processLeases: z.record(nonEmpty, processLeaseSchema),
+    operationSettlements: z.record(nonEmpty, operationSettlementSchema),
     candidates: z.record(nonEmpty, candidateSchema),
     findings: z.record(nonEmpty, findingSchema),
     reviews: z.record(nonEmpty, reviewStateSchema),
@@ -699,7 +719,7 @@ export function createPlanningRun(args: {
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
   const state: RunState = {
-    version: 1,
+    version: 2,
     revision: 0,
     run: {
       id: args.runId,
@@ -711,6 +731,7 @@ export function createPlanningRun(args: {
     workstreams: { source: {}, overall: {} },
     tasks: {},
     processLeases: {},
+    operationSettlements: {},
     candidates: {},
     findings: {},
     reviews: {},
@@ -795,7 +816,7 @@ export class RunStore {
         const next = validateRunState(
           {
             ...update(structuredClone(current)),
-            version: 1,
+            version: 2,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -985,9 +1006,11 @@ export function validateRunState(
   if (!parsed.success) {
     const version = versionOf(value);
     const message =
-      version === undefined || version !== 1
-        ? "Run state has an unsupported schema."
-        : "Run state is invalid.";
+      version === 1
+        ? "Run state uses legacy schema version 1; settle and clean it with the previous runtime before deploying this version."
+        : version === undefined || version !== 2
+          ? "Run state has an unsupported schema."
+          : "Run state is invalid.";
     throw new StateError(
       message,
       path,
@@ -1394,6 +1417,57 @@ function invariantIssues(
   ) {
     issues.push("an unbound planning run cannot have process leases");
   }
+  for (const [key, settlement] of Object.entries(state.operationSettlements)) {
+    if (key !== settlement.operationId) {
+      issues.push(`operation settlement key ${key} does not match its ID`);
+    }
+    if (state.processLeases[key]) {
+      issues.push(`operation ${key} is both active and settled`);
+    }
+    if (!workstreamExists(state, settlement.workstream)) {
+      issues.push(
+        `operation settlement ${key} references an unknown workstream`,
+      );
+    }
+  }
+  for (const lease of Object.values(state.processLeases)) {
+    if (state.operationSettlements[lease.id]) {
+      issues.push(`active operation ${lease.id} already has a settlement`);
+    }
+  }
+  for (const [key, preparation] of Object.entries(
+    state.publication.preparations,
+  )) {
+    const operation =
+      state.processLeases[preparation.operationId] ??
+      state.operationSettlements[preparation.operationId];
+    if (key !== preparation.id || operation?.kind !== "reconciliation") {
+      issues.push(`publication preparation ${key} has no reconciliation owner`);
+    }
+  }
+  for (const [key, intent] of Object.entries(state.publication.intents)) {
+    const operation =
+      state.processLeases[intent.operationId] ??
+      state.operationSettlements[intent.operationId];
+    if (
+      key !== intent.id ||
+      operation?.kind !== "reconciliation" ||
+      state.publication.preparations[intent.preparationId]?.operationId !==
+        intent.operationId
+    ) {
+      issues.push(
+        `publication intent ${key} has no matching preparation owner`,
+      );
+    }
+  }
+  for (const [key, receipt] of Object.entries(state.publication.receipts)) {
+    const operation =
+      state.processLeases[receipt.operationId] ??
+      state.operationSettlements[receipt.operationId];
+    if (key !== receipt.intentId || operation?.kind !== "publication") {
+      issues.push(`publication receipt ${key} has no publication owner`);
+    }
+  }
   for (const [key, candidate] of Object.entries(state.candidates)) {
     if (key !== candidate.id) {
       issues.push(`candidate key ${key} does not match its ID`);
@@ -1716,6 +1790,16 @@ function invariantIssues(
         state.workstreams.source[id]?.baseSha !== workstream.baseSha
       ) {
         issues.push(`source workstream ${id} runtime base was overwritten`);
+      }
+    }
+    for (const [id, settlement] of Object.entries(
+      previous.operationSettlements,
+    )) {
+      if (
+        JSON.stringify(state.operationSettlements[id]) !==
+        JSON.stringify(settlement)
+      ) {
+        issues.push(`operation settlement ${id} was overwritten or removed`);
       }
     }
     for (const [id, candidate] of Object.entries(previous.candidates)) {
