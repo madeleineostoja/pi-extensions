@@ -169,6 +169,40 @@ describe("Guard semantic confirmation", () => {
     }
   });
 
+  it("ignores large ignored trees when checking clean tracked removals", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "pipkin-guard-"));
+    try {
+      execFileSync("git", ["init"], { cwd });
+      execFileSync("git", ["config", "user.email", "test@example.com"], {
+        cwd,
+      });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd });
+      writeFileSync(join(cwd, ".gitignore"), ".cache/\n");
+      writeFileSync(join(cwd, "clean.txt"), "clean");
+      execFileSync("git", ["add", ".gitignore", "clean.txt"], { cwd });
+      execFileSync("git", ["commit", "-m", "initial"], { cwd });
+
+      const ignored = join(
+        cwd,
+        ".cache",
+        "a".repeat(180),
+        "b".repeat(180),
+        "c".repeat(180),
+      );
+      mkdirSync(ignored, { recursive: true });
+      for (let index = 0; index < 1_600; index++) {
+        writeFileSync(
+          join(ignored, `${String(index).padStart(4, "0")}-${"x".repeat(140)}`),
+          "ignored",
+        );
+      }
+
+      expect(await assessBashCommand("rm clean.txt", cwd)).toEqual([]);
+    } finally {
+      rmSync(cwd, { force: true, recursive: true });
+    }
+  });
+
   it("retains summaries for later risks when early details are oversized", () => {
     const detail = formatRisks([
       {

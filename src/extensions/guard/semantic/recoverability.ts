@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
+const GIT_MAX_BUFFER = 20 * 1024 * 1024;
 const SAFE_PSEUDO_DEVICES = new Set([
   "/dev/null",
   "/dev/zero",
@@ -100,18 +101,13 @@ async function inspectRepository(directory: string): Promise<Repository> {
     const [status, files] = await Promise.all([
       exec(
         "git",
-        [
-          "-C",
-          root,
-          "status",
-          "--porcelain=v1",
-          "-z",
-          "--ignored",
-          "--untracked-files=all",
-        ],
-        { timeout: 5000 },
+        ["-C", root, "status", "--porcelain=v1", "-z", "--untracked-files=no"],
+        { maxBuffer: GIT_MAX_BUFFER, timeout: 5000 },
       ),
-      exec("git", ["-C", root, "ls-files", "-z"], { timeout: 5000 }),
+      exec("git", ["-C", root, "ls-files", "-z"], {
+        maxBuffer: GIT_MAX_BUFFER,
+        timeout: 5000,
+      }),
     ]);
     return {
       kind: "snapshot",
