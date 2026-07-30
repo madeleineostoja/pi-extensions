@@ -3,11 +3,15 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import registerExtension, {
-  formatPapercutSummary,
-  PAPERCUT_STATUS_KEY,
+import { formatPapercutSummary, registerPapercutsBrowser } from "./browser.js";
+import {
   PapercutProposalSchema,
-} from "./index.js";
+  registerProposalTool,
+} from "./proposal-tool.js";
+import {
+  createPapercutStatusController,
+  PAPERCUT_STATUS_KEY,
+} from "./status.js";
 import { createPapercutStore } from "./store.js";
 
 const loadGate = vi.hoisted(() => ({
@@ -43,6 +47,17 @@ vi.mock("./store.js", async (importOriginal) => {
 });
 
 const roots: string[] = [];
+
+function registerExtension(pi: any): void {
+  const status = createPapercutStatusController();
+  registerProposalTool(pi, status);
+  registerPapercutsBrowser(pi, status);
+  pi.on("tool_result", (event: any, ctx: any) => status.toolResult(event, ctx));
+  pi.on("session_start", (_event: any, ctx: any) => status.sessionStart(ctx));
+  pi.on("session_shutdown", (_event: any, ctx: any) =>
+    status.sessionShutdown(ctx),
+  );
+}
 
 function repo(): string {
   const root = mkdtempSync(join(tmpdir(), "pipkin-papercuts-extension-"));

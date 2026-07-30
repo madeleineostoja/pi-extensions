@@ -11,7 +11,7 @@ import {
   elapsedLabel,
   tokenLabel,
 } from "./roster.js";
-import type { PublicAgentParams } from "./index.js";
+import type { PublicAgentParams } from "./public-tools.js";
 
 type AgentToolDetails = RuntimeSnapshot;
 type AgentToolResultWithStatus = AgentToolResult<AgentToolDetails> & {

@@ -21,8 +21,13 @@ import {
   SubagentRuntime,
 } from "#subagents/runtime";
 import { afterEach, describe, expect, it } from "vitest";
-import registerGuard from "../guard/index.ts";
+import { registerGuardCommand } from "../guard/command.ts";
+import { isSupportedMac } from "../guard/enforcement/decide.ts";
+import { createDirectFilesystemToolHandler } from "../guard/enforcement/handler.ts";
+import { createGuardBashRuntime } from "../guard/runtime/bash.ts";
+import { createGuardSessionController } from "../guard/runtime/controller.ts";
 import { getNonoTarget } from "../guard/runtime/nono.ts";
+import { createGuardRuntimeState } from "../guard/state.ts";
 import { within } from "./test-boundary.js";
 import {
   resolveImplementRoles,
@@ -32,6 +37,29 @@ import {
 import { spawnValidatedWorker } from "./worker-invocation.js";
 
 const directories: string[] = [];
+
+function registerGuard(pi: any): void {
+  const state = createGuardRuntimeState();
+  const supportedMac = isSupportedMac();
+  const bash = createGuardBashRuntime({ state, supportedMac });
+  const session = createGuardSessionController({ state, bash, supportedMac });
+
+  registerGuardCommand({ pi, state, supportedMac });
+  pi.on("session_start", (event: any, ctx: any) => {
+    const { bashTool } = session.sessionStart(event, ctx);
+    if (bashTool) {
+      pi.registerTool(bashTool);
+    }
+  });
+  pi.on("session_shutdown", (_event: any, ctx: any) =>
+    session.sessionShutdown(ctx),
+  );
+  pi.on(
+    "tool_call",
+    createDirectFilesystemToolHandler({ state, supportedMac }),
+  );
+  pi.on("user_bash", (_event: any, ctx: any) => session.userBash(ctx));
+}
 
 afterEach(() => {
   while (directories.length) {
