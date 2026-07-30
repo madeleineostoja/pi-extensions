@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, extname, relative, resolve, sep, win32 } from "node:path";
 import type { PiPathCompatibility } from "./capabilities.js";
@@ -39,18 +40,37 @@ function workspaceProtected(
   );
 }
 
+function canonical(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
 function homeCredential(
   path: string,
   compatibility: PiPathCompatibility,
 ): boolean {
   const pathApi = pathFor(compatibility);
   const home = compatibility.homeDir ?? homedir();
+  const directories = [
+    pathApi.resolve(home, ".ssh"),
+    pathApi.resolve(home, ".gnupg"),
+  ];
+  const files = [
+    pathApi.resolve(home, ".aws/credentials"),
+    pathApi.resolve(home, ".aws/config"),
+    pathApi.resolve(home, ".netrc"),
+  ];
   return (
-    under(path, pathApi.resolve(home, ".ssh"), compatibility) ||
-    under(path, pathApi.resolve(home, ".gnupg"), compatibility) ||
-    path === pathApi.resolve(home, ".aws/credentials") ||
-    path === pathApi.resolve(home, ".aws/config") ||
-    path === pathApi.resolve(home, ".netrc")
+    directories.some((directory) => under(path, directory, compatibility)) ||
+    files.includes(path) ||
+    directories.some((directory) => {
+      const target = canonical(directory);
+      return target !== undefined && under(path, target, compatibility);
+    }) ||
+    files.some((file) => canonical(file) === path)
   );
 }
 

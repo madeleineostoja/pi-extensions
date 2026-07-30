@@ -66,6 +66,7 @@ function guardExtension(pi: ExtensionAPI): void {
   pi.on(
     "session_start",
     async (_event: SessionStartEvent, ctx: ExtensionContext) => {
+      state.resetSession();
       probeAbort?.abort();
       const previousProbe = probe;
       const controller = new AbortController();
@@ -74,7 +75,6 @@ function guardExtension(pi: ExtensionAPI): void {
       if (probeAbort !== controller) {
         return;
       }
-      state.resetSession();
       state.setFixedCapabilities(
         createFixedCapabilities(ctx.cwd, ctx.sessionManager.getSessionFile()),
       );
@@ -97,10 +97,10 @@ function guardExtension(pi: ExtensionAPI): void {
     },
   );
   pi.on("session_shutdown", async () => {
+    state.resetSession();
     probeAbort?.abort();
     probeAbort = undefined;
     await probe;
-    state.resetSession();
   });
 
   pi.on("tool_call", async (event, ctx) => {

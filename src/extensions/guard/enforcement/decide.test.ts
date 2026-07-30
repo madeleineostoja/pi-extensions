@@ -8,7 +8,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { canonicalizeTarget, type FixedCapabilities } from "../capabilities.js";
+import {
+  canonicalizeTarget,
+  type FixedCapabilities,
+  type PiPathCompatibility,
+} from "../capabilities.js";
 import { createGuardRuntimeState } from "../state.js";
 import {
   decideDirectFilesystemTool,
@@ -53,12 +57,14 @@ function decide(
   tool: "read" | "grep" | "find" | "ls" | "write" | "edit",
   path?: string,
   supportedMac = true,
+  pathCompatibility?: PiPathCompatibility,
 ) {
   return decideDirectFilesystemTool({
     tool,
     input: path === undefined ? {} : { path },
     cwd,
     supportedMac,
+    pathCompatibility,
     state: runtime,
   });
 }
@@ -154,6 +160,97 @@ describe("direct filesystem decisions", () => {
       kind: "approval-required",
       outsideBoundary: false,
       protectedRead: true,
+    });
+  });
+
+  it("classifies home credential aliases through canonical designated paths", () => {
+    const { root, workspace, outside } = fixture();
+    const home = join(root, "home");
+    mkdirSync(home);
+    const compatibility = { homeDir: home };
+    const ssh = join(outside, "ssh");
+    const gnupg = join(outside, "gnupg");
+    mkdirSync(ssh);
+    mkdirSync(gnupg);
+    writeFileSync(join(ssh, "id_ed25519"), "secret");
+    writeFileSync(join(gnupg, "private-keys-v1.d"), "secret");
+    symlinkSync(ssh, join(home, ".ssh"));
+    symlinkSync(gnupg, join(home, ".gnupg"));
+    symlinkSync(ssh, join(workspace, "ssh-alias"));
+    symlinkSync(gnupg, join(workspace, "gnupg-alias"));
+
+    const aws = join(home, ".aws");
+    mkdirSync(aws);
+    const awsCredentials = join(outside, "aws-credentials");
+    const netrc = join(outside, "netrc");
+    writeFileSync(awsCredentials, "secret");
+    writeFileSync(netrc, "secret");
+    symlinkSync(awsCredentials, join(aws, "credentials"));
+    symlinkSync(netrc, join(home, ".netrc"));
+    symlinkSync(awsCredentials, join(workspace, "aws-alias"));
+    symlinkSync(netrc, join(workspace, "netrc-alias"));
+
+    const aliases = [
+      join(workspace, "ssh-alias", "id_ed25519"),
+      join(workspace, "gnupg-alias", "private-keys-v1.d"),
+      join(workspace, "aws-alias"),
+      join(workspace, "netrc-alias"),
+    ];
+    for (const alias of aliases) {
+      expect(
+        decide(
+          state(workspace),
+          workspace,
+          "read",
+          alias,
+          false,
+          compatibility,
+        ),
+      ).toMatchObject({
+        kind: "approval-required",
+        outsideBoundary: false,
+        protectedRead: true,
+        grant: { effects: ["protected-read"] },
+      });
+
+      const boundaryDisabled = state(workspace);
+      boundaryDisabled.setBoundaryEnabled(false);
+      expect(
+        decide(boundaryDisabled, workspace, "read", alias, true, compatibility),
+      ).toMatchObject({
+        kind: "approval-required",
+        outsideBoundary: false,
+        protectedRead: true,
+        grant: { effects: ["protected-read"] },
+      });
+
+      expect(
+        decide(state(workspace), workspace, "read", alias, true, compatibility),
+      ).toMatchObject({
+        kind: "approval-required",
+        outsideBoundary: true,
+        protectedRead: true,
+        grant: { effects: ["outside-boundary", "protected-read"] },
+      });
+      expect(
+        decide(state(workspace), workspace, "grep", alias, true, compatibility),
+      ).toMatchObject({ protectedRead: true });
+    }
+
+    expect(
+      decide(
+        state(workspace),
+        workspace,
+        "grep",
+        join(workspace, "ssh-alias"),
+        true,
+        compatibility,
+      ),
+    ).toMatchObject({
+      kind: "approval-required",
+      outsideBoundary: true,
+      protectedRead: false,
+      grant: { effects: ["outside-boundary"] },
     });
   });
 

@@ -8,7 +8,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { canonicalizeTarget, type FixedCapabilities } from "../capabilities.js";
+import {
+  canonicalizeTarget,
+  type FixedCapabilities,
+  type PiPathCompatibility,
+} from "../capabilities.js";
 import { createGuardRuntimeState } from "../state.js";
 import {
   filesystemPromptDetail,
@@ -59,6 +63,7 @@ async function gate(options: {
   path: string;
   tool?: "read" | "grep" | "find" | "ls" | "write" | "edit";
   supportedMac?: boolean;
+  pathCompatibility?: PiPathCompatibility;
   canPrompt?: boolean;
   choice?: "once" | "similar" | "block";
   signal?: AbortSignal;
@@ -69,6 +74,7 @@ async function gate(options: {
     input: { path: options.path },
     cwd: options.cwd,
     supportedMac: options.supportedMac ?? true,
+    pathCompatibility: options.pathCompatibility,
     canPrompt: options.canPrompt ?? true,
     signal: options.signal,
     state: options.runtime,
@@ -150,6 +156,30 @@ describe("direct filesystem tool gate", () => {
     });
   });
 
+  it("uses Pi-compatible paths when creating a session grant", async () => {
+    const { workspace, outside, runtime } = fixture();
+    const file = join(outside, "file.txt");
+    writeFileSync(file, "file");
+
+    expect(
+      await gate({
+        runtime,
+        cwd: workspace,
+        path: "~/file.txt",
+        pathCompatibility: { homeDir: outside },
+        choice: "similar",
+      }),
+    ).toEqual({});
+    expect(
+      await gate({
+        runtime,
+        cwd: workspace,
+        path: file,
+        canPrompt: false,
+      }),
+    ).toEqual({});
+  });
+
   it("allows once without retaining either combined approval effect", async () => {
     const { workspace, outside, runtime } = fixture();
     const env = join(outside, "secret");
@@ -205,6 +235,62 @@ describe("direct filesystem tool gate", () => {
     await expect(reset).resolves.toMatchObject({ block: true });
     expect(runtime.filesystemGrants()).toEqual([]);
     expect(runtime.protectedReadApprovals()).toEqual([]);
+  });
+
+  it("blocks protected reads after session shutdown without prompting", async () => {
+    const { workspace, runtime } = fixture();
+    const protectedFile = join(workspace, ".env");
+    writeFileSync(protectedFile, "secret");
+    let prompts = 0;
+    const prompt: FilesystemPrompt = async () => {
+      prompts += 1;
+      return "similar";
+    };
+
+    await expect(
+      gate({
+        runtime,
+        cwd: workspace,
+        path: protectedFile,
+        supportedMac: false,
+        prompt,
+      }),
+    ).resolves.toEqual({});
+    expect(prompts).toBe(1);
+    runtime.resetSession();
+    await expect(
+      gate({
+        runtime,
+        cwd: workspace,
+        path: protectedFile,
+        supportedMac: false,
+        prompt,
+      }),
+    ).resolves.toMatchObject({
+      block: true,
+      reason: expect.stringContaining("active session"),
+    });
+
+    const boundaryDisabled = fixture();
+    const disabledProtectedFile = join(boundaryDisabled.workspace, ".env");
+    writeFileSync(disabledProtectedFile, "secret");
+    boundaryDisabled.runtime.setBoundaryEnabled(false);
+    boundaryDisabled.runtime.resetSession();
+    await expect(
+      gate({
+        runtime: boundaryDisabled.runtime,
+        cwd: boundaryDisabled.workspace,
+        path: disabledProtectedFile,
+        prompt,
+      }),
+    ).resolves.toMatchObject({
+      block: true,
+      reason: expect.stringContaining("active session"),
+    });
+
+    expect(prompts).toBe(1);
+    expect(runtime.protectedReadApprovals()).toEqual([]);
+    expect(boundaryDisabled.runtime.protectedReadApprovals()).toEqual([]);
   });
 
   it("blocks stale approvals across either boundary transition", async () => {

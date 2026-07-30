@@ -1,4 +1,4 @@
-import type { FilesystemGrant } from "../capabilities.js";
+import type { FilesystemGrant, PiPathCompatibility } from "../capabilities.js";
 import type { GuardRuntimeState } from "../state.js";
 import {
   decideDirectFilesystemTool,
@@ -37,6 +37,7 @@ export async function gateDirectFilesystemTool(options: {
   input: Readonly<{ path?: unknown }>;
   cwd: string;
   supportedMac: boolean;
+  pathCompatibility?: PiPathCompatibility;
   canPrompt: boolean;
   signal?: AbortSignal;
   state: GuardRuntimeState;
@@ -48,6 +49,13 @@ export async function gateDirectFilesystemTool(options: {
   }
   if (decision.kind === "deny") {
     return { block: true, reason: decision.reason };
+  }
+  if (!options.state.fixedCapabilities()) {
+    return {
+      block: true,
+      reason:
+        "Guard: filesystem approval is unavailable outside an active session.",
+    };
   }
   if (!options.canPrompt) {
     return {

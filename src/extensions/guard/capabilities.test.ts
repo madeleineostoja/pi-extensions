@@ -154,11 +154,19 @@ describe("Guard capabilities", () => {
         grant(root, "write", "directory"),
       ],
     };
-    const manifest = buildNonoManifest(fixed, []);
+    const outside = join(root, "outside");
+    const protectedFile = join(root, ".env");
+    const manifest = buildNonoManifest(fixed, [
+      grant(outside, "read", "directory", ["outside-boundary"]),
+      grant(protectedFile, "read", "file", ["protected-read"]),
+    ]);
     expect(manifest).toEqual({
       version: "0.1.0",
       filesystem: {
-        grants: [{ path: root, type: "directory", access: "readwrite" }],
+        grants: [
+          { path: root, type: "directory", access: "readwrite" },
+          { path: outside, type: "directory", access: "read" },
+        ],
       },
       network: { mode: "unrestricted" },
     });
