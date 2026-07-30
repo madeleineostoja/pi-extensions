@@ -56,15 +56,6 @@ export default defineConfig({
       },
       {
         test: {
-          name: "scripts",
-          include: ["scripts/**/*.test.mjs"],
-          environment: "node",
-          globals: false,
-          fileParallelism: false,
-        },
-      },
-      {
-        test: {
           name: "lib",
           include: ["src/lib/**/*.test.ts"],
           environment: "node",
