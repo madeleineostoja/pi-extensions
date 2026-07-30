@@ -178,7 +178,7 @@ describe("Guard Bash runtime", () => {
       env: environment,
       signal: aborted.signal,
     });
-    await waitForFile(childPid);
+    await Promise.all([waitForFile(childPid), waitForFile(configPath)]);
     const abortChild = Number(readFileSync(childPid, "utf8"));
     const abortStaging = dirname(readFileSync(configPath, "utf8"));
     aborted.abort();
@@ -187,12 +187,13 @@ describe("Guard Bash runtime", () => {
     expect(existsSync(abortStaging)).toBe(false);
 
     rmSync(childPid, { force: true });
+    rmSync(configPath, { force: true });
     const timeoutRun = runtime.agentOperations.exec("echo guarded", workspace, {
       onData: () => undefined,
       env: environment,
       timeout: 1,
     });
-    await waitForFile(childPid);
+    await Promise.all([waitForFile(childPid), waitForFile(configPath)]);
     const timeoutChild = Number(readFileSync(childPid, "utf8"));
     const timeoutStaging = dirname(readFileSync(configPath, "utf8"));
     await expect(timeoutRun).rejects.toThrow("timeout:1");
@@ -200,6 +201,7 @@ describe("Guard Bash runtime", () => {
     expect(existsSync(timeoutStaging)).toBe(false);
 
     rmSync(childPid, { force: true });
+    rmSync(configPath, { force: true });
     const shutdownRun = runtime.agentOperations.exec(
       "echo guarded",
       workspace,
@@ -208,7 +210,7 @@ describe("Guard Bash runtime", () => {
         env: environment,
       },
     );
-    await waitForFile(childPid);
+    await Promise.all([waitForFile(childPid), waitForFile(configPath)]);
     const shutdownChild = Number(readFileSync(childPid, "utf8"));
     const shutdownStaging = dirname(readFileSync(configPath, "utf8"));
     await runtime.dispose();

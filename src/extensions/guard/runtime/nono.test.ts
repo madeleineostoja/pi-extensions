@@ -14,7 +14,6 @@ import { getNonoHealth, nonoRecoveryMessage } from "./nono.js";
 
 const directories: string[] = [];
 const environment = {
-  PIPKIN_NONO_PATH: process.env.PIPKIN_NONO_PATH,
   PIPKIN_TEST_NONO_MODE: process.env.PIPKIN_TEST_NONO_MODE,
   PIPKIN_TEST_NONO_LOG: process.env.PIPKIN_TEST_NONO_LOG,
   PIPKIN_TEST_NONO_PIDS: process.env.PIPKIN_TEST_NONO_PIDS,
@@ -103,13 +102,13 @@ async function waitFor(check: () => boolean): Promise<void> {
 
 async function health(mode: string) {
   const nono = fakeNono();
-  process.env.PIPKIN_NONO_PATH = nono.binary;
   process.env.PIPKIN_TEST_NONO_MODE = mode;
   process.env.PIPKIN_TEST_NONO_LOG = nono.log;
   const result = await getNonoHealth({
     platform: "darwin",
     arch: "arm64",
     timeoutMs: 1_500,
+    binaryPath: nono.binary,
   });
   return { nono, result };
 }
@@ -126,17 +125,23 @@ describe("Nono backend health", () => {
 
   it("classifies bounded executable and confinement failures as tools-only", async () => {
     const missing = join(fixture(), "missing");
-    process.env.PIPKIN_NONO_PATH = missing;
     await expect(
-      getNonoHealth({ platform: "darwin", arch: "arm64" }),
+      getNonoHealth({
+        platform: "darwin",
+        arch: "arm64",
+        binaryPath: missing,
+      }),
     ).resolves.toEqual({ kind: "tools-only", reason: "missing" });
 
     const nonExecutable = join(fixture(), "not-executable");
     writeFileSync(nonExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o600 });
     chmodSync(nonExecutable, 0o600);
-    process.env.PIPKIN_NONO_PATH = nonExecutable;
     await expect(
-      getNonoHealth({ platform: "darwin", arch: "arm64" }),
+      getNonoHealth({
+        platform: "darwin",
+        arch: "arm64",
+        binaryPath: nonExecutable,
+      }),
     ).resolves.toEqual({ kind: "tools-only", reason: "non-executable" });
 
     await expect(
@@ -174,12 +179,12 @@ describe("Nono backend health", () => {
 
     const controller = new AbortController();
     controller.abort();
-    process.env.PIPKIN_NONO_PATH = nono.binary;
     await expect(
       getNonoHealth({
         platform: "darwin",
         arch: "arm64",
         signal: controller.signal,
+        binaryPath: nono.binary,
       }),
     ).resolves.toEqual({ kind: "tools-only", reason: "cancelled" });
 
@@ -247,8 +252,6 @@ describe("Nono backend health", () => {
   });
 
   it("does not classify unsupported hosts and keeps recovery bounded", async () => {
-    const nono = fakeNono();
-    process.env.PIPKIN_NONO_PATH = nono.binary;
     await expect(
       getNonoHealth({ platform: "linux", arch: "x64" }),
     ).resolves.toBeUndefined();

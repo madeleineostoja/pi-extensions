@@ -131,9 +131,7 @@ function guardExtension(pi: ExtensionAPI): void {
       if (probeAbort !== controller) {
         return;
       }
-      state.setFixedCapabilities(
-        createFixedCapabilities(ctx.cwd, ctx.sessionManager.getSessionFile()),
-      );
+      state.setFixedCapabilities(createFixedCapabilities(ctx.cwd));
       registerBash();
       if (!supportedMac) {
         syncSurface(ctx);

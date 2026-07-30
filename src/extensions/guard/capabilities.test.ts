@@ -146,23 +146,15 @@ describe("Guard capabilities", () => {
     expect(state.protectedReadApprovals()).toEqual([]);
   });
 
-  it("keeps a session file exact while retaining ordinary temporary access", () => {
+  it("retains ordinary temporary access without promoting a fixture root", () => {
     const root = fixture();
     const workspace = join(root, "workspace");
     const sibling = join(root, "sibling");
-    const session = join(root, "current-session.jsonl");
     mkdirSync(workspace);
     mkdirSync(sibling);
-    writeFileSync(session, "session");
 
-    const fixed = createFixedCapabilities(workspace, session);
+    const fixed = createFixedCapabilities(workspace);
 
-    expect(fixed.grants).toContainEqual({
-      path: realpathSync(session),
-      access: "read",
-      kind: "file",
-      effects: [],
-    });
     expect(
       fixed.grants.some((grant) =>
         grantMatches(grant, realpathSync(sibling), "read"),

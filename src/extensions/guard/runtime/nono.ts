@@ -6,7 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { FixedCapabilities } from "../capabilities.js";
 import {
@@ -47,6 +47,7 @@ export type NonoHealthProbeOptions = Readonly<{
   arch?: NodeJS.Architecture;
   signal?: AbortSignal;
   timeoutMs?: number;
+  binaryPath?: string;
 }>;
 
 function reviewedAssets(value: unknown): {
@@ -104,10 +105,6 @@ export function managedNonoPath(target = getNonoTarget()): string | null {
         target,
         "pipkin-nono",
       );
-}
-
-function resolveNono(target: NonoTarget): string {
-  return resolve(process.env.PIPKIN_NONO_PATH ?? managedNonoPath(target)!);
 }
 
 function exists(path: string): boolean {
@@ -189,7 +186,7 @@ export async function getNonoHealth(
     return undefined;
   }
 
-  const binary = resolveNono(target);
+  const binary = options.binaryPath ?? managedNonoPath(target)!;
   if (!exists(binary)) {
     return { kind: "tools-only", reason: "missing" };
   }

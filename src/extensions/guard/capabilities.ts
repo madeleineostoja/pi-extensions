@@ -260,10 +260,7 @@ function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
   ];
 }
 
-export function createFixedCapabilities(
-  sessionCwd: string,
-  sessionFile?: string | undefined,
-): FixedCapabilities {
+export function createFixedCapabilities(sessionCwd: string): FixedCapabilities {
   const cwd = canonicalizeTarget(sessionCwd, process.cwd());
   const grants: FilesystemGrant[] = [];
   const add = (raw: string, access: AccessMode, kind: GrantKind) => {
@@ -289,9 +286,6 @@ export function createFixedCapabilities(
   };
   for (const [root, access, kind] of fixedRoots(cwd)) {
     add(root, access, kind);
-  }
-  if (sessionFile) {
-    add(sessionFile, "read", "file");
   }
   return { cwd, grants };
 }
