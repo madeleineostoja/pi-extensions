@@ -166,7 +166,7 @@ export async function runOverallRepair(args: {
   }
   if (!(await workspaceGit.isClean())) {
     const checkpoint = await workspaceGit.checkpoint(
-      completion.commitMessage ?? `fix: address ${args.repairId}`,
+      completion.commitMessage,
       false,
     );
     if (checkpoint.exitCode !== 0) {
@@ -212,6 +212,7 @@ export async function runOverallRepair(args: {
       baseSha: baseline.commitSha,
       commitSha,
       treeSha,
+      commitMessage: completion.commitMessage,
       implementationEvidence: {
         summary: completion.summary,
         verification: completion.verification,

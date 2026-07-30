@@ -14,6 +14,7 @@ export type ReplayCandidate = {
   baseSha: string;
   commitSha: string;
   treeSha: string;
+  commitMessage?: string;
 };
 
 export type ReplayStaging = {
@@ -455,10 +456,10 @@ export class CandidateReplayEngine {
         },
       };
     }
-    const commit = await stagingGit.checkpoint(
-      `chore: prepare ${candidate.id}`,
-      false,
-    );
+    if (!candidate.commitMessage) {
+      throw new Error("Publishable candidate has no commit message.");
+    }
+    const commit = await stagingGit.checkpoint(candidate.commitMessage, false);
     const command = hookCommandEvidence(commit, staging.worktreePath);
     if (commit.exitCode !== 0) {
       const [replayPatch, replayPaths, treeSha] = await Promise.all([

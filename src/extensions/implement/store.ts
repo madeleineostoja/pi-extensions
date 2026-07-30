@@ -156,6 +156,7 @@ const candidateSchema = z
     baseSha: nonEmpty,
     commitSha: nonEmpty,
     treeSha: nonEmpty,
+    commitMessage: nonEmpty.optional(),
     implementationEvidence: z
       .object({
         summary: nonEmpty,
@@ -1408,6 +1409,13 @@ function invariantIssues(
       issues.push(
         `candidate ${key} does not match its workstream runtime base`,
       );
+    }
+    if (
+      candidate.baseSha !== candidate.commitSha &&
+      candidate.implementationEvidence &&
+      !candidate.commitMessage
+    ) {
+      issues.push(`publishable candidate ${key} has no commit message`);
     }
   }
   for (const [key, finding] of Object.entries(state.findings)) {

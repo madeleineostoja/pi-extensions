@@ -80,6 +80,7 @@ async function candidate(
       baseSha,
       commitSha,
       treeSha,
+      commitMessage: `feat: ${path}`,
     };
   } finally {
     rmSync(index, { force: true });
@@ -214,6 +215,9 @@ describe("CandidateReplayEngine", () => {
     expect(await client.currentBranch()).toBe(before.branch);
     expect(await client.tree()).toBe(before.tree);
     expect(result.staging.treeSha).toBe(approved.treeSha);
+    expect(
+      git(result.staging.worktreePath, "log", "-1", "--format=%s").trim(),
+    ).toBe(approved.commitMessage);
     await removeStaging(root, result.staging);
   });
 

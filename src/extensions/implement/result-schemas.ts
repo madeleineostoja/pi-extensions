@@ -1,6 +1,11 @@
 import { Type, type Static } from "typebox";
 
 const nonEmptyString = () => Type.String({ minLength: 1 });
+const commitMessageString = () =>
+  Type.String({
+    minLength: 1,
+    pattern: "^[a-z]+(?:\\([^\\r\\n()]+\\))?!?: [^\\r\\n]+$",
+  });
 const strictCompiledContractSchema = Type.Object(
   {
     objective: nonEmptyString(),
@@ -46,6 +51,7 @@ export const workstreamImplementerResultSchema = Type.Union([
     {
       outcome: Type.Literal("changed"),
       summary: nonEmptyString(),
+      commitMessage: commitMessageString(),
       verification: Type.Array(nonEmptyString(), { minItems: 1 }),
       uncertainty: Type.Optional(nonEmptyString()),
     },
@@ -130,7 +136,7 @@ export const overallReworkSchema = Type.Object(
   {
     summary: nonEmptyString(),
     verification: Type.Array(nonEmptyString(), { minItems: 1 }),
-    commitMessage: Type.Optional(nonEmptyString()),
+    commitMessage: commitMessageString(),
   },
   { additionalProperties: false },
 );
@@ -165,6 +171,7 @@ export const recoveryCompletionSchema = Type.Object(
     candidateTip: Type.Optional(nonEmptyString()),
     changedPaths: Type.Optional(Type.Array(nonEmptyString())),
     trustedCheckpoint: Type.Optional(nonEmptyString()),
+    commitMessage: Type.Optional(commitMessageString()),
   },
   { additionalProperties: false },
 );

@@ -226,6 +226,7 @@ async function changedResult(cwd: string, taskIds: string[]) {
     result: {
       outcome: "changed" as const,
       summary: "Implemented the workstream and repaired local runtime state.",
+      commitMessage: "feat: implement workstream behavior",
       verification: ["Focused workstream tests passed."],
     },
   };
@@ -339,6 +340,7 @@ describe("workstream candidate lifecycle", () => {
           result: {
             outcome: "changed",
             summary: "No changes were needed.",
+            commitMessage: "feat: implement workstream behavior",
             verification: ["Inspected the repository."],
           },
         })),
@@ -389,6 +391,7 @@ describe("workstream candidate lifecycle", () => {
           result: {
             outcome: "changed",
             summary: "No changes were needed.",
+            commitMessage: "feat: implement workstream behavior",
             verification: ["Inspected the repository."],
           },
         })),
@@ -515,6 +518,9 @@ describe("workstream candidate lifecycle", () => {
       expect(readFileSync(join(subject.root, "first.txt"), "utf-8")).toBe(
         "first\n",
       );
+      expect(git(subject.root, "log", "-1", "--format=%s").trim()).toBe(
+        "feat: implement workstream behavior",
+      );
       expect(reviews).toBe(2);
     } finally {
       await runtime.stop("test completed");
@@ -577,6 +583,7 @@ describe("workstream candidate lifecycle", () => {
               action: "rework_candidate",
               summary: `Committed correction ${corrections}.`,
               evidence: `Correction ${corrections} is committed.`,
+              commitMessage: "feat: implement corrected workstream behavior",
               candidateTip,
               changedPaths: [`correction-${corrections}.txt`],
             },

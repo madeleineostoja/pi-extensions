@@ -94,6 +94,7 @@ describe("recovery correction publication journey", () => {
       baseSha: base,
       commitSha: corrected,
       treeSha: await candidate.treeAt(corrected),
+      commitMessage: "fix: publish corrected application",
     });
     if (replay.kind !== "prepared") {
       throw new Error(`Candidate replay failed: ${JSON.stringify(replay)}`);
@@ -129,6 +130,9 @@ describe("recovery correction publication journey", () => {
       },
     });
     expect(await target.head()).toBe(prepared);
+    expect(git(root, "log", "-1", "--format=%s").trim()).toBe(
+      "fix: publish corrected application",
+    );
     expect(git(root, "show", "HEAD:app.txt")).toBe("corrected");
     expect(git(candidatePath, "show", "HEAD:app.txt")).toBe("corrected");
   }, 15_000);
