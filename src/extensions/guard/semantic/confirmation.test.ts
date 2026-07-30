@@ -23,7 +23,7 @@ describe("Guard semantic confirmation", () => {
     const state = createGuardRuntimeState();
     await expect(
       confirmBashCommand({
-        command: "rm important",
+        command: "rm /etc/hosts",
         cwd: "/",
         state,
         ctx: context(),
@@ -36,7 +36,7 @@ describe("Guard semantic confirmation", () => {
     const state = createGuardRuntimeState();
     await expect(
       confirmBashCommand({
-        command: "rm important",
+        command: "rm /etc/hosts",
         cwd: "/",
         state,
         ctx: context(() => "Allow all this session"),
@@ -48,7 +48,7 @@ describe("Guard semantic confirmation", () => {
   it("resets Allow all when the session is replaced", async () => {
     const state = createGuardRuntimeState();
     await confirmBashCommand({
-      command: "rm important",
+      command: "rm /etc/hosts",
       cwd: "/",
       state,
       ctx: context(() => "Allow all this session"),
@@ -63,7 +63,7 @@ describe("Guard semantic confirmation", () => {
   it("blocks before execution when confirmation is declined", async () => {
     await expect(
       confirmBashCommand({
-        command: "rm important",
+        command: "rm /etc/hosts",
         cwd: "/",
         state: createGuardRuntimeState(),
         ctx: context(() => "Block"),

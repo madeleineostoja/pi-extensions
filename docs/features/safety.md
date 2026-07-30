@@ -20,7 +20,7 @@ Guard protects explicit reads of workspace `.env` files, project private-key nam
 
 ## Bash confirmation
 
-Before agent Bash starts, Guard assesses the final command and shows one ordered prompt for every recognized risk: **Allow once**, **Allow all this session**, or **Block**. Allowing all suppresses only later semantic prompts for that session; it changes neither Nono capabilities, filesystem/protected approvals, nor Readonly. No-UI calls pass semantic prompting without waiting, but supported-Mac workers remain Nono/direct constrained and protected direct reads stay closed without approval.
+Before agent Bash starts, Guard assesses the final command and shows one ordered prompt for likely data loss or destructive external actions: **Allow once**, **Allow all this session**, or **Block**. Routine commands, including clean Git-tracked file moves and removals, do not prompt. Allowing all suppresses only later semantic prompts for that session; it changes neither Nono capabilities, filesystem/protected approvals, nor Readonly. No-UI calls pass semantic prompting without waiting, but supported-Mac workers remain Nono/direct constrained and protected direct reads stay closed without approval.
 
 Trusted `!` and `!!` commands share the same live Nono capabilities and grants when healthy, while preserving Pi's context behavior. They do not receive model-origin semantic prompts.
 

@@ -205,7 +205,7 @@ export function executable(
 export function redirectTargets(words: string[]): string[] {
   const targets: string[] = [];
   for (let index = 0; index < words.length; index++) {
-    if (!/^\d*>{1,2}(?:[&|])?$/.test(words[index] ?? "")) {
+    if (!/^\d*>(?:[&|])?$/.test(words[index] ?? "")) {
       continue;
     }
     const target = words[index + 1];

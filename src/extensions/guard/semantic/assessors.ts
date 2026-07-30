@@ -1,9 +1,10 @@
 import { statSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import {
   canonicalCandidates,
   createRecoverability,
-  isRecoverable,
+  hasUnrecoverableData,
+  type FilesystemOperation,
 } from "./recoverability.js";
 import {
   executable,
@@ -14,27 +15,28 @@ import {
 
 export type Risk = {
   category: string;
-  severity: "medium" | "high";
   effect: string;
   segment: string;
   targets: string[];
   uncertainty?: string;
   segmentIndex: number;
 };
-type Operation = "remove" | "follow" | "overwrite";
+type FilesystemEffect = {
+  operation: FilesystemOperation;
+  targets: string[];
+  sources?: string[];
+  targetDirectory?: boolean;
+};
 type Draft = Omit<Risk, "segmentIndex" | "targets"> & {
-  targets?: string[];
-  filesystem?: Operation;
+  filesystem?: FilesystemEffect;
 };
 type Marker = { marker: RegExp; category: string; effect: string };
 
 const categoryOrder = [
   "filesystem",
   "git",
-  "permissions",
   "remote",
   "container",
-  "package",
   "infrastructure",
   "publish",
 ];
@@ -45,47 +47,43 @@ const uncertainMarkers: Marker[] = [
     effect: "unparseable file removal",
   },
   {
-    marker: /(?:^|\s)find\b[\s\S]*?(?:-delete|-exec(?:dir)?)(?=\s|$)/,
+    marker:
+      /(?:^|\s)find\b[\s\S]*?(?:-delete|-exec(?:dir)?\s+(?:rm|rmdir|unlink|shred))(?=\s|$)/,
     category: "filesystem",
     effect: "find destructive execution",
   },
   {
-    marker: /(?:^|\s)xargs\b[\s\S]*?(?:rm|rmdir|unlink|shred|sh|bash)(?=\s|$)/,
+    marker: /(?:^|\s)xargs\b[\s\S]*?(?:rm|rmdir|unlink|shred)(?=\s|$)/,
     category: "filesystem",
     effect: "xargs destructive execution",
   },
   {
-    marker: /(?:^|\s)(?:ssh|scp)\b[\s\S]+/,
-    category: "remote",
-    effect: "remote command requires confirmation",
-  },
-  {
-    marker: /(?:^|\s)(?:curl|wget)\b[\s\S]*?(?:\||sh|bash|python|node)(?=\s|$)/,
+    marker: /(?:^|\s)(?:curl|wget)\b[\s\S]*?(?:\||sh|bash)(?=\s|$)/,
     category: "remote",
     effect: "remote script execution",
   },
   {
     marker:
-      /(?:^|\s)git\s+(?:clean|reset|restore|push|branch|tag|gc|reflog)(?=\s|$)/,
+      /(?:^|\s)git\s+(?:clean\b[\s\S]*?(?:-f|--force)|reset\s+--hard|restore\b|checkout\b[\s\S]*?(?:-f|--force|\s+--)|stash\s+(?:drop|clear)|branch\s+-D|push\b[\s\S]*?(?:-[A-Za-z]*f[A-Za-z]*\b|--force|--delete|--prune|--mirror|\s:\S|\s\+\S)|gc\b[\s\S]*?--prune|reflog\s+expire)(?=\s|$)/,
     category: "git",
-    effect: "unparseable Git data loss",
+    effect: "unparseable destructive Git operation",
   },
   {
     marker:
-      /(?:^|\s)(?:docker|podman)\s+(?:system|volume|image|container)(?=\s|$)/,
+      /(?:^|\s)(?:docker|podman)\s+(?:system\s+prune|volume\s+(?:rm|remove|prune)|image\s+(?:rm|remove|prune)|container\s+(?:rm|remove))(?=\s|$)/,
     category: "container",
-    effect: "unparseable container mutation",
+    effect: "unparseable container data deletion",
   },
   {
     marker:
-      /(?:^|\s)(?:terraform|tofu|pulumi|aws)\s+(?:apply|destroy|delete|terminate|remove)(?=\s|$)/,
+      /(?:^|\s)(?:terraform|tofu|pulumi|aws|kubectl)\s+(?:destroy|delete(?:-|\b)|terminate-|remove-)(?=\s|$)/,
     category: "infrastructure",
-    effect: "unparseable infrastructure mutation",
+    effect: "unparseable infrastructure destruction",
   },
   {
-    marker: /(?:^|\s)(?:npm|pnpm|yarn)\s+(?:publish|unpublish)(?=\s|$)/,
+    marker: /(?:^|\s)(?:npm|pnpm)\s+unpublish(?=\s|$)/,
     category: "publish",
-    effect: "unparseable package publish",
+    effect: "unparseable package unpublish",
   },
 ];
 
@@ -93,20 +91,18 @@ function draft(
   category: string,
   effect: string,
   segment: string,
-  targets: string[] = [],
-  filesystem?: Operation,
+  filesystem?: FilesystemEffect,
   uncertainty?: string,
 ): Draft {
-  return {
-    category,
-    effect,
-    segment,
-    targets,
-    filesystem,
-    uncertainty,
-    severity:
-      category === "filesystem" || category === "git" ? "high" : "medium",
-  };
+  return { category, effect, segment, filesystem, uncertainty };
+}
+function filesystem(
+  operation: FilesystemOperation,
+  targets: string[],
+  sources?: string[],
+  targetDirectory?: boolean,
+): FilesystemEffect {
+  return { operation, targets, sources, targetDirectory };
 }
 function plainArgs(args: string[]): string[] {
   return args.filter(
@@ -124,11 +120,63 @@ function uncertain(segment: string): Draft[] {
         category,
         effect,
         segment,
-        [],
         undefined,
         "Unsupported shell syntax; this warning is based only on an exact destructive marker.",
       ),
     );
+}
+
+function transferEffect(
+  name: string,
+  args: string[],
+): FilesystemEffect | undefined {
+  const operands: string[] = [];
+  let targetDirectory: string | undefined;
+  const optionsWithValue = new Set(
+    name === "install"
+      ? ["-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix"]
+      : ["-t", "--target-directory", "-S", "--suffix"],
+  );
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === "--") {
+      operands.push(...args.slice(index + 1));
+      break;
+    }
+    if (arg === "-t" || arg === "--target-directory") {
+      targetDirectory = args[++index];
+      continue;
+    }
+    if (arg.startsWith("--target-directory=")) {
+      targetDirectory = arg.slice("--target-directory=".length);
+      continue;
+    }
+    if (optionsWithValue.has(arg)) {
+      index++;
+      continue;
+    }
+    if (!arg.startsWith("-")) {
+      operands.push(arg);
+    }
+  }
+  if (targetDirectory) {
+    return operands.length
+      ? filesystem(
+          name === "mv" ? "replace-entry" : "replace-content",
+          [targetDirectory],
+          operands,
+          true,
+        )
+      : undefined;
+  }
+  if (operands.length < 2) {
+    return undefined;
+  }
+  return filesystem(
+    name === "mv" ? "replace-entry" : "replace-content",
+    [operands.at(-1)!],
+    operands.slice(0, -1),
+  );
 }
 
 function direct(words: string[], segment: string, depth = 0): Draft[] {
@@ -143,61 +191,50 @@ function direct(words: string[], segment: string, depth = 0): Draft[] {
     risks.push(draft(...value));
 
   if (["rm", "rmdir", "unlink", "shred"].includes(name) && plain.length) {
-    add("filesystem", "file removal", segment, plain, "remove");
+    add("filesystem", "file removal", segment, filesystem("remove", plain));
   }
   if (name === "find" && args.includes("-delete")) {
     add(
       "filesystem",
       "find deletion",
       segment,
-      plain.slice(0, 1).length ? plain.slice(0, 1) : ["."],
       undefined,
       "find search roots are not fully interpreted; confirmation covers the exact invocation.",
     );
   }
+  const findExecutable = args.findIndex(
+    (arg) => arg === "-exec" || arg === "-execdir",
+  );
   if (
     name === "find" &&
-    (args.includes("-exec") || args.includes("-execdir"))
+    ["rm", "rmdir", "unlink", "shred"].includes(args[findExecutable + 1] ?? "")
   ) {
     add(
       "filesystem",
       "find destructive execution",
       segment,
-      plain.slice(0, 1).length ? plain.slice(0, 1) : ["."],
       undefined,
-      "find -exec is not interpreted; confirmation covers the exact invocation.",
+      "find -exec targets are not fully interpreted; confirmation covers the exact invocation.",
     );
   }
   if (
     name === "xargs" &&
-    args.some((arg) =>
-      ["rm", "rmdir", "unlink", "shred", "sh", "bash"].includes(arg),
-    )
+    args.some((arg) => ["rm", "rmdir", "unlink", "shred"].includes(arg))
   ) {
     add(
       "filesystem",
       "xargs destructive execution",
       segment,
-      [],
       undefined,
       "xargs input is not interpreted; confirmation covers the exact invocation.",
     );
   }
 
-  if (["cp", "install", "mv"].includes(name) && plain.length >= 2) {
-    const destination = plain.at(-1)!;
-    const ambiguous =
-      plain.length > 2 || args.some((arg) => arg.startsWith("-"));
-    add(
-      "filesystem",
-      `${name} destination replacement`,
-      segment,
-      name === "mv" ? [plain.at(-2)!, destination] : [destination],
-      name === "mv" ? undefined : "overwrite",
-      ambiguous
-        ? `${name} destination semantics are ambiguous; confirmation covers the exact invocation.`
-        : undefined,
-    );
+  if (["cp", "install", "mv"].includes(name)) {
+    const effect = transferEffect(name, args);
+    if (effect) {
+      add("filesystem", `${name} destination replacement`, segment, effect);
+    }
   }
   if (
     ["truncate", "dd", "sed", "perl"].includes(name) &&
@@ -220,32 +257,29 @@ function direct(words: string[], segment: string, depth = 0): Draft[] {
         "filesystem",
         `${name} destructive overwrite`,
         segment,
-        [target],
-        "follow",
+        filesystem("replace-content", [target]),
       );
     }
   }
   const redirects = redirectTargets(words);
   if (redirects.length) {
-    add("filesystem", "truncating redirection", segment, redirects, "follow");
+    add(
+      "filesystem",
+      "truncating redirection",
+      segment,
+      filesystem("replace-content", redirects),
+    );
   }
 
   if (name === "git") {
     const text = args.join(" ");
     if (
-      /\bclean\b.*(?:-f|--force)|\breset\s+--hard|\brestore\b(?:\s|$)|\bcheckout\b.*(?:-f|--force|\s+--(?:\s|$))|\bstash\s+(?:drop|clear)|\bbranch\s+-[dD]|\btag\s+-d|\bpush\b.*(?:-[A-Za-z]*f[A-Za-z]*\b|--force|--delete|--prune|--mirror)|\bpush\b.*(?:\s:\S|\s\+\S)|\bgc\b.*--prune|\breflog\s+expire/.test(
+      /\bclean\b.*(?:-f|--force)|\breset\s+--hard|\brestore\b(?:\s|$)|\bcheckout\b.*(?:-f|--force|\s+--(?:\s|$))|\bstash\s+(?:drop|clear)|\bbranch\s+-D|\bpush\b.*(?:-[A-Za-z]*f[A-Za-z]*\b|--force|--delete|--prune|--mirror)|\bpush\b.*(?:\s:\S|\s\+\S)|\bgc\b.*--prune|\breflog\s+expire/.test(
         text,
       )
     ) {
       add("git", "destructive Git operation", segment);
     }
-  }
-  if (
-    (name === "chmod" &&
-      (args.some((arg) => /R/.test(arg)) || args.includes("777"))) ||
-    (name === "chown" && args.some((arg) => /R/.test(arg)))
-  ) {
-    add("permissions", "risky recursive permissions change", segment);
   }
   if (
     name === "rsync" &&
@@ -255,9 +289,8 @@ function direct(words: string[], segment: string, depth = 0): Draft[] {
       "filesystem",
       "rsync deletion",
       segment,
-      plain.at(-1) ? [plain.at(-1)!] : [],
       undefined,
-      plain.at(-1) ? undefined : "rsync destination is unknown.",
+      "rsync deletion targets are not fully interpreted; confirmation covers the exact invocation.",
     );
   }
   if (
@@ -269,68 +302,35 @@ function direct(words: string[], segment: string, depth = 0): Draft[] {
     add("container", "container data deletion", segment);
   }
   if (
-    ["apt", "apt-get", "dnf", "yum", "pacman", "brew"].includes(name) &&
-    /\b(?:install|uninstall|remove|purge|upgrade|autoremove)\b/.test(
-      args.join(" "),
-    )
-  ) {
-    add("package", "system package mutation", segment);
-  }
-  if (
-    ["npm", "pnpm", "yarn"].includes(name) &&
-    /(?:^|\s)(?:uninstall|remove|global)(?:\s|$)|(?:^|\s)(?:--global|-g)(?:\s|$)/.test(
-      args.join(" "),
-    )
-  ) {
-    add("package", "global package mutation", segment);
-  }
-  if (
     ["terraform", "tofu", "pulumi", "aws", "kubectl"].includes(name) &&
-    /\b(?:destroy|apply|delete(?:-|\b)|terminate-|remove-|up\s+--yes|sync\s+.*--delete)\b/.test(
-      args.join(" "),
-    )
+    /\b(?:destroy|delete(?:-|\b)|terminate-|remove-)\b/.test(args.join(" "))
   ) {
-    add("infrastructure", "infrastructure mutation", segment);
+    add("infrastructure", "infrastructure destruction", segment);
   }
   if (
-    (["npm", "pnpm"].includes(name) &&
-      ["publish", "unpublish"].includes(args[0] ?? "")) ||
-    (name === "yarn" && args[0] === "npm" && args[1] === "publish") ||
-    (["vercel", "netlify", "fly", "gh"].includes(name) &&
-      /\b(?:deploy|publish|create|delete|destroy|merge)\b/.test(args.join(" ")))
+    (["npm", "pnpm"].includes(name) && args[0] === "unpublish") ||
+    (name === "yarn" && args[0] === "npm" && args[1] === "unpublish")
   ) {
-    add("publish", "remote deploy or publish", segment);
+    add("publish", "package unpublish", segment);
+  }
+  const sshHost =
+    name === "ssh" ? args.findIndex((arg) => !arg.startsWith("-")) : -1;
+  const sshCommand = args.slice(sshHost + 1);
+  if (
+    name === "ssh" &&
+    ["rm", "rmdir", "unlink", "shred"].includes(
+      sshCommand[0]?.split(/\s/, 1)[0] ?? "",
+    )
+  ) {
+    add("remote", "remote file removal", segment);
   }
   if (
     name === "gh" &&
-    /\b(?:create|delete|close|merge|edit|POST|PUT|PATCH|DELETE)\b/.test(
-      args.join(" "),
-    )
+    (/\brepo\s+delete\b|\brelease\s+delete\b/.test(args.join(" ")) ||
+      (args[0] === "api" &&
+        /(?:-X|--method)\s*=?\s*DELETE\b/i.test(args.join(" "))))
   ) {
-    add("remote", "GitHub mutation", segment);
-  }
-  if (name === "ssh" && args.length > 1) {
-    add(
-      "remote",
-      "remote command requires confirmation",
-      segment,
-      [],
-      undefined,
-      "SSH command tails are not interpreted; confirmation covers the exact invocation.",
-    );
-  }
-  if (
-    ["python", "python3", "node", "perl", "ruby"].includes(name) &&
-    args.some((arg) => ["-c", "-e"].includes(arg))
-  ) {
-    add(
-      "remote",
-      "inline interpreter execution",
-      segment,
-      [],
-      undefined,
-      "Inline interpreter content is not interpreted; confirmation covers the exact invocation.",
-    );
+    add("remote", "destructive GitHub operation", segment);
   }
   if (name === "eval") {
     risks.push(...uncertain(args.join(" ")));
@@ -352,6 +352,29 @@ function direct(words: string[], segment: string, depth = 0): Draft[] {
   return risks;
 }
 
+function concreteTargets(effect: FilesystemEffect, cwd: string): string[] {
+  const destination = effect.targets[0];
+  if (!destination || !effect.sources?.length || effect.targets.length !== 1) {
+    return effect.targets;
+  }
+  try {
+    if (!statSync(resolve(cwd, destination)).isDirectory()) {
+      return effect.sources.length === 1 && !effect.targetDirectory
+        ? [destination]
+        : [];
+    }
+    return effect.sources.map((source) =>
+      resolve(cwd, destination, basename(source)),
+    );
+  } catch {
+    return effect.targetDirectory
+      ? []
+      : effect.sources.length === 1
+        ? [destination]
+        : [];
+  }
+}
+
 export async function assessBashCommand(
   command: string,
   cwd: string,
@@ -359,6 +382,7 @@ export async function assessBashCommand(
   const recovery = createRecoverability(cwd);
   let effectiveCwd = cwd;
   const risks: Risk[] = [];
+  const movedUnrecoverableData = new Set<string>();
   const segments = splitSegments(command);
   for (const segment of segments) {
     const words = tokenize(segment.text);
@@ -383,58 +407,84 @@ export async function assessBashCommand(
       drafts.push(draft("remote", "remote script execution", segment.text));
     }
     for (const item of drafts) {
-      const targets = item.targets ?? [];
-      const directoryDestination =
-        item.effect.endsWith(" destination replacement") &&
-        targets.length === 1 &&
-        (() => {
-          try {
-            return statSync(resolve(effectiveCwd, targets[0]!)).isDirectory();
-          } catch {
-            return false;
-          }
-        })();
-      const uncertainty =
-        item.uncertainty ??
-        (directoryDestination
-          ? "Destination is a directory; replacement semantics are ambiguous."
-          : undefined);
+      const effect = item.filesystem;
+      const targets = effect ? concreteTargets(effect, effectiveCwd) : [];
       const absoluteTargets = await Promise.all(
         targets.map(async (target) => {
-          const candidates = item.filesystem
+          const candidates = effect
             ? await canonicalCandidates(
                 resolve(effectiveCwd, target),
-                item.filesystem,
+                effect.operation,
                 recovery,
               )
             : [];
           return candidates.at(-1) ?? resolve(effectiveCwd, target);
         }),
       );
+      const overwritesMovedData = absoluteTargets.some((target) =>
+        movedUnrecoverableData.has(target),
+      );
+      if (!effect || !targets.length) {
+        if (!effect) {
+          risks.push({
+            ...item,
+            targets: absoluteTargets,
+            segmentIndex: segment.index,
+          });
+        }
+        continue;
+      }
       if (
-        item.filesystem &&
-        !uncertainty &&
-        targets.length &&
-        (
+        !overwritesMovedData &&
+        !(
           await Promise.all(
             targets.map((target) =>
-              isRecoverable(
+              hasUnrecoverableData(
                 resolve(effectiveCwd, target),
-                item.filesystem!,
+                effect.operation,
                 recovery,
               ),
             ),
           )
-        ).every(Boolean)
+        ).some(Boolean)
       ) {
         continue;
       }
       risks.push({
         ...item,
-        uncertainty,
         targets: absoluteTargets,
         segmentIndex: segment.index,
       });
+    }
+    for (const item of drafts) {
+      const effect = item.filesystem;
+      if (
+        item.effect !== "mv destination replacement" ||
+        !effect?.sources?.length
+      ) {
+        continue;
+      }
+      const targets = concreteTargets(effect, effectiveCwd);
+      for (const [index, source] of effect.sources.entries()) {
+        const target = targets[index];
+        if (
+          target &&
+          (await hasUnrecoverableData(
+            resolve(effectiveCwd, source),
+            "remove",
+            recovery,
+          ))
+        ) {
+          const candidates = await canonicalCandidates(
+            resolve(effectiveCwd, target),
+            effect.operation,
+            recovery,
+          );
+          movedUnrecoverableData.add(
+            candidates.at(-1) ?? resolve(effectiveCwd, target),
+          );
+        }
+      }
     }
     const cdTarget =
       words?.[0] === "cd"

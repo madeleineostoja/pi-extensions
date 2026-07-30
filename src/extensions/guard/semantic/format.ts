@@ -11,8 +11,7 @@ function excerpt(value: string, limit: number): string {
 
 export function formatRisks(risks: Risk[]): string {
   const summaries = risks.map(
-    (risk, index) =>
-      `${index + 1}. [${risk.severity}] ${risk.category}: ${risk.effect}`,
+    (risk, index) => `${index + 1}. ${risk.category}: ${risk.effect}`,
   );
   const reserve = summaries.reduce(
     (size, summary) => size + summary.length + 3,

@@ -15,6 +15,10 @@ const SAFE_PSEUDO_DEVICES = new Set([
   "/dev/random",
 ]);
 
+export type FilesystemOperation =
+  | "remove"
+  | "replace-entry"
+  | "replace-content";
 type Snapshot = { root: string; tracked: Set<string>; changed: Set<string> };
 type Repository =
   | { kind: "non-git" }
@@ -234,61 +238,58 @@ async function temporaryTarget(
 
 export async function canonicalCandidates(
   target: string,
-  operation: "remove" | "follow" | "overwrite",
+  operation: FilesystemOperation,
   state: Recoverability,
 ): Promise<string[]> {
   const absolute = resolve(state.cwd, target);
   const entry = await canonical(absolute, false);
   const followed =
-    operation === "remove" ? undefined : await canonical(absolute, true);
+    operation === "replace-content"
+      ? await canonical(absolute, true)
+      : undefined;
   return [
     ...new Set([entry, followed].filter((value): value is string => !!value)),
   ];
 }
 
-export async function isRecoverable(
+export async function hasUnrecoverableData(
   target: string,
-  operation: "remove" | "follow" | "overwrite",
+  operation: FilesystemOperation,
   state: Recoverability,
 ): Promise<boolean> {
   const absolute = resolve(state.cwd, target);
-  if (operation !== "remove" && SAFE_PSEUDO_DEVICES.has(absolute)) {
-    return true;
+  if (operation === "replace-content" && SAFE_PSEUDO_DEVICES.has(absolute)) {
+    return false;
   }
-  let exists = true;
   try {
-    const stat = await lstat(absolute);
-    if (operation === "overwrite" && stat.isSymbolicLink()) {
-      return false;
-    }
+    await lstat(absolute);
   } catch {
-    exists = false;
-  }
-  if (!exists) {
     return false;
   }
   const candidates = await canonicalCandidates(absolute, operation, state);
   if (!candidates.length) {
-    return false;
+    return true;
   }
   const targetPath = candidates.at(-1)!;
   const repository = await repositoryFor(targetPath, state);
   if (await temporaryTarget(targetPath, state, repository)) {
+    return false;
+  }
+  const affected = await leaves(targetPath);
+  if (!affected) {
     return true;
+  }
+  if (!affected.length) {
+    return false;
   }
   if (
     repository.kind !== "snapshot" ||
     !inside(repository.value.root, targetPath)
   ) {
-    return false;
+    return true;
   }
-  const affected = await leaves(targetPath);
-  return (
-    !!affected?.length &&
-    affected.every(
-      (leaf) =>
-        repository.value.tracked.has(leaf) &&
-        !repository.value.changed.has(leaf),
-    )
+  return affected.some(
+    (leaf) =>
+      !repository.value.tracked.has(leaf) || repository.value.changed.has(leaf),
   );
 }
