@@ -166,7 +166,7 @@ export async function runOverallRepair(args: {
   }
   if (!(await workspaceGit.isClean())) {
     const checkpoint = await workspaceGit.checkpoint(
-      completion.commitMessage,
+      completion.checkpointCommitMessage,
       false,
     );
     if (checkpoint.exitCode !== 0) {
@@ -197,6 +197,9 @@ export async function runOverallRepair(args: {
     );
   }
   const treeSha = await workspaceGit.treeAt(commitSha);
+  if (treeSha === baseline.treeSha) {
+    throw new Error("Overall repair must produce a non-empty candidate delta.");
+  }
   mkdirSync(args.artifactsPath, { recursive: true });
   writeAtomicJson(
     join(args.artifactsPath, `${args.repairId}-completion.json`),
@@ -212,7 +215,6 @@ export async function runOverallRepair(args: {
       baseSha: baseline.commitSha,
       commitSha,
       treeSha,
-      commitMessage: completion.commitMessage,
       implementationEvidence: {
         summary: completion.summary,
         verification: completion.verification,

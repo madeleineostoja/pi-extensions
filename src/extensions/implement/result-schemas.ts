@@ -1,10 +1,11 @@
 import { Type, type Static } from "typebox";
 
 const nonEmptyString = () => Type.String({ minLength: 1 });
-const commitMessageString = () =>
+const commitMessageString = (options: { description?: string } = {}) =>
   Type.String({
     minLength: 1,
     pattern: "^[a-z]+(?:\\([^\\r\\n()]+\\))?!?: [^\\r\\n]+$",
+    ...options,
   });
 const strictCompiledContractSchema = Type.Object(
   {
@@ -51,7 +52,6 @@ export const workstreamImplementerResultSchema = Type.Union([
     {
       outcome: Type.Literal("changed"),
       summary: nonEmptyString(),
-      commitMessage: commitMessageString(),
       verification: Type.Array(nonEmptyString(), { minItems: 1 }),
       uncertainty: Type.Optional(nonEmptyString()),
     },
@@ -79,22 +79,48 @@ export const directReviewFindingSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const initialReviewSchema = Type.Union([
+const approvalSchema = Type.Object(
+  { verdict: Type.Literal("approved") },
+  { additionalProperties: false },
+);
+const changesRequestedReviewSchema = Type.Object(
+  {
+    verdict: Type.Literal("changes_requested"),
+    findings: Type.Array(directReviewFindingSchema, { minItems: 1 }),
+  },
+  { additionalProperties: false },
+);
+const publicationCommitSubject = () =>
+  commitMessageString({
+    description:
+      "Conventional Commit subject for the complete reviewed workstream, not an internal checkpoint or correction commit.",
+  });
+
+export const initialWorkstreamReviewSchema = Type.Union([
   Type.Object(
-    { verdict: Type.Literal("approved") },
+    {
+      verdict: Type.Literal("approved"),
+      publicationCommitSubject: publicationCommitSubject(),
+    },
     { additionalProperties: false },
   ),
   Type.Object(
     {
       verdict: Type.Literal("changes_requested"),
       findings: Type.Array(directReviewFindingSchema, { minItems: 1 }),
+      publicationCommitSubject: publicationCommitSubject(),
     },
     { additionalProperties: false },
   ),
 ]);
-
-export const initialWorkstreamReviewSchema = initialReviewSchema;
-export const initialOverallReviewSchema = initialReviewSchema;
+export const repositoryStateReviewSchema = Type.Union([
+  approvalSchema,
+  changesRequestedReviewSchema,
+]);
+export const initialOverallReviewSchema = Type.Union([
+  approvalSchema,
+  changesRequestedReviewSchema,
+]);
 
 const findingAssessmentSchema = Type.Object(
   {
@@ -115,18 +141,27 @@ const regressionFindingSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export const anchoredWorkstreamReviewSchema = Type.Object(
-  {
-    assessments: Type.Array(findingAssessmentSchema),
-    regressions: Type.Array(regressionFindingSchema),
-    observations: Type.Optional(
-      Type.Array(
-        Type.Object(
-          { summary: nonEmptyString(), evidence: nonEmptyString() },
-          { additionalProperties: false },
-        ),
+const anchoredReviewProperties = {
+  assessments: Type.Array(findingAssessmentSchema),
+  regressions: Type.Array(regressionFindingSchema),
+  observations: Type.Optional(
+    Type.Array(
+      Type.Object(
+        { summary: nonEmptyString(), evidence: nonEmptyString() },
+        { additionalProperties: false },
       ),
     ),
+  ),
+};
+
+export const anchoredWorkstreamReviewSchema = Type.Object(
+  anchoredReviewProperties,
+  { additionalProperties: false },
+);
+export const initialAnchoredWorkstreamReviewSchema = Type.Object(
+  {
+    ...anchoredReviewProperties,
+    publicationCommitSubject: publicationCommitSubject(),
   },
   { additionalProperties: false },
 );
@@ -136,7 +171,10 @@ export const overallReworkSchema = Type.Object(
   {
     summary: nonEmptyString(),
     verification: Type.Array(nonEmptyString(), { minItems: 1 }),
-    commitMessage: commitMessageString(),
+    checkpointCommitMessage: commitMessageString({
+      description:
+        "Internal Conventional Commit subject if Pipkin must checkpoint a dirty repair workspace.",
+    }),
   },
   { additionalProperties: false },
 );
@@ -171,7 +209,6 @@ export const recoveryCompletionSchema = Type.Object(
     candidateTip: Type.Optional(nonEmptyString()),
     changedPaths: Type.Optional(Type.Array(nonEmptyString())),
     trustedCheckpoint: Type.Optional(nonEmptyString()),
-    commitMessage: Type.Optional(commitMessageString()),
   },
   { additionalProperties: false },
 );
@@ -183,11 +220,17 @@ export type DirectReviewFinding = Static<typeof directReviewFindingSchema>;
 export type InitialWorkstreamReviewCompletion = Static<
   typeof initialWorkstreamReviewSchema
 >;
+export type RepositoryStateReviewCompletion = Static<
+  typeof repositoryStateReviewSchema
+>;
 export type InitialOverallReviewCompletion = Static<
   typeof initialOverallReviewSchema
 >;
 export type AnchoredWorkstreamReviewCompletion = Static<
   typeof anchoredWorkstreamReviewSchema
+>;
+export type InitialAnchoredWorkstreamReviewCompletion = Static<
+  typeof initialAnchoredWorkstreamReviewSchema
 >;
 export type OverallReworkCompletion = Static<typeof overallReworkSchema>;
 export type WholePlanRecoveryCompletion = Static<

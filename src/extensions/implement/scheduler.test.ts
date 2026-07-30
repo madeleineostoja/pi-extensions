@@ -149,7 +149,10 @@ describe("scheduler planning and candidate selection", () => {
       outcome: {
         kind: "initial",
         candidateId: "candidate-1",
-        completion: { verdict: "approved" },
+        completion: {
+          verdict: "approved",
+          publicationCommitSubject: "feat: publish workstream",
+        },
         evidence: "review artifact",
       },
     });
@@ -643,6 +646,7 @@ describe("scheduler recovery lifecycle", () => {
         evidence: "initial review artifact",
         completion: {
           verdict: "changes_requested",
+          publicationCommitSubject: "feat: publish workstream",
           findings: [
             {
               summary: "Missing observable behavior",

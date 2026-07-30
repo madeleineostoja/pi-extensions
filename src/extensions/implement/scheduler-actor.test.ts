@@ -359,7 +359,10 @@ describe("scheduler actor stop and reload lifecycle", () => {
             outcome: {
               kind: "initial",
               candidateId: "candidate:second-stream",
-              completion: { verdict: "approved" },
+              completion: {
+                verdict: "approved",
+                publicationCommitSubject: "feat: publish workstream",
+              },
               evidence: "Review completed after the stop boundary.",
             },
           });

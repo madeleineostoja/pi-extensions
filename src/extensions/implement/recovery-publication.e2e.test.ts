@@ -89,13 +89,15 @@ describe("recovery correction publication journey", () => {
       runId: "run-1",
       protectedPaths: [join(root, "plan.md")],
       protectedArtifactsMatch: () => true,
-    }).prepare({
-      id: `candidate:work:${corrected}`,
-      baseSha: base,
-      commitSha: corrected,
-      treeSha: await candidate.treeAt(corrected),
-      commitMessage: "fix: publish corrected application",
-    });
+    }).prepare(
+      {
+        id: `candidate:work:${corrected}`,
+        baseSha: base,
+        commitSha: corrected,
+        treeSha: await candidate.treeAt(corrected),
+      },
+      "fix: publish corrected application",
+    );
     if (replay.kind !== "prepared") {
       throw new Error(`Candidate replay failed: ${JSON.stringify(replay)}`);
     }

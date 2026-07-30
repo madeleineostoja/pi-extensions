@@ -14,7 +14,6 @@ export type ReplayCandidate = {
   baseSha: string;
   commitSha: string;
   treeSha: string;
-  commitMessage?: string;
 };
 
 export type ReplayStaging = {
@@ -163,6 +162,7 @@ export class CandidateReplayEngine {
 
   async prepare(
     candidate: ReplayCandidate,
+    publicationCommitSubject?: string,
     signal?: AbortSignal,
     retainedPreparation?: PublicationPreparation,
   ): Promise<CandidateReplayOutcome> {
@@ -222,7 +222,12 @@ export class CandidateReplayEngine {
               "The reviewed already-satisfied candidate has a stale repository base.",
           };
         }
-        const committed = await this.commitPrepared(staging, candidate, target);
+        const committed = await this.commitPrepared(
+          staging,
+          candidate,
+          target,
+          publicationCommitSubject,
+        );
         return committed.kind === "prepared"
           ? {
               kind: "prepared",
@@ -299,6 +304,7 @@ export class CandidateReplayEngine {
         },
         candidate,
         target,
+        publicationCommitSubject,
       );
       if (committed.kind !== "prepared") {
         return committed;
@@ -430,6 +436,7 @@ export class CandidateReplayEngine {
     staging: ReplayStaging,
     candidate: ReplayCandidate,
     target: Awaited<ReturnType<typeof targetSnapshot>>,
+    publicationCommitSubject?: string,
   ): Promise<
     | {
         kind: "prepared";
@@ -456,10 +463,12 @@ export class CandidateReplayEngine {
         },
       };
     }
-    if (!candidate.commitMessage) {
-      throw new Error("Publishable candidate has no commit message.");
+    if (!publicationCommitSubject) {
+      throw new Error(
+        "Publishable replay has no reviewer-authored commit subject.",
+      );
     }
-    const commit = await stagingGit.checkpoint(candidate.commitMessage, false);
+    const commit = await stagingGit.checkpoint(publicationCommitSubject, false);
     const command = hookCommandEvidence(commit, staging.worktreePath);
     if (commit.exitCode !== 0) {
       const [replayPatch, replayPaths, treeSha] = await Promise.all([

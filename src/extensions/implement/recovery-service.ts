@@ -133,9 +133,9 @@ export async function runRecovery(args: {
     }
     const result: RecoveryResult = { action };
     if (["rework_candidate", "reconcile"].includes(completion.action)) {
-      if (!candidate || !completion.candidateTip || !completion.commitMessage) {
+      if (!candidate || !completion.candidateTip) {
         throw new Error(
-          "Tracked recovery requires a retained candidate, candidate tip, and commit message.",
+          "Tracked recovery requires a retained candidate and candidate tip.",
         );
       }
       const candidateTip = await canonicalCommitSha(
@@ -147,7 +147,6 @@ export async function runRecovery(args: {
         workstream: args.effect.workstream,
         candidate,
         candidateTip,
-        commitMessage: completion.commitMessage,
         git: args.git,
       });
       const changedPaths = await changedPathsBetween(
@@ -178,11 +177,7 @@ export async function runRecovery(args: {
         changedPaths,
         evidence: completion.evidence,
       };
-    } else if (
-      completion.candidateTip ||
-      completion.changedPaths?.length ||
-      completion.commitMessage
-    ) {
+    } else if (completion.candidateTip || completion.changedPaths?.length) {
       throw new Error(
         "Only tracked recovery actions may report a candidate delta.",
       );
@@ -254,7 +249,6 @@ async function recoveredCandidate(args: {
   workstream: RuntimeWorkstream;
   candidate: RunState["candidates"][string];
   candidateTip: string;
-  commitMessage: string;
   git: GitClient;
 }): Promise<RunState["candidates"][string]> {
   const worktreePath = candidateWorktree(
@@ -302,7 +296,6 @@ async function recoveredCandidate(args: {
     id: `recovery:${recoveryTaskId(args.workstream)}:${args.candidateTip}`,
     commitSha: args.candidateTip,
     treeSha: await workspaceGit.treeAt(args.candidateTip),
-    commitMessage: args.commitMessage,
     ...(args.candidate.implementationEvidence
       ? {
           implementationEvidence: {

@@ -14,7 +14,9 @@ import {
 import {
   type AnchoredWorkstreamReviewCompletion,
   type DirectReviewFinding,
+  type InitialAnchoredWorkstreamReviewCompletion,
   type InitialWorkstreamReviewCompletion,
+  type RepositoryStateReviewCompletion,
 } from "./result-schemas.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import {
@@ -39,6 +41,7 @@ export type ReviewState = {
   };
   evidence: string[];
   observations: Array<{ summary: string; evidence: string }>;
+  publicationCommitSubject?: string;
 };
 
 export type ReviewFinding = DirectReviewFinding & {
@@ -66,7 +69,7 @@ export type ReviewPacket = {
 
 export type InitialSourceReviewPacket = ReviewPacket & {
   role: "reviewer";
-  completionKind: "initial-review";
+  completionKind: "initial-review" | "repository-state-review";
   identity: string;
   workspace: { path: string; mutationBoundary: string };
   mode: "initial" | "repository_state";
@@ -93,7 +96,7 @@ export type SourceReviewWorkerPacket =
 
 export type OverallAnchoredReviewPacket = {
   role: "reviewer";
-  completionKind: "anchored-review";
+  completionKind: "initial-anchored-review" | "anchored-review";
   identity: string;
   workspace: { path: string; mutationBoundary: string };
   planContext: string;
@@ -105,22 +108,26 @@ export type OverallAnchoredReviewPacket = {
 
 export type ReviewOutcome =
   | {
-      kind: "repository_state";
+      kind: "initial";
       candidateId: string;
-      assessedTargetSha: string;
-      completion: InitialWorkstreamReviewCompletion;
+      completion:
+        | InitialWorkstreamReviewCompletion
+        | RepositoryStateReviewCompletion;
       evidence: string;
     }
   | {
-      kind: "initial";
+      kind: "repository_state";
       candidateId: string;
-      completion: InitialWorkstreamReviewCompletion;
+      assessedTargetSha: string;
+      completion: RepositoryStateReviewCompletion;
       evidence: string;
     }
   | {
       kind: "anchored";
       candidateId: string;
-      completion: AnchoredWorkstreamReviewCompletion;
+      completion:
+        | AnchoredWorkstreamReviewCompletion
+        | InitialAnchoredWorkstreamReviewCompletion;
       evidence: string;
     };
 
@@ -314,7 +321,7 @@ export function buildSourceReviewWorkerPacket(args: {
     }
     return {
       ...common,
-      completionKind: "initial-review",
+      completionKind: "repository-state-review",
       mode: "repository_state",
       repositoryState: {
         historicalBaseSha: args.assessment.historicalBaseSha,
@@ -329,7 +336,14 @@ export function buildSourceReviewWorkerPacket(args: {
         `Reviewer packet ${args.workstream.id} has findings without a review epoch.`,
       );
     }
-    return { ...common, completionKind: "initial-review", mode: "initial" };
+    return {
+      ...common,
+      completionKind:
+        args.packet.candidate.commitSha === args.packet.candidate.baseSha
+          ? "repository-state-review"
+          : "initial-review",
+      mode: "initial",
+    };
   }
   const outstandingIds = args.packet.outstandingFindings.map(
     (finding) => finding.id,
@@ -509,7 +523,7 @@ export async function runWorkstreamReview(args: {
         kind: "repository_state",
         candidateId: candidate.id,
         assessedTargetSha: assessment.targetSha,
-        completion: result.result as InitialWorkstreamReviewCompletion,
+        completion: result.result as RepositoryStateReviewCompletion,
         evidence,
       }
     : review
@@ -522,7 +536,9 @@ export async function runWorkstreamReview(args: {
       : {
           kind: "initial",
           candidateId: candidate.id,
-          completion: result.result as InitialWorkstreamReviewCompletion,
+          completion: result.result as
+            | InitialWorkstreamReviewCompletion
+            | RepositoryStateReviewCompletion,
           evidence,
         };
 }
@@ -590,7 +606,9 @@ async function runOverallAnchoredReview(args: {
   }
   const packet: OverallAnchoredReviewPacket = {
     role: "reviewer",
-    completionKind: "anchored-review",
+    completionKind: review.publicationCommitSubject
+      ? "anchored-review"
+      : "initial-anchored-review",
     identity: `${args.state.run.id}/${args.workstream.repairId}/${candidate.id}`,
     workspace: {
       path: workspace.worktreePath,
@@ -618,6 +636,8 @@ async function runOverallAnchoredReview(args: {
         previousCandidate: workerPacket.previousCandidate.commitSha,
         currentCandidate: workerPacket.candidate.commitSha,
         worktreePath: workerPacket.workspace.path,
+        authorPublicationCommitSubject:
+          workerPacket.completionKind === "initial-anchored-review",
       }),
   });
   const result = await args.subagents.waitFor<unknown>(handle, args.signal);
@@ -644,7 +664,9 @@ async function runOverallAnchoredReview(args: {
   return {
     kind: "anchored",
     candidateId: candidate.id,
-    completion: result.result as AnchoredWorkstreamReviewCompletion,
+    completion: result.result as
+      | AnchoredWorkstreamReviewCompletion
+      | InitialAnchoredWorkstreamReviewCompletion,
     evidence,
   };
 }
@@ -652,7 +674,9 @@ async function runOverallAnchoredReview(args: {
 export function applyInitialWorkstreamReview(args: {
   workstream: RuntimeWorkstream;
   candidateId: string;
-  completion: InitialWorkstreamReviewCompletion;
+  completion:
+    | InitialWorkstreamReviewCompletion
+    | RepositoryStateReviewCompletion;
   evidence: string;
 }): { review: ReviewState; findings: ReviewFinding[] } {
   const findings =
@@ -674,6 +698,9 @@ export function applyInitialWorkstreamReview(args: {
       outstandingIds: findings.map((finding) => finding.id),
       evidence: [args.evidence],
       observations: [],
+      ...("publicationCommitSubject" in args.completion
+        ? { publicationCommitSubject: args.completion.publicationCommitSubject }
+        : {}),
     },
     findings,
   };
@@ -682,7 +709,9 @@ export function applyInitialWorkstreamReview(args: {
 export function applyAnchoredWorkstreamReview(args: {
   state: ReviewState;
   workstream: RuntimeWorkstream;
-  completion: AnchoredWorkstreamReviewCompletion;
+  completion:
+    | AnchoredWorkstreamReviewCompletion
+    | InitialAnchoredWorkstreamReviewCompletion;
   findings: ReviewFinding[];
   evidence: string;
 }): { review: ReviewState; findings: ReviewFinding[] } {
@@ -745,9 +774,20 @@ export function applyAnchoredWorkstreamReview(args: {
     ...args.state.outstandingIds.filter((id) => !resolved.has(id)),
     ...regressions.map((finding) => finding.id),
   ];
+  if (
+    "publicationCommitSubject" in args.completion &&
+    args.state.publicationCommitSubject
+  ) {
+    throw new Error(
+      "Only the first overall repair review may author a publication subject.",
+    );
+  }
   return {
     review: {
       ...args.state,
+      ...("publicationCommitSubject" in args.completion
+        ? { publicationCommitSubject: args.completion.publicationCommitSubject }
+        : {}),
       round: nextRound,
       outstandingIds,
       evidence: [...args.state.evidence, args.evidence],

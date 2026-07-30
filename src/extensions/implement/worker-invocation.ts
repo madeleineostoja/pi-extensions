@@ -2,8 +2,10 @@ import { isAbsolute } from "node:path";
 import type { Static } from "typebox";
 import {
   anchoredWorkstreamReviewSchema,
+  initialAnchoredWorkstreamReviewSchema,
   initialOverallReviewSchema,
   initialWorkstreamReviewSchema,
+  repositoryStateReviewSchema,
   overallReworkSchema,
   recoveryCompletionSchema,
   wholePlanRecoveryCompletionSchema,
@@ -47,8 +49,23 @@ const completionContracts = {
   "initial-review": {
     role: "reviewer",
     readOnly: true,
-    description: "Approve or return direct blocking findings.",
+    description:
+      "Review a changed workstream and author its publication subject.",
     schema: initialWorkstreamReviewSchema,
+  },
+  "repository-state-review": {
+    role: "reviewer",
+    readOnly: true,
+    description:
+      "Approve or return direct blocking findings for repository state.",
+    schema: repositoryStateReviewSchema,
+  },
+  "initial-anchored-review": {
+    role: "reviewer",
+    readOnly: true,
+    description:
+      "Assess the initial overall repair and author its publication subject.",
+    schema: initialAnchoredWorkstreamReviewSchema,
   },
   "anchored-review": {
     role: "reviewer",

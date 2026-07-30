@@ -176,7 +176,6 @@ describe("recovery service Git boundary", () => {
               action: "rework_candidate" as const,
               summary: "Committed the hook correction.",
               evidence: "The candidate now includes the tracked correction.",
-              commitMessage: "fix: correct candidate hook output",
               candidateTip,
               changedPaths: ["correction.txt"],
             },
@@ -198,9 +197,6 @@ describe("recovery service Git boundary", () => {
     expect(result.correction).toMatchObject({
       changedPaths: ["correction.txt"],
     });
-    expect(result.candidate?.commitMessage).toBe(
-      "fix: correct candidate hook output",
-    );
     expect(result.candidate?.commitSha).toBe(await candidateGit.head());
   });
 });

@@ -226,7 +226,6 @@ async function changedResult(cwd: string, taskIds: string[]) {
     result: {
       outcome: "changed" as const,
       summary: "Implemented the workstream and repaired local runtime state.",
-      commitMessage: "feat: implement workstream behavior",
       verification: ["Focused workstream tests passed."],
     },
   };
@@ -340,7 +339,6 @@ describe("workstream candidate lifecycle", () => {
           result: {
             outcome: "changed",
             summary: "No changes were needed.",
-            commitMessage: "feat: implement workstream behavior",
             verification: ["Inspected the repository."],
           },
         })),
@@ -391,7 +389,6 @@ describe("workstream candidate lifecycle", () => {
           result: {
             outcome: "changed",
             summary: "No changes were needed.",
-            commitMessage: "feat: implement workstream behavior",
             verification: ["Inspected the repository."],
           },
         })),
@@ -454,7 +451,13 @@ describe("workstream candidate lifecycle", () => {
         reviews += 1;
         return {
           status: "completed",
-          result: { verdict: "approved" },
+          result:
+            reviews === 1
+              ? {
+                  verdict: "approved",
+                  publicationCommitSubject: "feat: publish workstream",
+                }
+              : { verdict: "approved" },
         } as never;
       },
     };
@@ -519,7 +522,7 @@ describe("workstream candidate lifecycle", () => {
         "first\n",
       );
       expect(git(subject.root, "log", "-1", "--format=%s").trim()).toBe(
-        "feat: implement workstream behavior",
+        "feat: publish workstream",
       );
       expect(reviews).toBe(2);
     } finally {
@@ -583,7 +586,6 @@ describe("workstream candidate lifecycle", () => {
               action: "rework_candidate",
               summary: `Committed correction ${corrections}.`,
               evidence: `Correction ${corrections} is committed.`,
-              commitMessage: "feat: implement corrected workstream behavior",
               candidateTip,
               changedPaths: [`correction-${corrections}.txt`],
             },
@@ -596,6 +598,7 @@ describe("workstream candidate lifecycle", () => {
               status: "completed",
               result: {
                 verdict: "changes_requested",
+                publicationCommitSubject: "feat: publish workstream",
                 findings: [
                   {
                     summary: "First correction is required.",

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyAnchoredWorkstreamReview,
+  applyInitialWorkstreamReview,
   buildSourceReviewWorkerPacket,
+  retargetAnchoredReview,
   type ReviewPacket,
   type ReviewState,
 } from "./review.js";
@@ -110,6 +113,30 @@ describe("source review worker packets", () => {
     });
   });
 
+  it("uses the no-subject completion contract for initial satisfaction review", () => {
+    const satisfied = {
+      ...candidate,
+      id: "satisfied:work:base",
+      commitSha: "base",
+      treeSha: "base-tree",
+    };
+    const result = buildSourceReviewWorkerPacket({
+      state: state(),
+      workstream,
+      workspacePath,
+      packet: {
+        ...packet(),
+        candidate: satisfied,
+        outstandingFindings: [],
+      },
+    });
+
+    expect(result).toMatchObject({
+      completionKind: "repository-state-review",
+      mode: "initial",
+    });
+  });
+
   it("renders comparison identities without embedded diff content", () => {
     const initial = buildInitialWorkstreamReviewPrompt({
       ...packet(),
@@ -142,6 +169,106 @@ describe("source review worker packets", () => {
     expect(anchored).toContain("Base SHA: base");
     expect(anchored).toContain("previous..tip");
     expect(anchored).not.toContain("diff --git");
+  });
+
+  it("records a subject on the first overall repair review", () => {
+    const baseline = applyInitialWorkstreamReview({
+      workstream: { kind: "overall", repairId: "repair" },
+      candidateId: previousCandidate.id,
+      completion: {
+        verdict: "changes_requested",
+        findings: [
+          {
+            summary: "Missing behavior",
+            evidence: "The endpoint returns 404.",
+            requiredChange: "Add the endpoint.",
+            acceptanceCriteria: ["The endpoint returns 200."],
+          },
+        ],
+      },
+      evidence: "initial whole-plan review",
+    });
+    const repair = retargetAnchoredReview({
+      state: baseline.review,
+      candidateId: candidate.id,
+      correction: {
+        fromCandidateId: previousCandidate.id,
+        changedPaths: ["src/endpoint.ts"],
+        evidence: "Committed the repair.",
+      },
+    });
+    const reviewed = applyAnchoredWorkstreamReview({
+      state: repair,
+      workstream: { kind: "overall", repairId: "repair" },
+      completion: {
+        publicationCommitSubject: "fix: repair whole plan",
+        assessments: [
+          {
+            id: baseline.findings[0]!.id,
+            status: "unresolved",
+            evidence: "The endpoint remains unavailable.",
+          },
+        ],
+        regressions: [],
+      },
+      findings: baseline.findings,
+      evidence: "initial repair review",
+    });
+
+    expect(reviewed.review.publicationCommitSubject).toBe(
+      "fix: repair whole plan",
+    );
+  });
+
+  it("preserves the initial publication subject through a correction review", () => {
+    const initial = applyInitialWorkstreamReview({
+      workstream,
+      candidateId: previousCandidate.id,
+      completion: {
+        verdict: "changes_requested",
+        publicationCommitSubject: "feat: publish workstream",
+        findings: [
+          {
+            summary: "Missing behavior",
+            evidence: "The endpoint returns 404.",
+            requiredChange: "Add the endpoint.",
+            acceptanceCriteria: ["The endpoint returns 200."],
+          },
+        ],
+      },
+      evidence: "initial review",
+    });
+    const retargeted = retargetAnchoredReview({
+      state: initial.review,
+      candidateId: candidate.id,
+      correction: {
+        fromCandidateId: previousCandidate.id,
+        changedPaths: ["src/endpoint.ts"],
+        evidence: "Committed the correction.",
+      },
+    });
+    const updated = applyAnchoredWorkstreamReview({
+      state: retargeted,
+      workstream,
+      completion: {
+        assessments: [
+          {
+            id: initial.findings[0]!.id,
+            status: "resolved",
+            evidence: "The endpoint returns 200.",
+          },
+        ],
+        regressions: [],
+      },
+      findings: initial.findings,
+      evidence: "anchored review",
+    });
+
+    expect(updated.review).toMatchObject({
+      candidateId: candidate.id,
+      outstandingIds: [],
+      publicationCommitSubject: "feat: publish workstream",
+    });
   });
 
   it("rejects an incomplete anchored review epoch before spawning", () => {

@@ -70,7 +70,10 @@ describe("Implement managed runtime integration", () => {
       fauxAssistantMessage(
         fauxToolCall(
           MANAGED_COMPLETION_TOOL_NAME,
-          { verdict: "approved" },
+          {
+            verdict: "approved",
+            publicationCommitSubject: "feat: publish workstream",
+          },
           { id: "completion" },
         ),
       ),
@@ -110,7 +113,10 @@ describe("Implement managed runtime integration", () => {
 
     expect(result).toEqual({
       status: "completed",
-      result: { verdict: "approved" },
+      result: {
+        verdict: "approved",
+        publicationCommitSubject: "feat: publish workstream",
+      },
     });
     expect(snapshot).toMatchObject({
       status: "completed",
@@ -133,7 +139,10 @@ describe("Implement managed runtime integration", () => {
       fauxAssistantMessage(
         fauxToolCall(
           MANAGED_COMPLETION_TOOL_NAME,
-          { verdict: "approved" },
+          {
+            verdict: "approved",
+            publicationCommitSubject: "feat: publish workstream",
+          },
           { id: "completion" },
         ),
       ),
@@ -164,7 +173,10 @@ describe("Implement managed runtime integration", () => {
 
     await expect(client.waitFor(handle)).resolves.toEqual({
       status: "completed",
-      result: { verdict: "approved" },
+      result: {
+        verdict: "approved",
+        publicationCommitSubject: "feat: publish workstream",
+      },
     });
     expect(harness.sessions).toHaveLength(1);
     expect(harness.faux.state.callCount).toBe(1);

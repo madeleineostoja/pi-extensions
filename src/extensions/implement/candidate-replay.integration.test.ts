@@ -80,7 +80,6 @@ async function candidate(
       baseSha,
       commitSha,
       treeSha,
-      commitMessage: `feat: ${path}`,
     };
   } finally {
     rmSync(index, { force: true });
@@ -152,7 +151,10 @@ describe("CandidateReplayEngine", () => {
       protectedArtifactsMatch: () => true,
     });
 
-    const prepared = await protectedEngine.prepare(approved);
+    const prepared = await protectedEngine.prepare(
+      approved,
+      "feat: publish candidate",
+    );
     expect(prepared).toMatchObject({ kind: "prepared" });
     if (prepared.kind === "prepared") {
       await removeStaging(root, prepared.staging);
@@ -171,21 +173,25 @@ describe("CandidateReplayEngine", () => {
         ),
         runId: "run-2",
         protectedPaths: [plan],
-      }).prepare(approved),
+      }).prepare(approved, "feat: publish candidate"),
     ).resolves.toMatchObject({
       kind: "infrastructure_failure",
       evidence: expect.stringContaining("requires exact retained hashes"),
     });
 
     git(root, "add", "plan.md");
-    await expect(protectedEngine.prepare(approved)).resolves.toMatchObject({
+    await expect(
+      protectedEngine.prepare(approved, "feat: publish candidate"),
+    ).resolves.toMatchObject({
       kind: "infrastructure_failure",
       evidence: expect.stringContaining("clean outside sanctioned artifacts"),
     });
     git(root, "reset", "--", "plan.md");
 
     writeFileSync(join(root, "unrelated.txt"), "operator change\n");
-    await expect(protectedEngine.prepare(approved)).resolves.toMatchObject({
+    await expect(
+      protectedEngine.prepare(approved, "feat: publish candidate"),
+    ).resolves.toMatchObject({
       kind: "infrastructure_failure",
       evidence: expect.stringContaining("clean outside sanctioned artifacts"),
     });
@@ -201,7 +207,10 @@ describe("CandidateReplayEngine", () => {
       tree: await client.tree(),
     };
 
-    const result = await engine(root).prepare(approved);
+    const result = await engine(root).prepare(
+      approved,
+      "feat: publish candidate",
+    );
 
     expect(result).toMatchObject({
       kind: "prepared",
@@ -217,7 +226,7 @@ describe("CandidateReplayEngine", () => {
     expect(result.staging.treeSha).toBe(approved.treeSha);
     expect(
       git(result.staging.worktreePath, "log", "-1", "--format=%s").trim(),
-    ).toBe(approved.commitMessage);
+    ).toBe("feat: publish candidate");
     await removeStaging(root, result.staging);
   });
 
@@ -228,9 +237,9 @@ describe("CandidateReplayEngine", () => {
     preCommit(root, `echo ran >> "${marker}"`);
     const replay = engine(root);
 
-    const first = await replay.prepare(approved);
+    const first = await replay.prepare(approved, "feat: publish candidate");
     expect(first.kind).toBe("prepared");
-    const second = await replay.prepare(approved);
+    const second = await replay.prepare(approved, "feat: publish candidate");
     expect(second.kind).toBe("prepared");
     expect(readFileSync(marker, "utf-8").trim().split("\n")).toHaveLength(2);
     if (second.kind !== "prepared") {
@@ -251,9 +260,9 @@ describe("CandidateReplayEngine", () => {
     );
     const replay = engine(root);
 
-    const first = await replay.prepare(approved);
+    const first = await replay.prepare(approved, "feat: publish candidate");
     expect(first.kind).toBe("prepared");
-    const second = await replay.prepare(approved);
+    const second = await replay.prepare(approved, "feat: publish candidate");
     expect(second.kind).toBe("prepared");
     if (second.kind !== "prepared") {
       throw new Error(JSON.stringify(second));
@@ -271,7 +280,10 @@ describe("CandidateReplayEngine", () => {
       "printf hook\\n >> target.txt\ngit add target.txt\necho rejected >&2\nexit 1",
     );
 
-    const result = await engine(root).prepare(approved);
+    const result = await engine(root).prepare(
+      approved,
+      "feat: publish candidate",
+    );
 
     expect(result).toMatchObject({
       kind: "hook_rejected",
@@ -298,7 +310,10 @@ describe("CandidateReplayEngine", () => {
     const approved = await candidate(root, "candidate.txt", "candidate\n");
     preCommit(root, "printf hook\\n >> target.txt\ngit add target.txt");
 
-    const result = await engine(root).prepare(approved);
+    const result = await engine(root).prepare(
+      approved,
+      "feat: publish candidate",
+    );
 
     expect(result).toMatchObject({
       kind: "reconciliation_required",
@@ -322,7 +337,10 @@ describe("CandidateReplayEngine", () => {
     const second = await candidate(root, "target.txt", "second\n");
     git(root, "merge", "--ff-only", first.commitSha);
 
-    const preparedSecond = await engine(root).prepare(second);
+    const preparedSecond = await engine(root).prepare(
+      second,
+      "feat: publish target change",
+    );
 
     expect(preparedSecond).toMatchObject({
       kind: "prepared",
@@ -366,7 +384,7 @@ describe("CandidateReplayEngine", () => {
     const client = new ExecGitClient(root);
     const approved = await candidate(root, "candidate.txt", "candidate\n");
     const replay = engine(root);
-    const first = await replay.prepare(approved);
+    const first = await replay.prepare(approved, "feat: publish candidate");
     if (first.kind !== "prepared") {
       throw new Error(JSON.stringify(first));
     }
@@ -392,7 +410,12 @@ describe("CandidateReplayEngine", () => {
     git(first.staging.worktreePath, "add", "candidate.txt");
     await staging.checkpoint("feat: wrong", false);
 
-    const reused = await replay.prepare(approved, undefined, retained);
+    const reused = await replay.prepare(
+      approved,
+      "feat: publish candidate",
+      undefined,
+      retained,
+    );
 
     expect(reused).toMatchObject({
       kind: "prepared",
@@ -416,7 +439,10 @@ describe("CandidateReplayEngine", () => {
     git(root, "add", "candidate.txt");
     git(root, "commit", "-m", "feat: target overlap");
 
-    const result = await engine(root).prepare(approved);
+    const result = await engine(root).prepare(
+      approved,
+      "feat: publish candidate",
+    );
 
     expect(result).toMatchObject({
       kind: "reconciliation_required",
@@ -447,6 +473,7 @@ describe("CandidateReplayEngine", () => {
         commitSha: baseSha,
         treeSha: await client.tree(),
       },
+      undefined,
       controller.signal,
     );
 

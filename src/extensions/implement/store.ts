@@ -156,7 +156,6 @@ const candidateSchema = z
     baseSha: nonEmpty,
     commitSha: nonEmpty,
     treeSha: nonEmpty,
-    commitMessage: nonEmpty.optional(),
     implementationEvidence: z
       .object({
         summary: nonEmpty,
@@ -206,6 +205,7 @@ const reviewStateSchema = z
     observations: z.array(
       z.object({ summary: nonEmpty, evidence: nonEmpty }).strict(),
     ),
+    publicationCommitSubject: nonEmpty.optional(),
   })
   .strict();
 
@@ -1410,13 +1410,6 @@ function invariantIssues(
         `candidate ${key} does not match its workstream runtime base`,
       );
     }
-    if (
-      candidate.baseSha !== candidate.commitSha &&
-      candidate.implementationEvidence &&
-      !candidate.commitMessage
-    ) {
-      issues.push(`publishable candidate ${key} has no commit message`);
-    }
   }
   for (const [key, finding] of Object.entries(state.findings)) {
     if (key !== finding.id) {
@@ -1469,6 +1462,14 @@ function invariantIssues(
     ) {
       issues.push(`review ${key} has an invalid correction anchor`);
     }
+    if (
+      review.publicationCommitSubject &&
+      candidate.baseSha === candidate.commitSha
+    ) {
+      issues.push(
+        `review ${key} has a publication subject for an unchanged candidate`,
+      );
+    }
   }
   for (const workstream of [
     ...Object.values(state.workstreams.source),
@@ -1481,9 +1482,12 @@ function invariantIssues(
         ? state.reviews[workstreamIdentity(candidate.workstream)]
         : undefined;
       if (
+        !candidate ||
         !review ||
         review.candidateId !== candidateId ||
-        review.outstandingIds.length > 0
+        review.outstandingIds.length > 0 ||
+        (candidate.baseSha !== candidate.commitSha &&
+          !review.publicationCommitSubject)
       ) {
         issues.push(
           "approved or completed workstreams require a converged current review",

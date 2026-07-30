@@ -397,13 +397,35 @@ export function createRuntime(args: {
             preparation.candidateCommitSha === candidate.commitSha &&
             preparation.targetBaseSha === targetBaseSha,
         );
+        const review =
+          state.reviews[
+            effect.workstream.kind === "source"
+              ? `source:${effect.workstream.id}`
+              : `overall:${effect.workstream.repairId}`
+          ];
+        if (
+          candidate.commitSha !== candidate.baseSha &&
+          (!review ||
+            review.candidateId !== candidate.id ||
+            review.outstandingIds.length > 0 ||
+            !review.publicationCommitSubject)
+        ) {
+          throw new Error(
+            "Changed candidate reconciliation requires its converged reviewer-authored publication subject.",
+          );
+        }
         const replay = await new CandidateReplayEngine({
           git: args.git,
           worktreesRoot: join(args.lease.paths.worktrees, state.run.id),
           runId: state.run.id,
           protectedPaths: Object.keys(state.protectedArtifactHashes),
           protectedArtifactsMatch: () => protectedArtifactsMatch(state),
-        }).prepare(candidate, signal, retainedPreparation);
+        }).prepare(
+          candidate,
+          review?.publicationCommitSubject,
+          signal,
+          retainedPreparation,
+        );
         const workspace =
           replay.staging === undefined
             ? {

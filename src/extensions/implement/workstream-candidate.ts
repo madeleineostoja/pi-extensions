@@ -564,7 +564,6 @@ async function validateCompletion(args: {
       baseSha: args.workspace.baseSha,
       commitSha: candidateTip,
       treeSha,
-      commitMessage: args.completion.commitMessage,
       implementationEvidence,
     },
     checkpoints,
