@@ -26,10 +26,10 @@ afterEach(() => {
 
 type Handler = (...args: any[]) => any;
 
-function fixture() {
+function fixture(beforeGuardToolCallHandler?: Handler) {
   const cwd = mkdtempSync(join(tmpdir(), "pipkin-guard-extension-"));
   directories.push(cwd);
-  const handlers = new Map<string, Handler>();
+  const handlers = new Map<string, Handler[]>();
   const tools: any[] = [];
   const commands = new Map<string, any>();
   const status = vi.fn();
@@ -46,7 +46,8 @@ function fixture() {
     confirm: vi.fn(async () => true),
   };
   const pi = {
-    on: (event: string, handler: Handler) => handlers.set(event, handler),
+    on: (event: string, handler: Handler) =>
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]),
     registerTool: (tool: unknown) => tools.push(tool),
     registerCommand: (name: string, command: unknown) =>
       commands.set(name, command),
@@ -64,26 +65,46 @@ function fixture() {
       },
     }) as any;
 
+  if (beforeGuardToolCallHandler) {
+    pi.on("tool_call", beforeGuardToolCallHandler);
+  }
   registerGuard(pi as never);
-  return { commands, context, cwd, handlers, status, tools, ui };
+  const emit = async (event: string, payload: unknown, ctx: unknown) => {
+    let result: unknown;
+    for (const handler of handlers.get(event) ?? []) {
+      const next = await handler(payload, ctx);
+      if (next !== undefined) {
+        result = next;
+      }
+    }
+    return result;
+  };
+  return { commands, context, cwd, emit, handlers, status, tools, ui };
 }
 
 describe("Guard extension registration", () => {
-  it("owns the only Bash executor and assesses each execution exactly once", async () => {
-    const { context, handlers, tools } = fixture();
+  it("owns the only Bash executor and assesses final post-tool-call input exactly once", async () => {
+    const mutator = vi.fn((event: { toolName: string; input: object }) => {
+      if (event.toolName === "bash") {
+        Object.assign(event.input, { command: "printf guarded" });
+      }
+    });
+    const { context, emit, tools } = fixture(mutator);
     const ctx = context("print", false);
-    await handlers.get("session_start")!({ type: "session_start" }, ctx);
+    await emit("session_start", { type: "session_start" }, ctx);
 
     expect(tools).toHaveLength(1);
     expect(tools[0].name).toBe("bash");
+    const call = {
+      type: "tool_call",
+      toolCallId: "bash-1",
+      toolName: "bash",
+      input: { command: "printf before-mutation" },
+    };
+    await emit("tool_call", call, ctx);
+    expect(mutator).toHaveBeenCalledTimes(1);
     await expect(
-      tools[0].execute(
-        "bash-1",
-        { command: "printf guarded" },
-        undefined,
-        undefined,
-        ctx,
-      ),
+      tools[0].execute(call.toolCallId, call.input, undefined, undefined, ctx),
     ).resolves.toMatchObject({
       content: [{ type: "text", text: "guarded" }],
     });
@@ -92,31 +113,34 @@ describe("Guard extension registration", () => {
       expect.objectContaining({ command: "printf guarded", ctx }),
     );
 
-    await handlers.get("session_shutdown")!({ type: "session_shutdown" }, ctx);
+    await emit("session_shutdown", { type: "session_shutdown" }, ctx);
   });
 
   it("uses TUI-only approvals and shows Guard status only on the TUI surface", async () => {
-    const { commands, context, cwd, handlers, status, ui } = fixture();
+    const { commands, context, cwd, emit, status, ui } = fixture();
     const protectedFile = join(cwd, ".env");
     writeFileSync(protectedFile, "secret");
     const tui = context("tui", true);
-    await handlers.get("session_start")!({ type: "session_start" }, tui);
+    await emit("session_start", { type: "session_start" }, tui);
 
     expect(status).toHaveBeenLastCalledWith("pipkin.guard", "guard: local");
     await expect(
-      handlers.get("tool_call")!(
+      emit(
+        "tool_call",
         { toolName: "read", input: { path: protectedFile } },
         context("rpc", true),
       ),
     ).resolves.toMatchObject({ block: true });
     await expect(
-      handlers.get("tool_call")!(
+      emit(
+        "tool_call",
         { toolName: "read", input: { path: protectedFile } },
         tui,
       ),
     ).resolves.toBeUndefined();
     await expect(
-      handlers.get("tool_call")!(
+      emit(
+        "tool_call",
         { toolName: "read", input: { path: protectedFile } },
         context("rpc", true),
       ),
@@ -124,6 +148,6 @@ describe("Guard extension registration", () => {
 
     await commands.get("guard").handler("", tui);
     expect(ui.select).toHaveBeenCalled();
-    await handlers.get("session_shutdown")!({ type: "session_shutdown" }, tui);
+    await emit("session_shutdown", { type: "session_shutdown" }, tui);
   });
 });

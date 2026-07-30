@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalizeTarget,
   createFilesystemGrant,
+  createFixedCapabilities,
   resolvePiToolPath,
   grantMatches,
   type FilesystemGrant,
@@ -143,6 +144,33 @@ describe("Guard capabilities", () => {
     state.setBoundaryEnabled(false);
     expect(state.filesystemGrants()).toEqual([]);
     expect(state.protectedReadApprovals()).toEqual([]);
+  });
+
+  it("keeps a session file exact without granting sibling temporary workspaces", () => {
+    const root = fixture();
+    const workspace = join(root, "workspace");
+    const sibling = join(root, "sibling");
+    const session = join(root, "current-session.jsonl");
+    mkdirSync(workspace);
+    mkdirSync(sibling);
+    writeFileSync(session, "session");
+
+    const fixed = createFixedCapabilities(workspace, session);
+
+    expect(fixed.grants).toContainEqual({
+      path: realpathSync(session),
+      access: "read",
+      kind: "file",
+      effects: [],
+    });
+    expect(
+      fixed.grants.some(
+        (grant) =>
+          grant.kind === "directory" &&
+          grant.path !== realpathSync(workspace) &&
+          grantMatches(grant, realpathSync(sibling), "read"),
+      ),
+    ).toBe(false);
   });
 
   it("emits only sequence grants and unrestricted network", () => {

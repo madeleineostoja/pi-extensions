@@ -218,7 +218,7 @@ describe("Guard Bash runtime", () => {
     await expect(runtime.dispose()).resolves.toBeUndefined();
   });
 
-  it("blocks agent Bash but retains trusted local user Bash while Nono is tools-only", async () => {
+  it("blocks agent Bash but retains trusted local user Bash while Nono is tools-only or the boundary is off", async () => {
     const { state, workspace } = fixture();
     state.setBackendHealth({ kind: "tools-only", reason: "missing" });
     const runtime = createGuardBashRuntime({ state, supportedMac: true });
@@ -227,12 +227,15 @@ describe("Guard Bash runtime", () => {
         onData: () => undefined,
       }),
     ).rejects.toThrow("Bash is unavailable");
-    const output: string[] = [];
-    await expect(
-      runtime.userOperations.exec("printf user", workspace, {
-        onData: (data) => output.push(data.toString()),
-      }),
-    ).resolves.toEqual({ exitCode: 0 });
-    expect(output.join("")).toBe("user");
+    for (const boundaryEnabled of [true, false]) {
+      state.setBoundaryEnabled(boundaryEnabled);
+      const output: string[] = [];
+      await expect(
+        runtime.userOperations.exec("printf user", workspace, {
+          onData: (data) => output.push(data.toString()),
+        }),
+      ).resolves.toEqual({ exitCode: 0 });
+      expect(output.join("")).toBe("user");
+    }
   });
 });

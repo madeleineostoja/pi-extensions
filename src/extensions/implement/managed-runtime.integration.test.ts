@@ -1,4 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
@@ -144,17 +150,32 @@ describe("Implement managed runtime integration", () => {
     await runtime.dispose();
   });
 
-  it("runs Bash through Guard in a real managed worker before completion", async () => {
-    const workspace = mkdtempSync(join(tmpdir(), "pipkin-managed-guard-"));
-    directories.push(workspace);
+  it("runs Guard-constrained Bash in a real managed worker without parent approvals", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipkin-managed-guard-"));
+    directories.push(root);
+    const workspace = join(root, "workspace");
+    const sibling = join(root, "sibling-target");
+    const artifacts = join(root, "artifacts");
+    const protectedFile = join(workspace, ".env");
+    mkdirSync(workspace);
+    mkdirSync(sibling);
+    mkdirSync(artifacts);
+    const siblingFile = join(sibling, "target.txt");
+    const artifactFile = join(artifacts, "artifact.txt");
+    writeFileSync(protectedFile, "protected", { flag: "w" });
+    writeFileSync(siblingFile, "sibling", { flag: "w" });
+    writeFileSync(artifactFile, "artifact", { flag: "w" });
+    const command = [
+      "printf 'cwd='; pwd",
+      `cat ${JSON.stringify(siblingFile)} 2>&1 || true`,
+      `cat ${JSON.stringify(artifactFile)} 2>&1 || true`,
+      `rm -f ${JSON.stringify(join(workspace, "does-not-exist"))} || true`,
+    ].join("; ");
     const harness = await createManagedSessionHarness(
       [
+        fauxAssistantMessage(fauxToolCall("bash", { command }, { id: "bash" })),
         fauxAssistantMessage(
-          fauxToolCall(
-            "bash",
-            { command: "printf managed-guard" },
-            { id: "bash" },
-          ),
+          fauxToolCall("read", { path: protectedFile }, { id: "protected" }),
         ),
         fauxAssistantMessage(
           fauxToolCall(
@@ -202,6 +223,33 @@ describe("Implement managed runtime integration", () => {
       result: { verdict: "approved" },
     });
     expect(harness.sessions).toHaveLength(1);
+    const toolResults = harness.sessions[0]!.messages.filter(
+      (message) => message.role === "toolResult",
+    ) as Array<{
+      toolCallId: string;
+      content: Array<{ type: string; text?: string }>;
+      isError: boolean;
+    }>;
+    const bash = toolResults.find((message) => message.toolCallId === "bash");
+    const protectedRead = toolResults.find(
+      (message) => message.toolCallId === "protected",
+    );
+
+    expect(bash?.isError).toBe(false);
+    expect(
+      bash?.content.map((content) => content.text ?? "").join(""),
+    ).toContain(`cwd=${realpathSync(workspace)}`);
+    expect(bash?.content.map((content) => content.text ?? "").join("")).toMatch(
+      /operation not permitted|permission denied/i,
+    );
+    expect(protectedRead).toMatchObject({
+      isError: true,
+      content: [
+        {
+          text: expect.stringContaining("interactive TUI"),
+        },
+      ],
+    });
     await runtime.dispose();
   });
 
