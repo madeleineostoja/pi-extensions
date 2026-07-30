@@ -69,7 +69,9 @@ export class WriteAheadPublisher {
   ): Promise<PublicationOutcome> {
     const preflight = await this.preflight(intent);
     if (preflight) {
-      return preflight;
+      return preflight.kind === "target_moved"
+        ? this.provenPreCasTargetMove(intent, preflight.actual)
+        : preflight;
     }
     if (!this.options.git.updateRef) {
       return {
@@ -95,11 +97,7 @@ export class WriteAheadPublisher {
           }
         : actual === intent.preparedCommitSha
           ? await this.finishPublished(intent)
-          : {
-              kind: "target_moved",
-              expected: intent.targetBaseSha,
-              actual,
-            };
+          : this.provenPreCasTargetMove(intent, actual);
     }
     this.options.hooks?.afterRefUpdate?.();
     return this.finishPublished(intent);
@@ -146,6 +144,63 @@ export class WriteAheadPublisher {
       reason:
         "Target ref matches neither side of the durable publication intent.",
     };
+  }
+
+  private async provenPreCasTargetMove(
+    intent: WriteAheadPublicationIntent,
+    actual: string,
+  ): Promise<PublicationOutcome> {
+    try {
+      const [
+        head,
+        identity,
+        branch,
+        operation,
+        clean,
+        protectedIndexDirty,
+        descendant,
+      ] = await Promise.all([
+        this.options.git.head(),
+        this.options.git.checkoutIdentity(),
+        this.options.git.currentBranch(),
+        this.options.git.activeOperation(),
+        this.options.git.isCleanExcept([
+          ...this.options.protectedPaths,
+          join(this.options.checkoutRoot, ".pi", "pipkin", "implement"),
+        ]),
+        this.options.git.hasStagedChangesInPaths(this.options.protectedPaths),
+        this.options.git.isAncestor(intent.targetBaseSha, actual),
+      ]);
+      if (
+        head !== actual ||
+        actual === intent.targetBaseSha ||
+        actual === intent.preparedCommitSha ||
+        identity !== this.options.checkoutIdentity ||
+        `refs/heads/${branch}` !== intent.targetRef ||
+        operation ||
+        !clean ||
+        protectedIndexDirty ||
+        !descendant ||
+        JSON.stringify(hashes(this.captureProtectedArtifacts())) !==
+          JSON.stringify(intent.protectedArtifactHashes)
+      ) {
+        return {
+          kind: "safety_paused",
+          reason:
+            "Target movement cannot be proved as a clean descendant before publication compare-and-swap.",
+        };
+      }
+      return {
+        kind: "target_moved",
+        expected: intent.targetBaseSha,
+        actual,
+      };
+    } catch (error) {
+      return {
+        kind: "safety_paused",
+        reason: `Target movement could not be observed safely: ${message(error)}`,
+      };
+    }
   }
 
   private async finishPublished(

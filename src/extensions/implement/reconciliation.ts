@@ -14,7 +14,10 @@ import type { ReconciliationCompletion } from "./result-schemas.js";
 import type { SchedulerEffect } from "./scheduler/scheduler.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import type { RunState } from "./store.js";
-import { spawnValidatedWorker } from "./worker-invocation.js";
+import {
+  spawnValidatedWorker,
+  WorkerPacketError,
+} from "./worker-invocation.js";
 import { workstreamWorkspace } from "./workstream-candidate.js";
 
 export type ReconciliationPacket = {
@@ -34,6 +37,7 @@ export type ReconciliationPacket = {
     hookEvidence?: string;
   };
   priorEvidence: string[];
+  semanticAttempt: "initial" | "escalated";
   publicationCommitSubject?: string;
 };
 
@@ -118,7 +122,12 @@ export function buildReconciliationPacket(args: {
         ? { hookEvidence: assignment.hookEvidence }
         : {}),
     },
-    priorEvidence: [...review.evidence],
+    priorEvidence: [
+      ...review.evidence,
+      ...(assignment.priorAttemptEvidence ?? []),
+      ...(assignment.attemptEvidence ?? []),
+    ],
+    semanticAttempt: assignment.semanticAttempt ?? "initial",
     ...(review.publicationCommitSubject
       ? { publicationCommitSubject: review.publicationCommitSubject }
       : {}),
@@ -226,7 +235,9 @@ export async function runReconciliation(args: {
         ? "semantic_blocked"
         : admission.kind === "quarantined" || admission.kind === "unsafe"
           ? "workspace_unsafe"
-          : "provider_failure",
+          : providerFailure instanceof WorkerPacketError
+            ? "protocol_failure"
+            : "provider_failure",
       `Reconciliation workspace is ${admission.kind}: ${admission.reason}.`,
       observation,
     );

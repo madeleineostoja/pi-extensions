@@ -341,6 +341,17 @@ const workspaceRecreationSchema = z
   })
   .strict();
 
+const reconciliationContextSchema = z
+  .object({
+    key: nonEmpty,
+    workstream: failureWorkstreamSchema,
+    candidateTreeSha: nonEmpty,
+    targetSha: nonEmpty,
+    disposition: z.enum(["overlap", "conflict", "changed_patch"]),
+    relevantPaths: z.array(nonEmpty),
+  })
+  .strict();
+
 const reconciliationAssignmentSchema = z
   .object({
     id: nonEmpty,
@@ -351,6 +362,7 @@ const reconciliationAssignmentSchema = z
     targetSha: nonEmpty,
     targetTreeSha: nonEmpty,
     disposition: z.enum(["overlap", "conflict", "changed_patch"]),
+    context: reconciliationContextSchema,
     paths: z
       .object({
         candidate: z.array(nonEmpty),
@@ -370,6 +382,9 @@ const reconciliationAssignmentSchema = z
       .strict(),
     evidence: nonEmpty,
     hookEvidence: nonEmpty.optional(),
+    semanticAttempt: z.enum(["initial", "escalated"]),
+    priorAttemptEvidence: z.array(nonEmpty),
+    attemptEvidence: z.array(nonEmpty),
     status: z.enum(["pending", "completed", "blocked"]),
     executionFailures: z.number().int().nonnegative(),
   })
@@ -440,6 +455,21 @@ const publicationIntentSchema = z
     targetRef: nonEmpty,
     protectedArtifactSnapshots: z.record(nonEmpty, z.string()),
     protectedArtifactHashes: z.record(nonEmpty, hash),
+  })
+  .strict();
+
+const publicationSupersessionSchema = z
+  .object({
+    intentId: nonEmpty,
+    publicationOperationId: nonEmpty,
+    preparationOperationId: nonEmpty,
+    workstream: failureWorkstreamSchema,
+    candidateId: nonEmpty,
+    preparationId: nonEmpty,
+    targetRef: nonEmpty,
+    expectedTargetSha: nonEmpty,
+    actualTargetSha: nonEmpty,
+    supersededAt: nonEmpty,
   })
   .strict();
 
@@ -552,7 +582,7 @@ const wholePlanReviewSchema = z
 
 export const RunStateSchema = z
   .object({
-    version: z.literal(6),
+    version: z.literal(7),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -610,6 +640,7 @@ export const RunStateSchema = z
         preparations: z.record(nonEmpty, publicationPreparationSchema),
         intents: z.record(nonEmpty, publicationIntentSchema),
         receipts: z.record(nonEmpty, publicationReceiptSchema),
+        supersessions: z.record(nonEmpty, publicationSupersessionSchema),
       })
       .strict(),
     protectedArtifactHashes: z.record(nonEmpty, hash),
@@ -785,7 +816,7 @@ export function createPlanningRun(args: {
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
   const state: RunState = {
-    version: 6,
+    version: 7,
     revision: 0,
     run: {
       id: args.runId,
@@ -807,7 +838,12 @@ export function createPlanningRun(args: {
     workspaceRecreations: {},
     reconciliationAssignments: {},
     satisfaction: { receipts: {}, assessments: {} },
-    publication: { preparations: {}, intents: {}, receipts: {} },
+    publication: {
+      preparations: {},
+      intents: {},
+      receipts: {},
+      supersessions: {},
+    },
     protectedArtifactHashes: args.source.protectedArtifactHashes,
     projectionDebt: [],
     wholePlanReview: { status: "pending" },
@@ -885,7 +921,7 @@ export class RunStore {
         const next = validateRunState(
           {
             ...update(structuredClone(current)),
-            version: 6,
+            version: 7,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -1075,9 +1111,9 @@ export function validateRunState(
   if (!parsed.success) {
     const version = versionOf(value);
     const message =
-      version === 1 || version === 2 || version === 3 || version === 4
+      version !== undefined && version < 7
         ? `Run state uses legacy schema version ${version}; settle and clean it with the previous runtime before deploying this version.`
-        : version === undefined || version !== 5
+        : version === undefined || version !== 7
           ? "Run state has an unsupported schema."
           : "Run state is invalid.";
     throw new StateError(
@@ -1564,6 +1600,31 @@ function invariantIssues(
       issues.push(`publication receipt ${key} has no publication owner`);
     }
   }
+  for (const [key, supersession] of Object.entries(
+    state.publication.supersessions,
+  )) {
+    const intent = state.publication.intents[supersession.intentId];
+    const operation =
+      state.processLeases[supersession.publicationOperationId] ??
+      state.operationSettlements[supersession.publicationOperationId];
+    if (
+      key !== supersession.intentId ||
+      !intent ||
+      state.publication.receipts[key] ||
+      operation?.kind !== "publication" ||
+      operation.publicationIntentId !== supersession.intentId ||
+      intent.operationId !== supersession.preparationOperationId ||
+      !sameWorkstreamIdentity(intent.workstream, supersession.workstream) ||
+      intent.candidateId !== supersession.candidateId ||
+      intent.preparationId !== supersession.preparationId ||
+      intent.targetRef !== supersession.targetRef ||
+      intent.targetBaseSha !== supersession.expectedTargetSha ||
+      supersession.actualTargetSha === supersession.expectedTargetSha ||
+      supersession.actualTargetSha === intent.preparedCommitSha
+    ) {
+      issues.push(`publication supersession ${key} has no exact pre-CAS proof`);
+    }
+  }
   for (const [key, candidate] of Object.entries(state.candidates)) {
     if (key !== candidate.id) {
       issues.push(`candidate key ${key} does not match its ID`);
@@ -1728,15 +1789,29 @@ function invariantIssues(
       state,
       assignment.workstream,
     );
-    const currentCandidate = currentCandidateId
-      ? state.candidates[currentCandidateId]
-      : undefined;
     if (
       key !== assignment.id ||
       !candidate ||
       !sameWorkstreamIdentity(candidate.workstream, assignment.workstream) ||
       assignment.candidateCommitSha !== candidate.commitSha ||
       assignment.candidateTreeSha !== candidate.treeSha ||
+      !sameWorkstreamIdentity(
+        assignment.context.workstream,
+        assignment.workstream,
+      ) ||
+      assignment.context.candidateTreeSha !== assignment.candidateTreeSha ||
+      assignment.context.targetSha !== assignment.targetSha ||
+      assignment.context.disposition !== assignment.disposition ||
+      !samePaths(
+        assignment.context.relevantPaths,
+        canonicalRelevantPaths(assignment.paths),
+      ) ||
+      assignment.context.key !== reconciliationContextKey(assignment.context) ||
+      !canonicalGitPaths(assignment.context.relevantPaths) ||
+      (assignment.semanticAttempt === "initial" &&
+        assignment.priorAttemptEvidence.length !== 0) ||
+      (assignment.semanticAttempt === "escalated" &&
+        assignment.priorAttemptEvidence.length === 0) ||
       assignment.staging.id === "" ||
       assignment.staging.branchName === "" ||
       assignment.staging.targetRef !== state.run.checkout.branchRef ||
@@ -1744,12 +1819,35 @@ function invariantIssues(
       !canonicalGitPaths(assignment.paths.target) ||
       !canonicalGitPaths(assignment.paths.replay) ||
       (assignment.status === "pending" &&
-        currentCandidateId !== assignment.candidateId) ||
-      (assignment.status === "completed" &&
-        (!currentCandidate ||
-          currentCandidate.integrationBaseSha !== assignment.targetSha))
+        currentCandidateId !== assignment.candidateId)
     ) {
       issues.push(`reconciliation assignment ${key} has an invalid candidate`);
+    }
+  }
+  const reconciliationContexts = new Map<
+    string,
+    (typeof state.reconciliationAssignments)[string][]
+  >();
+  for (const assignment of Object.values(state.reconciliationAssignments)) {
+    const retained = reconciliationContexts.get(assignment.context.key) ?? [];
+    retained.push(assignment);
+    reconciliationContexts.set(assignment.context.key, retained);
+  }
+  for (const [key, assignments] of reconciliationContexts) {
+    if (
+      assignments.length > 2 ||
+      assignments.filter(
+        (assignment) => assignment.semanticAttempt === "initial",
+      ).length !== 1 ||
+      assignments.filter(
+        (assignment) => assignment.semanticAttempt === "escalated",
+      ).length > 1 ||
+      assignments.filter((assignment) => assignment.status === "pending")
+        .length > 1
+    ) {
+      issues.push(
+        `reconciliation context ${key} exceeds its convergence bound`,
+      );
     }
   }
   for (const [key, receipt] of Object.entries(state.satisfaction.receipts)) {
@@ -1854,12 +1952,16 @@ function invariantIssues(
         }) ||
       preparation.operationId !== intent.operationId ||
       !sameWorkstreamIdentity(candidate.workstream, intent.workstream) ||
-      workstreamCandidateId(state, intent.workstream) !== intent.candidateId ||
+      (state.publication.supersessions[key] === undefined &&
+        workstreamCandidateId(state, intent.workstream) !==
+          intent.candidateId) ||
       preparation.candidateId !== intent.candidateId ||
       preparation.targetRef !== intent.targetRef ||
       preparation.targetBaseSha !== intent.targetBaseSha ||
       preparation.preparedCommitSha !== intent.preparedCommitSha ||
-      preparation.preparedTreeSha !== intent.preparedTreeSha
+      preparation.preparedTreeSha !== intent.preparedTreeSha ||
+      (state.publication.supersessions[key] !== undefined &&
+        state.publication.receipts[key] !== undefined)
     ) {
       issues.push(
         `publication intent ${key} does not match its immutable preparation`,
@@ -1963,6 +2065,18 @@ function invariantIssues(
         issues.push(`publication receipt ${id} was overwritten or removed`);
       }
     }
+    for (const [id, supersession] of Object.entries(
+      previous.publication.supersessions,
+    )) {
+      if (
+        JSON.stringify(state.publication.supersessions[id]) !==
+        JSON.stringify(supersession)
+      ) {
+        issues.push(
+          `publication supersession ${id} was overwritten or removed`,
+        );
+      }
+    }
   }
   if (previous) {
     for (const [id, failure] of Object.entries(previous.failures)) {
@@ -1998,11 +2112,13 @@ function invariantIssues(
       const {
         status: _previousStatus,
         executionFailures: _previousFailures,
+        attemptEvidence: _previousAttemptEvidence,
         ...identity
       } = assignment;
       const {
         status: _retainedStatus,
         executionFailures: _retainedFailures,
+        attemptEvidence: _retainedAttemptEvidence,
         ...retainedIdentity
       } = retained;
       if (JSON.stringify(identity) !== JSON.stringify(retainedIdentity)) {
@@ -2037,6 +2153,35 @@ function sameWorkstreamIdentity(
   right: z.infer<typeof candidateSchema>["workstream"],
 ): boolean {
   return workstreamIdentity(left) === workstreamIdentity(right);
+}
+
+function reconciliationContextKey(
+  context: z.infer<typeof reconciliationContextSchema>,
+): string {
+  return `reconciliation-context-${sha256(
+    JSON.stringify({
+      workstream: workstreamIdentity(context.workstream),
+      candidateTreeSha: context.candidateTreeSha,
+      targetSha: context.targetSha,
+      disposition: context.disposition,
+      relevantPaths: context.relevantPaths,
+    }),
+  )}`;
+}
+
+function canonicalRelevantPaths(
+  paths: z.infer<typeof reconciliationAssignmentSchema>["paths"],
+): string[] {
+  return [
+    ...new Set([...paths.candidate, ...paths.target, ...paths.replay]),
+  ].sort();
+}
+
+function samePaths(left: readonly string[], right: readonly string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((path, index) => path === right[index])
+  );
 }
 
 function canonicalGitPaths(paths: readonly string[]): boolean {

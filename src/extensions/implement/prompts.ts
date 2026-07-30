@@ -109,6 +109,7 @@ Prior integration base: ${packet.priorIntegrationBase}
 Failed replay target: ${packet.failedTarget.commitSha}
 Failed target tree: ${packet.failedTarget.treeSha}
 Replay disposition: ${packet.replay.disposition}
+Semantic attempt: ${packet.semanticAttempt}
 Candidate paths: ${packet.replay.candidatePaths.join(", ") || "none"}
 Target paths: ${packet.replay.targetPaths.join(", ") || "none"}
 Exact relevant paths: ${scopedPaths}

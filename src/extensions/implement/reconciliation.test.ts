@@ -11,6 +11,153 @@ import type { RunState } from "./store.js";
 afterEach(() => cleanupSchedulerStores());
 
 describe("semantic reconciliation assignments", () => {
+  it("escalates one unchanged semantic context without replaying it and then exhausts", async () => {
+    const replay = await failedReplay();
+    const initial = reduceRunEvent(replay.state, {
+      kind: "reconciliation_assignment_requested",
+      workstream: replay.workstream,
+      now: "2026-01-01T00:03:00.000Z",
+    });
+    const initialEffect = initial.effects[0]!;
+    if (initialEffect.kind !== "run_reconciliation_worker") {
+      throw new Error("expected initial reconciliation worker");
+    }
+
+    const firstFailure = reduceRunEvent(initial.state, {
+      kind: "reconciliation_worker_failed",
+      workstream: initialEffect.workstream,
+      leaseId: initialEffect.leaseId,
+      assignmentId: initialEffect.assignmentId,
+      category: "semantic_blocked",
+      evidence: "The merge still preserves neither behavior.",
+    });
+    expect(firstFailure.accepted).toBe(true);
+    const assignments = Object.values(
+      firstFailure.state.reconciliationAssignments,
+    );
+    expect(assignments).toHaveLength(2);
+    expect(assignments[0]).toMatchObject({
+      semanticAttempt: "initial",
+      status: "blocked",
+    });
+    expect(assignments[1]).toMatchObject({
+      semanticAttempt: "escalated",
+      status: "pending",
+      context: { key: assignments[0]!.context.key },
+      priorAttemptEvidence: expect.arrayContaining([
+        "same-file semantic overlap",
+        "The merge still preserves neither behavior.",
+      ]),
+    });
+
+    expect(
+      reduceRunEvent(firstFailure.state, {
+        kind: "reconciliation_worker_failed",
+        workstream: initialEffect.workstream,
+        leaseId: initialEffect.leaseId,
+        assignmentId: initialEffect.assignmentId,
+        category: "semantic_blocked",
+        evidence: "The wording changed but the candidate did not.",
+      }).accepted,
+    ).toBe(false);
+
+    const escalated = reduceRunEvent(firstFailure.state, {
+      kind: "reconciliation_assignment_requested",
+      workstream: replay.workstream,
+      now: "2026-01-01T00:04:00.000Z",
+    });
+    const escalatedEffect = escalated.effects[0]!;
+    if (escalatedEffect.kind !== "run_reconciliation_worker") {
+      throw new Error("expected escalated reconciliation worker");
+    }
+    const packet = buildReconciliationPacket({
+      state: escalated.state,
+      effect: escalatedEffect,
+    });
+    expect(packet.semanticAttempt).toBe("escalated");
+    expect(packet.priorEvidence).toContain(
+      "The merge still preserves neither behavior.",
+    );
+
+    const exhausted = reduceRunEvent(escalated.state, {
+      kind: "reconciliation_worker_failed",
+      workstream: escalatedEffect.workstream,
+      leaseId: escalatedEffect.leaseId,
+      assignmentId: escalatedEffect.assignmentId,
+      category: "semantic_blocked",
+      evidence: "Still unchanged despite the escalation.",
+    });
+    expect(exhausted.accepted).toBe(true);
+    expect(exhausted.state).toMatchObject({
+      phase: "stopping",
+      failure: { category: "no_progress" },
+    });
+    expect(
+      Object.values(exhausted.state.reconciliationAssignments).map(
+        (assignment) => assignment.status,
+      ),
+    ).toEqual(["blocked", "blocked"]);
+  });
+
+  it("changes semantic context only for observed candidate tree or failed target changes", async () => {
+    const original = await failedReplay();
+    const changedTree = await failedReplay({ candidateTreeSha: "other-tree" });
+    const changedTarget = await failedReplay({ targetSha: "later-target-sha" });
+    const context = Object.values(original.state.reconciliationAssignments)[0]!
+      .context;
+
+    expect(
+      Object.values(changedTree.state.reconciliationAssignments)[0]!.context
+        .key,
+    ).not.toBe(context.key);
+    expect(
+      Object.values(changedTarget.state.reconciliationAssignments)[0]!.context
+        .key,
+    ).not.toBe(context.key);
+  });
+
+  it("retains execution failures across an eventual semantic escalation", async () => {
+    const replay = await failedReplay();
+    const requested = reduceRunEvent(replay.state, {
+      kind: "reconciliation_assignment_requested",
+      workstream: replay.workstream,
+      now: "2026-01-01T00:03:00.000Z",
+    });
+    const effect = requested.effects[0]!;
+    if (effect.kind !== "run_reconciliation_worker") {
+      throw new Error("expected reconciliation worker");
+    }
+    const executionFailure = reduceRunEvent(requested.state, {
+      kind: "reconciliation_worker_failed",
+      workstream: effect.workstream,
+      leaseId: effect.leaseId,
+      assignmentId: effect.assignmentId,
+      category: "provider_failure",
+      evidence: "provider timed out",
+    });
+    const retried = reduceRunEvent(executionFailure.state, {
+      kind: "reconciliation_assignment_requested",
+      workstream: replay.workstream,
+      now: "2026-01-01T00:04:00.000Z",
+    });
+    const retriedEffect = retried.effects[0]!;
+    if (retriedEffect.kind !== "run_reconciliation_worker") {
+      throw new Error("expected reconciliation retry");
+    }
+    const semanticFailure = reduceRunEvent(retried.state, {
+      kind: "reconciliation_worker_failed",
+      workstream: retriedEffect.workstream,
+      leaseId: retriedEffect.leaseId,
+      assignmentId: retriedEffect.assignmentId,
+      category: "semantic_blocked",
+      evidence: "unchanged merge",
+    });
+
+    expect(
+      Object.values(semanticFailure.state.reconciliationAssignments)[1],
+    ).toMatchObject({ semanticAttempt: "escalated", executionFailures: 1 });
+  });
+
   it("retains the failed replay inputs and admits only the assigned target-relative candidate", async () => {
     const replay = await failedReplay();
     const assignmentRequested = reduceRunEvent(replay.state, {
@@ -103,7 +250,12 @@ describe("semantic reconciliation assignments", () => {
   });
 });
 
-async function failedReplay() {
+async function failedReplay(
+  args: {
+    candidateTreeSha?: string;
+    targetSha?: string;
+  } = {},
+) {
   const store = await createSchedulerStore();
   const started = reduceRunEvent(store.read(), {
     kind: "workstreams_selected",
@@ -120,7 +272,10 @@ async function failedReplay() {
     leaseId: implementation.leaseId,
     outcome: {
       kind: "candidate_ready",
-      candidate: candidate("candidate-sha", "candidate-tree"),
+      candidate: candidate(
+        "candidate-sha",
+        args.candidateTreeSha ?? "candidate-tree",
+      ),
       checkpoints: { first: "candidate-sha" },
       satisfied: {},
     },
@@ -166,9 +321,12 @@ async function failedReplay() {
       evidence: "same-file semantic overlap",
       failedReplay: {
         candidateCommitSha: "candidate-sha",
-        candidateTreeSha: "candidate-tree",
-        targetSha: "failed-target-sha",
-        targetTreeSha: "failed-target-tree",
+        candidateTreeSha: args.candidateTreeSha ?? "candidate-tree",
+        targetSha: args.targetSha ?? "failed-target-sha",
+        targetTreeSha:
+          args.targetSha === undefined
+            ? "failed-target-tree"
+            : `${args.targetSha}-tree`,
         disposition: "overlap",
         paths: {
           candidate: ["src/endpoint.ts"],
@@ -186,7 +344,7 @@ async function failedReplay() {
       workspace: {
         id: "staging-failed",
         changedPaths: ["src/endpoint.ts"],
-        targetSha: "failed-target-sha",
+        targetSha: args.targetSha ?? "failed-target-sha",
         stateEvidence: "same-file semantic overlap",
       },
     },

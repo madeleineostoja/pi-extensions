@@ -208,13 +208,19 @@ async function captureTargetBoundary(
 
 function expectedTargetHead(state: RunState): string {
   const pending = Object.values(state.publication.intents).filter(
-    (intent) => !state.publication.receipts[intent.id],
+    (intent) =>
+      !state.publication.receipts[intent.id] &&
+      !state.publication.supersessions[intent.id],
   );
   if (pending.length === 1) {
     return pending[0]!.targetBaseSha;
   }
   if (pending.length > 1) {
     throw new Error("Resume found multiple unresolved publication intents.");
+  }
+  const superseded = Object.values(state.publication.supersessions);
+  if (superseded.length > 0) {
+    return superseded.at(-1)!.actualTargetSha;
   }
   const receipts = Object.values(state.publication.receipts);
   const publishedBases = new Set(

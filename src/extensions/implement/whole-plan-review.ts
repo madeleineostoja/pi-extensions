@@ -129,7 +129,9 @@ export async function runWholePlanReview(args: {
       (workstream) => workstream.phase !== "completed",
     ) ||
     Object.values(args.state.publication.intents).some(
-      (intent) => !args.state.publication.receipts[intent.id],
+      (intent) =>
+        !args.state.publication.receipts[intent.id] &&
+        !args.state.publication.supersessions[intent.id],
     )
   ) {
     throw new Error(

@@ -291,6 +291,7 @@ export class SchedulerActor {
       const workstream = getWorkstream(state, intent.workstream);
       if (
         state.publication.receipts[intent.id] &&
+        state.publication.supersessions[intent.id] === undefined &&
         workstream?.phase === "approved" &&
         workstream.candidateId === intent.candidateId
       ) {
@@ -309,6 +310,8 @@ export class SchedulerActor {
     for (const recreation of Object.values(state.workspaceRecreations)) {
       if (
         recreation.status === "pending" &&
+        this.processWorkstreams.size < state.run.workerConcurrency &&
+        activeWorkerLeaseCount(state) < state.run.workerConcurrency &&
         !this.hasLiveProcessFor(recreation.workstream)
       ) {
         return {
@@ -330,7 +333,8 @@ export class SchedulerActor {
         !activeLeaseFor(state, assignment.workstream) &&
         !this.hasLiveProcessFor(assignment.workstream) &&
         !hasIntegrationLease(state) &&
-        activeWorkerLeaseCount(state) === 0
+        activeWorkerLeaseCount(state) === 0 &&
+        this.processes.size === 0
       ) {
         return {
           kind: "event",
@@ -394,17 +398,6 @@ export class SchedulerActor {
           },
         };
       }
-
-      if (selectReadyRuntimeWorkstreams(state).length > 0) {
-        return {
-          kind: "event",
-          event: {
-            kind: "workstreams_selected",
-            now: this.now(),
-            baseShas: {},
-          },
-        };
-      }
     }
 
     const approved = runtimeWorkstreams(state).find((workstream) => {
@@ -427,6 +420,7 @@ export class SchedulerActor {
       const candidateId = getWorkstream(state, approved)!.candidateId!;
       const intent = Object.values(state.publication.intents).find(
         (entry) =>
+          state.publication.supersessions[entry.id] === undefined &&
           sameWorkstream(entry.workstream, approved) &&
           entry.candidateId === candidateId,
       );
@@ -444,6 +438,23 @@ export class SchedulerActor {
               workstream: approved,
               now: this.now(),
             },
+      };
+    }
+
+    if (
+      !hasIntegrationLease(state) &&
+      state.projectionDebt.length === 0 &&
+      this.processWorkstreams.size < state.run.workerConcurrency &&
+      activeWorkerLeaseCount(state) < state.run.workerConcurrency &&
+      selectReadyRuntimeWorkstreams(state).length > 0
+    ) {
+      return {
+        kind: "event",
+        event: {
+          kind: "workstreams_selected",
+          now: this.now(),
+          baseShas: {},
+        },
       };
     }
 
@@ -623,7 +634,8 @@ export class SchedulerActor {
         if (
           error instanceof SchedulerActorError ||
           error instanceof StateError ||
-          error instanceof WorkerPacketError
+          (error instanceof WorkerPacketError &&
+            effect.kind !== "run_reconciliation_worker")
         ) {
           await this.fail("persistence_runtime_failure", error.message);
           return;
@@ -636,7 +648,7 @@ export class SchedulerActor {
           await this.fail(
             error.outcome.kind === "target_moved"
               ? "target_moved"
-              : "workspace_unsafe",
+              : "publication_uncertain",
             error.message,
           );
           return;
@@ -675,7 +687,11 @@ export class SchedulerActor {
             workstream: effect.workstream,
             leaseId: effect.leaseId,
             assignmentId: effect.assignmentId,
-            category: failure?.category ?? "provider_failure",
+            category:
+              failure?.category ??
+              (error instanceof WorkerPacketError
+                ? "protocol_failure"
+                : "provider_failure"),
             evidence: error instanceof Error ? error.message : String(error),
             ...(failure?.observation
               ? { observation: failure.observation }
@@ -884,7 +900,9 @@ function isFinalSettlementForEffect(
     );
   }
   return (
-    event.kind === "publication_completed" || event.kind === "effect_failed"
+    event.kind === "publication_completed" ||
+    event.kind === "publication_target_moved" ||
+    event.kind === "effect_failed"
   );
 }
 

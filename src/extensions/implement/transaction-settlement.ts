@@ -15,7 +15,10 @@ export async function settlePublicationTransactions(args: {
       intent.workstream.kind === "source"
         ? state.workstreams.source[intent.workstream.id]
         : state.workstreams.overall[intent.workstream.repairId];
-    if (workstream?.phase === "completed") {
+    if (
+      workstream?.phase === "completed" ||
+      state.publication.supersessions[intent.id]
+    ) {
       continue;
     }
     const outcome = await new WriteAheadPublisher({

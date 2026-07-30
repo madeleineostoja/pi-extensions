@@ -19,6 +19,7 @@ import {
   workstreamReviewState,
   type ReviewOutcome,
 } from "../review.js";
+import { sha256 } from "../source-integrity.js";
 import type { RunState } from "../store.js";
 
 export type RuntimeWorkstream = RunState["candidates"][string]["workstream"];
@@ -270,6 +271,15 @@ export type SchedulerEvent =
       leaseId: string;
       intentId: string;
       projectionDebt?: RunState["projectionDebt"][number];
+    }
+  | {
+      kind: "publication_target_moved";
+      workstream: RuntimeWorkstream;
+      leaseId: string;
+      intentId: string;
+      candidateId: string;
+      expectedTargetSha: string;
+      actualTargetSha: string;
     }
   | { kind: "whole_plan_review_requested" }
   | { kind: "overall_repair_queued"; repairId: string }
@@ -526,6 +536,11 @@ export function reduceRunEvent(
       if (hasIntegrationLease(state)) {
         return reject(
           "implementation cannot start while integration owns the target",
+        );
+      }
+      if (hasQuiescentApprovedCandidate(state)) {
+        return reject(
+          "approved candidates must integrate before another implementation batch starts",
         );
       }
       const ready = selectReadyRuntimeWorkstreams(state);
@@ -1562,9 +1577,11 @@ export function reduceRunEvent(
         );
       }
       settleLease(state, lease, event.kind, event);
+      assignment.attemptEvidence.push(boundedFailureOutput(event.evidence));
       recordFailure(state, {
         category: event.category,
         assignment:
+          event.category === "semantic_blocked" ||
           event.category === "workspace_unsafe"
             ? "blocked"
             : "operational_retry",
@@ -1574,15 +1591,28 @@ export function reduceRunEvent(
         evidence: event.evidence,
         ...(event.observation ? { observation: event.observation } : {}),
       });
-      if (
-        event.category === "semantic_blocked" ||
-        event.category === "workspace_unsafe"
-      ) {
+      if (event.category === "workspace_unsafe") {
         assignment.status = "blocked";
         return failRun(
           state,
-          event.category,
+          "workspace_unsafe",
           event.evidence,
+          new Date().toISOString(),
+          reject,
+        );
+      }
+      if (event.category === "semantic_blocked") {
+        assignment.status = "blocked";
+        if (assignment.semanticAttempt === "initial") {
+          const escalation = createReconciliationEscalation(state, assignment);
+          state.reconciliationAssignments[escalation.id] = escalation;
+          workstream.phase = "reconciliation_required";
+          return accept();
+        }
+        return failRun(
+          state,
+          "no_progress",
+          "Semantic reconciliation exhausted its one escalated attempt without changing the candidate tree.",
           new Date().toISOString(),
           reject,
         );
@@ -1593,7 +1623,7 @@ export function reduceRunEvent(
         return failRun(
           state,
           terminalFailureCategory(event.category),
-          event.evidence,
+          `${event.category} exhausted reconciliation execution for this semantic context.`,
           new Date().toISOString(),
           reject,
         );
@@ -1742,6 +1772,27 @@ export function reduceRunEvent(
             "failed replay does not retain an exact immutable reconciliation context",
           );
         }
+        const paths = {
+          candidate: [...replay.paths.candidate],
+          target: [...replay.paths.target],
+          replay: [...replay.paths.replay],
+        };
+        const context = reconciliationContext({
+          workstream: event.workstream,
+          candidateTreeSha: replay.candidateTreeSha,
+          targetSha: replay.targetSha,
+          disposition: replay.disposition,
+          paths,
+        });
+        if (
+          Object.values(state.reconciliationAssignments).some(
+            (assignment) => assignment.context.key === context.key,
+          )
+        ) {
+          return reject(
+            "the unchanged failed replay context already has retained reconciliation history",
+          );
+        }
         const id = `reconcile:${workstreamId(event.workstream)}:${candidateId}:${Object.keys(state.reconciliationAssignments).length + 1}`;
         state.reconciliationAssignments[id] = {
           id,
@@ -1752,11 +1803,8 @@ export function reduceRunEvent(
           targetSha: replay.targetSha,
           targetTreeSha: replay.targetTreeSha,
           disposition: replay.disposition,
-          paths: {
-            candidate: [...replay.paths.candidate],
-            target: [...replay.paths.target],
-            replay: [...replay.paths.replay],
-          },
+          context,
+          paths,
           operationId: lease.id,
           staging: {
             id: replay.staging.id,
@@ -1780,6 +1828,9 @@ export function reduceRunEvent(
           ...(replay.hookEvidence
             ? { hookEvidence: boundedFailureOutput(replay.hookEvidence) }
             : {}),
+          semanticAttempt: "initial",
+          priorAttemptEvidence: [],
+          attemptEvidence: [],
           status: "pending",
           executionFailures: 0,
         };
@@ -1940,6 +1991,7 @@ export function reduceRunEvent(
         !workstream ||
         workstream.candidateId !== candidate.id ||
         workstream.phase !== "approved" ||
+        state.publication.supersessions[intent.id] !== undefined ||
         !processIsAllowed(state, event.workstream) ||
         activeLeaseFor(state, event.workstream) ||
         activeWorkerLeaseCount(state) > 0 ||
@@ -1980,6 +2032,7 @@ export function reduceRunEvent(
         lease.id !== event.receipt.operationId ||
         lease.publicationIntentId !== event.receipt.intentId ||
         !intent ||
+        state.publication.supersessions[intent.id] !== undefined ||
         intent.candidateId !== event.receipt.candidateId ||
         intent.targetBaseSha !== event.receipt.targetBaseSha ||
         intent.preparedCommitSha !== event.receipt.publishedCommitSha ||
@@ -2016,6 +2069,7 @@ export function reduceRunEvent(
         workstream.phase !== "publishing" ||
         !processIsAllowed(state, event.workstream) ||
         !intent ||
+        state.publication.supersessions[intent.id] !== undefined ||
         lease.publicationIntentId !== event.intentId ||
         lease.candidateId !== intent.candidateId ||
         workstream.candidateId !== intent.candidateId ||
@@ -2068,6 +2122,68 @@ export function reduceRunEvent(
           ? [{ kind: "run_projection", debtId: event.projectionDebt.id }]
           : [],
       );
+    }
+
+    case "publication_target_moved": {
+      const lease = ownedLease(
+        state,
+        event.leaseId,
+        event.workstream,
+        "publication",
+      );
+      const workstream = getWorkstream(state, event.workstream);
+      const intent = state.publication.intents[event.intentId];
+      const preparation = intent
+        ? state.publication.preparations[intent.preparationId]
+        : undefined;
+      const candidate = state.candidates[event.candidateId];
+      if (
+        !lease ||
+        !workstream ||
+        !intent ||
+        !preparation ||
+        !candidate ||
+        workstream.phase !== "publishing" ||
+        lease.publicationIntentId !== intent.id ||
+        lease.candidateId !== candidate.id ||
+        intent.candidateId !== event.candidateId ||
+        workstream.candidateId !== candidate.id ||
+        !sameWorkstream(candidate.workstream, event.workstream) ||
+        intent.targetBaseSha !== event.expectedTargetSha ||
+        preparation.targetBaseSha !== event.expectedTargetSha ||
+        event.actualTargetSha === event.expectedTargetSha ||
+        event.actualTargetSha === intent.preparedCommitSha ||
+        state.publication.receipts[intent.id] ||
+        state.publication.supersessions[intent.id]
+      ) {
+        return reject(
+          "target movement does not prove this exact stale publication intent",
+        );
+      }
+      settleLease(state, lease, event.kind, event);
+      state.publication.supersessions[intent.id] = {
+        intentId: intent.id,
+        publicationOperationId: lease.id,
+        preparationOperationId: intent.operationId,
+        workstream: event.workstream,
+        candidateId: candidate.id,
+        preparationId: intent.preparationId,
+        targetRef: intent.targetRef,
+        expectedTargetSha: event.expectedTargetSha,
+        actualTargetSha: event.actualTargetSha,
+        supersededAt: new Date().toISOString(),
+      };
+      recordFailure(state, {
+        category: "target_moved",
+        assignment: "failed_target_reconciliation",
+        workstream: event.workstream,
+        candidateId: candidate.id,
+        gate: "publication_compare_and_swap",
+        evidence: `Publication intent ${intent.id} was superseded before compare-and-swap from ${event.expectedTargetSha} to ${event.actualTargetSha}.`,
+        targetEvidence: event.actualTargetSha,
+      });
+      workstream.phase = "approved";
+      return accept();
     }
 
     case "whole_plan_review_requested":
@@ -2292,7 +2408,9 @@ export function reduceRunEvent(
         state.wholePlanReview.reviewedTargetSha !== event.targetSha ||
         state.wholePlanReview.reviewedTargetTreeSha !== event.targetTreeSha ||
         Object.values(state.publication.intents).some(
-          (intent) => !state.publication.receipts[intent.id],
+          (intent) =>
+            !state.publication.receipts[intent.id] &&
+            !state.publication.supersessions[intent.id],
         )
       ) {
         return reject("run still has incomplete workstreams or cleanup debt");
@@ -2518,6 +2636,62 @@ function startWorkspaceRecreation(
   };
 }
 
+function reconciliationContext(args: {
+  workstream: RuntimeWorkstream;
+  candidateTreeSha: string;
+  targetSha: string;
+  disposition: "overlap" | "conflict" | "changed_patch";
+  paths: { candidate: string[]; target: string[]; replay: string[] };
+}): RunState["reconciliationAssignments"][string]["context"] {
+  const relevantPaths = [
+    ...new Set([
+      ...args.paths.candidate,
+      ...args.paths.target,
+      ...args.paths.replay,
+    ]),
+  ].sort();
+  const workstream =
+    args.workstream.kind === "source"
+      ? { kind: "source" as const, id: args.workstream.id }
+      : { kind: "overall" as const, repairId: args.workstream.repairId };
+  return {
+    key: `reconciliation-context-${sha256(
+      JSON.stringify({
+        workstream: workstreamId(args.workstream),
+        candidateTreeSha: args.candidateTreeSha,
+        targetSha: args.targetSha,
+        disposition: args.disposition,
+        relevantPaths,
+      }),
+    )}`,
+    workstream,
+    candidateTreeSha: args.candidateTreeSha,
+    targetSha: args.targetSha,
+    disposition: args.disposition,
+    relevantPaths,
+  };
+}
+
+function createReconciliationEscalation(
+  state: RunState,
+  assignment: RunState["reconciliationAssignments"][string],
+): RunState["reconciliationAssignments"][string] {
+  const id = `reconcile:${workstreamId(assignment.workstream)}:${assignment.candidateId}:escalated:${Object.keys(state.reconciliationAssignments).length + 1}`;
+  return {
+    ...assignment,
+    id,
+    semanticAttempt: "escalated",
+    priorAttemptEvidence: [
+      ...assignment.priorAttemptEvidence,
+      assignment.evidence,
+      ...(assignment.hookEvidence ? [assignment.hookEvidence] : []),
+      ...assignment.attemptEvidence,
+    ],
+    attemptEvidence: [],
+    status: "pending",
+  };
+}
+
 function startReconciliationWorker(
   state: RunState,
   workstream: RuntimeWorkstream,
@@ -2685,6 +2859,16 @@ function processIsAllowed(
     : state.phase === "whole_plan_review";
 }
 
+function hasQuiescentApprovedCandidate(state: RunState): boolean {
+  return (
+    activeWorkerLeaseCount(state) === 0 &&
+    !hasIntegrationLease(state) &&
+    runtimeWorkstreams(state).some(
+      (workstream) => getWorkstream(state, workstream)?.phase === "approved",
+    )
+  );
+}
+
 export function hasIntegrationLease(state: RunState): boolean {
   return Object.values(state.processLeases).some(
     (lease) => lease.kind === "reconciliation" || lease.kind === "publication",
@@ -2705,7 +2889,9 @@ export function activeWorkerLeaseCount(state: RunState): number {
     (lease) =>
       lease.kind === "implementation" ||
       lease.kind === "review" ||
-      lease.kind === "revision",
+      lease.kind === "revision" ||
+      lease.kind === "reconciliation" ||
+      lease.kind === "workspace_recreation",
   ).length;
 }
 
@@ -3057,6 +3243,7 @@ export function isStoppingSettlementEvent(event: SchedulerEvent): boolean {
     "revision_failed",
     "reconciliation_worker_completed",
     "reconciliation_worker_failed",
+    "publication_target_moved",
     "workspace_recreation_completed",
     "run_failed",
   ].includes(event.kind);

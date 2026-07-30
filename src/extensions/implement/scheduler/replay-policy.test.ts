@@ -4,7 +4,9 @@ import {
   publicationPreparationId,
   stagingIdentity,
 } from "../candidate-replay.js";
+import type { GitClient } from "../git.js";
 import type { RunState } from "../store.js";
+import { settlePublicationTransactions } from "../transaction-settlement.js";
 import { reduceRunEvent } from "./scheduler.js";
 import {
   cleanupSchedulerStores,
@@ -105,6 +107,58 @@ describe("replay preparation policy", () => {
         intent: { ...intent, operationId: "reconciliation:run-1:stale" },
       }).accepted,
     ).toBe(false);
+  });
+
+  it("supersedes only the exact pre-CAS intent and returns it to reconciliation", async () => {
+    const ready = await publicationReady();
+    const moved = reduceRunEvent(ready.state, {
+      kind: "publication_target_moved",
+      workstream: ready.effect.workstream,
+      leaseId: ready.effect.leaseId,
+      intentId: ready.effect.intentId,
+      candidateId: ready.effect.candidateId,
+      expectedTargetSha: ready.intent.targetBaseSha,
+      actualTargetSha: "external-descendant-sha",
+    });
+
+    expect(moved.accepted).toBe(true);
+    expect(moved.state.workstreams.source["first-stream"]).toMatchObject({
+      phase: "approved",
+      candidateId: ready.effect.candidateId,
+    });
+    expect(moved.state.publication.supersessions[ready.intent.id]).toEqual(
+      expect.objectContaining({
+        intentId: ready.intent.id,
+        publicationOperationId: ready.effect.leaseId,
+        preparationOperationId: ready.intent.operationId,
+        expectedTargetSha: ready.intent.targetBaseSha,
+        actualTargetSha: "external-descendant-sha",
+      }),
+    );
+    expect(moved.state.processLeases[ready.effect.leaseId]).toBeUndefined();
+    expect(moved.state.operationSettlements[ready.effect.leaseId]).toEqual(
+      expect.objectContaining({ outcome: "publication_target_moved" }),
+    );
+    expect(
+      reduceRunEvent(moved.state, {
+        kind: "publication_requested",
+        workstream: ready.effect.workstream,
+        intentId: ready.intent.id,
+        now: "2026-01-01T00:04:00.000Z",
+      }).accepted,
+    ).toBe(false);
+    await ready.store.update(ready.store.read().revision, () => moved.state);
+    expect(
+      ready.store.read().publication.supersessions[ready.intent.id],
+    ).toEqual(
+      expect.objectContaining({ actualTargetSha: "external-descendant-sha" }),
+    );
+    await expect(
+      settlePublicationTransactions({
+        store: ready.store,
+        git: {} as GitClient,
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it("retains the exact failed replay target instead of inferring a later one", async () => {
@@ -216,7 +270,12 @@ async function requestedReconciliation() {
   if (effect.kind !== "run_reconciliation") {
     throw new Error("expected reconciliation");
   }
-  return { state: requested.state, effect, candidateId: "candidate:first" };
+  return {
+    store,
+    state: requested.state,
+    effect,
+    candidateId: "candidate:first",
+  };
 }
 
 function candidate(): RunState["candidates"][string] {
@@ -233,6 +292,64 @@ function candidate(): RunState["candidates"][string] {
       verification: ["tests pass"],
     },
   };
+}
+
+async function publicationReady() {
+  const requested = await requestedReconciliation();
+  const candidate = requested.state.candidates[requested.candidateId]!;
+  const preparation = preparationFor(
+    requested.state,
+    requested.effect.leaseId,
+    candidate,
+  );
+  const prepared = reduceRunEvent(requested.state, {
+    kind: "publication_preparation_recorded",
+    operationId: requested.effect.leaseId,
+    preparation,
+  });
+  const intent = intentFor(
+    prepared.state,
+    requested.effect.leaseId,
+    preparation,
+  );
+  const intentRecorded = reduceRunEvent(prepared.state, {
+    kind: "publication_intent_recorded",
+    operationId: requested.effect.leaseId,
+    intent,
+  });
+  const publication = reduceRunEvent(intentRecorded.state, {
+    kind: "reconciliation_completed",
+    workstream: requested.effect.workstream,
+    leaseId: requested.effect.leaseId,
+    outcome: {
+      kind: "prepared",
+      evidence: "prepared",
+      workspace: {
+        id: stagingIdentity({
+          runId: requested.state.run.id,
+          operationId: requested.effect.leaseId,
+          candidateId: candidate.id,
+          candidateCommitSha: candidate.commitSha,
+          candidateTreeSha: candidate.treeSha,
+          targetBaseSha: preparation.targetBaseSha,
+          targetRef: preparation.targetRef,
+        }).id,
+        checkpoint: preparation.preparedCommitSha,
+        changedPaths: [...preparation.changedPaths],
+        targetSha: preparation.targetBaseSha,
+        stateEvidence: "prepared",
+        stagingComparison: {
+          baseSha: preparation.targetBaseSha,
+          treeSha: preparation.preparedTreeSha,
+        },
+      },
+    },
+  });
+  const effect = publication.effects[0]!;
+  if (effect.kind !== "run_publication") {
+    throw new Error("expected publication");
+  }
+  return { store: requested.store, state: publication.state, effect, intent };
 }
 
 function preparationFor(
