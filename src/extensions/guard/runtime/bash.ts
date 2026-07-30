@@ -9,6 +9,8 @@ import type { GuardRuntimeState } from "../state.js";
 import { buildNonoManifest, writeNonoManifest } from "./manifest.js";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
+const TERMINATION_WAIT_MS = 5_000;
+const TERMINATION_POLL_MS = 10;
 
 function timeoutMs(timeout: number | undefined): number | undefined {
   if (timeout === undefined) {
@@ -37,6 +39,29 @@ function terminate(child: ChildProcess): void {
       process.kill(child.pid, "SIGKILL");
     } catch {}
   }
+}
+
+function processGroupExists(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessTree(pid: number): Promise<boolean> {
+  if (process.platform === "win32") {
+    return true;
+  }
+  const deadline = Date.now() + TERMINATION_WAIT_MS;
+  while (processGroupExists(pid)) {
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, TERMINATION_POLL_MS));
+  }
+  return true;
 }
 
 type ActiveInvocation = {
@@ -100,6 +125,7 @@ export function createGuardBashRuntime(options: {
             let abort: (() => void) | undefined;
             let finished = false;
             let terminationError: Error | undefined;
+            let terminatedPid: number | undefined;
             let invocation: ActiveInvocation | undefined;
             let settleInvocation: () => void = () => undefined;
 
@@ -133,6 +159,7 @@ export function createGuardBashRuntime(options: {
                 return;
               }
               terminationError = error;
+              terminatedPid = child.pid;
               terminate(child);
             };
 
@@ -165,9 +192,23 @@ export function createGuardBashRuntime(options: {
               }
               finish(error);
             });
-            child.once("close", (exitCode) =>
-              finish(terminationError ?? { exitCode }),
-            );
+            child.once("close", (exitCode) => {
+              void (async () => {
+                if (
+                  terminationError &&
+                  terminatedPid !== undefined &&
+                  !(await waitForProcessTree(terminatedPid))
+                ) {
+                  finish(
+                    new Error(
+                      `${terminationError.message}; process tree did not terminate`,
+                    ),
+                  );
+                  return;
+                }
+                finish(terminationError ?? { exitCode });
+              })();
+            });
             abort = () => stop(new Error("aborted"));
             execution.signal?.addEventListener("abort", abort, { once: true });
             if (timeout !== undefined) {

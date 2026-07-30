@@ -5,7 +5,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
@@ -151,7 +151,7 @@ describe("Implement managed runtime integration", () => {
   });
 
   it("runs Guard-constrained Bash in a real managed worker without parent approvals", async () => {
-    const root = mkdtempSync(join(tmpdir(), "pipkin-managed-guard-"));
+    const root = mkdtempSync(join(homedir(), ".pipkin-managed-guard-"));
     directories.push(root);
     const workspace = join(root, "workspace");
     const sibling = join(root, "sibling-target");

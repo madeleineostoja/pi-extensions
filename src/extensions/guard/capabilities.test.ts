@@ -146,7 +146,7 @@ describe("Guard capabilities", () => {
     expect(state.protectedReadApprovals()).toEqual([]);
   });
 
-  it("keeps a session file exact without granting sibling temporary workspaces", () => {
+  it("keeps a session file exact while retaining ordinary temporary access", () => {
     const root = fixture();
     const workspace = join(root, "workspace");
     const sibling = join(root, "sibling");
@@ -164,11 +164,19 @@ describe("Guard capabilities", () => {
       effects: [],
     });
     expect(
+      fixed.grants.some((grant) =>
+        grantMatches(grant, realpathSync(sibling), "read"),
+      ),
+    ).toBe(true);
+    expect(
+      fixed.grants.some((grant) =>
+        grantMatches(grant, realpathSync(sibling), "write"),
+      ),
+    ).toBe(true);
+    expect(
       fixed.grants.some(
         (grant) =>
-          grant.kind === "directory" &&
-          grant.path !== realpathSync(workspace) &&
-          grantMatches(grant, realpathSync(sibling), "read"),
+          grant.path === realpathSync(root) && grant.kind === "directory",
       ),
     ).toBe(false);
   });

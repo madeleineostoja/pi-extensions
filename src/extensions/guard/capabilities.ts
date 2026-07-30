@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import {
   basename,
   dirname,
@@ -203,7 +203,14 @@ function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
       grant(root, "write", "directory"),
     ]);
   return [
-    ...readWriteDirectories([cwd, ...(xdgCache ? [xdgCache] : []), npmCache]),
+    ...readWriteDirectories([
+      cwd,
+      tmpdir(),
+      "/tmp",
+      "/private/tmp",
+      ...(xdgCache ? [xdgCache] : []),
+      npmCache,
+    ]),
     ...readDirectories([
       "/bin",
       "/sbin",
