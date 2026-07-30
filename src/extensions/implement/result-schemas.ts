@@ -171,10 +171,7 @@ export const overallReworkSchema = Type.Object(
   {
     summary: nonEmptyString(),
     verification: Type.Array(nonEmptyString(), { minItems: 1 }),
-    checkpointCommitMessage: commitMessageString({
-      description:
-        "Internal Conventional Commit subject if Pipkin must checkpoint a dirty repair workspace.",
-    }),
+    uncertainty: Type.Optional(nonEmptyString()),
   },
   { additionalProperties: false },
 );

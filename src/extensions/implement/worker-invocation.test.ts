@@ -260,7 +260,7 @@ function recoveryState(): RunState {
       },
       workerConcurrency: 1,
     },
-    version: 2,
+    version: 3,
     revision: 1,
     phase: "running",
     executionPlan: {

@@ -287,31 +287,34 @@ describe("workstream candidate lifecycle", () => {
     );
   });
 
-  it("rejects an already-satisfied outcome after creating commits", async () => {
+  it("admits an observed commit when completion contradicts its Git state", async () => {
     const subject = await fixture({
       workstreams: [{ id: "combined", taskIds: ["first", "second"] }],
     });
-    await expect(
-      runWorkstreamCandidate({
-        state: subject.run.read(),
-        plan: subject.plan,
-        workstreamId: "combined",
-        git: new ExecGitClient(subject.root),
-        roles: subject.roles,
-        subagents: agent(async (cwd) => {
-          await changedResult(cwd, ["first", "second"]);
-          return {
-            status: "completed" as const,
-            result: {
-              outcome: "already_satisfied" as const,
-              evidence: "The repository already exposes both behaviors.",
-              summary: "Confirmed the workstream is already satisfied.",
-              verification: ["Inspected the repository state."],
-            },
-          };
-        }),
+    const outcome = await runWorkstreamCandidate({
+      state: subject.run.read(),
+      plan: subject.plan,
+      workstreamId: "combined",
+      git: new ExecGitClient(subject.root),
+      roles: subject.roles,
+      subagents: agent(async (cwd) => {
+        await changedResult(cwd, ["first", "second"]);
+        return {
+          status: "completed" as const,
+          result: {
+            outcome: "already_satisfied" as const,
+            evidence: "The repository already exposes both behaviors.",
+            summary: "Confirmed the workstream is already satisfied.",
+            verification: ["Inspected the repository state."],
+          },
+        };
       }),
-    ).rejects.toThrow("An already-satisfied workstream cannot create commits.");
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "candidate_ready",
+      candidate: { evidenceStatus: "unavailable" },
+    });
   });
 
   it("retains evidence from a failed lease after a retry succeeds", async () => {
@@ -854,13 +857,9 @@ describe("workstream candidate lifecycle", () => {
 
     expect(failure).toBeInstanceOf(WorkstreamCandidateLifecycleError);
     expect(failure?.message).toBe("Workstream candidate is dirty.");
-    expect(failure?.trustedCheckpoint).toMatch(/^[0-9a-f]{40}$/);
-    expect(failure?.trustedCandidate).toMatchObject({
-      id: `checkpoint:combined:${failure?.trustedCheckpoint}`,
-      commitSha: failure?.trustedCheckpoint,
-    });
+    expect(failure?.trustedCheckpoint).toBeUndefined();
+    expect(failure?.trustedCandidate).toBeUndefined();
     expect(failure?.recoveryWorkspace).toMatchObject({
-      checkpoint: failure?.trustedCheckpoint,
       changedPaths: ["uncommitted.txt"],
     });
     expect(
@@ -872,8 +871,10 @@ describe("workstream candidate lifecycle", () => {
       ),
     ).toMatchObject({
       status: "validation_failed",
-      trustedCheckpoint: failure?.trustedCheckpoint,
-      observation: { clean: false, head: failure?.trustedCheckpoint },
+      observation: {
+        clean: false,
+        head: expect.stringMatching(/^[0-9a-f]{40}$/),
+      },
     });
 
     const workspace = workstreamWorkspace(subject.run.read(), "combined");
@@ -884,7 +885,8 @@ describe("workstream candidate lifecycle", () => {
       state: subject.run.read(),
       workstreamId: "combined",
       git: targetGit,
-      trustedCheckpoint: failure!.trustedCheckpoint!,
+      trustedCheckpoint:
+        subject.run.read().workstreams.source.combined!.baseSha!,
     });
     const outcome = await runWorkstreamCandidate({
       state: subject.run.read(),
@@ -893,7 +895,8 @@ describe("workstream candidate lifecycle", () => {
       git: targetGit,
       roles: subject.roles,
       subagents: agent((cwd) => changedResult(cwd, ["first", "second"])),
-      trustedCheckpoint: failure!.trustedCheckpoint!,
+      trustedCheckpoint:
+        subject.run.read().workstreams.source.combined!.baseSha!,
     });
     expect(outcome).toMatchObject({ kind: "candidate_ready" });
   });

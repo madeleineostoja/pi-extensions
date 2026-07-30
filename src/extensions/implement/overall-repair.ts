@@ -129,19 +129,22 @@ export async function runOverallRepair(args: {
     plan: args.plan,
     findings,
   };
-  const handle = await spawnValidatedWorker({
-    packet,
-    subagents: args.subagents,
-    roles: args.roles,
-    taskId: args.repairId,
-    description: `Repair whole-plan findings for ${args.repairId}`,
-    render: buildOverallReworkPrompt,
-  });
-  const result = await args.subagents.waitFor<unknown>(handle, args.signal);
-  if (result.status !== "completed") {
-    throw new Error(
-      `Overall repair implementer ${result.status}: ${result.error}`,
-    );
+  let result:
+    | Awaited<ReturnType<typeof args.subagents.waitFor<unknown>>>
+    | undefined;
+  let failure: unknown;
+  try {
+    const handle = await spawnValidatedWorker({
+      packet,
+      subagents: args.subagents,
+      roles: args.roles,
+      taskId: args.repairId,
+      description: `Repair whole-plan findings for ${args.repairId}`,
+      render: buildOverallReworkPrompt,
+    });
+    result = await args.subagents.waitFor<unknown>(handle, args.signal);
+  } catch (error) {
+    failure = error;
   }
   if (
     (await snapshotChanged(
@@ -155,6 +158,70 @@ export async function runOverallRepair(args: {
       "Overall repair implementer changed the target checkout or protected artifacts.",
     );
   }
+  const commitSha = await workspaceGit.head();
+  const workspaceSafe =
+    (await workspaceGit.currentBranch()) === workspace.branchName &&
+    !(await workspaceGit.activeOperation()) &&
+    (await workspaceGit.isClean()) &&
+    (await workspaceGit.isAncestor(baseline.commitSha, commitSha));
+  if (failure || result?.status !== "completed") {
+    if (!workspaceSafe) {
+      throw new Error(
+        "Overall repair implementer left the owned workspace in an unsafe state.",
+      );
+    }
+    const changedPaths = await changedPathsBetween(
+      workspaceGit,
+      baseline.commitSha,
+      commitSha,
+    );
+    const protectedPaths = new Set(
+      Object.keys(args.state.protectedArtifactHashes).map((path) =>
+        relative(args.state.run.checkout.root, path),
+      ),
+    );
+    if (
+      commitSha === baseline.commitSha ||
+      changedPaths.some((path) => protectedPaths.has(path))
+    ) {
+      throw new Error(
+        `Overall repair implementer ${result?.status ?? "failed"}: ${result && result.status !== "completed" ? result.error : message(failure)}`,
+      );
+    }
+    const treeSha = await workspaceGit.treeAt(commitSha);
+    if (treeSha === baseline.treeSha) {
+      throw new Error("Overall repair candidate has no committed tree delta.");
+    }
+    const artifactPath = join(
+      args.artifactsPath,
+      `${args.repairId}-observation.json`,
+    );
+    mkdirSync(args.artifactsPath, { recursive: true });
+    writeAtomicJson(artifactPath, {
+      status: result?.status ?? "failed",
+      error:
+        result && result.status !== "completed"
+          ? result.error
+          : message(failure),
+      commitSha,
+      treeSha,
+      changedPaths,
+    });
+    return {
+      candidate: {
+        id: `overall:${args.state.run.id}:${args.repairId}:${commitSha}`,
+        workstream: { kind: "overall", repairId: args.repairId },
+        baseSha: baseline.commitSha,
+        commitSha,
+        treeSha,
+        evidenceStatus: "unavailable",
+        observationArtifact: artifactPath,
+        changedPaths,
+      },
+      checkpoints: {},
+      satisfied: {},
+    };
+  }
   const completion = result.result as OverallReworkCompletion;
   if (
     (await workspaceGit.currentBranch()) !== workspace.branchName ||
@@ -165,17 +232,10 @@ export async function runOverallRepair(args: {
     );
   }
   if (!(await workspaceGit.isClean())) {
-    const checkpoint = await workspaceGit.checkpoint(
-      completion.checkpointCommitMessage,
-      false,
+    throw new Error(
+      "Overall repair implementer left the owned workspace dirty; its state is quarantined.",
     );
-    if (checkpoint.exitCode !== 0) {
-      throw new Error(
-        `Overall repair checkpoint failed: ${checkpoint.stderr || checkpoint.stdout}`,
-      );
-    }
   }
-  const commitSha = await workspaceGit.head();
   if (!(await workspaceGit.isAncestor(baseline.commitSha, commitSha))) {
     throw new Error(
       "Overall repair candidate does not descend from its reviewed baseline.",
@@ -215,9 +275,14 @@ export async function runOverallRepair(args: {
       baseSha: baseline.commitSha,
       commitSha,
       treeSha,
+      evidenceStatus: "reported",
+      changedPaths,
       implementationEvidence: {
         summary: completion.summary,
         verification: completion.verification,
+        ...(completion.uncertainty
+          ? { uncertainty: completion.uncertainty }
+          : {}),
         artifactPath: join(
           args.artifactsPath,
           `${args.repairId}-completion.json`,
@@ -228,4 +293,8 @@ export async function runOverallRepair(args: {
     checkpoints: {},
     satisfied: {},
   };
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

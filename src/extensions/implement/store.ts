@@ -172,6 +172,9 @@ const candidateSchema = z
     baseSha: nonEmpty,
     commitSha: nonEmpty,
     treeSha: nonEmpty,
+    evidenceStatus: z.enum(["reported", "unavailable"]).optional(),
+    observationArtifact: nonEmpty.optional(),
+    changedPaths: z.array(nonEmpty).optional(),
     implementationEvidence: z
       .object({
         summary: nonEmpty,
@@ -492,7 +495,7 @@ const wholePlanReviewSchema = z
 
 export const RunStateSchema = z
   .object({
-    version: z.literal(2),
+    version: z.literal(3),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -719,7 +722,7 @@ export function createPlanningRun(args: {
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
   const state: RunState = {
-    version: 2,
+    version: 3,
     revision: 0,
     run: {
       id: args.runId,
@@ -816,7 +819,7 @@ export class RunStore {
         const next = validateRunState(
           {
             ...update(structuredClone(current)),
-            version: 2,
+            version: 3,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -1006,9 +1009,9 @@ export function validateRunState(
   if (!parsed.success) {
     const version = versionOf(value);
     const message =
-      version === 1
-        ? "Run state uses legacy schema version 1; settle and clean it with the previous runtime before deploying this version."
-        : version === undefined || version !== 2
+      version === 1 || version === 2
+        ? `Run state uses legacy schema version ${version}; settle and clean it with the previous runtime before deploying this version.`
+        : version === undefined || version !== 3
           ? "Run state has an unsupported schema."
           : "Run state is invalid.";
     throw new StateError(

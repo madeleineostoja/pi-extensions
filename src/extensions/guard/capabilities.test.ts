@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -195,6 +196,92 @@ describe("Guard capabilities", () => {
       ],
     });
     expect(manifest.filesystem.grants).toEqual([]);
+  });
+
+  it("grants validated linked-worktree Git administration without sibling worktrees", () => {
+    const root = fixture();
+    const target = join(root, "target");
+    const linked = join(root, "linked");
+    const sibling = join(root, "sibling");
+    mkdirSync(target);
+    execFileSync("git", ["init", "-b", "main", target]);
+    execFileSync("git", ["-C", target, "config", "user.name", "Pipkin"]);
+    execFileSync("git", [
+      "-C",
+      target,
+      "config",
+      "user.email",
+      "pipkin@example.test",
+    ]);
+    writeFileSync(join(target, "tracked"), "tracked");
+    execFileSync("git", ["-C", target, "add", "tracked"]);
+    execFileSync("git", ["-C", target, "commit", "-m", "initial"]);
+    execFileSync("git", [
+      "-C",
+      target,
+      "worktree",
+      "add",
+      "-b",
+      "linked",
+      linked,
+    ]);
+    execFileSync("git", [
+      "-C",
+      target,
+      "worktree",
+      "add",
+      "-b",
+      "sibling",
+      sibling,
+    ]);
+
+    const fixed = createFixedCapabilities(linked);
+    const gitDir = realpathSync(
+      execFileSync(
+        "git",
+        ["-C", linked, "rev-parse", "--path-format=absolute", "--git-dir"],
+        { encoding: "utf-8" },
+      ).trim(),
+    );
+    const commonDir = realpathSync(
+      execFileSync(
+        "git",
+        [
+          "-C",
+          linked,
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-common-dir",
+        ],
+        { encoding: "utf-8" },
+      ).trim(),
+    );
+
+    for (const path of [gitDir, commonDir]) {
+      expect(fixed.grants).toEqual(
+        expect.arrayContaining([
+          { path, access: "read", kind: "directory" },
+          { path, access: "write", kind: "directory" },
+        ]),
+      );
+    }
+    expect(
+      fixed.grants.some((entry) => entry.path === realpathSync(sibling)),
+    ).toBe(false);
+  });
+
+  it("rejects malformed linked-worktree indirection", () => {
+    const root = fixture();
+    const workspace = join(root, "workspace");
+    const unrelated = join(root, "unrelated");
+    mkdirSync(workspace);
+    mkdirSync(unrelated);
+    writeFileSync(join(workspace, ".git"), `gitdir: ${unrelated}\n`);
+
+    const fixed = createFixedCapabilities(workspace);
+    expect(
+      fixed.grants.some((entry) => entry.path === realpathSync(unrelated)),
+    ).toBe(false);
   });
 
   it("retains workspace-local inherited PATH roots and excludes credential config targets", () => {

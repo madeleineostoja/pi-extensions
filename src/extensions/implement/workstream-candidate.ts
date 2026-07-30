@@ -1,4 +1,9 @@
 import { mkdirSync, readFileSync } from "node:fs";
+import {
+  admitCandidateWorkspace,
+  observeCandidateWorkspace,
+  type CandidateWorkspaceObservation,
+} from "./candidate-admission.js";
 import { dirname, join, relative, resolve } from "node:path";
 import { writeAtomicJson } from "./atomic-json.js";
 import {
@@ -77,14 +82,7 @@ export type WorkstreamCandidateLifecycleArgs = {
   artifactLeaseId?: string;
 };
 
-type WorkspaceObservation = {
-  branch: string;
-  head: string;
-  tree?: string;
-  clean: boolean;
-  activeOperation?: string;
-  status: Array<{ status: string; path: string }>;
-};
+type WorkspaceObservation = CandidateWorkspaceObservation;
 
 type RecoveryWorkspaceEvidence = {
   id: string;
@@ -216,24 +214,30 @@ export async function runWorkstreamCandidate(
     }
   }
 
+  const candidateProtectedPaths = protectedPaths
+    .map((path) => protectedPathInWorktree(args.state, path))
+    .filter((path): path is string => path !== undefined);
+  const observation = await observeWorkspace(workspaceGit);
   const targetChanged = await snapshotChanged(
     args.git,
     targetBefore,
     protectedPaths,
   );
   if (targetChanged || !(await protectedArtifactsMatch(args.state))) {
+    const evidence =
+      "Implementer changed the target checkout or protected artifacts.";
     writeEvidence(args, {
       status: "target_changed",
+      observation,
       ...(result?.status === "completed" ? { completion: result.result } : {}),
     });
     throw new TargetBoundaryError(
-      "Implementer changed the target checkout or protected artifacts.",
+      evidence,
+      undefined,
+      undefined,
+      workspaceEvidence(args.workstreamId, observation),
     );
   }
-  const candidateProtectedPaths = protectedPaths
-    .map((path) => protectedPathInWorktree(args.state, path))
-    .filter((path): path is string => path !== undefined);
-  const observation = await observeWorkspace(workspaceGit);
   const trustedCheckpoint = await retainedCheckpoint(
     workspaceGit,
     workspace.branchName,
@@ -249,23 +253,32 @@ export async function runWorkstreamCandidate(
         git: workspaceGit,
       })
     : undefined;
+  const unavailableCandidate = await unavailableCandidateOutcome({
+    workstream,
+    workspace,
+    workspaceGit,
+    observation,
+    protectedPaths: candidateProtectedPaths,
+    operationId: args.artifactLeaseId ?? workspace.branchName,
+  });
   const recoveryWorkspace = workspaceEvidence(
     args.workstreamId,
     observation,
     trustedCheckpoint,
   );
-  if (failure instanceof WorkerPacketError) {
-    throw failure;
-  }
   if (failure) {
     const evidence = `Workstream implementer failed: ${message(failure)}`;
-    writeEvidence(args, {
+    const evidencePath = writeEvidence(args, {
       status: "failed",
       error: message(failure),
       observation,
       trustedCheckpoint,
       trustedCandidate,
+      ...(unavailableCandidate ? { unavailableCandidate } : {}),
     });
+    if (unavailableCandidate) {
+      return withUnavailableEvidence(unavailableCandidate, evidencePath);
+    }
     throw new WorkstreamCandidateLifecycleError(
       evidence,
       trustedCheckpoint,
@@ -275,12 +288,16 @@ export async function runWorkstreamCandidate(
   }
   if (!result || result.status !== "completed") {
     const evidence = `Workstream implementer ${result?.status}: ${result?.error ?? "no completion"}`;
-    writeEvidence(args, {
+    const evidencePath = writeEvidence(args, {
       ...result,
       observation,
       trustedCheckpoint,
       trustedCandidate,
+      ...(unavailableCandidate ? { unavailableCandidate } : {}),
     });
+    if (unavailableCandidate) {
+      return withUnavailableEvidence(unavailableCandidate, evidencePath);
+    }
     throw new WorkstreamCandidateLifecycleError(
       evidence,
       trustedCheckpoint,
@@ -307,14 +324,18 @@ export async function runWorkstreamCandidate(
     return evidencePath ? { ...outcome, evidencePath } : outcome;
   } catch (error) {
     const evidence = message(error);
-    writeEvidence(args, {
+    const evidencePath = writeEvidence(args, {
       status: "validation_failed",
       completion: result.result,
       observation,
       trustedCheckpoint,
       trustedCandidate,
+      ...(unavailableCandidate ? { unavailableCandidate } : {}),
       error: evidence,
     });
+    if (unavailableCandidate) {
+      return withUnavailableEvidence(unavailableCandidate, evidencePath);
+    }
     throw new WorkstreamCandidateLifecycleError(
       evidence,
       trustedCheckpoint,
@@ -456,6 +477,71 @@ function worktreesRunRoot(state: RunState): string {
   );
 }
 
+async function unavailableCandidateOutcome(args: {
+  workstream: ExecutionPlan["workstreams"][number];
+  workspace: TaskWorkspace;
+  workspaceGit: GitClient;
+  observation: WorkspaceObservation;
+  protectedPaths: string[];
+  operationId: string;
+}): Promise<WorkstreamCandidateOutcome | undefined> {
+  const admission = await admitCandidateWorkspace({
+    git: args.workspaceGit,
+    observation: args.observation,
+    input: {
+      operationId: args.operationId,
+      expectedBranch: args.workspace.branchName,
+      requiredAncestors: [args.workspace.baseSha],
+      comparisonBase: args.workspace.baseSha,
+      protectedPaths: args.protectedPaths,
+      targetBoundaryIntact: true,
+    },
+  });
+  if (admission.kind !== "admitted") {
+    return undefined;
+  }
+  const treeSha = args.observation.tree!;
+  if (treeSha === (await args.workspaceGit.treeAt(args.workspace.baseSha))) {
+    return undefined;
+  }
+  const changedPaths = admission.changedPaths;
+  return {
+    kind: "candidate_ready",
+    candidate: {
+      id: `candidate:${args.workstream.id}:${args.observation.head}`,
+      workstream: { kind: "source", id: args.workstream.id },
+      baseSha: args.workspace.baseSha,
+      commitSha: args.observation.head,
+      treeSha,
+      evidenceStatus: "unavailable",
+      changedPaths,
+    },
+    checkpoints: Object.fromEntries(
+      args.workstream.taskIds.map((taskId) => [taskId, args.observation.head]),
+    ),
+    satisfied: {},
+    summary: "Worker semantic completion is unavailable.",
+    verification: [],
+  };
+}
+
+function withUnavailableEvidence(
+  outcome: WorkstreamCandidateOutcome,
+  evidencePath: string | undefined,
+): WorkstreamCandidateOutcome {
+  if (outcome.kind !== "candidate_ready") {
+    return outcome;
+  }
+  return {
+    ...outcome,
+    candidate: {
+      ...outcome.candidate,
+      ...(evidencePath ? { observationArtifact: evidencePath } : {}),
+    },
+    ...(evidencePath ? { evidencePath } : {}),
+  };
+}
+
 async function validateCompletion(args: {
   completion: WorkstreamImplementerCompletion;
   workstream: ExecutionPlan["workstreams"][number];
@@ -511,6 +597,7 @@ async function validateCompletion(args: {
         baseSha: args.workspace.baseSha,
         commitSha: args.workspace.baseSha,
         treeSha: await args.workspaceGit.treeAt(args.workspace.baseSha),
+        evidenceStatus: "reported",
         implementationEvidence,
       },
       evidence,
@@ -553,6 +640,11 @@ async function validateCompletion(args: {
       "Candidate changes protected plan artifacts.",
     );
   }
+  const changedPaths = await changedPathsBetween(
+    args.workspaceGit,
+    args.workspace.baseSha,
+    candidateTip,
+  );
   const checkpoints = Object.fromEntries(
     args.workstream.taskIds.map((taskId) => [taskId, candidateTip]),
   );
@@ -564,6 +656,8 @@ async function validateCompletion(args: {
       baseSha: args.workspace.baseSha,
       commitSha: candidateTip,
       treeSha,
+      evidenceStatus: "reported",
+      changedPaths,
       implementationEvidence,
     },
     checkpoints,
@@ -628,6 +722,7 @@ async function retainedCheckpoint(
   if (
     observation.branch !== expectedBranch ||
     observation.activeOperation !== undefined ||
+    !observation.clean ||
     !(await git.isAncestor(baseSha, observation.head))
   ) {
     return undefined;
@@ -643,21 +738,7 @@ async function retainedCheckpoint(
 }
 
 async function observeWorkspace(git: GitClient): Promise<WorkspaceObservation> {
-  const [branch, head, activeOperation, status] = await Promise.all([
-    git.currentBranch(),
-    git.head(),
-    git.activeOperation(),
-    git.statusEntriesExcept([]),
-  ]);
-  const clean = status.length === 0;
-  return {
-    branch,
-    head,
-    clean,
-    activeOperation,
-    status,
-    ...(clean ? { tree: await git.tree() } : {}),
-  };
+  return observeCandidateWorkspace(git);
 }
 
 async function checkpointCandidate(args: {

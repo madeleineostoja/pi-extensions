@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import {
   basename,
@@ -209,6 +209,60 @@ export function isSensitiveHomeTarget(path: string, home: string): boolean {
   );
 }
 
+function linkedWorktreeGitDirectories(cwd: string): string[] {
+  const dotGit = join(cwd, ".git");
+  try {
+    if (!lstatSync(dotGit).isFile()) {
+      return [];
+    }
+    const pointer = /^gitdir:\s*(.+)\s*$/m.exec(
+      readFileSync(dotGit, "utf-8"),
+    )?.[1];
+    if (!pointer) {
+      return [];
+    }
+    const gitDir = existingCanonical(resolve(cwd, pointer));
+    if (!gitDir || !lstatSync(gitDir).isDirectory()) {
+      return [];
+    }
+    const commonPointer = readFileSync(
+      join(gitDir, "commondir"),
+      "utf-8",
+    ).trim();
+    if (!commonPointer) {
+      return [];
+    }
+    const commonDir = existingCanonical(resolve(gitDir, commonPointer));
+    if (
+      !commonDir ||
+      !lstatSync(commonDir).isDirectory() ||
+      !lstatSync(join(commonDir, "objects")).isDirectory() ||
+      !lstatSync(join(commonDir, "refs")).isDirectory() ||
+      !lstatSync(join(commonDir, "HEAD")).isFile() ||
+      !lstatSync(join(commonDir, "config")).isFile()
+    ) {
+      return [];
+    }
+    const registrationRoot = join(commonDir, "worktrees");
+    if (dirname(gitDir) !== registrationRoot) {
+      return [];
+    }
+    const reciprocalPointer = readFileSync(
+      join(gitDir, "gitdir"),
+      "utf-8",
+    ).trim();
+    const reciprocal = reciprocalPointer
+      ? existingCanonical(resolve(gitDir, reciprocalPointer))
+      : null;
+    if (reciprocal !== dotGit) {
+      return [];
+    }
+    return [gitDir, commonDir];
+  } catch {
+    return [];
+  }
+}
+
 function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
   const home = homedir();
   const xdgConfig = process.env.XDG_CONFIG_HOME ?? join(home, ".config");
@@ -310,7 +364,12 @@ export function createFixedCapabilities(sessionCwd: string): FixedCapabilities {
   const cwd = canonicalizeTarget(sessionCwd, process.cwd());
   const grants: FilesystemGrant[] = [];
   const executionGrants: ExecutionGrant[] = [];
-  const add = (raw: string, access: AccessMode, kind: GrantKind) => {
+  const add = (
+    raw: string,
+    access: AccessMode,
+    kind: GrantKind,
+    exact = false,
+  ) => {
     const resolved = makeGrant(raw, access, kind);
     if (
       !resolved ||
@@ -336,6 +395,7 @@ export function createFixedCapabilities(sessionCwd: string): FixedCapabilities {
       return;
     }
     if (
+      !exact &&
       grants.some(
         (current) =>
           (current.path === resolved.grant.path &&
@@ -353,6 +413,10 @@ export function createFixedCapabilities(sessionCwd: string): FixedCapabilities {
   };
   for (const [root, access, kind] of fixedRoots(cwd)) {
     add(root, access, kind);
+  }
+  for (const root of linkedWorktreeGitDirectories(cwd)) {
+    add(root, "read", "directory", true);
+    add(root, "write", "directory", true);
   }
   return { cwd, grants, executionGrants };
 }

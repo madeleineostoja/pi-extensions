@@ -503,16 +503,32 @@ export async function runWorkstreamReview(args: {
           description: `Review workstream ${args.workstream.id}`,
           render: buildInitialWorkstreamReviewPrompt,
         });
-  const result = await args.subagents.waitFor<unknown>(handle, args.signal);
-  if (result.status !== "completed") {
-    throw new Error(`Workstream reviewer ${result.status}: ${result.error}`);
+  let result:
+    | Awaited<ReturnType<typeof args.subagents.waitFor<unknown>>>
+    | undefined;
+  let failure: unknown;
+  try {
+    result = await args.subagents.waitFor<unknown>(handle, args.signal);
+  } catch (error) {
+    failure = error;
   }
   if (
+    (await workspaceGit.currentBranch()) !== workspace.branchName ||
     (await workspaceGit.head()) !== candidate.commitSha ||
+    (await workspaceGit.tree()) !== candidate.treeSha ||
     !(await workspaceGit.isClean()) ||
+    (await workspaceGit.activeOperation()) ||
     (assessment && (await args.git.head()) !== assessment.targetSha)
   ) {
     throw new Error("The reviewer changed the assessed repository state.");
+  }
+  if (failure) {
+    throw failure;
+  }
+  if (!result || result.status !== "completed") {
+    throw new Error(
+      `Workstream reviewer ${result?.status}: ${result?.error ?? "no completion"}`,
+    );
   }
   const evidence = reviewEvidencePath(args.artifactsPath, args.workstream.id, {
     packet,
@@ -640,17 +656,31 @@ async function runOverallAnchoredReview(args: {
           workerPacket.completionKind === "initial-anchored-review",
       }),
   });
-  const result = await args.subagents.waitFor<unknown>(handle, args.signal);
-  if (result.status !== "completed") {
-    throw new Error(
-      `Overall repair reviewer ${result.status}: ${result.error}`,
-    );
+  let result:
+    | Awaited<ReturnType<typeof args.subagents.waitFor<unknown>>>
+    | undefined;
+  let failure: unknown;
+  try {
+    result = await args.subagents.waitFor<unknown>(handle, args.signal);
+  } catch (error) {
+    failure = error;
   }
   if (
+    (await workspaceGit.currentBranch()) !== workspace.branchName ||
     (await workspaceGit.head()) !== candidate.commitSha ||
-    !(await workspaceGit.isClean())
+    (await workspaceGit.tree()) !== candidate.treeSha ||
+    !(await workspaceGit.isClean()) ||
+    (await workspaceGit.activeOperation())
   ) {
     throw new Error("The reviewer changed the overall repair workspace.");
+  }
+  if (failure) {
+    throw failure;
+  }
+  if (!result || result.status !== "completed") {
+    throw new Error(
+      `Overall repair reviewer ${result?.status}: ${result?.error ?? "no completion"}`,
+    );
   }
   const evidence = reviewEvidencePath(
     args.artifactsPath,
