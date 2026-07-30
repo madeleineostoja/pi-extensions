@@ -45,6 +45,21 @@ describe("Guard semantic confirmation", () => {
     expect(state.semanticConfirmationEnabled()).toBe(false);
   });
 
+  it("resets Allow all when the session is replaced", async () => {
+    const state = createGuardRuntimeState();
+    await confirmBashCommand({
+      command: "rm important",
+      cwd: "/",
+      state,
+      ctx: context(() => "Allow all this session"),
+    });
+    expect(state.semanticConfirmationEnabled()).toBe(false);
+
+    state.resetSession();
+
+    expect(state.semanticConfirmationEnabled()).toBe(true);
+  });
+
   it("blocks before execution when confirmation is declined", async () => {
     await expect(
       confirmBashCommand({

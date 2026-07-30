@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   createManagedSessionHarness,
@@ -10,7 +13,8 @@ import {
   MANAGED_COMPLETION_TOOL_NAME,
   SubagentRuntime,
 } from "#subagents/runtime";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import registerGuard from "../guard/index.ts";
 import { within } from "./test-boundary.js";
 import {
   resolveImplementRoles,
@@ -22,6 +26,14 @@ import {
   spawnValidatedWorker,
   WorkerPacketError,
 } from "./worker-invocation.js";
+
+const directories: string[] = [];
+
+afterEach(() => {
+  while (directories.length) {
+    rmSync(directories.pop()!, { recursive: true, force: true });
+  }
+});
 
 function roles(): ImplementRoles {
   const resolved = resolveImplementRoles({
@@ -127,6 +139,67 @@ describe("Implement managed runtime integration", () => {
       type: "pipkin:implement:reviewer",
       model: `${MANAGED_TEST_PROVIDER}/${MANAGED_TEST_MODEL}`,
       thinking: "high",
+    });
+    expect(harness.sessions).toHaveLength(1);
+    await runtime.dispose();
+  });
+
+  it("runs Bash through Guard in a real managed worker before completion", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "pipkin-managed-guard-"));
+    directories.push(workspace);
+    const harness = await createManagedSessionHarness(
+      [
+        fauxAssistantMessage(
+          fauxToolCall(
+            "bash",
+            { command: "printf managed-guard" },
+            { id: "bash" },
+          ),
+        ),
+        fauxAssistantMessage(
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            { verdict: "approved" },
+            { id: "completion" },
+          ),
+        ),
+      ],
+      { extensionFactories: [registerGuard] },
+    );
+    const extension = pi();
+    const runtime = new SubagentRuntime(extension as never, {
+      createSession: harness.createSession,
+    });
+    const client = new RuntimeSubagentClient(
+      extension as never,
+      managedSessionContext(harness) as never,
+      "run-guard",
+    );
+
+    const handle = await spawnValidatedWorker({
+      packet: {
+        role: "reviewer" as const,
+        completionKind: "initial-review" as const,
+        identity: "run-guard/work/candidate",
+        workspace: { path: workspace },
+      },
+      subagents: client,
+      roles: roles(),
+      taskId: "work",
+      description: "Run Guard Bash",
+      render: () => "Run the requested Bash check, then complete the review.",
+    });
+    const result = await within(
+      "managed Guard Bash completion",
+      client.waitFor(handle),
+      {
+        diagnostics: () => `managed sessions=${harness.sessions.length}`,
+      },
+    );
+
+    expect(result).toEqual({
+      status: "completed",
+      result: { verdict: "approved" },
     });
     expect(harness.sessions).toHaveLength(1);
     await runtime.dispose();
