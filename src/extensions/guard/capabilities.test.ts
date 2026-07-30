@@ -14,6 +14,7 @@ import {
   createFixedCapabilities,
   resolvePiToolPath,
   grantMatches,
+  isSensitiveHomeTarget,
   type FilesystemGrant,
 } from "./capabilities.js";
 import { isProtectedReadTarget } from "./protected.js";
@@ -142,6 +143,98 @@ describe("Guard capabilities", () => {
           grant.path === realpathSync(root) && grant.kind === "directory",
       ),
     ).toBe(false);
+  });
+
+  it("retains operational aliases in the manifest without changing canonical authorization", () => {
+    const root = fixture();
+    const canonical = join(root, "canonical");
+    const alias = join(root, "alias");
+    mkdirSync(canonical);
+    symlinkSync(canonical, alias);
+
+    const fixed = createFixedCapabilities(root);
+    const manifest = buildNonoManifest({
+      cwd: fixed.cwd,
+      grants: [grant(realpathSync(canonical), "read", "directory")],
+      executionGrants: [
+        {
+          path: alias,
+          canonicalPath: realpathSync(canonical),
+          access: "read",
+          kind: "directory",
+        },
+      ],
+    });
+
+    expect(manifest.filesystem.grants).toEqual(
+      expect.arrayContaining([
+        { path: alias, type: "directory", access: "read" },
+        { path: realpathSync(canonical), type: "directory", access: "read" },
+      ]),
+    );
+    expect(fixed.grants.some((entry) => entry.path === alias)).toBe(false);
+  });
+
+  it("drops execution aliases that are not backed by canonical authorization", () => {
+    const root = fixture();
+    const canonical = join(root, "canonical");
+    const alias = join(root, "alias");
+    mkdirSync(canonical);
+    symlinkSync(canonical, alias);
+
+    const manifest = buildNonoManifest({
+      cwd: root,
+      grants: [],
+      executionGrants: [
+        {
+          path: alias,
+          canonicalPath: realpathSync(canonical),
+          access: "read",
+          kind: "directory",
+        },
+      ],
+    });
+    expect(manifest.filesystem.grants).toEqual([]);
+  });
+
+  it("retains workspace-local inherited PATH roots and excludes credential config targets", () => {
+    const root = fixture();
+    const workspace = join(root, "workspace");
+    const toolchain = join(workspace, "node_modules", ".bin");
+    const home = join(root, "home");
+    const credentials = join(home, ".git-credentials");
+    const gitConfig = join(home, ".gitconfig");
+    mkdirSync(toolchain, { recursive: true });
+    mkdirSync(home);
+    writeFileSync(credentials, "secret");
+    symlinkSync(credentials, gitConfig);
+    const previousHome = process.env.HOME;
+    const previousPath = process.env.PATH;
+    process.env.HOME = home;
+    process.env.PATH = toolchain;
+    try {
+      const fixed = createFixedCapabilities(workspace);
+      expect(fixed.executionGrants).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: toolchain,
+            canonicalPath: realpathSync(toolchain),
+          }),
+        ]),
+      );
+      expect(isSensitiveHomeTarget(realpathSync(credentials), home)).toBe(true);
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      if (previousPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = previousPath;
+      }
+    }
   });
 
   it("emits fixed grants and unrestricted network", () => {

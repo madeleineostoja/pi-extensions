@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -9,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
+import { createFixedCapabilities } from "../capabilities.js";
 import { buildNonoManifest, runNono, writeNonoManifest } from "./manifest.js";
 import { getNonoHealth, getNonoTarget, managedNonoPath } from "./nono.js";
 
@@ -136,6 +139,64 @@ it.runIf(getNonoTarget() !== null)(
     expect(manifestFor({ workspace, session, introspection }).network).toEqual({
       mode: "unrestricted",
     });
+  },
+);
+
+it.runIf(getNonoTarget() !== null)(
+  "allows operational system aliases without broad private or var access",
+  async () => {
+    const binary = managedNonoPath();
+    if (!binary) {
+      throw new Error("Missing supported Nono target");
+    }
+    const workspace = mkdtempSync(join(tmpdir(), "pipkin-nono-alias-"));
+    directories.push(workspace);
+    const manifest = buildNonoManifest(createFixedCapabilities(workspace));
+
+    await expect(
+      cat(binary, writeNonoManifest(manifest), "/etc/hosts"),
+    ).resolves.toMatchObject({ kind: "exited", exitCode: 0 });
+    await expect(
+      cat(binary, writeNonoManifest(manifest), "/var/pipkin-denied"),
+    ).resolves.toMatchObject({ kind: "exited", exitCode: 1 });
+
+    const temporary = join(tmpdir(), `pipkin-nono-write-${Date.now()}`);
+    await expect(
+      runNono(binary, writeNonoManifest(manifest), "/bin/sh", [
+        "-c",
+        `printf temporary > ${temporary}`,
+      ]),
+    ).resolves.toMatchObject({ kind: "exited", exitCode: 0 });
+    expect(readFileSync(temporary, "utf8")).toBe("temporary");
+    rmSync(temporary, { force: true });
+    await expect(
+      runNono(binary, writeNonoManifest(manifest), "/bin/sh", [
+        "-c",
+        "printf denied > /etc/pipkin-nono-denied",
+      ]),
+    ).resolves.toMatchObject({ kind: "exited", exitCode: 1 });
+
+    execFileSync("git", ["init", workspace], { stdio: "ignore" });
+    const hook = join(workspace, ".git", "hooks", "pre-commit");
+    const hookResult = join(workspace, "hook-ran");
+    writeFileSync(hook, `#!/bin/sh\nprintf hook > ${hookResult}\n`);
+    chmodSync(hook, 0o700);
+    await expect(
+      runNono(binary, writeNonoManifest(manifest), "/usr/bin/env", [
+        "git",
+        "-C",
+        workspace,
+        "-c",
+        "user.name=Pipkin",
+        "-c",
+        "user.email=pipkin@example.test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+      ]),
+    ).resolves.toMatchObject({ kind: "exited", exitCode: 0 });
+    expect(readFileSync(hookResult, "utf8")).toBe("hook");
   },
 );
 
