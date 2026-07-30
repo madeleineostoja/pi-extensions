@@ -176,39 +176,27 @@ export const overallReworkSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export const wholePlanRecoveryCompletionSchema = Type.Object(
-  {
-    action: Type.Union([
-      Type.Literal("diagnose"),
-      Type.Literal("retry"),
-      Type.Literal("no_safe_action"),
-    ]),
-    summary: nonEmptyString(),
-    evidence: nonEmptyString(),
-    diagnosis: Type.Optional(nonEmptyString()),
-  },
-  { additionalProperties: false },
-);
-
-export const recoveryCompletionSchema = Type.Object(
-  {
-    action: Type.Union([
-      Type.Literal("diagnose"),
-      Type.Literal("retry"),
-      Type.Literal("rework_candidate"),
-      Type.Literal("reconcile"),
-      Type.Literal("recreate_workspace"),
-      Type.Literal("no_safe_action"),
-    ]),
-    summary: nonEmptyString(),
-    evidence: nonEmptyString(),
-    diagnosis: Type.Optional(nonEmptyString()),
-    candidateTip: Type.Optional(nonEmptyString()),
-    changedPaths: Type.Optional(Type.Array(nonEmptyString())),
-    trustedCheckpoint: Type.Optional(nonEmptyString()),
-  },
-  { additionalProperties: false },
-);
+export const revisionCompletionSchema = Type.Union([
+  Type.Object(
+    {
+      outcome: Type.Literal("changed"),
+      summary: nonEmptyString(),
+      verification: Type.Array(nonEmptyString(), { minItems: 1 }),
+      uncertainty: Type.Optional(nonEmptyString()),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      outcome: Type.Literal("blocked"),
+      summary: nonEmptyString(),
+      evidence: nonEmptyString(),
+      verification: Type.Array(nonEmptyString(), { minItems: 1 }),
+      uncertainty: Type.Optional(nonEmptyString()),
+    },
+    { additionalProperties: false },
+  ),
+]);
 
 export type WorkstreamImplementerCompletion = Static<
   typeof workstreamImplementerResultSchema
@@ -230,7 +218,4 @@ export type InitialAnchoredWorkstreamReviewCompletion = Static<
   typeof initialAnchoredWorkstreamReviewSchema
 >;
 export type OverallReworkCompletion = Static<typeof overallReworkSchema>;
-export type WholePlanRecoveryCompletion = Static<
-  typeof wholePlanRecoveryCompletionSchema
->;
-export type RecoveryCompletion = Static<typeof recoveryCompletionSchema>;
+export type RevisionCompletion = Static<typeof revisionCompletionSchema>;

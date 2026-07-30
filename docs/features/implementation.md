@@ -2,11 +2,11 @@
 
 Implement is Pipkin's autonomous software implementation system and parallel agent orchestrator. Give `/implement` a Markdown plan and it owns the run from planning through reviewed publication.
 
-Before coding starts, a high-reasoning planner reads the complete linked plan material and creates one immutable, dependency-aware schedule. It groups work at stable implementation and review boundaries: shared context and cumulative review can justify a multi-task workstream, while a narrower recovery scope can justify a split, including a dependent chain. Dedicated implementer and reviewer agents then work in isolated Git worktrees. Independent workstreams proceed concurrently up to the configured capacity; capacity is useful, not a requirement to split or to fill every slot. Review findings go back through bounded repair loops, and a final review checks the result as a whole.
+Before coding starts, a high-reasoning planner reads the complete linked plan material and creates one immutable, dependency-aware schedule. It groups work at stable implementation and review boundaries: shared context and cumulative review can justify a multi-task workstream, while a narrower revision scope can justify a split, including a dependent chain. Dedicated implementer and reviewer agents then work in isolated Git worktrees. Independent workstreams proceed concurrently up to the configured capacity; capacity is useful, not a requirement to split or to fill every slot. Review findings create exact bounded revision assignments, and a final review checks the result as a whole.
 
 The complete source plan is the shipment boundary. An approved intermediate candidate can establish a contract for a dependent workstream, but it must remain coherent and safe to publish. The target branch has one controlled writer. Pipkin integrates approved work serially, runs ordinary Git hooks, verifies the commit it prepared, and uses compare-and-swap protection when advancing the branch. Durable state and retained evidence make interrupted and failed runs inspectable and safely cleanable.
 
-This is not a public-agent fan-out or a prompt loop around a checklist. Implement owns scheduling, workspace isolation, review, recovery, publication, and plan projection as one system.
+This is not a public-agent fan-out or a prompt loop around a checklist. Implement owns scheduling, workspace isolation, review, revision policy, publication, and plan projection as one system.
 
 It is powerful and intentionally opinionated. Learn it in a disposable checkout before relying on unfamiliar hooks or project conventions.
 
@@ -56,7 +56,7 @@ It does not require an upstream, remote, package manager, configured validation 
 1. **Plan once.** A planner produces one strict immutable execution plan that covers every unchecked task exactly once, identifies dependencies, and groups static workstreams.
 2. **Work in isolation.** Eligible workstreams receive disposable owned Git worktrees. Independent streams may implement and review concurrently up to `workerConcurrency`; dependent streams receive bases that already contain completed dependencies.
 3. **Keep evidence.** Task coverage and commit provenance are distinct: implementers may retain meaningful intermediate checkpoints, while changed tasks without one use the validated final candidate tip. Verification is retained as concise statements of what was checked and the outcome, whether by tests, static analysis, or direct inspection. If a task is already satisfied, Pipkin asks for current-repository review instead of manufacturing a change.
-4. **Review before publication.** Implement derives candidate branch, commit, tree, and changed paths from the owned worktree rather than trusting worker-reported Git identity. A clean committed candidate remains reviewable when semantic completion is unavailable; dirty or unsafe workspaces are retained for inspection rather than reset. Initial review then assesses every ordered contract, the cumulative candidate, verification, and unnecessary machinery. Findings return through bounded repair and review. A checkpoint is not completion.
+4. **Review before publication.** Implement derives candidate branch, commit, tree, and changed paths from the owned worktree rather than trusting worker-reported Git identity. A clean committed candidate remains reviewable when semantic completion is unavailable; dirty or unsafe workspaces are retained for inspection rather than reset. Initial review then assesses every ordered contract, the cumulative candidate, verification, and unnecessary machinery. Findings create a revision assignment bound to that candidate, comparison base, review epoch, and outstanding IDs. The revision worker reports only semantic evidence; Pipkin observes the next candidate and anchors a fresh review. A checkpoint is not completion.
 5. **Publish one at a time.** When all managed agents are idle, the serialized integration lane replays an approved candidate onto the current target, commits it with the initial cumulative reviewer's workstream-wide publication subject, runs ordinary commit hooks, verifies the prepared commit, records publication intent, and advances the target with compare-and-swap protection.
 6. **Project completion.** Published or reviewed-as-satisfied tasks update their source checkboxes. Whole-plan review can send further findings through the same repair, review, integration, and publication path. The run completes only after its remaining projection debt is settled.
 
@@ -79,7 +79,7 @@ A boundary problem reports the exact paths and terminally fails the run. A bound
 
 Published commits are never rolled back just because a later checkbox projection or owned-resource cleanup needs another attempt. Plan checkbox changes are expected dirt while the run is active and ordinary working changes after it completes.
 
-## Durable state and recovery
+## Durable state and failure policy
 
 Each checkout owns its runs:
 
@@ -101,7 +101,7 @@ Implement state is versioned. Before upgrading to an incompatible lifecycle vers
 
 One OS-backed lease protects each checkout's active run and destructive cleanup. Linked checkouts have independent state and can run separately. A second run in the same checkout is rejected.
 
-Live recovery retains the gate, candidate, workspace, complete current findings, prior actions, and mutation boundary while the current actor remains alive. Recovery packets embed actionable findings inline; retained artifacts are diagnostic provenance, not worker-readable input. When recovery is exhausted, the run fails rather than reconstructing workers later.
+Failures retain their real category, candidate, lifecycle gate, target evidence, and workspace observation. The scheduler—not a model—selects a bounded review retry, candidate revision, failed-target reconciliation, workspace recreation, or operational retry. Revision packets bind the exact reviewed candidate, comparison base, finding epoch, outstanding IDs, and evidence. Provider/protocol attempts and unchanged semantic revisions have separate durable limits; rewording a response cannot reset either limit.
 
 Stopping is transient while owned processes settle. Failed and completed runs are terminal. A crash-retained active run is terminalized as interrupted under the checkout lease without launching workers. Cleanup settles exact durable publication and projection transactions first, preserves published target and plan changes, and removes only resources Pipkin can prove it owns.
 
@@ -120,7 +120,7 @@ Stopping is transient while owned processes settle. Failed and completed runs ar
 
 | Command   | Purpose                                                                                        |
 | --------- | ---------------------------------------------------------------------------------------------- |
-| `status`  | Show phases, findings, gates, leases, and projection debt                                      |
+| `status`  | Show phases, findings, failure category, assignments, leases, and projection debt              |
 | `inspect` | Show durable state and evidence paths for one run                                              |
 | `stop`    | Settle owned processes and terminally fail the active run safely                               |
 | `restart` | Clean a completed run after new-run preflight and start again                                  |
@@ -130,7 +130,7 @@ The active session also shows a diagnostic widget with overall progress, workstr
 
 ## Models and concurrency
 
-Implement uses `high` for planning and review and `medium` for implementation and recovery. `implement.workerConcurrency` defaults to `3` and caps at `8`.
+Implement uses `high` for planning and review and `medium` for implementation and revision. `implement.workerConcurrency` defaults to `3` and caps at `8`.
 
 Implementers choose appropriate project verification. There is no configured validation command, automatic validation-command discovery, role-specific persistent model override, or Implement-only reviewer watchdog. Use Pipkin's generic `/agents` controls for supervision.
 

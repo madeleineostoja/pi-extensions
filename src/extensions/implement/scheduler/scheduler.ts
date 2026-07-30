@@ -1,10 +1,10 @@
 import { publicationPreparationId } from "../candidate-replay.js";
 import {
-  boundedRecoveryOutput,
-  recoveryCycleSignature,
-  type RecoveryAction,
-  type RecoveryGateResult,
-} from "../recovery/recovery.js";
+  boundedFailureOutput,
+  noProgressSignature,
+  type FailureCategory,
+  type FailureCommandEvidence,
+} from "../failure-policy.js";
 import type { AnchoredWorkstreamReviewCompletion } from "../result-schemas.js";
 import {
   applyAnchoredWorkstreamReview,
@@ -18,7 +18,14 @@ import type { RunState } from "../store.js";
 
 export type RuntimeWorkstream = RunState["candidates"][string]["workstream"];
 type ProcessLease = RunState["processLeases"][string];
-type RecoveryWorkspace = RunState["recoveryEpisodes"][string]["workspace"];
+type WorkspaceObservation = {
+  branch: string;
+  head: string;
+  tree?: string;
+  clean: boolean;
+  activeOperation?: string;
+  status: ReadonlyArray<{ status: string; path: string }>;
+};
 
 type ImplementationOutcome =
   | {
@@ -52,30 +59,24 @@ export type SchedulerEvent =
       workstream: RuntimeWorkstream;
       leaseId: string;
       evidence: string;
-      trustedCheckpoint?: string;
       trustedCandidate?: RunState["candidates"][string];
-      workspace?: RunState["recoveryEpisodes"][string]["workspace"];
-      executionFailure?: boolean;
+      observation?: WorkspaceObservation;
+      category: FailureCategory;
     }
   | {
       kind: "effect_failed";
       effect: "review" | "reconciliation" | "publication";
-      gateKind?: "hook";
       workstream: RuntimeWorkstream;
       leaseId: string;
       evidence: string;
-      executionFailure?: boolean;
+      category: FailureCategory;
+      observation?: WorkspaceObservation;
+      command?: FailureCommandEvidence;
     }
-  | { kind: "whole_plan_review_failed"; evidence: string }
-  | { kind: "whole_plan_recovery_requested" }
-  | { kind: "whole_plan_recovery_abandoned" }
-  | { kind: "whole_plan_recovery_completed"; action: RecoveryAction }
-  | { kind: "whole_plan_recovery_failed"; evidence: string }
   | {
-      kind: "gate_recorded";
-      workstream: RuntimeWorkstream;
-      result: RecoveryGateResult;
-      workspace: RecoveryWorkspace;
+      kind: "whole_plan_review_failed";
+      evidence: string;
+      category: FailureCategory;
     }
   | {
       kind: "review_completed";
@@ -84,25 +85,41 @@ export type SchedulerEvent =
       outcome: ReviewOutcome;
       projectionDebt?: RunState["projectionDebt"][number];
     }
-  | { kind: "recovery_requested"; workstream: RuntimeWorkstream; now: string }
+  | { kind: "revision_requested"; workstream: RuntimeWorkstream; now: string }
   | {
-      kind: "recovery_completed";
+      kind: "revision_completed";
       workstream: RuntimeWorkstream;
       leaseId: string;
-      action: RecoveryAction;
-      candidate?: RunState["candidates"][string];
-      correction?: {
-        fromCandidateId: string;
-        changedPaths: string[];
-        evidence: string;
-      };
+      assignmentId: string;
+      outcome:
+        | {
+            kind: "candidate_ready";
+            candidate: RunState["candidates"][string];
+            correction: {
+              fromCandidateId: string;
+              changedPaths: string[];
+              evidence: string;
+            };
+          }
+        | { kind: "unchanged"; evidence: string };
     }
   | {
-      kind: "recovery_execution_failed";
+      kind: "revision_failed";
       workstream: RuntimeWorkstream;
       leaseId: string;
-      error: string;
-      now: string;
+      assignmentId: string;
+      category: FailureCategory;
+      evidence: string;
+      observation?: WorkspaceObservation;
+    }
+  | { kind: "workspace_recreation_requested"; id: string; now: string }
+  | {
+      kind: "workspace_recreation_completed";
+      id: string;
+      leaseId: string;
+      before: WorkspaceObservation;
+      after: WorkspaceObservation;
+      outcome: "restored" | "still_quarantined" | "unsafe";
     }
   | {
       kind: "reconciliation_requested";
@@ -137,7 +154,13 @@ export type SchedulerEvent =
         | {
             kind: "prepared";
             evidence: string;
-            workspace: RecoveryWorkspace;
+            workspace: {
+              id: string;
+              checkpoint?: string;
+              changedPaths: string[];
+              stateEvidence: string;
+              stagingComparison?: { baseSha: string; treeSha: string };
+            };
           }
         | {
             kind:
@@ -145,8 +168,14 @@ export type SchedulerEvent =
               | "execution_failed"
               | "hook_rejected";
             evidence: string;
-            command?: RecoveryGateResult["command"];
-            workspace: RecoveryWorkspace;
+            command?: FailureCommandEvidence;
+            workspace: {
+              id: string;
+              checkpoint?: string;
+              changedPaths: string[];
+              stateEvidence: string;
+              stagingComparison?: { baseSha: string; treeSha: string };
+            };
           };
     }
   | {
@@ -233,11 +262,17 @@ export type SchedulerEffect =
     }
   | { kind: "run_review"; workstream: RuntimeWorkstream; leaseId: string }
   | {
-      kind: "run_recovery";
+      kind: "run_revision";
       workstream: RuntimeWorkstream;
       leaseId: string;
-      episodeId: string;
-      independentlyEscalated: boolean;
+      candidateId: string;
+      assignmentId: string;
+    }
+  | {
+      kind: "recreate_workspace";
+      workstream: RuntimeWorkstream;
+      leaseId: string;
+      recreationId: string;
     }
   | {
       kind: "run_reconciliation";
@@ -253,7 +288,6 @@ export type SchedulerEffect =
       intentId: string;
     }
   | { kind: "run_whole_plan_review" }
-  | { kind: "run_whole_plan_recovery" }
   | { kind: "complete_whole_plan_run" }
   | { kind: "run_projection"; debtId: string };
 
@@ -339,6 +373,12 @@ export function selectReadyRuntimeWorkstreams(
   return [];
 }
 
+function terminalFailureCategory(
+  category: FailureCategory,
+): NonNullable<RunState["failure"]>["category"] {
+  return category === "hook_rejected" ? "runtime" : category;
+}
+
 function failRun(
   state: RunState,
   category: NonNullable<RunState["failure"]>["category"],
@@ -354,9 +394,6 @@ function failRun(
     return reject("only an active run can enter orderly failure");
   }
   state.failure = { category, reason, originPhase: state.phase, at };
-  if (state.wholePlanReview.recovery?.status === "running") {
-    state.wholePlanReview.recovery.status = "open";
-  }
   state.phase = "stopping";
   return { state, effects: [], accepted: true };
 }
@@ -488,72 +525,76 @@ export function reduceRunEvent(
         return reject("implementation failure does not own an active lease");
       }
       settleLease(state, lease, event.kind, event);
-      try {
-        const priorEpisode = openRecoveryEpisodeForWorkstream(
-          state,
-          event.workstream,
-        );
+      if (event.trustedCandidate) {
         if (
-          event.trustedCandidate &&
-          priorEpisode &&
-          priorEpisode.candidateId !== event.trustedCandidate.id
+          !sameWorkstream(event.trustedCandidate.workstream, event.workstream)
         ) {
-          priorEpisode.status = "completed";
+          return reject("observed candidate belongs to another workstream");
         }
-        if (event.trustedCandidate) {
-          if (
-            !sameWorkstream(
-              event.trustedCandidate.workstream,
-              event.workstream,
-            ) ||
-            (event.workstream.kind === "source" &&
-              event.trustedCandidate.baseSha !==
-                state.workstreams.source[event.workstream.id]?.baseSha) ||
-            event.trustedCandidate.commitSha !== event.trustedCheckpoint
-          ) {
-            return reject(
-              "Implementation checkpoint does not match its workstream boundary.",
-            );
-          }
-          const existing = state.candidates[event.trustedCandidate.id];
-          if (
-            existing &&
-            JSON.stringify(existing) !== JSON.stringify(event.trustedCandidate)
-          ) {
-            return reject("candidate identity is immutable");
-          }
-          state.candidates[event.trustedCandidate.id] = event.trustedCandidate;
-          workstream.candidateId = event.trustedCandidate.id;
+        const existing = state.candidates[event.trustedCandidate.id];
+        if (
+          existing &&
+          JSON.stringify(existing) !== JSON.stringify(event.trustedCandidate)
+        ) {
+          return reject("candidate identity is immutable");
         }
-        const failureCandidateId =
-          event.trustedCandidate?.id ?? workstream.candidateId;
-        recordGateResult(
-          state,
-          event.workstream,
-          {
-            id: `environment:${workstreamId(event.workstream)}:${state.gates.length + 1}`,
-            kind: "environment",
-            owner: workstreamId(event.workstream),
-            ...(failureCandidateId ? { candidateId: failureCandidateId } : {}),
-            attempt: state.gates.length + 1,
-            outcome: "failed",
-            evidence: event.evidence.slice(0, 12_000),
-            outstandingFindingIds: [],
-          },
-          event.workspace ?? {
-            id: workstreamId(event.workstream),
-            ...(event.trustedCheckpoint
-              ? { checkpoint: event.trustedCheckpoint }
-              : {}),
-            changedPaths: [],
-            stateEvidence: event.evidence.slice(0, 12_000),
-          },
-          event.executionFailure ? 1 : 0,
-        );
+        state.candidates[event.trustedCandidate.id] = event.trustedCandidate;
+        workstream.candidateId = event.trustedCandidate.id;
+        workstream.phase = "candidate_ready";
+        recordFailure(state, {
+          category: event.category,
+          assignment: "operational_retry",
+          workstream: event.workstream,
+          candidateId: event.trustedCandidate.id,
+          gate: "implementation_completion",
+          evidence: event.evidence,
+          observation: event.observation,
+        });
         return accept();
-      } catch (error) {
-        return reject(error instanceof Error ? error.message : String(error));
       }
+      recordFailure(state, {
+        category: event.category,
+        assignment:
+          event.category === "workspace_unsafe" &&
+          event.observation &&
+          !event.observation.clean
+            ? "workspace_recreation"
+            : "operational_retry",
+        workstream: event.workstream,
+        ...(workstream.candidateId
+          ? { candidateId: workstream.candidateId }
+          : {}),
+        gate: "implementation",
+        evidence: event.evidence,
+        observation: event.observation,
+      });
+      if (event.category === "workspace_unsafe") {
+        if (event.observation && !event.observation.clean) {
+          createWorkspaceRecreation(
+            state,
+            event.workstream,
+            "queued",
+            event.evidence,
+          );
+          workstream.phase = "recreating_workspace";
+          return accept();
+        }
+        return failRun(
+          state,
+          "workspace_unsafe",
+          event.evidence,
+          new Date().toISOString(),
+          reject,
+        );
+      }
+      return scheduleOperationalRetry(
+        state,
+        event.workstream,
+        "implementation",
+        event.evidence,
+        "queued",
+        reject,
+      );
     }
 
     case "effect_failed": {
@@ -573,32 +614,63 @@ export function reduceRunEvent(
       ) {
         return reject("failed effect does not own its active lease");
       }
-      const candidateId = workstream.candidateId;
       settleLease(state, lease, event.kind, event);
-      try {
-        recordGateResult(
+      const candidateId = workstream.candidateId;
+      recordFailure(state, {
+        category: event.category,
+        assignment:
+          event.category === "hook_rejected"
+            ? "candidate_revision"
+            : "operational_retry",
+        workstream: event.workstream,
+        ...(candidateId ? { candidateId } : {}),
+        gate: event.effect,
+        evidence: event.evidence,
+        ...(event.command ? { command: event.command } : {}),
+        ...(event.observation ? { observation: event.observation } : {}),
+      });
+      if (event.category === "workspace_unsafe") {
+        return failRun(
+          state,
+          "workspace_unsafe",
+          event.evidence,
+          new Date().toISOString(),
+          reject,
+        );
+      }
+      if (
+        event.category === "publication_uncertain" ||
+        event.category === "target_moved"
+      ) {
+        return failRun(
+          state,
+          event.category,
+          event.evidence,
+          new Date().toISOString(),
+          reject,
+        );
+      }
+      if (event.category === "hook_rejected" && candidateId) {
+        return createRevisionAssignment(
           state,
           event.workstream,
-          {
-            id: `${event.gateKind === "hook" ? "hook" : `environment:${event.effect}`}:${workstreamId(event.workstream)}:${state.gates.length + 1}`,
-            kind: event.gateKind === "hook" ? "hook" : "environment",
-            owner: workstreamId(event.workstream),
-            ...(candidateId ? { candidateId } : {}),
-            attempt: state.gates.length + 1,
-            outcome: "failed",
-            evidence: boundedRecoveryOutput(event.evidence),
-            outstandingFindingIds: [],
-          },
-          recoveryWorkspace(state, event.workstream, candidateId),
-          event.executionFailure ? 1 : 0,
+          candidateId,
+          [],
+          event.evidence,
+          reject,
         );
-        return accept();
-      } catch (error) {
-        return reject(error instanceof Error ? error.message : String(error));
       }
+      return scheduleOperationalRetry(
+        state,
+        event.workstream,
+        event.effect,
+        event.evidence,
+        event.effect === "review" ? "candidate_ready" : "approved",
+        reject,
+      );
     }
 
-    case "whole_plan_review_failed":
+    case "whole_plan_review_failed": {
       if (
         state.phase !== "whole_plan_review" ||
         state.wholePlanReview.status !== "reviewing"
@@ -607,103 +679,37 @@ export function reduceRunEvent(
           "whole-plan failure is not owned by an active assessment",
         );
       }
-      const priorRecovery = state.wholePlanReview.recovery;
-      const recovery = {
+      const retry = state.wholePlanReview.reviewRetry ?? {
+        attempts: 0,
+        evidence: [],
         status: "open" as const,
-        evidence: [
-          ...(priorRecovery?.evidence ?? []),
-          boundedRecoveryOutput(event.evidence),
-        ],
-        executionFailures: (priorRecovery?.executionFailures ?? 0) + 1,
-        actions: priorRecovery?.actions ?? [],
       };
+      retry.attempts++;
+      retry.evidence.push(boundedFailureOutput(event.evidence));
+      if (retry.attempts >= 3) {
+        retry.status = "exhausted";
+        state.wholePlanReview = {
+          status: "pending",
+          ...(state.wholePlanReview.epoch
+            ? { epoch: state.wholePlanReview.epoch }
+            : {}),
+          reviewRetry: retry,
+        };
+        return failRun(
+          state,
+          terminalFailureCategory(event.category),
+          event.evidence,
+          new Date().toISOString(),
+          reject,
+        );
+      }
       state.wholePlanReview = {
         status: "pending",
         ...(state.wholePlanReview.epoch
           ? { epoch: state.wholePlanReview.epoch }
           : {}),
-        recovery,
+        reviewRetry: retry,
       };
-      if (recovery.executionFailures >= 3) {
-        return failRun(
-          state,
-          "recovery_exhausted",
-          "Whole-plan reviewer failed three consecutive times.",
-          new Date().toISOString(),
-          reject,
-        );
-      }
-      return accept();
-
-    case "whole_plan_recovery_requested":
-      if (
-        state.phase !== "whole_plan_review" ||
-        state.wholePlanReview.recovery?.status !== "open"
-      ) {
-        return reject("whole-plan recovery is not ready to run");
-      }
-      state.wholePlanReview.recovery.status = "running";
-      return accept([{ kind: "run_whole_plan_recovery" }]);
-
-    case "whole_plan_recovery_abandoned":
-      if (
-        state.phase !== "whole_plan_review" ||
-        state.wholePlanReview.recovery?.status !== "running"
-      ) {
-        return reject("whole-plan recovery has no interrupted owner");
-      }
-      state.wholePlanReview.recovery.status = "open";
-      return accept();
-
-    case "whole_plan_recovery_completed": {
-      const recovery = state.wholePlanReview.recovery;
-      if (
-        state.phase !== "whole_plan_review" ||
-        recovery?.status !== "running" ||
-        !["retry", "diagnose", "no_safe_action"].includes(event.action.kind)
-      ) {
-        return reject("whole-plan recovery does not own an active failure");
-      }
-      recovery.actions.push(event.action);
-      recovery.executionFailures = 0;
-      if (event.action.kind === "no_safe_action") {
-        recovery.status = "completed";
-        return failRun(
-          state,
-          "recovery_exhausted",
-          event.action.evidence,
-          new Date().toISOString(),
-          reject,
-        );
-      }
-      if (event.action.kind === "retry") {
-        recovery.status = "completed";
-        return accept();
-      }
-      recovery.status = "open";
-      return accept();
-    }
-
-    case "whole_plan_recovery_failed": {
-      const recovery = state.wholePlanReview.recovery;
-      if (
-        state.phase !== "whole_plan_review" ||
-        recovery?.status !== "running"
-      ) {
-        return reject("whole-plan recovery failure has no active owner");
-      }
-      recovery.evidence.push(boundedRecoveryOutput(event.evidence));
-      recovery.executionFailures++;
-      recovery.status = "open";
-      if (recovery.executionFailures >= 3) {
-        return failRun(
-          state,
-          "recovery_exhausted",
-          "Whole-plan recovery worker failed three consecutive times.",
-          new Date().toISOString(),
-          reject,
-        );
-      }
       return accept();
     }
 
@@ -756,13 +762,12 @@ export function reduceRunEvent(
                   candidateId: event.outcome.candidate.id,
                   correction: {
                     fromCandidateId: review.candidateId,
-                    changedPaths:
-                      event.outcome.candidate.implementationEvidence
-                        ?.changedPaths ?? [],
+                    changedPaths: event.outcome.candidate.changedPaths ?? [],
                     evidence:
                       event.outcome.candidate.implementationEvidence
                         ?.artifactPath ??
-                      "Overall repair candidate was checkpointed.",
+                      event.outcome.candidate.observationArtifact ??
+                      "Overall repair candidate was observed.",
                   },
                 });
             } catch (error) {
@@ -819,32 +824,11 @@ export function reduceRunEvent(
         workstream.phase = "candidate_ready";
       }
       settleLease(state, lease, event.kind, event);
-      for (const episode of Object.values(state.recoveryEpisodes)) {
-        if (
-          episode.status === "open" &&
-          sameWorkstream(episode.workstream, event.workstream)
-        ) {
-          episode.status = "completed";
-        }
-      }
       return accept();
     }
 
     case "review_requested":
       return startProcess(state, event.workstream, "review", event.now, reject);
-
-    case "gate_recorded":
-      try {
-        recordGateResult(
-          state,
-          event.workstream,
-          event.result,
-          event.workspace,
-        );
-        return accept();
-      } catch (error) {
-        return reject(error instanceof Error ? error.message : String(error));
-      }
 
     case "review_completed": {
       const lease = ownedLease(
@@ -956,24 +940,23 @@ export function reduceRunEvent(
       }
       settleLease(state, lease, event.kind, event);
       const outstandingFindingIds = state.reviews[key]!.outstandingIds;
-      recordGateResult(
-        state,
-        event.workstream,
-        {
-          id: `review:${workstreamId(event.workstream)}:${event.outcome.candidateId}:${state.reviews[key]!.round + 1}`,
-          kind: "review",
-          owner: workstreamId(event.workstream),
-          candidateId: event.outcome.candidateId,
-          attempt: state.reviews[key]!.round + 1,
-          outcome: outstandingFindingIds.length > 0 ? "failed" : "passed",
-          evidence: event.outcome.evidence,
-          outstandingFindingIds,
-        },
-        recoveryWorkspace(state, event.workstream, event.outcome.candidateId),
-      );
       if (outstandingFindingIds.length > 0) {
-        workstream.phase = "recovering";
-        return accept();
+        recordFailure(state, {
+          category: "semantic_blocked",
+          assignment: "candidate_revision",
+          workstream: event.workstream,
+          candidateId: event.outcome.candidateId,
+          gate: "review",
+          evidence: event.outcome.evidence,
+        });
+        return createRevisionAssignment(
+          state,
+          event.workstream,
+          event.outcome.candidateId,
+          outstandingFindingIds,
+          event.outcome.evidence,
+          reject,
+        );
       }
       if (event.outcome.kind === "repository_state") {
         if (event.workstream.kind !== "source") {
@@ -1009,165 +992,236 @@ export function reduceRunEvent(
       return accept();
     }
 
-    case "recovery_requested":
-      return startRecoveryProcess(state, event.workstream, event.now, reject);
+    case "revision_requested":
+      return startRevision(state, event.workstream, event.now, reject);
 
-    case "recovery_completed": {
+    case "revision_completed": {
       const lease = ownedLease(
         state,
         event.leaseId,
         event.workstream,
-        "recovery",
+        "revision",
       );
       const workstream = getWorkstream(state, event.workstream);
-      const episode = lease?.recoveryEpisodeId
-        ? state.recoveryEpisodes[lease.recoveryEpisodeId]
-        : undefined;
+      const assignment = state.revisionAssignments[event.assignmentId];
       if (
         !lease ||
-        !episode ||
         !workstream ||
-        workstream.phase !== "recovering" ||
+        !assignment ||
+        lease.revisionAssignmentId !== assignment.id ||
+        assignment.status !== "open" ||
+        workstream.phase !== "revising" ||
+        workstream.candidateId !== assignment.candidateId ||
         !processIsAllowed(state, event.workstream)
       ) {
-        return reject("recovery result does not own an active episode lease");
+        return reject("revision result does not own its exact assignment");
       }
-      if (event.action.kind === "no_safe_action") {
-        if (event.action.outcome !== "no_safe_action") {
-          return reject(
-            "no-safe-action recovery must report a no-safe-action outcome",
+      if (event.outcome.kind === "unchanged") {
+        const candidate = state.candidates[assignment.candidateId];
+        if (!candidate) {
+          return reject("revision assignment lost its candidate");
+        }
+        const signature = noProgressSignature({
+          workstream: workstreamId(event.workstream),
+          candidateTree: candidate.treeSha,
+          findingEpoch: assignment.findingEpoch,
+          outstandingFindingIds: assignment.outstandingFindingIds,
+        });
+        assignment.noProgress = {
+          signature,
+          attempts:
+            assignment.noProgress.signature === signature
+              ? assignment.noProgress.attempts + 1
+              : 1,
+        };
+        settleLease(state, lease, event.kind, event);
+        recordFailure(state, {
+          category: "no_progress",
+          assignment: "blocked",
+          workstream: event.workstream,
+          candidateId: candidate.id,
+          gate: "revision",
+          evidence: event.outcome.evidence,
+        });
+        if (assignment.noProgress.attempts >= 2) {
+          assignment.status = "blocked";
+          return failRun(
+            state,
+            "no_progress",
+            "Revision left the same candidate tree unchanged for the same findings twice.",
+            new Date().toISOString(),
+            reject,
           );
         }
-        episode.cycle = {
-          signature: recoverySignatureFor(state, episode, "no_safe_action"),
-          identicalNoActionCycles: episode.cycle.identicalNoActionCycles + 1,
-          independentlyEscalated: true,
-        };
-        episode.actions.push(event.action);
-        episode.executionFailures = 0;
-        settleLease(state, lease, event.kind, event);
-        episode.status = "completed";
+        return accept();
+      }
+      const candidate = event.outcome.candidate;
+      const review = workstreamReviewState(state, event.workstream);
+      if (
+        !sameWorkstream(candidate.workstream, event.workstream) ||
+        candidate.baseSha !==
+          state.candidates[assignment.candidateId]?.baseSha ||
+        event.outcome.correction.fromCandidateId !== assignment.candidateId ||
+        !review ||
+        review.candidateId !== assignment.candidateId ||
+        review.round !== assignment.findingEpoch ||
+        JSON.stringify(review.outstandingIds) !==
+          JSON.stringify(assignment.outstandingFindingIds)
+      ) {
+        return reject("revision completion is stale for its review epoch");
+      }
+      const existing = state.candidates[candidate.id];
+      if (existing && JSON.stringify(existing) !== JSON.stringify(candidate)) {
+        return reject("candidate identity is immutable");
+      }
+      try {
+        state.reviews[reviewKey(event.workstream)] = retargetAnchoredReview({
+          state: review,
+          candidateId: candidate.id,
+          correction: event.outcome.correction,
+        });
+      } catch (error) {
+        return reject(error instanceof Error ? error.message : String(error));
+      }
+      state.candidates[candidate.id] = candidate;
+      workstream.candidateId = candidate.id;
+      assignment.status = "completed";
+      settleLease(state, lease, event.kind, event);
+      workstream.phase = "candidate_ready";
+      return accept();
+    }
+
+    case "revision_failed": {
+      const lease = ownedLease(
+        state,
+        event.leaseId,
+        event.workstream,
+        "revision",
+      );
+      const workstream = getWorkstream(state, event.workstream);
+      const assignment = state.revisionAssignments[event.assignmentId];
+      if (
+        !lease ||
+        !workstream ||
+        !assignment ||
+        lease.revisionAssignmentId !== assignment.id ||
+        assignment.status !== "open" ||
+        workstream.phase !== "revising"
+      ) {
+        return reject("revision failure does not own an active assignment");
+      }
+      settleLease(state, lease, event.kind, event);
+      recordFailure(state, {
+        category: event.category,
+        assignment:
+          event.category === "workspace_unsafe" &&
+          event.observation &&
+          !event.observation.clean
+            ? "workspace_recreation"
+            : "operational_retry",
+        workstream: event.workstream,
+        candidateId: assignment.candidateId,
+        gate: "revision",
+        evidence: event.evidence,
+        ...(event.observation ? { observation: event.observation } : {}),
+      });
+      if (event.category === "workspace_unsafe") {
+        if (event.observation && !event.observation.clean) {
+          createWorkspaceRecreation(
+            state,
+            event.workstream,
+            "revising",
+            event.evidence,
+          );
+          workstream.phase = "recreating_workspace";
+          return accept();
+        }
+        assignment.status = "blocked";
         return failRun(
           state,
-          "recovery_exhausted",
-          event.action.evidence,
+          "workspace_unsafe",
+          event.evidence,
           new Date().toISOString(),
           reject,
         );
       }
-      if (event.action.outcome !== "completed") {
-        return reject("completed recovery requires a completed safe action");
-      }
-      const trackedAction = ["rework_candidate", "reconcile"].includes(
-        event.action.kind,
-      );
-      if (Boolean(event.candidate) !== trackedAction) {
-        return reject(
-          "tracked recovery changes require a new candidate, and runtime repair must retain the candidate",
-        );
-      }
-      if (event.candidate) {
-        if (!sameWorkstream(event.candidate.workstream, event.workstream)) {
-          return reject("recovery candidate belongs to a different workstream");
-        }
-        const existing = state.candidates[event.candidate.id];
-        if (
-          existing &&
-          JSON.stringify(existing) !== JSON.stringify(event.candidate)
-        ) {
-          return reject("candidate identity is immutable");
-        }
-        const review = workstreamReviewState(state, event.workstream);
-        if (review) {
-          if (!event.correction) {
-            return reject(
-              "tracked rework requires an anchored correction delta",
-            );
-          }
-          state.reviews[reviewKey(event.workstream)] = retargetAnchoredReview({
-            state: review,
-            candidateId: event.candidate.id,
-            correction: event.correction,
-          });
-        } else if (event.correction) {
-          return reject("a correction delta requires an existing review epoch");
-        }
-        state.candidates[event.candidate.id] = event.candidate;
-        workstream.candidateId = event.candidate.id;
-        if (event.workstream.kind === "source") {
-          for (const taskId of state.workstreams.source[event.workstream.id]!
-            .taskIds) {
-            const task = state.tasks[taskId]!;
-            if (task.phase === "satisfaction_claimed") {
-              state.tasks[taskId] = {
-                workstreamId: task.workstreamId,
-                phase: "checkpointed",
-                checkpoint: event.candidate.commitSha,
-              };
-            }
-          }
-        }
-        workstream.phase = "candidate_ready";
-      }
-      episode.actions.push(event.action);
-      episode.executionFailures = 0;
-      episode.cycle = {
-        signature: recoverySignatureFor(
-          state,
-          episode,
-          "retry",
-          event.action.evidence,
-        ),
-        identicalNoActionCycles: 0,
-        independentlyEscalated: false,
-      };
-      settleLease(state, lease, event.kind, event);
-      if (event.candidate) {
-        episode.status = "completed";
-        return accept();
-      }
-      if (event.action.kind === "diagnose") {
-        return accept();
-      }
-      workstream.phase = retryPhaseForGate(episode.gateId);
-      return accept();
-    }
-
-    case "recovery_execution_failed": {
-      const lease = ownedLease(
-        state,
-        event.leaseId,
-        event.workstream,
-        "recovery",
-      );
-      const episode = lease?.recoveryEpisodeId
-        ? state.recoveryEpisodes[lease.recoveryEpisodeId]
-        : undefined;
-      if (!lease || !episode) {
-        return reject(
-          "worker execution failure does not own an active recovery episode",
-        );
-      }
-      const executionFailures = episode.executionFailures + 1;
-      episode.executionFailures = executionFailures;
-      episode.actions.push({
-        kind: "retry",
-        outcome: "execution_failure",
-        summary: "Recovery worker failed before a successful model turn.",
-        evidence: event.error,
-        at: event.now,
-      });
-      settleLease(state, lease, event.kind, event);
-      if (executionFailures >= 3) {
-        episode.status = "completed";
+      if (event.category === "semantic_blocked") {
+        assignment.status = "blocked";
         return failRun(
           state,
-          "recovery_exhausted",
-          "Recovery worker failed three consecutive times after Pi retries settled.",
-          event.now,
+          "semantic_blocked",
+          event.evidence,
+          new Date().toISOString(),
           reject,
         );
       }
+      assignment.executionFailures++;
+      if (assignment.executionFailures >= 3) {
+        assignment.status = "blocked";
+        return failRun(
+          state,
+          terminalFailureCategory(event.category),
+          event.evidence,
+          new Date().toISOString(),
+          reject,
+        );
+      }
+      return accept();
+    }
+
+    case "workspace_recreation_requested":
+      return startWorkspaceRecreation(state, event.id, event.now, reject);
+
+    case "workspace_recreation_completed": {
+      const recreation = state.workspaceRecreations[event.id];
+      const lease = recreation
+        ? ownedLease(
+            state,
+            event.leaseId,
+            recreation.workstream,
+            "workspace_recreation",
+          )
+        : undefined;
+      const workstream = recreation
+        ? getWorkstream(state, recreation.workstream)
+        : undefined;
+      if (
+        !recreation ||
+        !lease ||
+        lease.workspaceRecreationId !== recreation.id ||
+        !workstream ||
+        workstream.phase !== "recreating_workspace" ||
+        recreation.status !== "running"
+      ) {
+        return reject(
+          "workspace recreation does not own its exact resource operation",
+        );
+      }
+      recreation.before = retainedObservation(event.before);
+      recreation.after = retainedObservation(event.after);
+      recreation.status = event.outcome;
+      settleLease(state, lease, event.kind, event);
+      if (event.outcome !== "restored") {
+        recordFailure(state, {
+          category: "workspace_unsafe",
+          assignment: "blocked",
+          workstream: recreation.workstream,
+          ...(recreation.candidateId
+            ? { candidateId: recreation.candidateId }
+            : {}),
+          gate: "workspace_recreation",
+          evidence: `Workspace recreation settled ${event.outcome}.`,
+          observation: event.after,
+        });
+        return failRun(
+          state,
+          "workspace_unsafe",
+          "Workspace recreation could not restore its exact owned resource.",
+          new Date().toISOString(),
+          reject,
+        );
+      }
+      workstream.phase = recreation.resumePhase;
       return accept();
     }
 
@@ -1341,21 +1395,6 @@ export function reduceRunEvent(
       }
       if (event.outcome.kind === "prepared") {
         try {
-          recordGateResult(
-            state,
-            event.workstream,
-            {
-              id: `reconciliation:${workstreamId(event.workstream)}:${candidateId}:${state.gates.length + 1}`,
-              kind: "reconciliation",
-              owner: workstreamId(event.workstream),
-              candidateId,
-              attempt: state.gates.length + 1,
-              outcome: "passed",
-              evidence: event.outcome.evidence,
-              outstandingFindingIds: [],
-            },
-            event.outcome.workspace,
-          );
           const intent = Object.values(state.publication.intents).find(
             (entry) =>
               entry.candidateId === candidateId &&
@@ -1393,40 +1432,66 @@ export function reduceRunEvent(
           return reject(error instanceof Error ? error.message : String(error));
         }
       }
-      try {
-        settleLease(state, lease, event.kind, event);
-        recordGateResult(
+      settleLease(state, lease, event.kind, event);
+      if (event.outcome.kind === "hook_rejected") {
+        recordFailure(state, {
+          category: "hook_rejected",
+          assignment: "candidate_revision",
+          workstream: event.workstream,
+          candidateId,
+          gate: "reconciliation_hook",
+          evidence: event.outcome.evidence,
+          ...(event.outcome.command ? { command: event.outcome.command } : {}),
+        });
+        return createRevisionAssignment(
           state,
           event.workstream,
-          {
-            id: `${event.outcome.kind === "hook_rejected" ? "hook" : event.outcome.kind === "execution_failed" ? "environment:reconciliation" : "reconciliation"}:${workstreamId(event.workstream)}:${candidateId}:${state.gates.length + 1}`,
-            kind:
-              event.outcome.kind === "hook_rejected"
-                ? "hook"
-                : event.outcome.kind === "execution_failed"
-                  ? "environment"
-                  : "reconciliation",
-            owner: workstreamId(event.workstream),
-            candidateId,
-            attempt: state.gates.length + 1,
-            outcome: "failed",
-            evidence: event.outcome.evidence,
-            ...(event.outcome.command
-              ? { command: event.outcome.command }
-              : {}),
-            outstandingFindingIds: [],
-          },
-          recoveryWorkspace(
-            state,
-            event.workstream,
-            candidateId,
-            event.outcome.workspace,
-          ),
+          candidateId,
+          [],
+          event.outcome.evidence,
+          reject,
         );
-        return accept();
-      } catch (error) {
-        return reject(error instanceof Error ? error.message : String(error));
       }
+      if (event.outcome.kind === "reconciliation_required") {
+        const id = `reconcile:${workstreamId(event.workstream)}:${candidateId}:${Object.keys(state.reconciliationAssignments).length + 1}`;
+        state.reconciliationAssignments[id] = {
+          id,
+          workstream: event.workstream,
+          candidateId,
+          ...(event.outcome.workspace.stagingComparison
+            ? { targetSha: event.outcome.workspace.stagingComparison.baseSha }
+            : {}),
+          evidence: boundedFailureOutput(event.outcome.evidence),
+          status: "pending",
+        };
+        recordFailure(state, {
+          category: "semantic_blocked",
+          assignment: "failed_target_reconciliation",
+          workstream: event.workstream,
+          candidateId,
+          gate: "reconciliation",
+          evidence: event.outcome.evidence,
+          ...(event.outcome.command ? { command: event.outcome.command } : {}),
+        });
+        workstream.phase = "reconciliation_required";
+        return accept();
+      }
+      recordFailure(state, {
+        category: "provider_failure",
+        assignment: "operational_retry",
+        workstream: event.workstream,
+        candidateId,
+        gate: "reconciliation",
+        evidence: event.outcome.evidence,
+      });
+      return scheduleOperationalRetry(
+        state,
+        event.workstream,
+        "reconciliation",
+        event.outcome.evidence,
+        "approved",
+        reject,
+      );
     }
 
     case "publication_preparation_recorded": {
@@ -1625,8 +1690,8 @@ export function reduceRunEvent(
               changedPaths: preparation.changedPaths,
             },
           },
-          ...(state.wholePlanReview.recovery
-            ? { recovery: state.wholePlanReview.recovery }
+          ...(state.wholePlanReview.reviewRetry
+            ? { reviewRetry: state.wholePlanReview.reviewRetry }
             : {}),
         };
       }
@@ -1651,8 +1716,8 @@ export function reduceRunEvent(
         ...(state.wholePlanReview.epoch
           ? { epoch: state.wholePlanReview.epoch }
           : {}),
-        ...(state.wholePlanReview.recovery
-          ? { recovery: state.wholePlanReview.recovery }
+        ...(state.wholePlanReview.reviewRetry
+          ? { reviewRetry: state.wholePlanReview.reviewRetry }
           : {}),
       };
       return accept([{ kind: "run_whole_plan_review" }]);
@@ -1672,8 +1737,8 @@ export function reduceRunEvent(
       ) {
         return reject("whole-plan review cannot complete while repairs exist");
       }
-      if (state.wholePlanReview.recovery) {
-        state.wholePlanReview.recovery.executionFailures = 0;
+      if (state.wholePlanReview.reviewRetry) {
+        state.wholePlanReview.reviewRetry.status = "completed";
       }
       if (event.outcome.kind === "approved") {
         if (state.wholePlanReview.epoch) {
@@ -1684,8 +1749,8 @@ export function reduceRunEvent(
           evidence: event.outcome.evidence,
           reviewedTargetSha: event.outcome.reviewedTargetSha,
           reviewedTargetTreeSha: event.outcome.reviewedTargetTreeSha,
-          ...(state.wholePlanReview.recovery
-            ? { recovery: state.wholePlanReview.recovery }
+          ...(state.wholePlanReview.reviewRetry
+            ? { reviewRetry: state.wholePlanReview.reviewRetry }
             : {}),
         };
         return accept();
@@ -1765,8 +1830,8 @@ export function reduceRunEvent(
             reviewedTargetSha: event.outcome.reviewedTargetSha,
             reviewedTargetTreeSha: event.outcome.reviewedTargetTreeSha,
             epoch: nextEpoch,
-            ...(state.wholePlanReview.recovery
-              ? { recovery: state.wholePlanReview.recovery }
+            ...(state.wholePlanReview.reviewRetry
+              ? { reviewRetry: state.wholePlanReview.reviewRetry }
               : {}),
           };
           return accept();
@@ -1828,19 +1893,6 @@ export function reduceRunEvent(
       }
       settleLease(state, lease, "abandoned", event);
       workstream.phase = abandonedPhase(lease.kind);
-      if (lease.kind === "recovery" && lease.recoveryEpisodeId) {
-        const episode = state.recoveryEpisodes[lease.recoveryEpisodeId];
-        if (episode?.status === "open") {
-          episode.actions.push({
-            kind: "retry",
-            outcome: "interrupted",
-            summary: "Recovery process settled without a completion result.",
-            evidence:
-              "The actor retained the candidate for the next live recovery attempt.",
-            at: lease.acquiredAt,
-          });
-        }
-      }
       return accept();
     }
 
@@ -1975,8 +2027,8 @@ function queueWholePlanRepair(
   state.wholePlanReview = {
     status: "repairing",
     epoch: args.epoch,
-    ...(state.wholePlanReview.recovery
-      ? { recovery: state.wholePlanReview.recovery }
+    ...(state.wholePlanReview.reviewRetry
+      ? { reviewRetry: state.wholePlanReview.reviewRetry }
       : {}),
   };
   return { state, effects: [], accepted: true };
@@ -2010,38 +2062,85 @@ function startProcess(
   };
 }
 
-function startRecoveryProcess(
+function startRevision(
   state: RunState,
   workstream: RuntimeWorkstream,
   now: string,
   reject: (error: string) => SchedulerTransition,
 ): SchedulerTransition {
   const current = getWorkstream(state, workstream);
-  const episode = openRecoveryEpisodeForWorkstream(state, workstream);
+  const assignment = Object.values(state.revisionAssignments).find(
+    (candidate) =>
+      candidate.status === "open" &&
+      sameWorkstream(candidate.workstream, workstream),
+  );
   if (
     !current ||
-    !episode ||
-    episode.status !== "open" ||
-    current.phase !== "recovering" ||
+    !assignment ||
+    current.phase !== "revising" ||
+    current.candidateId !== assignment.candidateId ||
     !processIsAllowed(state, workstream) ||
     activeLeaseFor(state, workstream) ||
     activeWorkerLeaseCount(state) >= state.run.workerConcurrency ||
     hasIntegrationLease(state)
   ) {
-    return reject("workstream is not ready for recovery");
+    return reject("workstream is not ready for its revision assignment");
   }
-  const lease = createLease(state, workstream, "recovery", now, 0);
-  lease.recoveryEpisodeId = episode.id;
+  const lease = createLease(state, workstream, "revision", now, 0);
+  lease.revisionAssignmentId = assignment.id;
   state.processLeases[lease.id] = lease;
   return {
     state,
     effects: [
       {
-        kind: "run_recovery",
+        kind: "run_revision",
         workstream,
         leaseId: lease.id,
-        episodeId: episode.id,
-        independentlyEscalated: episode.cycle.independentlyEscalated,
+        candidateId: assignment.candidateId,
+        assignmentId: assignment.id,
+      },
+    ],
+    accepted: true,
+  };
+}
+
+function startWorkspaceRecreation(
+  state: RunState,
+  id: string,
+  now: string,
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
+  const recreation = state.workspaceRecreations[id];
+  const current = recreation
+    ? getWorkstream(state, recreation.workstream)
+    : undefined;
+  if (
+    !recreation ||
+    !current ||
+    recreation.status !== "pending" ||
+    current.phase !== "recreating_workspace" ||
+    activeLeaseFor(state, recreation.workstream)
+  ) {
+    return reject("workspace recreation is not ready");
+  }
+  const lease = createLease(
+    state,
+    recreation.workstream,
+    "workspace_recreation",
+    now,
+    0,
+  );
+  lease.workspaceRecreationId = recreation.id;
+  state.processLeases[lease.id] = lease;
+  recreation.status = "running";
+  return {
+    state,
+    effects: [
+      {
+        kind: "recreate_workspace",
+        workstream: recreation.workstream,
+        leaseId: lease.id,
+        recreationId: recreation.id,
       },
     ],
     accepted: true,
@@ -2126,8 +2225,11 @@ function settleLease(
     ...(lease.publicationIntentId
       ? { publicationIntentId: lease.publicationIntentId }
       : {}),
-    ...(lease.recoveryEpisodeId
-      ? { recoveryEpisodeId: lease.recoveryEpisodeId }
+    ...(lease.revisionAssignmentId
+      ? { revisionAssignmentId: lease.revisionAssignmentId }
+      : {}),
+    ...(lease.workspaceRecreationId
+      ? { workspaceRecreationId: lease.workspaceRecreationId }
       : {}),
     attempt: lease.attempt,
     acquiredAt: lease.acquiredAt,
@@ -2186,7 +2288,7 @@ export function activeWorkerLeaseCount(state: RunState): number {
     (lease) =>
       lease.kind === "implementation" ||
       lease.kind === "review" ||
-      lease.kind === "recovery",
+      lease.kind === "revision",
   ).length;
 }
 
@@ -2202,208 +2304,183 @@ export function getWorkstream(
     : state.workstreams.overall[workstream.repairId];
 }
 
-function recordGateResult(
+function recordFailure(
   state: RunState,
-  workstream: RuntimeWorkstream,
-  result: RecoveryGateResult,
-  workspace: RunState["recoveryEpisodes"][string]["workspace"],
-  executionFailures = 0,
+  args: {
+    category: FailureCategory;
+    assignment: RunState["failures"][string]["assignment"];
+    workstream: RuntimeWorkstream;
+    candidateId?: string;
+    gate?: string;
+    evidence: string;
+    command?: FailureCommandEvidence;
+    targetEvidence?: string;
+    observation?: WorkspaceObservation;
+  },
 ): void {
-  const runtime = getWorkstream(state, workstream);
-  const candidate = result.candidateId
-    ? state.candidates[result.candidateId]
-    : undefined;
-  if (
-    !runtime ||
-    result.owner !== workstreamId(workstream) ||
-    result.attempt < 1 ||
-    state.gates.some((gate) => gate.id === result.id) ||
-    (result.candidateId &&
-      (!candidate ||
-        runtime.candidateId !== result.candidateId ||
-        !sameWorkstream(candidate.workstream, workstream)))
-  ) {
-    throw new Error(
-      "Gate result does not match the current workstream candidate.",
-    );
-  }
-  state.gates.push({
-    id: result.id,
-    kind: result.kind,
-    workstream,
-    ...(result.candidateId ? { candidateId: result.candidateId } : {}),
-    attempt: result.attempt,
-    outcome: result.outcome,
-    evidence: result.evidence,
-    ...(result.command
+  const id = `failure:${workstreamId(args.workstream)}:${Object.keys(state.failures).length + 1}`;
+  state.failures[id] = {
+    id,
+    category: args.category,
+    assignment: args.assignment,
+    workstream: args.workstream,
+    ...(args.candidateId ? { candidateId: args.candidateId } : {}),
+    ...(args.gate ? { gate: args.gate } : {}),
+    evidence: boundedFailureOutput(args.evidence),
+    ...(args.command
       ? {
           command: {
-            ...result.command,
-            output: boundedRecoveryOutput(result.command.output),
+            ...args.command,
+            output: boundedFailureOutput(args.command.output),
           },
         }
       : {}),
-    ...(result.targetEvidence ? { targetEvidence: result.targetEvidence } : {}),
-    outstandingFindingIds: [...result.outstandingFindingIds],
-  });
-  const active = openRecoveryEpisodeForWorkstream(state, workstream);
-  if (active) {
-    if (active.candidateId !== result.candidateId) {
-      throw new Error(
-        "Gate retry does not match the active recovery candidate.",
-      );
-    }
-    active.gateAttempts.push(result.id);
-    if (result.outcome === "passed") {
-      active.status = "completed";
-      runtime.phase = "candidate_ready";
-    } else {
-      active.gateId = result.id;
-      active.outstandingFindingIds = [...result.outstandingFindingIds];
-      active.workspace = workspace;
-      active.cycle = recoveryCycleForGate(state, active, result);
-      runtime.phase = "recovering";
-    }
-    return;
-  }
-  if (result.outcome === "passed") {
-    return;
-  }
-  runtime.phase = "recovering";
-  const episodeId = `recovery:${result.id}`;
-  state.recoveryEpisodes[episodeId] = {
-    id: episodeId,
-    gateId: result.id,
-    gateAttempts: [result.id],
-    workstream,
-    ...(result.candidateId ? { candidateId: result.candidateId } : {}),
-    workspace,
-    outstandingFindingIds: [...result.outstandingFindingIds],
-    status: "open",
-    cycle: recoveryCycleForGate(
-      state,
-      {
-        gateId: result.id,
-        candidateId: result.candidateId,
-        workspace,
-        outstandingFindingIds: result.outstandingFindingIds,
-      },
-      result,
-    ),
-    executionFailures,
-    actions: [],
-  };
-}
-
-function recoveryWorkspace(
-  state: RunState,
-  workstream: RuntimeWorkstream,
-  candidateId?: string,
-  failedWorkspace?: {
-    changedPaths: string[];
-    stateEvidence: string;
-    stagingComparison?: { baseSha: string; treeSha: string };
-  },
-): RunState["recoveryEpisodes"][string]["workspace"] {
-  const candidate = candidateId ? state.candidates[candidateId] : undefined;
-  return {
-    id: workstreamId(workstream),
-    ...(candidate ? { checkpoint: candidate.commitSha } : {}),
-    changedPaths: failedWorkspace?.changedPaths ?? [],
-    stateEvidence:
-      failedWorkspace?.stateEvidence ??
-      "Workspace state was retained by the failed gate.",
-    ...(failedWorkspace?.stagingComparison
-      ? { stagingComparison: failedWorkspace.stagingComparison }
+    ...(args.targetEvidence ? { targetEvidence: args.targetEvidence } : {}),
+    ...(args.observation
+      ? { observation: retainedObservation(args.observation) }
       : {}),
+    at: new Date().toISOString(),
   };
 }
 
-function openRecoveryEpisodeForWorkstream(
+function retainedObservation(
+  observation: WorkspaceObservation,
+): NonNullable<RunState["workspaceRecreations"][string]["before"]> {
+  return {
+    ...observation,
+    status: observation.status.map((entry) => ({ ...entry })),
+  };
+}
+
+function createRevisionAssignment(
   state: RunState,
   workstream: RuntimeWorkstream,
-): RunState["recoveryEpisodes"][string] | undefined {
-  return Object.values(state.recoveryEpisodes)
-    .filter(
-      (episode) =>
-        episode.status === "open" &&
-        sameWorkstream(episode.workstream, workstream),
-    )
-    .at(-1);
+  candidateId: string,
+  outstandingFindingIds: string[],
+  evidence: string,
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
+  const candidate = state.candidates[candidateId];
+  const review = workstreamReviewState(state, workstream);
+  const runtime = getWorkstream(state, workstream);
+  if (
+    !candidate ||
+    !review ||
+    !runtime ||
+    review.candidateId !== candidateId ||
+    !sameWorkstream(candidate.workstream, workstream)
+  ) {
+    return reject(
+      "revision assignment requires the exact current reviewed candidate",
+    );
+  }
+  if (
+    JSON.stringify(review.outstandingIds) !==
+    JSON.stringify(outstandingFindingIds)
+  ) {
+    return reject(
+      "revision assignment findings do not match the active review epoch",
+    );
+  }
+  const id = `revision:${workstreamId(workstream)}:${candidate.commitSha}:${review.round}:${Object.keys(state.revisionAssignments).length + 1}`;
+  const existing = state.revisionAssignments[id];
+  if (existing && existing.status === "open") {
+    return reject("current candidate already has an open revision assignment");
+  }
+  state.revisionAssignments[id] = {
+    id,
+    workstream,
+    candidateId,
+    comparisonBase: candidate.commitSha,
+    findingEpoch: review.round,
+    outstandingFindingIds: [...outstandingFindingIds],
+    evidence: [boundedFailureOutput(evidence)],
+    status: "open",
+    executionFailures: 0,
+    noProgress: {
+      signature: noProgressSignature({
+        workstream: workstreamId(workstream),
+        candidateTree: candidate.treeSha,
+        findingEpoch: review.round,
+        outstandingFindingIds,
+      }),
+      attempts: 0,
+    },
+  };
+  runtime.phase = "revising";
+  return { state, effects: [], accepted: true };
 }
 
-function recoveryCycleForGate(
+function createWorkspaceRecreation(
   state: RunState,
-  episode: Pick<
-    RunState["recoveryEpisodes"][string],
-    "candidateId" | "gateId" | "outstandingFindingIds" | "workspace"
-  >,
-  gate: RecoveryGateResult,
-): RunState["recoveryEpisodes"][string]["cycle"] {
-  return {
-    signature: recoveryCycleSignature({
-      gateId: gate.id,
-      candidateTree: episode.candidateId
-        ? state.candidates[episode.candidateId]?.treeSha
-        : undefined,
-      failureEvidence: gate.evidence,
-      workspaceEvidence: episode.workspace.stateEvidence,
-      outstandingFindings: episode.outstandingFindingIds.map((id) => ({
-        id,
-        evidence: state.findings[id]?.evidence ?? "",
-      })),
-      workspaceId: episode.workspace.id,
-      nextAction: "retry",
-    }),
-    identicalNoActionCycles: 0,
-    independentlyEscalated: false,
+  workstream: RuntimeWorkstream,
+  resumePhase: "queued" | "candidate_ready" | "revising" | "approved",
+  evidence: string,
+): void {
+  const runtime = getWorkstream(state, workstream)!;
+  const candidateId = runtime.candidateId;
+  const candidate = candidateId ? state.candidates[candidateId] : undefined;
+  const checkpoint =
+    candidate?.commitSha ??
+    (workstream.kind === "source"
+      ? state.workstreams.source[workstream.id]?.baseSha
+      : undefined);
+  if (!checkpoint) {
+    throw new Error(
+      "workspace recreation requires an exact admitted candidate or workstream base",
+    );
+  }
+  const id = `workspace:${workstreamId(workstream)}:${checkpoint}:${Object.keys(state.workspaceRecreations).length + 1}`;
+  state.workspaceRecreations[id] = {
+    id,
+    workstream,
+    ...(candidateId ? { candidateId } : {}),
+    checkpoint,
+    resumePhase,
+    status: "pending",
+    evidence: [boundedFailureOutput(evidence)],
   };
 }
 
-function recoverySignatureFor(
+function scheduleOperationalRetry(
   state: RunState,
-  episode: RunState["recoveryEpisodes"][string],
-  nextAction: RecoveryAction["kind"],
-  diagnosis?: string,
-): string {
-  const gate = state.gates.find(
-    (candidate) => candidate.id === episode.gateAttempts.at(-1),
-  )!;
-  return recoveryCycleSignature({
-    gateId: episode.gateId,
-    candidateTree: episode.candidateId
-      ? state.candidates[episode.candidateId]?.treeSha
-      : undefined,
-    failureEvidence: gate.evidence,
-    diagnosis,
-    workspaceEvidence: episode.workspace.stateEvidence,
-    outstandingFindings: episode.outstandingFindingIds.map((id) => ({
-      id,
-      evidence: state.findings[id]?.evidence ?? "",
-    })),
-    workspaceId: episode.workspace.id,
-    nextAction,
-  });
-}
-
-function retryPhaseForGate(
-  gateId: string,
-): RunState["workstreams"]["source"][string]["phase"] {
-  if (
-    gateId.startsWith("review:") ||
-    gateId.startsWith("environment:review:")
-  ) {
-    return "candidate_ready";
+  workstream: RuntimeWorkstream,
+  lane: RunState["operationalRetries"][string]["lane"],
+  evidence: string,
+  phase: "queued" | "candidate_ready" | "approved",
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
+  const runtime = getWorkstream(state, workstream);
+  if (!runtime) {
+    return reject("operational retry has no workstream");
   }
-  if (
-    gateId.startsWith("hook:") ||
-    gateId.startsWith("reconciliation:") ||
-    gateId.startsWith("environment:reconciliation:") ||
-    gateId.startsWith("environment:publication:")
-  ) {
-    return "approved";
+  const candidateId = runtime.candidateId;
+  const id = `retry:${lane}:${workstreamId(workstream)}:${candidateId ?? "base"}`;
+  const retry = state.operationalRetries[id] ?? {
+    id,
+    workstream,
+    lane,
+    ...(candidateId ? { candidateId } : {}),
+    attempts: 0,
+    evidence: [],
+    status: "open" as const,
+  };
+  retry.attempts++;
+  retry.evidence.push(boundedFailureOutput(evidence));
+  if (retry.attempts >= 3) {
+    retry.status = "exhausted";
+    state.operationalRetries[id] = retry;
+    return failRun(
+      state,
+      "provider_failure",
+      `${lane} exhausted its durable retry bound.`,
+      new Date().toISOString(),
+      reject,
+    );
   }
-  return "queued";
+  state.operationalRetries[id] = retry;
+  runtime.phase = phase;
+  return { state, effects: [], accepted: true };
 }
 
 function workstreamId(workstream: RuntimeWorkstream): string {
@@ -2490,15 +2567,23 @@ export function allSourceWorkstreamsComplete(state: RunState): boolean {
 
 function abandonedPhase(
   kind: ProcessLease["kind"],
-): "queued" | "candidate_ready" | "recovering" | "approved" {
+):
+  | "queued"
+  | "candidate_ready"
+  | "revising"
+  | "recreating_workspace"
+  | "approved" {
   if (kind === "implementation") {
     return "queued";
   }
   if (kind === "review") {
     return "candidate_ready";
   }
-  if (kind === "recovery") {
-    return "recovering";
+  if (kind === "revision") {
+    return "revising";
+  }
+  if (kind === "workspace_recreation") {
+    return "recreating_workspace";
   }
   return "approved";
 }
@@ -2521,6 +2606,9 @@ export function isStoppingSettlementEvent(event: SchedulerEvent): boolean {
     "implementation_completed",
     "implementation_failed",
     "effect_failed",
+    "revision_completed",
+    "revision_failed",
+    "workspace_recreation_completed",
     "run_failed",
   ].includes(event.kind);
 }

@@ -23,7 +23,7 @@ import {
   writeExecutionPlan,
   type ExecutionPlan,
 } from "./execution-plan.js";
-import { recoveryActionKinds, recoveryGateKinds } from "./recovery/recovery.js";
+import { failureAssignmentKinds, failureCategories } from "./failure-policy.js";
 import {
   canonicalPath,
   normalizeCheckboxMarker,
@@ -56,7 +56,9 @@ const sourceWorkstreamSchema = z
       "implementing",
       "candidate_ready",
       "reviewing",
-      "recovering",
+      "revising",
+      "recreating_workspace",
+      "reconciliation_required",
       "approved",
       "reconciling",
       "publishing",
@@ -76,7 +78,9 @@ const overallWorkstreamSchema = z
       "implementing",
       "candidate_ready",
       "reviewing",
-      "recovering",
+      "revising",
+      "recreating_workspace",
+      "reconciliation_required",
       "approved",
       "reconciling",
       "publishing",
@@ -98,13 +102,15 @@ const processLeaseSchema = z
     kind: z.enum([
       "implementation",
       "review",
-      "recovery",
+      "revision",
+      "workspace_recreation",
       "reconciliation",
       "publication",
     ]),
     candidateId: nonEmpty.optional(),
     publicationIntentId: nonEmpty.optional(),
-    recoveryEpisodeId: nonEmpty.optional(),
+    revisionAssignmentId: nonEmpty.optional(),
+    workspaceRecreationId: nonEmpty.optional(),
     attempt: z.number().int().positive(),
     acquiredAt: nonEmpty,
   })
@@ -117,7 +123,8 @@ const operationSettlementSchema = z
     kind: processLeaseSchema.shape.kind,
     candidateId: nonEmpty.optional(),
     publicationIntentId: nonEmpty.optional(),
-    recoveryEpisodeId: nonEmpty.optional(),
+    revisionAssignmentId: nonEmpty.optional(),
+    workspaceRecreationId: nonEmpty.optional(),
     attempt: z.number().int().positive(),
     acquiredAt: nonEmpty,
     outcome: nonEmpty,
@@ -239,72 +246,104 @@ const commandEvidenceSchema = z
   })
   .strict();
 
-const gateSchema = z
+const failureWorkstreamSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("source"), id }).strict(),
+  z.object({ kind: z.literal("overall"), repairId: id }).strict(),
+]);
+
+const workspaceObservationSchema = z
   .object({
-    id: nonEmpty,
-    kind: z.enum(recoveryGateKinds),
-    workstream: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("source"), id }).strict(),
-      z.object({ kind: z.literal("overall"), repairId: id }).strict(),
-    ]),
-    candidateId: nonEmpty.optional(),
-    attempt: z.number().int().positive(),
-    outcome: z.enum(["passed", "failed"]),
-    evidence: nonEmpty,
-    command: commandEvidenceSchema.optional(),
-    targetEvidence: nonEmpty.optional(),
-    outstandingFindingIds: z.array(nonEmpty),
+    branch: z.string(),
+    head: nonEmpty,
+    tree: nonEmpty.optional(),
+    clean: z.boolean(),
+    activeOperation: nonEmpty.optional(),
+    status: z.array(
+      z.object({ status: nonEmpty, path: nonEmpty }).passthrough(),
+    ),
   })
   .strict();
 
-const recoveryActionSchema = z
+const failureRecordSchema = z
   .object({
-    kind: z.enum(recoveryActionKinds),
-    outcome: z.enum([
-      "completed",
-      "interrupted",
-      "execution_failure",
-      "no_safe_action",
-    ]),
-    summary: nonEmpty,
+    id: nonEmpty,
+    category: z.enum(failureCategories),
+    assignment: z.enum(failureAssignmentKinds),
+    workstream: failureWorkstreamSchema,
+    candidateId: nonEmpty.optional(),
+    gate: nonEmpty.optional(),
     evidence: nonEmpty,
+    command: commandEvidenceSchema.optional(),
+    targetEvidence: nonEmpty.optional(),
+    observation: workspaceObservationSchema.optional(),
     at: nonEmpty,
   })
   .strict();
 
-const recoverySchema = z
+const revisionAssignmentSchema = z
   .object({
     id: nonEmpty,
-    gateId: nonEmpty,
-    gateAttempts: z.array(nonEmpty).min(1),
-    workstream: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("source"), id }).strict(),
-      z.object({ kind: z.literal("overall"), repairId: id }).strict(),
+    workstream: failureWorkstreamSchema,
+    candidateId: nonEmpty,
+    comparisonBase: nonEmpty,
+    findingEpoch: z.number().int().nonnegative(),
+    outstandingFindingIds: z.array(nonEmpty),
+    evidence: z.array(nonEmpty),
+    status: z.enum(["open", "completed", "blocked"]),
+    executionFailures: z.number().int().nonnegative(),
+    noProgress: z
+      .object({ signature: nonEmpty, attempts: z.number().int().nonnegative() })
+      .strict(),
+  })
+  .strict();
+
+const operationalRetrySchema = z
+  .object({
+    id: nonEmpty,
+    workstream: failureWorkstreamSchema,
+    lane: z.enum([
+      "implementation",
+      "review",
+      "revision",
+      "reconciliation",
+      "publication",
+      "whole_plan_review",
     ]),
     candidateId: nonEmpty.optional(),
-    workspace: z
-      .object({
-        id: nonEmpty,
-        checkpoint: nonEmpty.optional(),
-        changedPaths: z.array(nonEmpty),
-        stateEvidence: nonEmpty,
-        stagingComparison: z
-          .object({ baseSha: nonEmpty, treeSha: nonEmpty })
-          .strict()
-          .optional(),
-      })
-      .strict(),
-    outstandingFindingIds: z.array(nonEmpty),
-    status: z.enum(["open", "completed"]),
-    cycle: z
-      .object({
-        signature: nonEmpty,
-        identicalNoActionCycles: z.number().int().nonnegative(),
-        independentlyEscalated: z.boolean(),
-      })
-      .strict(),
-    executionFailures: z.number().int().nonnegative(),
-    actions: z.array(recoveryActionSchema),
+    attempts: z.number().int().nonnegative(),
+    evidence: z.array(nonEmpty),
+    status: z.enum(["open", "exhausted", "completed"]),
+  })
+  .strict();
+
+const workspaceRecreationSchema = z
+  .object({
+    id: nonEmpty,
+    workstream: failureWorkstreamSchema,
+    candidateId: nonEmpty.optional(),
+    checkpoint: nonEmpty,
+    resumePhase: z.enum(["queued", "candidate_ready", "revising", "approved"]),
+    status: z.enum([
+      "pending",
+      "running",
+      "restored",
+      "still_quarantined",
+      "unsafe",
+    ]),
+    before: workspaceObservationSchema.optional(),
+    after: workspaceObservationSchema.optional(),
+    evidence: z.array(nonEmpty),
+  })
+  .strict();
+
+const reconciliationAssignmentSchema = z
+  .object({
+    id: nonEmpty,
+    workstream: failureWorkstreamSchema,
+    candidateId: nonEmpty,
+    targetSha: nonEmpty.optional(),
+    evidence: nonEmpty,
+    status: z.enum(["pending", "completed", "blocked"]),
   })
   .strict();
 
@@ -403,7 +442,14 @@ const failureSchema = z
     category: z.enum([
       "stopped",
       "interrupted",
-      "recovery_exhausted",
+      "semantic_blocked",
+      "no_progress",
+      "workspace_unsafe",
+      "protocol_failure",
+      "provider_failure",
+      "target_moved",
+      "publication_uncertain",
+      "persistence_runtime_failure",
       "safety",
       "runtime",
     ]),
@@ -419,34 +465,11 @@ const wholePlanReviewSchema = z
     reviewedTargetSha: nonEmpty.optional(),
     reviewedTargetTreeSha: nonEmpty.optional(),
     evidence: nonEmpty.optional(),
-    recovery: z
+    reviewRetry: z
       .object({
-        status: z.enum(["open", "running", "completed"]),
+        attempts: z.number().int().nonnegative(),
         evidence: z.array(nonEmpty).min(1),
-        executionFailures: z.number().int().nonnegative(),
-        actions: z.array(
-          z
-            .object({
-              kind: z.enum([
-                "diagnose",
-                "retry",
-                "rework_candidate",
-                "reconcile",
-                "recreate_workspace",
-                "no_safe_action",
-              ]),
-              outcome: z.enum([
-                "completed",
-                "no_safe_action",
-                "interrupted",
-                "execution_failure",
-              ]),
-              summary: nonEmpty,
-              evidence: nonEmpty,
-              at: nonEmpty,
-            })
-            .strict(),
-        ),
+        status: z.enum(["open", "exhausted", "completed"]),
       })
       .strict()
       .optional(),
@@ -495,7 +518,7 @@ const wholePlanReviewSchema = z
 
 export const RunStateSchema = z
   .object({
-    version: z.literal(3),
+    version: z.literal(4),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -534,8 +557,14 @@ export const RunStateSchema = z
     candidates: z.record(nonEmpty, candidateSchema),
     findings: z.record(nonEmpty, findingSchema),
     reviews: z.record(nonEmpty, reviewStateSchema),
-    gates: z.array(gateSchema),
-    recoveryEpisodes: z.record(nonEmpty, recoverySchema),
+    failures: z.record(nonEmpty, failureRecordSchema),
+    revisionAssignments: z.record(nonEmpty, revisionAssignmentSchema),
+    operationalRetries: z.record(nonEmpty, operationalRetrySchema),
+    workspaceRecreations: z.record(nonEmpty, workspaceRecreationSchema),
+    reconciliationAssignments: z.record(
+      nonEmpty,
+      reconciliationAssignmentSchema,
+    ),
     satisfaction: z
       .object({
         receipts: z.record(nonEmpty, satisfactionReceiptSchema),
@@ -722,7 +751,7 @@ export function createPlanningRun(args: {
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
   const state: RunState = {
-    version: 3,
+    version: 4,
     revision: 0,
     run: {
       id: args.runId,
@@ -738,8 +767,11 @@ export function createPlanningRun(args: {
     candidates: {},
     findings: {},
     reviews: {},
-    gates: [],
-    recoveryEpisodes: {},
+    failures: {},
+    revisionAssignments: {},
+    operationalRetries: {},
+    workspaceRecreations: {},
+    reconciliationAssignments: {},
     satisfaction: { receipts: {}, assessments: {} },
     publication: { preparations: {}, intents: {}, receipts: {} },
     protectedArtifactHashes: args.source.protectedArtifactHashes,
@@ -819,7 +851,7 @@ export class RunStore {
         const next = validateRunState(
           {
             ...update(structuredClone(current)),
-            version: 3,
+            version: 4,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -1009,9 +1041,9 @@ export function validateRunState(
   if (!parsed.success) {
     const version = versionOf(value);
     const message =
-      version === 1 || version === 2
+      version === 1 || version === 2 || version === 3
         ? `Run state uses legacy schema version ${version}; settle and clean it with the previous runtime before deploying this version.`
-        : version === undefined || version !== 3
+        : version === undefined || version !== 4
           ? "Run state has an unsupported schema."
           : "Run state is invalid.";
     throw new StateError(
@@ -1279,10 +1311,12 @@ function invariantIssues(
   }
   const wholePlanEpoch = state.wholePlanReview.epoch;
   if (
-    state.wholePlanReview.recovery?.status === "running" &&
+    state.wholePlanReview.reviewRetry?.status === "open" &&
     state.phase !== "whole_plan_review"
   ) {
-    issues.push("whole-plan recovery may run only during whole-plan review");
+    issues.push(
+      "whole-plan review retry may run only during whole-plan review",
+    );
   }
   if (state.wholePlanReview.status === "repairing" && !wholePlanEpoch) {
     issues.push("whole-plan repair requires a retained review epoch");
@@ -1385,11 +1419,13 @@ function invariantIssues(
         ? "implementing"
         : lease.kind === "review"
           ? "reviewing"
-          : lease.kind === "recovery"
-            ? "recovering"
-            : lease.kind === "reconciliation"
-              ? "reconciling"
-              : "publishing";
+          : lease.kind === "revision"
+            ? "revising"
+            : lease.kind === "workspace_recreation"
+              ? "recreating_workspace"
+              : lease.kind === "reconciliation"
+                ? "reconciling"
+                : "publishing";
     if (phase !== expectedPhase) {
       issues.push(`process lease ${key} does not match its workstream phase`);
     }
@@ -1404,14 +1440,25 @@ function invariantIssues(
       );
     }
     if (
-      lease.kind === "recovery" &&
-      (!lease.recoveryEpisodeId ||
-        state.recoveryEpisodes[lease.recoveryEpisodeId]?.status !== "open")
+      lease.kind === "revision" &&
+      (!lease.revisionAssignmentId ||
+        state.revisionAssignments[lease.revisionAssignmentId]?.status !==
+          "open")
     ) {
-      issues.push(`recovery lease ${key} does not match an open episode`);
+      issues.push(`revision lease ${key} does not match an open assignment`);
     }
-    if (lease.kind !== "recovery" && lease.recoveryEpisodeId !== undefined) {
-      issues.push(`non-recovery lease ${key} references a recovery episode`);
+    if (
+      lease.kind === "workspace_recreation" &&
+      (!lease.workspaceRecreationId ||
+        state.workspaceRecreations[lease.workspaceRecreationId]?.status !==
+          "running")
+    ) {
+      issues.push(
+        `workspace recreation lease ${key} does not match its operation`,
+      );
+    }
+    if (lease.kind !== "revision" && lease.revisionAssignmentId !== undefined) {
+      issues.push(`non-revision lease ${key} references a revision assignment`);
     }
   }
   if (
@@ -1572,88 +1619,63 @@ function invariantIssues(
       }
     }
   }
-  const gates = new Set<string>();
-  for (const gate of state.gates) {
-    if (gates.has(gate.id)) {
-      issues.push(`duplicate gate ${gate.id}`);
-    }
-    gates.add(gate.id);
-    const candidate = gate.candidateId
-      ? state.candidates[gate.candidateId]
+  for (const [key, failure] of Object.entries(state.failures)) {
+    const candidate = failure.candidateId
+      ? state.candidates[failure.candidateId]
       : undefined;
     if (
-      !workstreamExists(state, gate.workstream) ||
-      (gate.candidateId &&
+      key !== failure.id ||
+      !workstreamExists(state, failure.workstream) ||
+      (failure.candidateId &&
         (!candidate ||
-          JSON.stringify(candidate.workstream) !==
-            JSON.stringify(gate.workstream)))
+          !sameWorkstreamIdentity(candidate.workstream, failure.workstream)))
     ) {
-      issues.push(`gate ${gate.id} references unknown workstream or candidate`);
+      issues.push(`failure ${key} has an invalid owner or candidate`);
     }
   }
-  for (const gate of state.gates.filter((gate) => gate.outcome === "failed")) {
+  for (const [key, assignment] of Object.entries(state.revisionAssignments)) {
+    const candidate = state.candidates[assignment.candidateId];
+    const review = state.reviews[workstreamIdentity(assignment.workstream)];
     if (
-      !Object.values(state.recoveryEpisodes).some((episode) =>
-        episode.gateAttempts.includes(gate.id),
-      )
+      key !== assignment.id ||
+      !candidate ||
+      !sameWorkstreamIdentity(candidate.workstream, assignment.workstream) ||
+      assignment.comparisonBase !== candidate.commitSha ||
+      new Set(assignment.outstandingFindingIds).size !==
+        assignment.outstandingFindingIds.length ||
+      (assignment.status === "open" &&
+        (!review ||
+          review.candidateId !== assignment.candidateId ||
+          review.round !== assignment.findingEpoch ||
+          JSON.stringify(review.outstandingIds) !==
+            JSON.stringify(assignment.outstandingFindingIds)))
     ) {
-      issues.push(`failed gate ${gate.id} has no durable recovery episode`);
+      issues.push(`revision assignment ${key} does not match its review epoch`);
     }
   }
-  for (const [key, recovery] of Object.entries(state.recoveryEpisodes)) {
-    const gate = state.gates.find(
-      (candidate) => candidate.id === recovery.gateId,
-    );
-    const attempts = recovery.gateAttempts.map((attemptId) =>
-      state.gates.find((candidate) => candidate.id === attemptId),
-    );
-    const currentGate = attempts.at(-1);
-    const references = recovery.outstandingFindingIds.map(
-      (findingId) => state.findings[findingId],
-    );
-    const review = state.reviews[workstreamIdentity(recovery.workstream)];
-    if (
-      key !== recovery.id ||
-      !gate ||
-      gate.outcome !== "failed" ||
-      !recovery.gateAttempts.includes(recovery.gateId) ||
-      new Set(recovery.gateAttempts).size !== recovery.gateAttempts.length ||
-      attempts.some(
-        (attempt) =>
-          attempt === undefined ||
-          !sameWorkstreamIdentity(attempt.workstream, recovery.workstream) ||
-          attempt.candidateId !== recovery.candidateId,
-      ) ||
-      !sameWorkstreamIdentity(gate.workstream, recovery.workstream) ||
-      gate.candidateId !== recovery.candidateId ||
-      JSON.stringify(gate.outstandingFindingIds) !==
-        JSON.stringify(recovery.outstandingFindingIds) ||
-      (recovery.status === "open" &&
-        (currentGate?.id !== recovery.gateId ||
-          currentGate.outcome !== "failed"))
-    ) {
-      issues.push(`recovery episode ${key} does not match its failed gate`);
+  for (const [key, retry] of Object.entries(state.operationalRetries)) {
+    if (key !== retry.id || !workstreamExists(state, retry.workstream)) {
+      issues.push(`operational retry ${key} has an invalid owner`);
     }
+  }
+  for (const [key, recreation] of Object.entries(state.workspaceRecreations)) {
     if (
-      new Set(recovery.outstandingFindingIds).size !==
-        recovery.outstandingFindingIds.length ||
-      references.some(
-        (finding) =>
-          !finding ||
-          !sameWorkstreamIdentity(finding.workstream, recovery.workstream),
-      ) ||
-      (recovery.status === "open" &&
-        (references.some((finding) => finding!.status !== "open") ||
-          (recovery.outstandingFindingIds.length > 0 && !review) ||
-          (review &&
-            (review.candidateId !== recovery.candidateId ||
-              JSON.stringify(review.outstandingIds) !==
-                JSON.stringify(recovery.outstandingFindingIds)))))
+      key !== recreation.id ||
+      !workstreamExists(state, recreation.workstream)
     ) {
-      issues.push(`recovery episode ${key} references an inconsistent finding`);
+      issues.push(`workspace recreation ${key} has an invalid owner`);
     }
-    if (recovery.status === "completed" && recovery.actions.length === 0) {
-      issues.push(`completed recovery episode ${key} has no action evidence`);
+  }
+  for (const [key, assignment] of Object.entries(
+    state.reconciliationAssignments,
+  )) {
+    const candidate = state.candidates[assignment.candidateId];
+    if (
+      key !== assignment.id ||
+      !candidate ||
+      !sameWorkstreamIdentity(candidate.workstream, assignment.workstream)
+    ) {
+      issues.push(`reconciliation assignment ${key} has an invalid candidate`);
     }
   }
   for (const [key, receipt] of Object.entries(state.satisfaction.receipts)) {
@@ -1855,75 +1877,30 @@ function invariantIssues(
     }
   }
   if (previous) {
-    for (const gate of previous.gates) {
-      const retained = state.gates.find(
-        (candidate) => candidate.id === gate.id,
-      );
-      if (!retained || JSON.stringify(retained) !== JSON.stringify(gate)) {
-        issues.push(`gate ${gate.id} is not immutable`);
+    for (const [id, failure] of Object.entries(previous.failures)) {
+      if (JSON.stringify(state.failures[id]) !== JSON.stringify(failure)) {
+        issues.push(`failure ${id} was overwritten or removed`);
       }
     }
-    for (const [id, episode] of Object.entries(previous.recoveryEpisodes)) {
-      const retained = state.recoveryEpisodes[id];
-      if (!retained || !sameRecoveryEpisodeHistory(episode, retained)) {
-        issues.push(`recovery episode ${id} rewrites retained history`);
+    for (const [id, assignment] of Object.entries(
+      previous.revisionAssignments,
+    )) {
+      const retained = state.revisionAssignments[id];
+      if (
+        !retained ||
+        retained.candidateId !== assignment.candidateId ||
+        retained.comparisonBase !== assignment.comparisonBase ||
+        retained.findingEpoch !== assignment.findingEpoch ||
+        JSON.stringify(retained.outstandingFindingIds) !==
+          JSON.stringify(assignment.outstandingFindingIds)
+      ) {
+        issues.push(
+          `revision assignment ${id} rewrites its immutable identity`,
+        );
       }
     }
   }
   return issues;
-}
-
-function sameRecoveryEpisodeHistory(
-  previous: RunState["recoveryEpisodes"][string],
-  next: RunState["recoveryEpisodes"][string],
-): boolean {
-  const actionsAppended = next.actions.length > previous.actions.length;
-  const advancedGate =
-    previous.status === "open" &&
-    next.status === "open" &&
-    next.gateAttempts.length === previous.gateAttempts.length + 1 &&
-    previous.gateAttempts.every(
-      (attempt, index) => attempt === next.gateAttempts[index],
-    ) &&
-    next.gateId === next.gateAttempts.at(-1) &&
-    next.gateId !== previous.gateId &&
-    next.actions.length === previous.actions.length &&
-    previous.actions.every(
-      (action, index) =>
-        JSON.stringify(action) === JSON.stringify(next.actions[index]),
-    ) &&
-    next.executionFailures === 0;
-  const completed =
-    previous.status !== "completed" &&
-    next.status === "completed" &&
-    JSON.stringify(previous.cycle) === JSON.stringify(next.cycle) &&
-    previous.executionFailures === next.executionFailures;
-  const mutableStateChanged =
-    previous.status !== next.status ||
-    JSON.stringify(previous.cycle) !== JSON.stringify(next.cycle) ||
-    previous.executionFailures !== next.executionFailures;
-  return (
-    previous.id === next.id &&
-    (previous.status !== "completed" || next.status === "completed") &&
-    (!mutableStateChanged || actionsAppended || completed || advancedGate) &&
-    JSON.stringify(previous.workstream) === JSON.stringify(next.workstream) &&
-    previous.candidateId === next.candidateId &&
-    (advancedGate ||
-      (previous.gateId === next.gateId &&
-        JSON.stringify(previous.workspace) === JSON.stringify(next.workspace) &&
-        JSON.stringify(previous.outstandingFindingIds) ===
-          JSON.stringify(next.outstandingFindingIds))) &&
-    (advancedGate ||
-      (next.gateAttempts.length >= previous.gateAttempts.length &&
-        previous.gateAttempts.every(
-          (attempt, index) => attempt === next.gateAttempts[index],
-        ))) &&
-    next.actions.length >= previous.actions.length &&
-    previous.actions.every(
-      (action, index) =>
-        JSON.stringify(action) === JSON.stringify(next.actions[index]),
-    )
-  );
 }
 
 function workstreamExists(

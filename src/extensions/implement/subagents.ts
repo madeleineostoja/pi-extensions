@@ -22,11 +22,7 @@ export type SubagentClient = {
   ): Promise<SubagentResult<TResult>>;
 };
 
-export type PiImplementWorkerRole =
-  | "implementer"
-  | "reviewer"
-  | "planner"
-  | "recovery";
+export type PiImplementWorkerRole = "implementer" | "reviewer" | "planner";
 
 export type SpawnArgs<TSchemaValue extends TSchema = TSchema> = {
   type: string;
@@ -60,7 +56,6 @@ export type ImplementRoles = {
   implementer: ImplementRole;
   reviewer: ImplementRole;
   planner: ImplementRole;
-  recovery: ImplementRole;
 };
 
 export function resolveImplementRoles(
@@ -75,7 +70,6 @@ export function resolveImplementRoles(
     implementer: { type: "pipkin:implement:implementer", ...medium },
     reviewer: { type: "pipkin:implement:reviewer", ...high },
     planner: { type: "pipkin:implement:planner", ...high },
-    recovery: { type: "pipkin:implement:recovery", ...medium },
   };
 }
 

@@ -6,8 +6,10 @@ import {
   type CommandResult,
   type GitClient,
 } from "./git.js";
-import { boundedRecoveryOutput } from "./recovery/recovery.js";
-import type { RecoveryCommandEvidence } from "./recovery/recovery.js";
+import {
+  boundedFailureOutput,
+  type FailureCommandEvidence,
+} from "./failure-policy.js";
 
 export type ReplayCandidate = {
   id: string;
@@ -30,7 +32,7 @@ export type ReplayStaging = {
   candidatePaths: string[];
   targetPaths: string[];
   replayPaths?: string[];
-  hookCommand?: RecoveryCommandEvidence;
+  hookCommand?: FailureCommandEvidence;
 };
 
 export type PublicationPreparation = {
@@ -47,7 +49,7 @@ export type PublicationPreparation = {
   changedPaths: string[];
   disposition: "same_base" | "clean_non_overlap";
   hookEvidence: string;
-  hookCommand: RecoveryCommandEvidence;
+  hookCommand: FailureCommandEvidence;
 };
 
 export function stagingIdentity(args: {
@@ -90,7 +92,7 @@ export type CandidateReplayOutcome =
       kind: "hook_rejected";
       staging: ReplayStaging;
       evidence: string;
-      command: RecoveryCommandEvidence;
+      command: FailureCommandEvidence;
     }
   | {
       kind: "repository_assessment_required";
@@ -111,7 +113,7 @@ export function publicationPreparation(
     disposition: "same_base" | "clean_non_overlap";
     targetRef: string;
     hookEvidence: string;
-    hookCommand: RecoveryCommandEvidence;
+    hookCommand: FailureCommandEvidence;
   },
   prepared: Extract<CandidateReplayOutcome, { kind: "prepared" }>["staging"],
 ): PublicationPreparation {
@@ -547,14 +549,14 @@ export class CandidateReplayEngine {
 function hookCommandEvidence(
   command: CommandResult,
   cwd: string,
-): RecoveryCommandEvidence {
+): FailureCommandEvidence {
   return {
     command: command.command,
     cwd,
     exitCode: command.exitCode,
     ...(command.signal ? { signal: command.signal } : {}),
     timedOut: command.timedOut === true,
-    output: boundedRecoveryOutput(
+    output: boundedFailureOutput(
       [command.stdout, command.stderr].filter(Boolean).join("\n"),
     ),
   };

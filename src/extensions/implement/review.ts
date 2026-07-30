@@ -29,6 +29,8 @@ import { writeAtomicJson } from "./atomic-json.js";
 import type { RuntimeWorkstream } from "./scheduler/scheduler.js";
 import { protectedArtifactsMatch, type RunState } from "./store.js";
 
+export class ReviewWorkspaceSafetyError extends Error {}
+
 export type ReviewState = {
   candidateId: string;
   previousCandidateId?: string;
@@ -452,7 +454,7 @@ export async function runWorkstreamReview(args: {
     (await workspaceGit.head()) !== candidate.commitSha ||
     !(await workspaceGit.isClean())
   ) {
-    throw new Error(
+    throw new ReviewWorkspaceSafetyError(
       "The review workspace does not match its current candidate.",
     );
   }
@@ -520,7 +522,9 @@ export async function runWorkstreamReview(args: {
     (await workspaceGit.activeOperation()) ||
     (assessment && (await args.git.head()) !== assessment.targetSha)
   ) {
-    throw new Error("The reviewer changed the assessed repository state.");
+    throw new ReviewWorkspaceSafetyError(
+      "The reviewer changed the assessed repository state.",
+    );
   }
   if (failure) {
     throw failure;
@@ -596,7 +600,7 @@ async function runOverallAnchoredReview(args: {
     (await workspaceGit.head()) !== candidate.commitSha ||
     !(await workspaceGit.isClean())
   ) {
-    throw new Error(
+    throw new ReviewWorkspaceSafetyError(
       "The overall repair workspace does not match its current candidate.",
     );
   }
@@ -672,7 +676,9 @@ async function runOverallAnchoredReview(args: {
     !(await workspaceGit.isClean()) ||
     (await workspaceGit.activeOperation())
   ) {
-    throw new Error("The reviewer changed the overall repair workspace.");
+    throw new ReviewWorkspaceSafetyError(
+      "The reviewer changed the overall repair workspace.",
+    );
   }
   if (failure) {
     throw failure;
@@ -766,7 +772,6 @@ export function applyAnchoredWorkstreamReview(args: {
     return assessment
       ? {
           ...finding,
-          evidence: assessment.evidence,
           status:
             assessment.status === "resolved"
               ? ("resolved" as const)

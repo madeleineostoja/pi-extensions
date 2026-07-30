@@ -1,6 +1,7 @@
-import { RecoverySafetyError } from "../recovery/recovery-service.js";
+import { RevisionFailure } from "../revision.js";
 import { WorkerPacketError } from "../worker-invocation.js";
-import { MissingHookEvidenceError, PublicationError } from "../publication.js";
+import { ReviewWorkspaceSafetyError } from "../review.js";
+import { PublicationError } from "../publication.js";
 import type { ExecutionPlan } from "../execution-plan.js";
 import {
   TargetBoundaryError,
@@ -123,13 +124,7 @@ export class SchedulerActor {
     event: SchedulerEvent,
     sourceEffect?: SchedulerEffect,
   ): Promise<SchedulerEffect[]> {
-    const { effects, persistedEvent } = await this.persist(event, sourceEffect);
-    if (
-      persistedEvent?.kind === "recovery_completed" &&
-      persistedEvent.action.kind === "no_safe_action"
-    ) {
-      await this.fail("recovery_exhausted", persistedEvent.action.evidence);
-    }
+    const { effects } = await this.persist(event, sourceEffect);
     if (this.snapshot().phase === "stopping") {
       this.stopping = true;
       this.controller.abort();
@@ -310,22 +305,36 @@ export class SchedulerActor {
       }
     }
 
-    for (const episode of Object.values(state.recoveryEpisodes)) {
+    for (const recreation of Object.values(state.workspaceRecreations)) {
       if (
-        this.processWorkstreams.size < state.run.workerConcurrency &&
-        activeWorkerLeaseCount(state) < state.run.workerConcurrency &&
-        episode.status === "open" &&
-        getWorkstream(state, episode.workstream)?.phase === "recovering" &&
-        !Object.values(state.processLeases).some(
-          (lease) => lease.recoveryEpisodeId === episode.id,
-        ) &&
-        !this.hasLiveProcessFor(episode.workstream)
+        recreation.status === "pending" &&
+        !this.hasLiveProcessFor(recreation.workstream)
       ) {
         return {
           kind: "event",
           event: {
-            kind: "recovery_requested",
-            workstream: episode.workstream,
+            kind: "workspace_recreation_requested",
+            id: recreation.id,
+            now: this.now(),
+          },
+        };
+      }
+    }
+
+    for (const assignment of Object.values(state.revisionAssignments)) {
+      if (
+        this.processWorkstreams.size < state.run.workerConcurrency &&
+        activeWorkerLeaseCount(state) < state.run.workerConcurrency &&
+        assignment.status === "open" &&
+        getWorkstream(state, assignment.workstream)?.phase === "revising" &&
+        !activeLeaseFor(state, assignment.workstream) &&
+        !this.hasLiveProcessFor(assignment.workstream)
+      ) {
+        return {
+          kind: "event",
+          event: {
+            kind: "revision_requested",
+            workstream: assignment.workstream,
             now: this.now(),
           },
         };
@@ -417,20 +426,10 @@ export class SchedulerActor {
     }
 
     if (
-      state.phase === "whole_plan_review" &&
-      state.wholePlanReview.recovery?.status === "open"
-    ) {
-      return {
-        kind: "event",
-        event: { kind: "whole_plan_recovery_requested" },
-      };
-    }
-    if (
       state.wholePlanReview.status === "pending" &&
       state.projectionDebt.length === 0 &&
       allSourceWorkstreamsComplete(state) &&
-      state.wholePlanReview.recovery?.status !== "open" &&
-      state.wholePlanReview.recovery?.status !== "running"
+      state.wholePlanReview.reviewRetry?.status !== "exhausted"
     ) {
       return { kind: "event", event: { kind: "whole_plan_review_requested" } };
     }
@@ -532,10 +531,9 @@ export class SchedulerActor {
       .then(async () => {
         const managed =
           effect.kind === "run_implementation" ||
+          effect.kind === "run_revision" ||
           effect.kind === "run_review" ||
-          effect.kind === "run_recovery" ||
-          effect.kind === "run_whole_plan_review" ||
-          effect.kind === "run_whole_plan_recovery";
+          effect.kind === "run_whole_plan_review";
         const boundary =
           managed && this.options.captureTargetBoundary
             ? await this.options.captureTargetBoundary()
@@ -596,7 +594,7 @@ export class SchedulerActor {
           error instanceof TargetPreconditionError ||
           error instanceof TargetBoundaryError
         ) {
-          await this.fail("safety", error.message);
+          await this.fail("workspace_unsafe", error.message);
           return;
         }
         if (
@@ -604,7 +602,7 @@ export class SchedulerActor {
           error instanceof StateError ||
           error instanceof WorkerPacketError
         ) {
-          await this.fail("runtime", error.message);
+          await this.fail("persistence_runtime_failure", error.message);
           return;
         }
         if (
@@ -612,7 +610,12 @@ export class SchedulerActor {
           (error.outcome.kind === "safety_paused" ||
             error.outcome.kind === "target_moved")
         ) {
-          await this.fail("safety", error.message);
+          await this.fail(
+            error.outcome.kind === "target_moved"
+              ? "target_moved"
+              : "workspace_unsafe",
+            error.message,
+          );
           return;
         }
         if (
@@ -628,59 +631,31 @@ export class SchedulerActor {
             workstream: effect.workstream,
             leaseId: effect.leaseId,
             evidence: error instanceof Error ? error.message : String(error),
-            ...(lifecycleError?.trustedCheckpoint
-              ? { trustedCheckpoint: lifecycleError.trustedCheckpoint }
-              : {}),
             ...(lifecycleError?.trustedCandidate
               ? { trustedCandidate: lifecycleError.trustedCandidate }
               : {}),
-            ...(lifecycleError?.recoveryWorkspace
-              ? { workspace: lifecycleError.recoveryWorkspace }
+            ...(lifecycleError?.observation
+              ? { observation: lifecycleError.observation }
               : {}),
-            ...(!lifecycleError ? { executionFailure: true } : {}),
+            category: lifecycleError?.category ?? "provider_failure",
           });
           return;
         }
         if (
-          effect.kind === "run_recovery" &&
-          error instanceof RecoverySafetyError &&
+          effect.kind === "run_revision" &&
           this.snapshot().processLeases[effect.leaseId]
         ) {
+          const failure = error instanceof RevisionFailure ? error : undefined;
           await this.dispatch({
-            kind: "recovery_completed",
+            kind: "revision_failed",
             workstream: effect.workstream,
             leaseId: effect.leaseId,
-            action: {
-              kind: "no_safe_action",
-              outcome: "no_safe_action",
-              summary:
-                "Recovery output could not satisfy the durable safety boundary.",
-              evidence: error.message,
-              at: this.now(),
-            },
-          });
-          return;
-        }
-        if (
-          effect.kind === "run_recovery" &&
-          this.snapshot().processLeases[effect.leaseId]
-        ) {
-          await this.dispatch({
-            kind: "recovery_execution_failed",
-            workstream: effect.workstream,
-            leaseId: effect.leaseId,
-            error: error instanceof Error ? error.message : String(error),
-            now: this.now(),
-          });
-          return;
-        }
-        if (
-          effect.kind === "run_whole_plan_recovery" &&
-          this.snapshot().phase === "whole_plan_review"
-        ) {
-          await this.dispatch({
-            kind: "whole_plan_recovery_failed",
+            assignmentId: effect.assignmentId,
+            category: failure?.category ?? "provider_failure",
             evidence: error instanceof Error ? error.message : String(error),
+            ...(failure?.observation
+              ? { observation: failure.observation }
+              : {}),
           });
           return;
         }
@@ -690,6 +665,7 @@ export class SchedulerActor {
         ) {
           await this.dispatch({
             kind: "whole_plan_review_failed",
+            category: "provider_failure",
             evidence: error instanceof Error ? error.message : String(error),
           });
           return;
@@ -712,9 +688,10 @@ export class SchedulerActor {
         ) {
           await this.dispatch({
             kind: "effect_failed",
-            ...(error instanceof MissingHookEvidenceError
-              ? { gateKind: "hook" }
-              : { executionFailure: true }),
+            category:
+              error instanceof ReviewWorkspaceSafetyError
+                ? "workspace_unsafe"
+                : "provider_failure",
             effect:
               effect.kind === "run_review"
                 ? "review"
@@ -742,12 +719,6 @@ export class SchedulerActor {
           lease.kind === effectLeaseKind(effect)
         ) {
           await this.persist({ kind: "process_abandoned", leaseId });
-        }
-        if (
-          effect.kind === "run_whole_plan_recovery" &&
-          this.snapshot().wholePlanReview.recovery?.status === "running"
-        ) {
-          await this.persist({ kind: "whole_plan_recovery_abandoned" });
         }
         await this.finalizeFailure();
         await this.drive();
@@ -816,8 +787,11 @@ function effectLeaseKind(
   if (effect.kind === "run_review") {
     return "review";
   }
-  if (effect.kind === "run_recovery") {
-    return "recovery";
+  if (effect.kind === "run_revision") {
+    return "revision";
+  }
+  if (effect.kind === "recreate_workspace") {
+    return "workspace_recreation";
   }
   if (effect.kind === "run_reconciliation") {
     return "reconciliation";
@@ -846,10 +820,11 @@ function isFinalSettlementForEffect(
   if (effect.kind === "run_review") {
     return event.kind === "review_completed" || event.kind === "effect_failed";
   }
-  if (effect.kind === "run_recovery") {
-    return ["recovery_completed", "recovery_execution_failed"].includes(
-      event.kind,
-    );
+  if (effect.kind === "run_revision") {
+    return ["revision_completed", "revision_failed"].includes(event.kind);
+  }
+  if (effect.kind === "recreate_workspace") {
+    return event.kind === "workspace_recreation_completed";
   }
   if (effect.kind === "run_reconciliation") {
     return (

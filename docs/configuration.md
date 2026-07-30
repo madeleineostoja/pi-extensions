@@ -36,7 +36,7 @@ Pipkin routes work by role rather than hard-coding a provider. Each preset needs
 | --------- | ------------------------------------------------------- |
 | `utility` | Asynchronous session naming                             |
 | `low`     | Explore agents, including nested exploration            |
-| `medium`  | Implement workers and recovery agents                   |
+| `medium`  | Implement and revision workers                          |
 | `high`    | Review agents, Implement planning, and Implement review |
 
 General agents inherit the active parent model and thinking level. BTW uses the model associated with the current conversation flow. Explicit `Agent` tool arguments override a public agent's model or thinking for that invocation only; they are not saved.

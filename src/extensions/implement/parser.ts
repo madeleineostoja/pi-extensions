@@ -2,7 +2,7 @@ export type ParsedCommand =
   | {
       kind: "execution";
       planPath: string;
-      recovery?: { kind: "start-over"; runId: string };
+      restart?: { runId: string };
     }
   | {
       kind: "control";
@@ -18,7 +18,7 @@ export function parseCommand(input: string): ParsedCommand {
     return {
       kind: "execution",
       planPath: args[0]!,
-      recovery: { kind: "start-over", runId: args[1]! },
+      restart: { runId: args[1]! },
     };
   }
   if ((subcommand === "status" || subcommand === "stop") && args.length === 0) {

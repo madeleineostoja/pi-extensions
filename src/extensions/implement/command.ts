@@ -187,11 +187,11 @@ export function registerImplementCommand(
       >[1],
     ) => nextActivity.update(state, event);
     try {
-      if (parsed.recovery?.kind === "start-over") {
+      if (parsed.restart) {
         const checkoutRoot = await resolveCheckoutRoot(ctx.cwd);
         await cleanupCompletedRun({
           checkoutRoot,
-          runId: parsed.recovery.runId,
+          runId: parsed.restart.runId,
           prospectiveStart: true,
         });
       }
@@ -312,7 +312,7 @@ async function showRunMenu(
   return {
     kind: "execution",
     planPath: planPath.trim(),
-    recovery: { kind: "start-over", runId: run.runId },
+    restart: { runId: run.runId },
   };
 }
 

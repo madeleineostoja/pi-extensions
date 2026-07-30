@@ -90,8 +90,9 @@ export async function admitCandidateWorkspace(args: {
       reason: "required ancestry is missing",
     };
   }
-  const [expectedTree, changedPaths] = await Promise.all([
+  const [expectedTree, comparisonTree, changedPaths] = await Promise.all([
     git.treeAt(observation.head),
+    git.treeAt(input.comparisonBase),
     changedPathsBetween(git, input.comparisonBase, observation.head),
   ]);
   if (!observation.tree || observation.tree !== expectedTree) {
@@ -99,6 +100,13 @@ export async function admitCandidateWorkspace(args: {
       kind: "unsafe",
       observation,
       reason: "candidate tree is inconsistent",
+    };
+  }
+  if (expectedTree === comparisonTree || changedPaths.length === 0) {
+    return {
+      kind: "unchanged",
+      observation,
+      reason: "candidate tree is unchanged",
     };
   }
   if (changedPaths.some((path) => input.protectedPaths.includes(path))) {

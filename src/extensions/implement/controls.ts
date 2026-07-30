@@ -48,9 +48,10 @@ export function listCheckoutRuns(checkoutRoot: string): RunListing[] {
 }
 
 export function formatStatus(state: RunState): string {
-  const activeRecovery = Object.values(state.recoveryEpisodes).filter(
-    (episode) => episode.status === "open",
+  const activeRevisions = Object.values(state.revisionAssignments).filter(
+    (assignment) => assignment.status === "open",
   );
+  const latestFailure = Object.values(state.failures).at(-1);
   const phases = [
     ...Object.values(state.workstreams.source).map(
       (workstream) => `${workstream.id}: ${workstream.phase}`,
@@ -65,16 +66,18 @@ export function formatStatus(state: RunState): string {
   const activeProcesses = Object.values(state.processLeases)
     .map((lease) => `${lease.kind}:${lease.id}`)
     .join(", ");
-  const latestGate = state.gates.at(-1);
   return [
     `Run: ${state.run.id}`,
     `Phase: ${state.phase}`,
     `Workstreams: ${phases || "none"}`,
     `Active processes: ${activeProcesses || "none"}`,
     `Open findings: ${openFindings}`,
-    `Active recovery: ${state.phase === "failed" ? 0 : activeRecovery.length}`,
-    ...(latestGate
-      ? [`Latest gate: ${latestGate.kind} ${latestGate.outcome}`]
+    `Active revisions: ${state.phase === "failed" ? 0 : activeRevisions.length}`,
+    ...(latestFailure
+      ? [
+          `Latest failure: ${latestFailure.category} · ${latestFailure.assignment}`,
+          `Failure evidence: ${latestFailure.evidence}`,
+        ]
       : []),
     `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted`,
     `Debt: ${state.projectionDebt.length > 0 ? `projection debt ${state.projectionDebt.length}` : "none"}`,

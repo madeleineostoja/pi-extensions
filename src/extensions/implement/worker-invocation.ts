@@ -7,8 +7,7 @@ import {
   initialWorkstreamReviewSchema,
   repositoryStateReviewSchema,
   overallReworkSchema,
-  recoveryCompletionSchema,
-  wholePlanRecoveryCompletionSchema,
+  revisionCompletionSchema,
   strictExecutionPlanSchema,
   workstreamImplementerResultSchema,
 } from "./result-schemas.js";
@@ -73,17 +72,12 @@ const completionContracts = {
     description: "Assess every outstanding finding.",
     schema: anchoredWorkstreamReviewSchema,
   },
-  recovery: {
-    role: "recovery",
+  revision: {
+    role: "implementer",
     readOnly: false,
-    description: "Return one bounded recovery action.",
-    schema: recoveryCompletionSchema,
-  },
-  "whole-plan-recovery": {
-    role: "recovery",
-    readOnly: true,
-    description: "Return a bounded whole-plan recovery action.",
-    schema: wholePlanRecoveryCompletionSchema,
+    description:
+      "Report semantic evidence for the assigned candidate revision.",
+    schema: revisionCompletionSchema,
   },
 } as const;
 

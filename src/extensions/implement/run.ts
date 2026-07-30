@@ -22,7 +22,6 @@ import { createCheckboxProjectionIntent } from "./projection.js";
 import { runPublication } from "./publication.js";
 import {
   completeWholePlanRun,
-  runWholePlanRecovery,
   runWholePlanReview,
 } from "./whole-plan-review.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
@@ -37,7 +36,7 @@ import {
 } from "./workstream-candidate.js";
 import { runOverallRepair } from "./overall-repair.js";
 import { runWorkstreamReview } from "./review.js";
-import { runRecovery } from "./recovery/recovery-service.js";
+import { recreateWorkspace, runRevision } from "./revision.js";
 import {
   SchedulerActor,
   type SchedulerActorOptions,
@@ -272,10 +271,6 @@ export function createRuntime(args: {
         "artifacts",
       );
       if (effect.kind === "run_implementation") {
-        const sourceWorkstreamId =
-          effect.workstream.kind === "source"
-            ? effect.workstream.id
-            : undefined;
         const outcome =
           effect.workstream.kind === "source"
             ? await runWorkstreamCandidate({
@@ -288,22 +283,6 @@ export function createRuntime(args: {
                 subagents,
                 signal,
                 roles: args.roles,
-                recoveryObligations: Object.values(state.recoveryEpisodes)
-                  .filter(
-                    (episode) =>
-                      episode.status === "open" &&
-                      episode.workstream.kind === "source" &&
-                      episode.workstream.id === sourceWorkstreamId,
-                  )
-                  .flatMap((episode) =>
-                    episode.actions.map((action) => action.evidence),
-                  ),
-                trustedCheckpoint: Object.values(state.recoveryEpisodes).find(
-                  (episode) =>
-                    episode.status === "open" &&
-                    episode.workstream.kind === "source" &&
-                    episode.workstream.id === sourceWorkstreamId,
-                )?.workspace.checkpoint,
                 artifactsPath,
                 artifactLeaseId: effect.leaseId,
               })
@@ -683,16 +662,6 @@ export function createRuntime(args: {
         });
         return;
       }
-      if (effect.kind === "run_whole_plan_recovery") {
-        const action = await runWholePlanRecovery({
-          state,
-          subagents,
-          signal,
-          roles: args.roles,
-        });
-        await dispatch({ kind: "whole_plan_recovery_completed", action });
-        return;
-      }
       if (effect.kind === "complete_whole_plan_run") {
         await completeWholePlanRun({
           state,
@@ -701,8 +670,8 @@ export function createRuntime(args: {
         });
         return;
       }
-      if (effect.kind === "run_recovery") {
-        const outcome = await runRecovery({
+      if (effect.kind === "run_revision") {
+        const outcome = await runRevision({
           state,
           effect,
           git: args.git,
@@ -712,10 +681,32 @@ export function createRuntime(args: {
           roles: args.roles,
         });
         await dispatch({
-          kind: "recovery_completed",
+          kind: "revision_completed",
           workstream: effect.workstream,
           leaseId: effect.leaseId,
-          ...outcome,
+          assignmentId: effect.assignmentId,
+          outcome,
+        });
+        return;
+      }
+      if (effect.kind === "recreate_workspace") {
+        const recreation = state.workspaceRecreations[effect.recreationId];
+        if (!recreation) {
+          throw new Error("Workspace recreation is no longer retained.");
+        }
+        const outcome = await recreateWorkspace({
+          state,
+          workstream: effect.workstream,
+          checkpoint: recreation.checkpoint,
+          git: args.git,
+        });
+        await dispatch({
+          kind: "workspace_recreation_completed",
+          id: recreation.id,
+          leaseId: effect.leaseId,
+          before: { ...outcome.before, status: [...outcome.before.status] },
+          after: { ...outcome.after, status: [...outcome.after.status] },
+          outcome: outcome.outcome,
         });
         return;
       }

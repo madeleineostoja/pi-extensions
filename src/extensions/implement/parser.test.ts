@@ -14,7 +14,7 @@ describe("parseCommand", () => {
     expect(parseCommand("restart plan.md run-1")).toEqual({
       kind: "execution",
       planPath: "plan.md",
-      recovery: { kind: "start-over", runId: "run-1" },
+      restart: { runId: "run-1" },
     });
   });
 

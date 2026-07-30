@@ -10,12 +10,7 @@ import { sha256 } from "./source-integrity.js";
 import {
   type AnchoredWorkstreamReviewCompletion,
   type InitialOverallReviewCompletion,
-  type WholePlanRecoveryCompletion,
 } from "./result-schemas.js";
-import {
-  boundedRecoveryOutput,
-  type RecoveryAction,
-} from "./recovery/recovery.js";
 import type { SchedulerEvent } from "./scheduler/scheduler.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import { writeAtomicJson } from "./atomic-json.js";
@@ -37,14 +32,6 @@ export type WholePlanReviewPacket = {
   outstandingFindings: NonNullable<
     RunState["wholePlanReview"]["epoch"]
   >["findings"];
-};
-
-export type WholePlanRecoveryPacket = {
-  role: "recovery";
-  completionKind: "whole-plan-recovery";
-  identity: string;
-  workspace: { path: string; mutationBoundary: string };
-  failure: NonNullable<RunState["wholePlanReview"]["recovery"]>;
 };
 
 export function buildWholePlanReviewPacket(args: {
@@ -301,60 +288,6 @@ export async function runWholePlanReview(args: {
       reviewedTargetTreeSha: targetTree,
     },
   });
-}
-
-export async function runWholePlanRecovery(args: {
-  state: RunState;
-  subagents: SubagentClient;
-  signal?: AbortSignal;
-  roles: ImplementRoles;
-}): Promise<RecoveryAction> {
-  const recovery = args.state.wholePlanReview.recovery;
-  if (!recovery || recovery.status !== "running") {
-    throw new Error("Whole-plan recovery has no retained failure evidence.");
-  }
-  const packet: WholePlanRecoveryPacket = {
-    role: "recovery",
-    completionKind: "whole-plan-recovery",
-    identity: `${args.state.run.id}/whole-plan-recovery`,
-    workspace: {
-      path: args.state.run.checkout.root,
-      mutationBoundary:
-        "Read-only target checkout; diagnose retained whole-plan failure only.",
-    },
-    failure: recovery,
-  };
-  const handle = await spawnValidatedWorker({
-    packet,
-    subagents: args.subagents,
-    roles: args.roles,
-    taskId: "whole-plan-recovery",
-    description: `Recover whole-plan review for ${args.state.run.id}`,
-    render: (workerPacket) =>
-      `You are the Pipkin Implement recovery agent for a failed whole-plan review. ${workerPacket.workspace.mutationBoundary} Do not edit files, change Git state, install dependencies, or rerun the review yourself. Return retry when the orchestrator can safely rerun the same immutable assessment, diagnose for additional bounded evidence, or no_safe_action when manual intervention is required.\n\n${JSON.stringify(workerPacket.failure, null, 2)}`,
-  });
-  const response = await args.subagents.waitFor<WholePlanRecoveryCompletion>(
-    handle,
-    args.signal,
-  );
-  if (response.status !== "completed") {
-    throw new Error(
-      `Whole-plan recovery agent ${response.status}: ${response.error}`,
-    );
-  }
-  const completion = response.result;
-  return {
-    kind: completion.action,
-    outcome:
-      completion.action === "no_safe_action" ? "no_safe_action" : "completed",
-    summary: completion.summary,
-    evidence: boundedRecoveryOutput(
-      completion.diagnosis
-        ? `${completion.evidence}\nDiagnosis: ${completion.diagnosis}`
-        : completion.evidence,
-    ),
-    at: new Date().toISOString(),
-  };
 }
 
 export async function completeWholePlanRun(args: {
