@@ -4,7 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { resolveChoice } from "./handler";
-import readonly from "./index";
+import { registerReadonlyMode } from "./mode";
 import { extractToolPath, formatSteerTitle, parseReadonlyArgs } from "./utils";
 
 type ToolCallHandler = (
@@ -24,7 +24,7 @@ describe("Readonly", () => {
         }
       },
     } as unknown as ExtensionAPI;
-    readonly(api);
+    registerReadonlyMode(api);
 
     let prompt = "";
     const ctx = {
