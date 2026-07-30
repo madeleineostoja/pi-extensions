@@ -128,10 +128,10 @@ export function createGuardBashRuntime(options: {
       const fixed = options.state.fixedCapabilities();
       const health = options.state.backendHealth();
       if (!fixed || health?.kind !== "healthy") {
-        throw new Error("Guard: Nono Bash boundary is unavailable.");
+        throw new Error("Guard: Nono Bash sandbox is unavailable.");
       }
       if (disposed) {
-        throw new Error("Guard: Nono Bash boundary is shutting down.");
+        throw new Error("Guard: Nono Bash sandbox is shutting down.");
       }
       const timeout = timeoutMs(execution.timeout);
       if (execution.signal?.aborted) {
@@ -151,10 +151,7 @@ export function createGuardBashRuntime(options: {
       if (!commandFromStdin) {
         commandArgs.push(command);
       }
-      const manifestData = buildNonoManifest(
-        fixed,
-        options.state.filesystemGrants(),
-      );
+      const manifestData = buildNonoManifest(fixed);
       const manifest = writeNonoManifest(manifestData);
       const environment = sandboxEnvironment(
         execution.env,

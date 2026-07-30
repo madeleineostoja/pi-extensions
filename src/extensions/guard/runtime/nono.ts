@@ -139,10 +139,10 @@ function probeFixedCapabilities(inside: string): FixedCapabilities {
   return {
     cwd: inside,
     grants: [
-      { path: inside, access: "read", kind: "directory", effects: [] },
-      { path: inside, access: "write", kind: "directory", effects: [] },
-      { path: "/bin", access: "read", kind: "directory", effects: [] },
-      { path: "/usr", access: "read", kind: "directory", effects: [] },
+      { path: inside, access: "read", kind: "directory" },
+      { path: inside, access: "write", kind: "directory" },
+      { path: "/bin", access: "read", kind: "directory" },
+      { path: "/usr", access: "read", kind: "directory" },
     ],
   };
 }
@@ -174,7 +174,7 @@ async function executeManifestProbe(
   target: string,
   options: Pick<NonoHealthProbeOptions, "signal" | "timeoutMs">,
 ): Promise<NonoRunResult> {
-  const manifest = writeNonoManifest(buildNonoManifest(fixed, []));
+  const manifest = writeNonoManifest(buildNonoManifest(fixed));
   return runNono(binary, manifest, "/bin/cat", [target], options);
 }
 

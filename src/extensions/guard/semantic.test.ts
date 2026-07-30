@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -147,12 +153,12 @@ describe("Guard semantic confirmation", () => {
           )
         ).map((risk) => risk.targets.at(-1)),
       ).toEqual([
-        join(cwd, "clean.txt"),
-        join(cwd, "clean.txt"),
-        join(cwd, "untracked file.txt"),
-        join(cwd, "clean.txt"),
-        join(cwd, "destination", "clean.txt"),
-        join(cwd, "subdir", "destination", "clean.txt"),
+        join(realpathSync(cwd), "clean.txt"),
+        join(realpathSync(cwd), "clean.txt"),
+        join(realpathSync(cwd), "untracked file.txt"),
+        join(realpathSync(cwd), "clean.txt"),
+        join(realpathSync(cwd), "destination", "clean.txt"),
+        join(realpathSync(cwd), "subdir", "destination", "clean.txt"),
       ]);
 
       writeFileSync(join(cwd, "dirty.txt"), "dirty");

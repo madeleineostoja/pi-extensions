@@ -78,9 +78,9 @@ if (process.env.PIPKIN_GUARD_BASH_MODE === "hold") {
   const fixed: FixedCapabilities = {
     cwd: workspace,
     grants: [
-      { path: workspace, access: "read", kind: "directory", effects: [] },
-      { path: workspace, access: "write", kind: "directory", effects: [] },
-      { path: nodeBin, access: "read", kind: "directory", effects: [] },
+      { path: workspace, access: "read", kind: "directory" },
+      { path: workspace, access: "write", kind: "directory" },
+      { path: nodeBin, access: "read", kind: "directory" },
     ],
   };
   state.setFixedCapabilities(fixed);
@@ -89,20 +89,8 @@ if (process.env.PIPKIN_GUARD_BASH_MODE === "hold") {
 }
 
 describe("Guard Bash runtime", () => {
-  it("uses current reachability grants in an unrestricted Nono manifest and preserves factory environment", async () => {
+  it("uses only fixed grants in an unrestricted Nono manifest and preserves factory environment", async () => {
     const { log, outside, state, workspace } = fixture();
-    state.addGrant({
-      path: outside,
-      access: "read",
-      kind: "file",
-      effects: ["outside-boundary"],
-    });
-    state.addGrant({
-      path: join(workspace, ".env"),
-      access: "read",
-      kind: "file",
-      effects: ["protected-read"],
-    });
     const runtime = createGuardBashRuntime({ state, supportedMac: true });
     const output: string[] = [];
     const previous = process.env.PIPKIN_GUARD_BASH_LOG;
@@ -135,10 +123,7 @@ describe("Guard Bash runtime", () => {
     expect(logged.manifest.network).toEqual({ mode: "unrestricted" });
     expect(
       logged.manifest.filesystem.grants.map((grant) => grant.path),
-    ).toContain(outside);
-    expect(
-      logged.manifest.filesystem.grants.map((grant) => grant.path),
-    ).not.toContain(join(workspace, ".env"));
+    ).not.toContain(outside);
   });
 
   it("uses canonical permitted PATH entries and removes inaccessible entries", async () => {
@@ -159,7 +144,6 @@ describe("Guard Bash runtime", () => {
           path: realpathSync(toolchain),
           access: "read",
           kind: "directory",
-          effects: [],
         },
       ],
     });

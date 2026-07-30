@@ -53,9 +53,7 @@ function fixture(beforeGuardToolCallHandler?: Handler) {
     setStatus: status,
     theme: { fg: (_color: string, text: string) => text },
     select: vi.fn(async (_title: string, choices: string[]) =>
-      choices.includes("Allow similar this session")
-        ? "Allow similar this session"
-        : "Close",
+      choices.includes("Allow once") ? "Allow once" : "Close",
     ),
     input: vi.fn(async () => ""),
     confirm: vi.fn(async () => true),
@@ -171,7 +169,7 @@ describe("Guard extension registration", () => {
     await emit("session_shutdown", { type: "session_shutdown" }, ctx);
   });
 
-  it("uses TUI-only approvals and shows Guard status only on the TUI surface", async () => {
+  it("keeps TUI approvals one-shot and shows Guard status only on the TUI surface", async () => {
     const { commands, context, cwd, emit, status, ui } = fixture();
     const protectedFile = join(cwd, ".env");
     writeFileSync(protectedFile, "secret");
@@ -199,7 +197,7 @@ describe("Guard extension registration", () => {
         { toolName: "read", input: { path: protectedFile } },
         context("rpc", true),
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ block: true });
 
     await commands.get("guard").handler("", tui);
     expect(ui.select).toHaveBeenCalled();

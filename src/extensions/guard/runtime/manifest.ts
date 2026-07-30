@@ -45,20 +45,10 @@ function manifestGrants(
   });
 }
 
-export function buildNonoManifest(
-  fixed: FixedCapabilities,
-  activeGrants: readonly FilesystemGrant[],
-): NonoManifest {
+export function buildNonoManifest(fixed: FixedCapabilities): NonoManifest {
   return {
     version: "0.1.0",
-    filesystem: {
-      grants: manifestGrants([
-        ...fixed.grants,
-        ...activeGrants.filter((grant) =>
-          grant.effects.includes("outside-boundary"),
-        ),
-      ]),
-    },
+    filesystem: { grants: manifestGrants(fixed.grants) },
     network: { mode: "unrestricted" },
   };
 }

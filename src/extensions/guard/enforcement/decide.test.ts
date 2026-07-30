@@ -14,11 +14,7 @@ import {
   type PiPathCompatibility,
 } from "../capabilities.js";
 import { createGuardRuntimeState } from "../state.js";
-import {
-  decideDirectFilesystemTool,
-  prepareExplicitFilesystemGrant,
-} from "./decide.js";
-import { filesystemScope } from "./tool-gate.js";
+import { decideDirectFilesystemTool } from "./decide.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -43,8 +39,8 @@ function state(cwd: string) {
   const fixed: FixedCapabilities = {
     cwd: canonicalCwd,
     grants: [
-      { path: canonicalCwd, access: "read", kind: "directory", effects: [] },
-      { path: canonicalCwd, access: "write", kind: "directory", effects: [] },
+      { path: canonicalCwd, access: "read", kind: "directory" },
+      { path: canonicalCwd, access: "write", kind: "directory" },
     ],
   };
   runtime.setFixedCapabilities(fixed);
@@ -80,19 +76,23 @@ describe("direct filesystem decisions", () => {
 
     for (const tool of ["read", "grep", "find", "ls"] as const) {
       expect(decide(runtime, workspace, tool, inside).kind).toBe("allow");
-      expect(decide(runtime, workspace, tool, outsideFile).kind).toBe(
-        "approval-required",
-      );
+      expect(decide(runtime, workspace, tool, outsideFile)).toMatchObject({
+        kind: "approval-required",
+        access: "read",
+        outsideSandbox: true,
+      });
     }
     for (const tool of ["write", "edit"] as const) {
       expect(decide(runtime, workspace, tool, inside).kind).toBe("allow");
-      expect(decide(runtime, workspace, tool, outsideFile).kind).toBe(
-        "approval-required",
-      );
+      expect(decide(runtime, workspace, tool, outsideFile)).toMatchObject({
+        kind: "approval-required",
+        access: "write",
+        outsideSandbox: true,
+      });
     }
   });
 
-  it("uses Pi-compatible aliases and canonical paths, including a symlink escape", () => {
+  it("uses canonical paths for symlink escapes and Pi-compatible aliases", () => {
     const { workspace, outside } = fixture();
     const runtime = state(workspace);
     const file = join(outside, "a file.txt");
@@ -100,29 +100,36 @@ describe("direct filesystem decisions", () => {
     symlinkSync(outside, join(workspace, "escape"));
 
     expect(
-      canonicalizeTarget(`@file://${file.replace(/ /g, "\u00a0")}`, workspace),
-    ).toBe(canonicalizeTarget(file, workspace));
-    expect(decide(runtime, workspace, "read", "escape/a file.txt").kind).toBe(
-      "approval-required",
-    );
+      decide(runtime, workspace, "read", "escape/a file.txt"),
+    ).toMatchObject({
+      kind: "approval-required",
+      target: canonicalizeTarget(file, workspace),
+      outsideSandbox: true,
+    });
+    expect(
+      decide(runtime, workspace, "read", "~/a file.txt", true, {
+        homeDir: outside,
+      }),
+    ).toMatchObject({ target: canonicalizeTarget(file, workspace) });
   });
 
-  it("keeps missing mutations exact and never promotes them to a parent", () => {
+  it("allows one-shot approval for a missing mutation target", () => {
     const { workspace, outside } = fixture();
     const runtime = state(workspace);
     const target = join(outside, "new", "file.txt");
-    const result = decide(runtime, workspace, "write", target);
-    expect(result).toMatchObject({
+
+    expect(decide(runtime, workspace, "write", target)).toMatchObject({
       kind: "approval-required",
-      grant: {
-        path: canonicalizeTarget(target, workspace),
-        kind: "file",
-        access: "write",
-      },
+      target: canonicalizeTarget(target, workspace),
+      access: "write",
+    });
+    expect(decide(runtime, workspace, "read", target)).toMatchObject({
+      kind: "deny",
+      reason: expect.stringContaining("unavailable"),
     });
   });
 
-  it("combines outside and protected effects while keeping in-root protected files separate", () => {
+  it("combines outside-sandbox and protected-read reasons", () => {
     const { workspace, outside } = fixture();
     const runtime = state(workspace);
     const inside = join(workspace, ".env.example");
@@ -133,19 +140,17 @@ describe("direct filesystem decisions", () => {
 
     expect(decide(runtime, workspace, "read", inside)).toMatchObject({
       kind: "approval-required",
-      outsideBoundary: false,
+      outsideSandbox: false,
       protectedRead: true,
-      grant: { effects: ["protected-read"] },
     });
     expect(decide(runtime, workspace, "read", ".env.link")).toMatchObject({
       kind: "approval-required",
-      outsideBoundary: true,
+      outsideSandbox: true,
       protectedRead: true,
-      grant: { effects: ["outside-boundary", "protected-read"] },
     });
   });
 
-  it("retains protected explicit reads without a macOS reachability boundary", () => {
+  it("retains protected explicit reads without a macOS sandbox", () => {
     const { workspace, outside } = fixture();
     const runtime = state(workspace);
     const plain = join(outside, "plain.txt");
@@ -158,99 +163,34 @@ describe("direct filesystem decisions", () => {
       decide(runtime, workspace, "read", protectedFile, false),
     ).toMatchObject({
       kind: "approval-required",
-      outsideBoundary: false,
+      outsideSandbox: false,
       protectedRead: true,
     });
   });
 
-  it("classifies home credential aliases through canonical designated paths", () => {
+  it("classifies canonical home credential aliases", () => {
     const { root, workspace, outside } = fixture();
     const home = join(root, "home");
-    mkdirSync(home);
-    const compatibility = { homeDir: home };
     const ssh = join(outside, "ssh");
-    const gnupg = join(outside, "gnupg");
+    mkdirSync(home);
     mkdirSync(ssh);
-    mkdirSync(gnupg);
     writeFileSync(join(ssh, "id_ed25519"), "secret");
-    writeFileSync(join(gnupg, "private-keys-v1.d"), "secret");
     symlinkSync(ssh, join(home, ".ssh"));
-    symlinkSync(gnupg, join(home, ".gnupg"));
     symlinkSync(ssh, join(workspace, "ssh-alias"));
-    symlinkSync(gnupg, join(workspace, "gnupg-alias"));
-
-    const aws = join(home, ".aws");
-    mkdirSync(aws);
-    const awsCredentials = join(outside, "aws-credentials");
-    const netrc = join(outside, "netrc");
-    writeFileSync(awsCredentials, "secret");
-    writeFileSync(netrc, "secret");
-    symlinkSync(awsCredentials, join(aws, "credentials"));
-    symlinkSync(netrc, join(home, ".netrc"));
-    symlinkSync(awsCredentials, join(workspace, "aws-alias"));
-    symlinkSync(netrc, join(workspace, "netrc-alias"));
-
-    const aliases = [
-      join(workspace, "ssh-alias", "id_ed25519"),
-      join(workspace, "gnupg-alias", "private-keys-v1.d"),
-      join(workspace, "aws-alias"),
-      join(workspace, "netrc-alias"),
-    ];
-    for (const alias of aliases) {
-      expect(
-        decide(
-          state(workspace),
-          workspace,
-          "read",
-          alias,
-          false,
-          compatibility,
-        ),
-      ).toMatchObject({
-        kind: "approval-required",
-        outsideBoundary: false,
-        protectedRead: true,
-        grant: { effects: ["protected-read"] },
-      });
-
-      const boundaryDisabled = state(workspace);
-      boundaryDisabled.setBoundaryEnabled(false);
-      expect(
-        decide(boundaryDisabled, workspace, "read", alias, true, compatibility),
-      ).toMatchObject({
-        kind: "approval-required",
-        outsideBoundary: false,
-        protectedRead: true,
-        grant: { effects: ["protected-read"] },
-      });
-
-      expect(
-        decide(state(workspace), workspace, "read", alias, true, compatibility),
-      ).toMatchObject({
-        kind: "approval-required",
-        outsideBoundary: true,
-        protectedRead: true,
-        grant: { effects: ["outside-boundary", "protected-read"] },
-      });
-      expect(
-        decide(state(workspace), workspace, "grep", alias, true, compatibility),
-      ).toMatchObject({ protectedRead: true });
-    }
 
     expect(
       decide(
         state(workspace),
         workspace,
-        "grep",
-        join(workspace, "ssh-alias"),
-        true,
-        compatibility,
+        "read",
+        join(workspace, "ssh-alias", "id_ed25519"),
+        false,
+        { homeDir: home },
       ),
     ).toMatchObject({
       kind: "approval-required",
-      outsideBoundary: true,
-      protectedRead: false,
-      grant: { effects: ["outside-boundary"] },
+      outsideSandbox: false,
+      protectedRead: true,
     });
   });
 
@@ -259,94 +199,5 @@ describe("direct filesystem decisions", () => {
     const runtime = state(workspace);
     writeFileSync(join(workspace, ".env"), "secret");
     expect(decide(runtime, workspace, "grep").kind).toBe("allow");
-  });
-
-  it("records protected explicit directory read grants as exact subtrees", () => {
-    const { root, workspace, outside } = fixture();
-    const runtime = state(workspace);
-    const home = join(root, "home");
-    const ssh = join(home, ".ssh");
-    const credential = join(ssh, "id_rsa");
-    mkdirSync(home);
-    mkdirSync(ssh);
-    writeFileSync(credential, "secret");
-
-    const protectedGrant = prepareExplicitFilesystemGrant({
-      path: "~/.ssh",
-      cwd: workspace,
-      access: "read",
-      supportedMac: true,
-      state: runtime,
-      pathCompatibility: { homeDir: home },
-    })!;
-    expect(protectedGrant).toMatchObject({
-      path: canonicalizeTarget(ssh, workspace),
-      kind: "directory",
-      effects: ["outside-boundary", "protected-read"],
-    });
-    expect(filesystemScope(protectedGrant)).toBe(
-      `${canonicalizeTarget(ssh, workspace)}/**`,
-    );
-    const canonicalCredential = canonicalizeTarget(credential, workspace);
-    const canonicalSibling = canonicalizeTarget(
-      join(home, "sibling"),
-      workspace,
-    );
-    runtime.addGrant(protectedGrant);
-    expect(runtime.allowsReachability(canonicalCredential, "read")).toBe(true);
-    expect(runtime.allowsProtectedRead(canonicalCredential)).toBe(true);
-    expect(runtime.allowsReachability(canonicalSibling, "read")).toBe(false);
-    expect(runtime.allowsProtectedRead(canonicalSibling)).toBe(false);
-
-    const ordinary = prepareExplicitFilesystemGrant({
-      path: outside,
-      cwd: workspace,
-      access: "read",
-      supportedMac: true,
-      state: runtime,
-    });
-    expect(ordinary).toMatchObject({
-      kind: "directory",
-      effects: ["outside-boundary"],
-    });
-  });
-
-  it("only prepares existing exact files or directory scopes for explicit grants", () => {
-    const { workspace, outside } = fixture();
-    const runtime = state(workspace);
-    const file = join(outside, "file.txt");
-    writeFileSync(file, "outside");
-
-    expect(
-      prepareExplicitFilesystemGrant({
-        path: file,
-        cwd: workspace,
-        access: "read",
-        supportedMac: true,
-        state: runtime,
-      }),
-    ).toMatchObject({
-      path: canonicalizeTarget(file, workspace),
-      kind: "file",
-      effects: ["outside-boundary"],
-    });
-    expect(
-      prepareExplicitFilesystemGrant({
-        path: join(outside, "missing"),
-        cwd: workspace,
-        access: "read",
-        supportedMac: true,
-        state: runtime,
-      }),
-    ).toBeNull();
-    expect(
-      prepareExplicitFilesystemGrant({
-        path: file,
-        cwd: workspace,
-        access: "read",
-        supportedMac: false,
-        state: runtime,
-      }),
-    ).toBeNull();
   });
 });

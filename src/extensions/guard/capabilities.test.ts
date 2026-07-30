@@ -11,7 +11,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalizeTarget,
-  createFilesystemGrant,
   createFixedCapabilities,
   resolvePiToolPath,
   grantMatches,
@@ -38,9 +37,8 @@ function grant(
   path: string,
   access: "read" | "write",
   kind: "file" | "directory",
-  effects: FilesystemGrant["effects"] = [],
 ): FilesystemGrant {
-  return { path, access, kind, effects };
+  return { path, access, kind };
 }
 
 describe("Guard capabilities", () => {
@@ -65,7 +63,7 @@ describe("Guard capabilities", () => {
     );
   });
 
-  it("matches Pi 0.82 path resolution and read fallback", () => {
+  it("matches Pi path resolution and read fallback", () => {
     const root = fixture();
     const screenshotDirectory = join(root, "Screenshot 1\u202fAM.png");
     const screenshot = join(screenshotDirectory, "Screenshot 2\u202fPM.png");
@@ -106,44 +104,17 @@ describe("Guard capabilities", () => {
     expect(canonicalizeTarget("one/two", nested)).toBe(
       join(canonicalizeTarget(nested, root), "one", "two"),
     );
-    const grant = createFilesystemGrant(
-      "/definitely-pipkin-missing/foo",
-      "/",
-      "write",
-      ["outside-boundary"],
-      true,
-    )!;
-    expect(grant).toMatchObject({
-      path: "/definitely-pipkin-missing/foo",
-      kind: "file",
-    });
   });
 
-  it("keeps missing mutations exact and tracks reachability and protected approval separately", () => {
-    const root = fixture();
-    const env = join(root, ".env.example");
-    const missing = createFilesystemGrant(
-      env,
-      root,
-      "write",
-      ["outside-boundary"],
-      true,
-    )!;
-    expect(missing.kind).toBe("file");
-    expect(missing.path).toBe(canonicalizeTarget(env, root));
-    expect(isProtectedReadTarget(env, missing.path, root)).toBe(true);
-
+  it("resets both user toggles for each session", () => {
     const state = createGuardRuntimeState();
-    state.addGrant({
-      ...missing,
-      access: "read",
-      effects: ["outside-boundary", "protected-read"],
-    });
-    expect(state.allowsReachability(missing.path, "read")).toBe(true);
-    expect(state.allowsProtectedRead(missing.path)).toBe(true);
     state.setBoundaryEnabled(false);
-    expect(state.filesystemGrants()).toEqual([]);
-    expect(state.protectedReadApprovals()).toEqual([]);
+    state.setSemanticConfirmationEnabled(false);
+
+    state.resetSession();
+
+    expect(state.boundaryEnabled()).toBe(true);
+    expect(state.semanticConfirmationEnabled()).toBe(true);
   });
 
   it("retains ordinary temporary access without promoting a fixture root", () => {
@@ -173,28 +144,19 @@ describe("Guard capabilities", () => {
     ).toBe(false);
   });
 
-  it("emits only sequence grants and unrestricted network", () => {
+  it("emits fixed grants and unrestricted network", () => {
     const root = fixture();
-    const fixed = {
+    const manifest = buildNonoManifest({
       cwd: root,
       grants: [
         grant(root, "read", "directory"),
         grant(root, "write", "directory"),
       ],
-    };
-    const outside = join(root, "outside");
-    const protectedFile = join(root, ".env");
-    const manifest = buildNonoManifest(fixed, [
-      grant(outside, "read", "directory", ["outside-boundary"]),
-      grant(protectedFile, "read", "file", ["protected-read"]),
-    ]);
+    });
     expect(manifest).toEqual({
       version: "0.1.0",
       filesystem: {
-        grants: [
-          { path: root, type: "directory", access: "readwrite" },
-          { path: outside, type: "directory", access: "read" },
-        ],
+        grants: [{ path: root, type: "directory", access: "readwrite" }],
       },
       network: { mode: "unrestricted" },
     });

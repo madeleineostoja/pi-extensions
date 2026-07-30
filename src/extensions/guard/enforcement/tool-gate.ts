@@ -1,34 +1,30 @@
-import type { FilesystemGrant, PiPathCompatibility } from "../capabilities.js";
+import type { PiPathCompatibility } from "../capabilities.js";
 import type { GuardRuntimeState } from "../state.js";
 import {
   decideDirectFilesystemTool,
+  type DirectFilesystemDecision,
   type DirectFilesystemTool,
 } from "./decide.js";
 
-export type FilesystemPromptChoice = "once" | "similar" | "block";
+export type FilesystemPromptChoice = "once" | "block";
+export type FilesystemPromptRequest = Extract<
+  DirectFilesystemDecision,
+  { kind: "approval-required" }
+>;
+export type FilesystemPrompt = (
+  request: FilesystemPromptRequest,
+) => Promise<FilesystemPromptChoice>;
 
-export type FilesystemPrompt = (request: {
-  grant: FilesystemGrant;
-  outsideBoundary: boolean;
-  protectedRead: boolean;
-}) => Promise<FilesystemPromptChoice>;
-
-export function filesystemScope(grant: FilesystemGrant): string {
-  return grant.kind === "directory" ? `${grant.path}/**` : grant.path;
-}
-
-export function filesystemPromptDetail(request: {
-  grant: FilesystemGrant;
-  outsideBoundary: boolean;
-  protectedRead: boolean;
-}): string {
+export function filesystemPromptDetail(
+  request: FilesystemPromptRequest,
+): string {
   const effects = [
-    request.outsideBoundary ? "outside the filesystem boundary" : "",
+    request.outsideSandbox ? "outside the filesystem sandbox" : "",
     request.protectedRead ? "protected explicit read" : "",
   ].filter(Boolean);
   return [
     `Requires: ${effects.join(" and ")}`,
-    `Future ${request.grant.access} access: ${filesystemScope(request.grant)}`,
+    `Access: ${request.access} ${request.target}`,
   ].join("\n");
 }
 
@@ -81,14 +77,9 @@ export async function gateDirectFilesystemTool(options: {
       reason: "Guard: filesystem approval is no longer active.",
     };
   }
-  if (choice === "once") {
-    return {};
-  }
-  if (choice === "similar") {
-    options.state.addGrant(decision.grant);
-    return {};
-  }
-  return { block: true, reason: "Guard: filesystem access was blocked." };
+  return choice === "once"
+    ? {}
+    : { block: true, reason: "Guard: filesystem access was blocked." };
 }
 
 export function isDirectFilesystemTool(

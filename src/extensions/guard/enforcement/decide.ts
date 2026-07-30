@@ -1,12 +1,9 @@
 import { lstatSync } from "node:fs";
 import {
   canonicalizeTarget,
-  createFilesystemGrant,
   hasGrant,
   resolvePiToolPath,
   type AccessMode,
-  type FilesystemGrant,
-  type GrantKind,
   type PiPathCompatibility,
 } from "../capabilities.js";
 import { isProtectedReadTarget } from "../protected.js";
@@ -25,8 +22,8 @@ export type DirectFilesystemDecision =
   | {
       kind: "approval-required";
       target: string;
-      grant: FilesystemGrant;
-      outsideBoundary: boolean;
+      access: AccessMode;
+      outsideSandbox: boolean;
       protectedRead: boolean;
     }
   | { kind: "deny"; reason: string };
@@ -41,11 +38,12 @@ function isMutation(tool: DirectFilesystemTool): boolean {
   return tool === "write" || tool === "edit";
 }
 
-function kindFor(path: string): GrantKind | null {
+function exists(path: string): boolean {
   try {
-    return lstatSync(path).isDirectory() ? "directory" : "file";
+    lstatSync(path);
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -66,8 +64,12 @@ function isProtectedToolTarget(
   cwd: string,
   compatibility: PiPathCompatibility,
 ): boolean {
+  let fileTarget = false;
+  try {
+    fileTarget = !lstatSync(target).isDirectory();
+  } catch {}
   return (
-    (tool === "read" || (tool === "grep" && kindFor(target) === "file")) &&
+    (tool === "read" || (tool === "grep" && fileTarget)) &&
     isProtectedReadTarget(requested, target, cwd, compatibility)
   );
 }
@@ -109,111 +111,44 @@ export function decideDirectFilesystemTool(options: {
 
   const access = accessFor(options.tool);
   const fixed = options.state.fixedCapabilities();
-  const reachabilityEnabled =
+  const sandboxEnabled =
     options.supportedMac && options.state.boundaryEnabled();
-  if (reachabilityEnabled && !fixed) {
+  if (sandboxEnabled && !fixed) {
     return {
       kind: "deny",
-      reason: "Guard: filesystem boundary is unavailable.",
+      reason: "Guard: filesystem sandbox is unavailable.",
     };
   }
 
-  const outsideBoundary =
-    reachabilityEnabled &&
-    !hasGrant(fixed!.grants, target, access) &&
-    !options.state.allowsReachability(target, access);
+  const outsideSandbox =
+    sandboxEnabled && !hasGrant(fixed!.grants, target, access);
   const protectedRead =
-    (isProtectedToolTarget(
+    isProtectedToolTarget(
       options.tool,
       requestedTarget,
       target,
       options.cwd,
       compatibility,
     ) ||
-      isProtectedToolTarget(
-        options.tool,
-        requestedTarget,
-        target,
-        fixed?.cwd ?? options.cwd,
-        compatibility,
-      )) &&
-    !options.state.allowsProtectedRead(target);
+    isProtectedToolTarget(
+      options.tool,
+      requestedTarget,
+      target,
+      fixed?.cwd ?? options.cwd,
+      compatibility,
+    );
 
-  if (!outsideBoundary && !protectedRead) {
+  if (!outsideSandbox && !protectedRead) {
     return { kind: "allow", target };
   }
-
-  const grant = createFilesystemGrant(
-    target,
-    options.cwd,
-    access,
-    [
-      ...(outsideBoundary ? (["outside-boundary"] as const) : []),
-      ...(protectedRead ? (["protected-read"] as const) : []),
-    ],
-    isMutation(options.tool),
-  );
-  if (!grant) {
+  if (!isMutation(options.tool) && !exists(target)) {
     return { kind: "deny", reason: "Guard: filesystem target is unavailable." };
   }
   return {
     kind: "approval-required",
     target,
-    grant,
-    outsideBoundary,
+    access,
+    outsideSandbox,
     protectedRead,
   };
-}
-
-export function prepareExplicitFilesystemGrant(options: {
-  path: string;
-  cwd: string;
-  access: AccessMode;
-  supportedMac: boolean;
-  state: GuardRuntimeState;
-  pathCompatibility?: PiPathCompatibility;
-}): FilesystemGrant | null {
-  if (!options.supportedMac) {
-    return null;
-  }
-  const fixed = options.state.fixedCapabilities();
-  if (!fixed) {
-    return null;
-  }
-  const compatibility = options.pathCompatibility ?? {};
-  let requestedTarget: string;
-  let target: string;
-  try {
-    requestedTarget = resolvePiToolPath(
-      options.path,
-      options.cwd,
-      compatibility,
-    );
-    target = canonicalizeTarget(
-      requestedTarget,
-      options.cwd,
-      false,
-      compatibility,
-    );
-  } catch {
-    return null;
-  }
-  const kind = kindFor(target);
-  if (!kind) {
-    return null;
-  }
-  const outsideBoundary = !hasGrant(fixed.grants, target, options.access);
-  const protectedRead =
-    options.access === "read" &&
-    (isProtectedReadTarget(
-      requestedTarget,
-      target,
-      options.cwd,
-      compatibility,
-    ) ||
-      isProtectedReadTarget(requestedTarget, target, fixed.cwd, compatibility));
-  return createFilesystemGrant(target, options.cwd, options.access, [
-    ...(outsideBoundary ? (["outside-boundary"] as const) : []),
-    ...(protectedRead ? (["protected-read"] as const) : []),
-  ]);
 }

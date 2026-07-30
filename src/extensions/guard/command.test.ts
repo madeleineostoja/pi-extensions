@@ -1,63 +1,80 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { guardMenuDetail, registerGuardCommand } from "./command.js";
 import { createGuardRuntimeState } from "./state.js";
-import { guardMenuDetail } from "./command.js";
 
 function state() {
   return createGuardRuntimeState();
 }
 
-describe("Guard menu detail", () => {
-  it("reports healthy and locally disabled managed boundary state", () => {
+describe("Guard menu", () => {
+  it("reports managed sandbox health", () => {
     const runtime = state();
     runtime.setBackendHealth({ kind: "healthy", path: "/managed/nono" });
 
     expect(guardMenuDetail(runtime, true)).toContain("Managed Nono");
     expect(guardMenuDetail(runtime, true)).toContain("/managed/nono: healthy");
-    expect(guardMenuDetail(runtime, true)).toContain(
-      "Protected-read approvals: none",
-    );
-    expect(guardMenuDetail(runtime, true)).toContain(
-      "Semantic confirmation: enabled",
-    );
 
-    runtime.setBoundaryEnabled(false);
-    expect(guardMenuDetail(runtime, true)).toContain(
-      "Filesystem boundary is off",
-    );
-    expect(guardMenuDetail(runtime, true)).toContain("/managed/nono: healthy");
-  });
-
-  it("reports unhealthy recovery guidance and current approval state", () => {
-    const runtime = state();
     runtime.setBackendHealth({ kind: "tools-only", reason: "missing" });
-    runtime.addGrant({
-      path: "/secret",
-      access: "read",
-      kind: "file",
-      effects: ["protected-read"],
-    });
-    runtime.setSemanticConfirmationEnabled(false);
-
-    const detail = guardMenuDetail(runtime, true);
-    expect(detail).toContain("unhealthy");
-    expect(detail).toContain("npm install");
-    expect(detail).toContain("Protected-read approvals: 1");
-    expect(detail).toContain("Semantic confirmation: disabled");
+    expect(guardMenuDetail(runtime, true)).toContain("unhealthy");
+    expect(guardMenuDetail(runtime, true)).toContain("npm install");
   });
 
-  it("keeps unsupported platforms local while retaining approval state", () => {
+  it("reports unsupported hosts as local", () => {
+    expect(guardMenuDetail(state(), false)).toContain("local Bash");
+    expect(guardMenuDetail(state(), false)).toContain("sandbox");
+  });
+
+  it("shows current toggle states and toggles them when selected", async () => {
     const runtime = state();
-    runtime.addGrant({
-      path: "/secret",
-      access: "read",
-      kind: "file",
-      effects: ["protected-read"],
+    runtime.setBackendHealth({ kind: "healthy", path: "/managed/nono" });
+    let handler: ((args: string, ctx: never) => Promise<void>) | undefined;
+    const pi = {
+      registerCommand: (
+        _name: string,
+        command: { handler: typeof handler },
+      ) => {
+        handler = command.handler;
+      },
+    };
+    registerGuardCommand({
+      pi: pi as never,
+      state: runtime,
+      supportedMac: true,
     });
 
-    const detail = guardMenuDetail(runtime, false);
-    expect(detail).toContain("local Bash");
-    expect(detail).toContain("Protected-read approvals: 1");
-    expect(detail).toContain("Semantic confirmation: enabled");
-    expect(detail).not.toContain("Managed Nono");
+    const select = vi
+      .fn()
+      .mockResolvedValueOnce("Sandbox on")
+      .mockResolvedValueOnce("Semantic guard on")
+      .mockResolvedValueOnce("Close");
+    const ctx = {
+      hasUI: true,
+      mode: "tui",
+      ui: {
+        select,
+        setStatus: vi.fn(),
+        theme: { fg: (_color: string, text: string) => text },
+      },
+    } as never;
+
+    await handler!("", ctx);
+
+    expect(runtime.boundaryEnabled()).toBe(false);
+    expect(runtime.semanticConfirmationEnabled()).toBe(false);
+    expect(select.mock.calls[0]![1]).toEqual([
+      "Sandbox on",
+      "Semantic guard on",
+      "Close",
+    ]);
+    expect(select.mock.calls[1]![1]).toEqual([
+      "Sandbox off",
+      "Semantic guard on",
+      "Close",
+    ]);
+    expect(select.mock.calls[2]![1]).toEqual([
+      "Sandbox off",
+      "Semantic guard off",
+      "Close",
+    ]);
   });
 });

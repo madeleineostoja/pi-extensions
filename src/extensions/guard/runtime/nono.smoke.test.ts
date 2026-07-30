@@ -4,15 +4,11 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import type { FilesystemGrant } from "../capabilities.js";
-import { createGuardRuntimeState } from "../state.js";
-import { gateDirectFilesystemTool } from "../enforcement/tool-gate.js";
 import { buildNonoManifest, runNono, writeNonoManifest } from "./manifest.js";
 import { getNonoHealth, getNonoTarget, managedNonoPath } from "./nono.js";
 
@@ -28,37 +24,18 @@ function manifestFor(paths: {
   workspace: string;
   session: string;
   introspection: string;
-  grants?: readonly FilesystemGrant[];
 }) {
-  return buildNonoManifest(
-    {
-      cwd: paths.workspace,
-      grants: [
-        {
-          path: paths.workspace,
-          access: "read",
-          kind: "directory",
-          effects: [],
-        },
-        {
-          path: paths.workspace,
-          access: "write",
-          kind: "directory",
-          effects: [],
-        },
-        { path: paths.session, access: "read", kind: "file", effects: [] },
-        {
-          path: paths.introspection,
-          access: "read",
-          kind: "file",
-          effects: [],
-        },
-        { path: "/bin", access: "read", kind: "directory", effects: [] },
-        { path: "/usr", access: "read", kind: "directory", effects: [] },
-      ],
-    },
-    paths.grants ?? [],
-  );
+  return buildNonoManifest({
+    cwd: paths.workspace,
+    grants: [
+      { path: paths.workspace, access: "read", kind: "directory" },
+      { path: paths.workspace, access: "write", kind: "directory" },
+      { path: paths.session, access: "read", kind: "file" },
+      { path: paths.introspection, access: "read", kind: "file" },
+      { path: "/bin", access: "read", kind: "directory" },
+      { path: "/usr", access: "read", kind: "directory" },
+    ],
+  });
 }
 
 async function cat(
@@ -99,7 +76,7 @@ it.runIf(getNonoTarget() !== null)(
 );
 
 it.runIf(getNonoTarget() !== null)(
-  "confines a supported-macOS agent manifest to fixed, session, introspection, and approved capabilities",
+  "confines a supported-macOS agent manifest to fixed capabilities",
   async () => {
     const binary = managedNonoPath();
     if (!binary) {
@@ -109,18 +86,14 @@ it.runIf(getNonoTarget() !== null)(
     directories.push(root);
     const workspace = join(root, "workspace");
     const sibling = join(root, "sibling");
-    const directory = join(root, "directory-grant");
     mkdirSync(workspace);
     mkdirSync(sibling);
-    mkdirSync(directory);
     const workspaceFile = join(workspace, "allowed");
     const session = join(root, "current-session.jsonl");
     const siblingSession = join(root, "sibling-session.jsonl");
     const introspection = join(root, "pi-introspection.json");
     const auth = join(root, "auth.json");
     const explicit = join(root, "explicit-grant");
-    const directoryChild = join(directory, "child");
-    const protectedAlias = join(workspace, ".env");
     for (const [path, content] of [
       [workspaceFile, "workspace"],
       [session, "current-session"],
@@ -128,12 +101,9 @@ it.runIf(getNonoTarget() !== null)(
       [introspection, "pi-introspection"],
       [auth, "auth"],
       [explicit, "explicit"],
-      [directoryChild, "directory"],
     ] as const) {
       writeFileSync(path, content, { mode: 0o600 });
     }
-    symlinkSync(explicit, protectedAlias);
-
     for (const [path, content] of [
       [workspaceFile, "workspace"],
       [session, "current-session"],
@@ -163,86 +133,9 @@ it.runIf(getNonoTarget() !== null)(
       );
     }
 
-    const exactFile: FilesystemGrant = {
-      path: explicit,
-      access: "read",
-      kind: "file",
-      effects: ["outside-boundary"],
-    };
-    const directoryGrant: FilesystemGrant = {
-      path: directory,
-      access: "read",
-      kind: "directory",
-      effects: ["outside-boundary"],
-    };
-    for (const [path, content, grants] of [
-      [explicit, "explicit", [exactFile]],
-      [directoryChild, "directory", [directoryGrant]],
-    ] as const) {
-      await expect(
-        cat(
-          binary,
-          writeNonoManifest(
-            manifestFor({ workspace, session, introspection, grants }),
-          ),
-          path,
-        ),
-      ).resolves.toMatchObject({
-        kind: "exited",
-        exitCode: 0,
-        stdout: content,
-      });
-    }
-
-    const state = createGuardRuntimeState();
-    state.setFixedCapabilities({
-      cwd: workspace,
-      grants: manifestFor({
-        workspace,
-        session,
-        introspection,
-      }).filesystem.grants.map((grant) => ({
-        path: grant.path,
-        access: grant.access === "readwrite" ? "read" : grant.access,
-        kind: grant.type,
-        effects: [],
-      })),
+    expect(manifestFor({ workspace, session, introspection }).network).toEqual({
+      mode: "unrestricted",
     });
-    await expect(
-      gateDirectFilesystemTool({
-        tool: "read",
-        input: { path: protectedAlias },
-        cwd: workspace,
-        supportedMac: true,
-        canPrompt: true,
-        state,
-        prompt: async () => "similar",
-      }),
-    ).resolves.toEqual({});
-    expect(state.filesystemGrants()).toHaveLength(1);
-    expect(state.protectedReadApprovals()).toHaveLength(1);
-    await expect(
-      cat(
-        binary,
-        writeNonoManifest(
-          manifestFor({
-            workspace,
-            session,
-            introspection,
-            grants: state.filesystemGrants(),
-          }),
-        ),
-        explicit,
-      ),
-    ).resolves.toMatchObject({
-      kind: "exited",
-      exitCode: 0,
-      stdout: "explicit",
-    });
-    expect(
-      manifestFor({ workspace, session, introspection, grants: [exactFile] })
-        .network,
-    ).toEqual({ mode: "unrestricted" });
   },
 );
 

@@ -58,7 +58,7 @@ This makes it practical to give Pipkin a serious implementation plan and let it 
 
 Pipkin's first layers are deliberately about control:
 
-- **Guard** is the sole Bash, filesystem, protected-read, and semantic-confirmation owner. Supported Macs use managed Nono capabilities; unsupported or explicitly local sessions retain semantic and protected-read checks without a confinement claim.
+- **Guard** is the sole Bash, filesystem, protected-read, and semantic-confirmation owner. Supported Macs use a fixed managed Nono sandbox; unsupported sessions or sessions with the sandbox switched off retain semantic and protected-read checks without a confinement claim.
 - **Readonly** separately checkpoints resolved tools named `edit` and `write`. Toggle its established workflow with `Ctrl+R` or `/readonly`.
 
 **[Safety →](docs/features/safety.md)**
@@ -104,7 +104,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 | Surface                           | What it does                                                   |
 | --------------------------------- | -------------------------------------------------------------- |
-| `/guard`                          | Review Guard mode and session capabilities                     |
+| `/guard`                          | Toggle the session sandbox and semantic guard                  |
 | `/readonly [on\|off]`             | Toggle approval for resolved `edit` and `write` tools          |
 | `context_recall`                  | Recover the original content behind an elision stub            |
 | `lsp`                             | Make semantic source queries or inspect language-server status |

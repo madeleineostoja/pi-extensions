@@ -33,11 +33,10 @@ export function createDirectFilesystemToolHandler({
         const permission = await promptForPermission({
           ui: ctx.ui,
           signal: ctx.signal,
-          title: `Guard: allow ${request.grant.access} access?`,
+          title: `Guard: allow ${request.access} access?`,
           detail: filesystemPromptDetail(request),
           choices: [
             { value: "once", label: "Allow once" },
-            { value: "similar", label: "Allow similar this session" },
             { value: "block", label: "Block" },
           ],
         });

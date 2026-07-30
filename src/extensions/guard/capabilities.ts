@@ -19,12 +19,10 @@ import {
 
 export type AccessMode = "read" | "write";
 export type GrantKind = "file" | "directory";
-export type GrantEffect = "outside-boundary" | "protected-read";
 export type FilesystemGrant = Readonly<{
   path: string;
   access: AccessMode;
   kind: GrantKind;
-  effects: readonly GrantEffect[];
 }>;
 
 export type FixedCapabilities = Readonly<{
@@ -179,7 +177,7 @@ function makeGrant(
   if (actualKind === null || actualKind !== kind) {
     return null;
   }
-  return { path: canonical, access, kind, effects: [] };
+  return { path: canonical, access, kind };
 }
 
 function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
@@ -288,19 +286,4 @@ export function createFixedCapabilities(sessionCwd: string): FixedCapabilities {
     add(root, access, kind);
   }
   return { cwd, grants };
-}
-
-export function createFilesystemGrant(
-  rawPath: string,
-  cwd: string,
-  access: AccessMode,
-  effects: readonly GrantEffect[],
-  missingMutationTarget = false,
-): FilesystemGrant | null {
-  const canonical = canonicalizeTarget(rawPath, cwd);
-  const kind =
-    kindForExisting(canonical) ?? (missingMutationTarget ? "file" : null);
-  return kind === null
-    ? null
-    : { path: canonical, access, kind, effects: [...new Set(effects)] };
 }

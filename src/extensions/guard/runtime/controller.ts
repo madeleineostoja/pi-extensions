@@ -13,6 +13,7 @@ import { confirmBashCommand } from "../semantic/confirmation.js";
 export function createGuardBashTool(
   state: GuardRuntimeState,
   bash: GuardBashRuntime,
+  beforeExecute: () => Promise<void> = async () => undefined,
 ) {
   const fixed = state.fixedCapabilities();
   if (!fixed) {
@@ -25,6 +26,7 @@ export function createGuardBashTool(
     ...definition,
     async execute(...args: Parameters<typeof definition.execute>) {
       const [toolCallId, input, signal, onUpdate, executionCtx] = args;
+      await beforeExecute();
       await confirmBashCommand({
         command: input.command,
         cwd: fixed.cwd,
@@ -80,10 +82,9 @@ export function createGuardSessionController({
       const controller = new AbortController();
       probeAbort = controller;
       state.setFixedCapabilities(createFixedCapabilities(ctx.cwd));
-      const bashTool = createGuardBashTool(state, bash);
       if (!supportedMac) {
         syncSurface(ctx);
-        return { bashTool };
+        return { bashTool: createGuardBashTool(state, bash) };
       }
       const runningProbe = (async () => {
         await previousProbe;
@@ -108,7 +109,9 @@ export function createGuardSessionController({
         }
       };
       void runningProbe.then(clearProbe, clearProbe);
-      return { bashTool };
+      return {
+        bashTool: createGuardBashTool(state, bash, () => runningProbe),
+      };
     },
     async sessionShutdown(ctx: ExtensionContext): Promise<void> {
       state.resetSession();
