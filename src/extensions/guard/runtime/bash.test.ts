@@ -6,10 +6,11 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { FixedCapabilities } from "../capabilities.js";
 import { createGuardRuntimeState } from "../state.js";
@@ -65,7 +66,7 @@ if (process.env.PIPKIN_GUARD_BASH_MODE === "hold") {
   writeFileSync(process.env.PIPKIN_GUARD_BASH_CONFIG, config);
   setInterval(() => process.stdout.write("guard output\\n"), 10);
 } else {
-  writeFileSync(process.env.PIPKIN_GUARD_BASH_LOG, JSON.stringify({ manifest: JSON.parse(readFileSync(config, "utf8")), cwd: process.cwd(), session: process.env.PI_SESSION_FILE }));
+  writeFileSync(process.env.PIPKIN_GUARD_BASH_LOG, JSON.stringify({ manifest: JSON.parse(readFileSync(config, "utf8")), cwd: process.cwd(), session: process.env.PI_SESSION_FILE, path: process.env.PATH }));
   process.stdout.write("guard output\\n");
 }
 `,
@@ -73,11 +74,13 @@ if (process.env.PIPKIN_GUARD_BASH_MODE === "hold") {
   );
   chmodSync(binary, 0o700);
   const state = createGuardRuntimeState();
+  const nodeBin = dirname(realpathSync(process.execPath));
   const fixed: FixedCapabilities = {
     cwd: workspace,
     grants: [
       { path: workspace, access: "read", kind: "directory", effects: [] },
       { path: workspace, access: "write", kind: "directory", effects: [] },
+      { path: nodeBin, access: "read", kind: "directory", effects: [] },
     ],
   };
   state.setFixedCapabilities(fixed);
@@ -136,6 +139,48 @@ describe("Guard Bash runtime", () => {
     expect(
       logged.manifest.filesystem.grants.map((grant) => grant.path),
     ).not.toContain(join(workspace, ".env"));
+  });
+
+  it("uses canonical permitted PATH entries and removes inaccessible entries", async () => {
+    const { log, state, workspace } = fixture();
+    const root = dirname(workspace);
+    const toolchain = join(root, "toolchain");
+    const alias = join(root, "toolchain-alias");
+    const inaccessible = join(root, "inaccessible");
+    mkdirSync(toolchain);
+    mkdirSync(inaccessible);
+    symlinkSync(toolchain, alias);
+    const fixed = state.fixedCapabilities()!;
+    state.setFixedCapabilities({
+      ...fixed,
+      grants: [
+        ...fixed.grants,
+        {
+          path: realpathSync(toolchain),
+          access: "read",
+          kind: "directory",
+          effects: [],
+        },
+      ],
+    });
+    const nodeBin = dirname(realpathSync(process.execPath));
+    const runtime = createGuardBashRuntime({ state, supportedMac: true });
+
+    await expect(
+      runtime.agentOperations.exec("echo guarded", workspace, {
+        onData: () => undefined,
+        env: {
+          ...process.env,
+          PATH: [alias, inaccessible, nodeBin].join(delimiter),
+          PIPKIN_GUARD_BASH_LOG: log,
+        },
+      }),
+    ).resolves.toEqual({ exitCode: 0 });
+
+    const logged = JSON.parse(readFileSync(log, "utf8")) as { path: string };
+    expect(logged.path).toBe(
+      [realpathSync(toolchain), nodeBin].join(delimiter),
+    );
   });
 
   it("rejects invalid timeouts before staging or starting Nono", async () => {

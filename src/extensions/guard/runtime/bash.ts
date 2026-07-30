@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import { realpathSync, statSync } from "node:fs";
+import { delimiter, relative, resolve, sep } from "node:path";
 import {
   createLocalBashOperations,
   getShellConfig,
@@ -69,6 +71,43 @@ type ActiveInvocation = {
   settled: Promise<void>;
 };
 
+type ManifestGrant = ReturnType<
+  typeof buildNonoManifest
+>["filesystem"]["grants"][number];
+
+function readableDirectory(path: string, grant: ManifestGrant): boolean {
+  if (grant.type !== "directory" || grant.access === "write") {
+    return false;
+  }
+  const result = relative(grant.path, path);
+  return result === "" || (!result.startsWith(`..${sep}`) && result !== "..");
+}
+
+function sandboxEnvironment(
+  environment: NodeJS.ProcessEnv | undefined,
+  cwd: string,
+  grants: readonly ManifestGrant[],
+): NodeJS.ProcessEnv {
+  const env = { ...(environment ?? process.env) };
+  if (env.PATH === undefined) {
+    return env;
+  }
+  env.PATH = env.PATH.split(delimiter)
+    .flatMap((entry) => {
+      try {
+        const path = realpathSync(entry === "" ? cwd : resolve(cwd, entry));
+        return statSync(path).isDirectory() &&
+          grants.some((grant) => readableDirectory(path, grant))
+          ? [path]
+          : [];
+      } catch {
+        return [];
+      }
+    })
+    .join(delimiter);
+  return env;
+}
+
 export type GuardBashRuntime = {
   agentOperations: BashOperations;
   userOperations: BashOperations;
@@ -112,8 +151,15 @@ export function createGuardBashRuntime(options: {
       if (!commandFromStdin) {
         commandArgs.push(command);
       }
-      const manifest = writeNonoManifest(
-        buildNonoManifest(fixed, options.state.filesystemGrants()),
+      const manifestData = buildNonoManifest(
+        fixed,
+        options.state.filesystemGrants(),
+      );
+      const manifest = writeNonoManifest(manifestData);
+      const environment = sandboxEnvironment(
+        execution.env,
+        cwd,
+        manifestData.filesystem.grants,
       );
       commandArgs[2] = manifest.path;
 
@@ -167,7 +213,7 @@ export function createGuardBashRuntime(options: {
               child = spawn(health.path, commandArgs, {
                 cwd,
                 detached: process.platform !== "win32",
-                env: execution.env,
+                env: environment,
                 stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
                 windowsHide: true,
               });

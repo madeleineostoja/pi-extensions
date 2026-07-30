@@ -13,10 +13,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { swapSync, unlock, waitForLockSync } from "fs-native-extensions";
 import * as tar from "tar";
 
@@ -60,7 +59,10 @@ function targetForHost(platform = process.platform, arch = process.arch) {
   );
 }
 
-function managedTarget(target, agentDir = getAgentDir()) {
+function managedTarget(
+  target,
+  agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"),
+) {
   return join(agentDir, "pipkin", "guard", "nono", reviewed.version, target);
 }
 
