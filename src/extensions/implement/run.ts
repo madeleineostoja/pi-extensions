@@ -206,8 +206,11 @@ async function captureTargetBoundary(
   });
 }
 
-function expectedTargetHead(state: RunState): string {
-  const pending = Object.values(state.publication.intents).filter(
+export function expectedTargetHead(
+  state: Pick<RunState, "run" | "publication">,
+): string {
+  const intents = Object.values(state.publication.intents);
+  const pending = intents.filter(
     (intent) =>
       !state.publication.receipts[intent.id] &&
       !state.publication.supersessions[intent.id],
@@ -218,18 +221,17 @@ function expectedTargetHead(state: RunState): string {
   if (pending.length > 1) {
     throw new Error("Resume found multiple unresolved publication intents.");
   }
-  const superseded = Object.values(state.publication.supersessions);
-  if (superseded.length > 0) {
-    return superseded.at(-1)!.actualTargetSha;
+  for (const intent of [...intents].reverse()) {
+    const receipt = state.publication.receipts[intent.id];
+    if (receipt) {
+      return receipt.publishedCommitSha;
+    }
+    const supersession = state.publication.supersessions[intent.id];
+    if (supersession) {
+      return supersession.actualTargetSha;
+    }
   }
-  const receipts = Object.values(state.publication.receipts);
-  const publishedBases = new Set(
-    receipts.map((receipt) => receipt.targetBaseSha),
-  );
-  const tip = receipts.find(
-    (receipt) => !publishedBases.has(receipt.publishedCommitSha),
-  );
-  return tip?.publishedCommitSha ?? state.run.checkout.startHead;
+  return state.run.checkout.startHead;
 }
 
 export async function stopRun(
@@ -306,6 +308,7 @@ export function createRuntime(args: {
                   subagents,
                   signal,
                   artifactsPath,
+                  operationId: effect.leaseId,
                   roles: args.roles,
                 })),
               };
