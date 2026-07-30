@@ -1,4 +1,5 @@
 import type { OverallRepairPacket } from "./overall-repair.js";
+import type { ReconciliationPacket } from "./reconciliation.js";
 import type { RevisionPacket } from "./revision.js";
 import type { WorkstreamPacket } from "./workstream-candidate.js";
 import type {
@@ -55,7 +56,8 @@ export function buildInitialWorkstreamReviewPrompt(
 export function buildAnchoredWorkstreamReviewPrompt(
   packet: AnchoredSourceReviewPacket,
 ): string {
-  return `You are the independent reviewer for an anchored Pipkin Implement workstream re-review. Review read-only in:\n\n  ${packet.workspace.path}\n\nBase SHA: ${packet.candidate.baseSha}\nPrevious candidate: ${packet.previousCandidate.id} @ ${packet.previousCandidate.commitSha}\nCurrent candidate: ${packet.candidate.id} @ ${packet.candidate.commitSha}\nChanged paths: ${packet.latestCorrection.changedPaths.join(", ") || "none"}\nCorrection evidence: ${packet.latestCorrection.evidence}\nCurrent verification: ${JSON.stringify(packet.verificationEvidence?.verification ?? [])}\nCurrent uncertainty: ${packet.uncertainty ?? "none"}\n\nStart by running git diff --stat ${packet.previousCandidate.commitSha}..${packet.candidate.commitSha} and git diff --name-status ${packet.previousCandidate.commitSha}..${packet.candidate.commitSha}, then inspect scoped per-file diffs with git diff ${packet.previousCandidate.commitSha}..${packet.candidate.commitSha} -- <path>. Do not dump the full range into context. Assess every outstanding ID exactly once against the current candidate and the latest correction delta. Do not re-review the complete candidate. A resolved ID cannot reopen. Add a new blocking regression only when this exact latest delta caused it and list a changed path from the latest delta. Put every other concern in observations; observations never block. Do not edit files, change Git state, install dependencies, or run write-producing commands.\n\n## Ordered contracts\n\n${packet.contracts.map((task, index) => `### ${index + 1}. ${task.id}: ${task.title}\nObjective: ${task.compiledContract.objective}\nAcceptance: ${task.compiledContract.acceptanceCriteria.join("; ")}`).join("\n\n")}\n\n## Embedded source material\n\n${packet.sourceMaterial.map((material) => `### ${material.path}\n\n${material.content}`).join("\n\n") || "No additional source material."}\n\n## Outstanding findings\n\n${formatFindings(packet.outstandingFindings)}\n\nReturn one resolved or unresolved assessment for each supplied ID, direct causal regressions only, and optional observations.`;
+  const comparisonBase = packet.comparisonBase!;
+  return `You are the independent reviewer for an anchored Pipkin Implement workstream re-review. Review read-only in:\n\n  ${packet.workspace.path}\n\nHistorical workstream base: ${packet.candidate.baseSha}\nComparison base: ${comparisonBase}\nPrevious candidate: ${packet.previousCandidate.id} @ ${packet.previousCandidate.commitSha}\nCurrent candidate: ${packet.candidate.id} @ ${packet.candidate.commitSha}\nCanonical comparison paths: ${packet.latestCorrection.changedPaths.join(", ") || "none"}\nCorrection evidence: ${packet.latestCorrection.evidence}\nFinding epoch: ${packet.findingEpoch}\nPrior review evidence: ${JSON.stringify(packet.priorReviewEvidence ?? [])}\nCurrent verification: ${JSON.stringify(packet.verificationEvidence?.verification ?? [])}\nCurrent evidence: ${JSON.stringify(packet.currentEvidence ?? { status: "unavailable" })}\nCurrent uncertainty: ${packet.uncertainty ?? "none"}\nCumulative publication subject: ${packet.publicationCommitSubject ?? "not yet authored"}\n\nStart by running git diff --stat ${comparisonBase}..${packet.candidate.commitSha} and git diff --name-status ${comparisonBase}..${packet.candidate.commitSha}, then inspect scoped per-file diffs with git diff ${comparisonBase}..${packet.candidate.commitSha} -- <path>. Do not dump the full range into context. Assess every outstanding ID exactly once against the complete current contribution, preserving the reviewed candidate behavior and the integrated target behavior. A resolved ID cannot reopen solely because target history entered candidate ancestry. Add a new blocking regression only when this canonical comparison range caused it and list a canonical changed path. Put every other concern in observations; observations never block. Do not edit files, change Git state, install dependencies, or run write-producing commands.\n\n## Ordered contracts\n\n${packet.contracts.map((task, index) => `### ${index + 1}. ${task.id}: ${task.title}\nObjective: ${task.compiledContract.objective}\nAcceptance: ${task.compiledContract.acceptanceCriteria.join("; ")}`).join("\n\n")}\n\n## Embedded source material\n\n${packet.sourceMaterial.map((material) => `### ${material.path}\n\n${material.content}`).join("\n\n") || "No additional source material."}\n\n## Outstanding findings\n\n${formatFindings(packet.outstandingFindings)}\n\nReturn one resolved or unresolved assessment for each supplied ID, direct causal regressions only, and optional observations.`;
 }
 
 export function buildInitialOverallReviewPrompt(args: {
@@ -77,6 +79,7 @@ export function buildAnchoredOverallReviewPrompt(args: {
   candidateContext: string;
   baseSha: string;
   outstandingFindings: Finding[];
+  completeFindings?: Finding[];
   previousCandidate: string;
   currentCandidate: string;
   worktreePath?: string;
@@ -85,7 +88,45 @@ export function buildAnchoredOverallReviewPrompt(args: {
   const publicationSubject = args.authorPublicationCommitSubject
     ? " When returning the initial repair assessment, also author one concise Conventional Commit subject describing the complete repair delta. This is publication metadata, not an additional review pass."
     : "";
-  return `You are the independent reviewer for an anchored whole-plan repair. Review read-only in ${args.worktreePath ?? "the repair worktree"}.\n\nBase SHA: ${args.baseSha}\nPrevious candidate SHA: ${args.previousCandidate}\nCurrent candidate SHA: ${args.currentCandidate}\n\nStart by running git diff --stat ${args.previousCandidate}..${args.currentCandidate} and git diff --name-status ${args.previousCandidate}..${args.currentCandidate}, then inspect scoped per-file diffs with git diff ${args.previousCandidate}..${args.currentCandidate} -- <path>. Do not dump the full range into context.\n\nPlan context:\n${args.planContext}\n\nCandidate context:\n${args.candidateContext}\n\nAssess every outstanding finding exactly once against the current candidate and latest correction delta. Do not re-review the complete candidate. A resolved finding cannot reopen. Add a blocking regression only when the latest delta caused it; place every other concern in observations.\n\n## Outstanding findings\n\n${formatFindings(args.outstandingFindings)}\n\nDo not edit files, change Git state, install dependencies, or run write-producing commands.${publicationSubject}`;
+  return `You are the independent reviewer for an anchored whole-plan repair. Review read-only in ${args.worktreePath ?? "the repair worktree"}.\n\nComparison base SHA: ${args.baseSha}\nPrevious candidate SHA: ${args.previousCandidate}\nCurrent candidate SHA: ${args.currentCandidate}\n\nStart by running git diff --stat ${args.baseSha}..${args.currentCandidate} and git diff --name-status ${args.baseSha}..${args.currentCandidate}, then inspect scoped per-file diffs with git diff ${args.baseSha}..${args.currentCandidate} -- <path>. Do not dump the full range into context.\n\nPlan context:\n${args.planContext}\n\nCandidate context:\n${args.candidateContext}\n\n## Complete prior findings\n\n${formatFindings(args.completeFindings ?? []) || "None."}\n\nAssess every outstanding finding exactly once against the complete current contribution, preserving both the previous candidate and the integrated target behavior. A resolved finding cannot reopen solely because target history entered candidate ancestry. Add a blocking regression only when the canonical comparison range caused it; place every other concern in observations.\n\n## Outstanding findings\n\n${formatFindings(args.outstandingFindings)}\n\nDo not edit files, change Git state, install dependencies, or run write-producing commands.${publicationSubject}`;
+}
+
+export function buildReconciliationPrompt(
+  packet: ReconciliationPacket,
+): string {
+  const scopedPaths = packet.replay.relevantPaths.join(", ") || "none retained";
+  return `You are the Pipkin Implement semantic reconciliation worker for one exact failed replay. Work only in this assigned Git candidate worktree:
+
+  ${packet.workspace.path}
+
+${packet.workspace.mutationBoundary}
+
+The scheduler fixed this assignment. This is not a generic retry, workspace recreation, safety action, or publication step. Do not access the sibling target worktree, publication staging, protected source corpus, or any other worktree. Do not push, fetch, reset, rebase, amend, rewrite candidate history, bypass hooks, or change refs. Use only the retained immutable commit identities available through this worktree's Git object database.
+
+Prior candidate: ${packet.candidate.id} @ ${packet.candidate.commitSha}
+Historical workstream base: ${packet.candidate.baseSha}
+Prior integration base: ${packet.priorIntegrationBase}
+Failed replay target: ${packet.failedTarget.commitSha}
+Failed target tree: ${packet.failedTarget.treeSha}
+Replay disposition: ${packet.replay.disposition}
+Candidate paths: ${packet.replay.candidatePaths.join(", ") || "none"}
+Target paths: ${packet.replay.targetPaths.join(", ") || "none"}
+Exact relevant paths: ${scopedPaths}
+
+First inspect only scoped immutable ranges: git diff --stat ${packet.priorIntegrationBase}..${packet.candidate.commitSha}, git diff --name-status ${packet.priorIntegrationBase}..${packet.candidate.commitSha}, git diff --stat ${packet.priorIntegrationBase}..${packet.failedTarget.commitSha}, and git diff --name-status ${packet.priorIntegrationBase}..${packet.failedTarget.commitSha}. Inspect per-file diffs only for the retained paths; do not dump full ranges into context. Then merge ${packet.failedTarget.commitSha} into the current candidate branch with a normal merge commit, preserving both the reviewed candidate behavior and the failed target behavior. Resolve textual conflicts and clean semantic overlaps deliberately. Run proportionate verification, inspect the target-relative result with git diff --stat ${packet.failedTarget.commitSha}..HEAD and scoped per-file diffs, commit through ordinary hooks, and leave the assigned worktree clean with no active Git operation.
+
+## Failed replay evidence
+
+${packet.replay.evidence}
+${packet.replay.hookEvidence ? `\nHook evidence:\n${packet.replay.hookEvidence}` : ""}
+
+## Prior review evidence
+
+${packet.priorEvidence.map((evidence) => `- ${evidence}`).join("\n") || "None."}
+
+Cumulative publication subject: ${packet.publicationCommitSubject ?? "retained by the scheduler; do not author or change it"}
+
+Submit only a concise semantic summary, at least one verification statement, and uncertainty when applicable. Do not report commit IDs, branch names, trees, paths, or Git operation output: the orchestrator observes those directly.`;
 }
 
 export function buildRevisionPrompt(packet: RevisionPacket): string {

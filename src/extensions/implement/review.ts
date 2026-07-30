@@ -33,6 +33,7 @@ export class ReviewWorkspaceSafetyError extends Error {}
 
 export type ReviewState = {
   candidateId: string;
+  comparisonBase: string;
   previousCandidateId?: string;
   round: number;
   outstandingIds: string[];
@@ -67,6 +68,15 @@ export type ReviewPacket = {
   uncertainty?: string;
   outstandingFindings: ReviewFinding[];
   latestCorrection?: ReviewState["latestCorrection"];
+  comparisonBase?: string;
+  findingEpoch?: number;
+  priorReviewEvidence?: string[];
+  publicationCommitSubject?: string;
+  currentEvidence?: {
+    status: "reported" | "unavailable";
+    summary?: string;
+    artifactPath?: string;
+  };
 };
 
 export type InitialSourceReviewPacket = ReviewPacket & {
@@ -105,6 +115,11 @@ export type OverallAnchoredReviewPacket = {
   candidateContext: string;
   previousCandidate: RunState["candidates"][string];
   candidate: RunState["candidates"][string];
+  comparisonBase: string;
+  findingEpoch: number;
+  priorReviewEvidence: string[];
+  publicationCommitSubject?: string;
+  completeFindings: ReviewFinding[];
   outstandingFindings: ReviewFinding[];
 };
 
@@ -127,6 +142,10 @@ export type ReviewOutcome =
   | {
       kind: "anchored";
       candidateId: string;
+      previousCandidateId: string;
+      comparisonBase: string;
+      changedPaths: string[];
+      findingEpoch: number;
       completion:
         | AnchoredWorkstreamReviewCompletion
         | InitialAnchoredWorkstreamReviewCompletion;
@@ -233,6 +252,20 @@ export function buildReviewPacket(args: {
     ...(candidate.implementationEvidence
       ? { verificationEvidence: candidate.implementationEvidence }
       : {}),
+    currentEvidence: {
+      status: candidate.evidenceStatus ?? "reported",
+      ...(candidate.implementationEvidence?.summary
+        ? { summary: candidate.implementationEvidence.summary }
+        : {}),
+      ...((candidate.implementationEvidence?.artifactPath ??
+      candidate.observationArtifact)
+        ? {
+            artifactPath:
+              candidate.implementationEvidence?.artifactPath ??
+              candidate.observationArtifact,
+          }
+        : {}),
+    },
     ...(candidate.implementationEvidence?.uncertainty
       ? { uncertainty: candidate.implementationEvidence.uncertainty }
       : {}),
@@ -245,6 +278,16 @@ export function buildReviewPacket(args: {
       ),
     ...(review?.latestCorrection
       ? { latestCorrection: review.latestCorrection }
+      : {}),
+    ...(review
+      ? {
+          comparisonBase: review.comparisonBase,
+          findingEpoch: review.round,
+          priorReviewEvidence: [...review.evidence],
+          ...(review.publicationCommitSubject
+            ? { publicationCommitSubject: review.publicationCommitSubject }
+            : {}),
+        }
       : {}),
   };
 }
@@ -353,6 +396,8 @@ export function buildSourceReviewWorkerPacket(args: {
   if (
     args.review.candidateId !== args.packet.candidate.id ||
     !args.review.previousCandidateId ||
+    !args.packet.comparisonBase ||
+    args.packet.comparisonBase !== args.review.comparisonBase ||
     !args.packet.previousCandidate ||
     args.packet.previousCandidate.id !== args.review.previousCandidateId ||
     !sameWorkstream(
@@ -467,7 +512,7 @@ export async function runWorkstreamReview(args: {
     review && previousCandidate
       ? await changedPathsBetween(
           workspaceGit,
-          previousCandidate.commitSha,
+          review.comparisonBase,
           candidate.commitSha,
         )
       : undefined;
@@ -550,6 +595,10 @@ export async function runWorkstreamReview(args: {
       ? {
           kind: "anchored",
           candidateId: candidate.id,
+          previousCandidateId: previousCandidate!.id,
+          comparisonBase: review!.comparisonBase,
+          changedPaths: [...actualChangedPaths!],
+          findingEpoch: review!.round,
           completion: result.result as AnchoredWorkstreamReviewCompletion,
           evidence,
         }
@@ -604,11 +653,12 @@ async function runOverallAnchoredReview(args: {
       "The overall repair workspace does not match its current candidate.",
     );
   }
+  const completeFindings = workstreamReviewFindings(
+    args.state,
+    args.workstream,
+  );
   const available = new Map(
-    workstreamReviewFindings(args.state, args.workstream).map((finding) => [
-      finding.id,
-      finding,
-    ]),
+    completeFindings.map((finding) => [finding.id, finding]),
   );
   const findings = review.outstandingIds.map((id) => {
     const finding = available.get(id);
@@ -636,11 +686,30 @@ async function runOverallAnchoredReview(args: {
         "Read-only candidate worktree; do not mutate Git or protected corpus.",
     },
     planContext: JSON.stringify(args.plan, null, 2),
-    candidateContext: `Run base: ${args.state.run.checkout.startHead}\nCandidate: ${candidate.commitSha}`,
+    candidateContext: `Run base: ${args.state.run.checkout.startHead}\nHistorical workstream base: ${candidate.baseSha}\nComparison base: ${review.comparisonBase}\nPrevious candidate: ${previousCandidate.commitSha}\nCandidate: ${candidate.commitSha}\nCanonical comparison paths: ${review.latestCorrection?.changedPaths.join(", ") || "none"}\nFinding epoch: ${review.round}\nPrior review evidence: ${JSON.stringify(review.evidence)}\nCurrent verification: ${JSON.stringify(candidate.implementationEvidence?.verification ?? [])}\nCurrent evidence: ${candidate.implementationEvidence?.artifactPath ?? candidate.observationArtifact ?? "unavailable"}\nCurrent uncertainty: ${candidate.implementationEvidence?.uncertainty ?? "none"}\nCumulative publication subject: ${review.publicationCommitSubject ?? "not yet authored"}`,
     previousCandidate,
     candidate,
+    comparisonBase: review.comparisonBase,
+    findingEpoch: review.round,
+    priorReviewEvidence: [...review.evidence],
+    ...(review.publicationCommitSubject
+      ? { publicationCommitSubject: review.publicationCommitSubject }
+      : {}),
+    completeFindings,
     outstandingFindings: findings,
   };
+  const actualChangedPaths = await changedPathsBetween(
+    workspaceGit,
+    review.comparisonBase,
+    candidate.commitSha,
+  );
+  if (
+    !sameIds(actualChangedPaths, review.latestCorrection?.changedPaths ?? [])
+  ) {
+    throw new WorkerPacketError(
+      "Overall repair review does not match its canonical comparison range.",
+    );
+  }
   const handle = await spawnValidatedWorker({
     packet,
     subagents: args.subagents,
@@ -651,8 +720,9 @@ async function runOverallAnchoredReview(args: {
       buildAnchoredOverallReviewPrompt({
         planContext: workerPacket.planContext,
         candidateContext: workerPacket.candidateContext,
-        baseSha: workerPacket.candidate.baseSha,
+        baseSha: workerPacket.comparisonBase,
         outstandingFindings: workerPacket.outstandingFindings as never,
+        completeFindings: workerPacket.completeFindings as never,
         previousCandidate: workerPacket.previousCandidate.commitSha,
         currentCandidate: workerPacket.candidate.commitSha,
         worktreePath: workerPacket.workspace.path,
@@ -700,6 +770,10 @@ async function runOverallAnchoredReview(args: {
   return {
     kind: "anchored",
     candidateId: candidate.id,
+    previousCandidateId: previousCandidate.id,
+    comparisonBase: review.comparisonBase,
+    changedPaths: actualChangedPaths,
+    findingEpoch: review.round,
     completion: result.result as
       | AnchoredWorkstreamReviewCompletion
       | InitialAnchoredWorkstreamReviewCompletion,
@@ -710,6 +784,7 @@ async function runOverallAnchoredReview(args: {
 export function applyInitialWorkstreamReview(args: {
   workstream: RuntimeWorkstream;
   candidateId: string;
+  comparisonBase: string;
   completion:
     | InitialWorkstreamReviewCompletion
     | RepositoryStateReviewCompletion;
@@ -730,6 +805,7 @@ export function applyInitialWorkstreamReview(args: {
   return {
     review: {
       candidateId: args.candidateId,
+      comparisonBase: args.comparisonBase,
       round: 0,
       outstandingIds: findings.map((finding) => finding.id),
       evidence: [args.evidence],
@@ -835,6 +911,7 @@ export function applyAnchoredWorkstreamReview(args: {
 export function retargetAnchoredReview(args: {
   state: ReviewState;
   candidateId: string;
+  comparisonBase: string;
   correction: {
     fromCandidateId: string;
     changedPaths: string[];
@@ -850,6 +927,7 @@ export function retargetAnchoredReview(args: {
   return {
     ...args.state,
     candidateId: args.candidateId,
+    comparisonBase: args.comparisonBase,
     previousCandidateId: args.state.candidateId,
     latestCorrection: args.correction,
   };

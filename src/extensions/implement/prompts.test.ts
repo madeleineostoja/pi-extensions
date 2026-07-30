@@ -46,8 +46,8 @@ describe("whole-plan and repair prompts", () => {
       expect(prompt).toContain("git diff --name-status");
     }
     expect(initial).toContain("run-base..published-current");
-    expect(anchored).toContain("Base SHA: run-base");
-    expect(anchored).toContain("previous-repair..current-repair");
+    expect(anchored).toContain("Comparison base SHA: run-base");
+    expect(anchored).toContain("run-base..current-repair");
     expect(repair).toContain("run-base..current-repair");
   });
 });

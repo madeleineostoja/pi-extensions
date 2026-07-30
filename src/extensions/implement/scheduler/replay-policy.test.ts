@@ -117,6 +117,25 @@ describe("replay preparation policy", () => {
       outcome: {
         kind: "reconciliation_required",
         evidence: "candidate and target overlap",
+        failedReplay: {
+          candidateCommitSha: "candidate-sha",
+          candidateTreeSha: "candidate-tree",
+          targetSha: "failed-target-sha",
+          targetTreeSha: "failed-target-tree",
+          disposition: "overlap",
+          paths: {
+            candidate: ["src/endpoint.ts"],
+            target: ["src/endpoint.ts"],
+            replay: ["src/endpoint.ts"],
+          },
+          staging: {
+            id: "staging-failed",
+            operationId: requested.effect.leaseId,
+            branchName: "pipkin/implement/run-1/staging-failed",
+            targetRef: "refs/heads/main",
+          },
+          evidence: "candidate and target overlap",
+        },
         workspace: {
           id: "staging-failed",
           changedPaths: ["src/endpoint.ts"],
@@ -131,6 +150,12 @@ describe("replay preparation policy", () => {
       expect.objectContaining({
         candidateId: requested.candidateId,
         targetSha: "failed-target-sha",
+        disposition: "overlap",
+        paths: {
+          candidate: ["src/endpoint.ts"],
+          target: ["src/endpoint.ts"],
+          replay: ["src/endpoint.ts"],
+        },
         status: "pending",
       }),
     ]);

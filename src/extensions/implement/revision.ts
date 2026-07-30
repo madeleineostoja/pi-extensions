@@ -8,7 +8,7 @@ import {
 } from "./candidate-admission.js";
 import { captureRestoreSnapshot, snapshotChanged } from "./candidate.js";
 import { TaskWorkspaceManager } from "./candidate-worker.js";
-import type { GitClient } from "./git.js";
+import { changedPathsBetween, type GitClient } from "./git.js";
 import { overallRepairWorkspace } from "./overall-repair.js";
 import { buildRevisionPrompt } from "./prompts.js";
 import type { RevisionCompletion } from "./result-schemas.js";
@@ -28,6 +28,7 @@ export type RevisionPacket = {
   workspace: { path: string; mutationBoundary: string };
   candidate: RunState["candidates"][string];
   comparisonBase: string;
+  reviewComparisonBase: string;
   findingEpoch: number;
   outstandingFindingIds: string[];
   findings: RunState["findings"][string][];
@@ -77,6 +78,7 @@ export function buildRevisionPacket(args: {
     assignment.candidateId !== candidate.id ||
     assignment.comparisonBase !== candidate.commitSha ||
     !review ||
+    review.comparisonBase === "" ||
     review.candidateId !== candidate.id ||
     review.round !== assignment.findingEpoch ||
     !sameIds(review.outstandingIds, assignment.outstandingFindingIds)
@@ -112,6 +114,7 @@ export function buildRevisionPacket(args: {
     },
     candidate,
     comparisonBase: assignment.comparisonBase,
+    reviewComparisonBase: review.comparisonBase,
     findingEpoch: assignment.findingEpoch,
     outstandingFindingIds: [...assignment.outstandingFindingIds],
     findings,
@@ -242,7 +245,11 @@ export async function runRevision(args: {
       observation,
     );
   }
-  const admitted = admission;
+  const reviewChangedPaths = await changedPathsBetween(
+    workspaceGit,
+    packet.reviewComparisonBase,
+    observation.head,
+  );
   const evidenceStatus =
     providerFailure || response?.status !== "completed"
       ? "unavailable"
@@ -282,7 +289,7 @@ export async function runRevision(args: {
     treeSha: observation.tree!,
     evidenceStatus,
     observationArtifact: evidencePath,
-    changedPaths: admitted.changedPaths,
+    changedPaths: reviewChangedPaths,
     ...(completion
       ? {
           implementationEvidence: {
@@ -301,7 +308,7 @@ export async function runRevision(args: {
     candidate,
     correction: {
       fromCandidateId: packet.candidate.id,
-      changedPaths: admitted.changedPaths,
+      changedPaths: reviewChangedPaths,
       evidence: evidencePath,
     },
   };

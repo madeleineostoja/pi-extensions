@@ -32,6 +32,25 @@ type WorkspaceObservation = {
   status: ReadonlyArray<{ status: string; path: string }>;
 };
 
+type FailedReplayContext = {
+  candidateCommitSha: string;
+  candidateTreeSha: string;
+  targetSha: string;
+  targetTreeSha: string;
+  disposition: "overlap" | "conflict" | "changed_patch";
+  paths: { candidate: string[]; target: string[]; replay: string[] };
+  staging: {
+    id: string;
+    operationId: string;
+    branchName: string;
+    targetRef: string;
+    replayPatchHash?: string;
+    hookCommand?: FailureCommandEvidence;
+  };
+  evidence: string;
+  hookEvidence?: string;
+};
+
 type ImplementationOutcome =
   | {
       kind: "candidate_ready";
@@ -132,6 +151,34 @@ export type SchedulerEvent =
       now: string;
     }
   | {
+      kind: "reconciliation_assignment_requested";
+      workstream: RuntimeWorkstream;
+      now: string;
+    }
+  | {
+      kind: "reconciliation_worker_completed";
+      workstream: RuntimeWorkstream;
+      leaseId: string;
+      assignmentId: string;
+      outcome: {
+        candidate: RunState["candidates"][string];
+        correction: {
+          fromCandidateId: string;
+          changedPaths: string[];
+          evidence: string;
+        };
+      };
+    }
+  | {
+      kind: "reconciliation_worker_failed";
+      workstream: RuntimeWorkstream;
+      leaseId: string;
+      assignmentId: string;
+      category: FailureCategory;
+      evidence: string;
+      observation?: WorkspaceObservation;
+    }
+  | {
       kind: "satisfaction_reassessment_requested";
       workstream: Extract<RuntimeWorkstream, { kind: "source" }>;
       targetSha: string;
@@ -169,10 +216,21 @@ export type SchedulerEvent =
             };
           }
         | {
-            kind:
-              | "reconciliation_required"
-              | "execution_failed"
-              | "hook_rejected";
+            kind: "reconciliation_required";
+            evidence: string;
+            command?: FailureCommandEvidence;
+            failedReplay: FailedReplayContext;
+            workspace: {
+              id: string;
+              checkpoint?: string;
+              changedPaths: string[];
+              stateEvidence: string;
+              targetSha?: string;
+              stagingComparison?: { baseSha: string; treeSha: string };
+            };
+          }
+        | {
+            kind: "execution_failed" | "hook_rejected";
             evidence: string;
             command?: FailureCommandEvidence;
             workspace: {
@@ -286,6 +344,13 @@ export type SchedulerEffect =
       workstream: RuntimeWorkstream;
       leaseId: string;
       candidateId: string;
+    }
+  | {
+      kind: "run_reconciliation_worker";
+      workstream: RuntimeWorkstream;
+      leaseId: string;
+      candidateId: string;
+      assignmentId: string;
     }
   | {
       kind: "run_publication";
@@ -767,6 +832,9 @@ export function reduceRunEvent(
                 retargetAnchoredReview({
                   state: review,
                   candidateId: event.outcome.candidate.id,
+                  comparisonBase:
+                    event.outcome.candidate.integrationBaseSha ??
+                    event.outcome.candidate.baseSha,
                   correction: {
                     fromCandidateId: review.candidateId,
                     changedPaths: event.outcome.candidate.changedPaths ?? [],
@@ -885,6 +953,9 @@ export function reduceRunEvent(
           const update = applyInitialWorkstreamReview({
             workstream: event.workstream,
             candidateId: event.outcome.candidateId,
+            comparisonBase:
+              state.candidates[event.outcome.candidateId]!.integrationBaseSha ??
+              state.candidates[event.outcome.candidateId]!.baseSha,
             completion: event.outcome.completion,
             evidence: event.outcome.evidence,
           });
@@ -923,9 +994,19 @@ export function reduceRunEvent(
           assessment!.status = findings.length === 0 ? "approved" : "rejected";
         } else {
           const review = workstreamReviewState(state, event.workstream);
-          if (!review || review.candidateId !== event.outcome.candidateId) {
+          if (
+            !review ||
+            review.candidateId !== event.outcome.candidateId ||
+            review.previousCandidateId !== event.outcome.previousCandidateId ||
+            review.comparisonBase !== event.outcome.comparisonBase ||
+            review.round !== event.outcome.findingEpoch ||
+            !samePaths(
+              review.latestCorrection?.changedPaths ?? [],
+              event.outcome.changedPaths,
+            )
+          ) {
             return reject(
-              "anchored review is not bound to the current review epoch",
+              "anchored review is not bound to the current comparison identity",
             );
           }
           const update = applyAnchoredWorkstreamReview({
@@ -1087,6 +1168,7 @@ export function reduceRunEvent(
         state.reviews[reviewKey(event.workstream)] = retargetAnchoredReview({
           state: review,
           candidateId: candidate.id,
+          comparisonBase: review.comparisonBase,
           correction: event.outcome.correction,
         });
       } catch (error) {
@@ -1385,6 +1467,141 @@ export function reduceRunEvent(
     case "reconciliation_requested":
       return startReconciliation(state, event.workstream, event.now, reject);
 
+    case "reconciliation_assignment_requested":
+      return startReconciliationWorker(
+        state,
+        event.workstream,
+        event.now,
+        reject,
+      );
+
+    case "reconciliation_worker_completed": {
+      const lease = ownedLease(
+        state,
+        event.leaseId,
+        event.workstream,
+        "reconciliation",
+      );
+      const workstream = getWorkstream(state, event.workstream);
+      const assignment = state.reconciliationAssignments[event.assignmentId];
+      const previous = assignment
+        ? state.candidates[assignment.candidateId]
+        : undefined;
+      const review = workstreamReviewState(state, event.workstream);
+      const candidate = event.outcome.candidate;
+      if (
+        !lease ||
+        !workstream ||
+        !assignment ||
+        !previous ||
+        !review ||
+        lease.reconciliationAssignmentId !== assignment.id ||
+        assignment.status !== "pending" ||
+        workstream.phase !== "reconciling" ||
+        workstream.candidateId !== assignment.candidateId ||
+        assignment.candidateCommitSha !== previous.commitSha ||
+        assignment.candidateTreeSha !== previous.treeSha ||
+        event.outcome.correction.fromCandidateId !== previous.id ||
+        !sameWorkstream(candidate.workstream, event.workstream) ||
+        candidate.baseSha !== previous.baseSha ||
+        candidate.integrationBaseSha !== assignment.targetSha ||
+        candidate.commitSha === previous.commitSha ||
+        candidate.treeSha === previous.treeSha ||
+        !samePaths(
+          candidate.changedPaths ?? [],
+          event.outcome.correction.changedPaths,
+        ) ||
+        !reviewIsCurrentForReconciliation(review, previous.id)
+      ) {
+        return reject(
+          "reconciliation completion does not own its exact candidate and failed target",
+        );
+      }
+      const existing = state.candidates[candidate.id];
+      if (existing && JSON.stringify(existing) !== JSON.stringify(candidate)) {
+        return reject("candidate identity is immutable");
+      }
+      try {
+        state.reviews[reviewKey(event.workstream)] = retargetAnchoredReview({
+          state: review,
+          candidateId: candidate.id,
+          comparisonBase: assignment.targetSha,
+          correction: event.outcome.correction,
+        });
+      } catch (error) {
+        return reject(error instanceof Error ? error.message : String(error));
+      }
+      state.candidates[candidate.id] = candidate;
+      workstream.candidateId = candidate.id;
+      assignment.status = "completed";
+      settleLease(state, lease, event.kind, event);
+      workstream.phase = "candidate_ready";
+      return accept();
+    }
+
+    case "reconciliation_worker_failed": {
+      const lease = ownedLease(
+        state,
+        event.leaseId,
+        event.workstream,
+        "reconciliation",
+      );
+      const workstream = getWorkstream(state, event.workstream);
+      const assignment = state.reconciliationAssignments[event.assignmentId];
+      if (
+        !lease ||
+        !workstream ||
+        !assignment ||
+        lease.reconciliationAssignmentId !== assignment.id ||
+        assignment.status !== "pending" ||
+        workstream.phase !== "reconciling" ||
+        workstream.candidateId !== assignment.candidateId
+      ) {
+        return reject(
+          "reconciliation failure does not own its exact assignment",
+        );
+      }
+      settleLease(state, lease, event.kind, event);
+      recordFailure(state, {
+        category: event.category,
+        assignment:
+          event.category === "workspace_unsafe"
+            ? "blocked"
+            : "operational_retry",
+        workstream: event.workstream,
+        candidateId: assignment.candidateId,
+        gate: "semantic_reconciliation",
+        evidence: event.evidence,
+        ...(event.observation ? { observation: event.observation } : {}),
+      });
+      if (
+        event.category === "semantic_blocked" ||
+        event.category === "workspace_unsafe"
+      ) {
+        assignment.status = "blocked";
+        return failRun(
+          state,
+          event.category,
+          event.evidence,
+          new Date().toISOString(),
+          reject,
+        );
+      }
+      assignment.executionFailures++;
+      if (assignment.executionFailures >= 3) {
+        assignment.status = "blocked";
+        return failRun(
+          state,
+          terminalFailureCategory(event.category),
+          event.evidence,
+          new Date().toISOString(),
+          reject,
+        );
+      }
+      workstream.phase = "reconciliation_required";
+      return accept();
+    }
+
     case "reconciliation_completed": {
       const lease = ownedLease(
         state,
@@ -1504,9 +1721,25 @@ export function reduceRunEvent(
         );
       }
       if (event.outcome.kind === "reconciliation_required") {
-        if (!event.outcome.workspace.targetSha) {
+        const replay = event.outcome.failedReplay;
+        if (
+          !event.outcome.workspace.targetSha ||
+          event.outcome.workspace.targetSha !== replay.targetSha ||
+          replay.candidateCommitSha !==
+            state.candidates[candidateId]?.commitSha ||
+          replay.candidateTreeSha !== state.candidates[candidateId]?.treeSha ||
+          replay.staging.id !== event.outcome.workspace.id ||
+          replay.staging.operationId !== lease.id ||
+          !samePaths(
+            event.outcome.workspace.changedPaths,
+            replay.paths.replay,
+          ) ||
+          !canonicalReplayPaths(replay.paths.candidate) ||
+          !canonicalReplayPaths(replay.paths.target) ||
+          !canonicalReplayPaths(replay.paths.replay)
+        ) {
           return reject(
-            "failed replay does not retain the exact target it reconciled against",
+            "failed replay does not retain an exact immutable reconciliation context",
           );
         }
         const id = `reconcile:${workstreamId(event.workstream)}:${candidateId}:${Object.keys(state.reconciliationAssignments).length + 1}`;
@@ -1514,9 +1747,41 @@ export function reduceRunEvent(
           id,
           workstream: event.workstream,
           candidateId,
-          targetSha: event.outcome.workspace.targetSha,
-          evidence: boundedFailureOutput(event.outcome.evidence),
+          candidateCommitSha: replay.candidateCommitSha,
+          candidateTreeSha: replay.candidateTreeSha,
+          targetSha: replay.targetSha,
+          targetTreeSha: replay.targetTreeSha,
+          disposition: replay.disposition,
+          paths: {
+            candidate: [...replay.paths.candidate],
+            target: [...replay.paths.target],
+            replay: [...replay.paths.replay],
+          },
+          operationId: lease.id,
+          staging: {
+            id: replay.staging.id,
+            branchName: replay.staging.branchName,
+            targetRef: replay.staging.targetRef,
+            ...(replay.staging.replayPatchHash
+              ? { replayPatchHash: replay.staging.replayPatchHash }
+              : {}),
+            ...(replay.staging.hookCommand
+              ? {
+                  hookCommand: {
+                    ...replay.staging.hookCommand,
+                    output: boundedFailureOutput(
+                      replay.staging.hookCommand.output,
+                    ),
+                  },
+                }
+              : {}),
+          },
+          evidence: boundedFailureOutput(replay.evidence),
+          ...(replay.hookEvidence
+            ? { hookEvidence: boundedFailureOutput(replay.hookEvidence) }
+            : {}),
           status: "pending",
+          executionFailures: 0,
         };
         recordFailure(state, {
           category: "semantic_blocked",
@@ -1995,7 +2260,9 @@ export function reduceRunEvent(
         return reject("process lease references an unknown workstream");
       }
       settleLease(state, lease, "abandoned", event);
-      workstream.phase = abandonedPhase(lease.kind);
+      workstream.phase = lease.reconciliationAssignmentId
+        ? "reconciliation_required"
+        : abandonedPhase(lease.kind);
       return accept();
     }
 
@@ -2117,6 +2384,7 @@ function queueWholePlanRepair(
   const update = applyInitialWorkstreamReview({
     workstream,
     candidateId: candidate.id,
+    comparisonBase: candidate.integrationBaseSha ?? candidate.baseSha,
     completion: {
       verdict: "changes_requested",
       findings: args.findings.map(({ id: _, ...finding }) => finding),
@@ -2250,6 +2518,49 @@ function startWorkspaceRecreation(
   };
 }
 
+function startReconciliationWorker(
+  state: RunState,
+  workstream: RuntimeWorkstream,
+  now: string,
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
+  const current = getWorkstream(state, workstream);
+  const assignment = Object.values(state.reconciliationAssignments).find(
+    (candidate) =>
+      candidate.status === "pending" &&
+      sameWorkstream(candidate.workstream, workstream),
+  );
+  if (
+    !current ||
+    !assignment ||
+    current.phase !== "reconciliation_required" ||
+    current.candidateId !== assignment.candidateId ||
+    !processIsAllowed(state, workstream) ||
+    activeLeaseFor(state, workstream) ||
+    activeWorkerLeaseCount(state) > 0 ||
+    hasIntegrationLease(state)
+  ) {
+    return reject("workstream is not ready for its reconciliation assignment");
+  }
+  const lease = createLease(state, workstream, "reconciliation", now, 0);
+  lease.reconciliationAssignmentId = assignment.id;
+  state.processLeases[lease.id] = lease;
+  current.phase = "reconciling";
+  return {
+    state,
+    effects: [
+      {
+        kind: "run_reconciliation_worker",
+        workstream,
+        leaseId: lease.id,
+        candidateId: assignment.candidateId,
+        assignmentId: assignment.id,
+      },
+    ],
+    accepted: true,
+  };
+}
+
 function startReconciliation(
   state: RunState,
   workstream: RuntimeWorkstream,
@@ -2330,6 +2641,9 @@ function settleLease(
       : {}),
     ...(lease.revisionAssignmentId
       ? { revisionAssignmentId: lease.revisionAssignmentId }
+      : {}),
+    ...(lease.reconciliationAssignmentId
+      ? { reconciliationAssignmentId: lease.reconciliationAssignmentId }
       : {}),
     ...(lease.workspaceRecreationId
       ? { workspaceRecreationId: lease.workspaceRecreationId }
@@ -2599,6 +2913,29 @@ function samePaths(left: readonly string[], right: readonly string[]): boolean {
   );
 }
 
+function canonicalReplayPaths(paths: readonly string[]): boolean {
+  return (
+    new Set(paths).size === paths.length &&
+    paths.every(
+      (path, index) =>
+        path === path.trim() &&
+        path !== "" &&
+        !path.startsWith("/") &&
+        !path.split("/").includes("..") &&
+        (index === 0 || paths[index - 1]! < path),
+    )
+  );
+}
+
+function reviewIsCurrentForReconciliation(
+  review: NonNullable<ReturnType<typeof workstreamReviewState>>,
+  candidateId: string,
+): boolean {
+  return (
+    review.candidateId === candidateId && review.outstandingIds.length === 0
+  );
+}
+
 function sourceTaskOutcomeIsComplete(
   state: RunState,
   workstream: RuntimeWorkstream,
@@ -2718,6 +3055,8 @@ export function isStoppingSettlementEvent(event: SchedulerEvent): boolean {
     "effect_failed",
     "revision_completed",
     "revision_failed",
+    "reconciliation_worker_completed",
+    "reconciliation_worker_failed",
     "workspace_recreation_completed",
     "run_failed",
   ].includes(event.kind);

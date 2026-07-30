@@ -7,6 +7,7 @@ import {
   initialWorkstreamReviewSchema,
   repositoryStateReviewSchema,
   overallReworkSchema,
+  reconciliationCompletionSchema,
   revisionCompletionSchema,
   strictExecutionPlanSchema,
   workstreamImplementerResultSchema,
@@ -71,6 +72,13 @@ const completionContracts = {
     readOnly: true,
     description: "Assess every outstanding finding.",
     schema: anchoredWorkstreamReviewSchema,
+  },
+  reconciliation: {
+    role: "implementer",
+    readOnly: false,
+    description:
+      "Report semantic evidence for the assigned candidate reconciliation.",
+    schema: reconciliationCompletionSchema,
   },
   revision: {
     role: "implementer",

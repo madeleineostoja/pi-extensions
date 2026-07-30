@@ -37,6 +37,7 @@ import {
 } from "./workstream-candidate.js";
 import { runOverallRepair } from "./overall-repair.js";
 import { runWorkstreamReview } from "./review.js";
+import { runReconciliation } from "./reconciliation.js";
 import { recreateWorkspace, runRevision } from "./revision.js";
 import {
   SchedulerActor,
@@ -363,6 +364,25 @@ export function createRuntime(args: {
         });
         return;
       }
+      if (effect.kind === "run_reconciliation_worker") {
+        const outcome = await runReconciliation({
+          state,
+          effect,
+          git: args.git,
+          subagents,
+          artifactsPath,
+          signal,
+          roles: args.roles,
+        });
+        await dispatch({
+          kind: "reconciliation_worker_completed",
+          workstream: effect.workstream,
+          leaseId: effect.leaseId,
+          assignmentId: effect.assignmentId,
+          outcome,
+        });
+        return;
+      }
       if (effect.kind === "run_reconciliation") {
         const candidate = state.candidates[effect.candidateId];
         if (!candidate) {
@@ -449,32 +469,68 @@ export function createRuntime(args: {
           if (replay.kind === "cancelled") {
             return;
           }
+          const failedReplay =
+            replay.kind === "reconciliation_required" && !replay.hookMutated
+              ? {
+                  candidateCommitSha: replay.staging.candidateCommitSha,
+                  candidateTreeSha: replay.staging.candidateTreeSha,
+                  targetSha: replay.staging.targetBaseSha,
+                  targetTreeSha: replay.staging.targetTreeSha,
+                  disposition: replay.disposition,
+                  paths: {
+                    candidate: [...replay.staging.candidatePaths],
+                    target: [...replay.staging.targetPaths],
+                    replay: [...(replay.staging.replayPaths ?? [])],
+                  },
+                  staging: {
+                    id: replay.staging.id,
+                    operationId: replay.staging.operationId,
+                    branchName: replay.staging.branchName,
+                    targetRef: replay.staging.targetRef,
+                    ...(replay.staging.replayPatchHash
+                      ? { replayPatchHash: replay.staging.replayPatchHash }
+                      : {}),
+                    ...(replay.staging.hookCommand
+                      ? { hookCommand: replay.staging.hookCommand }
+                      : {}),
+                  },
+                  evidence: replay.evidence,
+                  ...(replay.staging.hookCommand?.output
+                    ? { hookEvidence: replay.staging.hookCommand.output }
+                    : {}),
+                }
+              : undefined;
+          const evidence =
+            "evidence" in replay
+              ? replay.evidence
+              : "Replay did not produce a publishable candidate.";
+          const outcome = failedReplay
+            ? {
+                kind: "reconciliation_required" as const,
+                evidence,
+                failedReplay,
+                workspace,
+              }
+            : {
+                kind:
+                  replay.kind === "infrastructure_failure"
+                    ? ("execution_failed" as const)
+                    : ("hook_rejected" as const),
+                evidence,
+                ...(replay.kind === "hook_rejected"
+                  ? { command: replay.command }
+                  : replay.kind === "reconciliation_required" &&
+                      replay.hookMutated &&
+                      replay.staging.hookCommand
+                    ? { command: replay.staging.hookCommand }
+                    : {}),
+                workspace,
+              };
           await dispatch({
             kind: "reconciliation_completed",
             workstream: effect.workstream,
             leaseId: effect.leaseId,
-            outcome: {
-              kind:
-                replay.kind === "infrastructure_failure"
-                  ? "execution_failed"
-                  : replay.kind === "hook_rejected" ||
-                      (replay.kind === "reconciliation_required" &&
-                        replay.hookMutated)
-                    ? "hook_rejected"
-                    : "reconciliation_required",
-              evidence:
-                "evidence" in replay
-                  ? replay.evidence
-                  : "Replay did not produce a publishable candidate.",
-              ...(replay.kind === "hook_rejected"
-                ? { command: replay.command }
-                : replay.kind === "reconciliation_required" &&
-                    replay.hookMutated &&
-                    replay.staging.hookCommand
-                  ? { command: replay.staging.hookCommand }
-                  : {}),
-              workspace,
-            },
+            outcome,
           });
           return;
         }

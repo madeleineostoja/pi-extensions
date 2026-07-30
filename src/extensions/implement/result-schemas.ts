@@ -176,6 +176,15 @@ export const overallReworkSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const reconciliationCompletionSchema = Type.Object(
+  {
+    summary: nonEmptyString(),
+    verification: Type.Array(nonEmptyString(), { minItems: 1 }),
+    uncertainty: Type.Optional(nonEmptyString()),
+  },
+  { additionalProperties: false },
+);
+
 export const revisionCompletionSchema = Type.Union([
   Type.Object(
     {
@@ -218,4 +227,7 @@ export type InitialAnchoredWorkstreamReviewCompletion = Static<
   typeof initialAnchoredWorkstreamReviewSchema
 >;
 export type OverallReworkCompletion = Static<typeof overallReworkSchema>;
+export type ReconciliationCompletion = Static<
+  typeof reconciliationCompletionSchema
+>;
 export type RevisionCompletion = Static<typeof revisionCompletionSchema>;

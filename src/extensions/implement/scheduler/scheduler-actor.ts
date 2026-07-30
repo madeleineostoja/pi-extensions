@@ -1,3 +1,4 @@
+import { ReconciliationFailure } from "../reconciliation.js";
 import { RevisionFailure } from "../revision.js";
 import { WorkerPacketError } from "../worker-invocation.js";
 import { ReviewWorkspaceSafetyError } from "../review.js";
@@ -321,6 +322,27 @@ export class SchedulerActor {
       }
     }
 
+    for (const assignment of Object.values(state.reconciliationAssignments)) {
+      if (
+        assignment.status === "pending" &&
+        getWorkstream(state, assignment.workstream)?.phase ===
+          "reconciliation_required" &&
+        !activeLeaseFor(state, assignment.workstream) &&
+        !this.hasLiveProcessFor(assignment.workstream) &&
+        !hasIntegrationLease(state) &&
+        activeWorkerLeaseCount(state) === 0
+      ) {
+        return {
+          kind: "event",
+          event: {
+            kind: "reconciliation_assignment_requested",
+            workstream: assignment.workstream,
+            now: this.now(),
+          },
+        };
+      }
+    }
+
     for (const assignment of Object.values(state.revisionAssignments)) {
       if (
         this.processWorkstreams.size < state.run.workerConcurrency &&
@@ -532,6 +554,7 @@ export class SchedulerActor {
         const managed =
           effect.kind === "run_implementation" ||
           effect.kind === "run_revision" ||
+          effect.kind === "run_reconciliation_worker" ||
           effect.kind === "run_review" ||
           effect.kind === "run_whole_plan_review";
         const boundary =
@@ -638,6 +661,25 @@ export class SchedulerActor {
               ? { observation: lifecycleError.observation }
               : {}),
             category: lifecycleError?.category ?? "provider_failure",
+          });
+          return;
+        }
+        if (
+          effect.kind === "run_reconciliation_worker" &&
+          this.snapshot().processLeases[effect.leaseId]
+        ) {
+          const failure =
+            error instanceof ReconciliationFailure ? error : undefined;
+          await this.dispatch({
+            kind: "reconciliation_worker_failed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            assignmentId: effect.assignmentId,
+            category: failure?.category ?? "provider_failure",
+            evidence: error instanceof Error ? error.message : String(error),
+            ...(failure?.observation
+              ? { observation: failure.observation }
+              : {}),
           });
           return;
         }
@@ -793,7 +835,10 @@ function effectLeaseKind(
   if (effect.kind === "recreate_workspace") {
     return "workspace_recreation";
   }
-  if (effect.kind === "run_reconciliation") {
+  if (
+    effect.kind === "run_reconciliation" ||
+    effect.kind === "run_reconciliation_worker"
+  ) {
     return "reconciliation";
   }
   if (effect.kind === "run_publication") {
@@ -830,6 +875,12 @@ function isFinalSettlementForEffect(
     return (
       event.kind === "reconciliation_completed" ||
       event.kind === "effect_failed"
+    );
+  }
+  if (effect.kind === "run_reconciliation_worker") {
+    return (
+      event.kind === "reconciliation_worker_completed" ||
+      event.kind === "reconciliation_worker_failed"
     );
   }
   return (

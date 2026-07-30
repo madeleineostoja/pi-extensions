@@ -25,6 +25,7 @@ export type ReplayStaging = {
   worktreePath: string;
   branchName: string;
   targetBaseSha: string;
+  targetTreeSha: string;
   targetRef: string;
   preparedCommitSha?: string;
   treeSha?: string;
@@ -256,6 +257,7 @@ export class CandidateReplayEngine {
       ]);
       const staging = await this.ensureStaging(
         target.head,
+        target.tree,
         target.ref,
         candidate,
         candidatePaths,
@@ -352,8 +354,8 @@ export class CandidateReplayEngine {
           staging: {
             ...staging,
             replayPaths,
-            replayPatch: patch,
-            replayPatchHash: patchHash(patch),
+            replayPatch,
+            replayPatchHash: patchHash(replayPatch),
           },
           evidence:
             "Replaying the approved candidate produced a different staged patch.",
@@ -390,6 +392,7 @@ export class CandidateReplayEngine {
 
   private async ensureStaging(
     targetBaseSha: string,
+    targetTreeSha: string,
     targetRef: string,
     candidate: ReplayCandidate,
     candidatePaths: string[],
@@ -479,6 +482,7 @@ export class CandidateReplayEngine {
         worktreePath,
         branchName,
         targetBaseSha,
+        targetTreeSha,
         targetRef,
         candidateId: candidate.id,
         candidateCommitSha: candidate.commitSha,
@@ -511,6 +515,7 @@ export class CandidateReplayEngine {
       worktreePath,
       branchName,
       targetBaseSha,
+      targetTreeSha,
       targetRef,
       candidateId: candidate.id,
       candidateCommitSha: candidate.commitSha,

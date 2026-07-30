@@ -111,6 +111,7 @@ const processLeaseSchema = z
     candidateId: nonEmpty.optional(),
     publicationIntentId: nonEmpty.optional(),
     revisionAssignmentId: nonEmpty.optional(),
+    reconciliationAssignmentId: nonEmpty.optional(),
     workspaceRecreationId: nonEmpty.optional(),
     attempt: z.number().int().positive(),
     acquiredAt: nonEmpty,
@@ -125,6 +126,7 @@ const operationSettlementSchema = z
     candidateId: nonEmpty.optional(),
     publicationIntentId: nonEmpty.optional(),
     revisionAssignmentId: nonEmpty.optional(),
+    reconciliationAssignmentId: nonEmpty.optional(),
     workspaceRecreationId: nonEmpty.optional(),
     attempt: z.number().int().positive(),
     acquiredAt: nonEmpty,
@@ -218,6 +220,7 @@ const findingSchema = z
 const reviewStateSchema = z
   .object({
     candidateId: nonEmpty,
+    comparisonBase: nonEmpty,
     previousCandidateId: nonEmpty.optional(),
     round: z.number().int().nonnegative(),
     outstandingIds: z.array(nonEmpty),
@@ -343,9 +346,32 @@ const reconciliationAssignmentSchema = z
     id: nonEmpty,
     workstream: failureWorkstreamSchema,
     candidateId: nonEmpty,
+    candidateCommitSha: nonEmpty,
+    candidateTreeSha: nonEmpty,
     targetSha: nonEmpty,
+    targetTreeSha: nonEmpty,
+    disposition: z.enum(["overlap", "conflict", "changed_patch"]),
+    paths: z
+      .object({
+        candidate: z.array(nonEmpty),
+        target: z.array(nonEmpty),
+        replay: z.array(nonEmpty),
+      })
+      .strict(),
+    operationId: nonEmpty,
+    staging: z
+      .object({
+        id: nonEmpty,
+        branchName: nonEmpty,
+        targetRef: nonEmpty,
+        replayPatchHash: hash.optional(),
+        hookCommand: commandEvidenceSchema.optional(),
+      })
+      .strict(),
     evidence: nonEmpty,
+    hookEvidence: nonEmpty.optional(),
     status: z.enum(["pending", "completed", "blocked"]),
+    executionFailures: z.number().int().nonnegative(),
   })
   .strict();
 
@@ -526,7 +552,7 @@ const wholePlanReviewSchema = z
 
 export const RunStateSchema = z
   .object({
-    version: z.literal(5),
+    version: z.literal(6),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -759,7 +785,7 @@ export function createPlanningRun(args: {
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
   const state: RunState = {
-    version: 5,
+    version: 6,
     revision: 0,
     run: {
       id: args.runId,
@@ -859,7 +885,7 @@ export class RunStore {
         const next = validateRunState(
           {
             ...update(structuredClone(current)),
-            version: 5,
+            version: 6,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -1465,6 +1491,18 @@ function invariantIssues(
         `workspace recreation lease ${key} does not match its operation`,
       );
     }
+    if (
+      lease.reconciliationAssignmentId !== undefined &&
+      (lease.kind !== "reconciliation" ||
+        state.reconciliationAssignments[lease.reconciliationAssignmentId]
+          ?.status !== "pending" ||
+        state.reconciliationAssignments[lease.reconciliationAssignmentId]
+          ?.candidateId !== lease.candidateId)
+    ) {
+      issues.push(
+        `reconciliation lease ${key} does not match its exact assignment`,
+      );
+    }
     if (lease.kind !== "revision" && lease.revisionAssignmentId !== undefined) {
       issues.push(`non-revision lease ${key} references a revision assignment`);
     }
@@ -1595,6 +1633,14 @@ function invariantIssues(
       issues.push(`review ${key} has an invalid correction anchor`);
     }
     if (
+      candidate.integrationBaseSha !== undefined &&
+      review.comparisonBase !== candidate.integrationBaseSha
+    ) {
+      issues.push(
+        `review ${key} does not retain its integration comparison base`,
+      );
+    }
+    if (
       review.publicationCommitSubject &&
       candidate.baseSha === candidate.commitSha
     ) {
@@ -1678,10 +1724,30 @@ function invariantIssues(
     state.reconciliationAssignments,
   )) {
     const candidate = state.candidates[assignment.candidateId];
+    const currentCandidateId = workstreamCandidateId(
+      state,
+      assignment.workstream,
+    );
+    const currentCandidate = currentCandidateId
+      ? state.candidates[currentCandidateId]
+      : undefined;
     if (
       key !== assignment.id ||
       !candidate ||
-      !sameWorkstreamIdentity(candidate.workstream, assignment.workstream)
+      !sameWorkstreamIdentity(candidate.workstream, assignment.workstream) ||
+      assignment.candidateCommitSha !== candidate.commitSha ||
+      assignment.candidateTreeSha !== candidate.treeSha ||
+      assignment.staging.id === "" ||
+      assignment.staging.branchName === "" ||
+      assignment.staging.targetRef !== state.run.checkout.branchRef ||
+      !canonicalGitPaths(assignment.paths.candidate) ||
+      !canonicalGitPaths(assignment.paths.target) ||
+      !canonicalGitPaths(assignment.paths.replay) ||
+      (assignment.status === "pending" &&
+        currentCandidateId !== assignment.candidateId) ||
+      (assignment.status === "completed" &&
+        (!currentCandidate ||
+          currentCandidate.integrationBaseSha !== assignment.targetSha))
     ) {
       issues.push(`reconciliation assignment ${key} has an invalid candidate`);
     }
@@ -1921,6 +1987,30 @@ function invariantIssues(
         );
       }
     }
+    for (const [id, assignment] of Object.entries(
+      previous.reconciliationAssignments,
+    )) {
+      const retained = state.reconciliationAssignments[id];
+      if (!retained) {
+        issues.push(`reconciliation assignment ${id} was removed`);
+        continue;
+      }
+      const {
+        status: _previousStatus,
+        executionFailures: _previousFailures,
+        ...identity
+      } = assignment;
+      const {
+        status: _retainedStatus,
+        executionFailures: _retainedFailures,
+        ...retainedIdentity
+      } = retained;
+      if (JSON.stringify(identity) !== JSON.stringify(retainedIdentity)) {
+        issues.push(
+          `reconciliation assignment ${id} rewrites its immutable failed replay context`,
+        );
+      }
+    }
   }
   return issues;
 }
@@ -1947,6 +2037,20 @@ function sameWorkstreamIdentity(
   right: z.infer<typeof candidateSchema>["workstream"],
 ): boolean {
   return workstreamIdentity(left) === workstreamIdentity(right);
+}
+
+function canonicalGitPaths(paths: readonly string[]): boolean {
+  return (
+    new Set(paths).size === paths.length &&
+    paths.every(
+      (path, index) =>
+        path === path.trim() &&
+        path !== "" &&
+        !path.startsWith("/") &&
+        !path.split("/").includes("..") &&
+        (index === 0 || paths[index - 1]! < path),
+    )
+  );
 }
 
 function workstreamPhase(
