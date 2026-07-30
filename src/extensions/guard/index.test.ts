@@ -3,13 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { confirmBashCommand } = vi.hoisted(() => ({
-  confirmBashCommand: vi.fn(),
-}));
+const { confirmBashCommand, getNonoHealth, isSupportedMac } = vi.hoisted(
+  () => ({
+    confirmBashCommand: vi.fn(),
+    getNonoHealth: vi.fn(),
+    isSupportedMac: vi.fn(() => false),
+  }),
+);
 
 vi.mock("./enforcement/decide.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./enforcement/decide.js")>()),
-  isSupportedMac: () => false,
+  isSupportedMac,
+}));
+vi.mock("./runtime/nono.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./runtime/nono.js")>()),
+  getNonoHealth,
 }));
 vi.mock("./semantic/confirmation.js", () => ({ confirmBashCommand }));
 
@@ -19,6 +27,9 @@ const directories: string[] = [];
 
 afterEach(() => {
   confirmBashCommand.mockReset();
+  getNonoHealth.mockReset();
+  isSupportedMac.mockReset();
+  isSupportedMac.mockReturnValue(false);
   while (directories.length) {
     rmSync(directories.pop()!, { recursive: true, force: true });
   }
@@ -83,6 +94,28 @@ function fixture(beforeGuardToolCallHandler?: Handler) {
 }
 
 describe("Guard extension registration", () => {
+  it("does not block session startup while probing Nono health", async () => {
+    isSupportedMac.mockReturnValue(true);
+    let resolveHealth!: (health: { kind: "healthy"; path: string }) => void;
+    getNonoHealth.mockReturnValue(
+      new Promise((resolve) => {
+        resolveHealth = resolve;
+      }),
+    );
+    const { context, emit, handlers, status, tools } = fixture();
+    const tui = context("tui", true);
+    const handler = handlers.get("session_start")![0];
+
+    expect(handler({ type: "session_start" }, tui)).toBeUndefined();
+    expect(tools).toHaveLength(1);
+
+    resolveHealth({ kind: "healthy", path: "/managed/nono" });
+    await vi.waitFor(() =>
+      expect(status).toHaveBeenCalledWith("pipkin.guard", "󰒃 guard"),
+    );
+    await emit("session_shutdown", { type: "session_shutdown" }, tui);
+  });
+
   it("owns the only Bash executor and assesses final post-tool-call input exactly once", async () => {
     const mutator = vi.fn((event: { toolName: string; input: object }) => {
       if (event.toolName === "bash") {

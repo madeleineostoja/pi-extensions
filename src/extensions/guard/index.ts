@@ -119,43 +119,42 @@ function guardExtension(pi: ExtensionAPI): void {
     }
   };
 
-  pi.on(
-    "session_start",
-    async (_event: SessionStartEvent, ctx: ExtensionContext) => {
-      state.resetSession();
-      probeAbort?.abort();
-      const previousProbe = probe;
-      const controller = new AbortController();
-      probeAbort = controller;
+  pi.on("session_start", (_event: SessionStartEvent, ctx: ExtensionContext) => {
+    state.resetSession();
+    probeAbort?.abort();
+    const previousProbe = probe;
+    const controller = new AbortController();
+    probeAbort = controller;
+    state.setFixedCapabilities(createFixedCapabilities(ctx.cwd));
+    registerBash();
+    if (!supportedMac) {
+      syncSurface(ctx);
+      return;
+    }
+    const runningProbe = (async () => {
       await previousProbe;
       if (probeAbort !== controller) {
         return;
       }
-      state.setFixedCapabilities(createFixedCapabilities(ctx.cwd));
-      registerBash();
-      if (!supportedMac) {
-        syncSurface(ctx);
-        return;
+      let health: NonoHealth | undefined;
+      try {
+        health = await getNonoHealth({ signal: controller.signal });
+      } catch {
+        health = { kind: "tools-only", reason: "probe-failed" } as const;
       }
-      const runningProbe = (async () => {
-        let health: NonoHealth | undefined;
-        try {
-          health = await getNonoHealth({ signal: controller.signal });
-        } catch {
-          health = { kind: "tools-only", reason: "probe-failed" } as const;
-        }
-        if (probeAbort === controller) {
-          state.setBackendHealth(health);
-          syncSurface(ctx);
-        }
-      })();
-      probe = runningProbe;
-      await runningProbe;
+      if (probeAbort === controller) {
+        state.setBackendHealth(health);
+        syncSurface(ctx);
+      }
+    })();
+    probe = runningProbe;
+    const clearProbe = () => {
       if (probe === runningProbe) {
         probe = undefined;
       }
-    },
-  );
+    };
+    void runningProbe.then(clearProbe, clearProbe);
+  });
   pi.on("session_shutdown", async (_event, ctx) => {
     state.resetSession();
     probeAbort?.abort();
