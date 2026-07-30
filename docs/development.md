@@ -20,8 +20,10 @@ For a focused change:
 
 1. run the closest adjacent test project or file;
 2. run `npm run check` for TypeScript changes;
-3. run the bundle project when registrations, internal imports, lifecycle order, or the root manifest changed;
+3. run the bundle project for entrypoint, registration, internal-import, lifecycle-order, or root-manifest contracts;
 4. finish with the root checks appropriate to the change.
+
+Feature behavior tests import responsibility-named implementation modules, not `index.ts`. Keep tests beside their owner and preserve their Vitest filename suffix and project assignment when moving them; the bundle project owns entrypoint loading and registration provenance.
 
 ```sh
 npx vitest run --project bundle
@@ -33,12 +35,12 @@ The bundle suite uses Pi's installed loader against `package.json#pi.extensions`
 
 A new feature requires all of the following:
 
-1. create `src/extensions/<feature>/index.ts` as its Pi registration root;
+1. create `src/extensions/<feature>/index.ts` as its thin Pi registration root;
 2. place it intentionally in the ordered `package.json#pi.extensions` list;
-3. keep feature code and behavior tests adjacent;
+3. keep feature behavior and behavior tests adjacent in responsibility-named modules;
 4. update bundle expectations when public registrations or ordering change;
 5. update the relevant concept guide and the root README.
 
-Keep feature-specific code with its owner. Move a helper to `src/lib/` only once at least two features need the generic capability. Cross-feature imports need an explicit narrow mapping; production code must not import another feature's `index.ts` or an undeclared internal path.
+Add a feature subfolder only for an established cohesive cluster; do not create generic `internal/`, `src/`, `api/`, or wrapper directories. Keep feature-specific code with its owner. Move a helper to `src/lib/` only once at least two features need the generic capability. Cross-feature imports need an explicit narrow mapping; production code must not import another feature's `index.ts` or an undeclared internal path.
 
 Read [Architecture](architecture.md) and the repository `AGENTS.md` before changing lifecycle, shared state, extension APIs, or bundle order.

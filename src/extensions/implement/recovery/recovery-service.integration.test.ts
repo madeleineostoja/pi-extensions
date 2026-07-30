@@ -3,10 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ExecGitClient } from "./git.js";
+import { ExecGitClient } from "../git.js";
 import { runRecovery } from "./recovery-service.js";
-import type { ImplementRoles, SpawnArgs } from "./subagents.js";
-import type { RunState } from "./store.js";
+import type { ImplementRoles, SpawnArgs } from "../subagents.js";
+import type { RunState } from "../store.js";
 
 const directories = new Set<string>();
 

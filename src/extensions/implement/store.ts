@@ -23,7 +23,7 @@ import {
   writeExecutionPlan,
   type ExecutionPlan,
 } from "./execution-plan.js";
-import { recoveryActionKinds, recoveryGateKinds } from "./recovery.js";
+import { recoveryActionKinds, recoveryGateKinds } from "./recovery/recovery.js";
 import {
   canonicalPath,
   normalizeCheckboxMarker,

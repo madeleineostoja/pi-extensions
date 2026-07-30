@@ -6,8 +6,8 @@ import {
   type CommandResult,
   type GitClient,
 } from "./git.js";
-import { boundedRecoveryOutput } from "./recovery.js";
-import type { RecoveryCommandEvidence } from "./recovery.js";
+import { boundedRecoveryOutput } from "./recovery/recovery.js";
+import type { RecoveryCommandEvidence } from "./recovery/recovery.js";
 
 export type ReplayCandidate = {
   id: string;

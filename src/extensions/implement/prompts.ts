@@ -1,5 +1,5 @@
 import type { OverallRepairPacket } from "./overall-repair.js";
-import type { RecoveryWorkerPacket } from "./recovery-packet.js";
+import type { RecoveryWorkerPacket } from "./recovery/recovery-packet.js";
 import type { WorkstreamPacket } from "./workstream-candidate.js";
 import type {
   AnchoredSourceReviewPacket,

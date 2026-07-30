@@ -1,4 +1,4 @@
-import type { SchedulerEffect, SchedulerEvent } from "./scheduler.js";
+import type { SchedulerEffect, SchedulerEvent } from "./scheduler/scheduler.js";
 import type { RunState } from "./store.js";
 import {
   type PublicationOutcome,

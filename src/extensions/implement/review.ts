@@ -26,7 +26,7 @@ import {
 import { overallRepairWorkspace } from "./overall-repair.js";
 import { workstreamWorkspace } from "./workstream-candidate.js";
 import { writeAtomicJson } from "./atomic-json.js";
-import type { RuntimeWorkstream } from "./scheduler.js";
+import type { RuntimeWorkstream } from "./scheduler/scheduler.js";
 import { protectedArtifactsMatch, type RunState } from "./store.js";
 
 export type ReviewState = {

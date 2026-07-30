@@ -9,9 +9,9 @@ import {
   createUnboundSchedulerRun,
   deferred,
 } from "./scheduler-test-support.js";
-import type { RunState, RunStore } from "./store.js";
-import { WorkstreamCandidateLifecycleError } from "./workstream-candidate.js";
-import { WorkerPacketError } from "./worker-invocation.js";
+import type { RunState, RunStore } from "../store.js";
+import { WorkstreamCandidateLifecycleError } from "../workstream-candidate.js";
+import { WorkerPacketError } from "../worker-invocation.js";
 
 afterEach(cleanupSchedulerStores);
 

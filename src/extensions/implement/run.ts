@@ -37,11 +37,11 @@ import {
 } from "./workstream-candidate.js";
 import { runOverallRepair } from "./overall-repair.js";
 import { runWorkstreamReview } from "./review.js";
-import { runRecovery } from "./recovery-service.js";
+import { runRecovery } from "./recovery/recovery-service.js";
 import {
   SchedulerActor,
   type SchedulerActorOptions,
-} from "./scheduler-actor.js";
+} from "./scheduler/scheduler-actor.js";
 import {
   acquireCheckoutLease,
   createPlanningRun,

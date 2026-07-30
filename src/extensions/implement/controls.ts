@@ -14,7 +14,7 @@ import {
   type CheckoutLeaseCapability,
   type RunState,
 } from "./store.js";
-import { reduceRunEvent } from "./scheduler.js";
+import { reduceRunEvent } from "./scheduler/scheduler.js";
 import {
   settleProjectionTransactions,
   settlePublicationTransactions,

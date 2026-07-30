@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { readExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
-import type { SchedulerEvent } from "./scheduler.js";
+import type { SchedulerEvent } from "./scheduler/scheduler.js";
 import type { RunState } from "./store.js";
 
 export const TEMPORARY_ACTIVITY_WIDGET_KEY =

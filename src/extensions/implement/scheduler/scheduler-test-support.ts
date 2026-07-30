@@ -2,16 +2,16 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compileExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
-import { buildMaterialStore } from "./material-store.js";
-import { parsePlan } from "./plan.js";
+import { compileExecutionPlan, type ExecutionPlan } from "../execution-plan.js";
+import { buildMaterialStore } from "../material-store.js";
+import { parsePlan } from "../plan.js";
 import {
   checkoutPaths,
   createPlanningRun,
   sourceIdentityForExecutionPlan,
   type CheckoutLeaseCapability,
   type RunStore,
-} from "./store.js";
+} from "../store.js";
 
 const temporaryDirectories = new Set<string>();
 
