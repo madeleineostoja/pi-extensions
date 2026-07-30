@@ -1,4 +1,4 @@
-import { formatSteer } from "./utils";
+import { formatSteer } from "./utils.js";
 
 export type ResolveChoiceResult = {
   block: boolean;

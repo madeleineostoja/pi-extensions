@@ -6,21 +6,20 @@ Pipkin is one product with several runtime owners. The split entrypoints are the
 
 The root manifest loads the complete bundle in this order:
 
-1. Sandbox
+1. Guard
 2. Readonly
-3. Shell Guard
-4. Context
-5. Defaults
-6. UI
-7. Personality
-8. LSP
-9. Subagents
-10. Implement
-11. Papercuts
-12. BTW
-13. Caffeinate
+3. Context
+4. Defaults
+5. UI
+6. Personality
+7. LSP
+8. Subagents
+9. Implement
+10. Papercuts
+11. BTW
+12. Caffeinate
 
-Order is a runtime contract. Sandbox, Readonly, and Shell Guard stay first so tool-call handlers apply in that safety order. Subagents precedes Implement because Implement consumes its managed runtime.
+Order is a runtime contract. Guard then Readonly form the safety prefix: Guard owns Bash, filesystem/protected decisions, and semantic confirmation; Readonly retains the independent edit/write workflow. Subagents precedes Implement because Implement consumes its managed runtime.
 
 The bundle integration suite loads the actual manifest through Pi's loader. It checks inventory, public registration ownership, source provenance, internal imports, startup/reload behavior, and safety ordering rather than recreating extension discovery in test code.
 

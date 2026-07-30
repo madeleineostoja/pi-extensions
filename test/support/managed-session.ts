@@ -15,8 +15,18 @@ export const MANAGED_TEST_CWD = "/managed-completion-workspace";
 export type FauxResponse = Parameters<
   ReturnType<typeof createFauxCore>["setResponses"]
 >[0];
+type CreateSessionOptions = NonNullable<
+  Parameters<typeof createAgentSession>[0]
+>;
 
-export async function createManagedSessionHarness(responses: FauxResponse) {
+export async function createManagedSessionHarness(
+  responses: FauxResponse,
+  harnessOptions: {
+    extensionFactories?: ConstructorParameters<
+      typeof DefaultResourceLoader
+    >[0]["extensionFactories"];
+  } = {},
+) {
   const faux = createFauxCore({
     provider: MANAGED_TEST_PROVIDER,
     api: "openai-completions",
@@ -68,14 +78,13 @@ export async function createManagedSessionHarness(responses: FauxResponse) {
     retry: { enabled: false },
   });
   const sessions: AgentSession[] = [];
-  const createSession = async (
-    options: Parameters<typeof createAgentSession>[0] = {},
-  ) => {
+  const createSession = async (options: CreateSessionOptions = {}) => {
     const cwd = options.cwd ?? MANAGED_TEST_CWD;
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir: cwd,
       settingsManager,
+      extensionFactories: harnessOptions.extensionFactories,
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,

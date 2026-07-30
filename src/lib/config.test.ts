@@ -18,14 +18,19 @@ describe("Pipkin config", () => {
       JSON.stringify({
         models: { ...models, utility: { model: "bad", thinking: "minimal" } },
         implement: { workerConcurrency: 99 },
-        sandbox: { enabled: false },
+        unsupported: { enabled: false },
       }),
     );
 
     expect(snapshot.config.models.utility).toBeUndefined();
     expect(snapshot.config.models.low).toEqual(models.low);
     expect(snapshot.config.implement.workerConcurrency).toBe(8);
-    expect(snapshot.config.sandbox).toEqual({ enabled: false });
+    expect(snapshot.config).not.toHaveProperty("unsupported");
+    expect(snapshot.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "unsupported" }),
+      ]),
+    );
     expect(presetIssue(snapshot, "utility")?.message).toContain("model");
   });
 
