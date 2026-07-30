@@ -15,6 +15,7 @@ import { ensureGitInfoExclude } from "#lib/git";
 import { z } from "zod";
 import { writeAtomicJson, type AtomicJsonWriteHooks } from "./atomic-json.js";
 import {
+  publicationIntentId,
   publicationPreparationId,
   stagingIdentity,
 } from "./candidate-replay.js";
@@ -177,6 +178,7 @@ const candidateSchema = z
       z.object({ kind: z.literal("overall"), repairId: id }).strict(),
     ]),
     baseSha: nonEmpty,
+    integrationBaseSha: nonEmpty.optional(),
     commitSha: nonEmpty,
     treeSha: nonEmpty,
     evidenceStatus: z.enum(["reported", "unavailable"]).optional(),
@@ -341,7 +343,7 @@ const reconciliationAssignmentSchema = z
     id: nonEmpty,
     workstream: failureWorkstreamSchema,
     candidateId: nonEmpty,
-    targetSha: nonEmpty.optional(),
+    targetSha: nonEmpty,
     evidence: nonEmpty,
     status: z.enum(["pending", "completed", "blocked"]),
   })
@@ -365,6 +367,7 @@ const satisfactionAssessmentSchema = z
     workstream: z.object({ kind: z.literal("source"), id }).strict(),
     historicalBaseSha: nonEmpty,
     targetSha: nonEmpty,
+    operationId: nonEmpty.optional(),
     evidence: nonEmpty,
     status: z.enum(["pending", "approved", "rejected"]),
   })
@@ -376,6 +379,7 @@ const publicationPreparationSchema = z
     operationId: nonEmpty,
     candidateId: nonEmpty,
     candidateCommitSha: nonEmpty,
+    candidateTreeSha: nonEmpty,
     targetBaseSha: nonEmpty,
     targetRef: nonEmpty,
     preparedCommitSha: nonEmpty,
@@ -384,7 +388,11 @@ const publicationPreparationSchema = z
     stagingBranch: nonEmpty,
     replayPatchHash: hash,
     changedPaths: z.array(nonEmpty),
-    disposition: z.enum(["same_base", "clean_non_overlap"]),
+    disposition: z.enum([
+      "same_base",
+      "reconciled_same_base",
+      "clean_non_overlap",
+    ]),
     hookEvidence: nonEmpty,
     hookCommand: commandEvidenceSchema,
   })
@@ -518,7 +526,7 @@ const wholePlanReviewSchema = z
 
 export const RunStateSchema = z
   .object({
-    version: z.literal(4),
+    version: z.literal(5),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -751,7 +759,7 @@ export function createPlanningRun(args: {
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
   const state: RunState = {
-    version: 4,
+    version: 5,
     revision: 0,
     run: {
       id: args.runId,
@@ -851,7 +859,7 @@ export class RunStore {
         const next = validateRunState(
           {
             ...update(structuredClone(current)),
-            version: 4,
+            version: 5,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -1041,9 +1049,9 @@ export function validateRunState(
   if (!parsed.success) {
     const version = versionOf(value);
     const message =
-      version === 1 || version === 2 || version === 3
+      version === 1 || version === 2 || version === 3 || version === 4
         ? `Run state uses legacy schema version ${version}; settle and clean it with the previous runtime before deploying this version.`
-        : version === undefined || version !== 4
+        : version === undefined || version !== 5
           ? "Run state has an unsupported schema."
           : "Run state is invalid.";
     throw new StateError(
@@ -1719,21 +1727,23 @@ function invariantIssues(
     const candidate = state.candidates[preparation.candidateId];
     const staging = stagingIdentity({
       runId: state.run.id,
+      operationId: preparation.operationId,
       candidateId: preparation.candidateId,
       candidateCommitSha: preparation.candidateCommitSha,
+      candidateTreeSha: preparation.candidateTreeSha,
       targetBaseSha: preparation.targetBaseSha,
+      targetRef: preparation.targetRef,
     });
     if (
       key !== preparation.id ||
       preparation.id !==
         publicationPreparationId({
           runId: state.run.id,
-          candidateId: preparation.candidateId,
-          candidateCommitSha: preparation.candidateCommitSha,
-          targetBaseSha: preparation.targetBaseSha,
+          preparation,
         }) ||
       !candidate ||
       candidate.commitSha !== preparation.candidateCommitSha ||
+      candidate.treeSha !== preparation.candidateTreeSha ||
       preparation.targetRef !== state.run.checkout.branchRef ||
       preparation.stagingBranch !== staging.branchName ||
       preparation.stagingWorktree !==
@@ -1747,9 +1757,14 @@ function invariantIssues(
           staging.id,
         ) ||
       (preparation.disposition === "same_base" &&
-        preparation.targetBaseSha !== candidate.baseSha) ||
+        (candidate.integrationBaseSha !== undefined ||
+          preparation.targetBaseSha !== candidate.baseSha)) ||
+      (preparation.disposition === "reconciled_same_base" &&
+        (candidate.integrationBaseSha === undefined ||
+          preparation.targetBaseSha !== candidate.integrationBaseSha)) ||
       (preparation.disposition === "clean_non_overlap" &&
-        preparation.targetBaseSha === candidate.baseSha) ||
+        preparation.targetBaseSha ===
+          (candidate.integrationBaseSha ?? candidate.baseSha)) ||
       preparation.preparedTreeSha === "" ||
       preparation.replayPatchHash === ""
     ) {
@@ -1765,6 +1780,13 @@ function invariantIssues(
       key !== intent.id ||
       !candidate ||
       !preparation ||
+      intent.id !==
+        publicationIntentId({
+          runId: state.run.id,
+          operationId: intent.operationId,
+          preparation,
+        }) ||
+      preparation.operationId !== intent.operationId ||
       !sameWorkstreamIdentity(candidate.workstream, intent.workstream) ||
       workstreamCandidateId(state, intent.workstream) !== intent.candidateId ||
       preparation.candidateId !== intent.candidateId ||

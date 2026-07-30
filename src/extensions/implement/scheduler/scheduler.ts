@@ -1,4 +1,9 @@
-import { publicationPreparationId } from "../candidate-replay.js";
+import { join } from "node:path";
+import {
+  publicationIntentId,
+  publicationPreparationId,
+  stagingIdentity,
+} from "../candidate-replay.js";
 import {
   boundedFailureOutput,
   noProgressSignature,
@@ -159,6 +164,7 @@ export type SchedulerEvent =
               checkpoint?: string;
               changedPaths: string[];
               stateEvidence: string;
+              targetSha?: string;
               stagingComparison?: { baseSha: string; treeSha: string };
             };
           }
@@ -174,6 +180,7 @@ export type SchedulerEvent =
               checkpoint?: string;
               changedPaths: string[];
               stateEvidence: string;
+              targetSha?: string;
               stagingComparison?: { baseSha: string; treeSha: string };
             };
           };
@@ -1061,6 +1068,8 @@ export function reduceRunEvent(
         !sameWorkstream(candidate.workstream, event.workstream) ||
         candidate.baseSha !==
           state.candidates[assignment.candidateId]?.baseSha ||
+        candidate.integrationBaseSha !==
+          state.candidates[assignment.candidateId]?.integrationBaseSha ||
         event.outcome.correction.fromCandidateId !== assignment.candidateId ||
         !review ||
         review.candidateId !== assignment.candidateId ||
@@ -1254,6 +1263,7 @@ export function reduceRunEvent(
         workstream: event.workstream,
         historicalBaseSha: candidate.baseSha,
         targetSha: event.targetSha,
+        operationId: lease.id,
         evidence: event.evidence,
         status: "approved",
       };
@@ -1315,6 +1325,7 @@ export function reduceRunEvent(
             workstream: event.workstream,
             historicalBaseSha: candidate.baseSha,
             targetSha: event.targetSha,
+            operationId: lease.id,
             evidence: event.evidence,
             status: "pending",
           })
@@ -1327,6 +1338,7 @@ export function reduceRunEvent(
         workstream: event.workstream,
         historicalBaseSha: candidate.baseSha,
         targetSha: event.targetSha,
+        operationId: lease.id,
         evidence: event.evidence,
         status: "pending",
       };
@@ -1395,14 +1407,53 @@ export function reduceRunEvent(
       }
       if (event.outcome.kind === "prepared") {
         try {
+          const candidate = state.candidates[candidateId];
           const intent = Object.values(state.publication.intents).find(
             (entry) =>
+              entry.operationId === lease.id &&
               entry.candidateId === candidateId &&
               sameWorkstream(entry.workstream, event.workstream),
           );
-          if (!intent) {
+          const preparation = intent
+            ? state.publication.preparations[intent.preparationId]
+            : undefined;
+          const staging =
+            candidate && preparation
+              ? stagingIdentity({
+                  runId: state.run.id,
+                  operationId: lease.id,
+                  candidateId: candidate.id,
+                  candidateCommitSha: candidate.commitSha,
+                  candidateTreeSha: candidate.treeSha,
+                  targetBaseSha: preparation.targetBaseSha,
+                  targetRef: preparation.targetRef,
+                })
+              : undefined;
+          if (
+            !candidate ||
+            !intent ||
+            !preparation ||
+            preparation.operationId !== lease.id ||
+            preparation.candidateId !== candidate.id ||
+            preparation.candidateCommitSha !== candidate.commitSha ||
+            preparation.candidateTreeSha !== candidate.treeSha ||
+            preparation.id !== intent.preparationId ||
+            event.outcome.workspace.id !== staging?.id ||
+            event.outcome.workspace.checkpoint !==
+              preparation.preparedCommitSha ||
+            event.outcome.workspace.targetSha !== preparation.targetBaseSha ||
+            !event.outcome.workspace.stagingComparison ||
+            event.outcome.workspace.stagingComparison.baseSha !==
+              preparation.targetBaseSha ||
+            event.outcome.workspace.stagingComparison.treeSha !==
+              preparation.preparedTreeSha ||
+            !samePaths(
+              event.outcome.workspace.changedPaths,
+              preparation.changedPaths,
+            )
+          ) {
             return reject(
-              "prepared reconciliation requires a durable publication intent",
+              "prepared reconciliation requires its exact durable preparation and intent",
             );
           }
           settleLease(state, lease, event.kind, event);
@@ -1453,14 +1504,17 @@ export function reduceRunEvent(
         );
       }
       if (event.outcome.kind === "reconciliation_required") {
+        if (!event.outcome.workspace.targetSha) {
+          return reject(
+            "failed replay does not retain the exact target it reconciled against",
+          );
+        }
         const id = `reconcile:${workstreamId(event.workstream)}:${candidateId}:${Object.keys(state.reconciliationAssignments).length + 1}`;
         state.reconciliationAssignments[id] = {
           id,
           workstream: event.workstream,
           candidateId,
-          ...(event.outcome.workspace.stagingComparison
-            ? { targetSha: event.outcome.workspace.stagingComparison.baseSha }
-            : {}),
+          targetSha: event.outcome.workspace.targetSha,
           evidence: boundedFailureOutput(event.outcome.evidence),
           status: "pending",
         };
@@ -1501,7 +1555,9 @@ export function reduceRunEvent(
       if (
         !lease ||
         lease.kind !== "reconciliation" ||
+        lease.id !== event.operationId ||
         lease.id !== event.preparation.operationId ||
+        lease.candidateId !== candidate?.id ||
         !sameWorkstream(
           lease.workstream,
           candidate?.workstream ?? lease.workstream,
@@ -1510,16 +1566,49 @@ export function reduceRunEvent(
         event.preparation.id !==
           publicationPreparationId({
             runId: state.run.id,
-            candidateId: event.preparation.candidateId,
-            candidateCommitSha: event.preparation.candidateCommitSha,
-            targetBaseSha: event.preparation.targetBaseSha,
+            preparation: event.preparation,
           }) ||
         candidate.commitSha !== event.preparation.candidateCommitSha ||
+        candidate.treeSha !== event.preparation.candidateTreeSha ||
         (event.preparation.disposition === "same_base" &&
-          event.preparation.targetBaseSha !== candidate.baseSha) ||
+          (candidate.integrationBaseSha !== undefined ||
+            event.preparation.targetBaseSha !== candidate.baseSha)) ||
+        (event.preparation.disposition === "reconciled_same_base" &&
+          (candidate.integrationBaseSha === undefined ||
+            event.preparation.targetBaseSha !==
+              candidate.integrationBaseSha)) ||
         (event.preparation.disposition === "clean_non_overlap" &&
-          event.preparation.targetBaseSha === candidate.baseSha) ||
+          event.preparation.targetBaseSha ===
+            (candidate.integrationBaseSha ?? candidate.baseSha)) ||
         event.preparation.targetRef !== state.run.checkout.branchRef ||
+        event.preparation.stagingBranch !==
+          stagingIdentity({
+            runId: state.run.id,
+            operationId: event.preparation.operationId,
+            candidateId: event.preparation.candidateId,
+            candidateCommitSha: event.preparation.candidateCommitSha,
+            candidateTreeSha: event.preparation.candidateTreeSha,
+            targetBaseSha: event.preparation.targetBaseSha,
+            targetRef: event.preparation.targetRef,
+          }).branchName ||
+        event.preparation.stagingWorktree !==
+          join(
+            state.run.checkout.root,
+            ".pi",
+            "pipkin",
+            "implement",
+            "worktrees",
+            state.run.id,
+            stagingIdentity({
+              runId: state.run.id,
+              operationId: event.preparation.operationId,
+              candidateId: event.preparation.candidateId,
+              candidateCommitSha: event.preparation.candidateCommitSha,
+              candidateTreeSha: event.preparation.candidateTreeSha,
+              targetBaseSha: event.preparation.targetBaseSha,
+              targetRef: event.preparation.targetRef,
+            }).id,
+          ) ||
         (existing &&
           JSON.stringify(existing) !== JSON.stringify(event.preparation))
       ) {
@@ -1539,7 +1628,9 @@ export function reduceRunEvent(
       if (
         !lease ||
         lease.kind !== "reconciliation" ||
+        lease.id !== event.operationId ||
         lease.id !== event.intent.operationId ||
+        lease.candidateId !== candidate?.id ||
         preparation?.operationId !== event.operationId ||
         !candidate ||
         !preparation ||
@@ -1550,7 +1641,13 @@ export function reduceRunEvent(
         preparation.targetBaseSha !== event.intent.targetBaseSha ||
         preparation.preparedCommitSha !== event.intent.preparedCommitSha ||
         preparation.preparedTreeSha !== event.intent.preparedTreeSha ||
-        preparation.targetRef !== event.intent.targetRef
+        preparation.targetRef !== event.intent.targetRef ||
+        event.intent.id !==
+          publicationIntentId({
+            runId: state.run.id,
+            operationId: event.operationId,
+            preparation,
+          })
       ) {
         return reject(
           "publication intent does not match its immutable preparation",
@@ -1618,7 +1715,13 @@ export function reduceRunEvent(
         lease.id !== event.receipt.operationId ||
         lease.publicationIntentId !== event.receipt.intentId ||
         !intent ||
-        intent.preparedCommitSha !== event.receipt.publishedCommitSha
+        intent.candidateId !== event.receipt.candidateId ||
+        intent.targetBaseSha !== event.receipt.targetBaseSha ||
+        intent.preparedCommitSha !== event.receipt.publishedCommitSha ||
+        intent.preparedTreeSha !== event.receipt.publishedTreeSha ||
+        intent.targetRef !== event.receipt.targetRef ||
+        JSON.stringify(intent.protectedArtifactHashes) !==
+          JSON.stringify(event.receipt.protectedArtifactHashes)
       ) {
         return reject("publication receipt does not match its intent");
       }
@@ -2487,6 +2590,13 @@ function workstreamId(workstream: RuntimeWorkstream): string {
   return workstream.kind === "source"
     ? `source:${workstream.id}`
     : `overall:${workstream.repairId}`;
+}
+
+function samePaths(left: readonly string[], right: readonly string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((path, index) => path === right[index])
+  );
 }
 
 function sourceTaskOutcomeIsComplete(

@@ -171,12 +171,12 @@ describe("checkout store transitions", () => {
       },
       workerConcurrency: 1,
     });
-    const legacy = { ...store.read(), version: 1 };
+    const legacy = { ...store.read(), version: 4 };
     writeFileSync(store.path, JSON.stringify(legacy));
 
     expect(() => RunStore.open(lease, store.path)).toThrow(StateError);
     expect(() => RunStore.open(lease, store.path)).toThrow(
-      "legacy schema version 1",
+      "legacy schema version 4",
     );
   });
 

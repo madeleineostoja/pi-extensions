@@ -12,6 +12,7 @@ import {
 } from "./execution-plan.js";
 import {
   CandidateReplayEngine,
+  publicationIntentId,
   publicationPreparation,
 } from "./candidate-replay.js";
 import { ExecGitClient } from "./git.js";
@@ -372,8 +373,10 @@ export function createRuntime(args: {
           state.publication.preparations,
         ).find(
           (preparation) =>
+            preparation.operationId === effect.leaseId &&
             preparation.candidateId === candidate.id &&
             preparation.candidateCommitSha === candidate.commitSha &&
+            preparation.candidateTreeSha === candidate.treeSha &&
             preparation.targetBaseSha === targetBaseSha,
         );
         const review =
@@ -397,6 +400,7 @@ export function createRuntime(args: {
           git: args.git,
           worktreesRoot: join(args.lease.paths.worktrees, state.run.id),
           runId: state.run.id,
+          operationId: effect.leaseId,
           protectedPaths: Object.keys(state.protectedArtifactHashes),
           protectedArtifactsMatch: () => protectedArtifactsMatch(state),
         }).prepare(
@@ -416,6 +420,7 @@ export function createRuntime(args: {
                 id: replay.staging.id,
                 checkpoint: replay.staging.preparedCommitSha,
                 changedPaths: replay.staging.replayPaths ?? [],
+                targetSha: replay.staging.targetBaseSha,
                 stateEvidence:
                   "evidence" in replay ? replay.evidence : replay.kind,
                 ...(replay.staging.treeSha
@@ -524,6 +529,7 @@ export function createRuntime(args: {
         const preparation = publicationPreparation(
           {
             runId: state.run.id,
+            operationId: effect.leaseId,
             candidate,
             disposition: replay.disposition,
             targetRef: `refs/heads/${branch}`,
@@ -535,7 +541,7 @@ export function createRuntime(args: {
         await dispatch({
           kind: "publication_preparation_recorded",
           operationId: effect.leaseId,
-          preparation: { ...preparation, operationId: effect.leaseId },
+          preparation,
         });
         const intent = new WriteAheadPublisher({
           git: args.git,
@@ -543,7 +549,11 @@ export function createRuntime(args: {
           checkoutIdentity: state.run.checkout.gitDir,
           protectedPaths: Object.keys(state.protectedArtifactHashes),
         }).createIntent({
-          id: `publication:${state.run.id}:${effect.workstream.kind === "source" ? effect.workstream.id : effect.workstream.repairId}:${replay.staging.preparedCommitSha}`,
+          id: publicationIntentId({
+            runId: state.run.id,
+            operationId: effect.leaseId,
+            preparation,
+          }),
           candidateId: candidate.id,
           targetBaseSha: preparation.targetBaseSha,
           preparedCommitSha: preparation.preparedCommitSha,

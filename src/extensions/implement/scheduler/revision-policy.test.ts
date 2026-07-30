@@ -25,7 +25,12 @@ describe("revision policy", () => {
       leaseId: implementation.leaseId,
       outcome: {
         kind: "candidate_ready",
-        candidate: candidate("candidate:first", "first-sha", "first-tree"),
+        candidate: candidate(
+          "candidate:first",
+          "first-sha",
+          "first-tree",
+          "integration-base",
+        ),
         checkpoints: { first: "first-sha" },
         satisfied: {},
       },
@@ -89,7 +94,12 @@ describe("revision policy", () => {
       assignmentId: revision.assignmentId,
       outcome: {
         kind: "candidate_ready",
-        candidate: candidate("revision:first", "revision-sha", "revision-tree"),
+        candidate: candidate(
+          "revision:first",
+          "revision-sha",
+          "revision-tree",
+          "integration-base",
+        ),
         correction: {
           fromCandidateId: "candidate:first",
           changedPaths: ["src/endpoint.ts"],
@@ -106,6 +116,9 @@ describe("revision policy", () => {
       previousCandidateId: "candidate:first",
       publicationCommitSubject: "fix: implement first task",
     });
+    expect(
+      completed.state.candidates["revision:first"]?.integrationBaseSha,
+    ).toBe("integration-base");
     expect(
       reduceRunEvent(completed.state, {
         kind: "revision_completed",
@@ -302,11 +315,17 @@ function observation(clean: boolean) {
   };
 }
 
-function candidate(id: string, commitSha: string, treeSha: string) {
+function candidate(
+  id: string,
+  commitSha: string,
+  treeSha: string,
+  integrationBaseSha?: string,
+) {
   return {
     id,
     workstream: { kind: "source" as const, id: "first-stream" },
     baseSha: "base-sha",
+    ...(integrationBaseSha ? { integrationBaseSha } : {}),
     commitSha,
     treeSha,
     evidenceStatus: "reported" as const,

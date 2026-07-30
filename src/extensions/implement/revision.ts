@@ -275,6 +275,9 @@ export async function runRevision(args: {
     id: `revision:${revisionTaskId(args.effect.workstream)}:${observation.head}`,
     workstream: args.effect.workstream,
     baseSha: packet.candidate.baseSha,
+    ...(packet.candidate.integrationBaseSha
+      ? { integrationBaseSha: packet.candidate.integrationBaseSha }
+      : {}),
     commitSha: observation.head,
     treeSha: observation.tree!,
     evidenceStatus,
