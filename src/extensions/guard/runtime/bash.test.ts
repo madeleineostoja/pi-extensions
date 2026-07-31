@@ -65,6 +65,9 @@ if (process.env.PIPKIN_GUARD_BASH_MODE === "hold") {
   writeFileSync(process.env.PIPKIN_GUARD_BASH_CHILD_PID, String(child.pid));
   writeFileSync(process.env.PIPKIN_GUARD_BASH_CONFIG, config);
   setInterval(() => process.stdout.write("guard output\\n"), 10);
+} else if (process.env.PIPKIN_GUARD_BASH_MODE === "deny") {
+  process.stderr.write(args.includes("--no-diagnostics") ? "operation not permitted\\n" : "nono run --read /outside -- command\\n");
+  process.exitCode = 1;
 } else {
   writeFileSync(process.env.PIPKIN_GUARD_BASH_LOG, JSON.stringify({ manifest: JSON.parse(readFileSync(config, "utf8")), cwd: process.cwd(), session: process.env.PI_SESSION_FILE, path: process.env.PATH }));
   process.stdout.write("guard output\\n");
@@ -124,6 +127,26 @@ describe("Guard Bash runtime", () => {
     expect(
       logged.manifest.filesystem.grants.map((grant) => grant.path),
     ).not.toContain(outside);
+  });
+
+  it("replaces Nono permission suggestions with fixed-session guidance", async () => {
+    const { state, workspace } = fixture();
+    const runtime = createGuardBashRuntime({ state, supportedMac: true });
+    const output: string[] = [];
+
+    await expect(
+      runtime.agentOperations.exec("cat /outside", workspace, {
+        onData: (data) => output.push(data.toString()),
+        env: { ...process.env, PIPKIN_GUARD_BASH_MODE: "deny" },
+      }),
+    ).resolves.toEqual({ exitCode: 1 });
+
+    const text = output.join("");
+    expect(text).toContain("operation not permitted");
+    expect(text).not.toContain("nono run --read");
+    expect(text).toContain(
+      "Guard: Sandbox permissions are fixed for this session and cannot be expanded from inside it.",
+    );
   });
 
   it("uses canonical permitted PATH entries and removes inaccessible entries", async () => {

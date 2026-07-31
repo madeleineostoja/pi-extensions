@@ -14,6 +14,8 @@ import { buildNonoManifest, writeNonoManifest } from "./manifest.js";
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const TERMINATION_WAIT_MS = 5_000;
 const TERMINATION_POLL_MS = 10;
+const FIXED_PERMISSION_MESSAGE =
+  "Guard: Sandbox permissions are fixed for this session and cannot be expanded from inside it.";
 
 function timeoutMs(timeout: number | undefined): number | undefined {
   if (timeout === undefined) {
@@ -148,6 +150,7 @@ export function createGuardBashRuntime(options: {
       const shell = getShellConfig();
       const commandArgs = [
         "run",
+        "--no-diagnostics",
         "--config",
         "",
         "--",
@@ -170,7 +173,7 @@ export function createGuardBashRuntime(options: {
           })),
         fixed.executionGrants === undefined,
       );
-      commandArgs[2] = manifest.path;
+      commandArgs[3] = manifest.path;
 
       try {
         return await new Promise<{ exitCode: number | null }>(
@@ -260,6 +263,11 @@ export function createGuardBashRuntime(options: {
                     ),
                   );
                   return;
+                }
+                if (!terminationError && exitCode !== 0) {
+                  execution.onData(
+                    Buffer.from(`\n${FIXED_PERMISSION_MESSAGE}\n`),
+                  );
                 }
                 finish(terminationError ?? { exitCode });
               })();
