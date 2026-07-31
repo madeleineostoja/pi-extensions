@@ -85,6 +85,120 @@ describe("concurrent integration scheduling", () => {
     await actor.stop();
   });
 
+  it("discards a selection decision made stale while capturing its runtime base", async () => {
+    const store = await createSchedulerStore(2, true);
+    const selected = reduceRunEvent(store.read(), {
+      kind: "workstreams_selected",
+      now: "2026-01-01T00:00:00.000Z",
+      baseShas: {
+        "first-stream": "base-sha",
+        "second-stream": "base-sha",
+      },
+    });
+    const firstImplementation = selected.effects.find(
+      (effect) =>
+        effect.kind === "run_implementation" &&
+        effect.workstream.kind === "source" &&
+        effect.workstream.id === "first-stream",
+    );
+    const secondImplementation = selected.effects.find(
+      (effect) =>
+        effect.kind === "run_implementation" &&
+        effect.workstream.kind === "source" &&
+        effect.workstream.id === "second-stream",
+    );
+    if (
+      firstImplementation?.kind !== "run_implementation" ||
+      secondImplementation?.kind !== "run_implementation"
+    ) {
+      throw new Error("expected source implementations");
+    }
+    const admitted = reduceRunEvent(selected.state, {
+      kind: "implementation_completed",
+      workstream: firstImplementation.workstream,
+      leaseId: firstImplementation.leaseId,
+      outcome: {
+        kind: "candidate_ready",
+        candidate: candidate(),
+        checkpoints: { first: "candidate-sha" },
+        satisfied: {},
+      },
+    });
+    const retryReady = reduceRunEvent(admitted.state, {
+      kind: "implementation_failed",
+      workstream: secondImplementation.workstream,
+      leaseId: secondImplementation.leaseId,
+      category: "provider_failure",
+      evidence: "provider unavailable",
+    });
+    delete retryReady.state.workstreams.source["second-stream"]?.baseSha;
+    await store.update(store.read().revision, () => retryReady.state);
+
+    const targetHeadEntered = deferred();
+    const releaseTargetHead = deferred<string>();
+    const reconciliationStarted = deferred();
+    let implementationStarts = 0;
+    const actor = new SchedulerActor({
+      store,
+      targetHead: async () => {
+        targetHeadEntered.resolve();
+        return releaseTargetHead.promise;
+      },
+      executeEffect: async ({ effect, dispatch, signal }) => {
+        if (effect.kind === "run_review") {
+          await targetHeadEntered.promise;
+          await dispatch({
+            kind: "review_completed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            outcome: {
+              kind: "initial",
+              candidateId: "candidate:first",
+              evidence: "review artifact",
+              completion: {
+                verdict: "approved",
+                publicationCommitSubject: "feat: publish candidate",
+              },
+            },
+          });
+          return;
+        }
+        if (effect.kind === "run_reconciliation") {
+          reconciliationStarted.resolve();
+          await new Promise<void>((resolve) =>
+            signal.addEventListener("abort", () => resolve(), { once: true }),
+          );
+          return;
+        }
+        if (effect.kind === "run_implementation") {
+          implementationStarts += 1;
+        }
+      },
+    });
+
+    const started = actor.start();
+    await targetHeadEntered.promise;
+    await vi.waitFor(() =>
+      expect(store.read().workstreams.source["first-stream"]?.phase).toBe(
+        "approved",
+      ),
+    );
+    releaseTargetHead.resolve("base-sha");
+
+    await expect(started).resolves.toBeUndefined();
+    await reconciliationStarted.promise;
+    expect(implementationStarts).toBe(0);
+    expect(store.read()).toMatchObject({
+      phase: "running",
+      workstreams: {
+        source: {
+          "second-stream": { phase: "queued" },
+        },
+      },
+    });
+    await actor.stop();
+  });
+
   it("integrates an approved quiescent candidate before assigning another ready batch", async () => {
     const store = await createSchedulerStore(1, true);
     const selected = reduceRunEvent(store.read(), {

@@ -102,7 +102,14 @@ export class SchedulerActor {
           this.startEffect(next.effect);
           return;
         }
-        await this.persist(await this.withAssignedRuntimeBases(next.event));
+        const { persistedEvent } = await this.persist(
+          await this.withAssignedRuntimeBases(next.event),
+          undefined,
+          next.expectedRevision,
+        );
+        if (next.expectedRevision !== undefined && !persistedEvent) {
+          return;
+        }
       }
     })().finally(() => {
       this.drivePromise = undefined;
@@ -142,6 +149,7 @@ export class SchedulerActor {
   private async persist(
     event: SchedulerEvent,
     sourceEffect?: SchedulerEffect,
+    expectedRevision?: number,
   ): Promise<{
     effects: SchedulerEffect[];
     persistedEvent: SchedulerEvent | undefined;
@@ -149,6 +157,12 @@ export class SchedulerActor {
     const operation = this.queue.then(async () => {
       for (;;) {
         const current = this.options.store.read();
+        if (
+          expectedRevision !== undefined &&
+          current.revision !== expectedRevision
+        ) {
+          return { effects: [], persistedEvent: undefined };
+        }
         let eventToPersist = event;
         if (
           sourceEffect &&
@@ -287,7 +301,11 @@ export class SchedulerActor {
   private nextDriveStep():
     | { kind: "planner" }
     | { kind: "effect"; effect: SchedulerEffect }
-    | { kind: "event"; event: SchedulerEvent }
+    | {
+        kind: "event";
+        event: SchedulerEvent;
+        expectedRevision?: number;
+      }
     | undefined {
     const state = this.snapshot();
     if (state.phase === "planning") {
@@ -468,6 +486,7 @@ export class SchedulerActor {
           now: this.now(),
           baseShas: {},
         },
+        expectedRevision: state.revision,
       };
     }
 
