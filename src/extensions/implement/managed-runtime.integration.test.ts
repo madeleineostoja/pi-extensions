@@ -106,10 +106,6 @@ describe("Implement managed runtime integration", () => {
         type: "pipkin:implement:implementer",
         thinking: "medium",
       }),
-      recovery: expect.objectContaining({
-        type: "pipkin:implement:recovery",
-        thinking: "medium",
-      }),
     });
   });
 

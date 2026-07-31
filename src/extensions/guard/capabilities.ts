@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import {
   basename,
@@ -25,9 +25,17 @@ export type FilesystemGrant = Readonly<{
   kind: GrantKind;
 }>;
 
+export type ExecutionGrant = Readonly<{
+  path: string;
+  canonicalPath: string;
+  access: AccessMode;
+  kind: GrantKind;
+}>;
+
 export type FixedCapabilities = Readonly<{
   cwd: string;
   grants: readonly FilesystemGrant[];
+  executionGrants?: readonly ExecutionGrant[];
 }>;
 
 export type PiPathCompatibility = Readonly<{
@@ -168,7 +176,7 @@ function makeGrant(
   raw: string,
   access: AccessMode,
   kind: GrantKind,
-): FilesystemGrant | null {
+): { grant: FilesystemGrant; execution: ExecutionGrant } | null {
   const canonical = existingCanonical(raw);
   if (canonical === null) {
     return null;
@@ -177,11 +185,90 @@ function makeGrant(
   if (actualKind === null || actualKind !== kind) {
     return null;
   }
-  return { path: canonical, access, kind };
+  return {
+    grant: { path: canonical, access, kind },
+    execution: { path: raw, canonicalPath: canonical, access, kind },
+  };
+}
+
+export function isSensitiveHomeTarget(path: string, home: string): boolean {
+  const relativePath = relative(existingCanonical(home) ?? home, path);
+  return [
+    ".git-credentials",
+    ".netrc",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".docker",
+    ".kube",
+    ".npmrc",
+    ".pypirc",
+  ].some(
+    (entry) =>
+      relativePath === entry || relativePath.startsWith(`${entry}${sep}`),
+  );
+}
+
+function linkedWorktreeGitDirectories(cwd: string): string[] {
+  const dotGit = join(cwd, ".git");
+  try {
+    if (!lstatSync(dotGit).isFile()) {
+      return [];
+    }
+    const pointer = /^gitdir:\s*(.+)\s*$/m.exec(
+      readFileSync(dotGit, "utf-8"),
+    )?.[1];
+    if (!pointer) {
+      return [];
+    }
+    const gitDir = existingCanonical(resolve(cwd, pointer));
+    if (!gitDir || !lstatSync(gitDir).isDirectory()) {
+      return [];
+    }
+    const commonPointer = readFileSync(
+      join(gitDir, "commondir"),
+      "utf-8",
+    ).trim();
+    if (!commonPointer) {
+      return [];
+    }
+    const commonDir = existingCanonical(resolve(gitDir, commonPointer));
+    if (
+      !commonDir ||
+      !lstatSync(commonDir).isDirectory() ||
+      !lstatSync(join(commonDir, "objects")).isDirectory() ||
+      !lstatSync(join(commonDir, "refs")).isDirectory() ||
+      !lstatSync(join(commonDir, "HEAD")).isFile() ||
+      !lstatSync(join(commonDir, "config")).isFile()
+    ) {
+      return [];
+    }
+    const registrationRoot = join(commonDir, "worktrees");
+    if (dirname(gitDir) !== registrationRoot) {
+      return [];
+    }
+    const reciprocalPointer = readFileSync(
+      join(gitDir, "gitdir"),
+      "utf-8",
+    ).trim();
+    const reciprocal = reciprocalPointer
+      ? existingCanonical(resolve(gitDir, reciprocalPointer))
+      : null;
+    if (reciprocal !== dotGit) {
+      return [];
+    }
+    return [gitDir, commonDir];
+  } catch {
+    return [];
+  }
 }
 
 function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
   const home = homedir();
+  const xdgConfig = process.env.XDG_CONFIG_HOME ?? join(home, ".config");
+  const inheritedPath = (process.env.PATH ?? "")
+    .split(process.platform === "win32" ? ";" : ":")
+    .filter((entry) => entry !== "");
   const xdgCache = process.env.XDG_CACHE_HOME;
   const npmCache = process.env.npm_config_cache ?? join(home, ".npm");
   const nodePrefix = dirname(
@@ -206,6 +293,8 @@ function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
       tmpdir(),
       "/tmp",
       "/private/tmp",
+      "/var/tmp",
+      "/private/var/tmp",
       ...(xdgCache ? [xdgCache] : []),
       npmCache,
     ]),
@@ -214,12 +303,16 @@ function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
       "/sbin",
       "/usr",
       "/System",
-      "/Library/Developer",
+      "/Library",
+      "/Applications",
       "/etc",
       "/private/etc",
       "/opt",
+      "/var/select",
+      "/private/var/select",
       "/private/var/db/dyld",
       "/var/db/dyld",
+      ...inheritedPath,
     ]),
     ...[
       "/dev/null",
@@ -233,6 +326,7 @@ function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
       grant(root, "write", "file"),
     ]),
     ...[
+      "/dev/dtracehelper",
       "/dev/zero",
       "/dev/random",
       "/dev/urandom",
@@ -240,6 +334,14 @@ function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
       "/dev/fd/0",
     ].map((root) => grant(root, "read", "file")),
     grant("/dev/fd", "read", "directory"),
+    ...[
+      join(home, ".gitconfig"),
+      join(xdgConfig, "git", "config"),
+      join(xdgConfig, "git", "ignore"),
+      join(xdgConfig, "git", "attributes"),
+      join(home, ".config", "git", "ignore"),
+      join(home, ".config", "git", "attributes"),
+    ].map((path) => grant(path, "read", "file")),
     ...readDirectories([
       "/nix/store",
       "/run/current-system/sw",
@@ -261,29 +363,60 @@ function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
 export function createFixedCapabilities(sessionCwd: string): FixedCapabilities {
   const cwd = canonicalizeTarget(sessionCwd, process.cwd());
   const grants: FilesystemGrant[] = [];
-  const add = (raw: string, access: AccessMode, kind: GrantKind) => {
-    const grant = makeGrant(raw, access, kind);
-    if (!grant || (grant.path !== cwd && under(grant.path, cwd))) {
+  const executionGrants: ExecutionGrant[] = [];
+  const add = (
+    raw: string,
+    access: AccessMode,
+    kind: GrantKind,
+    exact = false,
+  ) => {
+    const resolved = makeGrant(raw, access, kind);
+    if (
+      !resolved ||
+      (kind === "file" && isSensitiveHomeTarget(resolved.grant.path, homedir()))
+    ) {
+      return;
+    }
+    const addExecutionGrant = () => {
+      if (
+        !executionGrants.some(
+          (current) =>
+            current.path === resolved.execution.path &&
+            current.canonicalPath === resolved.execution.canonicalPath &&
+            current.access === resolved.execution.access &&
+            current.kind === resolved.execution.kind,
+        )
+      ) {
+        executionGrants.push(resolved.execution);
+      }
+    };
+    addExecutionGrant();
+    if (resolved.grant.path !== cwd && under(resolved.grant.path, cwd)) {
       return;
     }
     if (
+      !exact &&
       grants.some(
         (current) =>
-          (current.path === grant.path &&
-            current.access === grant.access &&
-            current.kind === grant.kind) ||
-          (grant.kind === "directory" &&
+          (current.path === resolved.grant.path &&
+            current.access === resolved.grant.access &&
+            current.kind === resolved.grant.kind) ||
+          (resolved.grant.kind === "directory" &&
             current.kind === "directory" &&
-            current.access === grant.access &&
-            under(grant.path, current.path)),
+            current.access === resolved.grant.access &&
+            under(resolved.grant.path, current.path)),
       )
     ) {
       return;
     }
-    grants.push(grant);
+    grants.push(resolved.grant);
   };
   for (const [root, access, kind] of fixedRoots(cwd)) {
     add(root, access, kind);
   }
-  return { cwd, grants };
+  for (const root of linkedWorktreeGitDirectories(cwd)) {
+    add(root, "read", "directory", true);
+    add(root, "write", "directory", true);
+  }
+  return { cwd, grants, executionGrants };
 }

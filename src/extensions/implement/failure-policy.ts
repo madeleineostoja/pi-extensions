@@ -1,0 +1,55 @@
+import { createHash } from "node:crypto";
+
+export const failureCategories = [
+  "protocol_failure",
+  "provider_failure",
+  "semantic_blocked",
+  "no_progress",
+  "workspace_unsafe",
+  "hook_rejected",
+  "target_moved",
+  "publication_uncertain",
+  "persistence_runtime_failure",
+] as const;
+export type FailureCategory = (typeof failureCategories)[number];
+
+export const failureAssignmentKinds = [
+  "candidate_revision",
+  "failed_target_reconciliation",
+  "review_retry",
+  "workspace_recreation",
+  "operational_retry",
+  "blocked",
+] as const;
+export type FailureAssignmentKind = (typeof failureAssignmentKinds)[number];
+
+export type FailureCommandEvidence = {
+  command: string;
+  cwd: string;
+  exitCode?: number;
+  signal?: string;
+  timedOut: boolean;
+  output: string;
+};
+
+export function boundedFailureOutput(output: string, limit = 12_000): string {
+  return output.length <= limit ? output : output.slice(-limit);
+}
+
+export function noProgressSignature(args: {
+  workstream: string;
+  candidateTree: string;
+  findingEpoch: number;
+  outstandingFindingIds: readonly string[];
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        workstream: args.workstream,
+        candidateTree: args.candidateTree,
+        findingEpoch: args.findingEpoch,
+        outstandingFindingIds: [...args.outstandingFindingIds].sort(),
+      }),
+    )
+    .digest("hex");
+}

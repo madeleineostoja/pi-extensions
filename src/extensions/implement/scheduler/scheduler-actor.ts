@@ -1,6 +1,8 @@
-import { RecoverySafetyError } from "../recovery/recovery-service.js";
+import { ReconciliationFailure } from "../reconciliation.js";
+import { RevisionFailure } from "../revision.js";
 import { WorkerPacketError } from "../worker-invocation.js";
-import { MissingHookEvidenceError, PublicationError } from "../publication.js";
+import { ReviewWorkspaceSafetyError } from "../review.js";
+import { PublicationError } from "../publication.js";
 import type { ExecutionPlan } from "../execution-plan.js";
 import {
   TargetBoundaryError,
@@ -123,13 +125,7 @@ export class SchedulerActor {
     event: SchedulerEvent,
     sourceEffect?: SchedulerEffect,
   ): Promise<SchedulerEffect[]> {
-    const { effects, persistedEvent } = await this.persist(event, sourceEffect);
-    if (
-      persistedEvent?.kind === "recovery_completed" &&
-      persistedEvent.action.kind === "no_safe_action"
-    ) {
-      await this.fail("recovery_exhausted", persistedEvent.action.evidence);
-    }
+    const { effects } = await this.persist(event, sourceEffect);
     if (this.snapshot().phase === "stopping") {
       this.stopping = true;
       this.controller.abort();
@@ -295,6 +291,7 @@ export class SchedulerActor {
       const workstream = getWorkstream(state, intent.workstream);
       if (
         state.publication.receipts[intent.id] &&
+        state.publication.supersessions[intent.id] === undefined &&
         workstream?.phase === "approved" &&
         workstream.candidateId === intent.candidateId
       ) {
@@ -310,22 +307,60 @@ export class SchedulerActor {
       }
     }
 
-    for (const episode of Object.values(state.recoveryEpisodes)) {
+    for (const recreation of Object.values(state.workspaceRecreations)) {
       if (
+        recreation.status === "pending" &&
         this.processWorkstreams.size < state.run.workerConcurrency &&
         activeWorkerLeaseCount(state) < state.run.workerConcurrency &&
-        episode.status === "open" &&
-        getWorkstream(state, episode.workstream)?.phase === "recovering" &&
-        !Object.values(state.processLeases).some(
-          (lease) => lease.recoveryEpisodeId === episode.id,
-        ) &&
-        !this.hasLiveProcessFor(episode.workstream)
+        !this.hasLiveProcessFor(recreation.workstream)
       ) {
         return {
           kind: "event",
           event: {
-            kind: "recovery_requested",
-            workstream: episode.workstream,
+            kind: "workspace_recreation_requested",
+            id: recreation.id,
+            now: this.now(),
+          },
+        };
+      }
+    }
+
+    for (const assignment of Object.values(state.reconciliationAssignments)) {
+      if (
+        assignment.status === "pending" &&
+        getWorkstream(state, assignment.workstream)?.phase ===
+          "reconciliation_required" &&
+        !activeLeaseFor(state, assignment.workstream) &&
+        !this.hasLiveProcessFor(assignment.workstream) &&
+        !hasIntegrationLease(state) &&
+        activeWorkerLeaseCount(state) === 0 &&
+        this.processes.size === 0
+      ) {
+        return {
+          kind: "event",
+          event: {
+            kind: "reconciliation_assignment_requested",
+            workstream: assignment.workstream,
+            now: this.now(),
+          },
+        };
+      }
+    }
+
+    for (const assignment of Object.values(state.revisionAssignments)) {
+      if (
+        this.processWorkstreams.size < state.run.workerConcurrency &&
+        activeWorkerLeaseCount(state) < state.run.workerConcurrency &&
+        assignment.status === "open" &&
+        getWorkstream(state, assignment.workstream)?.phase === "revising" &&
+        !activeLeaseFor(state, assignment.workstream) &&
+        !this.hasLiveProcessFor(assignment.workstream)
+      ) {
+        return {
+          kind: "event",
+          event: {
+            kind: "revision_requested",
+            workstream: assignment.workstream,
             now: this.now(),
           },
         };
@@ -363,17 +398,6 @@ export class SchedulerActor {
           },
         };
       }
-
-      if (selectReadyRuntimeWorkstreams(state).length > 0) {
-        return {
-          kind: "event",
-          event: {
-            kind: "workstreams_selected",
-            now: this.now(),
-            baseShas: {},
-          },
-        };
-      }
     }
 
     const approved = runtimeWorkstreams(state).find((workstream) => {
@@ -396,6 +420,7 @@ export class SchedulerActor {
       const candidateId = getWorkstream(state, approved)!.candidateId!;
       const intent = Object.values(state.publication.intents).find(
         (entry) =>
+          state.publication.supersessions[entry.id] === undefined &&
           sameWorkstream(entry.workstream, approved) &&
           entry.candidateId === candidateId,
       );
@@ -417,20 +442,27 @@ export class SchedulerActor {
     }
 
     if (
-      state.phase === "whole_plan_review" &&
-      state.wholePlanReview.recovery?.status === "open"
+      !hasIntegrationLease(state) &&
+      state.projectionDebt.length === 0 &&
+      this.processWorkstreams.size < state.run.workerConcurrency &&
+      activeWorkerLeaseCount(state) < state.run.workerConcurrency &&
+      selectReadyRuntimeWorkstreams(state).length > 0
     ) {
       return {
         kind: "event",
-        event: { kind: "whole_plan_recovery_requested" },
+        event: {
+          kind: "workstreams_selected",
+          now: this.now(),
+          baseShas: {},
+        },
       };
     }
+
     if (
       state.wholePlanReview.status === "pending" &&
       state.projectionDebt.length === 0 &&
       allSourceWorkstreamsComplete(state) &&
-      state.wholePlanReview.recovery?.status !== "open" &&
-      state.wholePlanReview.recovery?.status !== "running"
+      state.wholePlanReview.reviewRetry?.status !== "exhausted"
     ) {
       return { kind: "event", event: { kind: "whole_plan_review_requested" } };
     }
@@ -527,14 +559,15 @@ export class SchedulerActor {
     if ("workstream" in effect) {
       this.processWorkstreams.set(key, effect.workstream);
     }
+    let finalSettlementAttempted = false;
     const process = Promise.resolve()
       .then(async () => {
         const managed =
           effect.kind === "run_implementation" ||
+          effect.kind === "run_revision" ||
+          effect.kind === "run_reconciliation_worker" ||
           effect.kind === "run_review" ||
-          effect.kind === "run_recovery" ||
-          effect.kind === "run_whole_plan_review" ||
-          effect.kind === "run_whole_plan_recovery";
+          effect.kind === "run_whole_plan_review";
         const boundary =
           managed && this.options.captureTargetBoundary
             ? await this.options.captureTargetBoundary()
@@ -559,6 +592,9 @@ export class SchedulerActor {
             effect,
             signal: controller.signal,
             dispatch: async (event) => {
+              if (isFinalSettlementForEffect(event, effect)) {
+                finalSettlementAttempted = true;
+              }
               await this.dispatch(event, effect);
             },
           });
@@ -592,15 +628,16 @@ export class SchedulerActor {
           error instanceof TargetPreconditionError ||
           error instanceof TargetBoundaryError
         ) {
-          await this.fail("safety", error.message);
+          await this.fail("workspace_unsafe", error.message);
           return;
         }
         if (
           error instanceof SchedulerActorError ||
           error instanceof StateError ||
-          error instanceof WorkerPacketError
+          (error instanceof WorkerPacketError &&
+            effect.kind !== "run_reconciliation_worker")
         ) {
-          await this.fail("runtime", error.message);
+          await this.fail("persistence_runtime_failure", error.message);
           return;
         }
         if (
@@ -608,7 +645,12 @@ export class SchedulerActor {
           (error.outcome.kind === "safety_paused" ||
             error.outcome.kind === "target_moved")
         ) {
-          await this.fail("safety", error.message);
+          await this.fail(
+            error.outcome.kind === "target_moved"
+              ? "target_moved"
+              : "publication_uncertain",
+            error.message,
+          );
           return;
         }
         if (
@@ -624,59 +666,54 @@ export class SchedulerActor {
             workstream: effect.workstream,
             leaseId: effect.leaseId,
             evidence: error instanceof Error ? error.message : String(error),
-            ...(lifecycleError?.trustedCheckpoint
-              ? { trustedCheckpoint: lifecycleError.trustedCheckpoint }
-              : {}),
             ...(lifecycleError?.trustedCandidate
               ? { trustedCandidate: lifecycleError.trustedCandidate }
               : {}),
-            ...(lifecycleError?.recoveryWorkspace
-              ? { workspace: lifecycleError.recoveryWorkspace }
+            ...(lifecycleError?.observation
+              ? { observation: lifecycleError.observation }
               : {}),
-            ...(!lifecycleError ? { executionFailure: true } : {}),
+            category: lifecycleError?.category ?? "provider_failure",
           });
           return;
         }
         if (
-          effect.kind === "run_recovery" &&
-          error instanceof RecoverySafetyError &&
+          effect.kind === "run_reconciliation_worker" &&
           this.snapshot().processLeases[effect.leaseId]
         ) {
+          const failure =
+            error instanceof ReconciliationFailure ? error : undefined;
           await this.dispatch({
-            kind: "recovery_completed",
+            kind: "reconciliation_worker_failed",
             workstream: effect.workstream,
             leaseId: effect.leaseId,
-            action: {
-              kind: "no_safe_action",
-              outcome: "no_safe_action",
-              summary:
-                "Recovery output could not satisfy the durable safety boundary.",
-              evidence: error.message,
-              at: this.now(),
-            },
-          });
-          return;
-        }
-        if (
-          effect.kind === "run_recovery" &&
-          this.snapshot().processLeases[effect.leaseId]
-        ) {
-          await this.dispatch({
-            kind: "recovery_execution_failed",
-            workstream: effect.workstream,
-            leaseId: effect.leaseId,
-            error: error instanceof Error ? error.message : String(error),
-            now: this.now(),
-          });
-          return;
-        }
-        if (
-          effect.kind === "run_whole_plan_recovery" &&
-          this.snapshot().phase === "whole_plan_review"
-        ) {
-          await this.dispatch({
-            kind: "whole_plan_recovery_failed",
+            assignmentId: effect.assignmentId,
+            category:
+              failure?.category ??
+              (error instanceof WorkerPacketError
+                ? "protocol_failure"
+                : "provider_failure"),
             evidence: error instanceof Error ? error.message : String(error),
+            ...(failure?.observation
+              ? { observation: failure.observation }
+              : {}),
+          });
+          return;
+        }
+        if (
+          effect.kind === "run_revision" &&
+          this.snapshot().processLeases[effect.leaseId]
+        ) {
+          const failure = error instanceof RevisionFailure ? error : undefined;
+          await this.dispatch({
+            kind: "revision_failed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            assignmentId: effect.assignmentId,
+            category: failure?.category ?? "provider_failure",
+            evidence: error instanceof Error ? error.message : String(error),
+            ...(failure?.observation
+              ? { observation: failure.observation }
+              : {}),
           });
           return;
         }
@@ -686,6 +723,7 @@ export class SchedulerActor {
         ) {
           await this.dispatch({
             kind: "whole_plan_review_failed",
+            category: "provider_failure",
             evidence: error instanceof Error ? error.message : String(error),
           });
           return;
@@ -708,9 +746,10 @@ export class SchedulerActor {
         ) {
           await this.dispatch({
             kind: "effect_failed",
-            ...(error instanceof MissingHookEvidenceError
-              ? { gateKind: "hook" }
-              : { executionFailure: true }),
+            category:
+              error instanceof ReviewWorkspaceSafetyError
+                ? "workspace_unsafe"
+                : "provider_failure",
             effect:
               effect.kind === "run_review"
                 ? "review"
@@ -731,14 +770,13 @@ export class SchedulerActor {
         const lease = leaseId
           ? this.snapshot().processLeases[leaseId]
           : undefined;
-        if (leaseId && lease && lease.kind === effectLeaseKind(effect)) {
-          await this.persist({ kind: "process_abandoned", leaseId });
-        }
         if (
-          effect.kind === "run_whole_plan_recovery" &&
-          this.snapshot().wholePlanReview.recovery?.status === "running"
+          !finalSettlementAttempted &&
+          leaseId &&
+          lease &&
+          lease.kind === effectLeaseKind(effect)
         ) {
-          await this.persist({ kind: "whole_plan_recovery_abandoned" });
+          await this.persist({ kind: "process_abandoned", leaseId });
         }
         await this.finalizeFailure();
         await this.drive();
@@ -807,16 +845,65 @@ function effectLeaseKind(
   if (effect.kind === "run_review") {
     return "review";
   }
-  if (effect.kind === "run_recovery") {
-    return "recovery";
+  if (effect.kind === "run_revision") {
+    return "revision";
   }
-  if (effect.kind === "run_reconciliation") {
+  if (effect.kind === "recreate_workspace") {
+    return "workspace_recreation";
+  }
+  if (
+    effect.kind === "run_reconciliation" ||
+    effect.kind === "run_reconciliation_worker"
+  ) {
     return "reconciliation";
   }
   if (effect.kind === "run_publication") {
     return "publication";
   }
   return undefined;
+}
+
+function isFinalSettlementForEffect(
+  event: SchedulerEvent,
+  effect: SchedulerEffect,
+): boolean {
+  if (!("leaseId" in effect) || !("leaseId" in event)) {
+    return false;
+  }
+  if (event.leaseId !== effect.leaseId) {
+    return false;
+  }
+  if (effect.kind === "run_implementation") {
+    return ["implementation_completed", "implementation_failed"].includes(
+      event.kind,
+    );
+  }
+  if (effect.kind === "run_review") {
+    return event.kind === "review_completed" || event.kind === "effect_failed";
+  }
+  if (effect.kind === "run_revision") {
+    return ["revision_completed", "revision_failed"].includes(event.kind);
+  }
+  if (effect.kind === "recreate_workspace") {
+    return event.kind === "workspace_recreation_completed";
+  }
+  if (effect.kind === "run_reconciliation") {
+    return (
+      event.kind === "reconciliation_completed" ||
+      event.kind === "effect_failed"
+    );
+  }
+  if (effect.kind === "run_reconciliation_worker") {
+    return (
+      event.kind === "reconciliation_worker_completed" ||
+      event.kind === "reconciliation_worker_failed"
+    );
+  }
+  return (
+    event.kind === "publication_completed" ||
+    event.kind === "publication_target_moved" ||
+    event.kind === "effect_failed"
+  );
 }
 
 function linkedAbortController(parent: AbortSignal): AbortController {

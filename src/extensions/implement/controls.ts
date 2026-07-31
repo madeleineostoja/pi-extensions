@@ -48,9 +48,10 @@ export function listCheckoutRuns(checkoutRoot: string): RunListing[] {
 }
 
 export function formatStatus(state: RunState): string {
-  const activeRecovery = Object.values(state.recoveryEpisodes).filter(
-    (episode) => episode.status === "open",
+  const activeRevisions = Object.values(state.revisionAssignments).filter(
+    (assignment) => assignment.status === "open",
   );
+  const latestFailure = Object.values(state.failures).at(-1);
   const phases = [
     ...Object.values(state.workstreams.source).map(
       (workstream) => `${workstream.id}: ${workstream.phase}`,
@@ -65,18 +66,74 @@ export function formatStatus(state: RunState): string {
   const activeProcesses = Object.values(state.processLeases)
     .map((lease) => `${lease.kind}:${lease.id}`)
     .join(", ");
-  const latestGate = state.gates.at(-1);
+  const candidateContext = Object.values(state.candidates).map((candidate) => {
+    const review =
+      state.reviews[
+        candidate.workstream.kind === "source"
+          ? `source:${candidate.workstream.id}`
+          : `overall:${candidate.workstream.repairId}`
+      ];
+    return [
+      `${candidate.id}: historical base ${candidate.baseSha}`,
+      ...(candidate.integrationBaseSha
+        ? [`integration base ${candidate.integrationBaseSha}`]
+        : []),
+      ...(review?.previousCandidateId
+        ? [`previous candidate ${review.previousCandidateId}`]
+        : []),
+    ].join(" · ");
+  });
+  const reconciliation = Object.values(state.reconciliationAssignments).map(
+    (assignment) =>
+      `${assignment.id}: ${assignment.semanticAttempt} ${assignment.status} · failed target ${assignment.targetSha} · context ${assignment.context.key}`,
+  );
+  const publication = Object.values(state.publication.intents).map((intent) => {
+    const supersession = state.publication.supersessions[intent.id];
+    const receipt = state.publication.receipts[intent.id];
+    return `${intent.id}: preparation target ${intent.targetBaseSha} · ${
+      receipt
+        ? `published ${receipt.publishedCommitSha}`
+        : supersession
+          ? `superseded by ${supersession.actualTargetSha}`
+          : "pending"
+    }`;
+  });
+  const publicationUncertainty =
+    state.failure?.category === "publication_uncertain"
+      ? state.failure.reason
+      : Object.values(state.failures)
+          .filter((failure) => failure.category === "publication_uncertain")
+          .at(-1)?.evidence;
   return [
     `Run: ${state.run.id}`,
+    `Run start target: ${state.run.checkout.startHead}`,
     `Phase: ${state.phase}`,
     `Workstreams: ${phases || "none"}`,
     `Active processes: ${activeProcesses || "none"}`,
     `Open findings: ${openFindings}`,
-    `Active recovery: ${state.phase === "failed" ? 0 : activeRecovery.length}`,
-    ...(latestGate
-      ? [`Latest gate: ${latestGate.kind} ${latestGate.outcome}`]
+    `Active revisions: ${state.phase === "failed" ? 0 : activeRevisions.length}`,
+    ...(candidateContext.length > 0
+      ? [`Candidates: ${candidateContext.join("; ")}`]
       : []),
-    `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted`,
+    ...(reconciliation.length > 0
+      ? [`Reconciliation: ${reconciliation.join("; ")}`]
+      : []),
+    ...(latestFailure?.category === "target_moved"
+      ? [`Moved target: ${latestFailure.targetEvidence ?? "observed"}`]
+      : []),
+    ...(latestFailure
+      ? [
+          `Latest failure: ${latestFailure.category} · ${latestFailure.assignment}`,
+          `Failure evidence: ${latestFailure.evidence}`,
+        ]
+      : []),
+    `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted; ${Object.keys(state.publication.supersessions).length} superseded`,
+    ...(publication.length > 0
+      ? [`Publication intents: ${publication.join("; ")}`]
+      : []),
+    ...(publicationUncertainty
+      ? [`Publication uncertainty: ${publicationUncertainty}`]
+      : []),
     `Debt: ${state.projectionDebt.length > 0 ? `projection debt ${state.projectionDebt.length}` : "none"}`,
     ...(state.failure
       ? [

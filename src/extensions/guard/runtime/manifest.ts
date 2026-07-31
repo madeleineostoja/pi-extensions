@@ -2,7 +2,12 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { FilesystemGrant, FixedCapabilities } from "../capabilities.js";
+import {
+  hasGrant,
+  type ExecutionGrant,
+  type FilesystemGrant,
+  type FixedCapabilities,
+} from "../capabilities.js";
 
 export type NonoManifestGrant = Readonly<{
   path: string;
@@ -26,9 +31,23 @@ export type NonoRunOptions = Readonly<{
 
 function manifestGrants(
   grants: readonly FilesystemGrant[],
+  executionGrants: readonly ExecutionGrant[],
 ): NonoManifestGrant[] {
   const modes = new Map<string, Set<"read" | "write">>();
-  for (const grant of grants) {
+  const authorizedExecutionGrants = executionGrants.filter((grant) =>
+    hasGrant(grants, grant.canonicalPath, grant.access),
+  );
+  for (const grant of [
+    ...grants,
+    ...authorizedExecutionGrants.flatMap((grant) => [
+      { path: grant.path, access: grant.access, kind: grant.kind },
+      {
+        path: grant.canonicalPath,
+        access: grant.access,
+        kind: grant.kind,
+      },
+    ]),
+  ]) {
     const key = `${grant.kind}\0${grant.path}`;
     const entry = modes.get(key) ?? new Set<"read" | "write">();
     entry.add(grant.access);
@@ -48,7 +67,16 @@ function manifestGrants(
 export function buildNonoManifest(fixed: FixedCapabilities): NonoManifest {
   return {
     version: "0.1.0",
-    filesystem: { grants: manifestGrants(fixed.grants) },
+    filesystem: {
+      grants: manifestGrants(
+        fixed.grants,
+        fixed.executionGrants ??
+          fixed.grants.map((grant) => ({
+            ...grant,
+            canonicalPath: grant.path,
+          })),
+      ),
+    },
     network: { mode: "unrestricted" },
   };
 }

@@ -196,14 +196,17 @@ function ownedResources(state: RunState): Map<string, OwnedResource> {
   }
   for (const assessment of Object.values(state.satisfaction.assessments)) {
     const candidate = state.candidates[assessment.candidateId];
-    if (!candidate) {
+    if (!candidate || !assessment.operationId) {
       continue;
     }
     const staging = stagingIdentity({
       runId: state.run.id,
+      operationId: assessment.operationId,
       candidateId: candidate.id,
       candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
       targetBaseSha: assessment.targetSha,
+      targetRef: state.run.checkout.branchRef,
     });
     add(staging.branchName, join(root, staging.id), assessment.targetSha);
   }

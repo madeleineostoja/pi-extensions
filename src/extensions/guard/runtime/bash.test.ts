@@ -135,6 +135,7 @@ describe("Guard Bash runtime", () => {
     mkdirSync(toolchain);
     mkdirSync(inaccessible);
     symlinkSync(toolchain, alias);
+    const nodeBin = dirname(realpathSync(process.execPath));
     const fixed = state.fixedCapabilities()!;
     state.setFixedCapabilities({
       ...fixed,
@@ -146,8 +147,22 @@ describe("Guard Bash runtime", () => {
           kind: "directory",
         },
       ],
+      executionGrants: [
+        ...(fixed.executionGrants ?? []),
+        {
+          path: alias,
+          canonicalPath: realpathSync(toolchain),
+          access: "read",
+          kind: "directory",
+        },
+        {
+          path: nodeBin,
+          canonicalPath: nodeBin,
+          access: "read",
+          kind: "directory",
+        },
+      ],
     });
-    const nodeBin = dirname(realpathSync(process.execPath));
     const runtime = createGuardBashRuntime({ state, supportedMac: true });
 
     await expect(
@@ -155,7 +170,9 @@ describe("Guard Bash runtime", () => {
         onData: () => undefined,
         env: {
           ...process.env,
-          PATH: [alias, inaccessible, nodeBin].join(delimiter),
+          PATH: [alias, realpathSync(toolchain), inaccessible, nodeBin].join(
+            delimiter,
+          ),
           PIPKIN_GUARD_BASH_LOG: log,
         },
       }),
@@ -163,7 +180,7 @@ describe("Guard Bash runtime", () => {
 
     const logged = JSON.parse(readFileSync(log, "utf8")) as { path: string };
     expect(logged.path).toBe(
-      [realpathSync(toolchain), nodeBin].join(delimiter),
+      [alias, realpathSync(toolchain), nodeBin].join(delimiter),
     );
   });
 

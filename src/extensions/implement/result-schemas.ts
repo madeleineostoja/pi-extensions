@@ -171,47 +171,41 @@ export const overallReworkSchema = Type.Object(
   {
     summary: nonEmptyString(),
     verification: Type.Array(nonEmptyString(), { minItems: 1 }),
-    checkpointCommitMessage: commitMessageString({
-      description:
-        "Internal Conventional Commit subject if Pipkin must checkpoint a dirty repair workspace.",
-    }),
+    uncertainty: Type.Optional(nonEmptyString()),
   },
   { additionalProperties: false },
 );
 
-export const wholePlanRecoveryCompletionSchema = Type.Object(
+export const reconciliationCompletionSchema = Type.Object(
   {
-    action: Type.Union([
-      Type.Literal("diagnose"),
-      Type.Literal("retry"),
-      Type.Literal("no_safe_action"),
-    ]),
     summary: nonEmptyString(),
-    evidence: nonEmptyString(),
-    diagnosis: Type.Optional(nonEmptyString()),
+    verification: Type.Array(nonEmptyString(), { minItems: 1 }),
+    uncertainty: Type.Optional(nonEmptyString()),
   },
   { additionalProperties: false },
 );
 
-export const recoveryCompletionSchema = Type.Object(
-  {
-    action: Type.Union([
-      Type.Literal("diagnose"),
-      Type.Literal("retry"),
-      Type.Literal("rework_candidate"),
-      Type.Literal("reconcile"),
-      Type.Literal("recreate_workspace"),
-      Type.Literal("no_safe_action"),
-    ]),
-    summary: nonEmptyString(),
-    evidence: nonEmptyString(),
-    diagnosis: Type.Optional(nonEmptyString()),
-    candidateTip: Type.Optional(nonEmptyString()),
-    changedPaths: Type.Optional(Type.Array(nonEmptyString())),
-    trustedCheckpoint: Type.Optional(nonEmptyString()),
-  },
-  { additionalProperties: false },
-);
+export const revisionCompletionSchema = Type.Union([
+  Type.Object(
+    {
+      outcome: Type.Literal("changed"),
+      summary: nonEmptyString(),
+      verification: Type.Array(nonEmptyString(), { minItems: 1 }),
+      uncertainty: Type.Optional(nonEmptyString()),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      outcome: Type.Literal("blocked"),
+      summary: nonEmptyString(),
+      evidence: nonEmptyString(),
+      verification: Type.Array(nonEmptyString(), { minItems: 1 }),
+      uncertainty: Type.Optional(nonEmptyString()),
+    },
+    { additionalProperties: false },
+  ),
+]);
 
 export type WorkstreamImplementerCompletion = Static<
   typeof workstreamImplementerResultSchema
@@ -233,7 +227,7 @@ export type InitialAnchoredWorkstreamReviewCompletion = Static<
   typeof initialAnchoredWorkstreamReviewSchema
 >;
 export type OverallReworkCompletion = Static<typeof overallReworkSchema>;
-export type WholePlanRecoveryCompletion = Static<
-  typeof wholePlanRecoveryCompletionSchema
+export type ReconciliationCompletion = Static<
+  typeof reconciliationCompletionSchema
 >;
-export type RecoveryCompletion = Static<typeof recoveryCompletionSchema>;
+export type RevisionCompletion = Static<typeof revisionCompletionSchema>;

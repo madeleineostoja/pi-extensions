@@ -76,6 +76,9 @@ function packet(): ReviewPacket {
       changedPaths: ["src/endpoint.ts"],
       evidence: "Committed the correction.",
     },
+    comparisonBase: "base",
+    findingEpoch: 1,
+    priorReviewEvidence: ["/orchestrator/review.json"],
   };
 }
 
@@ -83,6 +86,7 @@ describe("source review worker packets", () => {
   it("retains the exact anchored finding set and correction delta", () => {
     const review: ReviewState = {
       candidateId: candidate.id,
+      comparisonBase: "base",
       previousCandidateId: previousCandidate.id,
       round: 1,
       outstandingIds: ["finding-1"],
@@ -166,8 +170,8 @@ describe("source review worker packets", () => {
       "git diff --stat historical-base..assessed-current",
     );
     expect(initial).not.toContain("diff --git");
-    expect(anchored).toContain("Base SHA: base");
-    expect(anchored).toContain("previous..tip");
+    expect(anchored).toContain("Comparison base: base");
+    expect(anchored).toContain("base..tip");
     expect(anchored).not.toContain("diff --git");
   });
 
@@ -175,6 +179,7 @@ describe("source review worker packets", () => {
     const baseline = applyInitialWorkstreamReview({
       workstream: { kind: "overall", repairId: "repair" },
       candidateId: previousCandidate.id,
+      comparisonBase: previousCandidate.baseSha,
       completion: {
         verdict: "changes_requested",
         findings: [
@@ -191,6 +196,7 @@ describe("source review worker packets", () => {
     const repair = retargetAnchoredReview({
       state: baseline.review,
       candidateId: candidate.id,
+      comparisonBase: baseline.review.comparisonBase,
       correction: {
         fromCandidateId: previousCandidate.id,
         changedPaths: ["src/endpoint.ts"],
@@ -224,6 +230,7 @@ describe("source review worker packets", () => {
     const initial = applyInitialWorkstreamReview({
       workstream,
       candidateId: previousCandidate.id,
+      comparisonBase: previousCandidate.baseSha,
       completion: {
         verdict: "changes_requested",
         publicationCommitSubject: "feat: publish workstream",
@@ -241,6 +248,7 @@ describe("source review worker packets", () => {
     const retargeted = retargetAnchoredReview({
       state: initial.review,
       candidateId: candidate.id,
+      comparisonBase: initial.review.comparisonBase,
       correction: {
         fromCandidateId: previousCandidate.id,
         changedPaths: ["src/endpoint.ts"],
@@ -280,6 +288,7 @@ describe("source review worker packets", () => {
         packet: packet(),
         review: {
           candidateId: candidate.id,
+          comparisonBase: "base",
           previousCandidateId: previousCandidate.id,
           round: 1,
           outstandingIds: [],

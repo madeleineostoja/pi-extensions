@@ -105,10 +105,10 @@ export function formatTemporaryActivity(
     });
   }
 
-  if (state.wholePlanReview.recovery) {
-    const recovery = state.wholePlanReview.recovery;
+  if (state.wholePlanReview.reviewRetry) {
+    const retry = state.wholePlanReview.reviewRetry;
     lines.push(
-      `  whole-plan recovery · ${recovery.status} · ${shorten(recovery.evidence.at(-1) ?? "retrying review")}`,
+      `  whole-plan review retry · ${retry.status} · ${shorten(retry.evidence.at(-1) ?? "retrying review")}`,
     );
   }
   if (state.failure) {
@@ -132,14 +132,12 @@ function appendAttentionLines(
       : candidate.repairId ===
         (workstream as Extract<RuntimeWorkstream, { kind: "overall" }>)
           .repairId);
-  const failedGate = state.gates
-    .filter(
-      (gate) => gate.outcome === "failed" && sameWorkstream(gate.workstream),
-    )
+  const failure = Object.values(state.failures)
+    .filter((entry) => sameWorkstream(entry.workstream))
     .at(-1);
-  if (failedGate) {
+  if (failure) {
     lines.push(
-      `    last failure · ${failedGate.kind} · ${shorten(failedGate.evidence)}`,
+      `    last failure · ${failure.category} · ${shorten(failure.evidence)}`,
     );
   }
   const findings = Object.values(state.findings).filter(
@@ -193,17 +191,14 @@ function notifyAttentionTransition(
     );
     return;
   }
-  if (event.kind === "recovery_execution_failed") {
+  if (event.kind === "revision_failed") {
     ctx.ui.notify(
-      `Implement recovery failed: ${shorten(event.error)}`,
+      `Implement revision failed: ${shorten(event.evidence)}`,
       "warning",
     );
     return;
   }
-  if (
-    event.kind === "whole_plan_review_failed" ||
-    event.kind === "whole_plan_recovery_failed"
-  ) {
+  if (event.kind === "whole_plan_review_failed") {
     ctx.ui.notify(
       `Implement review failed: ${shorten(event.evidence)}`,
       "warning",

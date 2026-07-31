@@ -66,6 +66,18 @@ export async function runPublication(args: {
   }
   const writeAheadIntent = toWriteAheadIntent(intent);
   const initial = await args.publisher.publish(writeAheadIntent);
+  if (initial.kind === "target_moved") {
+    await args.dispatch({
+      kind: "publication_target_moved",
+      workstream: args.effect.workstream,
+      leaseId: args.effect.leaseId,
+      intentId: intent.id,
+      candidateId: intent.candidateId,
+      expectedTargetSha: initial.expected,
+      actualTargetSha: initial.actual,
+    });
+    return;
+  }
   const outcome =
     initial.kind === "published" || initial.kind === "safety_paused"
       ? initial
@@ -75,7 +87,9 @@ export async function runPublication(args: {
   }
   await args.dispatch({
     kind: "publication_receipt_recorded",
+    operationId: args.effect.leaseId,
     receipt: {
+      operationId: args.effect.leaseId,
       intentId: intent.id,
       candidateId: intent.candidateId,
       targetBaseSha: intent.targetBaseSha,

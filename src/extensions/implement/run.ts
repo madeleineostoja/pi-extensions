@@ -12,6 +12,7 @@ import {
 } from "./execution-plan.js";
 import {
   CandidateReplayEngine,
+  publicationIntentId,
   publicationPreparation,
 } from "./candidate-replay.js";
 import { ExecGitClient } from "./git.js";
@@ -22,7 +23,6 @@ import { createCheckboxProjectionIntent } from "./projection.js";
 import { runPublication } from "./publication.js";
 import {
   completeWholePlanRun,
-  runWholePlanRecovery,
   runWholePlanReview,
 } from "./whole-plan-review.js";
 import { WriteAheadPublisher } from "./write-ahead-publication.js";
@@ -37,7 +37,8 @@ import {
 } from "./workstream-candidate.js";
 import { runOverallRepair } from "./overall-repair.js";
 import { runWorkstreamReview } from "./review.js";
-import { runRecovery } from "./recovery/recovery-service.js";
+import { runReconciliation } from "./reconciliation.js";
+import { recreateWorkspace, runRevision } from "./revision.js";
 import {
   SchedulerActor,
   type SchedulerActorOptions,
@@ -205,9 +206,14 @@ async function captureTargetBoundary(
   });
 }
 
-function expectedTargetHead(state: RunState): string {
-  const pending = Object.values(state.publication.intents).filter(
-    (intent) => !state.publication.receipts[intent.id],
+export function expectedTargetHead(
+  state: Pick<RunState, "run" | "publication">,
+): string {
+  const intents = Object.values(state.publication.intents);
+  const pending = intents.filter(
+    (intent) =>
+      !state.publication.receipts[intent.id] &&
+      !state.publication.supersessions[intent.id],
   );
   if (pending.length === 1) {
     return pending[0]!.targetBaseSha;
@@ -215,14 +221,17 @@ function expectedTargetHead(state: RunState): string {
   if (pending.length > 1) {
     throw new Error("Resume found multiple unresolved publication intents.");
   }
-  const receipts = Object.values(state.publication.receipts);
-  const publishedBases = new Set(
-    receipts.map((receipt) => receipt.targetBaseSha),
-  );
-  const tip = receipts.find(
-    (receipt) => !publishedBases.has(receipt.publishedCommitSha),
-  );
-  return tip?.publishedCommitSha ?? state.run.checkout.startHead;
+  for (const intent of [...intents].reverse()) {
+    const receipt = state.publication.receipts[intent.id];
+    if (receipt) {
+      return receipt.publishedCommitSha;
+    }
+    const supersession = state.publication.supersessions[intent.id];
+    if (supersession) {
+      return supersession.actualTargetSha;
+    }
+  }
+  return state.run.checkout.startHead;
 }
 
 export async function stopRun(
@@ -272,10 +281,6 @@ export function createRuntime(args: {
         "artifacts",
       );
       if (effect.kind === "run_implementation") {
-        const sourceWorkstreamId =
-          effect.workstream.kind === "source"
-            ? effect.workstream.id
-            : undefined;
         const outcome =
           effect.workstream.kind === "source"
             ? await runWorkstreamCandidate({
@@ -288,22 +293,6 @@ export function createRuntime(args: {
                 subagents,
                 signal,
                 roles: args.roles,
-                recoveryObligations: Object.values(state.recoveryEpisodes)
-                  .filter(
-                    (episode) =>
-                      episode.status === "open" &&
-                      episode.workstream.kind === "source" &&
-                      episode.workstream.id === sourceWorkstreamId,
-                  )
-                  .flatMap((episode) =>
-                    episode.actions.map((action) => action.evidence),
-                  ),
-                trustedCheckpoint: Object.values(state.recoveryEpisodes).find(
-                  (episode) =>
-                    episode.status === "open" &&
-                    episode.workstream.kind === "source" &&
-                    episode.workstream.id === sourceWorkstreamId,
-                )?.workspace.checkpoint,
                 artifactsPath,
                 artifactLeaseId: effect.leaseId,
               })
@@ -319,6 +308,7 @@ export function createRuntime(args: {
                   subagents,
                   signal,
                   artifactsPath,
+                  operationId: effect.leaseId,
                   roles: args.roles,
                 })),
               };
@@ -383,6 +373,25 @@ export function createRuntime(args: {
         });
         return;
       }
+      if (effect.kind === "run_reconciliation_worker") {
+        const outcome = await runReconciliation({
+          state,
+          effect,
+          git: args.git,
+          subagents,
+          artifactsPath,
+          signal,
+          roles: args.roles,
+        });
+        await dispatch({
+          kind: "reconciliation_worker_completed",
+          workstream: effect.workstream,
+          leaseId: effect.leaseId,
+          assignmentId: effect.assignmentId,
+          outcome,
+        });
+        return;
+      }
       if (effect.kind === "run_reconciliation") {
         const candidate = state.candidates[effect.candidateId];
         if (!candidate) {
@@ -393,8 +402,10 @@ export function createRuntime(args: {
           state.publication.preparations,
         ).find(
           (preparation) =>
+            preparation.operationId === effect.leaseId &&
             preparation.candidateId === candidate.id &&
             preparation.candidateCommitSha === candidate.commitSha &&
+            preparation.candidateTreeSha === candidate.treeSha &&
             preparation.targetBaseSha === targetBaseSha,
         );
         const review =
@@ -418,6 +429,7 @@ export function createRuntime(args: {
           git: args.git,
           worktreesRoot: join(args.lease.paths.worktrees, state.run.id),
           runId: state.run.id,
+          operationId: effect.leaseId,
           protectedPaths: Object.keys(state.protectedArtifactHashes),
           protectedArtifactsMatch: () => protectedArtifactsMatch(state),
         }).prepare(
@@ -437,6 +449,7 @@ export function createRuntime(args: {
                 id: replay.staging.id,
                 checkpoint: replay.staging.preparedCommitSha,
                 changedPaths: replay.staging.replayPaths ?? [],
+                targetSha: replay.staging.targetBaseSha,
                 stateEvidence:
                   "evidence" in replay ? replay.evidence : replay.kind,
                 ...(replay.staging.treeSha
@@ -465,32 +478,68 @@ export function createRuntime(args: {
           if (replay.kind === "cancelled") {
             return;
           }
+          const failedReplay =
+            replay.kind === "reconciliation_required" && !replay.hookMutated
+              ? {
+                  candidateCommitSha: replay.staging.candidateCommitSha,
+                  candidateTreeSha: replay.staging.candidateTreeSha,
+                  targetSha: replay.staging.targetBaseSha,
+                  targetTreeSha: replay.staging.targetTreeSha,
+                  disposition: replay.disposition,
+                  paths: {
+                    candidate: [...replay.staging.candidatePaths],
+                    target: [...replay.staging.targetPaths],
+                    replay: [...(replay.staging.replayPaths ?? [])],
+                  },
+                  staging: {
+                    id: replay.staging.id,
+                    operationId: replay.staging.operationId,
+                    branchName: replay.staging.branchName,
+                    targetRef: replay.staging.targetRef,
+                    ...(replay.staging.replayPatchHash
+                      ? { replayPatchHash: replay.staging.replayPatchHash }
+                      : {}),
+                    ...(replay.staging.hookCommand
+                      ? { hookCommand: replay.staging.hookCommand }
+                      : {}),
+                  },
+                  evidence: replay.evidence,
+                  ...(replay.staging.hookCommand?.output
+                    ? { hookEvidence: replay.staging.hookCommand.output }
+                    : {}),
+                }
+              : undefined;
+          const evidence =
+            "evidence" in replay
+              ? replay.evidence
+              : "Replay did not produce a publishable candidate.";
+          const outcome = failedReplay
+            ? {
+                kind: "reconciliation_required" as const,
+                evidence,
+                failedReplay,
+                workspace,
+              }
+            : {
+                kind:
+                  replay.kind === "infrastructure_failure"
+                    ? ("execution_failed" as const)
+                    : ("hook_rejected" as const),
+                evidence,
+                ...(replay.kind === "hook_rejected"
+                  ? { command: replay.command }
+                  : replay.kind === "reconciliation_required" &&
+                      replay.hookMutated &&
+                      replay.staging.hookCommand
+                    ? { command: replay.staging.hookCommand }
+                    : {}),
+                workspace,
+              };
           await dispatch({
             kind: "reconciliation_completed",
             workstream: effect.workstream,
             leaseId: effect.leaseId,
-            outcome: {
-              kind:
-                replay.kind === "infrastructure_failure"
-                  ? "execution_failed"
-                  : replay.kind === "hook_rejected" ||
-                      (replay.kind === "reconciliation_required" &&
-                        replay.hookMutated)
-                    ? "hook_rejected"
-                    : "reconciliation_required",
-              evidence:
-                "evidence" in replay
-                  ? replay.evidence
-                  : "Replay did not produce a publishable candidate.",
-              ...(replay.kind === "hook_rejected"
-                ? { command: replay.command }
-                : replay.kind === "reconciliation_required" &&
-                    replay.hookMutated &&
-                    replay.staging.hookCommand
-                  ? { command: replay.staging.hookCommand }
-                  : {}),
-              workspace,
-            },
+            outcome,
           });
           return;
         }
@@ -545,6 +594,7 @@ export function createRuntime(args: {
         const preparation = publicationPreparation(
           {
             runId: state.run.id,
+            operationId: effect.leaseId,
             candidate,
             disposition: replay.disposition,
             targetRef: `refs/heads/${branch}`,
@@ -555,6 +605,7 @@ export function createRuntime(args: {
         );
         await dispatch({
           kind: "publication_preparation_recorded",
+          operationId: effect.leaseId,
           preparation,
         });
         const intent = new WriteAheadPublisher({
@@ -563,7 +614,11 @@ export function createRuntime(args: {
           checkoutIdentity: state.run.checkout.gitDir,
           protectedPaths: Object.keys(state.protectedArtifactHashes),
         }).createIntent({
-          id: `publication:${state.run.id}:${effect.workstream.kind === "source" ? effect.workstream.id : effect.workstream.repairId}:${replay.staging.preparedCommitSha}`,
+          id: publicationIntentId({
+            runId: state.run.id,
+            operationId: effect.leaseId,
+            preparation,
+          }),
           candidateId: candidate.id,
           targetBaseSha: preparation.targetBaseSha,
           preparedCommitSha: preparation.preparedCommitSha,
@@ -572,8 +627,10 @@ export function createRuntime(args: {
         });
         await dispatch({
           kind: "publication_intent_recorded",
+          operationId: effect.leaseId,
           intent: {
             ...intent,
+            operationId: effect.leaseId,
             workstream: effect.workstream,
             preparationId: preparation.id,
           },
@@ -680,16 +737,6 @@ export function createRuntime(args: {
         });
         return;
       }
-      if (effect.kind === "run_whole_plan_recovery") {
-        const action = await runWholePlanRecovery({
-          state,
-          subagents,
-          signal,
-          roles: args.roles,
-        });
-        await dispatch({ kind: "whole_plan_recovery_completed", action });
-        return;
-      }
       if (effect.kind === "complete_whole_plan_run") {
         await completeWholePlanRun({
           state,
@@ -698,8 +745,8 @@ export function createRuntime(args: {
         });
         return;
       }
-      if (effect.kind === "run_recovery") {
-        const outcome = await runRecovery({
+      if (effect.kind === "run_revision") {
+        const outcome = await runRevision({
           state,
           effect,
           git: args.git,
@@ -709,10 +756,32 @@ export function createRuntime(args: {
           roles: args.roles,
         });
         await dispatch({
-          kind: "recovery_completed",
+          kind: "revision_completed",
           workstream: effect.workstream,
           leaseId: effect.leaseId,
-          ...outcome,
+          assignmentId: effect.assignmentId,
+          outcome,
+        });
+        return;
+      }
+      if (effect.kind === "recreate_workspace") {
+        const recreation = state.workspaceRecreations[effect.recreationId];
+        if (!recreation) {
+          throw new Error("Workspace recreation is no longer retained.");
+        }
+        const outcome = await recreateWorkspace({
+          state,
+          workstream: effect.workstream,
+          checkpoint: recreation.checkpoint,
+          git: args.git,
+        });
+        await dispatch({
+          kind: "workspace_recreation_completed",
+          id: recreation.id,
+          leaseId: effect.leaseId,
+          before: { ...outcome.before, status: [...outcome.before.status] },
+          after: { ...outcome.after, status: [...outcome.after.status] },
+          outcome: outcome.outcome,
         });
         return;
       }

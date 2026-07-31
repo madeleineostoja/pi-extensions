@@ -1,19 +1,27 @@
 import { mkdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { writeAtomicJson } from "./atomic-json.js";
+import {
+  admitCandidateWorkspace,
+  observeCandidateWorkspace,
+} from "./candidate-admission.js";
 import { captureRestoreSnapshot, snapshotChanged } from "./candidate.js";
 import {
   TaskWorkspaceManager,
   type TaskWorkspace,
 } from "./candidate-worker.js";
 import type { ExecutionPlan } from "./execution-plan.js";
-import { changedPathsBetween, type GitClient } from "./git.js";
+import type { GitClient } from "./git.js";
 import { buildOverallReworkPrompt } from "./prompts.js";
 import { type OverallReworkCompletion } from "./result-schemas.js";
-import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import type { RuntimeWorkstream } from "./scheduler/scheduler.js";
+import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import { protectedArtifactsMatch, type RunState } from "./store.js";
-import { spawnValidatedWorker } from "./worker-invocation.js";
+import {
+  spawnValidatedWorker,
+  WorkerPacketError,
+} from "./worker-invocation.js";
+import { WorkstreamCandidateLifecycleError } from "./workstream-candidate.js";
 
 export type OverallRepairPacket = {
   role: "implementer";
@@ -58,6 +66,7 @@ export async function runOverallRepair(args: {
   git: GitClient;
   subagents: SubagentClient;
   artifactsPath: string;
+  operationId: string;
   signal?: AbortSignal;
   roles: ImplementRoles;
 }): Promise<{
@@ -73,8 +82,9 @@ export async function runOverallRepair(args: {
     throw new Error("Overall repair has no durable baseline candidate.");
   }
   if (!(await protectedArtifactsMatch(args.state))) {
-    throw new Error(
+    throw new WorkstreamCandidateLifecycleError(
       "Protected source artifacts changed before overall repair.",
+      "workspace_unsafe",
     );
   }
   const workspace = overallRepairWorkspace(
@@ -91,20 +101,23 @@ export async function runOverallRepair(args: {
     existingBranch: branches.includes(workspace.branchName),
   });
   const workspaceGit = args.git.forWorktree(workspace.worktreePath);
+  const initial = await observeCandidateWorkspace(workspaceGit);
   if (
-    (await workspaceGit.head()) !== baseline.commitSha ||
-    (await workspaceGit.currentBranch()) !== workspace.branchName ||
-    (await workspaceGit.activeOperation()) ||
-    !(await workspaceGit.isClean())
+    initial.head !== baseline.commitSha ||
+    initial.tree !== baseline.treeSha ||
+    initial.branch !== workspace.branchName ||
+    initial.activeOperation ||
+    !initial.clean
   ) {
-    throw new Error(
+    throw new WorkstreamCandidateLifecycleError(
       "Overall repair workspace does not match its durable baseline.",
+      "workspace_unsafe",
+      undefined,
+      initial,
     );
   }
-  const targetSnapshot = await captureRestoreSnapshot(
-    args.git,
-    Object.keys(args.state.protectedArtifactHashes),
-  );
+  const protectedPaths = Object.keys(args.state.protectedArtifactHashes);
+  const targetSnapshot = await captureRestoreSnapshot(args.git, protectedPaths);
   const findings = Object.values(args.state.findings).filter(
     (finding) =>
       finding.workstream.kind === "overall" &&
@@ -129,103 +142,139 @@ export async function runOverallRepair(args: {
     plan: args.plan,
     findings,
   };
-  const handle = await spawnValidatedWorker({
-    packet,
-    subagents: args.subagents,
-    roles: args.roles,
-    taskId: args.repairId,
-    description: `Repair whole-plan findings for ${args.repairId}`,
-    render: buildOverallReworkPrompt,
-  });
-  const result = await args.subagents.waitFor<unknown>(handle, args.signal);
-  if (result.status !== "completed") {
-    throw new Error(
-      `Overall repair implementer ${result.status}: ${result.error}`,
-    );
+  let result:
+    | Awaited<ReturnType<typeof args.subagents.waitFor<unknown>>>
+    | undefined;
+  let failure: unknown;
+  try {
+    const handle = await spawnValidatedWorker({
+      packet,
+      subagents: args.subagents,
+      roles: args.roles,
+      taskId: args.repairId,
+      description: `Repair whole-plan findings for ${args.repairId}`,
+      render: buildOverallReworkPrompt,
+    });
+    result = await args.subagents.waitFor<unknown>(handle, args.signal);
+  } catch (error) {
+    failure = error;
   }
-  if (
-    (await snapshotChanged(
-      args.git,
-      targetSnapshot,
-      Object.keys(args.state.protectedArtifactHashes),
-    )) ||
-    !(await protectedArtifactsMatch(args.state))
-  ) {
-    throw new Error(
+  const observation = await observeCandidateWorkspace(workspaceGit);
+  const targetChanged =
+    (await snapshotChanged(args.git, targetSnapshot, protectedPaths)) ||
+    !(await protectedArtifactsMatch(args.state));
+  if (targetChanged) {
+    throw new WorkstreamCandidateLifecycleError(
       "Overall repair implementer changed the target checkout or protected artifacts.",
+      "workspace_unsafe",
+      undefined,
+      observation,
     );
   }
-  const completion = result.result as OverallReworkCompletion;
-  if (
-    (await workspaceGit.currentBranch()) !== workspace.branchName ||
-    (await workspaceGit.activeOperation())
-  ) {
-    throw new Error(
-      "Overall repair implementer left the owned workspace on an unsafe Git state.",
-    );
-  }
-  if (!(await workspaceGit.isClean())) {
-    const checkpoint = await workspaceGit.checkpoint(
-      completion.checkpointCommitMessage,
-      false,
-    );
-    if (checkpoint.exitCode !== 0) {
-      throw new Error(
-        `Overall repair checkpoint failed: ${checkpoint.stderr || checkpoint.stdout}`,
+  const candidateProtectedPaths = protectedPaths
+    .map((path) => relative(args.state.run.checkout.root, path))
+    .filter((path) => path !== ".." && !path.startsWith("../"));
+  const admission = await admitCandidateWorkspace({
+    git: workspaceGit,
+    observation,
+    input: {
+      operationId: args.operationId,
+      expectedBranch: workspace.branchName,
+      requiredAncestors: [baseline.commitSha],
+      comparisonBase: baseline.commitSha,
+      protectedPaths: candidateProtectedPaths,
+      targetBoundaryIntact: true,
+    },
+  });
+  const completion =
+    result?.status === "completed"
+      ? (result.result as OverallReworkCompletion)
+      : undefined;
+  const artifactPath = writeOverallRepairEvidence(args, {
+    packet,
+    ...(completion ? { completion } : {}),
+    ...(failure
+      ? { error: message(failure) }
+      : result && result.status !== "completed"
+        ? { error: result.error }
+        : {}),
+    observation,
+    admission,
+  });
+  if (admission.kind !== "admitted") {
+    if (admission.kind === "quarantined" || admission.kind === "unsafe") {
+      throw new WorkstreamCandidateLifecycleError(
+        `Overall repair workspace is ${admission.kind}: ${admission.reason}.`,
+        "workspace_unsafe",
+        undefined,
+        observation,
       );
     }
-  }
-  const commitSha = await workspaceGit.head();
-  if (!(await workspaceGit.isAncestor(baseline.commitSha, commitSha))) {
-    throw new Error(
-      "Overall repair candidate does not descend from its reviewed baseline.",
+    const evidence = failure
+      ? message(failure)
+      : result && result.status !== "completed"
+        ? result.error
+        : "Overall repair must produce a non-empty candidate delta.";
+    throw new WorkstreamCandidateLifecycleError(
+      evidence,
+      failure instanceof WorkerPacketError
+        ? "protocol_failure"
+        : completion
+          ? "protocol_failure"
+          : "provider_failure",
+      undefined,
+      observation,
     );
   }
-  const changedPaths = await changedPathsBetween(
-    workspaceGit,
-    baseline.commitSha,
-    commitSha,
-  );
-  const protectedPaths = new Set(
-    Object.keys(args.state.protectedArtifactHashes).map((path) =>
-      relative(args.state.run.checkout.root, path),
-    ),
-  );
-  if (changedPaths.some((path) => protectedPaths.has(path))) {
-    throw new Error(
-      "Overall repair candidate changed a protected plan artifact.",
-    );
-  }
-  const treeSha = await workspaceGit.treeAt(commitSha);
-  if (treeSha === baseline.treeSha) {
-    throw new Error("Overall repair must produce a non-empty candidate delta.");
-  }
-  mkdirSync(args.artifactsPath, { recursive: true });
-  writeAtomicJson(
-    join(args.artifactsPath, `${args.repairId}-completion.json`),
-    completion,
-  );
+  const evidenceStatus = completion ? "reported" : "unavailable";
   return {
     candidate: {
-      id: `overall:${args.state.run.id}:${args.repairId}:${commitSha}`,
+      id: `overall:${args.state.run.id}:${args.repairId}:${observation.head}`,
       workstream: {
         kind: "overall",
         repairId: args.repairId,
       } satisfies RuntimeWorkstream,
       baseSha: baseline.commitSha,
-      commitSha,
-      treeSha,
-      implementationEvidence: {
-        summary: completion.summary,
-        verification: completion.verification,
-        artifactPath: join(
-          args.artifactsPath,
-          `${args.repairId}-completion.json`,
-        ),
-        changedPaths,
-      },
+      commitSha: observation.head,
+      treeSha: observation.tree!,
+      evidenceStatus,
+      observationArtifact: artifactPath,
+      changedPaths: admission.changedPaths,
+      ...(completion
+        ? {
+            implementationEvidence: {
+              summary: completion.summary,
+              verification: completion.verification,
+              ...(completion.uncertainty
+                ? { uncertainty: completion.uncertainty }
+                : {}),
+              artifactPath,
+              changedPaths: admission.changedPaths,
+            },
+          }
+        : {}),
     },
     checkpoints: {},
     satisfied: {},
   };
+}
+
+function writeOverallRepairEvidence(
+  args: Pick<
+    Parameters<typeof runOverallRepair>[0],
+    "artifactsPath" | "repairId" | "operationId"
+  >,
+  value: unknown,
+): string {
+  mkdirSync(args.artifactsPath, { recursive: true });
+  const path = join(
+    args.artifactsPath,
+    `${args.repairId}-${args.operationId}-observation.json`,
+  );
+  writeAtomicJson(path, value);
+  return path;
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

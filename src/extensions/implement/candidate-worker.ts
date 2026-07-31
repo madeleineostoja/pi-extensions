@@ -71,19 +71,13 @@ export class TaskWorkspaceManager {
     }
   }
 
-  async recreate(
-    workspace: TaskWorkspace,
-    trustedCheckpoint: string,
-  ): Promise<void> {
+  async recreate(workspace: TaskWorkspace, checkpoint: string): Promise<void> {
     this.assertOwnedPath(workspace.worktreePath);
     await this.assertOwnedWorkspace(workspace);
     const workspaceGit = this.git.forWorktree(workspace.worktreePath);
     if (
-      !(await this.git.isAncestor(workspace.baseSha, trustedCheckpoint)) ||
-      !(await workspaceGit.isAncestor(
-        trustedCheckpoint,
-        await workspaceGit.head(),
-      ))
+      !(await this.git.isAncestor(workspace.baseSha, checkpoint)) ||
+      !(await workspaceGit.isAncestor(checkpoint, await workspaceGit.head()))
     ) {
       throw new Error(
         `Task workspace cannot be recreated from an untrusted checkpoint: ${workspace.worktreePath}`,
@@ -92,8 +86,8 @@ export class TaskWorkspaceManager {
     await this.git.removeWorktree(workspace.worktreePath);
     await this.ensure(workspace, { existingBranch: true });
     const recreatedGit = this.git.forWorktree(workspace.worktreePath);
-    await recreatedGit.resetHard(trustedCheckpoint);
-    if ((await recreatedGit.head()) !== trustedCheckpoint) {
+    await recreatedGit.resetHard(checkpoint);
+    if ((await recreatedGit.head()) !== checkpoint) {
       throw new Error(
         `Task workspace was not recreated at its trusted checkpoint: ${workspace.worktreePath}`,
       );

@@ -86,7 +86,28 @@ async function candidate(
   }
 }
 
-function engine(root: string): CandidateReplayEngine {
+async function reconciledCandidate(
+  root: string,
+  path: string,
+  content: string,
+): Promise<ReplayCandidate> {
+  const original = await candidate(root, path, content);
+  writeFileSync(join(root, "target.txt"), "integration\n");
+  git(root, "add", "target.txt");
+  git(root, "commit", "-m", "feat: integration base");
+  const integrationBaseSha = git(root, "rev-parse", "HEAD").trim();
+  git(root, "merge", "--no-ff", "--no-edit", original.commitSha);
+  const client = new ExecGitClient(root);
+  const commitSha = await client.head();
+  const treeSha = await client.treeAt(commitSha);
+  git(root, "reset", "--hard", integrationBaseSha);
+  return { ...original, integrationBaseSha, commitSha, treeSha };
+}
+
+function engine(
+  root: string,
+  operationId = "reconciliation:run-1:1:0",
+): CandidateReplayEngine {
   return new CandidateReplayEngine({
     git: new ExecGitClient(root),
     worktreesRoot: join(
@@ -98,6 +119,7 @@ function engine(root: string): CandidateReplayEngine {
       "run-1",
     ),
     runId: "run-1",
+    operationId,
   });
 }
 
@@ -147,6 +169,7 @@ describe("CandidateReplayEngine", () => {
         "run-1",
       ),
       runId: "run-1",
+      operationId: "reconciliation:run-1:1:0",
       protectedPaths: [plan],
       protectedArtifactsMatch: () => true,
     });
@@ -172,6 +195,7 @@ describe("CandidateReplayEngine", () => {
           "run-2",
         ),
         runId: "run-2",
+        operationId: "reconciliation:run-2:1:0",
         protectedPaths: [plan],
       }).prepare(approved, "feat: publish candidate"),
     ).resolves.toMatchObject({
@@ -330,6 +354,271 @@ describe("CandidateReplayEngine", () => {
     await removeStaging(root, result.staging);
   });
 
+  it("replays only a reviewed integration contribution when its integration base is the target", async () => {
+    const root = repository();
+    const client = new ExecGitClient(root);
+    const approved = await reconciledCandidate(
+      root,
+      "candidate.txt",
+      "candidate\n",
+    );
+    const target = await client.head();
+
+    const result = await engine(root).prepare(
+      approved,
+      "feat: publish reconciled candidate",
+    );
+
+    expect(result).toMatchObject({
+      kind: "prepared",
+      disposition: "reconciled_same_base",
+      staging: {
+        targetBaseSha: target,
+        candidatePaths: ["candidate.txt"],
+        targetPaths: [],
+      },
+    });
+    if (result.kind !== "prepared") {
+      throw new Error(JSON.stringify(result));
+    }
+    expect(await client.parent(result.staging.preparedCommitSha)).toBe(target);
+    expect(result.staging.treeSha).toBe(approved.treeSha);
+    expect(result.staging.replayPaths).toEqual(["candidate.txt"]);
+    expect(
+      publicationPreparation(
+        {
+          runId: "run-1",
+          operationId: "reconciliation:run-1:1:0",
+          candidate: approved,
+          disposition: result.disposition,
+          targetRef: `refs/heads/${await client.currentBranch()}`,
+          hookEvidence: "git commit completed with retained command evidence",
+          hookCommand: result.staging.hookCommand!,
+        },
+        result.staging,
+      ),
+    ).toMatchObject({
+      candidateTreeSha: approved.treeSha,
+      disposition: "reconciled_same_base",
+      changedPaths: ["candidate.txt"],
+      replayPatchHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(
+      git(result.staging.worktreePath, "log", "-1", "--format=%s").trim(),
+    ).toBe("feat: publish reconciled candidate");
+    expect(
+      git(
+        result.staging.worktreePath,
+        "diff",
+        target,
+        result.staging.preparedCommitSha,
+        "--",
+        "target.txt",
+      ),
+    ).toBe("");
+    expect(await client.head()).toBe(target);
+    await removeStaging(root, result.staging);
+  });
+
+  it("replays an integration-base candidate over non-overlapping target movement", async () => {
+    const root = repository();
+    const client = new ExecGitClient(root);
+    const approved = await reconciledCandidate(
+      root,
+      "candidate.txt",
+      "candidate\n",
+    );
+    writeFileSync(join(root, "later.txt"), "target advance\n");
+    git(root, "add", "later.txt");
+    git(root, "commit", "-m", "feat: advance target");
+    const target = await client.head();
+
+    const result = await engine(root).prepare(
+      approved,
+      "feat: publish reconciled candidate",
+    );
+
+    expect(result).toMatchObject({
+      kind: "prepared",
+      disposition: "clean_non_overlap",
+      staging: {
+        targetBaseSha: target,
+        candidatePaths: ["candidate.txt"],
+        targetPaths: ["later.txt"],
+        replayPaths: ["candidate.txt"],
+      },
+    });
+    if (result.kind !== "prepared") {
+      throw new Error(JSON.stringify(result));
+    }
+    expect(await client.parent(result.staging.preparedCommitSha)).toBe(target);
+    expect(result.staging.treeSha).not.toBe(approved.treeSha);
+    expect(await client.head()).toBe(target);
+    await removeStaging(root, result.staging);
+  });
+
+  it("requires reconciliation for a clean same-file target overlap after integration", async () => {
+    const root = repository();
+    const client = new ExecGitClient(root);
+    writeFileSync(
+      join(root, "candidate.txt"),
+      "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n",
+    );
+    git(root, "add", "candidate.txt");
+    git(root, "commit", "-m", "chore: expand candidate fixture");
+    const approved = await reconciledCandidate(
+      root,
+      "candidate.txt",
+      "candidate\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n",
+    );
+    writeFileSync(
+      join(root, "candidate.txt"),
+      "one\ntwo\nthree\nfour\nfive\nsix\nseven\ntarget\n",
+    );
+    git(root, "add", "candidate.txt");
+    git(root, "commit", "-m", "feat: advance same path");
+    const target = await client.head();
+
+    const result = await engine(root).prepare(
+      approved,
+      "feat: publish reconciled candidate",
+    );
+
+    expect(result).toMatchObject({
+      kind: "reconciliation_required",
+      disposition: "overlap",
+      staging: {
+        targetBaseSha: target,
+        candidatePaths: ["candidate.txt"],
+        targetPaths: ["candidate.txt"],
+      },
+    });
+    expect(await client.head()).toBe(target);
+    if (result.kind === "reconciliation_required") {
+      await removeStaging(root, result.staging);
+    }
+  });
+
+  it("retains a textual integration-base conflict against the exact advanced target", async () => {
+    const root = repository();
+    const client = new ExecGitClient(root);
+    const approved = await reconciledCandidate(
+      root,
+      "candidate.txt",
+      "candidate\n",
+    );
+    writeFileSync(join(root, "candidate.txt"), "target\n");
+    git(root, "add", "candidate.txt");
+    git(root, "commit", "-m", "feat: conflicting target advance");
+    const target = await client.head();
+
+    const result = await engine(root).prepare(
+      approved,
+      "feat: publish reconciled candidate",
+    );
+
+    expect(result).toMatchObject({
+      kind: "reconciliation_required",
+      disposition: "conflict",
+      staging: { targetBaseSha: target },
+    });
+    expect(await client.head()).toBe(target);
+    if (result.kind === "reconciliation_required") {
+      await removeStaging(root, result.staging);
+    }
+  });
+
+  it("fails closed for invalid integration ancestry without moving the target", async () => {
+    const root = repository();
+    const client = new ExecGitClient(root);
+    const approved = await candidate(root, "candidate.txt", "candidate\n");
+    writeFileSync(join(root, "target.txt"), "target\n");
+    git(root, "add", "target.txt");
+    git(root, "commit", "-m", "feat: target branch");
+    const target = await client.head();
+
+    await expect(
+      engine(root).prepare(
+        { ...approved, integrationBaseSha: target },
+        "feat: publish candidate",
+      ),
+    ).resolves.toMatchObject({
+      kind: "infrastructure_failure",
+      evidence: expect.stringContaining("integration base"),
+    });
+    await expect(
+      engine(root).prepare(
+        { ...approved, integrationBaseSha: approved.commitSha },
+        "feat: publish candidate",
+      ),
+    ).resolves.toMatchObject({
+      kind: "infrastructure_failure",
+      evidence: expect.stringContaining("Current target"),
+    });
+    expect(await client.head()).toBe(target);
+  });
+
+  it("does not reuse a preparation across operation or candidate identities", async () => {
+    const root = repository();
+    const client = new ExecGitClient(root);
+    const approved = await candidate(root, "candidate.txt", "candidate\n");
+    const replay = engine(root, "reconciliation:run-1:1:0");
+    const first = await replay.prepare(approved, "feat: publish candidate");
+    if (first.kind !== "prepared") {
+      throw new Error(JSON.stringify(first));
+    }
+    const retained = publicationPreparation(
+      {
+        runId: "run-1",
+        operationId: "reconciliation:run-1:1:0",
+        candidate: approved,
+        disposition: first.disposition,
+        targetRef: `refs/heads/${await client.currentBranch()}`,
+        hookEvidence: "git commit completed with retained command evidence",
+        hookCommand: {
+          command: "git commit",
+          cwd: first.staging.worktreePath,
+          timedOut: false,
+          output: "",
+          exitCode: 0,
+        },
+      },
+      first.staging,
+    );
+    const other = await candidate(root, "target.txt", "other\n");
+    const target = await client.head();
+
+    await expect(
+      engine(root, "reconciliation:run-1:2:1").prepare(
+        approved,
+        "feat: publish candidate",
+        undefined,
+        retained,
+      ),
+    ).resolves.toMatchObject({
+      kind: "infrastructure_failure",
+      evidence: expect.stringContaining("staging identity"),
+    });
+    await expect(
+      replay.prepare(other, "feat: publish other", undefined, retained),
+    ).resolves.toMatchObject({
+      kind: "infrastructure_failure",
+      evidence: expect.stringContaining("staging identity"),
+    });
+    expect(await client.head()).toBe(target);
+
+    writeFileSync(join(root, "target.txt"), "advanced target\n");
+    git(root, "add", "target.txt");
+    git(root, "commit", "-m", "feat: advance target");
+    await expect(
+      replay.prepare(approved, "feat: publish candidate", undefined, retained),
+    ).resolves.toMatchObject({
+      kind: "infrastructure_failure",
+      evidence: expect.stringContaining("staging identity"),
+    });
+    await removeStaging(root, first.staging);
+  });
+
   it("replays a historical candidate after a non-overlapping publication", async () => {
     const root = repository();
     const client = new ExecGitClient(root);
@@ -355,9 +644,10 @@ describe("CandidateReplayEngine", () => {
       publicationPreparation(
         {
           runId: "run-1",
+          operationId: "reconciliation:run-1:1:0",
           candidate: second,
           disposition: preparedSecond.disposition,
-          targetRef: "refs/heads/master",
+          targetRef: `refs/heads/${await client.currentBranch()}`,
           hookEvidence: "git commit completed with retained command evidence",
           hookCommand: {
             command: "git commit",
@@ -391,9 +681,10 @@ describe("CandidateReplayEngine", () => {
     const retained = publicationPreparation(
       {
         runId: "run-1",
+        operationId: "reconciliation:run-1:1:0",
         candidate: approved,
         disposition: first.disposition,
-        targetRef: "refs/heads/master",
+        targetRef: `refs/heads/${await client.currentBranch()}`,
         hookEvidence: "git commit completed with retained command evidence",
         hookCommand: {
           command: "git commit",

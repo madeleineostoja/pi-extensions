@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
-import { delimiter, relative, resolve, sep } from "node:path";
+import { delimiter, resolve } from "node:path";
 import {
   createLocalBashOperations,
   getShellConfig,
   type BashOperations,
 } from "@earendil-works/pi-coding-agent";
+import type { ExecutionGrant } from "../capabilities.js";
 import type { GuardRuntimeState } from "../state.js";
 import { buildNonoManifest, writeNonoManifest } from "./manifest.js";
 
@@ -71,22 +72,28 @@ type ActiveInvocation = {
   settled: Promise<void>;
 };
 
-type ManifestGrant = ReturnType<
-  typeof buildNonoManifest
->["filesystem"]["grants"][number];
-
-function readableDirectory(path: string, grant: ManifestGrant): boolean {
-  if (grant.type !== "directory" || grant.access === "write") {
-    return false;
-  }
-  const result = relative(grant.path, path);
-  return result === "" || (!result.startsWith(`..${sep}`) && result !== "..");
+function readableExecutionDirectory(
+  path: string,
+  grants: readonly ExecutionGrant[],
+  allowCanonicalFallback: boolean,
+): boolean {
+  return grants.some((grant) => {
+    if (grant.kind !== "directory" || grant.access !== "read") {
+      return false;
+    }
+    return (
+      grant.path === path ||
+      grant.canonicalPath === path ||
+      (allowCanonicalFallback && grant.canonicalPath === realpathSync(path))
+    );
+  });
 }
 
 function sandboxEnvironment(
   environment: NodeJS.ProcessEnv | undefined,
   cwd: string,
-  grants: readonly ManifestGrant[],
+  grants: readonly ExecutionGrant[],
+  allowCanonicalFallback: boolean,
 ): NodeJS.ProcessEnv {
   const env = { ...(environment ?? process.env) };
   if (env.PATH === undefined) {
@@ -95,9 +102,9 @@ function sandboxEnvironment(
   env.PATH = env.PATH.split(delimiter)
     .flatMap((entry) => {
       try {
-        const path = realpathSync(entry === "" ? cwd : resolve(cwd, entry));
+        const path = resolve(cwd, entry);
         return statSync(path).isDirectory() &&
-          grants.some((grant) => readableDirectory(path, grant))
+          readableExecutionDirectory(path, grants, allowCanonicalFallback)
           ? [path]
           : [];
       } catch {
@@ -156,7 +163,12 @@ export function createGuardBashRuntime(options: {
       const environment = sandboxEnvironment(
         execution.env,
         cwd,
-        manifestData.filesystem.grants,
+        fixed.executionGrants ??
+          fixed.grants.map((grant) => ({
+            ...grant,
+            canonicalPath: grant.path,
+          })),
+        fixed.executionGrants === undefined,
       );
       commandArgs[2] = manifest.path;
 
