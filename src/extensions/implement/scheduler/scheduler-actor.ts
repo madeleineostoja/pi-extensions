@@ -19,11 +19,11 @@ import {
   activeLeaseFor,
   activeWorkerLeaseCount,
   allSourceWorkstreamsComplete,
-  allSourceWorkstreamsTerminal,
   getWorkstream,
   hasIntegrationLease,
   isStoppingSettlementEvent,
   reduceRunEvent,
+  runCanSettleIncomplete,
   runtimeWorkstreams,
   sameWorkstream,
   selectReadyRuntimeWorkstreams,
@@ -496,23 +496,7 @@ export class SchedulerActor {
     ) {
       return { kind: "effect", effect: { kind: "complete_whole_plan_run" } };
     }
-    if (
-      allSourceWorkstreamsTerminal(state) &&
-      Object.values(state.workstreams.overall).every((workstream) =>
-        ["completed", "failed"].includes(workstream.phase),
-      ) &&
-      Object.keys(state.processLeases).length === 0 &&
-      this.processes.size === 0 &&
-      state.projectionDebt.length === 0 &&
-      Object.values(state.publication.intents).every(
-        (intent) =>
-          state.publication.receipts[intent.id] !== undefined ||
-          state.publication.supersessions[intent.id] !== undefined ||
-          state.publication.abandonments[intent.id] !== undefined,
-      ) &&
-      state.wholePlanReview.status !== "reviewing" &&
-      state.wholePlanReview.status !== "repairing"
-    ) {
+    if (runCanSettleIncomplete(state) && this.processes.size === 0) {
       return { kind: "event", event: { kind: "run_incomplete" } };
     }
     return undefined;

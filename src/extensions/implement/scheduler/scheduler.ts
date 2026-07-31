@@ -922,6 +922,7 @@ export function reduceRunEvent(
         workstream.phase = "candidate_ready";
       }
       settleLease(state, lease, event.kind, event);
+      completeOperationalRetries(state, event.workstream, "implementation");
       return accept();
     }
 
@@ -1050,6 +1051,7 @@ export function reduceRunEvent(
         return reject(error instanceof Error ? error.message : String(error));
       }
       settleLease(state, lease, event.kind, event);
+      completeOperationalRetries(state, event.workstream, "review");
       const outstandingFindingIds = state.reviews[key]!.outstandingIds;
       if (outstandingFindingIds.length > 0) {
         recordFailure(state, {
@@ -1363,6 +1365,7 @@ export function reduceRunEvent(
         assessedAt: new Date().toISOString(),
       };
       settleLease(state, lease, event.kind, event);
+      completeOperationalRetries(state, event.workstream, "reconciliation");
       workstream.phase = "completed";
       if (
         event.projectionDebt &&
@@ -1429,6 +1432,7 @@ export function reduceRunEvent(
         status: "pending",
       };
       settleLease(state, lease, event.kind, event);
+      completeOperationalRetries(state, event.workstream, "reconciliation");
       workstream.phase = "candidate_ready";
       return accept();
     }
@@ -1695,6 +1699,7 @@ export function reduceRunEvent(
             );
           }
           settleLease(state, lease, event.kind, event);
+          completeOperationalRetries(state, event.workstream, "reconciliation");
           const publicationLease = createLease(
             state,
             event.workstream,
@@ -1722,6 +1727,9 @@ export function reduceRunEvent(
         }
       }
       settleLease(state, lease, event.kind, event);
+      if (event.outcome.kind !== "execution_failed") {
+        completeOperationalRetries(state, event.workstream, "reconciliation");
+      }
       if (event.outcome.kind === "hook_rejected") {
         recordFailure(state, {
           category: "hook_rejected",
@@ -2076,6 +2084,7 @@ export function reduceRunEvent(
         return reject("publication result does not own a receipted intent");
       }
       settleLease(state, lease, event.kind, event);
+      completeOperationalRetries(state, event.workstream, "publication");
       workstream.phase = "completed";
       if (
         event.projectionDebt &&
@@ -2391,40 +2400,7 @@ export function reduceRunEvent(
       return accept();
 
     case "run_incomplete":
-      if (
-        !["running", "whole_plan_review"].includes(state.phase) ||
-        !allSourceWorkstreamsTerminal(state) ||
-        !allOverallWorkstreamsTerminal(state) ||
-        Object.keys(state.processLeases).length > 0 ||
-        state.projectionDebt.length > 0 ||
-        state.wholePlanReview.status === "reviewing" ||
-        state.wholePlanReview.status === "repairing" ||
-        Object.values(state.operationalRetries).some(
-          (retry) => retry.status === "open",
-        ) ||
-        Object.values(state.workspaceRecreations).some(
-          (recreation) =>
-            recreation.status === "pending" || recreation.status === "running",
-        ) ||
-        Object.values(state.revisionAssignments).some(
-          (assignment) => assignment.status === "open",
-        ) ||
-        Object.values(state.reconciliationAssignments).some(
-          (assignment) => assignment.status === "pending",
-        ) ||
-        wholePlanReviewCanProgress(state) ||
-        Object.values(state.publication.intents).some(
-          (intent) =>
-            !state.publication.receipts[intent.id] &&
-            !state.publication.supersessions[intent.id] &&
-            !state.publication.abandonments[intent.id],
-        ) ||
-        (allSourceWorkstreamsComplete(state) &&
-          Object.values(state.workstreams.overall).every(
-            (workstream) => workstream.phase === "completed",
-          ) &&
-          state.wholePlanReview.status === "approved")
-      ) {
+      if (!runCanSettleIncomplete(state)) {
         return reject("run still has safe work or unresolved settlement debt");
       }
       state.phase = "incomplete";
@@ -3207,6 +3183,22 @@ function propagateDependencySkips(state: RunState): void {
   }
 }
 
+function completeOperationalRetries(
+  state: RunState,
+  workstream: RuntimeWorkstream,
+  lane: RunState["operationalRetries"][string]["lane"],
+): void {
+  for (const retry of Object.values(state.operationalRetries)) {
+    if (
+      retry.status === "open" &&
+      retry.lane === lane &&
+      sameWorkstream(retry.workstream, workstream)
+    ) {
+      retry.status = "completed";
+    }
+  }
+}
+
 function scheduleOperationalRetry(
   state: RunState,
   workstream: RuntimeWorkstream,
@@ -3408,6 +3400,45 @@ export function allSourceWorkstreamsTerminal(state: RunState): boolean {
 function allOverallWorkstreamsTerminal(state: RunState): boolean {
   return Object.values(state.workstreams.overall).every((workstream) =>
     ["completed", "failed"].includes(workstream.phase),
+  );
+}
+
+export function runCanSettleIncomplete(state: RunState): boolean {
+  return (
+    ["running", "whole_plan_review"].includes(state.phase) &&
+    allSourceWorkstreamsTerminal(state) &&
+    allOverallWorkstreamsTerminal(state) &&
+    Object.keys(state.processLeases).length === 0 &&
+    state.projectionDebt.length === 0 &&
+    state.wholePlanReview.status !== "reviewing" &&
+    state.wholePlanReview.status !== "repairing" &&
+    !Object.values(state.operationalRetries).some(
+      (retry) => retry.status === "open",
+    ) &&
+    !Object.values(state.workspaceRecreations).some(
+      (recreation) =>
+        recreation.status === "pending" || recreation.status === "running",
+    ) &&
+    !Object.values(state.revisionAssignments).some(
+      (assignment) => assignment.status === "open",
+    ) &&
+    !Object.values(state.reconciliationAssignments).some(
+      (assignment) => assignment.status === "pending",
+    ) &&
+    !wholePlanReviewCanProgress(state) &&
+    Object.values(state.publication.intents).every(
+      (intent) =>
+        state.publication.receipts[intent.id] ||
+        state.publication.supersessions[intent.id] ||
+        state.publication.abandonments[intent.id],
+    ) &&
+    !(
+      allSourceWorkstreamsComplete(state) &&
+      Object.values(state.workstreams.overall).every(
+        (workstream) => workstream.phase === "completed",
+      ) &&
+      state.wholePlanReview.status === "approved"
+    )
   );
 }
 

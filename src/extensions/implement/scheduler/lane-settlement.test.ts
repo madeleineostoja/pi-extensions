@@ -58,6 +58,67 @@ describe("lane-local settlement", () => {
     expect(store.read().phase).toBe("incomplete");
   });
 
+  it("settles a transient operational retry when its lane later succeeds", async () => {
+    const store = await createSchedulerStore();
+    let state = store.read();
+    const selected = reduceRunEvent(state, {
+      kind: "workstreams_selected",
+      now: "2026-01-01T00:01:00.000Z",
+      baseShas: { "first-stream": "base-sha" },
+    });
+    const firstAttempt = selected.effects[0];
+    if (firstAttempt?.kind !== "run_implementation") {
+      throw new Error("expected first-stream implementation");
+    }
+    state = reduceRunEvent(selected.state, {
+      kind: "implementation_failed",
+      workstream: firstAttempt.workstream,
+      leaseId: firstAttempt.leaseId,
+      category: "provider_failure",
+      evidence: "transient provider failure",
+    }).state;
+
+    const retried = reduceRunEvent(state, {
+      kind: "workstreams_selected",
+      now: "2026-01-01T00:02:00.000Z",
+      baseShas: { "first-stream": "base-sha" },
+    });
+    const secondAttempt = retried.effects[0];
+    if (secondAttempt?.kind !== "run_implementation") {
+      throw new Error("expected retried first-stream implementation");
+    }
+    const completed = reduceRunEvent(retried.state, {
+      kind: "implementation_completed",
+      workstream: secondAttempt.workstream,
+      leaseId: secondAttempt.leaseId,
+      outcome: {
+        kind: "candidate_ready",
+        candidate: {
+          id: "candidate:first-stream",
+          workstream: secondAttempt.workstream,
+          baseSha: "base-sha",
+          commitSha: "candidate-sha",
+          treeSha: "candidate-tree",
+        },
+        checkpoints: { first: "candidate-sha" },
+        satisfied: {},
+      },
+    });
+
+    expect(completed.accepted).toBe(true);
+    expect(Object.values(completed.state.operationalRetries)).toContainEqual(
+      expect.objectContaining({
+        lane: "implementation",
+        workstream: { kind: "source", id: "first-stream" },
+        status: "completed",
+      }),
+    );
+    await store.update(store.read().revision, () => completed.state);
+    expect(store.read().workstreams.source["first-stream"]?.phase).toBe(
+      "candidate_ready",
+    );
+  });
+
   it("propagates queued dependency skips transitively with direct evidence", async () => {
     const store = await createSchedulerStore();
     let state = store.read();

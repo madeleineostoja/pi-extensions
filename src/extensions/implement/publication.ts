@@ -29,7 +29,7 @@ export class PublicationError extends Error {
 export async function runPublication(args: {
   state: RunState;
   effect: Extract<SchedulerEffect, { kind: "run_publication" }>;
-  publisher: WriteAheadPublisher;
+  publisher: Pick<WriteAheadPublisher, "publish" | "recover">;
   dispatch: (event: SchedulerEvent) => Promise<void>;
   projectionDebt?: RunState["projectionDebt"][number];
 }): Promise<void> {
@@ -65,23 +65,37 @@ export async function runPublication(args: {
     return;
   }
   const writeAheadIntent = toWriteAheadIntent(intent);
-  const initial = await args.publisher.publish(writeAheadIntent);
-  if (initial.kind === "target_moved") {
+  let outcome: PublicationOutcome;
+  let recoveredAfterFailure = false;
+  try {
+    outcome = await args.publisher.publish(writeAheadIntent);
+  } catch (error) {
+    try {
+      outcome = await args.publisher.recover(writeAheadIntent);
+      recoveredAfterFailure = true;
+    } catch {
+      throw error;
+    }
+  }
+  if (outcome.kind === "target_moved") {
     await args.dispatch({
       kind: "publication_target_moved",
       workstream: args.effect.workstream,
       leaseId: args.effect.leaseId,
       intentId: intent.id,
       candidateId: intent.candidateId,
-      expectedTargetSha: initial.expected,
-      actualTargetSha: initial.actual,
+      expectedTargetSha: outcome.expected,
+      actualTargetSha: outcome.actual,
     });
     return;
   }
-  const outcome =
-    initial.kind === "published" || initial.kind === "safety_paused"
-      ? initial
-      : await args.publisher.recover(writeAheadIntent);
+  if (
+    !recoveredAfterFailure &&
+    outcome.kind !== "published" &&
+    outcome.kind !== "safety_paused"
+  ) {
+    outcome = await args.publisher.recover(writeAheadIntent);
+  }
   if (outcome.kind !== "published") {
     throw new PublicationError(outcome);
   }
