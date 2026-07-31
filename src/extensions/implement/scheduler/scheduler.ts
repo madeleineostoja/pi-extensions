@@ -1156,11 +1156,8 @@ export function reduceRunEvent(
           gate: "revision",
           evidence: event.outcome.evidence,
         });
-        if (assignment.noProgress.attempts >= 2) {
-          assignment.status = "blocked";
-          failWorkstream(state, event.workstream);
-          return accept();
-        }
+        assignment.status = "blocked";
+        failWorkstream(state, event.workstream);
         return accept();
       }
       const candidate = event.outcome.candidate;

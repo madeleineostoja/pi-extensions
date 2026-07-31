@@ -133,22 +133,65 @@ describe("revision policy", () => {
     ).toBe(false);
   });
 
-  it("exhausts semantic no-progress without resetting the bound from response wording", async () => {
+  it("settles the first unchanged revision as no progress without a duplicate revision", async () => {
     const state = await stateAtRevision();
-    const first = requestAndLeaveUnchanged(state, "first wording");
-    expect(first.failure).toBeUndefined();
-    const second = requestAndLeaveUnchanged(first, "different wording");
-    expect(second.phase).toBe("running");
-    expect(second.workstreams.source["first-stream"]?.phase).toBe("failed");
-    expect(Object.values(second.failures)).toContainEqual(
+    const settled = requestAndLeaveUnchanged(state, "first wording");
+    const assignment = Object.values(settled.revisionAssignments)[0]!;
+
+    expect(settled.phase).toBe("running");
+    expect(settled.workstreams.source).toMatchObject({
+      "first-stream": {
+        phase: "failed",
+        candidateId: "candidate:first",
+      },
+      "second-stream": { phase: "dependency_skipped" },
+    });
+    expect(assignment).toMatchObject({
+      status: "blocked",
+      noProgress: { attempts: 1 },
+    });
+    expect(settled.reviews["source:first-stream"]).toMatchObject({
+      candidateId: "candidate:first",
+      outstandingIds: ["source-first-stream-r1"],
+    });
+    expect(settled.candidates["candidate:first"]).toBeDefined();
+    expect(Object.values(settled.failures)).toContainEqual(
       expect.objectContaining({
         category: "no_progress",
         assignment: "blocked",
+        evidence: "first wording",
       }),
     );
     expect(
-      Object.values(second.revisionAssignments)[0]?.noProgress.attempts,
-    ).toBe(2);
+      reduceRunEvent(settled, {
+        kind: "revision_requested",
+        workstream: { kind: "source", id: "first-stream" },
+        now: "2026-01-01T00:03:00.000Z",
+      }),
+    ).toMatchObject({ accepted: false, effects: [] });
+    expect(reduceRunEvent(settled, { kind: "run_incomplete" })).toMatchObject({
+      accepted: true,
+      state: { phase: "incomplete" },
+    });
+  });
+
+  it("leaves independent workstreams active after an unchanged revision settles", async () => {
+    const state = await stateAtRevision(2, true);
+    const settled = requestAndLeaveUnchanged(state, "no semantic change");
+
+    expect(settled.workstreams.source["first-stream"]?.phase).toBe("failed");
+    expect(settled.workstreams.source["second-stream"]?.phase).toBe(
+      "implementing",
+    );
+    expect(Object.values(settled.processLeases)).toContainEqual(
+      expect.objectContaining({
+        workstream: { kind: "source", id: "second-stream" },
+        kind: "implementation",
+      }),
+    );
+    expect(reduceRunEvent(settled, { kind: "run_incomplete" }).accepted).toBe(
+      false,
+    );
   });
 
   it("keeps protocol retries separate from semantic no progress", async () => {
@@ -239,12 +282,15 @@ describe("revision policy", () => {
   });
 });
 
-async function stateAtRevision() {
-  const store = await createSchedulerStore();
+async function stateAtRevision(concurrency = 1, independent = false) {
+  const store = await createSchedulerStore(concurrency, independent);
   const started = reduceRunEvent(store.read(), {
     kind: "workstreams_selected",
     now: "2026-01-01T00:00:00.000Z",
-    baseShas: { "first-stream": "base-sha" },
+    baseShas: {
+      "first-stream": "base-sha",
+      ...(independent ? { "second-stream": "base-sha" } : {}),
+    },
   });
   const implementation = started.effects[0]!;
   if (implementation.kind !== "run_implementation") {
