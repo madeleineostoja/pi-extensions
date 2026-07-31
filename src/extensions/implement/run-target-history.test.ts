@@ -66,6 +66,7 @@ function targetState(): TargetState {
       intents: {},
       receipts: {},
       supersessions: {},
+      abandonments: {},
     },
   };
 }

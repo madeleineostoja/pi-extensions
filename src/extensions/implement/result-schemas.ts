@@ -197,7 +197,7 @@ export const revisionCompletionSchema = Type.Union([
   ),
   Type.Object(
     {
-      outcome: Type.Literal("blocked"),
+      outcome: Type.Literal("unchanged"),
       summary: nonEmptyString(),
       evidence: nonEmptyString(),
       verification: Type.Array(nonEmptyString(), { minItems: 1 }),

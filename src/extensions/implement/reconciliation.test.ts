@@ -89,9 +89,12 @@ describe("semantic reconciliation assignments", () => {
     });
     expect(exhausted.accepted).toBe(true);
     expect(exhausted.state).toMatchObject({
-      phase: "stopping",
-      failure: { category: "no_progress" },
+      phase: "running",
+      workstreams: { source: { "first-stream": { phase: "failed" } } },
     });
+    expect(Object.values(exhausted.state.failures)).toContainEqual(
+      expect.objectContaining({ category: "semantic_blocked" }),
+    );
     expect(
       Object.values(exhausted.state.reconciliationAssignments).map(
         (assignment) => assignment.status,

@@ -214,6 +214,13 @@ function notifyAttentionTransition(
   }
   if (event.kind === "run_completed") {
     ctx.ui.notify(`Implement completed run ${state.run.id}.`, "info");
+    return;
+  }
+  if (event.kind === "run_incomplete") {
+    ctx.ui.notify(
+      `Implement settled incomplete run ${state.run.id}; inspect retained lane failures.`,
+      "warning",
+    );
   }
 }
 

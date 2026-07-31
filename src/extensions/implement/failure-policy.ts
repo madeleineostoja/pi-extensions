@@ -10,6 +10,7 @@ export const failureCategories = [
   "target_moved",
   "publication_uncertain",
   "persistence_runtime_failure",
+  "dependency_skipped",
 ] as const;
 export type FailureCategory = (typeof failureCategories)[number];
 
@@ -20,6 +21,7 @@ export const failureAssignmentKinds = [
   "workspace_recreation",
   "operational_retry",
   "blocked",
+  "dependency_skip",
 ] as const;
 export type FailureAssignmentKind = (typeof failureAssignmentKinds)[number];
 

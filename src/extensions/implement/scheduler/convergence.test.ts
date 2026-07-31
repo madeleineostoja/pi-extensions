@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SchedulerActor } from "./scheduler-actor.js";
 import { reduceRunEvent } from "./scheduler.js";
 import {
@@ -39,6 +39,49 @@ describe("concurrent integration scheduling", () => {
 
     expect(active).toEqual(new Set(["first-stream", "second-stream"]));
     expect(Object.keys(store.read().processLeases)).toHaveLength(2);
+    await actor.stop();
+  });
+
+  it("keeps an independent active worker alive when another lane exhausts", async () => {
+    const store = await createSchedulerStore(2, true);
+    let independentSignal: AbortSignal | undefined;
+    const actor = new SchedulerActor({
+      store,
+      executeEffect: async ({ effect, signal, dispatch }) => {
+        if (effect.kind !== "run_implementation") {
+          return;
+        }
+        if (effect.workstream.kind !== "source") {
+          throw new Error("expected source implementation");
+        }
+        if (effect.workstream.id === "first-stream") {
+          await dispatch({
+            kind: "implementation_failed",
+            workstream: effect.workstream,
+            leaseId: effect.leaseId,
+            category: "provider_failure",
+            evidence: "provider unavailable",
+          });
+          return;
+        }
+        independentSignal = signal;
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+      },
+    });
+
+    await actor.start();
+    await vi.waitFor(() =>
+      expect(store.read().workstreams.source["first-stream"]?.phase).toBe(
+        "failed",
+      ),
+    );
+
+    expect(independentSignal?.aborted).toBe(false);
+    expect(store.read().workstreams.source["second-stream"]?.phase).toBe(
+      "implementing",
+    );
     await actor.stop();
   });
 

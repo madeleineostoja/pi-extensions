@@ -321,7 +321,7 @@ export function runMenuActions(
   current: boolean,
 ): string[] {
   const actions = ["Status", "Inspect"];
-  if (current && !["completed", "failed"].includes(phase)) {
+  if (current && !["completed", "incomplete", "failed"].includes(phase)) {
     actions.push("Stop");
   }
   if (!current && phase === "completed") {

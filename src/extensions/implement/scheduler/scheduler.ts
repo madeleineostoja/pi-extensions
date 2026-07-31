@@ -97,6 +97,7 @@ export type SchedulerEvent =
       category: FailureCategory;
       observation?: WorkspaceObservation;
       command?: FailureCommandEvidence;
+      provenNoWrite?: boolean;
     }
   | {
       kind: "whole_plan_review_failed";
@@ -322,6 +323,7 @@ export type SchedulerEvent =
       now: string;
     }
   | { kind: "run_failed" }
+  | { kind: "run_incomplete" }
   | { kind: "run_completed"; targetSha: string; targetTreeSha: string }
   | {
       kind: "projection_debt_recorded";
@@ -455,12 +457,6 @@ export function selectReadyRuntimeWorkstreams(
   return [];
 }
 
-function terminalFailureCategory(
-  category: FailureCategory,
-): NonNullable<RunState["failure"]>["category"] {
-  return category === "hook_rejected" ? "runtime" : category;
-}
-
 function failRun(
   state: RunState,
   category: NonNullable<RunState["failure"]>["category"],
@@ -512,7 +508,11 @@ export function reduceRunEvent(
     accepted: true,
   });
 
-  if (state.phase === "failed" || state.phase === "completed") {
+  if (
+    state.phase === "failed" ||
+    state.phase === "incomplete" ||
+    state.phase === "completed"
+  ) {
     return reject("terminal runs do not accept lifecycle events");
   }
   if (state.phase === "stopping" && !isStoppingSettlementEvent(event)) {
@@ -717,6 +717,16 @@ export function reduceRunEvent(
         ...(event.observation ? { observation: event.observation } : {}),
       });
       if (event.category === "workspace_unsafe") {
+        if (event.observation && !event.observation.clean) {
+          createWorkspaceRecreation(
+            state,
+            event.workstream,
+            event.effect === "review" ? "candidate_ready" : "approved",
+            event.evidence,
+          );
+          workstream.phase = "recreating_workspace";
+          return accept();
+        }
         return failRun(
           state,
           "workspace_unsafe",
@@ -754,6 +764,7 @@ export function reduceRunEvent(
         event.evidence,
         event.effect === "review" ? "candidate_ready" : "approved",
         reject,
+        event.effect === "publication" && event.provenNoWrite === true,
       );
     }
 
@@ -782,13 +793,7 @@ export function reduceRunEvent(
             : {}),
           reviewRetry: retry,
         };
-        return failRun(
-          state,
-          terminalFailureCategory(event.category),
-          event.evidence,
-          new Date().toISOString(),
-          reject,
-        );
+        return accept();
       }
       state.wholePlanReview = {
         status: "pending",
@@ -1148,13 +1153,8 @@ export function reduceRunEvent(
         });
         if (assignment.noProgress.attempts >= 2) {
           assignment.status = "blocked";
-          return failRun(
-            state,
-            "no_progress",
-            "Revision left the same candidate tree unchanged for the same findings twice.",
-            new Date().toISOString(),
-            reject,
-          );
+          failWorkstream(state, event.workstream);
+          return accept();
         }
         return accept();
       }
@@ -1253,24 +1253,14 @@ export function reduceRunEvent(
       }
       if (event.category === "semantic_blocked") {
         assignment.status = "blocked";
-        return failRun(
-          state,
-          "semantic_blocked",
-          event.evidence,
-          new Date().toISOString(),
-          reject,
-        );
+        failWorkstream(state, event.workstream);
+        return accept();
       }
       assignment.executionFailures++;
       if (assignment.executionFailures >= 3) {
         assignment.status = "blocked";
-        return failRun(
-          state,
-          terminalFailureCategory(event.category),
-          event.evidence,
-          new Date().toISOString(),
-          reject,
-        );
+        failWorkstream(state, event.workstream);
+        return accept();
       }
       return accept();
     }
@@ -1319,13 +1309,8 @@ export function reduceRunEvent(
           evidence: `Workspace recreation settled ${event.outcome}.`,
           observation: event.after,
         });
-        return failRun(
-          state,
-          "workspace_unsafe",
-          "Workspace recreation could not restore its exact owned resource.",
-          new Date().toISOString(),
-          reject,
-        );
+        failWorkstream(state, recreation.workstream);
+        return accept();
       }
       workstream.phase = recreation.resumePhase;
       return accept();
@@ -1592,6 +1577,16 @@ export function reduceRunEvent(
         ...(event.observation ? { observation: event.observation } : {}),
       });
       if (event.category === "workspace_unsafe") {
+        if (event.observation && !event.observation.clean) {
+          createWorkspaceRecreation(
+            state,
+            event.workstream,
+            "reconciliation_required",
+            event.evidence,
+          );
+          workstream.phase = "recreating_workspace";
+          return accept();
+        }
         assignment.status = "blocked";
         return failRun(
           state,
@@ -1609,24 +1604,14 @@ export function reduceRunEvent(
           workstream.phase = "reconciliation_required";
           return accept();
         }
-        return failRun(
-          state,
-          "no_progress",
-          "Semantic reconciliation exhausted its one escalated attempt without changing the candidate tree.",
-          new Date().toISOString(),
-          reject,
-        );
+        failWorkstream(state, event.workstream);
+        return accept();
       }
       assignment.executionFailures++;
       if (assignment.executionFailures >= 3) {
         assignment.status = "blocked";
-        return failRun(
-          state,
-          terminalFailureCategory(event.category),
-          `${event.category} exhausted reconciliation execution for this semantic context.`,
-          new Date().toISOString(),
-          reject,
-        );
+        failWorkstream(state, event.workstream);
+        return accept();
       }
       workstream.phase = "reconciliation_required";
       return accept();
@@ -1992,6 +1977,7 @@ export function reduceRunEvent(
         workstream.candidateId !== candidate.id ||
         workstream.phase !== "approved" ||
         state.publication.supersessions[intent.id] !== undefined ||
+        state.publication.abandonments[intent.id] !== undefined ||
         !processIsAllowed(state, event.workstream) ||
         activeLeaseFor(state, event.workstream) ||
         activeWorkerLeaseCount(state) > 0 ||
@@ -2033,6 +2019,7 @@ export function reduceRunEvent(
         lease.publicationIntentId !== event.receipt.intentId ||
         !intent ||
         state.publication.supersessions[intent.id] !== undefined ||
+        state.publication.abandonments[intent.id] !== undefined ||
         intent.candidateId !== event.receipt.candidateId ||
         intent.targetBaseSha !== event.receipt.targetBaseSha ||
         intent.preparedCommitSha !== event.receipt.publishedCommitSha ||
@@ -2070,6 +2057,7 @@ export function reduceRunEvent(
         !processIsAllowed(state, event.workstream) ||
         !intent ||
         state.publication.supersessions[intent.id] !== undefined ||
+        state.publication.abandonments[intent.id] !== undefined ||
         lease.publicationIntentId !== event.intentId ||
         lease.candidateId !== intent.candidateId ||
         workstream.candidateId !== intent.candidateId ||
@@ -2154,7 +2142,8 @@ export function reduceRunEvent(
         event.actualTargetSha === event.expectedTargetSha ||
         event.actualTargetSha === intent.preparedCommitSha ||
         state.publication.receipts[intent.id] ||
-        state.publication.supersessions[intent.id]
+        state.publication.supersessions[intent.id] ||
+        state.publication.abandonments[intent.id]
       ) {
         return reject(
           "target movement does not prove this exact stale publication intent",
@@ -2190,7 +2179,7 @@ export function reduceRunEvent(
       if (
         !["running", "whole_plan_review"].includes(state.phase) ||
         state.wholePlanReview.status !== "pending" ||
-        !allSourceWorkstreamsComplete(state)
+        !wholePlanReviewCanProgress(state)
       ) {
         return reject("whole-plan review is not ready to run");
       }
@@ -2395,6 +2384,46 @@ export function reduceRunEvent(
       state.phase = "failed";
       return accept();
 
+    case "run_incomplete":
+      if (
+        !["running", "whole_plan_review"].includes(state.phase) ||
+        !allSourceWorkstreamsTerminal(state) ||
+        !allOverallWorkstreamsTerminal(state) ||
+        Object.keys(state.processLeases).length > 0 ||
+        state.projectionDebt.length > 0 ||
+        state.wholePlanReview.status === "reviewing" ||
+        state.wholePlanReview.status === "repairing" ||
+        Object.values(state.operationalRetries).some(
+          (retry) => retry.status === "open",
+        ) ||
+        Object.values(state.workspaceRecreations).some(
+          (recreation) =>
+            recreation.status === "pending" || recreation.status === "running",
+        ) ||
+        Object.values(state.revisionAssignments).some(
+          (assignment) => assignment.status === "open",
+        ) ||
+        Object.values(state.reconciliationAssignments).some(
+          (assignment) => assignment.status === "pending",
+        ) ||
+        wholePlanReviewCanProgress(state) ||
+        Object.values(state.publication.intents).some(
+          (intent) =>
+            !state.publication.receipts[intent.id] &&
+            !state.publication.supersessions[intent.id] &&
+            !state.publication.abandonments[intent.id],
+        ) ||
+        (allSourceWorkstreamsComplete(state) &&
+          Object.values(state.workstreams.overall).every(
+            (workstream) => workstream.phase === "completed",
+          ) &&
+          state.wholePlanReview.status === "approved")
+      ) {
+        return reject("run still has safe work or unresolved settlement debt");
+      }
+      state.phase = "incomplete";
+      return accept();
+
     case "run_completed":
       if (
         state.phase !== "whole_plan_review" ||
@@ -2410,7 +2439,8 @@ export function reduceRunEvent(
         Object.values(state.publication.intents).some(
           (intent) =>
             !state.publication.receipts[intent.id] &&
-            !state.publication.supersessions[intent.id],
+            !state.publication.supersessions[intent.id] &&
+            !state.publication.abandonments[intent.id],
         )
       ) {
         return reject("run still has incomplete workstreams or cleanup debt");
@@ -2419,6 +2449,21 @@ export function reduceRunEvent(
       return accept();
 
     case "projection_debt_recorded":
+      if (
+        event.debt.taskIds.some((taskId) => {
+          const task = state.tasks[taskId];
+          const workstream = task
+            ? state.workstreams.source[task.workstreamId]
+            : undefined;
+          return (
+            !task ||
+            workstream?.phase === "failed" ||
+            workstream?.phase === "dependency_skipped"
+          );
+        })
+      ) {
+        return reject("failed or skipped source tasks cannot be projected");
+      }
       if (!state.projectionDebt.some((debt) => debt.id === event.debt.id)) {
         state.projectionDebt.push(event.debt);
         return accept([{ kind: "run_projection", debtId: event.debt.id }]);
@@ -3017,7 +3062,12 @@ function createRevisionAssignment(
 function createWorkspaceRecreation(
   state: RunState,
   workstream: RuntimeWorkstream,
-  resumePhase: "queued" | "candidate_ready" | "revising" | "approved",
+  resumePhase:
+    | "queued"
+    | "candidate_ready"
+    | "revising"
+    | "reconciliation_required"
+    | "approved",
   evidence: string,
 ): void {
   const runtime = getWorkstream(state, workstream)!;
@@ -3045,6 +3095,98 @@ function createWorkspaceRecreation(
   };
 }
 
+function failWorkstream(state: RunState, workstream: RuntimeWorkstream): void {
+  const runtime = getWorkstream(state, workstream);
+  if (!runtime) {
+    throw new Error("lane failure references an unknown workstream");
+  }
+  runtime.phase = "failed";
+  if (
+    workstream.kind === "overall" &&
+    state.wholePlanReview.status === "repairing"
+  ) {
+    state.wholePlanReview = {
+      status: "pending",
+      ...(state.wholePlanReview.epoch
+        ? { epoch: state.wholePlanReview.epoch }
+        : {}),
+      ...(state.wholePlanReview.reviewRetry
+        ? { reviewRetry: state.wholePlanReview.reviewRetry }
+        : {}),
+    };
+  }
+  for (const assignment of Object.values(state.revisionAssignments)) {
+    if (
+      assignment.status === "open" &&
+      sameWorkstream(assignment.workstream, workstream)
+    ) {
+      assignment.status = "blocked";
+    }
+  }
+  for (const assignment of Object.values(state.reconciliationAssignments)) {
+    if (
+      assignment.status === "pending" &&
+      sameWorkstream(assignment.workstream, workstream)
+    ) {
+      assignment.status = "blocked";
+    }
+  }
+  for (const retry of Object.values(state.operationalRetries)) {
+    if (
+      retry.status === "open" &&
+      sameWorkstream(retry.workstream, workstream)
+    ) {
+      retry.status = "exhausted";
+    }
+  }
+  for (const recreation of Object.values(state.workspaceRecreations)) {
+    if (
+      recreation.status === "pending" &&
+      sameWorkstream(recreation.workstream, workstream)
+    ) {
+      recreation.status = "unsafe";
+    }
+  }
+  if (workstream.kind === "source") {
+    propagateDependencySkips(state);
+  }
+}
+
+function propagateDependencySkips(state: RunState): void {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const workstream of Object.values(state.workstreams.source).sort(
+      (left, right) => left.id.localeCompare(right.id),
+    )) {
+      if (workstream.phase !== "queued") {
+        continue;
+      }
+      const unavailable = workstream.dependsOn
+        .map((id) => state.workstreams.source[id])
+        .filter(
+          (dependency): dependency is NonNullable<typeof dependency> =>
+            dependency?.phase === "failed" ||
+            dependency?.phase === "dependency_skipped",
+        );
+      if (unavailable.length === 0) {
+        continue;
+      }
+      workstream.phase = "dependency_skipped";
+      recordFailure(state, {
+        category: "dependency_skipped",
+        assignment: "dependency_skip",
+        workstream: { kind: "source", id: workstream.id },
+        gate: "dependency",
+        evidence: `Unavailable direct dependencies: ${unavailable
+          .map((dependency) => `${dependency.id} (${dependency.phase})`)
+          .join(", ")}.`,
+      });
+      changed = true;
+    }
+  }
+}
+
 function scheduleOperationalRetry(
   state: RunState,
   workstream: RuntimeWorkstream,
@@ -3052,6 +3194,7 @@ function scheduleOperationalRetry(
   evidence: string,
   phase: "queued" | "candidate_ready" | "approved",
   reject: (error: string) => SchedulerTransition,
+  provenNoWrite = false,
 ): SchedulerTransition {
   const runtime = getWorkstream(state, workstream);
   if (!runtime) {
@@ -3073,13 +3216,51 @@ function scheduleOperationalRetry(
   if (retry.attempts >= 3) {
     retry.status = "exhausted";
     state.operationalRetries[id] = retry;
-    return failRun(
-      state,
-      "provider_failure",
-      `${lane} exhausted its durable retry bound.`,
-      new Date().toISOString(),
-      reject,
-    );
+    if (lane === "publication") {
+      const intent = Object.values(state.publication.intents).find(
+        (candidate) =>
+          sameWorkstream(candidate.workstream, workstream) &&
+          candidate.candidateId === candidateId &&
+          state.publication.receipts[candidate.id] === undefined &&
+          state.publication.supersessions[candidate.id] === undefined &&
+          state.publication.abandonments[candidate.id] === undefined,
+      );
+      if (!intent || !provenNoWrite) {
+        return failRun(
+          state,
+          "publication_uncertain",
+          "Publication retry exhaustion could not prove that its exact intent made no ref write.",
+          new Date().toISOString(),
+          reject,
+        );
+      }
+      const operation = Object.values(state.operationSettlements)
+        .filter(
+          (settlement) =>
+            settlement.kind === "publication" &&
+            settlement.publicationIntentId === intent.id,
+        )
+        .at(-1);
+      if (!operation) {
+        return reject(
+          "publication abandonment has no settled publication operation",
+        );
+      }
+      state.publication.abandonments[intent.id] = {
+        intentId: intent.id,
+        publicationOperationId: operation.operationId,
+        preparationOperationId: intent.operationId,
+        workstream,
+        candidateId: intent.candidateId,
+        preparationId: intent.preparationId,
+        targetRef: intent.targetRef,
+        targetBaseSha: intent.targetBaseSha,
+        evidence: boundedFailureOutput(evidence),
+        abandonedAt: new Date().toISOString(),
+      };
+    }
+    failWorkstream(state, workstream);
+    return { state, effects: [], accepted: true };
   }
   state.operationalRetries[id] = retry;
   runtime.phase = phase;
@@ -3195,6 +3376,29 @@ function taskIdOwner(state: RunState, taskId: string): string {
 export function allSourceWorkstreamsComplete(state: RunState): boolean {
   return Object.values(state.workstreams.source).every(
     (workstream) => workstream.phase === "completed",
+  );
+}
+
+export function allSourceWorkstreamsTerminal(state: RunState): boolean {
+  return Object.values(state.workstreams.source).every((workstream) =>
+    ["completed", "failed", "dependency_skipped"].includes(workstream.phase),
+  );
+}
+
+function allOverallWorkstreamsTerminal(state: RunState): boolean {
+  return Object.values(state.workstreams.overall).every((workstream) =>
+    ["completed", "failed"].includes(workstream.phase),
+  );
+}
+
+function wholePlanReviewCanProgress(state: RunState): boolean {
+  return (
+    allSourceWorkstreamsComplete(state) &&
+    Object.values(state.workstreams.overall).every(
+      (workstream) => workstream.phase === "completed",
+    ) &&
+    state.wholePlanReview.status === "pending" &&
+    state.wholePlanReview.reviewRetry?.status !== "exhausted"
   );
 }
 

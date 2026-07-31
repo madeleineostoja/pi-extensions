@@ -138,7 +138,14 @@ describe("revision policy", () => {
     const first = requestAndLeaveUnchanged(state, "first wording");
     expect(first.failure).toBeUndefined();
     const second = requestAndLeaveUnchanged(first, "different wording");
-    expect(second.failure).toMatchObject({ category: "no_progress" });
+    expect(second.phase).toBe("running");
+    expect(second.workstreams.source["first-stream"]?.phase).toBe("failed");
+    expect(Object.values(second.failures)).toContainEqual(
+      expect.objectContaining({
+        category: "no_progress",
+        assignment: "blocked",
+      }),
+    );
     expect(
       Object.values(second.revisionAssignments)[0]?.noProgress.attempts,
     ).toBe(2);
@@ -165,7 +172,11 @@ describe("revision policy", () => {
         evidence: `malformed response ${attempt}`,
       }).state;
     }
-    expect(state.failure).toMatchObject({ category: "protocol_failure" });
+    expect(state.phase).toBe("running");
+    expect(state.workstreams.source["first-stream"]?.phase).toBe("failed");
+    expect(Object.values(state.failures)).toContainEqual(
+      expect.objectContaining({ category: "protocol_failure" }),
+    );
     expect(
       Object.values(state.revisionAssignments)[0]?.noProgress.attempts,
     ).toBe(0);

@@ -64,6 +64,8 @@ const sourceWorkstreamSchema = z
       "reconciling",
       "publishing",
       "completed",
+      "failed",
+      "dependency_skipped",
     ]),
     baseSha: nonEmpty.optional(),
     candidateId: nonEmpty.optional(),
@@ -86,6 +88,7 @@ const overallWorkstreamSchema = z
       "reconciling",
       "publishing",
       "completed",
+      "failed",
     ]),
     candidateId: nonEmpty.optional(),
   })
@@ -327,7 +330,13 @@ const workspaceRecreationSchema = z
     workstream: failureWorkstreamSchema,
     candidateId: nonEmpty.optional(),
     checkpoint: nonEmpty,
-    resumePhase: z.enum(["queued", "candidate_ready", "revising", "approved"]),
+    resumePhase: z.enum([
+      "queued",
+      "candidate_ready",
+      "revising",
+      "reconciliation_required",
+      "approved",
+    ]),
     status: z.enum([
       "pending",
       "running",
@@ -473,6 +482,21 @@ const publicationSupersessionSchema = z
   })
   .strict();
 
+const publicationAbandonmentSchema = z
+  .object({
+    intentId: nonEmpty,
+    publicationOperationId: nonEmpty,
+    preparationOperationId: nonEmpty,
+    workstream: failureWorkstreamSchema,
+    candidateId: nonEmpty,
+    preparationId: nonEmpty,
+    targetRef: nonEmpty,
+    targetBaseSha: nonEmpty,
+    evidence: nonEmpty,
+    abandonedAt: nonEmpty,
+  })
+  .strict();
+
 const publicationReceiptSchema = z
   .object({
     operationId: nonEmpty,
@@ -606,6 +630,7 @@ export const RunStateSchema = z
       "whole_plan_review",
       "stopping",
       "failed",
+      "incomplete",
       "completed",
     ]),
     executionPlan: z.object({ path: nonEmpty, hash }).strict().optional(),
@@ -641,6 +666,7 @@ export const RunStateSchema = z
         intents: z.record(nonEmpty, publicationIntentSchema),
         receipts: z.record(nonEmpty, publicationReceiptSchema),
         supersessions: z.record(nonEmpty, publicationSupersessionSchema),
+        abandonments: z.record(nonEmpty, publicationAbandonmentSchema),
       })
       .strict(),
     protectedArtifactHashes: z.record(nonEmpty, hash),
@@ -843,6 +869,7 @@ export function createPlanningRun(args: {
       intents: {},
       receipts: {},
       supersessions: {},
+      abandonments: {},
     },
     protectedArtifactHashes: args.source.protectedArtifactHashes,
     projectionDebt: [],
@@ -1017,11 +1044,17 @@ export class RunStore {
       );
     }
     for (const taskId of taskIds) {
+      const task = current.tasks[taskId];
+      const workstream = task
+        ? current.workstreams.source[task.workstreamId]
+        : undefined;
       if (
-        !current.tasks[taskId] ||
+        !task ||
         !["checkpointed", "reviewed_satisfied", "published"].includes(
-          current.tasks[taskId].phase,
-        )
+          task.phase,
+        ) ||
+        workstream?.phase === "failed" ||
+        workstream?.phase === "dependency_skipped"
       ) {
         throw new StateError(
           "Only checkpointed, reviewed-satisfied, or already-published tasks may be projected.",
@@ -1290,7 +1323,10 @@ function invariantIssues(
   if (state.phase === "planning" && bound) {
     issues.push("planning cannot bind an execution plan");
   }
-  if (!bound && !["planning", "stopping", "failed"].includes(state.phase)) {
+  if (
+    !bound &&
+    !["planning", "stopping", "failed", "incomplete"].includes(state.phase)
+  ) {
     issues.push("only planning-derived stop and failure states may be unbound");
   }
   if (
@@ -1370,7 +1406,11 @@ function invariantIssues(
     if (key !== workstream.id) {
       issues.push(`source workstream key ${key} does not match its ID`);
     }
-    if (workstream.phase !== "queued" && !workstream.baseSha) {
+    if (
+      workstream.phase !== "queued" &&
+      workstream.phase !== "dependency_skipped" &&
+      !workstream.baseSha
+    ) {
       issues.push(`source workstream ${key} has no assigned runtime base`);
     }
   }
@@ -1452,6 +1492,66 @@ function invariantIssues(
     state.wholePlanReview.status !== "approved"
   ) {
     issues.push("a completed run requires an approved whole-plan review");
+  }
+  if (state.phase === "incomplete") {
+    if (!bound) {
+      issues.push("an incomplete run requires a bound execution plan");
+    }
+    if (
+      Object.values(state.workstreams.source).some(
+        (workstream) =>
+          !["completed", "failed", "dependency_skipped"].includes(
+            workstream.phase,
+          ),
+      ) ||
+      Object.values(state.workstreams.overall).some(
+        (workstream) => !["completed", "failed"].includes(workstream.phase),
+      ) ||
+      Object.keys(state.processLeases).length > 0 ||
+      state.projectionDebt.length > 0 ||
+      state.wholePlanReview.status === "reviewing" ||
+      state.wholePlanReview.status === "repairing" ||
+      Object.values(state.operationalRetries).some(
+        (retry) => retry.status === "open",
+      ) ||
+      Object.values(state.workspaceRecreations).some(
+        (recreation) =>
+          recreation.status === "pending" || recreation.status === "running",
+      ) ||
+      Object.values(state.revisionAssignments).some(
+        (assignment) => assignment.status === "open",
+      ) ||
+      Object.values(state.reconciliationAssignments).some(
+        (assignment) => assignment.status === "pending",
+      ) ||
+      (state.wholePlanReview.status === "pending" &&
+        state.wholePlanReview.reviewRetry?.status !== "exhausted" &&
+        Object.values(state.workstreams.source).every(
+          (workstream) => workstream.phase === "completed",
+        ) &&
+        Object.values(state.workstreams.overall).every(
+          (workstream) => workstream.phase === "completed",
+        )) ||
+      Object.values(state.publication.intents).some(
+        (intent) =>
+          !state.publication.receipts[intent.id] &&
+          !state.publication.supersessions[intent.id] &&
+          !state.publication.abandonments[intent.id],
+      )
+    ) {
+      issues.push("an incomplete run retains safe work or unsettled debt");
+    }
+    if (
+      Object.values(state.workstreams.source).every(
+        (workstream) => workstream.phase === "completed",
+      ) &&
+      Object.values(state.workstreams.overall).every(
+        (workstream) => workstream.phase === "completed",
+      ) &&
+      state.wholePlanReview.status === "approved"
+    ) {
+      issues.push("an incomplete run cannot represent full delivery");
+    }
   }
   const activeWorkstreams = new Set<string>();
   for (const [key, lease] of Object.entries(state.processLeases)) {
@@ -1611,6 +1711,7 @@ function invariantIssues(
       key !== supersession.intentId ||
       !intent ||
       state.publication.receipts[key] ||
+      state.publication.abandonments[key] ||
       operation?.kind !== "publication" ||
       operation.publicationIntentId !== supersession.intentId ||
       intent.operationId !== supersession.preparationOperationId ||
@@ -1623,6 +1724,31 @@ function invariantIssues(
       supersession.actualTargetSha === intent.preparedCommitSha
     ) {
       issues.push(`publication supersession ${key} has no exact pre-CAS proof`);
+    }
+  }
+  for (const [key, abandonment] of Object.entries(
+    state.publication.abandonments,
+  )) {
+    const intent = state.publication.intents[abandonment.intentId];
+    const operation =
+      state.processLeases[abandonment.publicationOperationId] ??
+      state.operationSettlements[abandonment.publicationOperationId];
+    if (
+      key !== abandonment.intentId ||
+      !intent ||
+      state.publication.receipts[key] ||
+      state.publication.supersessions[key] ||
+      operation?.kind !== "publication" ||
+      !isProvenNoWriteAbandonment(operation) ||
+      operation.publicationIntentId !== abandonment.intentId ||
+      intent.operationId !== abandonment.preparationOperationId ||
+      !sameWorkstreamIdentity(intent.workstream, abandonment.workstream) ||
+      intent.candidateId !== abandonment.candidateId ||
+      intent.preparationId !== abandonment.preparationId ||
+      intent.targetRef !== abandonment.targetRef ||
+      intent.targetBaseSha !== abandonment.targetBaseSha
+    ) {
+      issues.push(`publication abandonment ${key} has no exact no-write proof`);
     }
   }
   for (const [key, candidate] of Object.entries(state.candidates)) {
@@ -1953,6 +2079,7 @@ function invariantIssues(
       preparation.operationId !== intent.operationId ||
       !sameWorkstreamIdentity(candidate.workstream, intent.workstream) ||
       (state.publication.supersessions[key] === undefined &&
+        state.publication.abandonments[key] === undefined &&
         workstreamCandidateId(state, intent.workstream) !==
           intent.candidateId) ||
       preparation.candidateId !== intent.candidateId ||
@@ -1960,8 +2087,11 @@ function invariantIssues(
       preparation.targetBaseSha !== intent.targetBaseSha ||
       preparation.preparedCommitSha !== intent.preparedCommitSha ||
       preparation.preparedTreeSha !== intent.preparedTreeSha ||
-      (state.publication.supersessions[key] !== undefined &&
-        state.publication.receipts[key] !== undefined)
+      [
+        state.publication.supersessions[key],
+        state.publication.abandonments[key],
+        state.publication.receipts[key],
+      ].filter(Boolean).length > 1
     ) {
       issues.push(
         `publication intent ${key} does not match its immutable preparation`,
@@ -2000,11 +2130,28 @@ function invariantIssues(
     for (const [id, workstream] of Object.entries(
       previous.workstreams.source,
     )) {
+      const current = state.workstreams.source[id];
       if (
         workstream.baseSha !== undefined &&
-        state.workstreams.source[id]?.baseSha !== workstream.baseSha
+        current?.baseSha !== workstream.baseSha
       ) {
         issues.push(`source workstream ${id} runtime base was overwritten`);
+      }
+      if (
+        ["failed", "dependency_skipped"].includes(workstream.phase) &&
+        current?.phase !== workstream.phase
+      ) {
+        issues.push(`terminal source workstream ${id} was reactivated`);
+      }
+    }
+    for (const [id, workstream] of Object.entries(
+      previous.workstreams.overall,
+    )) {
+      if (
+        workstream.phase === "failed" &&
+        state.workstreams.overall[id]?.phase !== "failed"
+      ) {
+        issues.push(`terminal overall workstream ${id} was reactivated`);
       }
     }
     for (const [id, settlement] of Object.entries(
@@ -2075,6 +2222,16 @@ function invariantIssues(
         issues.push(
           `publication supersession ${id} was overwritten or removed`,
         );
+      }
+    }
+    for (const [id, abandonment] of Object.entries(
+      previous.publication.abandonments,
+    )) {
+      if (
+        JSON.stringify(state.publication.abandonments[id]) !==
+        JSON.stringify(abandonment)
+      ) {
+        issues.push(`publication abandonment ${id} was overwritten or removed`);
       }
     }
   }
@@ -2175,6 +2332,36 @@ function canonicalRelevantPaths(
   return [
     ...new Set([...paths.candidate, ...paths.target, ...paths.replay]),
   ].sort();
+}
+
+function isProvenNoWriteAbandonment(
+  operation:
+    | RunState["processLeases"][string]
+    | RunState["operationSettlements"][string]
+    | undefined,
+): boolean {
+  if (
+    !operation ||
+    !("eventFingerprint" in operation) ||
+    operation.kind !== "publication" ||
+    operation.outcome !== "effect_failed"
+  ) {
+    return false;
+  }
+  try {
+    const event = JSON.parse(operation.eventFingerprint) as {
+      kind?: unknown;
+      effect?: unknown;
+      provenNoWrite?: unknown;
+    };
+    return (
+      event.kind === "effect_failed" &&
+      event.effect === "publication" &&
+      event.provenNoWrite === true
+    );
+  } catch {
+    return false;
+  }
 }
 
 function samePaths(left: readonly string[], right: readonly string[]): boolean {

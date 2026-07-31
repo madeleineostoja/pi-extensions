@@ -213,7 +213,8 @@ export function expectedTargetHead(
   const pending = intents.filter(
     (intent) =>
       !state.publication.receipts[intent.id] &&
-      !state.publication.supersessions[intent.id],
+      !state.publication.supersessions[intent.id] &&
+      !state.publication.abandonments[intent.id],
   );
   if (pending.length === 1) {
     return pending[0]!.targetBaseSha;
@@ -229,6 +230,9 @@ export function expectedTargetHead(
     const supersession = state.publication.supersessions[intent.id];
     if (supersession) {
       return supersession.actualTargetSha;
+    }
+    if (state.publication.abandonments[intent.id]) {
+      return intent.targetBaseSha;
     }
   }
   return state.run.checkout.startHead;

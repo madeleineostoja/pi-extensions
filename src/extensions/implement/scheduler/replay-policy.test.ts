@@ -161,6 +161,47 @@ describe("replay preparation policy", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("abandons an exhausted publication only after a proven no-write recovery", async () => {
+    const ready = await publicationReady();
+    let state = ready.state;
+    let effect = ready.effect;
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const failed = reduceRunEvent(state, {
+        kind: "effect_failed",
+        effect: "publication",
+        workstream: effect.workstream,
+        leaseId: effect.leaseId,
+        category: "provider_failure",
+        evidence: `publication retry ${attempt}`,
+        ...(attempt === 3 ? { provenNoWrite: true } : {}),
+      });
+      expect(failed.accepted).toBe(true);
+      state = failed.state;
+      if (attempt < 3) {
+        const requested = reduceRunEvent(state, {
+          kind: "publication_requested",
+          workstream: effect.workstream,
+          intentId: ready.intent.id,
+          now: `2026-01-01T00:0${attempt + 3}:00.000Z`,
+        });
+        effect = requested.effects[0]! as typeof effect;
+        state = requested.state;
+      }
+    }
+
+    expect(state.workstreams.source["first-stream"]?.phase).toBe("failed");
+    expect(state.publication.abandonments[ready.intent.id]).toMatchObject({
+      intentId: ready.intent.id,
+      publicationOperationId: effect.leaseId,
+      targetBaseSha: ready.intent.targetBaseSha,
+    });
+    await ready.store.update(ready.store.read().revision, () => state);
+    expect(
+      ready.store.read().publication.abandonments[ready.intent.id],
+    ).toBeDefined();
+  });
+
   it("retains the exact failed replay target instead of inferring a later one", async () => {
     const requested = await requestedReconciliation();
 

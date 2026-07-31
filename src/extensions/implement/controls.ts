@@ -89,13 +89,16 @@ export function formatStatus(state: RunState): string {
   );
   const publication = Object.values(state.publication.intents).map((intent) => {
     const supersession = state.publication.supersessions[intent.id];
+    const abandonment = state.publication.abandonments[intent.id];
     const receipt = state.publication.receipts[intent.id];
     return `${intent.id}: preparation target ${intent.targetBaseSha} · ${
       receipt
         ? `published ${receipt.publishedCommitSha}`
         : supersession
           ? `superseded by ${supersession.actualTargetSha}`
-          : "pending"
+          : abandonment
+            ? "abandoned without a ref write"
+            : "pending"
     }`;
   });
   const publicationUncertainty =
@@ -111,7 +114,7 @@ export function formatStatus(state: RunState): string {
     `Workstreams: ${phases || "none"}`,
     `Active processes: ${activeProcesses || "none"}`,
     `Open findings: ${openFindings}`,
-    `Active revisions: ${state.phase === "failed" ? 0 : activeRevisions.length}`,
+    `Active revisions: ${["failed", "incomplete"].includes(state.phase) ? 0 : activeRevisions.length}`,
     ...(candidateContext.length > 0
       ? [`Candidates: ${candidateContext.join("; ")}`]
       : []),
@@ -127,7 +130,7 @@ export function formatStatus(state: RunState): string {
           `Failure evidence: ${latestFailure.evidence}`,
         ]
       : []),
-    `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted; ${Object.keys(state.publication.supersessions).length} superseded`,
+    `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted; ${Object.keys(state.publication.supersessions).length} superseded; ${Object.keys(state.publication.abandonments).length} abandoned`,
     ...(publication.length > 0
       ? [`Publication intents: ${publication.join("; ")}`]
       : []),
@@ -237,12 +240,12 @@ export async function cleanupWithLease(args: {
   await settleProjectionTransactions({ store });
   const state = store.read();
   const allowedPhases = args.allowIncomplete
-    ? ["completed", "failed"]
+    ? ["completed", "incomplete", "failed"]
     : ["completed"];
   if (!allowedPhases.includes(state.phase)) {
     throw new Error(
       args.allowIncomplete
-        ? "Only completed or failed runs may be cleaned up."
+        ? "Only completed, incomplete, or failed runs may be cleaned up."
         : "Only completed runs may be destructively cleaned.",
     );
   }

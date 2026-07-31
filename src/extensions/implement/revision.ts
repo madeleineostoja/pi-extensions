@@ -52,8 +52,7 @@ export class RevisionFailure extends Error {
     readonly category:
       | "protocol_failure"
       | "provider_failure"
-      | "workspace_unsafe"
-      | "semantic_blocked",
+      | "workspace_unsafe",
     message: string,
     readonly observation?: CandidateWorkspaceObservation,
   ) {
@@ -221,10 +220,10 @@ export async function runRevision(args: {
           observation,
         );
       }
-      if (response.result.outcome === "blocked") {
+      if (response.result.outcome !== "unchanged") {
         throw new RevisionFailure(
-          "semantic_blocked",
-          response.result.evidence,
+          "protocol_failure",
+          "Revision reported a changed correction without an observed candidate change.",
           observation,
         );
       }

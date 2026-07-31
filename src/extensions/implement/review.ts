@@ -26,10 +26,21 @@ import {
 import { overallRepairWorkspace } from "./overall-repair.js";
 import { workstreamWorkspace } from "./workstream-candidate.js";
 import { writeAtomicJson } from "./atomic-json.js";
+import {
+  observeCandidateWorkspace,
+  type CandidateWorkspaceObservation,
+} from "./candidate-admission.js";
 import type { RuntimeWorkstream } from "./scheduler/scheduler.js";
 import { protectedArtifactsMatch, type RunState } from "./store.js";
 
-export class ReviewWorkspaceSafetyError extends Error {}
+export class ReviewWorkspaceSafetyError extends Error {
+  constructor(
+    message: string,
+    readonly observation?: CandidateWorkspaceObservation,
+  ) {
+    super(message);
+  }
+}
 
 export type ReviewState = {
   candidateId: string;
@@ -501,6 +512,7 @@ export async function runWorkstreamReview(args: {
   ) {
     throw new ReviewWorkspaceSafetyError(
       "The review workspace does not match its current candidate.",
+      await observeCandidateWorkspace(workspaceGit),
     );
   }
   if (assessment && (await args.git.head()) !== assessment.targetSha) {
@@ -569,6 +581,7 @@ export async function runWorkstreamReview(args: {
   ) {
     throw new ReviewWorkspaceSafetyError(
       "The reviewer changed the assessed repository state.",
+      await observeCandidateWorkspace(workspaceGit),
     );
   }
   if (failure) {
@@ -651,6 +664,7 @@ async function runOverallAnchoredReview(args: {
   ) {
     throw new ReviewWorkspaceSafetyError(
       "The overall repair workspace does not match its current candidate.",
+      await observeCandidateWorkspace(workspaceGit),
     );
   }
   const completeFindings = workstreamReviewFindings(
@@ -748,6 +762,7 @@ async function runOverallAnchoredReview(args: {
   ) {
     throw new ReviewWorkspaceSafetyError(
       "The reviewer changed the overall repair workspace.",
+      await observeCandidateWorkspace(workspaceGit),
     );
   }
   if (failure) {

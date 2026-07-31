@@ -19,6 +19,7 @@ import {
   activeLeaseFor,
   activeWorkerLeaseCount,
   allSourceWorkstreamsComplete,
+  allSourceWorkstreamsTerminal,
   getWorkstream,
   hasIntegrationLease,
   isStoppingSettlementEvent,
@@ -462,6 +463,9 @@ export class SchedulerActor {
       state.wholePlanReview.status === "pending" &&
       state.projectionDebt.length === 0 &&
       allSourceWorkstreamsComplete(state) &&
+      Object.values(state.workstreams.overall).every(
+        (workstream) => workstream.phase === "completed",
+      ) &&
       state.wholePlanReview.reviewRetry?.status !== "exhausted"
     ) {
       return { kind: "event", event: { kind: "whole_plan_review_requested" } };
@@ -479,6 +483,25 @@ export class SchedulerActor {
       !this.processes.has("complete_whole_plan_run")
     ) {
       return { kind: "effect", effect: { kind: "complete_whole_plan_run" } };
+    }
+    if (
+      allSourceWorkstreamsTerminal(state) &&
+      Object.values(state.workstreams.overall).every((workstream) =>
+        ["completed", "failed"].includes(workstream.phase),
+      ) &&
+      Object.keys(state.processLeases).length === 0 &&
+      this.processes.size === 0 &&
+      state.projectionDebt.length === 0 &&
+      Object.values(state.publication.intents).every(
+        (intent) =>
+          state.publication.receipts[intent.id] !== undefined ||
+          state.publication.supersessions[intent.id] !== undefined ||
+          state.publication.abandonments[intent.id] !== undefined,
+      ) &&
+      state.wholePlanReview.status !== "reviewing" &&
+      state.wholePlanReview.status !== "repairing"
+    ) {
+      return { kind: "event", event: { kind: "run_incomplete" } };
     }
     return undefined;
   }
@@ -744,12 +767,11 @@ export class SchedulerActor {
             effect.kind === "run_publication") &&
           this.snapshot().processLeases[effect.leaseId]
         ) {
+          const reviewFailure =
+            error instanceof ReviewWorkspaceSafetyError ? error : undefined;
           await this.dispatch({
             kind: "effect_failed",
-            category:
-              error instanceof ReviewWorkspaceSafetyError
-                ? "workspace_unsafe"
-                : "provider_failure",
+            category: reviewFailure ? "workspace_unsafe" : "provider_failure",
             effect:
               effect.kind === "run_review"
                 ? "review"
@@ -759,6 +781,14 @@ export class SchedulerActor {
             workstream: effect.workstream,
             leaseId: effect.leaseId,
             evidence: error instanceof Error ? error.message : String(error),
+            ...(reviewFailure?.observation
+              ? { observation: reviewFailure.observation }
+              : {}),
+            ...(effect.kind === "run_publication" &&
+            error instanceof PublicationError &&
+            error.outcome.kind === "retry_from_base"
+              ? { provenNoWrite: true }
+              : {}),
           });
         }
       })
@@ -789,7 +819,7 @@ export class SchedulerActor {
     reason: string,
   ): Promise<void> {
     const phase = this.snapshot().phase;
-    if (["failed", "completed"].includes(phase)) {
+    if (["failed", "incomplete", "completed"].includes(phase)) {
       return;
     }
     this.stopping = true;

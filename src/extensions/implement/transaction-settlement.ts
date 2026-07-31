@@ -17,7 +17,8 @@ export async function settlePublicationTransactions(args: {
         : state.workstreams.overall[intent.workstream.repairId];
     if (
       workstream?.phase === "completed" ||
-      state.publication.supersessions[intent.id]
+      state.publication.supersessions[intent.id] ||
+      state.publication.abandonments[intent.id]
     ) {
       continue;
     }
