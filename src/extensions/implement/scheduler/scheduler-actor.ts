@@ -152,6 +152,12 @@ export class SchedulerActor {
         let eventToPersist = event;
         if (
           sourceEffect &&
+          ["failed", "incomplete", "completed"].includes(current.phase)
+        ) {
+          return { effects: [], persistedEvent: undefined };
+        }
+        if (
+          sourceEffect &&
           current.phase === "stopping" &&
           !isStoppingSettlementEvent(event)
         ) {
@@ -171,6 +177,12 @@ export class SchedulerActor {
             kind: "process_abandoned",
             leaseId: sourceLeaseId,
           };
+        }
+        if (
+          eventToPersist.kind === "run_failed" &&
+          current.phase === "failed"
+        ) {
+          return { effects: [], persistedEvent: undefined };
         }
         const transition = reduceRunEvent(current, eventToPersist);
         if (!transition.accepted) {
@@ -656,9 +668,7 @@ export class SchedulerActor {
         }
         if (
           error instanceof SchedulerActorError ||
-          error instanceof StateError ||
-          (error instanceof WorkerPacketError &&
-            effect.kind !== "run_reconciliation_worker")
+          error instanceof StateError
         ) {
           await this.fail("persistence_runtime_failure", error.message);
           return;
@@ -695,7 +705,11 @@ export class SchedulerActor {
             ...(lifecycleError?.observation
               ? { observation: lifecycleError.observation }
               : {}),
-            category: lifecycleError?.category ?? "provider_failure",
+            category:
+              lifecycleError?.category ??
+              (error instanceof WorkerPacketError
+                ? "protocol_failure"
+                : "provider_failure"),
           });
           return;
         }
@@ -732,7 +746,11 @@ export class SchedulerActor {
             workstream: effect.workstream,
             leaseId: effect.leaseId,
             assignmentId: effect.assignmentId,
-            category: failure?.category ?? "provider_failure",
+            category:
+              failure?.category ??
+              (error instanceof WorkerPacketError
+                ? "protocol_failure"
+                : "provider_failure"),
             evidence: error instanceof Error ? error.message : String(error),
             ...(failure?.observation
               ? { observation: failure.observation }
@@ -746,7 +764,10 @@ export class SchedulerActor {
         ) {
           await this.dispatch({
             kind: "whole_plan_review_failed",
-            category: "provider_failure",
+            category:
+              error instanceof WorkerPacketError
+                ? "protocol_failure"
+                : "provider_failure",
             evidence: error instanceof Error ? error.message : String(error),
           });
           return;
@@ -771,7 +792,11 @@ export class SchedulerActor {
             error instanceof ReviewWorkspaceSafetyError ? error : undefined;
           await this.dispatch({
             kind: "effect_failed",
-            category: reviewFailure ? "workspace_unsafe" : "provider_failure",
+            category: reviewFailure
+              ? "workspace_unsafe"
+              : error instanceof WorkerPacketError
+                ? "protocol_failure"
+                : "provider_failure",
             effect:
               effect.kind === "run_review"
                 ? "review"

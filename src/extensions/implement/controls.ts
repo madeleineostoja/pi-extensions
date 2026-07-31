@@ -60,9 +60,22 @@ export function formatStatus(state: RunState): string {
       (workstream) => `${workstream.repairId}: ${workstream.phase}`,
     ),
   ].join(", ");
-  const openFindings = Object.values(state.findings).filter(
+  const openFindingRecords = Object.values(state.findings).filter(
     (finding) => finding.status === "open",
-  ).length;
+  );
+  const openFindings = openFindingRecords.length;
+  const terminalLanes = [
+    ...Object.values(state.workstreams.source)
+      .filter(
+        (workstream) =>
+          workstream.phase === "failed" ||
+          workstream.phase === "dependency_skipped",
+      )
+      .map((workstream) => `${workstream.id}: ${workstream.phase}`),
+    ...Object.values(state.workstreams.overall)
+      .filter((workstream) => workstream.phase === "failed")
+      .map((workstream) => `${workstream.repairId}: failed`),
+  ];
   const activeProcesses = Object.values(state.processLeases)
     .map((lease) => `${lease.kind}:${lease.id}`)
     .join(", ");
@@ -114,6 +127,16 @@ export function formatStatus(state: RunState): string {
     `Workstreams: ${phases || "none"}`,
     `Active processes: ${activeProcesses || "none"}`,
     `Open findings: ${openFindings}`,
+    ...(openFindingRecords.length > 0
+      ? [
+          `Open finding evidence: ${openFindingRecords
+            .map((finding) => `${finding.id} · ${finding.evidence}`)
+            .join("; ")}`,
+        ]
+      : []),
+    ...(terminalLanes.length > 0
+      ? [`Unavailable lanes: ${terminalLanes.join(", ")}`]
+      : []),
     `Active revisions: ${["failed", "incomplete"].includes(state.phase) ? 0 : activeRevisions.length}`,
     ...(candidateContext.length > 0
       ? [`Candidates: ${candidateContext.join("; ")}`]

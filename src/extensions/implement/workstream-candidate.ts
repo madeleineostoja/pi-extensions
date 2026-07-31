@@ -25,11 +25,8 @@ import type {
   SubagentClient,
   SubagentHandle,
 } from "./subagents.js";
-import {
-  spawnValidatedWorker,
-  WorkerPacketError,
-} from "./worker-invocation.js";
-import type { RunState } from "./store.js";
+import { spawnValidatedWorker } from "./worker-invocation.js";
+import { StateError, type RunState } from "./store.js";
 
 export type WorkstreamPacket = {
   role: "implementer";
@@ -125,8 +122,9 @@ export async function runWorkstreamCandidate(
     workstream = selected;
     runtime = retained;
   } catch (error) {
-    throw new WorkerPacketError(
+    throw new StateError(
       `Implementer packet ${args.state.run.id}/${args.workstreamId} could not be materialized: ${message(error)}`,
+      args.state.executionPlan?.path ?? args.state.run.checkout.root,
     );
   }
   if ((await args.git.head()) !== runtime.baseSha) {
@@ -153,12 +151,18 @@ export async function runWorkstreamCandidate(
   });
   const workspaceGit = args.git.forWorktree(workspace.worktreePath);
   const expectedCheckpoint = workspace.baseSha;
+  const initialObservation = await observeWorkspace(workspaceGit);
   if (
-    (await workspaceGit.head()) !== expectedCheckpoint ||
-    !(await workspaceGit.isClean())
+    initialObservation.branch !== workspace.branchName ||
+    initialObservation.head !== expectedCheckpoint ||
+    !initialObservation.clean ||
+    initialObservation.activeOperation
   ) {
     throw new WorkstreamCandidateLifecycleError(
       "Owned workspace does not match its trusted checkpoint; recreate it before retrying.",
+      "workspace_unsafe",
+      undefined,
+      initialObservation,
     );
   }
   let packet: WorkstreamPacket;
@@ -170,8 +174,9 @@ export async function runWorkstreamCandidate(
       workspace,
     });
   } catch (error) {
-    throw new WorkerPacketError(
+    throw new StateError(
       `Implementer packet ${args.state.run.id}/${args.workstreamId} could not be materialized: ${message(error)}`,
+      args.state.executionPlan?.path ?? args.state.run.checkout.root,
     );
   }
   const targetBefore = await captureRestoreSnapshot(args.git, protectedPaths);
@@ -317,7 +322,11 @@ export async function runWorkstreamCandidate(
     }
     throw new WorkstreamCandidateLifecycleError(
       evidence,
-      observation.clean ? "protocol_failure" : "workspace_unsafe",
+      error instanceof WorkstreamCandidateLifecycleError
+        ? error.category
+        : observation.clean
+          ? "protocol_failure"
+          : "workspace_unsafe",
       trustedCandidate,
       observation,
     );
@@ -516,16 +525,25 @@ async function validateCompletion(args: {
   if (args.observation.branch !== args.workspace.branchName) {
     throw new WorkstreamCandidateLifecycleError(
       "Workstream candidate is no longer on its owned branch.",
+      "workspace_unsafe",
+      undefined,
+      args.observation,
     );
   }
   if (args.observation.activeOperation !== undefined) {
     throw new WorkstreamCandidateLifecycleError(
       "Workstream candidate has an active Git operation.",
+      "workspace_unsafe",
+      undefined,
+      args.observation,
     );
   }
   if (!args.observation.clean) {
     throw new WorkstreamCandidateLifecycleError(
       "Workstream candidate is dirty.",
+      "workspace_unsafe",
+      undefined,
+      args.observation,
     );
   }
 
@@ -583,6 +601,9 @@ async function validateCompletion(args: {
   ) {
     throw new WorkstreamCandidateLifecycleError(
       "Candidate does not descend from its assigned base.",
+      "workspace_unsafe",
+      undefined,
+      args.observation,
     );
   }
   const treeSha = args.observation.tree!;
@@ -601,6 +622,9 @@ async function validateCompletion(args: {
   ) {
     throw new WorkstreamCandidateLifecycleError(
       "Candidate changes protected plan artifacts.",
+      "workspace_unsafe",
+      undefined,
+      args.observation,
     );
   }
   const changedPaths = await changedPathsBetween(

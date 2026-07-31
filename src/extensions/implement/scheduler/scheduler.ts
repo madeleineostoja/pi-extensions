@@ -643,8 +643,7 @@ export function reduceRunEvent(
         category: event.category,
         assignment:
           event.category === "workspace_unsafe" &&
-          event.observation &&
-          !event.observation.clean
+          isKnownOwnedDirtyWorkspace(state, event.workstream, event.observation)
             ? "workspace_recreation"
             : "operational_retry",
         workstream: event.workstream,
@@ -656,7 +655,9 @@ export function reduceRunEvent(
         observation: event.observation,
       });
       if (event.category === "workspace_unsafe") {
-        if (event.observation && !event.observation.clean) {
+        if (
+          isKnownOwnedDirtyWorkspace(state, event.workstream, event.observation)
+        ) {
           createWorkspaceRecreation(
             state,
             event.workstream,
@@ -717,7 +718,9 @@ export function reduceRunEvent(
         ...(event.observation ? { observation: event.observation } : {}),
       });
       if (event.category === "workspace_unsafe") {
-        if (event.observation && !event.observation.clean) {
+        if (
+          isKnownOwnedDirtyWorkspace(state, event.workstream, event.observation)
+        ) {
           createWorkspaceRecreation(
             state,
             event.workstream,
@@ -1221,8 +1224,7 @@ export function reduceRunEvent(
         category: event.category,
         assignment:
           event.category === "workspace_unsafe" &&
-          event.observation &&
-          !event.observation.clean
+          isKnownOwnedDirtyWorkspace(state, event.workstream, event.observation)
             ? "workspace_recreation"
             : "operational_retry",
         workstream: event.workstream,
@@ -1232,7 +1234,9 @@ export function reduceRunEvent(
         ...(event.observation ? { observation: event.observation } : {}),
       });
       if (event.category === "workspace_unsafe") {
-        if (event.observation && !event.observation.clean) {
+        if (
+          isKnownOwnedDirtyWorkspace(state, event.workstream, event.observation)
+        ) {
           createWorkspaceRecreation(
             state,
             event.workstream,
@@ -1577,7 +1581,9 @@ export function reduceRunEvent(
         ...(event.observation ? { observation: event.observation } : {}),
       });
       if (event.category === "workspace_unsafe") {
-        if (event.observation && !event.observation.clean) {
+        if (
+          isKnownOwnedDirtyWorkspace(state, event.workstream, event.observation)
+        ) {
           createWorkspaceRecreation(
             state,
             event.workstream,
@@ -2893,6 +2899,20 @@ function ownedLease(
   return lease?.kind === kind && sameWorkstream(lease.workstream, workstream)
     ? lease
     : undefined;
+}
+
+function isKnownOwnedDirtyWorkspace(
+  state: RunState,
+  workstream: RuntimeWorkstream,
+  observation: WorkspaceObservation | undefined,
+): boolean {
+  const id = workstream.kind === "source" ? workstream.id : workstream.repairId;
+  return (
+    observation !== undefined &&
+    !observation.clean &&
+    observation.activeOperation === undefined &&
+    observation.branch === `pipkin/implement/${state.run.id}/${id}`
+  );
 }
 
 function processIsAllowed(

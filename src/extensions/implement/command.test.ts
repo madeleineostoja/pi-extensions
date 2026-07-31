@@ -41,6 +41,12 @@ describe("/implement command", () => {
       "Clean up",
       "Back",
     ]);
+    expect(runMenuActions("incomplete", true)).toEqual([
+      "Status",
+      "Inspect",
+      "Clean up",
+      "Back",
+    ]);
     expect(runMenuActions("running", false)).toEqual([
       "Status",
       "Inspect",

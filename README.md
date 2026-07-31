@@ -48,7 +48,7 @@ Pipkin is an autonomous engineering runtime and parallel agent orchestrator for 
 
 A planner agent reads the complete plan corpus and designs a dependency graph and workstreams. Pipkin then coordinates multiple implementer and reviewer agents in isolated Git worktrees. It schedules independent streams concurrently, gives dependent work the right completed base, routes findings back through repair, and finishes with a whole-plan review.
 
-The orchestration remains inspectable throughout. The target branch only moves through a serialized integration lane after hooks run, the prepared commit is verified, and compare-and-swap checks still hold. Durable run state lets Pipkin explain a blocked gate, recover work it owns, and resume safe interruptions rather than losing the run.
+The orchestration remains inspectable throughout. The target branch only moves through a serialized integration lane after hooks run, the prepared commit is verified, and compare-and-swap checks still hold. Durable run state lets Pipkin explain retained candidates and failures, preserve independently delivered work, and safely clean terminal runs without losing evidence.
 
 This makes it practical to give Pipkin a serious implementation plan and let it drive the work without surrendering visibility or Git discipline.
 
@@ -110,7 +110,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents         |
 | `get_subagent_result`             | Inspect or join a background agent                             |
 | `steer_subagent`                  | Queue guidance for a running background agent                  |
-| `/implement`                      | Start, inspect, resume, stop, or clean up implementation runs  |
+| `/implement`                      | Start, inspect, stop, or clean up implementation runs          |
 | `/papercuts` / `propose_papercut` | Capture and review durable project workflow gaps               |
 | `/btw <question>`                 | Ask an ephemeral side question from current session context    |
 

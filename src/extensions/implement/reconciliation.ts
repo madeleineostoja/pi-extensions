@@ -172,7 +172,7 @@ export async function runReconciliation(args: {
     packet.failedTarget.treeSha
   ) {
     throw new ReconciliationFailure(
-      "protocol_failure",
+      "workspace_unsafe",
       "Retained failed-target tree no longer matches its immutable identity.",
       initial,
     );

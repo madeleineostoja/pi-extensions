@@ -64,6 +64,12 @@ Checkpoint and correction commit subjects remain internal provenance. The first 
 
 The result is parallel work where it is safe and a single accountable lane where Git history changes.
 
+## Delivery outcomes
+
+A run is `completed` only after every source workstream is delivered, projected, and approved by whole-plan review. A lane that exhausts its bounded worker, review, revision, reconciliation, hook, or workspace-recreation policy becomes `failed`; queued descendants with an unavailable direct dependency become `dependency_skipped`. Their candidates, findings, worktrees, and bounded evidence remain retained and unpublished. Independent lanes continue, and any successful publication keeps its checkbox projection.
+
+Once no safe work, lease, publication transaction, or projection debt remains, a partial run settles as `incomplete`. Failed and skipped source tasks stay unchecked, and whole-plan review does not run over a partial result. `incomplete` is terminal, blocks another run in the same checkout until confirmed cleanup, and is distinct from `failed`, which is reserved for explicit stop/interruption or a target, ownership, persistence, projection, or publication-safety boundary that cannot be proven. Pipkin does not roll back, auto-resume, or publish retained candidates.
+
 ## Protecting the target checkout
 
 The invoking checkout remains orchestrator-owned. Managed agents do not run while integration or publication is active, and publication does not run while managed agents are active.
@@ -103,7 +109,7 @@ One OS-backed lease protects each checkout's active run and destructive cleanup.
 
 Failures retain their real category, candidate, lifecycle gate, target evidence, and workspace observation. Failed replay reconciliation retains the exact failed target, replay disposition, canonical relevant paths, candidate identity, and bounded staging and hook evidence; it never guesses from a later target. The scheduler—not a model—selects a bounded review retry, candidate revision, failed-target reconciliation, workspace recreation, or operational retry. Revision and reconciliation packets bind exact observed candidates and comparison bases; a reconciliation integration base remains the review base through later revisions. Provider/protocol attempts and unchanged semantic revisions have separate durable limits; rewording a response cannot reset either limit.
 
-Stopping is transient while owned processes settle. Failed and completed runs are terminal. A crash-retained active run is terminalized as interrupted under the checkout lease without launching workers. Cleanup settles exact durable publication and projection transactions first, preserves published target and plan changes, and removes only resources Pipkin can prove it owns.
+Stopping is transient while owned processes settle. Failed, incomplete, and completed runs are terminal. A crash-retained active run is terminalized as interrupted under the checkout lease without launching workers. Cleanup settles exact durable publication and projection transactions first, preserves published target and plan changes, and removes only resources Pipkin can prove it owns.
 
 ## Commands
 
@@ -118,13 +124,13 @@ Stopping is transient while owned processes settle. Failed and completed runs ar
 /implement stop
 ```
 
-| Command   | Purpose                                                                                        |
-| --------- | ---------------------------------------------------------------------------------------------- |
-| `status`  | Show phases, findings, failure category, assignments, leases, and projection debt              |
-| `inspect` | Show durable state and evidence paths for one run                                              |
-| `stop`    | Settle owned processes and terminally fail the active run safely                               |
-| `restart` | Clean a completed run after new-run preflight and start again                                  |
-| `cleanup` | Terminalize interrupted runs, settle durable transactions, and remove provably owned resources |
+| Command   | Purpose                                                                                         |
+| --------- | ----------------------------------------------------------------------------------------------- |
+| `status`  | Show terminal outcome, lane phases, findings, failures, assignments, leases, receipts, and debt |
+| `inspect` | Show durable state, retained candidates, and evidence paths for one run                         |
+| `stop`    | Settle owned processes and terminally fail the active run safely                                |
+| `restart` | Clean a completed run after new-run preflight and start again                                   |
+| `cleanup` | Terminalize interrupted runs, settle durable transactions, and remove provably owned resources  |
 
 The active session also shows a diagnostic widget with overall progress, workstream stages, recent failures, and open findings.
 
