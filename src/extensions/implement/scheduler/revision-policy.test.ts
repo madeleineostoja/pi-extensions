@@ -71,6 +71,7 @@ describe("revision policy", () => {
     expect(findings.state.workstreams.source["first-stream"]?.phase).toBe(
       "revising",
     );
+    expect(findings.state.failures).toEqual({});
     expect(assignment).toMatchObject({
       candidateId: "candidate:first",
       comparisonBase: "first-sha",

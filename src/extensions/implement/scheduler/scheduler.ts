@@ -1054,14 +1054,6 @@ export function reduceRunEvent(
       completeOperationalRetries(state, event.workstream, "review");
       const outstandingFindingIds = state.reviews[key]!.outstandingIds;
       if (outstandingFindingIds.length > 0) {
-        recordFailure(state, {
-          category: "semantic_blocked",
-          assignment: "candidate_revision",
-          workstream: event.workstream,
-          candidateId: event.outcome.candidateId,
-          gate: "review",
-          evidence: event.outcome.evidence,
-        });
         return createRevisionAssignment(
           state,
           event.workstream,
