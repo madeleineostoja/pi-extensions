@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compileExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
 import { buildMaterialStore } from "./material-store.js";
+import { writeSourceCorpus } from "./requirements-context.js";
 import { parsePlan } from "./plan.js";
 import {
   checkoutPaths,
@@ -79,6 +80,11 @@ export async function createLifecycleFixture(): Promise<LifecycleFixture> {
     source: sourceIdentityForExecutionPlan(compiled.value),
     workerConcurrency: 1,
   });
+  writeSourceCorpus(
+    join(lease.paths.runs, "run-1"),
+    materialStore,
+    compiled.value,
+  );
   await store.bindExecutionPlan(compiled.value);
   return {
     root,

@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { compileExecutionPlan } from "./execution-plan.js";
 import { buildMaterialStore } from "./material-store.js";
+import { writeSourceCorpus } from "./requirements-context.js";
 import { parsePlan } from "./plan.js";
 import {
   checkoutPaths,
@@ -107,6 +108,11 @@ describe("workstream packet", () => {
       source: sourceIdentityForExecutionPlan(compiled.value),
       workerConcurrency: 1,
     });
+    writeSourceCorpus(
+      join(fakeLease(root).paths.runs, "run-1"),
+      materialStore,
+      compiled.value,
+    );
     await run.bindExecutionPlan(compiled.value);
     const state = run.read();
     await run.update(state.revision, (current) => ({
@@ -132,8 +138,8 @@ describe("workstream packet", () => {
 
     expect(packet.tasks.map((task) => task.id)).toEqual(["first", "second"]);
     expect(packet.sourceMaterial).toEqual([
-      { path: `${realpathSync(planPath)}:5`, content: "- [ ] First" },
-      { path: `${realpathSync(planPath)}:6`, content: "- [ ] Second\n" },
+      { path: "plan.md:5", content: "- [ ] First" },
+      { path: "plan.md:6", content: "- [ ] Second\n" },
     ]);
   });
 });

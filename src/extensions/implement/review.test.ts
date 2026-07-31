@@ -54,7 +54,9 @@ function packet(): ReviewPacket {
     candidate,
     previousCandidate,
     contracts: [],
-    sourceMaterial: [{ path: "/checkout/plan.md", content: "# Plan" }],
+    sourceMaterial: [{ path: "plan.md", content: "# Plan" }],
+    corpus: [{ path: "plan.md", content: "# Plan" }],
+    schedule: { tasks: [], workstreams: [] },
     checkpoints: {},
     satisfiedEvidence: {},
     outstandingFindings: [

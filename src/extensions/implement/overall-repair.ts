@@ -11,6 +11,10 @@ import {
   type TaskWorkspace,
 } from "./candidate-worker.js";
 import type { ExecutionPlan } from "./execution-plan.js";
+import {
+  loadRequirementsContext,
+  type RequirementsContext,
+} from "./requirements-context.js";
 import type { GitClient } from "./git.js";
 import { buildOverallReworkPrompt } from "./prompts.js";
 import { type OverallReworkCompletion } from "./result-schemas.js";
@@ -31,7 +35,7 @@ export type OverallRepairPacket = {
   runId: string;
   runBaseSha: string;
   baseline: RunState["candidates"][string];
-  plan: ExecutionPlan;
+  requirements: RequirementsContext;
   findings: RunState["findings"][string][];
 };
 
@@ -139,7 +143,10 @@ export async function runOverallRepair(args: {
     runId: args.state.run.id,
     runBaseSha: args.state.run.checkout.startHead,
     baseline,
-    plan: args.plan,
+    requirements: loadRequirementsContext(
+      join(args.state.executionPlan!.path, ".."),
+      args.plan,
+    ),
     findings,
   };
   let result:

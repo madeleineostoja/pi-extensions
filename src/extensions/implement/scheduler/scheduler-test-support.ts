@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compileExecutionPlan, type ExecutionPlan } from "../execution-plan.js";
 import { buildMaterialStore } from "../material-store.js";
+import { writeSourceCorpus } from "../requirements-context.js";
 import { parsePlan } from "../plan.js";
 import {
   checkoutPaths,
@@ -85,6 +86,11 @@ export function planFor(
   if (!result.ok) {
     throw new Error(result.reason);
   }
+  writeSourceCorpus(
+    join(checkoutPaths(directory).runs, "run-1"),
+    materialStore,
+    result.value,
+  );
   return result.value;
 }
 

@@ -95,13 +95,14 @@ Each checkout owns its runs:
   checkout.owner.json
   runs/<run-id>/
     execution-plan.json
+    source-corpus.json
     run-state.json
     artifacts/
   worktrees/<run-id>/
   trash/
 ```
 
-`run-state.json` is authoritative. UI, evidence, status output, and Markdown checkboxes are projections of it. Every worker attempt remains durably owned until its exact terminal result settles; completed attempts retain their settlement identity so late or conflicting worker output cannot affect a newer attempt.
+`run-state.json` is authoritative. UI, evidence, status output, and Markdown checkboxes are projections of it. `source-corpus.json` is immutable run input beside the execution plan: it retains the frozen root plan and linked Markdown content used to prepare worker packets. Implementers receive only their assigned contracts and selected snapshot material; reviewers and revision workers additionally receive the complete frozen corpus and a worker-safe schedule for interpretation and dependency context. The corpus is not evidence or a worker-readable filesystem path. Pipkin continues to verify the live protected source files for integrity and checkbox projection; the snapshot never bypasses those checks. Every worker attempt remains durably owned until its exact terminal result settles; completed attempts retain their settlement identity so late or conflicting worker output cannot affect a newer attempt.
 
 Implement state is versioned. Before upgrading to an incompatible lifecycle version, settle and clean retained runs with the previously loaded runtime. A newer runtime rejects legacy run state rather than guessing how to resume it.
 

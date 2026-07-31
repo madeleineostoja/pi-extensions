@@ -25,6 +25,7 @@ import {
   type ExecutionPlan,
 } from "./execution-plan.js";
 import { failureAssignmentKinds, failureCategories } from "./failure-policy.js";
+import { loadRequirementsContext } from "./requirements-context.js";
 import {
   canonicalPath,
   normalizeCheckboxMarker,
@@ -993,6 +994,14 @@ export class RunStore {
     if (!persisted) {
       writeExecutionPlan(runDir, plan);
     }
+    try {
+      loadRequirementsContext(runDir, plan);
+    } catch (error) {
+      throw new StateError(
+        `The retained source corpus is invalid: ${error instanceof Error ? error.message : String(error)}`,
+        this.path,
+      );
+    }
     return this.update(current.revision, (state) => ({
       ...state,
       phase: "running",
@@ -1349,6 +1358,13 @@ function invariantIssues(
         "execution plan is missing, invalid, or has a mismatched hash",
       );
     } else {
+      try {
+        loadRequirementsContext(join(state.executionPlan!.path, ".."), plan);
+      } catch {
+        issues.push(
+          "source corpus is missing, invalid, or does not match the execution plan",
+        );
+      }
       if (
         plan.source.checkoutId !== state.run.checkout.gitDir ||
         plan.source.baseSha !== state.run.checkout.startHead ||

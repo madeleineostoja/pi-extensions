@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import {
   admitCandidateWorkspace,
   observeCandidateWorkspace,
@@ -17,8 +17,12 @@ import { buildWorkstreamImplementerPrompt } from "./prompts.js";
 import {
   canonicalPath,
   protectedArtifactsMatch as artifactHashesMatch,
-  resolveCorpusPath as resolveImmutableCorpusPath,
 } from "./source-integrity.js";
+import {
+  loadRequirementsContext,
+  scopedRequirements,
+  type WorkerRequirementTask,
+} from "./requirements-context.js";
 import { type WorkstreamImplementerCompletion } from "./result-schemas.js";
 import type {
   ImplementRoles,
@@ -38,7 +42,7 @@ export type WorkstreamPacket = {
   };
   workstreamId: string;
   baseSha: string;
-  tasks: ExecutionPlan["tasks"];
+  tasks: WorkerRequirementTask[];
   priorCheckpoints: Record<string, string>;
   sourceMaterial: Array<{ path: string; content: string }>;
 };
@@ -358,38 +362,14 @@ export function buildWorkstreamPacket(args: {
       `Unknown execution-plan workstream: ${args.workstreamId}`,
     );
   }
-  const tasks = workstream.taskIds.map((taskId) => {
-    const task = plan.tasks.find((candidate) => candidate.id === taskId);
-    if (!task) {
-      throw new WorkstreamCandidateLifecycleError(
-        `Workstream ${args.workstreamId} references unknown task ${taskId}.`,
-      );
-    }
-    return task;
-  });
-  const supportingPaths = new Set<string>();
-  for (const task of tasks) {
-    for (const document of task.supportingDocuments ?? []) {
-      try {
-        const path = resolveCorpusPath(plan, args.state, document);
-        if (path !== plan.source.planPath) {
-          supportingPaths.add(path);
-        }
-      } catch {
-        continue;
-      }
-    }
-  }
-  const sourceMaterial = [
-    ...tasks.map((task) => ({
-      path: `${task.sourceAnchor.path}:${task.sourceAnchor.lineNumber}`,
-      content: task.sourceBlock,
-    })),
-    ...[...supportingPaths].map((path) => ({
-      path,
-      content: readFileSync(path, "utf-8"),
-    })),
-  ];
+  const context = loadRequirementsContext(
+    dirname(args.state.executionPlan!.path),
+    plan,
+  );
+  const { contracts: tasks, sourceMaterial } = scopedRequirements(
+    context,
+    workstream.taskIds,
+  );
   const priorCheckpoints = Object.fromEntries(
     tasks.flatMap((task) => {
       const runtime = args.state.tasks[task.id];
@@ -728,25 +708,6 @@ async function checkpointCandidate(args: {
     commitSha: args.checkpoint,
     treeSha: await args.git.treeAt(args.checkpoint),
   };
-}
-
-function resolveCorpusPath(
-  plan: ExecutionPlan,
-  state: RunState,
-  path: string,
-): string {
-  try {
-    return resolveImmutableCorpusPath({
-      planPath: plan.source.planPath,
-      checkoutRoot: state.run.checkout.root,
-      corpus: plan.source.corpusFiles,
-      reference: path,
-    });
-  } catch (error) {
-    throw new WorkstreamCandidateLifecycleError(
-      error instanceof Error ? error.message : String(error),
-    );
-  }
 }
 
 function protectedPathInWorktree(

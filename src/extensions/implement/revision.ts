@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { writeAtomicJson } from "./atomic-json.js";
 import {
   admitCandidateWorkspace,
@@ -10,6 +10,12 @@ import { captureRestoreSnapshot, snapshotChanged } from "./candidate.js";
 import { TaskWorkspaceManager } from "./candidate-worker.js";
 import { changedPathsBetween, type GitClient } from "./git.js";
 import { overallRepairWorkspace } from "./overall-repair.js";
+import { readExecutionPlan } from "./execution-plan.js";
+import {
+  loadRequirementsContext,
+  scopedRequirements,
+  type RequirementsContext,
+} from "./requirements-context.js";
 import { buildRevisionPrompt } from "./prompts.js";
 import type { RevisionCompletion } from "./result-schemas.js";
 import type {
@@ -33,6 +39,7 @@ export type RevisionPacket = {
   outstandingFindingIds: string[];
   findings: RunState["findings"][string][];
   evidence: string[];
+  requirements: RequirementsContext;
 };
 
 export type RevisionOutcome =
@@ -101,6 +108,29 @@ export function buildRevisionPacket(args: {
     }
     return finding;
   });
+  const plan = args.state.executionPlan
+    ? readExecutionPlan(dirname(args.state.executionPlan.path))
+    : undefined;
+  if (!plan) {
+    throw new RevisionFailure(
+      "protocol_failure",
+      "Revision assignment has no valid immutable execution plan.",
+    );
+  }
+  const context = loadRequirementsContext(
+    dirname(args.state.executionPlan!.path),
+    plan,
+  );
+  const requirements =
+    args.effect.workstream.kind === "source"
+      ? {
+          ...context,
+          ...scopedRequirements(
+            context,
+            args.state.workstreams.source[args.effect.workstream.id]!.taskIds,
+          ),
+        }
+      : context;
   return {
     role: "implementer",
     completionKind: "revision",
@@ -118,6 +148,7 @@ export function buildRevisionPacket(args: {
     outstandingFindingIds: [...assignment.outstandingFindingIds],
     findings,
     evidence: [...assignment.evidence],
+    requirements,
   };
 }
 

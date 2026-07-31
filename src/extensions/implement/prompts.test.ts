@@ -38,7 +38,11 @@ describe("whole-plan and repair prompts", () => {
         commitSha: "current-repair",
         treeSha: "current-tree",
       },
-      plan: { version: 1 },
+      requirements: {
+        contracts: [],
+        corpus: [],
+        schedule: { tasks: [], workstreams: [] },
+      },
       findings: [],
     } as unknown as OverallRepairPacket);
 
@@ -70,6 +74,11 @@ describe("whole-plan and repair prompts", () => {
         },
       ],
       evidence: [],
+      requirements: {
+        contracts: [],
+        corpus: [],
+        schedule: { tasks: [], workstreams: [] },
+      },
     } as unknown as RevisionPacket);
 
     expect(prompt).toContain("outcome `changed`");

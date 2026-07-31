@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ExecutionPlan } from "./execution-plan.js";
+import { compileExecutionPlan } from "./execution-plan.js";
+import { buildMaterialStore } from "./material-store.js";
+import { parsePlan } from "./plan.js";
+import { writeSourceCorpus } from "./requirements-context.js";
+import { sha256 } from "./source-integrity.js";
 import { ExecGitClient } from "./git.js";
 import { runOverallRepair } from "./overall-repair.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
@@ -85,7 +89,56 @@ async function overallFixture() {
     commitSha: baseSha,
     treeSha,
   };
+  const planPath = join(root, "plan.md");
+  const planContent = "# Plan\n\n- [ ] Repair app behavior\n";
+  writeFileSync(planPath, planContent);
+  const parsed = parsePlan(planPath, planContent);
+  const materialStore = buildMaterialStore({
+    plan: parsed,
+    planPath,
+    repoRoot: root,
+  });
+  const compiled = compileExecutionPlan(
+    {
+      version: 1,
+      tasks: [
+        {
+          id: "repair-app",
+          planIndex: 1,
+          title: "Repair app behavior",
+          dependsOn: [],
+          supportingDocuments: [],
+          compiledContract: {
+            objective: "Repair app behavior.",
+            inScope: ["app.txt"],
+            acceptanceCriteria: ["app.txt is repaired"],
+            outOfScope: ["Unrelated work"],
+          },
+        },
+      ],
+      workstreams: [
+        { id: "repair-app", taskIds: ["repair-app"], dependsOn: [] },
+      ],
+    },
+    {
+      plan: parsed,
+      planHash: sha256(planContent),
+      materialStore,
+      checkoutId: join(root, ".git"),
+      baseSha,
+      workerConcurrency: 1,
+    },
+  );
+  if (!compiled.ok) {
+    throw new Error(compiled.reason);
+  }
+  const runDir = join(root, ".pi", "pipkin", "implement", "runs", "run-1");
+  writeSourceCorpus(runDir, materialStore, compiled.value);
   const state = {
+    executionPlan: {
+      path: join(runDir, "execution-plan.json"),
+      hash: compiled.value.executionPlanHash,
+    },
     run: {
       id: "run-1",
       checkout: { root, startHead: baseSha },
@@ -123,7 +176,7 @@ async function overallFixture() {
     baseSha,
     args: {
       state,
-      plan: {} as ExecutionPlan,
+      plan: compiled.value,
       repairId,
       git: gitClient,
       artifactsPath: join(root, "artifacts"),

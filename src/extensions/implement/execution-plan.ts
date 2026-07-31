@@ -9,6 +9,7 @@ import {
 import type { ParsedPlan, PlanTask } from "./plan.js";
 import { writeAtomicJson } from "./atomic-json.js";
 import { normalizeCheckboxMarker, sha256 } from "./source-integrity.js";
+import { writeSourceCorpus } from "./requirements-context.js";
 
 const ID_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
@@ -104,7 +105,7 @@ export type PlannerPacket = {
   };
   planContent: string;
   unchecked: UncheckedPlanTask[];
-  corpus: MaterialStore["files"];
+  corpus: Array<{ displayPath: string; content: string }>;
   baseSha: string;
   workerConcurrency: number;
 };
@@ -145,9 +146,9 @@ export function buildPlannerPacket(
       },
       planContent: args.plan.content,
       unchecked,
-      corpus: args.materialStore.files.filter(
-        (file) => file.absolutePath !== args.materialStore.entryPath,
-      ),
+      corpus: args.materialStore.files
+        .filter((file) => file.absolutePath !== args.materialStore.entryPath)
+        .map(({ displayPath, content }) => ({ displayPath, content })),
       baseSha: args.baseSha,
       workerConcurrency: args.workerConcurrency,
     },
@@ -176,6 +177,7 @@ export async function planExecution(
   if (!compiled.ok) {
     return compiled;
   }
+  writeSourceCorpus(args.runDir, args.materialStore, compiled.value);
   writeExecutionPlan(args.runDir, compiled.value);
   return { ok: true, value: { kind: "compiled", plan: compiled.value } };
 }
@@ -678,7 +680,7 @@ export function buildStrictExecutionPlannerPrompt(
     .map((entry) => `- planIndex ${entry.planIndex}: ${entry.task.text}`)
     .join("\n");
   const corpus = packet.corpus
-    .map((file) => `### ${file.absolutePath}\n\n${file.content}`)
+    .map((file) => `### ${file.displayPath}\n\n${file.content}`)
     .join("\n\n");
   return `You are the Pipkin Implement planner working read-only in the assigned target checkout:\n\n  ${packet.workspace.path}\n\n${packet.workspace.mutationBoundary}\n\nReturn only the strict completion object.\n\n## Source plan\n\n${packet.planContent}\n\n## Unchecked source tasks\n\n${tasks}\n\n## Linked requirement documents\n\n${corpus || "None."}\n\nBase SHA: ${packet.baseSha}\nEffective worker concurrency: ${packet.workerConcurrency}\n\nCreate exactly one task contract for every listed planIndex. Choose a small number of substantial workstreams by balancing retained implementation context, cumulative review coherence, bounded review and revision scope, integration conflict, and useful concurrency up to the effective capacity; capacity is a benefit, not a quota. Group tasks only when shared evolving context, conflict-prone code, invariants, or cumulative review materially helps. Do not group tasks solely because they share a feature, broad topic, checklist order, or serial dependency. Split at a stable implementation and review boundary when it narrows scope, including when a sequential dependent workstream is clearer. Multi-task workstreams and dependent chains are first-class; do not create singletons merely to occupy workers. Workstream order must respect dependencies. Before returning, challenge the largest workstream for a meaningful split and the smallest adjacent workstreams for a useful merge. Whole-plan and all-singleton partitions are suspicious but legal only when concrete plan-specific constraints justify them. The complete source plan is the shipment boundary: an intermediate candidate may establish a contract for a dependent workstream, but each candidate must remain coherent and safe to publish. Ground requirements and acceptance criteria in the source corpus, existing repository contracts, or material correctness, safety, data-integrity, or operational risks. Exploration may reveal implementation options and constraints but does not create scope. Prefer existing project, framework, platform, standard-library, or installed-dependency capabilities over new custom mechanisms when they satisfy the contract. Use implementationNotes only for required constraints, decisions, and reuse opportunities, not code choreography. Keep verificationGuidance proportional to changed behavior and material risk. supportingDocuments is optional and may name only linked requirement documents shown above. It is not for repository paths: mention existing, proposed, or deleted repository paths, symbols, URLs, and tickets freely in the task contract instead. Do not invent hashes, source anchors, task modes, fallback plans, or runtime IDs.`;
 }

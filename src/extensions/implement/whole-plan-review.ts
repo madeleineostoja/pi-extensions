@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ExecutionPlan } from "./execution-plan.js";
 import type { GitClient } from "./git.js";
@@ -7,6 +7,7 @@ import {
   buildInitialOverallReviewPrompt,
 } from "./prompts.js";
 import { sha256 } from "./source-integrity.js";
+import { loadRequirementsContext } from "./requirements-context.js";
 import {
   type AnchoredWorkstreamReviewCompletion,
   type InitialOverallReviewCompletion,
@@ -48,10 +49,10 @@ export function buildWholePlanReviewPacket(args: {
       "Whole-plan review material no longer matches the immutable corpus.",
     );
   }
-  const source = args.plan.source.corpusFiles.map((artifact) => ({
-    path: artifact.path,
-    content: readFileSync(artifact.path, "utf-8"),
-  }));
+  const requirements = loadRequirementsContext(
+    join(args.state.executionPlan!.path, ".."),
+    args.plan,
+  );
   const completed = Object.values(args.state.workstreams.source).map(
     (workstream) => ({
       id: workstream.id,
@@ -80,10 +81,14 @@ export function buildWholePlanReviewPacket(args: {
     ...(args.previousSha ? { previousSha: args.previousSha } : {}),
     outstandingFindings: args.outstandingFindings,
     planContext: [
-      "## Immutable execution plan",
-      JSON.stringify(args.plan, null, 2),
-      "## Source corpus",
-      ...source.map(({ path, content }) => `### ${path}\n${content}`),
+      "## Complete compiled contracts",
+      JSON.stringify(requirements.contracts, null, 2),
+      "## Complete frozen source corpus",
+      ...requirements.corpus.map(
+        ({ path, content }) => `### ${path}\n${content}`,
+      ),
+      "## Worker-safe execution schedule",
+      JSON.stringify(requirements.schedule, null, 2),
     ].join("\n\n"),
     candidateContext: [
       `Run base: ${args.state.run.checkout.startHead}`,

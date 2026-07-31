@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { ExecutionPlan } from "./execution-plan.js";
 import { changedPathsBetween, type GitClient } from "./git.js";
 import {
@@ -7,10 +7,13 @@ import {
   buildAnchoredWorkstreamReviewPrompt,
   buildInitialWorkstreamReviewPrompt,
 } from "./prompts.js";
+import { sha256 } from "./source-integrity.js";
 import {
-  resolveCorpusPath as resolveImmutableCorpusPath,
-  sha256,
-} from "./source-integrity.js";
+  loadRequirementsContext,
+  scopedRequirements,
+  type WorkerRequirementTask,
+  type WorkerSchedule,
+} from "./requirements-context.js";
 import {
   type AnchoredWorkstreamReviewCompletion,
   type DirectReviewFinding,
@@ -71,8 +74,10 @@ export type ReviewPacket = {
   workstream: RuntimeWorkstream;
   candidate: RunState["candidates"][string];
   previousCandidate?: RunState["candidates"][string];
-  contracts: ExecutionPlan["tasks"];
+  contracts: WorkerRequirementTask[];
   sourceMaterial: Array<{ path: string; content: string }>;
+  corpus: Array<{ path: string; content: string }>;
+  schedule: WorkerSchedule;
   checkpoints: Record<string, string>;
   satisfiedEvidence: Record<string, string>;
   verificationEvidence?: RunState["candidates"][string]["implementationEvidence"];
@@ -227,13 +232,11 @@ export function buildReviewPacket(args: {
     args.workstream.kind === "source"
       ? args.state.workstreams.source[args.workstream.id]!.taskIds
       : [];
-  const contracts = taskIds.map((taskId) => {
-    const task = args.plan.tasks.find((item) => item.id === taskId);
-    if (!task) {
-      throw new Error(`The execution plan is missing task ${taskId}.`);
-    }
-    return task;
-  });
+  const context = loadRequirementsContext(
+    dirname(args.state.executionPlan!.path),
+    args.plan,
+  );
+  const { contracts, sourceMaterial } = scopedRequirements(context, taskIds);
   const checkpoints: Record<string, string> = {};
   const satisfiedEvidence: Record<string, string> = {};
   for (const taskId of taskIds) {
@@ -257,7 +260,9 @@ export function buildReviewPacket(args: {
       ? { previousCandidate: args.state.candidates[review.previousCandidateId] }
       : {}),
     contracts,
-    sourceMaterial: sourceMaterial(args.state, args.plan, contracts),
+    sourceMaterial,
+    corpus: context.corpus,
+    schedule: context.schedule,
     checkpoints,
     satisfiedEvidence,
     ...(candidate.implementationEvidence
@@ -267,14 +272,6 @@ export function buildReviewPacket(args: {
       status: candidate.evidenceStatus ?? "reported",
       ...(candidate.implementationEvidence?.summary
         ? { summary: candidate.implementationEvidence.summary }
-        : {}),
-      ...((candidate.implementationEvidence?.artifactPath ??
-      candidate.observationArtifact)
-        ? {
-            artifactPath:
-              candidate.implementationEvidence?.artifactPath ??
-              candidate.observationArtifact,
-          }
         : {}),
     },
     ...(candidate.implementationEvidence?.uncertainty
@@ -301,36 +298,6 @@ export function buildReviewPacket(args: {
         }
       : {}),
   };
-}
-
-function sourceMaterial(
-  state: RunState,
-  plan: ExecutionPlan,
-  contracts: ExecutionPlan["tasks"],
-): Array<{ path: string; content: string }> {
-  const supportingPaths = new Set<string>();
-  for (const task of contracts) {
-    for (const document of task.supportingDocuments ?? []) {
-      try {
-        const path = resolveCorpusPath(state, plan, document);
-        if (path !== plan.source.planPath) {
-          supportingPaths.add(path);
-        }
-      } catch {
-        continue;
-      }
-    }
-  }
-  return [
-    ...contracts.map((task) => ({
-      path: `${task.sourceAnchor.path}:${task.sourceAnchor.lineNumber}`,
-      content: task.sourceBlock,
-    })),
-    ...[...supportingPaths].map((path) => ({
-      path,
-      content: readFileSync(path, "utf-8"),
-    })),
-  ];
 }
 
 export function buildSourceReviewWorkerPacket(args: {
@@ -699,8 +666,15 @@ async function runOverallAnchoredReview(args: {
       mutationBoundary:
         "Read-only candidate worktree; do not mutate Git or protected corpus.",
     },
-    planContext: JSON.stringify(args.plan, null, 2),
-    candidateContext: `Run base: ${args.state.run.checkout.startHead}\nHistorical workstream base: ${candidate.baseSha}\nComparison base: ${review.comparisonBase}\nPrevious candidate: ${previousCandidate.commitSha}\nCandidate: ${candidate.commitSha}\nCanonical comparison paths: ${review.latestCorrection?.changedPaths.join(", ") || "none"}\nFinding epoch: ${review.round}\nPrior review evidence: ${JSON.stringify(review.evidence)}\nCurrent verification: ${JSON.stringify(candidate.implementationEvidence?.verification ?? [])}\nCurrent evidence: ${candidate.implementationEvidence?.artifactPath ?? candidate.observationArtifact ?? "unavailable"}\nCurrent uncertainty: ${candidate.implementationEvidence?.uncertainty ?? "none"}\nCumulative publication subject: ${review.publicationCommitSubject ?? "not yet authored"}`,
+    planContext: JSON.stringify(
+      loadRequirementsContext(
+        dirname(args.state.executionPlan!.path),
+        args.plan,
+      ),
+      null,
+      2,
+    ),
+    candidateContext: `Run base: ${args.state.run.checkout.startHead}\nHistorical workstream base: ${candidate.baseSha}\nComparison base: ${review.comparisonBase}\nPrevious candidate: ${previousCandidate.commitSha}\nCandidate: ${candidate.commitSha}\nCanonical comparison paths: ${review.latestCorrection?.changedPaths.join(", ") || "none"}\nFinding epoch: ${review.round}\nPrior review evidence: ${JSON.stringify(review.evidence)}\nCurrent verification: ${JSON.stringify(candidate.implementationEvidence?.verification ?? [])}\nCurrent evidence status: ${candidate.evidenceStatus ?? "unavailable"}\nCurrent uncertainty: ${candidate.implementationEvidence?.uncertainty ?? "none"}\nCumulative publication subject: ${review.publicationCommitSubject ?? "not yet authored"}`,
     previousCandidate,
     candidate,
     comparisonBase: review.comparisonBase,
@@ -961,19 +935,6 @@ function reviewEvidencePath(
   );
   writeAtomicJson(path, evidence);
   return path;
-}
-
-function resolveCorpusPath(
-  state: RunState,
-  plan: ExecutionPlan,
-  path: string,
-): string {
-  return resolveImmutableCorpusPath({
-    planPath: plan.source.planPath,
-    checkoutRoot: state.run.checkout.root,
-    corpus: plan.source.corpusFiles,
-    reference: path,
-  });
 }
 
 function message(error: unknown): string {
