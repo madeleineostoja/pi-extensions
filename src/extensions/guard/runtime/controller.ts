@@ -48,10 +48,14 @@ export function createGuardSessionController({
   state,
   bash,
   supportedMac,
+  healthProbe = getNonoHealth,
 }: {
   state: GuardRuntimeState;
   bash: GuardBashRuntime;
   supportedMac: boolean;
+  healthProbe?: (options: {
+    signal: AbortSignal;
+  }) => Promise<NonoHealth | undefined>;
 }) {
   let probeAbort: AbortController | undefined;
   let probe: Promise<void> | undefined;
@@ -93,7 +97,7 @@ export function createGuardSessionController({
         }
         let health: NonoHealth | undefined;
         try {
-          health = await getNonoHealth({ signal: controller.signal });
+          health = await healthProbe({ signal: controller.signal });
         } catch {
           health = { kind: "tools-only", reason: "probe-failed" } as const;
         }

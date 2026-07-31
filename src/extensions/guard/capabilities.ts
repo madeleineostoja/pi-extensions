@@ -263,7 +263,9 @@ function linkedWorktreeGitDirectories(cwd: string): string[] {
   }
 }
 
-function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
+export function fixedCapabilityRoots(
+  cwd: string,
+): Array<[string, AccessMode, GrantKind]> {
   const home = homedir();
   const xdgConfig = process.env.XDG_CONFIG_HOME ?? join(home, ".config");
   const inheritedPath = (process.env.PATH ?? "")
@@ -325,8 +327,11 @@ function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
       grant(root, "read", "file"),
       grant(root, "write", "file"),
     ]),
+    ...["/dev/dtracehelper"].flatMap((root) => [
+      grant(root, "read", "file"),
+      grant(root, "write", "file"),
+    ]),
     ...[
-      "/dev/dtracehelper",
       "/dev/zero",
       "/dev/random",
       "/dev/urandom",
@@ -343,6 +348,7 @@ function fixedRoots(cwd: string): Array<[string, AccessMode, GrantKind]> {
       join(home, ".config", "git", "attributes"),
     ].map((path) => grant(path, "read", "file")),
     ...readDirectories([
+      "/nix",
       "/nix/store",
       "/run/current-system/sw",
       "/etc/profiles/per-user",
@@ -411,7 +417,7 @@ export function createFixedCapabilities(sessionCwd: string): FixedCapabilities {
     }
     grants.push(resolved.grant);
   };
-  for (const [root, access, kind] of fixedRoots(cwd)) {
+  for (const [root, access, kind] of fixedCapabilityRoots(cwd)) {
     add(root, access, kind);
   }
   for (const root of linkedWorktreeGitDirectories(cwd)) {

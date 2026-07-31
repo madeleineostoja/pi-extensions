@@ -1,12 +1,14 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
@@ -26,7 +28,7 @@ import { isSupportedMac } from "../guard/enforcement/decide.ts";
 import { createDirectFilesystemToolHandler } from "../guard/enforcement/handler.ts";
 import { createGuardBashRuntime } from "../guard/runtime/bash.ts";
 import { createGuardSessionController } from "../guard/runtime/controller.ts";
-import { getNonoTarget } from "../guard/runtime/nono.ts";
+import type { NonoHealth } from "../guard/runtime/nono.ts";
 import { createGuardRuntimeState } from "../guard/state.ts";
 import { within } from "./test-boundary.js";
 import {
@@ -38,11 +40,16 @@ import { spawnValidatedWorker } from "./worker-invocation.js";
 
 const directories: string[] = [];
 
-function registerGuard(pi: any): void {
+function registerGuard(pi: any, health?: NonoHealth): void {
+  const supportedMac = health ? true : isSupportedMac();
   const state = createGuardRuntimeState();
-  const supportedMac = isSupportedMac();
   const bash = createGuardBashRuntime({ state, supportedMac });
-  const session = createGuardSessionController({ state, bash, supportedMac });
+  const session = createGuardSessionController({
+    state,
+    bash,
+    supportedMac,
+    healthProbe: health ? async () => health : undefined,
+  });
 
   registerGuardCommand({ pi, state, supportedMac });
   pi.on("session_start", (event: any, ctx: any) => {
@@ -89,6 +96,37 @@ function pi() {
     sendMessage() {},
     getActiveTools: () => ["read", "bash", "edit", "write"],
   };
+}
+
+function fakeNono(root: string): { binary: string; log: string } {
+  const binary = join(root, "pipkin-nono");
+  const log = join(root, "nono-log.json");
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+import { readFileSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+const args = process.argv.slice(2);
+const config = args[args.indexOf("--config") + 1];
+writeFileSync(process.env.PIPKIN_MANAGED_NONO_LOG, JSON.stringify({
+  args,
+  manifest: JSON.parse(readFileSync(config, "utf8")),
+  cwd: process.cwd(),
+  environment: { PATH: process.env.PATH, PI_SESSION_FILE: process.env.PI_SESSION_FILE },
+}));
+const command = args.slice(args.indexOf("--") + 1);
+const child = spawn(command[0], command.slice(1), {
+  cwd: process.cwd(),
+  env: process.env,
+  stdio: "inherit",
+});
+child.once("error", () => process.exit(127));
+child.once("close", (code) => process.exit(code ?? 1));
+`,
+    { mode: 0o700 },
+  );
+  chmodSync(binary, 0o700);
+  return { binary, log };
 }
 
 describe("Implement managed runtime integration", () => {
@@ -178,30 +216,22 @@ describe("Implement managed runtime integration", () => {
     await runtime.dispose();
   });
 
-  it.runIf(getNonoTarget() !== null)(
-    "runs Guard-constrained Bash in a real managed worker without parent approvals",
-    async () => {
-      const root = mkdtempSync(join(homedir(), ".pipkin-managed-guard-"));
-      directories.push(root);
-      const workspace = join(root, "workspace");
-      const sibling = join(root, "sibling-target");
-      const artifacts = join(root, "artifacts");
-      const protectedFile = join(workspace, ".env");
-      mkdirSync(workspace);
-      mkdirSync(sibling);
-      mkdirSync(artifacts);
-      const siblingFile = join(sibling, "target.txt");
-      const artifactFile = join(artifacts, "artifact.txt");
-      const workspaceFile = join(workspace, "created-by-worker");
-      writeFileSync(protectedFile, "protected", { flag: "w" });
-      writeFileSync(siblingFile, "sibling", { flag: "w" });
-      writeFileSync(artifactFile, "artifact", { flag: "w" });
-      const command = [
-        "printf 'cwd='; pwd",
-        `if cat ${JSON.stringify(siblingFile)}; then echo sibling-readable; else echo sibling-denied; fi`,
-        `if cat ${JSON.stringify(artifactFile)}; then echo artifact-readable; else echo artifact-denied; fi`,
-        `touch ${JSON.stringify(workspaceFile)} && echo workspace-write`,
-      ].join("; ");
+  it("runs Guard Bash in a managed worker through the fake Nono integration", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipkin-managed-guard-"));
+    directories.push(root);
+    const workspace = join(root, "workspace");
+    const protectedFile = join(workspace, ".env");
+    const workspaceFile = join(workspace, "created-by-worker");
+    mkdirSync(workspace);
+    writeFileSync(protectedFile, "protected");
+    const nono = fakeNono(root);
+    const command = [
+      "printf 'cwd='; pwd",
+      `touch ${JSON.stringify(workspaceFile)} && echo workspace-write`,
+    ].join("; ");
+    const previousLog = process.env.PIPKIN_MANAGED_NONO_LOG;
+    process.env.PIPKIN_MANAGED_NONO_LOG = nono.log;
+    try {
       const harness = await createManagedSessionHarness(
         [
           fauxAssistantMessage(
@@ -221,7 +251,12 @@ describe("Implement managed runtime integration", () => {
             ),
           ),
         ],
-        { extensionFactories: [registerGuard] },
+        {
+          extensionFactories: [
+            (extension) =>
+              registerGuard(extension, { kind: "healthy", path: nono.binary }),
+          ],
+        },
       );
       const extension = pi();
       const runtime = new SubagentRuntime(extension as never, {
@@ -272,16 +307,48 @@ describe("Implement managed runtime integration", () => {
       const protectedRead = toolResults.find(
         (message) => message.toolCallId === "protected",
       );
+      const invocation = JSON.parse(readFileSync(nono.log, "utf8")) as {
+        args: string[];
+        manifest: {
+          filesystem: { grants: Array<{ path: string; access: string }> };
+        };
+        cwd: string;
+        environment: { PATH?: string; PI_SESSION_FILE?: string };
+      };
 
       expect(bash?.isError).toBe(false);
-      const bashOutput = bash?.content
-        .map((content) => content.text ?? "")
-        .join("");
-      expect(bashOutput).toContain(`cwd=${realpathSync(workspace)}`);
-      expect(bashOutput).toContain("sibling-denied");
-      expect(bashOutput).toContain("artifact-denied");
-      expect(bashOutput).toContain("workspace-write");
+      expect(
+        bash?.content.map((content) => content.text ?? "").join(""),
+      ).toContain(`cwd=${realpathSync(workspace)}`);
       expect(existsSync(workspaceFile)).toBe(true);
+      expect(invocation.cwd).toBe(realpathSync(workspace));
+      expect(invocation.args.slice(0, 4)).toEqual([
+        "run",
+        "--config",
+        expect.stringMatching(/pipkin-nono-manifest\.json$/),
+        "--",
+      ]);
+      expect(invocation.args[4]).toBeTruthy();
+      expect(invocation.manifest.filesystem.grants).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: realpathSync(workspace),
+            access: "readwrite",
+            type: "directory",
+          }),
+          expect.objectContaining({
+            path: "/bin",
+            access: "read",
+            type: "directory",
+          }),
+          expect.objectContaining({
+            path: "/usr",
+            access: "read",
+            type: "directory",
+          }),
+        ]),
+      );
+      expect(invocation.environment.PATH).toBeTruthy();
       expect(protectedRead).toMatchObject({
         isError: true,
         content: [
@@ -291,8 +358,14 @@ describe("Implement managed runtime integration", () => {
         ],
       });
       await runtime.dispose();
-    },
-  );
+    } finally {
+      if (previousLog === undefined) {
+        delete process.env.PIPKIN_MANAGED_NONO_LOG;
+      } else {
+        process.env.PIPKIN_MANAGED_NONO_LOG = previousLog;
+      }
+    }
+  });
 
   it("passes a large rendered prompt to a managed child", async () => {
     const harness = await createManagedSessionHarness([

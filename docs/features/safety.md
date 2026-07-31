@@ -12,7 +12,7 @@ Use `/guard` to toggle the current **Sandbox on/off** and **Semantic guard on/of
 
 ## Filesystem capabilities
 
-On a supported Mac, Guard builds a fixed sandbox from the canonical session cwd, ordinary temporary/cache roots, required system and device roots, and narrow read-only Pi introspection roots. Direct authorization always uses canonical paths. Nono also receives trusted operational aliases for those canonical roots, so platform tools can open paths such as `/etc`, `/private/etc`, temporary aliases, and inherited executable directories without making their parent roots reachable.
+On a supported Mac, Guard builds a fixed sandbox from the canonical session cwd, ordinary temporary/cache roots, required system and device roots, and narrow read-only Pi introspection roots. Where present, `/dev/dtracehelper` is an exact read/write device grant and `/nix` is read-only for ordinary macOS/Nix command execution; Guard does not grant `/dev` broadly. Direct authorization always uses canonical paths. Nono also receives trusted operational aliases for those canonical roots, so platform tools can open paths such as `/etc`, `/private/etc`, temporary aliases, and inherited executable directories without making their parent roots reachable.
 
 Existing inherited `PATH` directories, ordinary Git configuration and ignore files, system/toolchain roots, and Pi's `<agent-dir>/pipkin`, `bin`, `extensions`, `skills`, `prompts`, and `themes` roots are read-only. Only the workspace, temporary roots, and recognized caches are writable. For a validated linked Git worktree, Guard also grants that worktree's registered Git administration and common Git directory, which gives ordinary Git commands the same capability as a normal checkout's `.git`. The registration must point back to the canonical worktree; malformed or one-way `.git` indirection receives no expansion. This does not grant sibling working trees or attempt per-ref confinement inside shared Git administration.
 
@@ -29,6 +29,8 @@ Before agent Bash starts, Guard assesses the final command and shows one ordered
 Trusted `!` and `!!` commands share the same fixed Nono sandbox when healthy, while preserving Pi's context behavior. They do not receive model-origin semantic prompts.
 
 ## Scope limits
+
+Pipkin's tests use fake Nono executables to verify its manifests, invocation, lifecycle, and managed-worker composition. The installed managed binary remains subject to Guard's production fail-closed health probe, including allowed and denied filesystem access; Pipkin's repository suite does not re-test Nono's confinement implementation.
 
 Guard mediates Pi's Bash definition and selected direct filesystem tools. It does not mediate extension JavaScript, provider traffic, Web Fetch, direct RPC `{type:"bash"}`, or subprocesses owned by other extensions. Use an outer VM, container, or restricted environment when network isolation or broader process isolation is required.
 

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -13,6 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalizeTarget,
   createFixedCapabilities,
+  fixedCapabilityRoots,
   resolvePiToolPath,
   grantMatches,
   isSensitiveHomeTarget,
@@ -320,6 +322,38 @@ describe("Guard capabilities", () => {
         delete process.env.PATH;
       } else {
         process.env.PATH = previousPath;
+      }
+    }
+  });
+
+  it("constructs dtracehelper read/write and /nix read grants", () => {
+    expect(fixedCapabilityRoots(fixture())).toEqual(
+      expect.arrayContaining([
+        ["/dev/dtracehelper", "read", "file"],
+        ["/dev/dtracehelper", "write", "file"],
+        ["/nix", "read", "directory"],
+      ]),
+    );
+  });
+
+  it("emits dtracehelper and /nix grants when those host paths exist", () => {
+    const fixed = createFixedCapabilities(fixture());
+    const expectations = [
+      ["/dev/dtracehelper", "file", ["read", "write"]],
+      ["/nix", "directory", ["read"]],
+    ] as const;
+
+    for (const [path, kind, accesses] of expectations) {
+      if (existsSync(path)) {
+        expect(fixed.grants).toEqual(
+          expect.arrayContaining(
+            accesses.map((access) => ({
+              path: realpathSync(path),
+              access,
+              kind,
+            })),
+          ),
+        );
       }
     }
   });
