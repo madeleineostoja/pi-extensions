@@ -30,6 +30,11 @@ describe("review completion schemas", () => {
     ).toBe(true);
     expect(validates(repositoryStateReviewSchema, { findings: [] })).toBe(true);
     expect(validates(initialOverallReviewSchema, { findings: [] })).toBe(true);
+    expect(
+      validates(initialOverallReviewSchema, {
+        findings: [{ ...finding, disposition: "advisory" }],
+      }),
+    ).toBe(true);
   });
 
   it("rejects verdicts, unknown fields, and missing direct dispositions", () => {
@@ -124,5 +129,37 @@ describe("review completion schemas", () => {
         publicationCommitSubject: "fix: complete repair",
       }),
     ).toBe(true);
+    expect(
+      validates(initialAnchoredWorkstreamReviewSchema, {
+        assessments: [],
+        regressions: [],
+      }),
+    ).toBe(false);
+    expect(
+      validates(anchoredWorkstreamReviewSchema, {
+        assessments: [
+          {
+            id: "finding-1",
+            status: "resolved",
+            evidence: "Verified.",
+            disposition: "advisory",
+          },
+        ],
+        regressions: [],
+      }),
+    ).toBe(false);
+    expect(
+      validates(anchoredWorkstreamReviewSchema, {
+        assessments: [],
+        regressions: [],
+        observations: [
+          {
+            summary: "Unrelated concern",
+            evidence: "No delta.",
+            changedPaths: ["src/endpoint.ts"],
+          },
+        ],
+      }),
+    ).toBe(false);
   });
 });

@@ -478,7 +478,7 @@ describe("revision policy", () => {
     expect(() => validateRunState(assessed.state, "test")).not.toThrow();
   });
 
-  it("retains resolved epoch IDs when final whole-plan review queues a regression repair", async () => {
+  it("retains resolved epoch IDs and queues an advisory causal regression under the Task-1 policy", async () => {
     const state = (await createSchedulerStore()).read();
     const workstream = { kind: "overall" as const, repairId: "repair-1" };
     const baselineId = "overall-baseline:repair-1";
@@ -572,7 +572,7 @@ describe("revision policy", () => {
               evidence: "The repair omits an edge case.",
               requiredChange: "Handle the edge case.",
               acceptanceCriteria: ["The edge case is handled."],
-              disposition: "blocking",
+              disposition: "advisory",
               changedPaths: ["src/repair.ts"],
             },
           ],
@@ -581,6 +581,11 @@ describe("revision policy", () => {
     });
 
     expect(queued.accepted).toBe(true);
+    expect(queued.state.findings[findingIds[0]!]?.status).toBe("resolved");
+    expect(queued.state.findings["overall-repair-1-r3"]).toMatchObject({
+      status: "open",
+      disposition: "advisory",
+    });
     expect(queued.state.wholePlanReview).toMatchObject({
       status: "repairing",
       epoch: {

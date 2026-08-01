@@ -1048,6 +1048,8 @@ export function reduceRunEvent(
             completion: event.outcome.completion,
             findings: workstreamReviewFindings(state, event.workstream),
             evidence: event.outcome.evidence,
+            pendingPolicy:
+              event.workstream.kind === "overall" ? "all_open" : "blocking",
           });
           const wholePlanEpoch = state.wholePlanReview.epoch;
           state.reviews[key] = update.review;
