@@ -27,6 +27,7 @@ function fixture() {
     temporaryRoots: [],
     cacheRoots: [],
     writableRoots: [realpathSync(workspace)],
+    creationRoots: [],
   });
   return {
     outside: realpathSync(outside),

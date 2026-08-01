@@ -8,6 +8,7 @@ const policy = {
   temporaryRoots: ["/temporary"],
   cacheRoots: ["/cache"],
   writableRoots: ["/workspace", "/git", "/temporary", "/cache"],
+  creationRoots: [],
 } as const;
 
 function commandFixture(supportedMac: boolean) {

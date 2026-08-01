@@ -178,6 +178,7 @@ export function createSandboxBashRuntime(
           let launchDiagnostics = Buffer.alloc(0);
           let launchConfirmed = false;
           let launchOutput = Buffer.alloc(0);
+          const launchMarker = Buffer.from(LAUNCH_MARKER);
           const cleanup = () => {
             if (timer) {
               clearTimeout(timer);
@@ -242,25 +243,32 @@ export function createSandboxBashRuntime(
               onData(data);
               return;
             }
+            launchDiagnostics = appendLaunchDiagnostic(launchDiagnostics, data);
             launchOutput = Buffer.concat([launchOutput, data]);
-            const marker = Buffer.from(LAUNCH_MARKER);
-            if (
-              launchOutput.length < marker.length &&
-              marker.subarray(0, launchOutput.length).equals(launchOutput)
-            ) {
-              return;
-            }
-            if (launchOutput.subarray(0, marker.length).equals(marker)) {
+            const markerIndex = launchOutput.indexOf(launchMarker);
+            if (markerIndex >= 0) {
+              const prefix = launchOutput.subarray(0, markerIndex);
+              const remainder = launchOutput.subarray(
+                markerIndex + launchMarker.length,
+              );
               launchConfirmed = true;
-              const remainder = launchOutput.subarray(marker.length);
               launchOutput = Buffer.alloc(0);
+              if (prefix.length) {
+                onData(prefix);
+              }
               if (remainder.length) {
                 onData(remainder);
               }
               return;
             }
-            onData(launchOutput);
-            launchOutput = Buffer.alloc(0);
+            const flushLength = Math.max(
+              0,
+              launchOutput.length - launchMarker.length + 1,
+            );
+            if (flushLength > 0) {
+              onData(launchOutput.subarray(0, flushLength));
+              launchOutput = launchOutput.subarray(flushLength);
+            }
           };
           child.stdout?.on("data", onStdout);
           child.stderr?.on("data", onStderr);
@@ -285,14 +293,14 @@ export function createSandboxBashRuntime(
                 );
                 return;
               }
-              if (
-                !terminationError &&
-                !launchConfirmed &&
-                sandboxRejected(launchDiagnostics)
-              ) {
+              if (!terminationError && !launchConfirmed) {
+                const diagnostic = launchDiagnostics.toString().trim();
+                const failure = sandboxRejected(launchDiagnostics)
+                  ? "sandbox-exec rejected the launch"
+                  : "sandbox-exec exited before shell startup";
                 finish(
                   new Error(
-                    `Sandbox: sandbox-exec rejected the launch: ${launchDiagnostics.toString().trim()}`,
+                    `Sandbox: ${failure}: ${diagnostic || `exit code ${exitCode ?? "unknown"}`}`,
                   ),
                 );
                 return;

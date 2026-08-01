@@ -59,6 +59,9 @@ if (process.env.PIPKIN_SANDBOX_BACKEND_REJECT === "true") {
   process.stderr.write("sandbox-exec: invalid profile\\n");
   process.exit(70);
 }
+if (process.env.PIPKIN_SANDBOX_BACKEND_SILENT_EXIT === "true") {
+  process.exit(71);
+}
 const separator = args.indexOf("--");
 const child = spawn(args[separator + 1], args.slice(separator + 2), { stdio: "inherit" });
 child.once("close", (code) => process.exit(code ?? 1));
@@ -72,6 +75,7 @@ child.once("close", (code) => process.exit(code ?? 1));
     temporaryRoots: [],
     cacheRoots: [],
     writableRoots: [workspace],
+    creationRoots: [],
   };
   return { executable, policy, workspace };
 }
@@ -129,6 +133,27 @@ describe("Sandbox Bash runtime", () => {
     expect(result).toMatchObject({
       content: [{ type: "text", text: "firstsecond" }],
     });
+  });
+
+  it("preserves shell startup output without exposing the launch marker", async () => {
+    const { executable, policy, workspace } = fixture();
+    const bashEnv = join(workspace, "bash-env");
+    writeFileSync(bashEnv, "printf startup\n");
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+    });
+    const output: string[] = [];
+    await expect(
+      runtime.operations.exec("printf command", workspace, {
+        onData: (data) => output.push(data.toString()),
+        env: executionEnv({ BASH_ENV: bashEnv }),
+      }),
+    ).resolves.toEqual({ exitCode: 0 });
+    expect(output.join("")).toBe("startupcommand");
+    expect(output.join("")).not.toContain("__PIPKIN_SANDBOX_LAUNCHED__");
   });
 
   it("transports multiline and large commands without exposing the launch marker", async () => {
@@ -219,6 +244,24 @@ printf last`,
         env: executionEnv({ PIPKIN_SANDBOX_BACKEND_REJECT: "true" }),
       }),
     ).rejects.toThrow("sandbox-exec rejected the launch");
+  });
+
+  it("reports a silent exit before shell startup as a Sandbox launch failure", async () => {
+    const { executable, policy, workspace } = fixture();
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+    });
+    await expect(
+      runtime.operations.exec("printf local", workspace, {
+        onData: () => undefined,
+        env: executionEnv({ PIPKIN_SANDBOX_BACKEND_SILENT_EXIT: "true" }),
+      }),
+    ).rejects.toThrow(
+      "Sandbox: sandbox-exec exited before shell startup: exit code 71",
+    );
   });
 
   it("rejects invalid and already-aborted protected operations before launch", async () => {

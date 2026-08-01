@@ -24,6 +24,7 @@ export type SandboxPolicy = Readonly<{
   temporaryRoots: readonly string[];
   cacheRoots: readonly string[];
   writableRoots: readonly string[];
+  creationRoots: readonly string[];
 }>;
 
 export type GitRunResult = Readonly<{
@@ -56,7 +57,10 @@ function canonicalExisting(path: string): string {
   return canonical;
 }
 
-export function canonicalPath(path: string): string {
+export function canonicalRoot(path: string): Readonly<{
+  path: string;
+  creationRoots: readonly string[];
+}> {
   if (!isAbsolute(path) || path.includes("\0")) {
     throw new SandboxPolicyError("root must be an absolute path");
   }
@@ -64,7 +68,19 @@ export function canonicalPath(path: string): string {
   let cursor = path;
   while (true) {
     try {
-      return resolve(realpathSync(cursor), ...missing.reverse());
+      let canonical = realpathSync(cursor);
+      const missingComponents = missing.reverse();
+      if (missingComponents.includes("..")) {
+        return canonicalRoot(resolve(canonical, ...missingComponents));
+      }
+      const creationRoots = missingComponents.map((component) => {
+        canonical = resolve(canonical, component);
+        return canonical;
+      });
+      return Object.freeze({
+        path: canonical,
+        creationRoots: Object.freeze(creationRoots),
+      });
     } catch {
       try {
         lstatSync(cursor);
@@ -85,6 +101,10 @@ export function canonicalPath(path: string): string {
       cursor = parent;
     }
   }
+}
+
+export function canonicalPath(path: string): string {
+  return canonicalRoot(path).path;
 }
 
 export function normalizeRoots(roots: readonly string[]): readonly string[] {
@@ -180,7 +200,9 @@ function absoluteDirectory(value: string | undefined): string | undefined {
   }
 }
 
-function cacheRoot(value: string): string | undefined {
+function cacheRoot(
+  value: string,
+): Readonly<{ path: string; creationRoots: readonly string[] }> | undefined {
   if (!isAbsolute(value)) {
     return undefined;
   }
@@ -190,7 +212,7 @@ function cacheRoot(value: string): string | undefined {
         return undefined;
       }
     } catch {}
-    return canonicalPath(value);
+    return canonicalRoot(value);
   } catch {
     return undefined;
   }
@@ -202,6 +224,7 @@ export async function resolveSandboxPolicy(
     env?: NodeJS.ProcessEnv;
     homeDir?: string;
     temporaryDir?: string;
+    standardTemporaryRoots?: readonly string[];
     gitRunner?: GitRunner;
   }>,
 ): Promise<SandboxPolicy> {
@@ -214,8 +237,9 @@ export async function resolveSandboxPolicy(
     [
       absoluteDirectory(env.TMPDIR),
       absoluteDirectory(options.temporaryDir ?? tmpdir()),
-      absoluteDirectory("/tmp"),
-      absoluteDirectory("/var/tmp"),
+      ...(options.standardTemporaryRoots ?? ["/tmp", "/var/tmp"]).map(
+        absoluteDirectory,
+      ),
     ].filter((root): root is string => root !== undefined),
   );
   const cacheCandidates = [
@@ -225,13 +249,21 @@ export async function resolveSandboxPolicy(
     join(home, "Library", "Caches", "pnpm"),
   ]
     .flatMap((root) => (root ? [cacheRoot(root)] : []))
-    .filter((root): root is string => root !== undefined);
-  const cacheRoots = normalizeRoots(cacheCandidates);
+    .filter((root): root is NonNullable<typeof root> => root !== undefined);
+  const cacheRoots = normalizeRoots(cacheCandidates.map((root) => root.path));
   const writableRoots = normalizeRoots([
     workspaceRoot,
     ...(git ? [git.worktreeGitDir, git.commonGitDir] : []),
     ...temporaryRoots,
     ...cacheRoots,
+  ]);
+  const recursiveRoots = new Set(writableRoots);
+  const creationRoots = Object.freeze([
+    ...new Set(
+      cacheCandidates.flatMap((root) =>
+        recursiveRoots.has(root.path) ? root.creationRoots.slice(0, -1) : [],
+      ),
+    ),
   ]);
   return Object.freeze({
     sessionCwd,
@@ -240,6 +272,7 @@ export async function resolveSandboxPolicy(
     temporaryRoots,
     cacheRoots,
     writableRoots,
+    creationRoots,
   });
 }
 

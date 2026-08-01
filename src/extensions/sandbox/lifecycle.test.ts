@@ -8,6 +8,7 @@ const policy = {
   temporaryRoots: [],
   cacheRoots: [],
   writableRoots: ["/workspace"],
+  creationRoots: [],
 } as const;
 
 function context() {

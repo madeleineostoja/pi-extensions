@@ -10,7 +10,11 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { SandboxPolicyError, resolveSandboxPolicy } from "./policy.js";
+import {
+  canonicalRoot,
+  SandboxPolicyError,
+  resolveSandboxPolicy,
+} from "./policy.js";
 
 const directories: string[] = [];
 
@@ -51,6 +55,43 @@ describe("Sandbox policy", () => {
       join(realpathSync(home), "missing-xdg"),
       join(realpathSync(home), "Library", "pnpm", "store"),
       join(realpathSync(home), "Library", "Caches", "pnpm"),
+    ]);
+  });
+
+  it("records exact missing ancestors needed to create reviewed cache roots", async () => {
+    const root = directory("missing-cache-ancestors");
+    const workspace = join(root, "workspace");
+    const home = join(root, "home");
+    const temporary = join(root, "temporary");
+    mkdirSync(workspace);
+    mkdirSync(home);
+    mkdirSync(temporary);
+    const canonicalHome = realpathSync(home);
+    const npmParent = join(canonicalHome, "cache-parent");
+    const npm = join(npmParent, "npm");
+
+    expect(canonicalRoot(join(home, "cache-parent", "npm"))).toEqual({
+      path: npm,
+      creationRoots: [npmParent, npm],
+    });
+    expect(canonicalRoot(`${home}/missing/../normalized-cache`)).toEqual({
+      path: join(canonicalHome, "normalized-cache"),
+      creationRoots: [join(canonicalHome, "normalized-cache")],
+    });
+
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: workspace,
+      homeDir: home,
+      temporaryDir: temporary,
+      standardTemporaryRoots: [],
+      env: { npm_config_cache: join(home, "cache-parent", "npm") },
+    });
+    expect(policy.writableRoots).toContain(npm);
+    expect(policy.creationRoots).toEqual([
+      npmParent,
+      join(canonicalHome, "Library"),
+      join(canonicalHome, "Library", "pnpm"),
+      join(canonicalHome, "Library", "Caches"),
     ]);
   });
 
