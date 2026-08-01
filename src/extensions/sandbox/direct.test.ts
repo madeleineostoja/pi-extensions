@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { decideDirectWrite } from "./direct.js";
+import { decideDirectMutation, decideDirectWrite } from "./direct.js";
 import type { SandboxPolicy } from "./policy.js";
 
 const directories: string[] = [];
@@ -74,6 +74,27 @@ describe("Sandbox direct writes", () => {
         target,
       });
     }
+  });
+
+  it("uses the same containment decision for write and edit and rejects malformed paths", () => {
+    const { policy, workspace } = fixture();
+    for (const tool of ["write", "edit"] as const) {
+      expect(
+        decideDirectMutation({
+          tool,
+          input: { path: "inside.txt" },
+          policy,
+        }),
+      ).toMatchObject({ kind: "allow", target: join(workspace, "inside.txt") });
+    }
+    for (const path of [undefined, "", "inside\0.txt"]) {
+      expect(decideDirectWrite(path, policy)).toMatchObject({ kind: "deny" });
+    }
+    symlinkSync("loop", join(workspace, "loop"));
+    expect(decideDirectWrite("loop", policy)).toEqual({
+      kind: "deny",
+      reason: "Sandbox: filesystem path is invalid.",
+    });
   });
 
   it("retains the session-subdirectory base while checking the worktree root", () => {

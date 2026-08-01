@@ -9,7 +9,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createSandboxBashRuntime } from "./bash.js";
+import {
+  createSandboxBashDefinition,
+  createSandboxBashRuntime,
+} from "./bash.js";
 import type { SandboxPolicy } from "./policy.js";
 
 const directories: string[] = [];
@@ -92,6 +95,38 @@ describe("Sandbox Bash runtime", () => {
     expect(output.join("")).toBe(`forwarded:${realpathSync(workspace)}`);
   });
 
+  it("preserves Pi Bash partial updates and final result semantics", async () => {
+    const { executable, policy, workspace } = fixture();
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+    });
+    const definition = createSandboxBashDefinition(workspace, runtime);
+    const updates: Array<{ content: Array<{ type: string; text?: string }> }> =
+      [];
+    const result = await definition.execute(
+      "sandbox-call",
+      { command: "printf first; sleep 0.15; printf second" },
+      undefined,
+      (update) => updates.push(update),
+      {
+        sessionManager: {
+          getSessionFile: () => undefined,
+          getSessionId: () => "test-session",
+        },
+      } as never,
+    );
+    expect(updates[0]).toEqual({ content: [], details: undefined });
+    expect(updates.some((update) => update.content[0]?.text === "first")).toBe(
+      true,
+    );
+    expect(result).toMatchObject({
+      content: [{ type: "text", text: "firstsecond" }],
+    });
+  });
+
   it("transports multiline and large commands without exposing the launch marker", async () => {
     const { executable, policy, workspace } = fixture();
     const runtime = createSandboxBashRuntime({
@@ -156,6 +191,32 @@ printf last`,
     ).rejects.toThrow("sandbox-exec rejected the launch");
   });
 
+  it("rejects invalid and already-aborted protected operations before launch", async () => {
+    const { policy, workspace } = fixture();
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: join(workspace, "missing-sandbox-exec"),
+    });
+    for (const timeout of [0, -1, Infinity, 2_147_483.648]) {
+      await expect(
+        runtime.operations.exec("printf never", workspace, {
+          onData: () => undefined,
+          timeout,
+        }),
+      ).rejects.toThrow("Invalid timeout");
+    }
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      runtime.operations.exec("printf never", workspace, {
+        onData: () => undefined,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("aborted");
+  });
+
   it("terminates protected operations on timeout and abort", async () => {
     const { executable, policy, workspace } = fixture();
     const runtime = createSandboxBashRuntime({
@@ -177,6 +238,34 @@ printf last`,
     });
     setTimeout(() => controller.abort(), 10);
     await expect(aborted).rejects.toThrow("aborted");
+  });
+
+  it("terminates protected descendants during disposal", async () => {
+    const { executable, policy, workspace } = fixture();
+    const childPid = join(workspace, "protected-child.pid");
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+    });
+    const childProgram = `const { writeFileSync } = require("node:fs"); writeFileSync(process.env.PIPKIN_SANDBOX_CHILD_PID, String(process.pid)); setInterval(() => {}, 1_000);`;
+    const run = runtime.operations.exec(
+      `${JSON.stringify(process.execPath)} -e ${JSON.stringify(childProgram)}`,
+      workspace,
+      {
+        onData: () => undefined,
+        env: { PIPKIN_SANDBOX_CHILD_PID: childPid },
+      },
+    );
+    await waitForFile(childPid);
+    const pid = Number(
+      (await import("node:fs")).readFileSync(childPid, "utf8"),
+    );
+    await runtime.dispose();
+    await expect(run).rejects.toThrow("aborted");
+    expect(processExists(pid)).toBe(false);
+    await expect(runtime.dispose()).resolves.toBeUndefined();
   });
 
   it("does not fall back to local execution when enabled launch fails", async () => {
@@ -228,8 +317,9 @@ printf last`,
 
   it("rejects failed macOS initialization until Sandbox is explicitly off", async () => {
     const { workspace } = fixture();
+    let enabled = true;
     const runtime = createSandboxBashRuntime({
-      enabled: () => true,
+      enabled: () => enabled,
       supportedMac: true,
       unavailableReason: "Sandbox: policy resolution failed.",
     });
@@ -238,6 +328,14 @@ printf last`,
         onData: () => undefined,
       }),
     ).rejects.toThrow("policy resolution failed");
+    enabled = false;
+    const output: string[] = [];
+    await expect(
+      runtime.operations.exec("printf local", workspace, {
+        onData: (data) => output.push(data.toString()),
+      }),
+    ).resolves.toEqual({ exitCode: 0 });
+    expect(output.join("")).toBe("local");
   });
 
   it("selects ordinary local operations only when explicitly off or unsupported", async () => {

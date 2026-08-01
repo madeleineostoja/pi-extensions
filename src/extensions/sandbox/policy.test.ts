@@ -76,6 +76,8 @@ describe("Sandbox policy", () => {
     const root = directory("worktree");
     const linked = join(dirname(root), `${basename(root)}-linked`);
     directories.push(linked);
+    const temporary = directory("linked-temporary");
+    const home = directory("linked-home");
     git(root, ["init"]);
     git(root, ["config", "user.email", "test@example.com"]);
     git(root, ["config", "user.name", "Test"]);
@@ -86,12 +88,72 @@ describe("Sandbox policy", () => {
     git(root, ["worktree", "add", "-b", "linked", linked]);
     const policy = await resolveSandboxPolicy({
       sessionCwd: linked,
-      temporaryDir: root,
+      homeDir: home,
+      temporaryDir: temporary,
       env: {},
     });
     expect(policy.workspaceRoot).toBe(realpathSync(linked));
     expect(policy.git?.worktreeGitDir).not.toBe(policy.git?.commonGitDir);
     expect(policy.git?.commonGitDir).toBe(realpathSync(join(root, ".git")));
+    expect(policy.writableRoots).toEqual(
+      expect.arrayContaining([
+        realpathSync(linked),
+        policy.git!.commonGitDir,
+        realpathSync(temporary),
+      ]),
+    );
+    expect(policy.writableRoots).not.toContain(policy.git!.worktreeGitDir);
+    expect(policy.writableRoots).not.toContain(realpathSync(root));
+  });
+
+  it("grants only reviewed package-cache purposes and their final effective roots", async () => {
+    const root = directory("reviewed-caches");
+    const workspace = join(root, "workspace");
+    const home = join(root, "home");
+    const temporary = join(root, "temporary");
+    const npm = join(root, "npm");
+    const xdg = join(root, "xdg");
+    const pnpmStore = join(home, "Library", "pnpm", "store");
+    const pnpmCache = join(home, "Library", "Caches", "pnpm");
+    for (const path of [
+      workspace,
+      home,
+      temporary,
+      npm,
+      xdg,
+      pnpmStore,
+      pnpmCache,
+    ]) {
+      mkdirSync(path, { recursive: true });
+    }
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: workspace,
+      homeDir: home,
+      temporaryDir: temporary,
+      env: {
+        npm_config_cache: npm,
+        XDG_CACHE_HOME: xdg,
+        PNPM_HOME: join(home, "pnpm-bin"),
+      },
+    });
+    const canonicalRoots = [npm, xdg, pnpmStore, pnpmCache].map((path) =>
+      realpathSync(path),
+    );
+    expect(policy.cacheRoots).toEqual(canonicalRoots);
+    expect(policy.writableRoots).toEqual(
+      expect.arrayContaining([
+        realpathSync(workspace),
+        realpathSync(temporary),
+        ...canonicalRoots,
+      ]),
+    );
+    expect(policy.writableRoots).not.toContain(realpathSync(home));
+    expect(policy.writableRoots).not.toContain(
+      realpathSync(join(home, "Library", "pnpm")),
+    );
+    expect(policy.writableRoots).not.toContain(
+      join(realpathSync(home), "pnpm-bin"),
+    );
   });
 
   it("canonicalizes aliases and collapses covered roots", async () => {
