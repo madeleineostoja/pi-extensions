@@ -64,9 +64,19 @@ export function canonicalPath(path: string): string {
   let cursor = path;
   while (true) {
     try {
-      const canonical = realpathSync(cursor);
-      return resolve(canonical, ...missing.reverse());
+      return resolve(realpathSync(cursor), ...missing.reverse());
     } catch {
+      try {
+        lstatSync(cursor);
+        throw new SandboxPolicyError(`unable to canonicalize root: ${path}`);
+      } catch (lstatError) {
+        if (lstatError instanceof SandboxPolicyError) {
+          throw lstatError;
+        }
+        if ((lstatError as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw new SandboxPolicyError(`unable to canonicalize root: ${path}`);
+        }
+      }
       const parent = dirname(cursor);
       if (parent === cursor) {
         throw new SandboxPolicyError(`unable to canonicalize root: ${path}`);

@@ -10,8 +10,7 @@ export const SANDBOX_PROFILE = String.raw`(version 1)
 (allow file-read-metadata)
 (allow process-exec)
 (allow process-fork)
-(allow process-info*)
-(allow process-codesigning-status)
+(allow process-info* (target same-sandbox))
 (allow signal (target self))
 (allow signal (target same-sandbox))
 (allow file-ioctl)
@@ -19,7 +18,8 @@ export const SANDBOX_PROFILE = String.raw`(version 1)
 (allow ipc-posix-sem)
 (allow sysctl-read)
 (allow network*)
-(allow mach-lookup)
+(allow mach-lookup
+  (global-name "com.apple.system.opendirectoryd.libinfo"))
 (allow file-write*
   (literal (param "root0"))
   (subpath (param "root0"))
@@ -80,12 +80,12 @@ export function sandboxParameters(roots: readonly string[]): string[] {
 }
 
 function profileParameters(roots: readonly string[]): string[] {
+  const parameters = sandboxParameters(roots);
   return [
-    ...sandboxParameters(roots),
+    ...parameters,
     ...Array.from(
       { length: MAX_WRITABLE_ROOTS - roots.length },
-      (_, index) =>
-        `root${roots.length + index}=/.pipkin-unreachable-write-root-${index}`,
+      (_, index) => `root${roots.length + index}=${roots[0]}`,
     ),
   ];
 }

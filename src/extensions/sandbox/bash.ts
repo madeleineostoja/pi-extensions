@@ -12,11 +12,15 @@ import { SANDBOX_EXECUTABLE, sandboxArguments } from "./seatbelt.js";
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const TERMINATION_WAIT_MS = 5_000;
 const TERMINATION_POLL_MS = 10;
+const LAUNCH_MARKER = "__PIPKIN_SANDBOX_LAUNCHED__\n";
+const LAUNCH_PREFIX = `printf '${LAUNCH_MARKER}'\n`;
 
 type ActiveInvocation = Readonly<{
   terminate: () => void;
   settled: Promise<void>;
 }>;
+
+type BashExecution = Parameters<BashOperations["exec"]>[2];
 
 function timeoutMs(timeout: number | undefined): number | undefined {
   if (timeout === undefined) {
@@ -65,6 +69,12 @@ async function waitForProcessTree(pid: number): Promise<boolean> {
   }
 }
 
+function sandboxRejected(output: readonly Buffer[]): boolean {
+  return /(?:^|\n)sandbox-exec(?:\[\d+\])?:/m.test(
+    Buffer.concat(output).toString(),
+  );
+}
+
 export type SandboxBashRuntime = Readonly<{
   operations: BashOperations;
   dispose: () => Promise<void>;
@@ -92,6 +102,39 @@ export function createSandboxBashRuntime(
   const supportedMac = options.supportedMac ?? process.platform === "darwin";
   let disposed = false;
   let disposing: Promise<void> | undefined;
+
+  const localOperations: BashOperations = {
+    async exec(command, cwd, execution) {
+      if (disposed) {
+        throw new Error("Sandbox: Bash is shutting down.");
+      }
+      const controller = new AbortController();
+      const forwardAbort = () => controller.abort();
+      if (execution.signal?.aborted) {
+        forwardAbort();
+      } else {
+        execution.signal?.addEventListener("abort", forwardAbort, {
+          once: true,
+        });
+      }
+      let settleInvocation: () => void = () => undefined;
+      const invocation: ActiveInvocation = {
+        terminate: forwardAbort,
+        settled: new Promise<void>((settle) => (settleInvocation = settle)),
+      };
+      active.add(invocation);
+      try {
+        return await local.exec(command, cwd, {
+          ...execution,
+          signal: controller.signal,
+        });
+      } finally {
+        execution.signal?.removeEventListener("abort", forwardAbort);
+        active.delete(invocation);
+        settleInvocation();
+      }
+    },
+  };
 
   const protectedOperations: BashOperations = {
     async exec(command, cwd, execution) {
@@ -127,6 +170,8 @@ export function createSandboxBashRuntime(
           let invocation: ActiveInvocation | undefined;
           let settleInvocation: () => void = () => undefined;
           const output: Buffer[] = [];
+          let launchConfirmed = false;
+          let launchOutput = Buffer.alloc(0);
           const cleanup = () => {
             if (timer) {
               clearTimeout(timer);
@@ -180,7 +225,32 @@ export function createSandboxBashRuntime(
             output.push(data);
             execution.onData(data);
           };
-          child.stdout?.on("data", onData);
+          const onStdout = (data: Buffer) => {
+            if (launchConfirmed) {
+              onData(data);
+              return;
+            }
+            launchOutput = Buffer.concat([launchOutput, data]);
+            const marker = Buffer.from(LAUNCH_MARKER);
+            if (
+              launchOutput.length < marker.length &&
+              marker.subarray(0, launchOutput.length).equals(launchOutput)
+            ) {
+              return;
+            }
+            if (launchOutput.subarray(0, marker.length).equals(marker)) {
+              launchConfirmed = true;
+              const remainder = launchOutput.subarray(marker.length);
+              launchOutput = Buffer.alloc(0);
+              if (remainder.length) {
+                onData(remainder);
+              }
+              return;
+            }
+            onData(launchOutput);
+            launchOutput = Buffer.alloc(0);
+          };
+          child.stdout?.on("data", onStdout);
           child.stderr?.on("data", onData);
           child.once("error", (error) => {
             if (child.pid) {
@@ -203,7 +273,11 @@ export function createSandboxBashRuntime(
                 );
                 return;
               }
-              if (!terminationError && [64, 65, 70].includes(exitCode ?? -1)) {
+              if (
+                !terminationError &&
+                !launchConfirmed &&
+                sandboxRejected(output)
+              ) {
                 finish(
                   new Error(
                     `Sandbox: sandbox-exec rejected the launch: ${Buffer.concat(output).toString().trim()}`,
@@ -223,7 +297,7 @@ export function createSandboxBashRuntime(
             );
           }
           child.stdin?.on("error", () => undefined);
-          child.stdin?.end(command);
+          child.stdin?.end(`${LAUNCH_PREFIX}${command}`);
         },
       );
     },
@@ -231,9 +305,12 @@ export function createSandboxBashRuntime(
 
   return {
     operations: {
-      exec(command, cwd, execution) {
+      exec(command, cwd, execution: BashExecution) {
+        if (disposed) {
+          return Promise.reject(new Error("Sandbox: Bash is shutting down."));
+        }
         if (!supportedMac || !options.enabled()) {
-          return local.exec(command, cwd, execution);
+          return localOperations.exec(command, cwd, execution);
         }
         return protectedOperations.exec(command, cwd, execution);
       },

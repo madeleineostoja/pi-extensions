@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -32,25 +33,26 @@ describe("Sandbox Seatbelt integration", () => {
       const outside = join(parent, "outside.txt");
       mkdirSync(workspace);
       writeFileSync(outside, "before");
+      const canonicalWorkspace = realpathSync(workspace);
       const policy: SandboxPolicy = {
-        sessionCwd: workspace,
-        workspaceRoot: workspace,
+        sessionCwd: canonicalWorkspace,
+        workspaceRoot: canonicalWorkspace,
         temporaryRoots: [],
         cacheRoots: [],
-        writableRoots: [workspace],
+        writableRoots: [canonicalWorkspace],
       };
       const result = spawnSync(
         SANDBOX_EXECUTABLE,
         sandboxArguments({ policy, shell: { shell: "/bin/sh", args: ["-s"] } }),
         {
-          cwd: workspace,
+          cwd: canonicalWorkspace,
           input:
             "printf inside > inside.txt\nprintf changed > ../outside.txt\n",
           encoding: "utf8",
         },
       );
       expect(result.status).not.toBe(0);
-      expect(readFileSync(join(workspace, "inside.txt"), "utf8")).toBe(
+      expect(readFileSync(join(canonicalWorkspace, "inside.txt"), "utf8")).toBe(
         "inside",
       );
       expect(readFileSync(outside, "utf8")).toBe("before");

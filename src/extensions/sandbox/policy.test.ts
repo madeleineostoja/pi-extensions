@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   realpathSync,
@@ -107,6 +108,37 @@ describe("Sandbox policy", () => {
     expect(policy.writableRoots).not.toContain(
       join(realpathSync(root), "cache"),
     );
+  });
+
+  it("omits dangling and looping cache symlinks without creating absent roots", async () => {
+    const root = directory("cache-links");
+    const home = join(root, "home");
+    const dangling = join(home, "dangling");
+    const parent = join(home, "parent");
+    const pnpmStore = join(home, "Library", "pnpm", "store");
+    const pnpmCache = join(home, "Library", "Caches", "pnpm");
+    mkdirSync(home);
+    mkdirSync(dirname(pnpmStore), { recursive: true });
+    mkdirSync(dirname(pnpmCache), { recursive: true });
+    symlinkSync(join(root, "missing"), dangling);
+    symlinkSync(join(root, "missing-parent"), parent);
+    symlinkSync(join(root, "missing-store"), pnpmStore);
+    symlinkSync("pnpm", pnpmCache);
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: root,
+      homeDir: home,
+      temporaryDir: root,
+      env: {
+        npm_config_cache: dangling,
+        XDG_CACHE_HOME: join(parent, "cache"),
+      },
+    });
+    expect(policy.cacheRoots).not.toContain(dangling);
+    expect(policy.cacheRoots).not.toContain(join(parent, "cache"));
+    expect(policy.cacheRoots).not.toContain(pnpmStore);
+    expect(policy.cacheRoots).not.toContain(pnpmCache);
+    expect(policy.cacheRoots).toEqual([]);
+    expect(existsSync(join(home, ".npm"))).toBe(false);
   });
 
   it("does not turn a genuine Git error into a non-Git policy", async () => {

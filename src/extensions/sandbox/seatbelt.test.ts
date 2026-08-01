@@ -21,6 +21,10 @@ describe("Sandbox Seatbelt profile", () => {
     expect(SANDBOX_PROFILE).toContain("(allow file-read*)");
     expect(SANDBOX_PROFILE).toContain("(allow network*)");
     expect(SANDBOX_PROFILE).toContain("(allow process-exec)");
+    expect(SANDBOX_PROFILE).toContain(
+      '(global-name "com.apple.system.opendirectoryd.libinfo")',
+    );
+    expect(SANDBOX_PROFILE).not.toContain("(allow mach-lookup)");
     expect(SANDBOX_PROFILE).toContain('(literal (param "root0"))');
     expect(SANDBOX_PROFILE).toContain('(subpath (param "root0"))');
     expect(SANDBOX_PROFILE).not.toContain("/workspace");
@@ -41,6 +45,13 @@ describe("Sandbox Seatbelt profile", () => {
     expect(args).toEqual(
       expect.arrayContaining(["-p", SANDBOX_PROFILE, "/bin/bash", "-s"]),
     );
+    const parameterValues = args
+      .filter((value, index) => args[index - 1] === "-D")
+      .map((value) => value.slice(value.indexOf("=") + 1));
+    expect(parameterValues).toHaveLength(16);
+    expect(
+      parameterValues.every((value) => policy.writableRoots.includes(value)),
+    ).toBe(true);
   });
 
   it("rejects malformed roots before launch", () => {

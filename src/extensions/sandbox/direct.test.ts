@@ -35,7 +35,11 @@ function fixture() {
     cacheRoots: [],
     writableRoots: [canonicalWorkspace],
   };
-  return { outside, policy, workspace: canonicalWorkspace };
+  return {
+    outside: realpathSync(outside),
+    policy,
+    workspace: canonicalWorkspace,
+  };
 }
 
 describe("Sandbox direct writes", () => {
@@ -57,16 +61,17 @@ describe("Sandbox direct writes", () => {
     symlinkSync(join(outside, "file.txt"), join(workspace, "file-link"));
     symlinkSync(outside, join(workspace, "directory-link"));
     symlinkSync(join(outside, "missing.txt"), join(workspace, "dangling-link"));
-    for (const path of [
-      join(outside, "file.txt"),
-      "../workspace-copy/file.txt",
-      "file-link",
-      "directory-link/new.txt",
-      "dangling-link",
+    for (const [path, target] of [
+      [join(outside, "file.txt"), join(outside, "file.txt")],
+      ["../workspace-copy/file.txt", join(outside, "file.txt")],
+      ["file-link", join(outside, "file.txt")],
+      ["directory-link/new.txt", join(outside, "new.txt")],
+      ["dangling-link", join(outside, "missing.txt")],
     ]) {
       expect(decideDirectWrite(path, policy)).toEqual({
         kind: "deny",
         reason: "Sandbox: direct writes must stay in the workspace.",
+        target,
       });
     }
   });

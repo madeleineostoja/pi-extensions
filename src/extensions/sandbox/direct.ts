@@ -4,7 +4,7 @@ import { pathIsWithin, type SandboxPolicy } from "./policy.js";
 
 export type DirectWriteDecision =
   | Readonly<{ kind: "allow"; target: string }>
-  | Readonly<{ kind: "deny"; reason: string }>;
+  | Readonly<{ kind: "deny"; reason: string; target?: string }>;
 
 function components(path: string): string[] {
   const root = parse(path).root;
@@ -76,6 +76,7 @@ export function decideDirectWrite(
       : {
           kind: "deny",
           reason: "Sandbox: direct writes must stay in the workspace.",
+          target,
         };
   } catch {
     return { kind: "deny", reason: "Sandbox: filesystem path is invalid." };
