@@ -103,6 +103,7 @@ export function sandboxArguments(
     ]),
     "-p",
     SANDBOX_PROFILE,
+    "--",
     options.shell.shell,
     ...options.shell.args,
   ];

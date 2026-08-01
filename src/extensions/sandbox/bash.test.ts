@@ -28,8 +28,8 @@ function fixture() {
     `#!/usr/bin/env node
 import { spawn } from "node:child_process";
 const args = process.argv.slice(2);
-const profile = args.indexOf("-p");
-const child = spawn(args[profile + 2], args.slice(profile + 3), { stdio: "inherit" });
+const separator = args.indexOf("--");
+const child = spawn(args[separator + 1], args.slice(separator + 2), { stdio: "inherit" });
 child.once("close", (code) => process.exit(code ?? 1));
 `,
     { mode: 0o700 },
