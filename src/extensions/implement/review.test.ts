@@ -64,10 +64,12 @@ function packet(): ReviewPacket {
         id: "finding-1",
         candidateId: previousCandidate.id,
         workstream,
+        scope: { kind: "source", id: "work" },
         summary: "Missing behavior",
         evidence: "The endpoint returns 404.",
         requiredChange: "Add the endpoint.",
         acceptanceCriteria: ["The endpoint returns 200."],
+        disposition: "blocking",
         origin: "initial",
         introducedRound: 0,
         status: "open",
@@ -85,13 +87,164 @@ function packet(): ReviewPacket {
 }
 
 describe("source review worker packets", () => {
+  it("gives mixed initial findings one correction pass and retains narrowed advisories", () => {
+    const initial = applyInitialWorkstreamReview({
+      workstream,
+      candidateId: previousCandidate.id,
+      comparisonBase: previousCandidate.baseSha,
+      completion: {
+        publicationCommitSubject: "feat: publish workstream",
+        findings: [
+          {
+            summary: "Blocking behavior",
+            evidence: "The endpoint fails.",
+            requiredChange: "Make the endpoint work.",
+            acceptanceCriteria: ["The endpoint responds."],
+            disposition: "blocking",
+          },
+          {
+            summary: "Coverage gap",
+            evidence: "The endpoint has no integration test.",
+            requiredChange: "Add representative coverage.",
+            acceptanceCriteria: ["The endpoint is covered."],
+            disposition: "advisory",
+          },
+        ],
+      },
+      evidence: "initial review",
+    });
+    expect(initial.review.pendingCorrectionIds).toEqual(
+      initial.findings.map((finding) => finding.id),
+    );
+
+    const assessed = applyAnchoredWorkstreamReview({
+      state: retargetAnchoredReview({
+        state: initial.review,
+        candidateId: candidate.id,
+        comparisonBase: "base",
+        correction: {
+          fromCandidateId: previousCandidate.id,
+          changedPaths: ["src/endpoint.ts"],
+          evidence: "correction",
+        },
+      }),
+      workstream,
+      findings: initial.findings,
+      completion: {
+        assessments: [
+          {
+            id: initial.findings[0]!.id,
+            status: "resolved",
+            evidence: "The endpoint responds.",
+          },
+          {
+            id: initial.findings[1]!.id,
+            status: "unresolved",
+            evidence: "A narrower integration scenario remains uncovered.",
+            disposition: "advisory",
+            summary: "One integration scenario remains",
+            requiredChange: "Cover the remaining scenario.",
+            acceptanceCriteria: ["The remaining scenario is covered."],
+          },
+        ],
+        regressions: [],
+      },
+      evidence: "assessment",
+    });
+
+    expect(assessed.review.pendingCorrectionIds).toEqual([]);
+    expect(assessed.findings).toContainEqual(
+      expect.objectContaining({
+        id: initial.findings[1]!.id,
+        status: "open",
+        disposition: "advisory",
+        summary: "One integration scenario remains",
+      }),
+    );
+  });
+  it("retains causal advisory regressions without an advisory-only correction", () => {
+    const initial = applyInitialWorkstreamReview({
+      workstream,
+      candidateId: previousCandidate.id,
+      comparisonBase: "base",
+      completion: {
+        publicationCommitSubject: "fix: publish workstream",
+        findings: [
+          {
+            summary: "Original blocker",
+            evidence: "Original failure.",
+            requiredChange: "Fix the original failure.",
+            acceptanceCriteria: ["Original behavior works."],
+            disposition: "blocking",
+          },
+        ],
+      },
+      evidence: "initial review",
+    });
+    const reviewed = applyAnchoredWorkstreamReview({
+      state: retargetAnchoredReview({
+        state: initial.review,
+        candidateId: candidate.id,
+        comparisonBase: "base",
+        correction: {
+          fromCandidateId: previousCandidate.id,
+          changedPaths: ["src/endpoint.ts"],
+          evidence: "correction",
+        },
+      }),
+      workstream,
+      findings: initial.findings,
+      completion: {
+        assessments: [
+          {
+            id: initial.findings[0]!.id,
+            status: "resolved",
+            evidence: "Original behavior works.",
+          },
+        ],
+        regressions: [
+          {
+            summary: "Advisory regression",
+            evidence: "Representative coverage is absent.",
+            requiredChange: "Add representative coverage.",
+            acceptanceCriteria: ["Coverage exercises the change."],
+            disposition: "advisory",
+            changedPaths: ["src/endpoint.ts"],
+          },
+          {
+            summary: "Blocking regression",
+            evidence: "The response is malformed.",
+            requiredChange: "Return a valid response.",
+            acceptanceCriteria: ["The response is valid."],
+            disposition: "blocking",
+            changedPaths: ["src/endpoint.ts"],
+          },
+        ],
+      },
+      evidence: "assessment",
+    });
+
+    expect(reviewed.review.pendingCorrectionIds).toEqual([
+      reviewed.findings.find(
+        (finding) => finding.summary === "Blocking regression",
+      )!.id,
+    ]);
+    expect(reviewed.findings).toContainEqual(
+      expect.objectContaining({
+        summary: "Advisory regression",
+        status: "open",
+        disposition: "advisory",
+      }),
+    );
+  });
+
   it("retains the exact anchored finding set and correction delta", () => {
     const review: ReviewState = {
       candidateId: candidate.id,
       comparisonBase: "base",
       previousCandidateId: previousCandidate.id,
       round: 1,
-      outstandingIds: ["finding-1"],
+      pendingCorrectionIds: ["finding-1"],
       latestCorrection: packet().latestCorrection,
       evidence: ["/orchestrator/review.json"],
       observations: [],
@@ -183,13 +336,13 @@ describe("source review worker packets", () => {
       candidateId: previousCandidate.id,
       comparisonBase: previousCandidate.baseSha,
       completion: {
-        verdict: "changes_requested",
         findings: [
           {
             summary: "Missing behavior",
             evidence: "The endpoint returns 404.",
             requiredChange: "Add the endpoint.",
             acceptanceCriteria: ["The endpoint returns 200."],
+            disposition: "blocking",
           },
         ],
       },
@@ -215,6 +368,10 @@ describe("source review worker packets", () => {
             id: baseline.findings[0]!.id,
             status: "unresolved",
             evidence: "The endpoint remains unavailable.",
+            disposition: "blocking",
+            summary: "Missing behavior",
+            requiredChange: "Add the endpoint.",
+            acceptanceCriteria: ["The endpoint returns 200."],
           },
         ],
         regressions: [],
@@ -234,7 +391,6 @@ describe("source review worker packets", () => {
       candidateId: previousCandidate.id,
       comparisonBase: previousCandidate.baseSha,
       completion: {
-        verdict: "changes_requested",
         publicationCommitSubject: "feat: publish workstream",
         findings: [
           {
@@ -242,6 +398,7 @@ describe("source review worker packets", () => {
             evidence: "The endpoint returns 404.",
             requiredChange: "Add the endpoint.",
             acceptanceCriteria: ["The endpoint returns 200."],
+            disposition: "blocking",
           },
         ],
       },
@@ -276,7 +433,7 @@ describe("source review worker packets", () => {
 
     expect(updated.review).toMatchObject({
       candidateId: candidate.id,
-      outstandingIds: [],
+      pendingCorrectionIds: [],
       publicationCommitSubject: "feat: publish workstream",
     });
   });
@@ -293,7 +450,7 @@ describe("source review worker packets", () => {
           comparisonBase: "base",
           previousCandidateId: previousCandidate.id,
           round: 1,
-          outstandingIds: [],
+          pendingCorrectionIds: [],
           evidence: [],
           observations: [],
         },

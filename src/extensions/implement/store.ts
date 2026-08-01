@@ -211,12 +211,23 @@ const findingSchema = z
       z.object({ kind: z.literal("source"), id }).strict(),
       z.object({ kind: z.literal("overall"), repairId: id }).strict(),
     ]),
+    scope: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("source"), id }).strict(),
+      z
+        .object({
+          kind: z.literal("whole_plan"),
+          initialTargetSha: nonEmpty,
+          initialTargetTreeSha: nonEmpty,
+        })
+        .strict(),
+    ]),
     summary: nonEmpty,
     evidence: nonEmpty,
     requiredChange: nonEmpty,
     acceptanceCriteria: z.array(nonEmpty).min(1),
     origin: z.enum(["initial", "regression"]),
     introducedRound: z.number().int().nonnegative(),
+    disposition: z.enum(["blocking", "advisory"]),
     status: z.enum(["open", "resolved"]),
   })
   .strict();
@@ -227,7 +238,7 @@ const reviewStateSchema = z
     comparisonBase: nonEmpty,
     previousCandidateId: nonEmpty.optional(),
     round: z.number().int().nonnegative(),
-    outstandingIds: z.array(nonEmpty),
+    pendingCorrectionIds: z.array(nonEmpty),
     latestCorrection: z
       .object({
         fromCandidateId: nonEmpty,
@@ -296,7 +307,7 @@ const revisionAssignmentSchema = z
     candidateId: nonEmpty,
     comparisonBase: nonEmpty,
     findingEpoch: z.number().int().nonnegative(),
-    outstandingFindingIds: z.array(nonEmpty),
+    pendingCorrectionIds: z.array(nonEmpty),
     evidence: z.array(nonEmpty),
     status: z.enum(["open", "completed", "blocked"]),
     executionFailures: z.number().int().nonnegative(),
@@ -566,21 +577,8 @@ const wholePlanReviewSchema = z
       .object({
         initialTargetSha: nonEmpty,
         initialTargetTreeSha: nonEmpty,
-        originalFindingIds: z.array(nonEmpty).min(1),
-        outstandingFindingIds: z.array(nonEmpty),
-        findings: z
-          .array(
-            z
-              .object({
-                id: nonEmpty,
-                summary: nonEmpty,
-                evidence: nonEmpty,
-                requiredChange: nonEmpty,
-                acceptanceCriteria: z.array(nonEmpty).min(1),
-              })
-              .strict(),
-          )
-          .min(1),
+        findingIds: z.array(nonEmpty).min(1),
+        pendingCorrectionIds: z.array(nonEmpty),
         latestRepair: z
           .object({
             candidateId: nonEmpty,
@@ -607,7 +605,7 @@ const wholePlanReviewSchema = z
 
 export const RunStateSchema = z
   .object({
-    version: z.literal(7),
+    version: z.literal(8),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -843,7 +841,7 @@ export function createPlanningRun(args: {
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
   const state: RunState = {
-    version: 7,
+    version: 8,
     revision: 0,
     run: {
       id: args.runId,
@@ -949,7 +947,7 @@ export class RunStore {
         const next = validateRunState(
           {
             ...update(structuredClone(current)),
-            version: 7,
+            version: 8,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -1153,9 +1151,9 @@ export function validateRunState(
   if (!parsed.success) {
     const version = versionOf(value);
     const message =
-      version !== undefined && version < 7
+      version !== undefined && version < 8
         ? `Run state uses legacy schema version ${version}; settle and clean it with the previous runtime before deploying this version.`
-        : version === undefined || version !== 7
+        : version === undefined || version !== 8
           ? "Run state has an unsupported schema."
           : "Run state is invalid.";
     throw new StateError(
@@ -1457,26 +1455,23 @@ function invariantIssues(
     );
   }
   if (wholePlanEpoch) {
-    const originalIds = new Set(wholePlanEpoch.originalFindingIds);
-    if (originalIds.size !== wholePlanEpoch.originalFindingIds.length) {
+    const originalIds = new Set(wholePlanEpoch.findingIds);
+    if (originalIds.size !== wholePlanEpoch.findingIds.length) {
       issues.push("whole-plan review epoch repeats an original finding ID");
     }
     if (
-      !wholePlanEpoch.originalFindingIds.every((findingId) =>
-        wholePlanEpoch.findings.some((finding) => finding.id === findingId),
+      !wholePlanEpoch.findingIds.every(
+        (findingId) => state.findings[findingId] !== undefined,
       )
     ) {
-      issues.push("whole-plan review epoch lost an original finding");
+      issues.push("whole-plan review epoch lost a canonical finding");
     }
-    const knownFindingIds = new Set(
-      wholePlanEpoch.findings.map((finding) => finding.id),
-    );
     if (
-      wholePlanEpoch.outstandingFindingIds.some(
-        (findingId) => !knownFindingIds.has(findingId),
+      wholePlanEpoch.pendingCorrectionIds.some(
+        (findingId) => state.findings[findingId]?.status !== "open",
       )
     ) {
-      issues.push("whole-plan review epoch has an unknown outstanding finding");
+      issues.push("whole-plan review epoch has an unknown pending finding");
     }
     const latestCandidate = wholePlanEpoch.latestRepair
       ? state.candidates[wholePlanEpoch.latestRepair.candidateId]
@@ -1784,9 +1779,36 @@ function invariantIssues(
       );
     }
   }
+  const findingIds = new Set<string>();
   for (const [key, finding] of Object.entries(state.findings)) {
-    if (key !== finding.id) {
-      issues.push(`finding key ${key} does not match its ID`);
+    if (key !== finding.id || findingIds.has(finding.id)) {
+      issues.push(`finding key ${key} does not match its immutable ID`);
+    }
+    findingIds.add(finding.id);
+    const prior = previous?.findings[finding.id];
+    if (
+      prior &&
+      (prior.candidateId !== finding.candidateId ||
+        JSON.stringify(prior.workstream) !==
+          JSON.stringify(finding.workstream) ||
+        JSON.stringify(prior.scope) !== JSON.stringify(finding.scope) ||
+        prior.origin !== finding.origin ||
+        prior.introducedRound !== finding.introducedRound)
+    ) {
+      issues.push(`finding ${key} changed immutable introduction provenance`);
+    }
+    if (
+      (finding.scope.kind === "source" &&
+        (finding.workstream.kind !== "source" ||
+          finding.workstream.id !== finding.scope.id)) ||
+      (finding.scope.kind === "whole_plan" &&
+        (finding.workstream.kind !== "overall" ||
+          state.wholePlanReview.epoch?.initialTargetSha !==
+            finding.scope.initialTargetSha ||
+          state.wholePlanReview.epoch?.initialTargetTreeSha !==
+            finding.scope.initialTargetTreeSha))
+    ) {
+      issues.push(`finding ${key} has an invalid immutable scope`);
     }
     const candidate = state.candidates[finding.candidateId];
     if (
@@ -1811,20 +1833,44 @@ function invariantIssues(
     ) {
       issues.push(`review ${key} does not match its workstream candidate`);
     }
-    const outstanding = new Set(review.outstandingIds);
-    if (outstanding.size !== review.outstandingIds.length) {
+    const outstanding = new Set(review.pendingCorrectionIds);
+    if (outstanding.size !== review.pendingCorrectionIds.length) {
       issues.push(`review ${key} repeats an outstanding finding ID`);
     }
-    const streamFindings = Object.values(state.findings).filter(
-      (finding) =>
-        JSON.stringify(finding.workstream) ===
-        JSON.stringify(candidate.workstream),
-    );
-    for (const finding of streamFindings) {
-      if ((finding.status === "open") !== outstanding.has(finding.id)) {
+    const authorizedIds =
+      candidate.workstream.kind === "overall"
+        ? (state.wholePlanReview.epoch?.findingIds ?? [])
+        : Object.values(state.findings)
+            .filter(
+              (finding) =>
+                candidate.workstream.kind === "source" &&
+                finding.workstream.kind === "source" &&
+                finding.workstream.id === candidate.workstream.id,
+            )
+            .map((finding) => finding.id);
+    for (const findingId of review.pendingCorrectionIds) {
+      const finding = state.findings[findingId];
+      if (
+        !finding ||
+        finding.status !== "open" ||
+        !authorizedIds.includes(findingId)
+      ) {
         issues.push(
-          `review ${key} has inconsistent outstanding finding ${finding.id}`,
+          `review ${key} has an invalid pending finding ${findingId}`,
         );
+      }
+    }
+    for (const findingId of authorizedIds) {
+      const finding = state.findings[findingId]!;
+      if (
+        finding.status === "open" &&
+        finding.disposition === "blocking" &&
+        !outstanding.has(findingId) &&
+        !["approved", "completed"].includes(
+          workstreamPhase(state, candidate.workstream) ?? "",
+        )
+      ) {
+        issues.push(`review ${key} lost open blocking finding ${findingId}`);
       }
     }
     if (
@@ -1866,7 +1912,16 @@ function invariantIssues(
         !candidate ||
         !review ||
         review.candidateId !== candidateId ||
-        review.outstandingIds.length > 0 ||
+        review.pendingCorrectionIds.length > 0 ||
+        Object.values(state.findings).some(
+          (finding) =>
+            finding.status === "open" &&
+            finding.disposition === "blocking" &&
+            (workstream.kind === "source"
+              ? finding.workstream.kind === "source" &&
+                finding.workstream.id === workstream.id
+              : state.wholePlanReview.epoch?.findingIds.includes(finding.id)),
+        ) ||
         (candidate.baseSha !== candidate.commitSha &&
           !review.publicationCommitSubject)
       ) {
@@ -1898,14 +1953,14 @@ function invariantIssues(
       !candidate ||
       !sameWorkstreamIdentity(candidate.workstream, assignment.workstream) ||
       assignment.comparisonBase !== candidate.commitSha ||
-      new Set(assignment.outstandingFindingIds).size !==
-        assignment.outstandingFindingIds.length ||
+      new Set(assignment.pendingCorrectionIds).size !==
+        assignment.pendingCorrectionIds.length ||
       (assignment.status === "open" &&
         (!review ||
           review.candidateId !== assignment.candidateId ||
           review.round !== assignment.findingEpoch ||
-          JSON.stringify(review.outstandingIds) !==
-            JSON.stringify(assignment.outstandingFindingIds)))
+          JSON.stringify(review.pendingCorrectionIds) !==
+            JSON.stringify(assignment.pendingCorrectionIds)))
     ) {
       issues.push(`revision assignment ${key} does not match its review epoch`);
     }
@@ -2266,8 +2321,8 @@ function invariantIssues(
         retained.candidateId !== assignment.candidateId ||
         retained.comparisonBase !== assignment.comparisonBase ||
         retained.findingEpoch !== assignment.findingEpoch ||
-        JSON.stringify(retained.outstandingFindingIds) !==
-          JSON.stringify(assignment.outstandingFindingIds)
+        JSON.stringify(retained.pendingCorrectionIds) !==
+          JSON.stringify(assignment.pendingCorrectionIds)
       ) {
         issues.push(
           `revision assignment ${id} rewrites its immutable identity`,

@@ -42,7 +42,7 @@ export function noProgressSignature(args: {
   workstream: string;
   candidateTree: string;
   findingEpoch: number;
-  outstandingFindingIds: readonly string[];
+  pendingCorrectionIds: readonly string[];
 }): string {
   return createHash("sha256")
     .update(
@@ -50,7 +50,7 @@ export function noProgressSignature(args: {
         workstream: args.workstream,
         candidateTree: args.candidateTree,
         findingEpoch: args.findingEpoch,
-        outstandingFindingIds: [...args.outstandingFindingIds].sort(),
+        pendingCorrectionIds: [...args.pendingCorrectionIds].sort(),
       }),
     )
     .digest("hex");

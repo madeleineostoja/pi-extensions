@@ -122,12 +122,12 @@ export async function runOverallRepair(args: {
   }
   const protectedPaths = Object.keys(args.state.protectedArtifactHashes);
   const targetSnapshot = await captureRestoreSnapshot(args.git, protectedPaths);
-  const findings = Object.values(args.state.findings).filter(
-    (finding) =>
-      finding.workstream.kind === "overall" &&
-      finding.workstream.repairId === args.repairId &&
-      finding.status === "open",
-  );
+  const pendingCorrectionIds =
+    args.state.reviews[`overall:${args.repairId}`]?.pendingCorrectionIds;
+  const findings = (pendingCorrectionIds ?? []).flatMap((id) => {
+    const finding = args.state.findings[id];
+    return finding?.status === "open" ? [finding] : [];
+  });
   if (findings.length === 0) {
     throw new Error("Overall repair requires complete current open findings.");
   }

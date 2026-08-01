@@ -43,7 +43,8 @@ const completionContracts = {
   "initial-overall-review": {
     role: "reviewer",
     readOnly: true,
-    description: "Approve the complete run or return direct blocking findings.",
+    description:
+      "Return direct whole-plan findings; the scheduler derives approval.",
     schema: initialOverallReviewSchema,
   },
   "initial-review": {
@@ -57,7 +58,7 @@ const completionContracts = {
     role: "reviewer",
     readOnly: true,
     description:
-      "Approve or return direct blocking findings for repository state.",
+      "Return direct repository-state findings; the scheduler derives approval.",
     schema: repositoryStateReviewSchema,
   },
   "initial-anchored-review": {

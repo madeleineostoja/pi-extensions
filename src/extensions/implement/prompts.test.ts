@@ -63,7 +63,7 @@ describe("whole-plan and repair prompts", () => {
       candidate: { id: "candidate", commitSha: "candidate-sha" },
       comparisonBase: "candidate-sha",
       findingEpoch: 1,
-      outstandingFindingIds: ["finding-1"],
+      pendingCorrectionIds: ["finding-1"],
       findings: [
         {
           id: "finding-1",

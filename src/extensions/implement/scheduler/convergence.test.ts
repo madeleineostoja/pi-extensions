@@ -156,7 +156,7 @@ describe("concurrent integration scheduling", () => {
               candidateId: "candidate:first",
               evidence: "review artifact",
               completion: {
-                verdict: "approved",
+                findings: [],
                 publicationCommitSubject: "feat: publish candidate",
               },
             },
@@ -239,7 +239,7 @@ describe("concurrent integration scheduling", () => {
         candidateId: "candidate:first",
         evidence: "review artifact",
         completion: {
-          verdict: "approved",
+          findings: [],
           publicationCommitSubject: "feat: publish candidate",
         },
       },

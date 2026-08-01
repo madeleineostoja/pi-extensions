@@ -50,7 +50,7 @@ export type ReviewState = {
   comparisonBase: string;
   previousCandidateId?: string;
   round: number;
-  outstandingIds: string[];
+  pendingCorrectionIds: string[];
   latestCorrection?: {
     fromCandidateId: string;
     changedPaths: string[];
@@ -65,6 +65,13 @@ export type ReviewFinding = DirectReviewFinding & {
   id: string;
   candidateId: string;
   workstream: RuntimeWorkstream;
+  scope:
+    | { kind: "source"; id: string }
+    | {
+        kind: "whole_plan";
+        initialTargetSha: string;
+        initialTargetTreeSha: string;
+      };
   origin: "initial" | "regression";
   introducedRound: number;
   status: "open" | "resolved";
@@ -185,18 +192,18 @@ export function workstreamReviewFindings(
   state: RunState,
   workstream: RuntimeWorkstream,
 ): ReviewFinding[] {
-  return Object.values(state.findings).filter((finding) => {
-    if (finding.workstream.kind === "source" && workstream.kind === "source") {
-      return finding.workstream.id === workstream.id;
-    }
-    if (
-      finding.workstream.kind === "overall" &&
-      workstream.kind === "overall"
-    ) {
-      return finding.workstream.repairId === workstream.repairId;
-    }
-    return false;
-  });
+  if (workstream.kind === "overall") {
+    const ids = state.wholePlanReview.epoch?.findingIds ?? [];
+    return ids.flatMap((id) => {
+      const finding = state.findings[id];
+      return finding ? [finding] : [];
+    });
+  }
+  return Object.values(state.findings).filter(
+    (finding) =>
+      finding.workstream.kind === "source" &&
+      finding.workstream.id === workstream.id,
+  );
 }
 
 export function buildReviewPacket(args: {
@@ -278,11 +285,11 @@ export function buildReviewPacket(args: {
       ? { uncertainty: candidate.implementationEvidence.uncertainty }
       : {}),
     outstandingFindings: workstreamReviewFindings(args.state, args.workstream)
-      .filter((finding) => review?.outstandingIds.includes(finding.id))
+      .filter((finding) => review?.pendingCorrectionIds.includes(finding.id))
       .sort(
         (left, right) =>
-          review!.outstandingIds.indexOf(left.id) -
-          review!.outstandingIds.indexOf(right.id),
+          review!.pendingCorrectionIds.indexOf(left.id) -
+          review!.pendingCorrectionIds.indexOf(right.id),
       ),
     ...(review?.latestCorrection
       ? { latestCorrection: review.latestCorrection }
@@ -368,7 +375,7 @@ export function buildSourceReviewWorkerPacket(args: {
       mode: "initial",
     };
   }
-  const outstandingIds = args.packet.outstandingFindings.map(
+  const pendingCorrectionIds = args.packet.outstandingFindings.map(
     (finding) => finding.id,
   );
   if (
@@ -385,7 +392,7 @@ export function buildSourceReviewWorkerPacket(args: {
     !args.review.latestCorrection ||
     args.review.latestCorrection.fromCandidateId !==
       args.packet.previousCandidate.id ||
-    !sameIds(outstandingIds, args.review.outstandingIds) ||
+    !sameIds(pendingCorrectionIds, args.review.pendingCorrectionIds) ||
     !sameIds(
       args.actualChangedPaths ?? [],
       args.review.latestCorrection.changedPaths,
@@ -641,7 +648,7 @@ async function runOverallAnchoredReview(args: {
   const available = new Map(
     completeFindings.map((finding) => [finding.id, finding]),
   );
-  const findings = review.outstandingIds.map((id) => {
+  const findings = review.pendingCorrectionIds.map((id) => {
     const finding = available.get(id);
     if (!finding || finding.status !== "open") {
       throw new WorkerPacketError(
@@ -650,7 +657,7 @@ async function runOverallAnchoredReview(args: {
     }
     return finding;
   });
-  if (new Set(review.outstandingIds).size !== findings.length) {
+  if (new Set(review.pendingCorrectionIds).size !== findings.length) {
     throw new WorkerPacketError(
       "Overall repair review has duplicate anchored finding references.",
     );
@@ -778,25 +785,33 @@ export function applyInitialWorkstreamReview(args: {
     | InitialWorkstreamReviewCompletion
     | RepositoryStateReviewCompletion;
   evidence: string;
+  scope?: ReviewFinding["scope"];
 }): { review: ReviewState; findings: ReviewFinding[] } {
-  const findings =
-    args.completion.verdict === "changes_requested"
-      ? args.completion.findings.map((finding, index) => ({
-          ...finding,
-          id: `${reviewKey(args.workstream).replace(":", "-")}-r${index + 1}`,
-          candidateId: args.candidateId,
-          workstream: args.workstream,
-          origin: "initial" as const,
-          introducedRound: 0,
-          status: "open" as const,
-        }))
-      : [];
+  const scope =
+    args.scope ??
+    (args.workstream.kind === "source"
+      ? { kind: "source" as const, id: args.workstream.id }
+      : {
+          kind: "whole_plan" as const,
+          initialTargetSha: args.comparisonBase,
+          initialTargetTreeSha: args.comparisonBase,
+        });
+  const findings = args.completion.findings.map((finding, index) => ({
+    scope,
+    ...finding,
+    id: `${reviewKey(args.workstream).replace(":", "-")}-r${index + 1}`,
+    candidateId: args.candidateId,
+    workstream: args.workstream,
+    origin: "initial" as const,
+    introducedRound: 0,
+    status: "open" as const,
+  }));
   return {
     review: {
       candidateId: args.candidateId,
       comparisonBase: args.comparisonBase,
       round: 0,
-      outstandingIds: findings.map((finding) => finding.id),
+      pendingCorrectionIds: findings.map((finding) => finding.id),
       evidence: [args.evidence],
       observations: [],
       ...("publicationCommitSubject" in args.completion
@@ -817,9 +832,25 @@ export function applyAnchoredWorkstreamReview(args: {
   evidence: string;
 }): { review: ReviewState; findings: ReviewFinding[] } {
   assertAssessmentCoverage(
-    args.state.outstandingIds,
+    args.state.pendingCorrectionIds,
     args.completion.assessments,
   );
+  if (
+    new Set(args.findings.map((finding) => finding.id)).size !==
+      args.findings.length ||
+    args.state.pendingCorrectionIds.some((id) => {
+      const finding = args.findings.find((candidate) => candidate.id === id);
+      return (
+        !finding ||
+        finding.status !== "open" ||
+        (args.workstream.kind === "source" &&
+          (finding.workstream.kind !== "source" ||
+            finding.workstream.id !== args.workstream.id))
+      );
+    })
+  ) {
+    throw new Error("Anchored review does not own its pending findings.");
+  }
   const assessments = new Map(
     args.completion.assessments.map((assessment) => [
       assessment.id,
@@ -834,15 +865,26 @@ export function applyAnchoredWorkstreamReview(args: {
   );
   const updated = args.findings.map((finding) => {
     const assessment = assessments.get(finding.id);
-    return assessment
+    if (!assessment) {
+      return finding;
+    }
+    if (finding.status !== "open") {
+      throw new Error("Anchored review cannot reopen a resolved finding.");
+    }
+    return assessment.status === "resolved"
       ? {
           ...finding,
-          status:
-            assessment.status === "resolved"
-              ? ("resolved" as const)
-              : finding.status,
+          status: "resolved" as const,
+          evidence: assessment.evidence,
         }
-      : finding;
+      : {
+          ...finding,
+          summary: assessment.summary,
+          evidence: assessment.evidence,
+          requiredChange: assessment.requiredChange,
+          acceptanceCriteria: assessment.acceptanceCriteria,
+          disposition: assessment.disposition,
+        };
   });
   const latestPaths = new Set(args.state.latestCorrection?.changedPaths ?? []);
   const qualifying = args.completion.regressions.filter((finding) =>
@@ -863,16 +905,31 @@ export function applyAnchoredWorkstreamReview(args: {
     evidence: finding.evidence,
     requiredChange: finding.requiredChange,
     acceptanceCriteria: finding.acceptanceCriteria,
+    disposition: finding.disposition,
     id: `${reviewKey(args.workstream).replace(":", "-")}-r${nextNumber + index}`,
     candidateId: args.state.candidateId,
     workstream: args.workstream,
+    scope:
+      args.findings[0]?.scope ??
+      (args.workstream.kind === "source"
+        ? { kind: "source" as const, id: args.workstream.id }
+        : {
+            kind: "whole_plan" as const,
+            initialTargetSha: args.state.comparisonBase,
+            initialTargetTreeSha: args.state.comparisonBase,
+          }),
     origin: "regression" as const,
     introducedRound: nextRound,
     status: "open" as const,
   }));
-  const outstandingIds = [
-    ...args.state.outstandingIds.filter((id) => !resolved.has(id)),
-    ...regressions.map((finding) => finding.id),
+  const pendingCorrectionIds = [
+    ...args.state.pendingCorrectionIds.filter((id) => {
+      const finding = updated.find((candidate) => candidate.id === id);
+      return !resolved.has(id) && finding?.disposition === "blocking";
+    }),
+    ...regressions
+      .filter((finding) => finding.disposition === "blocking")
+      .map((finding) => finding.id),
   ];
   if (
     "publicationCommitSubject" in args.completion &&
@@ -889,7 +946,7 @@ export function applyAnchoredWorkstreamReview(args: {
         ? { publicationCommitSubject: args.completion.publicationCommitSubject }
         : {}),
       round: nextRound,
-      outstandingIds,
+      pendingCorrectionIds,
       evidence: [...args.state.evidence, args.evidence],
       observations: [...args.state.observations, ...observations],
     },
@@ -963,10 +1020,10 @@ function sameIds(left: string[], right: string[]): boolean {
 }
 
 function assertAssessmentCoverage(
-  outstandingIds: string[],
+  pendingCorrectionIds: string[],
   assessments: AnchoredWorkstreamReviewCompletion["assessments"],
 ): void {
-  const expected = new Set(outstandingIds);
+  const expected = new Set(pendingCorrectionIds);
   const seen = new Set<string>();
   for (const assessment of assessments) {
     if (!expected.has(assessment.id) || seen.has(assessment.id)) {

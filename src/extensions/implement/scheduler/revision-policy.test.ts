@@ -53,7 +53,6 @@ describe("revision policy", () => {
         candidateId: "candidate:first",
         evidence: "review artifact",
         completion: {
-          verdict: "changes_requested",
           publicationCommitSubject: "fix: implement first task",
           findings: [
             {
@@ -61,6 +60,7 @@ describe("revision policy", () => {
               evidence: "the endpoint is incomplete",
               requiredChange: "complete the endpoint",
               acceptanceCriteria: ["endpoint responds"],
+              disposition: "blocking",
             },
           ],
         },
@@ -76,7 +76,7 @@ describe("revision policy", () => {
       candidateId: "candidate:first",
       comparisonBase: "first-sha",
       findingEpoch: 0,
-      outstandingFindingIds: ["source-first-stream-r1"],
+      pendingCorrectionIds: ["source-first-stream-r1"],
     });
 
     const revisionRequested = reduceRunEvent(findings.state, {
@@ -153,7 +153,7 @@ describe("revision policy", () => {
     });
     expect(settled.reviews["source:first-stream"]).toMatchObject({
       candidateId: "candidate:first",
-      outstandingIds: ["source-first-stream-r1"],
+      pendingCorrectionIds: ["source-first-stream-r1"],
     });
     expect(settled.candidates["candidate:first"]).toBeDefined();
     expect(Object.values(settled.failures)).toContainEqual(
@@ -326,7 +326,6 @@ async function stateAtRevision(concurrency = 1, independent = false) {
       candidateId: "candidate:first",
       evidence: "review artifact",
       completion: {
-        verdict: "changes_requested",
         publicationCommitSubject: "fix: implement first task",
         findings: [
           {
@@ -334,6 +333,7 @@ async function stateAtRevision(concurrency = 1, independent = false) {
             evidence: "the endpoint is incomplete",
             requiredChange: "complete the endpoint",
             acceptanceCriteria: ["endpoint responds"],
+            disposition: "blocking",
           },
         ],
       },

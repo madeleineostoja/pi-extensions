@@ -30,9 +30,7 @@ export type WholePlanReviewPacket = {
   candidateContext: string;
   receipts: RunState["publication"]["receipts"];
   uncertainty: string[];
-  outstandingFindings: NonNullable<
-    RunState["wholePlanReview"]["epoch"]
-  >["findings"];
+  outstandingFindings: RunState["findings"][string][];
 };
 
 export function buildWholePlanReviewPacket(args: {
@@ -168,10 +166,8 @@ export async function runWholePlanReview(args: {
     );
   }
   const outstandingFindings = anchored
-    ? epoch!.outstandingFindingIds.map((id) => {
-        const finding = epoch!.findings.find(
-          (candidate) => candidate.id === id,
-        );
+    ? epoch!.pendingCorrectionIds.map((id) => {
+        const finding = args.state.findings[id];
         if (!finding) {
           throw new Error(
             "Whole-plan review has a missing current anchored finding.",
@@ -181,7 +177,7 @@ export async function runWholePlanReview(args: {
       })
     : [];
   if (
-    new Set(anchored ? epoch!.outstandingFindingIds : []).size !==
+    new Set(anchored ? epoch!.pendingCorrectionIds : []).size !==
     outstandingFindings.length
   ) {
     throw new Error(
@@ -259,7 +255,7 @@ export async function runWholePlanReview(args: {
     });
     return;
   }
-  if (completion.verdict === "approved") {
+  if (completion.findings.length === 0) {
     await args.dispatch({
       kind: "whole_plan_review_completed",
       outcome: {
@@ -284,12 +280,7 @@ export async function runWholePlanReview(args: {
         commitSha: target,
         treeSha: await args.git.treeAt(target),
       },
-      findings: completion.findings.map((finding) => ({
-        summary: finding.summary,
-        evidence: finding.evidence,
-        requiredChange: finding.requiredChange,
-        acceptanceCriteria: finding.acceptanceCriteria,
-      })),
+      findings: completion.findings,
       evidence,
       reviewedTargetSha: target,
       reviewedTargetTreeSha: targetTree,

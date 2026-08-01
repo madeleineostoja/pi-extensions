@@ -297,7 +297,7 @@ async function requestedReconciliation() {
       candidateId: "candidate:first",
       evidence: "review artifact",
       completion: {
-        verdict: "approved",
+        findings: [],
         publicationCommitSubject: "feat: publish candidate",
       },
     },

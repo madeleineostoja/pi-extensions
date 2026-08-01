@@ -16,6 +16,7 @@ import {
   applyInitialWorkstreamReview,
   retargetAnchoredReview,
   reviewKey,
+  workstreamReviewFindings,
   workstreamReviewState,
   type ReviewOutcome,
 } from "../review.js";
@@ -302,6 +303,7 @@ export type SchedulerEvent =
               evidence: string;
               requiredChange: string;
               acceptanceCriteria: string[];
+              disposition: "blocking" | "advisory";
             }>;
             evidence: string;
             reviewedTargetSha: string;
@@ -994,22 +996,29 @@ export function reduceRunEvent(
               "repository-state review is not bound to its candidate",
             );
           }
-          const findings =
-            event.outcome.completion.verdict === "changes_requested"
-              ? event.outcome.completion.findings.map((finding, index) => ({
-                  ...finding,
-                  id: `${reviewKey(event.workstream).replace(":", "-")}-repository-${review.round + 1}-${index + 1}`,
-                  candidateId: event.outcome.candidateId,
-                  workstream: event.workstream,
-                  origin: "regression" as const,
-                  introducedRound: review.round + 1,
-                  status: "open" as const,
-                }))
-              : [];
+          const findings = event.outcome.completion.findings.map(
+            (finding, index) => ({
+              ...finding,
+              id: `${reviewKey(event.workstream).replace(":", "-")}-repository-${review.round + 1}-${index + 1}`,
+              candidateId: event.outcome.candidateId,
+              workstream: event.workstream,
+              scope:
+                event.workstream.kind === "source"
+                  ? { kind: "source" as const, id: event.workstream.id }
+                  : {
+                      kind: "whole_plan" as const,
+                      initialTargetSha: review.comparisonBase,
+                      initialTargetTreeSha: review.comparisonBase,
+                    },
+              origin: "regression" as const,
+              introducedRound: review.round + 1,
+              status: "open" as const,
+            }),
+          );
           state.reviews[key] = {
             ...review,
             round: review.round + 1,
-            outstandingIds: findings.map((finding) => finding.id),
+            pendingCorrectionIds: findings.map((finding) => finding.id),
             evidence: [...review.evidence, event.outcome.evidence],
           };
           for (const finding of findings) {
@@ -1037,9 +1046,7 @@ export function reduceRunEvent(
             state: review,
             workstream: event.workstream,
             completion: event.outcome.completion,
-            findings: Object.values(state.findings).filter((finding) =>
-              sameWorkstream(finding.workstream, event.workstream),
-            ),
+            findings: workstreamReviewFindings(state, event.workstream),
             evidence: event.outcome.evidence,
           });
           state.reviews[key] = update.review;
@@ -1052,13 +1059,13 @@ export function reduceRunEvent(
       }
       settleLease(state, lease, event.kind, event);
       completeOperationalRetries(state, event.workstream, "review");
-      const outstandingFindingIds = state.reviews[key]!.outstandingIds;
-      if (outstandingFindingIds.length > 0) {
+      const pendingCorrectionIds = state.reviews[key]!.pendingCorrectionIds;
+      if (pendingCorrectionIds.length > 0) {
         return createRevisionAssignment(
           state,
           event.workstream,
           event.outcome.candidateId,
-          outstandingFindingIds,
+          pendingCorrectionIds,
           event.outcome.evidence,
           reject,
         );
@@ -1130,7 +1137,7 @@ export function reduceRunEvent(
           workstream: workstreamId(event.workstream),
           candidateTree: candidate.treeSha,
           findingEpoch: assignment.findingEpoch,
-          outstandingFindingIds: assignment.outstandingFindingIds,
+          pendingCorrectionIds: assignment.pendingCorrectionIds,
         });
         assignment.noProgress = {
           signature,
@@ -1164,8 +1171,8 @@ export function reduceRunEvent(
         !review ||
         review.candidateId !== assignment.candidateId ||
         review.round !== assignment.findingEpoch ||
-        JSON.stringify(review.outstandingIds) !==
-          JSON.stringify(assignment.outstandingFindingIds)
+        JSON.stringify(review.pendingCorrectionIds) !==
+          JSON.stringify(assignment.pendingCorrectionIds)
       ) {
         return reject("revision completion is stale for its review epoch");
       }
@@ -2234,8 +2241,18 @@ export function reduceRunEvent(
       }
       if (event.outcome.kind === "anchored") {
         const epoch = state.wholePlanReview.epoch;
+        const latestCandidate = epoch?.latestRepair
+          ? state.candidates[epoch.latestRepair.candidateId]
+          : undefined;
+        const workstream = latestCandidate?.workstream;
+        const review = workstream
+          ? workstreamReviewState(state, workstream)
+          : undefined;
         if (
           !epoch?.latestRepair ||
+          !latestCandidate ||
+          !workstream ||
+          !review ||
           epoch.latestRepair.publishedCommitSha !==
             event.outcome.reviewedTargetSha ||
           epoch.latestRepair.publishedTreeSha !==
@@ -2245,86 +2262,65 @@ export function reduceRunEvent(
             "anchored whole-plan review lost its published repair boundary",
           );
         }
-        const expected = new Set(epoch.outstandingFindingIds);
-        const assessments = new Map(
-          event.outcome.completion.assessments.map((assessment) => [
-            assessment.id,
-            assessment,
-          ]),
-        );
-        if (
-          event.outcome.completion.assessments.length !== expected.size ||
-          assessments.size !== expected.size ||
-          [...expected].some((findingId) => !assessments.has(findingId))
-        ) {
-          return reject(
-            "anchored whole-plan review must assess each outstanding finding exactly once",
-          );
-        }
-        const changedPaths = new Set(epoch.latestRepair.changedPaths);
-        const regressions = event.outcome.completion.regressions.filter(
-          (finding) =>
-            finding.changedPaths.some((path) => changedPaths.has(path)),
-        );
-        const assessedFindings = epoch.findings.map((finding) => {
-          const assessment = expected.has(finding.id)
-            ? assessments.get(finding.id)
-            : undefined;
-          return assessment
-            ? { ...finding, evidence: assessment.evidence }
-            : finding;
-        });
-        const unresolved = assessedFindings.filter(
-          (finding) =>
-            expected.has(finding.id) &&
-            assessments.get(finding.id)?.status === "unresolved",
-        );
-        const nextFindings = [
-          ...unresolved,
-          ...regressions.map((finding, index) => ({
-            id: `whole-plan-regression-${epoch.findings.length + index + 1}`,
-            summary: finding.summary,
-            evidence: finding.evidence,
-            requiredChange: finding.requiredChange,
-            acceptanceCriteria: finding.acceptanceCriteria,
-          })),
-        ];
-        const nextEpoch = {
-          ...epoch,
-          findings: [
-            ...assessedFindings,
-            ...nextFindings.filter(
-              (finding) =>
-                !assessedFindings.some((known) => known.id === finding.id),
-            ),
-          ],
-          outstandingFindingIds: nextFindings.map((finding) => finding.id),
-        };
-        if (nextFindings.length === 0) {
-          state.wholePlanReview = {
-            status: "approved",
+        try {
+          const update = applyAnchoredWorkstreamReview({
+            state: review,
+            workstream,
+            completion: event.outcome.completion,
+            findings: epoch.findingIds.flatMap((id) => {
+              const finding = state.findings[id];
+              return finding ? [finding] : [];
+            }),
             evidence: event.outcome.evidence,
-            reviewedTargetSha: event.outcome.reviewedTargetSha,
-            reviewedTargetTreeSha: event.outcome.reviewedTargetTreeSha,
-            epoch: nextEpoch,
-            ...(state.wholePlanReview.reviewRetry
-              ? { reviewRetry: state.wholePlanReview.reviewRetry }
-              : {}),
+          });
+          if (update.findings.length < epoch.findingIds.length) {
+            return reject(
+              "anchored whole-plan review lost a canonical finding",
+            );
+          }
+          for (const finding of update.findings) {
+            state.findings[finding.id] = finding;
+          }
+          const nextReview = {
+            ...update.review,
+            pendingCorrectionIds: update.findings
+              .filter((finding) => finding.status === "open")
+              .map((finding) => finding.id),
           };
-          return accept();
+          state.reviews[reviewKey(workstream)] = nextReview;
+          const nextEpoch = {
+            ...epoch,
+            findingIds: update.findings.map((finding) => finding.id),
+            pendingCorrectionIds: nextReview.pendingCorrectionIds,
+          };
+          if (nextReview.pendingCorrectionIds.length === 0) {
+            state.wholePlanReview = {
+              status: "approved",
+              evidence: event.outcome.evidence,
+              reviewedTargetSha: event.outcome.reviewedTargetSha,
+              reviewedTargetTreeSha: event.outcome.reviewedTargetTreeSha,
+              epoch: nextEpoch,
+              ...(state.wholePlanReview.reviewRetry
+                ? { reviewRetry: state.wholePlanReview.reviewRetry }
+                : {}),
+            };
+            return accept();
+          }
+          return queueWholePlanRepair(
+            state,
+            {
+              repairId: nextOverallRepairId(state),
+              targetSha: event.outcome.reviewedTargetSha,
+              targetTreeSha: event.outcome.reviewedTargetTreeSha,
+              findingIds: nextReview.pendingCorrectionIds,
+              evidence: event.outcome.evidence,
+              epoch: nextEpoch,
+            },
+            reject,
+          );
+        } catch (error) {
+          return reject(error instanceof Error ? error.message : String(error));
         }
-        return queueWholePlanRepair(
-          state,
-          {
-            repairId: nextOverallRepairId(state),
-            targetSha: event.outcome.reviewedTargetSha,
-            targetTreeSha: event.outcome.reviewedTargetTreeSha,
-            findings: nextFindings,
-            evidence: event.outcome.evidence,
-            epoch: nextEpoch,
-          },
-          reject,
-        );
       }
       const { repairId, candidate } = event.outcome;
       if (
@@ -2345,14 +2341,14 @@ export function reduceRunEvent(
           targetSha: event.outcome.reviewedTargetSha,
           targetTreeSha: event.outcome.reviewedTargetTreeSha,
           candidate,
-          findings: initialFindings,
+          findingIds: initialFindings.map((finding) => finding.id),
+          initialFindings,
           evidence: event.outcome.evidence,
           epoch: {
             initialTargetSha: event.outcome.reviewedTargetSha,
             initialTargetTreeSha: event.outcome.reviewedTargetTreeSha,
-            originalFindingIds: initialFindings.map((finding) => finding.id),
-            outstandingFindingIds: initialFindings.map((finding) => finding.id),
-            findings: initialFindings,
+            findingIds: initialFindings.map((finding) => finding.id),
+            pendingCorrectionIds: initialFindings.map((finding) => finding.id),
           },
         },
         reject,
@@ -2453,7 +2449,6 @@ export function reduceRunEvent(
 }
 
 type WholePlanEpoch = NonNullable<RunState["wholePlanReview"]["epoch"]>;
-type WholePlanEpochFinding = WholePlanEpoch["findings"][number];
 
 function nextOverallRepairId(state: RunState): string {
   let number = 1;
@@ -2470,7 +2465,15 @@ function queueWholePlanRepair(
     targetSha: string;
     targetTreeSha: string;
     candidate?: RunState["candidates"][string];
-    findings: WholePlanEpochFinding[];
+    findingIds: string[];
+    initialFindings?: Array<{
+      id: string;
+      summary: string;
+      evidence: string;
+      requiredChange: string;
+      acceptanceCriteria: string[];
+      disposition: "blocking" | "advisory";
+    }>;
     evidence: string;
     epoch: WholePlanEpoch;
   },
@@ -2479,7 +2482,7 @@ function queueWholePlanRepair(
   if (
     !safeId(args.repairId) ||
     state.workstreams.overall[args.repairId] ||
-    args.findings.length === 0
+    args.findingIds.length === 0
   ) {
     return reject("whole-plan findings have an invalid repair identity");
   }
@@ -2515,20 +2518,55 @@ function queueWholePlanRepair(
     phase: "queued",
     candidateId: candidate.id,
   };
-  const update = applyInitialWorkstreamReview({
-    workstream,
+  if (
+    args.findingIds.length === 0 ||
+    new Set(args.findingIds).size !== args.findingIds.length
+  ) {
+    return reject("whole-plan repair has invalid canonical finding references");
+  }
+  if (args.initialFindings) {
+    if (
+      args.initialFindings.length !== args.findingIds.length ||
+      args.initialFindings.some(
+        (finding, index) => finding.id !== args.findingIds[index],
+      )
+    ) {
+      return reject(
+        "whole-plan initial findings do not match their canonical IDs",
+      );
+    }
+    for (const finding of args.initialFindings) {
+      if (state.findings[finding.id]) {
+        return reject("whole-plan canonical finding ID already exists");
+      }
+      state.findings[finding.id] = {
+        ...finding,
+        candidateId: candidate.id,
+        workstream,
+        scope: {
+          kind: "whole_plan",
+          initialTargetSha: args.epoch.initialTargetSha,
+          initialTargetTreeSha: args.epoch.initialTargetTreeSha,
+        },
+        origin: "initial",
+        introducedRound: 0,
+        status: "open",
+      };
+    }
+  }
+  if (args.findingIds.some((id) => state.findings[id]?.status !== "open")) {
+    return reject(
+      "whole-plan repair has missing or settled canonical findings",
+    );
+  }
+  state.reviews[reviewKey(workstream)] = {
     candidateId: candidate.id,
     comparisonBase: candidate.integrationBaseSha ?? candidate.baseSha,
-    completion: {
-      verdict: "changes_requested",
-      findings: args.findings.map(({ id: _, ...finding }) => finding),
-    },
-    evidence: args.evidence,
-  });
-  state.reviews[reviewKey(workstream)] = update.review;
-  for (const finding of update.findings) {
-    state.findings[finding.id] = finding;
-  }
+    round: 0,
+    pendingCorrectionIds: [...args.findingIds],
+    evidence: [args.evidence],
+    observations: [],
+  };
   state.wholePlanReview = {
     status: "repairing",
     epoch: args.epoch,
@@ -2989,7 +3027,7 @@ function createRevisionAssignment(
   state: RunState,
   workstream: RuntimeWorkstream,
   candidateId: string,
-  outstandingFindingIds: string[],
+  pendingCorrectionIds: string[],
   evidence: string,
   reject: (error: string) => SchedulerTransition,
 ): SchedulerTransition {
@@ -3008,8 +3046,8 @@ function createRevisionAssignment(
     );
   }
   if (
-    JSON.stringify(review.outstandingIds) !==
-    JSON.stringify(outstandingFindingIds)
+    JSON.stringify(review.pendingCorrectionIds) !==
+    JSON.stringify(pendingCorrectionIds)
   ) {
     return reject(
       "revision assignment findings do not match the active review epoch",
@@ -3026,7 +3064,7 @@ function createRevisionAssignment(
     candidateId,
     comparisonBase: candidate.commitSha,
     findingEpoch: review.round,
-    outstandingFindingIds: [...outstandingFindingIds],
+    pendingCorrectionIds: [...pendingCorrectionIds],
     evidence: [boundedFailureOutput(evidence)],
     status: "open",
     executionFailures: 0,
@@ -3035,7 +3073,7 @@ function createRevisionAssignment(
         workstream: workstreamId(workstream),
         candidateTree: candidate.treeSha,
         findingEpoch: review.round,
-        outstandingFindingIds,
+        pendingCorrectionIds,
       }),
       attempts: 0,
     },
@@ -3300,7 +3338,8 @@ function reviewIsCurrentForReconciliation(
   candidateId: string,
 ): boolean {
   return (
-    review.candidateId === candidateId && review.outstandingIds.length === 0
+    review.candidateId === candidateId &&
+    review.pendingCorrectionIds.length === 0
   );
 }
 

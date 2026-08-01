@@ -157,6 +157,33 @@ describe("checkout store transitions", () => {
     );
   });
 
+  it("rejects version-7 retained state rather than interpreting it as active", () => {
+    const directory = root();
+    const lease = fakeLease(directory);
+    const store = createPlanningRun({
+      lease,
+      runId: "run-1",
+      checkout: {
+        root: directory,
+        gitDir: join(directory, ".git"),
+        commonGitDir: join(directory, ".git"),
+        branchRef: "main",
+        startHead: "base-sha",
+      },
+      source: {
+        entry: { path: join(directory, "plan.md"), normalizedHash: sha256("") },
+        corpus: [{ path: join(directory, "plan.md"), hash: sha256("") }],
+        protectedArtifactHashes: { [join(directory, "plan.md")]: sha256("") },
+      },
+      workerConcurrency: 1,
+    });
+    writeFileSync(store.path, JSON.stringify({ ...store.read(), version: 7 }));
+
+    expect(() => RunStore.open(lease, store.path)).toThrow(
+      "legacy schema version 7",
+    );
+  });
+
   it("rejects legacy state rather than interpreting it as an active operation", () => {
     const directory = root();
     const lease = fakeLease(directory);

@@ -36,7 +36,7 @@ export type RevisionPacket = {
   comparisonBase: string;
   reviewComparisonBase: string;
   findingEpoch: number;
-  outstandingFindingIds: string[];
+  pendingCorrectionIds: string[];
   findings: RunState["findings"][string][];
   evidence: string[];
   requirements: RequirementsContext;
@@ -87,14 +87,14 @@ export function buildRevisionPacket(args: {
     review.comparisonBase === "" ||
     review.candidateId !== candidate.id ||
     review.round !== assignment.findingEpoch ||
-    !sameIds(review.outstandingIds, assignment.outstandingFindingIds)
+    !sameIds(review.pendingCorrectionIds, assignment.pendingCorrectionIds)
   ) {
     throw new RevisionFailure(
       "protocol_failure",
       `Revision assignment ${args.effect.assignmentId} is no longer current.`,
     );
   }
-  const findings = assignment.outstandingFindingIds.map((id) => {
+  const findings = assignment.pendingCorrectionIds.map((id) => {
     const finding = args.state.findings[id];
     if (
       !finding ||
@@ -145,7 +145,7 @@ export function buildRevisionPacket(args: {
     comparisonBase: assignment.comparisonBase,
     reviewComparisonBase: review.comparisonBase,
     findingEpoch: assignment.findingEpoch,
-    outstandingFindingIds: [...assignment.outstandingFindingIds],
+    pendingCorrectionIds: [...assignment.pendingCorrectionIds],
     findings,
     evidence: [...assignment.evidence],
     requirements,
