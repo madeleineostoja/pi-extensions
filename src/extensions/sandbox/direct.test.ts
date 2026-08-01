@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { decideDirectMutation, decideDirectWrite } from "./direct.js";
 import type { SandboxPolicy } from "./policy.js";
@@ -64,15 +65,28 @@ describe("Sandbox direct writes", () => {
     for (const [path, target] of [
       [join(outside, "file.txt"), join(outside, "file.txt")],
       ["../workspace-copy/file.txt", join(outside, "file.txt")],
+      [`${outside}\\..\\workspace\\file.txt`, undefined],
       ["file-link", join(outside, "file.txt")],
       ["directory-link/new.txt", join(outside, "new.txt")],
       ["dangling-link", join(outside, "missing.txt")],
     ]) {
-      expect(decideDirectWrite(path, policy)).toEqual({
+      expect(decideDirectWrite(path, policy)).toMatchObject({
         kind: "deny",
         reason: "Sandbox: direct writes must stay in the workspace.",
-        target,
+        ...(target ? { target } : {}),
       });
+    }
+  });
+
+  it("applies Pi path normalization before containment", () => {
+    const { outside, policy } = fixture();
+    const outsideFile = join(outside, "outside.txt");
+    for (const path of [
+      `@${outsideFile}`,
+      pathToFileURL(outsideFile).toString(),
+      "~/pipkin-sandbox-outside.txt",
+    ]) {
+      expect(decideDirectWrite(path, policy).kind).toBe("deny");
     }
   });
 

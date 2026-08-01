@@ -36,6 +36,10 @@ function processExists(pid: number): boolean {
   }
 }
 
+function executionEnv(values: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return { ...process.env, ...values };
+}
+
 afterEach(() => {
   while (directories.length) {
     rmSync(directories.pop()!, { force: true, recursive: true });
@@ -88,7 +92,7 @@ describe("Sandbox Bash runtime", () => {
         workspace,
         {
           onData: (data) => output.push(data.toString()),
-          env: { PIPKIN_SANDBOX_TEST: "forwarded" },
+          env: executionEnv({ PIPKIN_SANDBOX_TEST: "forwarded" }),
         },
       ),
     ).resolves.toEqual({ exitCode: 0 });
@@ -175,6 +179,32 @@ printf last`,
     }
   });
 
+  it("preserves Pi's prepared execution environment", async () => {
+    const { executable, policy, workspace } = fixture();
+    const inheritedSessionId = process.env.PI_SESSION_ID;
+    process.env.PI_SESSION_ID = "inherited-session";
+    try {
+      const runtime = createSandboxBashRuntime({
+        policy,
+        enabled: () => true,
+        supportedMac: true,
+        sandboxExecutable: executable,
+      });
+      await expect(
+        runtime.operations.exec('test -z "$PI_SESSION_ID"', workspace, {
+          onData: () => undefined,
+          env: { PATH: process.env.PATH ?? "" },
+        }),
+      ).resolves.toEqual({ exitCode: 0 });
+    } finally {
+      if (inheritedSessionId === undefined) {
+        delete process.env.PI_SESSION_ID;
+      } else {
+        process.env.PI_SESSION_ID = inheritedSessionId;
+      }
+    }
+  });
+
   it("reports an early sandbox-exec rejection without local fallback", async () => {
     const { executable, policy, workspace } = fixture();
     const runtime = createSandboxBashRuntime({
@@ -186,7 +216,7 @@ printf last`,
     await expect(
       runtime.operations.exec("printf local", workspace, {
         onData: () => undefined,
-        env: { PIPKIN_SANDBOX_BACKEND_REJECT: "true" },
+        env: executionEnv({ PIPKIN_SANDBOX_BACKEND_REJECT: "true" }),
       }),
     ).rejects.toThrow("sandbox-exec rejected the launch");
   });
@@ -255,7 +285,7 @@ printf last`,
       workspace,
       {
         onData: () => undefined,
-        env: { PIPKIN_SANDBOX_CHILD_PID: childPid },
+        env: executionEnv({ PIPKIN_SANDBOX_CHILD_PID: childPid }),
       },
     );
     await waitForFile(childPid);
@@ -297,7 +327,7 @@ printf last`,
       workspace,
       {
         onData: () => undefined,
-        env: { PIPKIN_SANDBOX_CHILD_PID: childPid },
+        env: executionEnv({ PIPKIN_SANDBOX_CHILD_PID: childPid }),
       },
     );
     await waitForFile(childPid);

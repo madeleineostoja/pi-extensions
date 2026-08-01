@@ -14,6 +14,7 @@ const TERMINATION_WAIT_MS = 5_000;
 const TERMINATION_POLL_MS = 10;
 const LAUNCH_MARKER = "__PIPKIN_SANDBOX_LAUNCHED__\n";
 const LAUNCH_PREFIX = `printf '${LAUNCH_MARKER}'\n`;
+const MAX_LAUNCH_DIAGNOSTIC_BYTES = 64 * 1024;
 
 type ActiveInvocation = Readonly<{
   terminate: () => void;
@@ -69,10 +70,15 @@ async function waitForProcessTree(pid: number): Promise<boolean> {
   }
 }
 
-function sandboxRejected(output: readonly Buffer[]): boolean {
-  return /(?:^|\n)sandbox-exec(?:\[\d+\])?:/m.test(
-    Buffer.concat(output).toString(),
-  );
+function sandboxRejected(output: Buffer): boolean {
+  return /(?:^|\n)sandbox-exec(?:\[\d+\])?:/m.test(output.toString());
+}
+
+function appendLaunchDiagnostic(output: Buffer, data: Buffer): Buffer {
+  const combined = Buffer.concat([output, data]);
+  return combined.length > MAX_LAUNCH_DIAGNOSTIC_BYTES
+    ? combined.subarray(-MAX_LAUNCH_DIAGNOSTIC_BYTES)
+    : combined;
 }
 
 export type SandboxBashRuntime = Readonly<{
@@ -169,7 +175,7 @@ export function createSandboxBashRuntime(
           let terminatedPid: number | undefined;
           let invocation: ActiveInvocation | undefined;
           let settleInvocation: () => void = () => undefined;
-          const output: Buffer[] = [];
+          let launchDiagnostics = Buffer.alloc(0);
           let launchConfirmed = false;
           let launchOutput = Buffer.alloc(0);
           const cleanup = () => {
@@ -207,7 +213,7 @@ export function createSandboxBashRuntime(
               {
                 cwd,
                 detached: process.platform !== "win32",
-                env: { ...process.env, ...execution.env },
+                env: execution.env ?? process.env,
                 stdio: ["pipe", "pipe", "pipe"],
                 windowsHide: true,
               },
@@ -221,9 +227,15 @@ export function createSandboxBashRuntime(
             settled: new Promise<void>((settle) => (settleInvocation = settle)),
           };
           active.add(invocation);
-          const onData = (data: Buffer) => {
-            output.push(data);
-            execution.onData(data);
+          const onData = (data: Buffer) => execution.onData(data);
+          const onStderr = (data: Buffer) => {
+            if (!launchConfirmed) {
+              launchDiagnostics = appendLaunchDiagnostic(
+                launchDiagnostics,
+                data,
+              );
+            }
+            onData(data);
           };
           const onStdout = (data: Buffer) => {
             if (launchConfirmed) {
@@ -251,7 +263,7 @@ export function createSandboxBashRuntime(
             launchOutput = Buffer.alloc(0);
           };
           child.stdout?.on("data", onStdout);
-          child.stderr?.on("data", onData);
+          child.stderr?.on("data", onStderr);
           child.once("error", (error) => {
             if (child.pid) {
               stop(terminationError ?? error);
@@ -276,11 +288,11 @@ export function createSandboxBashRuntime(
               if (
                 !terminationError &&
                 !launchConfirmed &&
-                sandboxRejected(output)
+                sandboxRejected(launchDiagnostics)
               ) {
                 finish(
                   new Error(
-                    `Sandbox: sandbox-exec rejected the launch: ${Buffer.concat(output).toString().trim()}`,
+                    `Sandbox: sandbox-exec rejected the launch: ${launchDiagnostics.toString().trim()}`,
                   ),
                 );
                 return;
