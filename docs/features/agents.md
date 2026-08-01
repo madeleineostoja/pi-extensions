@@ -25,7 +25,7 @@ Use `lsp` directly for one known-symbol question and ordinary reads for one or t
 }
 ```
 
-`prompt` is the complete task contract. `description` is the short status label. `cwd`, `model`, and `thinking` can override the run's defaults when their exact values are known.
+`prompt` is the complete task contract. `description` is the short status label. Public agents always run in the invoking session's working directory. `model` and `thinking` can override the run's defaults when their exact values are known.
 
 Foreground is the default and the right choice when the result is your next dependency. The tool waits for completion and returns the final snapshot and answer. In the TUI, pressing Escape while foreground agents are active asks for confirmation before aborting them. When a turn has multiple foreground agents, the prompt lists them and confirmation stops them together; background agents keep running.
 
@@ -80,7 +80,7 @@ Nested Explore runs created by managed Pipkin workflows use the same runtime and
 
 Subagents inherit the parent extension environment and active tools, except public agent tools are withheld to prevent recursive fan-out. Explore and Review retain shell access for discovery and checks. Their read-only behavior is a trusted-model instruction, not technical confinement.
 
-Public subagents share the parent's filesystem and **do not receive isolated Git worktrees**. Do not edit files that a child currently owns. If implementation needs strong workspace separation and publication control, use [Implement](implementation.md), whose managed workers run in owned disposable worktrees.
+Public subagents share the invoking session's filesystem and **do not receive isolated Git worktrees**. Do not edit files that a child currently owns. If implementation needs strong workspace separation and publication control, use [Implement](implementation.md), whose trusted managed workers run in owned disposable worktrees.
 
 ## Model routing
 

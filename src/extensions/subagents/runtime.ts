@@ -1005,7 +1005,7 @@ export class SubagentRuntime {
       if (!explore) {
         throw new Error("Pipkin config is missing a valid low model preset.");
       }
-      const started = await this.runPublicAgent({
+      const started = await this.runManagedAgent({
         type: "Explore",
         prompt: buildExplorePrompt(params),
         description: `explore: ${params.question.trim().slice(0, 100)}`,

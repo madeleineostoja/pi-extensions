@@ -209,6 +209,7 @@ describe("Implement managed runtime integration", () => {
         taskId: "work",
       },
       type: "pipkin:implement:reviewer",
+      cwd: MANAGED_TEST_CWD,
       model: `${MANAGED_TEST_PROVIDER}/${MANAGED_TEST_MODEL}`,
       thinking: "high",
     });

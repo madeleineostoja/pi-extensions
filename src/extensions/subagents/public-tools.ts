@@ -48,9 +48,6 @@ export const PublicAgentParameters = Type.Object({
     }),
   ),
   thinking: Type.Optional(Thinking),
-  cwd: Type.Optional(
-    Type.String({ description: "Optional working directory override." }),
-  ),
 });
 
 export type PublicAgentParams = Static<typeof PublicAgentParameters>;
@@ -112,7 +109,7 @@ export function registerPublicAgentTools({
           type: params.subagent_type,
           prompt: params.prompt,
           description: params.description,
-          cwd: params.cwd ?? ctx.cwd,
+          cwd: ctx.cwd,
           ...resolveAgentSelection(
             params.subagent_type,
             params.model,

@@ -271,6 +271,40 @@ describe("SubagentRuntime", () => {
     expect(runtime.snapshots()).toEqual([completed]);
   });
 
+  it("preserves distinct cwd values for trusted managed calls", async () => {
+    const { pi } = fakePi();
+    const sessions = [makeSession("first"), makeSession("second")];
+    const createdCwds: string[] = [];
+    const createSession = vi.fn(async (options?: { cwd?: string }) => {
+      createdCwds.push(options?.cwd ?? "");
+      return { session: sessions.shift()! };
+    });
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+
+    const first = await runtime.runManagedAgent({
+      type: "internal",
+      prompt: "first",
+      cwd: "/trusted/first",
+      ctx: makeCtx() as never,
+    });
+    const second = await runtime.runManagedAgent({
+      type: "internal",
+      prompt: "second",
+      cwd: "/trusted/second",
+      ctx: makeCtx() as never,
+    });
+
+    expect([first.cwd, second.cwd]).toEqual([
+      "/trusted/first",
+      "/trusted/second",
+    ]);
+    expect(runtime.snapshots().map((snapshot) => snapshot.cwd)).toEqual([
+      "/trusted/first",
+      "/trusted/second",
+    ]);
+    expect(createdCwds).toEqual(["/trusted/first", "/trusted/second"]);
+  });
+
   it("refreshes health for public snapshot accessors", async () => {
     const { pi } = fakePi();
     const promptDone = deferred<void>();

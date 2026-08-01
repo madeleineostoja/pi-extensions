@@ -314,9 +314,59 @@ describe("public subagent tools", () => {
       type: "string",
       enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     });
+    expect(parameters.properties.cwd).toBeUndefined();
+    expect(JSON.stringify(tools[0].parameters)).not.toContain(
+      "working directory override",
+    );
     expect(JSON.stringify(tools[0].parameters)).toContain(
       "do not guess available models",
     );
+  });
+
+  it("roots public agents at the invoking cwd despite an injected legacy cwd", async () => {
+    const { pi, tools } = makePi(["read"]);
+    const sessions = [
+      makeSession("general"),
+      makeSession("explore"),
+      makeSession("review"),
+    ];
+    const createdCwds: string[] = [];
+    const createSession = vi.fn(async (options?: { cwd?: string }) => {
+      createdCwds.push(options?.cwd ?? "");
+      return { session: sessions.shift()!.session };
+    });
+    const runtime = new SubagentRuntime(pi as never, { createSession });
+    const config = loadPipkinConfig(getAgentDirMock());
+    registerPublicAgentTools({
+      pi: pi as never,
+      runtime,
+      roster: new SubagentRosterController(runtime),
+      foregroundInterrupt: new ForegroundInterruptGuard(),
+      configPath: config.path,
+      modelPresets: config.config.models,
+    });
+    const agent = tools.find((tool) => tool.name === "Agent");
+
+    for (const subagent_type of ["General", "Explore", "Review"] as const) {
+      const result = await agent!.execute(
+        `call-${subagent_type}`,
+        {
+          subagent_type,
+          prompt: `run ${subagent_type}`,
+          cwd: "/legacy-redirect",
+        },
+        undefined,
+        undefined,
+        makeCtx({ cwd: "/invoking" }),
+      );
+
+      expect(result.details).toMatchObject({
+        type: subagent_type,
+        cwd: "/invoking",
+      });
+    }
+    expect(createSession).toHaveBeenCalledTimes(3);
+    expect(createdCwds).toEqual(["/invoking", "/invoking", "/invoking"]);
   });
 
   it("returns complete foreground content and actionable background content", async () => {
