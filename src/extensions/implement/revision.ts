@@ -87,7 +87,9 @@ export function buildRevisionPacket(args: {
     review.comparisonBase === "" ||
     review.candidateId !== candidate.id ||
     review.round !== assignment.findingEpoch ||
-    !sameIds(review.pendingCorrectionIds, assignment.pendingCorrectionIds)
+    !sameIds(review.pendingCorrectionIds, assignment.pendingCorrectionIds) ||
+    new Set(assignment.pendingCorrectionIds).size !==
+      assignment.pendingCorrectionIds.length
   ) {
     throw new RevisionFailure(
       "protocol_failure",
@@ -99,7 +101,11 @@ export function buildRevisionPacket(args: {
     if (
       !finding ||
       finding.status !== "open" ||
-      !sameWorkstream(finding.workstream, args.effect.workstream)
+      !findingIsAuthorizedForRevision(
+        args.state,
+        finding,
+        args.effect.workstream,
+      )
     ) {
       throw new RevisionFailure(
         "protocol_failure",
@@ -427,6 +433,17 @@ function workstreamKey(workstream: RuntimeWorkstream): string {
   return workstream.kind === "source"
     ? `source:${workstream.id}`
     : `overall:${workstream.repairId}`;
+}
+
+function findingIsAuthorizedForRevision(
+  state: RunState,
+  finding: RunState["findings"][string],
+  workstream: RuntimeWorkstream,
+): boolean {
+  return workstream.kind === "source"
+    ? sameWorkstream(finding.workstream, workstream)
+    : finding.scope.kind === "whole_plan" &&
+        state.wholePlanReview.epoch?.findingIds.includes(finding.id) === true;
 }
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {

@@ -1,4 +1,6 @@
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { buildRevisionPacket } from "../revision.js";
 import { reduceRunEvent } from "./scheduler.js";
 import { validateRunState } from "../store.js";
 import {
@@ -251,6 +253,112 @@ describe("revision policy", () => {
     ).toBe(false);
   });
 
+  it("creates the next assignment from only reassessed open blockers", async () => {
+    const state = await stateAtRevision(1, false, [
+      {
+        summary: "Missing behavior",
+        evidence: "The endpoint is incomplete.",
+        requiredChange: "Complete the endpoint.",
+        acceptanceCriteria: ["The endpoint responds."],
+        disposition: "blocking",
+      },
+      {
+        summary: "Coverage gap",
+        evidence: "The endpoint has no integration coverage.",
+        requiredChange: "Add representative coverage.",
+        acceptanceCriteria: ["Coverage exercises the endpoint."],
+        disposition: "advisory",
+      },
+    ]);
+    const revisionRequested = reduceRunEvent(state, {
+      kind: "revision_requested",
+      workstream: { kind: "source", id: "first-stream" },
+      now: "2026-01-01T00:02:00.000Z",
+    });
+    const revision = revisionRequested.effects[0]!;
+    if (revision.kind !== "run_revision") {
+      throw new Error("expected revision");
+    }
+    const admitted = reduceRunEvent(revisionRequested.state, {
+      kind: "revision_completed",
+      workstream: revision.workstream,
+      leaseId: revision.leaseId,
+      assignmentId: revision.assignmentId,
+      outcome: {
+        kind: "candidate_ready",
+        candidate: candidate("revision:first", "revision-sha", "revision-tree"),
+        correction: {
+          fromCandidateId: "candidate:first",
+          changedPaths: ["src/endpoint.ts"],
+          evidence: "revision artifact",
+        },
+      },
+    });
+    const reviewRequested = reduceRunEvent(admitted.state, {
+      kind: "review_requested",
+      workstream: { kind: "source", id: "first-stream" },
+      now: "2026-01-01T00:03:00.000Z",
+    });
+    const review = reviewRequested.effects[0]!;
+    if (review.kind !== "run_review") {
+      throw new Error("expected review");
+    }
+    const reassessed = reduceRunEvent(reviewRequested.state, {
+      kind: "review_completed",
+      workstream: review.workstream,
+      leaseId: review.leaseId,
+      outcome: {
+        kind: "anchored",
+        candidateId: "revision:first",
+        previousCandidateId: "candidate:first",
+        comparisonBase: "base-sha",
+        changedPaths: ["src/endpoint.ts"],
+        findingEpoch: 0,
+        evidence: "assessment artifact",
+        completion: {
+          assessments: [
+            {
+              id: "source-first-stream-r1",
+              status: "unresolved",
+              evidence: "The endpoint remains incomplete.",
+              disposition: "blocking",
+              summary: "Missing behavior",
+              requiredChange: "Complete the endpoint.",
+              acceptanceCriteria: ["The endpoint responds."],
+            },
+            {
+              id: "source-first-stream-r2",
+              status: "resolved",
+              evidence: "Representative coverage exercises the endpoint.",
+            },
+          ],
+          regressions: [],
+        },
+      },
+    });
+
+    expect(
+      reassessed.state.reviews["source:first-stream"]?.pendingCorrectionIds,
+    ).toEqual(["source-first-stream-r1"]);
+    expect(
+      Object.values(reassessed.state.revisionAssignments).find(
+        (assignment) => assignment.status === "open",
+      ),
+    ).toMatchObject({ pendingCorrectionIds: ["source-first-stream-r1"] });
+    expect(reassessed.state.findings["source-first-stream-r2"]?.status).toBe(
+      "resolved",
+    );
+  });
+
+  it("rejects a source review that drops an open blocker from correction authority", async () => {
+    const state = await stateAtRevision();
+    state.reviews["source:first-stream"]!.pendingCorrectionIds = [];
+
+    expect(invariantIssues(state)).toContain(
+      "review source:first-stream lost open blocking finding source-first-stream-r1",
+    );
+  });
+
   it("rejects removed findings and invalid historical assignment snapshots", async () => {
     const state = await stateAtRevision();
     const finding = state.findings["source-first-stream-r1"]!;
@@ -260,20 +368,20 @@ describe("revision policy", () => {
       id: "source-first-stream-advisory",
       disposition: "advisory",
     };
-    expect(() => validateRunState(withAdvisory, "test", state)).not.toThrow();
+    expect(() => validate(withAdvisory, state)).not.toThrow();
 
     const withoutAdvisory = structuredClone(withAdvisory);
     delete withoutAdvisory.findings["source-first-stream-advisory"];
-    expect(() =>
-      validateRunState(withoutAdvisory, "test", withAdvisory),
-    ).toThrow("finding source-first-stream-advisory was removed");
+    expect(invariantIssues(withoutAdvisory, withAdvisory)).toContain(
+      "finding source-first-stream-advisory was removed",
+    );
 
     const invalidSnapshot = structuredClone(state);
     const assignment = Object.values(invalidSnapshot.revisionAssignments)[0]!;
     assignment.status = "completed";
     assignment.pendingCorrectionIds = ["unknown-finding"];
-    expect(() => validateRunState(invalidSnapshot, "test")).toThrow(
-      "revision assignment",
+    expect(invariantIssues(invalidSnapshot)).toContain(
+      "revision assignment revision:source:first-stream:first-sha:0:1 does not match its review epoch",
     );
   });
 
@@ -330,17 +438,17 @@ describe("revision policy", () => {
       },
     };
 
-    expect(() => validateRunState(state, "test")).not.toThrow();
+    expect(() => validate(state)).not.toThrow();
 
     const lostByReview = structuredClone(state);
     lostByReview.reviews["overall:repair-1"]!.pendingCorrectionIds = [];
-    expect(() => validateRunState(lostByReview, "test")).toThrow(
+    expect(invariantIssues(lostByReview)).toContain(
       "overall review overall:repair-1 does not retain every open epoch finding as pending",
     );
 
     const staleEpoch = structuredClone(state);
     staleEpoch.findings[findingId]!.status = "resolved";
-    expect(() => validateRunState(staleEpoch, "test")).toThrow(
+    expect(invariantIssues(staleEpoch)).toContain(
       "whole-plan review epoch has an invalid pending finding",
     );
   });
@@ -475,7 +583,7 @@ describe("revision policy", () => {
     expect(Object.values(assessed.state.revisionAssignments)[0]).toMatchObject({
       pendingCorrectionIds: [findingIds[1]],
     });
-    expect(() => validateRunState(assessed.state, "test")).not.toThrow();
+    expect(() => validate(assessed.state)).not.toThrow();
   });
 
   it("retains resolved epoch IDs and queues an advisory causal regression under the Task-1 policy", async () => {
@@ -596,7 +704,126 @@ describe("revision policy", () => {
     expect(
       queued.state.reviews["overall:overall-repair-1"]?.pendingCorrectionIds,
     ).toEqual(["overall-repair-1-r3"]);
-    expect(() => validateRunState(queued.state, "test")).not.toThrow();
+    const nextRepairId = "overall-repair-1";
+    const nextWorkstream = {
+      kind: "overall" as const,
+      repairId: nextRepairId,
+    };
+    const nextBaselineId =
+      queued.state.workstreams.overall[nextRepairId]!.candidateId!;
+    const candidateId = "overall-repair:overall-repair-1";
+    const next = structuredClone(queued.state);
+    next.candidates[candidateId] = {
+      id: candidateId,
+      workstream: nextWorkstream,
+      baseSha: "published-sha",
+      commitSha: "second-repair-sha",
+      treeSha: "second-repair-tree",
+      changedPaths: ["src/repair.ts"],
+    };
+    next.workstreams.overall[nextRepairId] = {
+      ...next.workstreams.overall[nextRepairId]!,
+      candidateId,
+      phase: "candidate_ready",
+    };
+    next.reviews[`overall:${nextRepairId}`] = {
+      ...next.reviews[`overall:${nextRepairId}`]!,
+      candidateId,
+      comparisonBase: "published-sha",
+      previousCandidateId: nextBaselineId,
+      latestCorrection: {
+        fromCandidateId: nextBaselineId,
+        changedPaths: ["src/repair.ts"],
+        evidence: "second repair candidate",
+      },
+    };
+    const requested = reduceRunEvent(next, {
+      kind: "review_requested",
+      workstream: nextWorkstream,
+      now: "2026-01-01T00:02:00.000Z",
+    });
+    const review = requested.effects[0]!;
+    if (review.kind !== "run_review") {
+      throw new Error("expected later overall review");
+    }
+    const assessed = reduceRunEvent(requested.state, {
+      kind: "review_completed",
+      workstream: nextWorkstream,
+      leaseId: review.leaseId,
+      outcome: {
+        kind: "anchored",
+        candidateId,
+        previousCandidateId: nextBaselineId,
+        comparisonBase: "published-sha",
+        changedPaths: ["src/repair.ts"],
+        findingEpoch: 0,
+        evidence: "second repair assessment",
+        completion: {
+          publicationCommitSubject: "fix: correct repair regression",
+          assessments: [
+            {
+              id: "overall-repair-1-r3",
+              status: "unresolved",
+              evidence: "The edge case remains unhandled.",
+              disposition: "advisory",
+              summary: "Repair regression",
+              requiredChange: "Handle the edge case.",
+              acceptanceCriteria: ["The edge case is handled."],
+            },
+          ],
+          regressions: [],
+        },
+      },
+    });
+    const assignment = Object.values(assessed.state.revisionAssignments).find(
+      (entry) => entry.workstream.kind === "overall" && entry.status === "open",
+    )!;
+    const revisionRequested = reduceRunEvent(assessed.state, {
+      kind: "revision_requested",
+      workstream: nextWorkstream,
+      now: "2026-01-01T00:03:00.000Z",
+    });
+    const revision = revisionRequested.effects[0]!;
+    if (revision.kind !== "run_revision") {
+      throw new Error("expected later overall revision");
+    }
+
+    const packet = buildRevisionPacket({
+      state: revisionRequested.state,
+      effect: revision,
+    });
+
+    expect(assignment.pendingCorrectionIds).toEqual(["overall-repair-1-r3"]);
+    expect(packet.findings).toEqual([
+      expect.objectContaining({
+        id: "overall-repair-1-r3",
+        workstream: { kind: "overall", repairId: "repair-1" },
+        scope,
+      }),
+    ]);
+
+    const duplicate = structuredClone(revisionRequested.state);
+    duplicate.revisionAssignments[
+      revision.assignmentId
+    ]!.pendingCorrectionIds.push("overall-repair-1-r3");
+    duplicate.reviews[`overall:${nextRepairId}`]!.pendingCorrectionIds.push(
+      "overall-repair-1-r3",
+    );
+    expect(() =>
+      buildRevisionPacket({ state: duplicate, effect: revision }),
+    ).toThrow("no longer current");
+
+    const resolved = structuredClone(revisionRequested.state);
+    resolved.findings["overall-repair-1-r3"]!.status = "resolved";
+    expect(() =>
+      buildRevisionPacket({ state: resolved, effect: revision }),
+    ).toThrow("invalid finding overall-repair-1-r3");
+
+    const wrongEpoch = structuredClone(revisionRequested.state);
+    wrongEpoch.wholePlanReview.epoch!.findingIds = [];
+    expect(() =>
+      buildRevisionPacket({ state: wrongEpoch, effect: revision }),
+    ).toThrow("invalid finding overall-repair-1-r3");
   });
 
   it("settles the first unchanged revision as no progress without a duplicate revision", async () => {
@@ -814,6 +1041,30 @@ async function stateAtRevision(
       },
     },
   }).state;
+}
+
+function validate(
+  state: Parameters<typeof validateRunState>[0],
+  previous?: Parameters<typeof validateRunState>[2],
+) {
+  const run = state as Awaited<ReturnType<typeof stateAtRevision>>;
+  return validateRunState(
+    state,
+    join(dirname(run.executionPlan!.path), "run-state.json"),
+    previous,
+  );
+}
+
+function invariantIssues(
+  state: Parameters<typeof validateRunState>[0],
+  previous?: Parameters<typeof validateRunState>[2],
+): string[] {
+  try {
+    validate(state, previous);
+    return [];
+  } catch (error) {
+    return (error as { issues: string[] }).issues;
+  }
 }
 
 function requestAndLeaveUnchanged(

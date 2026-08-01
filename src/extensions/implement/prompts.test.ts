@@ -100,6 +100,10 @@ describe("whole-plan and repair prompts", () => {
     expect(prompt).toContain("Author one concise Conventional Commit subject");
     expect(prompt).toContain("whether assessments leave blockers, advisories");
     expect(prompt).toContain("Only this reviewer completion may resolve");
+    expect(prompt).toContain("Assess every outstanding ID exactly once");
+    expect(prompt).toContain("A resolved ID cannot reopen");
+    expect(prompt).toContain("new causal regression only");
+    expect(prompt).toContain("observations never block");
     expect(prompt).toContain("publication counterfactual");
     expect(prompt).toContain("material shippable improvements as advisory");
   });
@@ -135,7 +139,7 @@ describe("whole-plan and repair prompts", () => {
     });
 
     for (const prompt of [source, overall]) {
-      expect(prompt).toContain("Classify each finding");
+      expect(prompt.toLowerCase()).toContain("classify each");
       expect(prompt).toContain("blocking");
       expect(prompt).toContain("advisory");
       expect(prompt).toContain("publication counterfactual");

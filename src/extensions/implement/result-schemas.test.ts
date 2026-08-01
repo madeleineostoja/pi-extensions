@@ -150,6 +150,35 @@ describe("review completion schemas", () => {
     ).toBe(false);
     expect(
       validates(anchoredWorkstreamReviewSchema, {
+        assessments: [
+          {
+            id: "finding-1",
+            status: "unresolved",
+            evidence: "Still present.",
+            disposition: "blocking",
+            summary: "Missing response",
+            requiredChange: "Return the documented response.",
+            acceptanceCriteria: ["The endpoint returns 200."],
+            verdict: "changes_requested",
+          },
+        ],
+        regressions: [{ ...finding, changedPaths: ["src/endpoint.ts"] }],
+      }),
+    ).toBe(false);
+    expect(
+      validates(anchoredWorkstreamReviewSchema, {
+        assessments: [],
+        regressions: [
+          {
+            ...finding,
+            changedPaths: ["src/endpoint.ts"],
+            status: "resolved",
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      validates(anchoredWorkstreamReviewSchema, {
         assessments: [],
         regressions: [],
         observations: [
