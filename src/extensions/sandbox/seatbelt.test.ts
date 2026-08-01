@@ -46,10 +46,21 @@ describe("Sandbox Seatbelt profile", () => {
     expect(profile).not.toContain("/home/user/cache");
   });
 
+  it("marks a protected invocation's default denial without widening policy", () => {
+    const marker = "PIPKIN_ABC123";
+    const profile = sandboxProfile(policy, marker);
+    expect(profile).toContain(`(deny default (with message "${marker}"))`);
+    expect(profile).not.toContain("(deny default)\n");
+    expect(() => sandboxProfile(policy, 'PIPKIN_bad"')).toThrow(
+      "invalid denial marker",
+    );
+  });
+
   it("uses stable, separate parameter arguments and stdin shell launch", () => {
     const args = sandboxArguments({
       policy,
       shell: { shell: "/bin/bash", args: ["-s"] },
+      marker: "PIPKIN_ABC123",
     });
     expect(SANDBOX_EXECUTABLE).toBe("/usr/bin/sandbox-exec");
     expect(args.slice(0, 8)).toEqual([
@@ -63,7 +74,12 @@ describe("Sandbox Seatbelt profile", () => {
       "create0=/home/user/cache",
     ]);
     expect(args).toEqual(
-      expect.arrayContaining(["-p", sandboxProfile(policy), "/bin/bash", "-s"]),
+      expect.arrayContaining([
+        "-p",
+        sandboxProfile(policy, "PIPKIN_ABC123"),
+        "/bin/bash",
+        "-s",
+      ]),
     );
     expect(
       args.filter((value, index) => args[index - 1] === "-D"),

@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   createBashToolDefinition,
   createLocalBashOperations,
   getShellConfig,
   type BashOperations,
 } from "@earendil-works/pi-coding-agent";
+import type { SandboxDenialObserver } from "./denial-observer.js";
 import type { SandboxPolicy } from "./policy.js";
 import { SANDBOX_EXECUTABLE, sandboxArguments } from "./seatbelt.js";
 
@@ -15,6 +17,10 @@ const TERMINATION_POLL_MS = 10;
 const LAUNCH_MARKER = "__PIPKIN_SANDBOX_LAUNCHED__\n";
 const LAUNCH_PREFIX = `printf '${LAUNCH_MARKER}'\n`;
 const MAX_LAUNCH_DIAGNOSTIC_BYTES = 64 * 1024;
+
+function denialMarker(): string {
+  return `PIPKIN_${randomUUID().replaceAll("-", "")}`;
+}
 
 type ActiveInvocation = Readonly<{
   terminate: () => void;
@@ -101,6 +107,7 @@ export function createSandboxBashRuntime(
     shellPath?: string;
     spawn?: SandboxSpawn;
     sandboxExecutable?: string;
+    denialObserver?: SandboxDenialObserver;
   }>,
 ): SandboxBashRuntime {
   const local = createLocalBashOperations({ shellPath: options.shellPath });
@@ -164,7 +171,12 @@ export function createSandboxBashRuntime(
             ? configuredShell.args
             : ["-s"],
       };
-      const args = sandboxArguments({ policy: options.policy, shell });
+      const marker = denialMarker();
+      const args = sandboxArguments({
+        policy: options.policy,
+        shell,
+        marker,
+      });
       return new Promise<{ exitCode: number | null }>(
         (resolveResult, reject) => {
           let child: ChildProcess;
@@ -178,6 +190,7 @@ export function createSandboxBashRuntime(
           let launchDiagnostics = Buffer.alloc(0);
           let launchConfirmed = false;
           let launchOutput = Buffer.alloc(0);
+          let releaseDenial: (() => void) | undefined;
           const launchMarker = Buffer.from(LAUNCH_MARKER);
           const cleanup = () => {
             if (timer) {
@@ -189,6 +202,7 @@ export function createSandboxBashRuntime(
             if (invocation) {
               active.delete(invocation);
             }
+            releaseDenial?.();
             settleInvocation();
           };
           const finish = (result: { exitCode: number | null } | Error) => {
@@ -208,6 +222,8 @@ export function createSandboxBashRuntime(
             terminate(child);
           };
           try {
+            releaseDenial =
+              options.denialObserver?.registerBashInvocation(marker);
             child = (options.spawn ?? spawn)(
               options.sandboxExecutable ?? SANDBOX_EXECUTABLE,
               args,

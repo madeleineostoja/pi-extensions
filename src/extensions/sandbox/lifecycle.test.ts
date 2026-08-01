@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { SandboxDenialObserver } from "./denial-observer.js";
+import { createSandboxDenialRecorder } from "./denials.js";
 import { createSandboxSessionController } from "./lifecycle.js";
+import type { SandboxPolicy } from "./policy.js";
 import { createSandboxSessionState } from "./state.js";
 
 const policy = {
@@ -25,41 +28,80 @@ function context() {
   };
 }
 
+function observer() {
+  const start = vi.fn();
+  const dispose = vi.fn(async () => undefined);
+  return {
+    dispose,
+    start,
+    value: {
+      start,
+      registerBashInvocation: () => () => undefined,
+      dispose,
+    } satisfies SandboxDenialObserver,
+  };
+}
+
+function controller(options: {
+  state?: ReturnType<typeof createSandboxSessionState>;
+  supportedMac: boolean;
+  resolvePolicy?: () => Promise<SandboxPolicy>;
+  createDenialObserver?: () => SandboxDenialObserver;
+}) {
+  const state = options.state ?? createSandboxSessionState();
+  const denials = createSandboxDenialRecorder();
+  return {
+    controller: createSandboxSessionController({
+      state,
+      denials,
+      supportedMac: options.supportedMac,
+      resolvePolicy: options.resolvePolicy,
+      createDenialObserver: options.createDenialObserver
+        ? () => options.createDenialObserver!()
+        : undefined,
+    }),
+    denials,
+    state,
+  };
+}
+
 describe("Sandbox lifecycle", () => {
   it("registers an enabled Bash owner after resolving one immutable policy", async () => {
-    const state = createSandboxSessionState();
-    const controller = createSandboxSessionController({
-      state,
+    const watched = observer();
+    const { controller: session, state } = controller({
       supportedMac: true,
       resolvePolicy: async () => policy,
+      createDenialObserver: () => watched.value,
     });
     const ctx = context();
-    const bash = await controller.sessionStart({} as never, ctx as never);
+    const bash = await session.sessionStart({} as never, ctx as never);
     expect(bash.name).toBe("bash");
     expect(state.enabled()).toBe(true);
     expect(state.policy()).toBe(policy);
+    expect(watched.start).toHaveBeenCalledOnce();
     expect(ctx.statuses.get("pipkin.sandbox")).toContain("sandbox");
-    await controller.sessionShutdown(ctx as never);
+    await session.sessionShutdown(ctx as never);
+    expect(watched.dispose).toHaveBeenCalledOnce();
     expect(ctx.statuses.get("pipkin.sandbox")).toBeUndefined();
   });
 
   it("keeps macOS Bash fail-closed when policy resolution fails", async () => {
-    const state = createSandboxSessionState();
-    const controller = createSandboxSessionController({
-      state,
+    const watched = observer();
+    const { controller: session, state } = controller({
       supportedMac: true,
       resolvePolicy: async () => {
         throw new Error("Git failed");
       },
+      createDenialObserver: () => watched.value,
     });
     const ctx = context();
-    const bash = await controller.sessionStart({} as never, ctx as never);
+    const bash = await session.sessionStart({} as never, ctx as never);
     expect(bash.name).toBe("bash");
     expect(state.policy()).toBeUndefined();
     expect(state.unavailableReason()).toContain("Git failed");
     expect(ctx.statuses.get("pipkin.sandbox")).toContain("unavailable");
     expect(state.enabled()).toBe(true);
-    await controller.sessionShutdown(ctx as never);
+    await session.sessionShutdown(ctx as never);
   });
 
   it("initializes a child policy independently after a parent turns Sandbox off", async () => {
@@ -68,33 +110,55 @@ describe("Sandbox lifecycle", () => {
     parent.setEnabled(false);
     const child = createSandboxSessionState();
     const childPolicy = { ...policy, sessionCwd: "/workspace/child" };
-    const controller = createSandboxSessionController({
+    const { controller: session, state } = controller({
       state: child,
       supportedMac: true,
       resolvePolicy: async () => childPolicy,
+      createDenialObserver: () => observer().value,
     });
     const ctx = { ...context(), cwd: "/workspace/child" };
-    await controller.sessionStart({} as never, ctx as never);
+    await session.sessionStart({} as never, ctx as never);
     expect(parent.enabled()).toBe(false);
-    expect(child.enabled()).toBe(true);
-    expect(child.policy()).toBe(childPolicy);
-    await controller.sessionShutdown(ctx as never);
+    expect(state.enabled()).toBe(true);
+    expect(state.policy()).toBe(childPolicy);
+    await session.sessionShutdown(ctx as never);
   });
 
   it("uses local Bash and unavailable status on Linux without policy resolution", async () => {
-    const state = createSandboxSessionState();
-    const controller = createSandboxSessionController({
-      state,
+    const createDenialObserver = vi.fn(() => observer().value);
+    const { controller: session, state } = controller({
       supportedMac: false,
       resolvePolicy: async () => {
         throw new Error("should not resolve");
       },
+      createDenialObserver,
     });
     const ctx = context();
-    const bash = await controller.sessionStart({} as never, ctx as never);
+    const bash = await session.sessionStart({} as never, ctx as never);
     expect(bash.name).toBe("bash");
     expect(state.policy()).toBeUndefined();
+    expect(createDenialObserver).not.toHaveBeenCalled();
     expect(ctx.statuses.get("pipkin.sandbox")).toContain("unavailable");
-    await controller.sessionShutdown(ctx as never);
+    await session.sessionShutdown(ctx as never);
+  });
+
+  it("resets session diagnostics and replaces the observer on restart", async () => {
+    const first = observer();
+    const second = observer();
+    const observers = [first, second];
+    const { controller: session, denials } = controller({
+      supportedMac: true,
+      resolvePolicy: async () => policy,
+      createDenialObserver: () => observers.shift()!.value,
+    });
+    const ctx = context();
+    await session.sessionStart({} as never, ctx as never);
+    denials.recordDirect({ tool: "write", reason: "blocked" });
+    await session.sessionShutdown(ctx as never);
+    expect(denials.snapshot()).toEqual({ count: 0, recent: [] });
+    await session.sessionStart({} as never, ctx as never);
+    expect(first.dispose).toHaveBeenCalledOnce();
+    expect(second.start).toHaveBeenCalledOnce();
+    await session.sessionShutdown(ctx as never);
   });
 });

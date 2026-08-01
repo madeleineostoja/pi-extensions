@@ -152,7 +152,17 @@ function creationParameters(roots: readonly string[]): string[] {
   return roots.map((root, index) => `create${index}=${root}`);
 }
 
-export function sandboxProfile(policy: SandboxPolicy): string {
+function markedDenyDefault(marker: string | undefined): string {
+  if (marker === undefined) {
+    return "(deny default)";
+  }
+  if (!/^PIPKIN_[A-Za-z0-9]+$/.test(marker)) {
+    throw new Error("Sandbox: invalid denial marker.");
+  }
+  return `(deny default (with message "${marker}"))`;
+}
+
+export function sandboxProfile(policy: SandboxPolicy, marker?: string): string {
   assertWritableRoots(policy.writableRoots);
   assertCreationRoots(policy.creationRoots, policy.writableRoots);
   const recursiveRules = policy.writableRoots.flatMap((_, index) => [
@@ -162,7 +172,7 @@ export function sandboxProfile(policy: SandboxPolicy): string {
   const creationRules = policy.creationRoots.map(
     (_, index) => `  (literal (param "create${index}"))`,
   );
-  return `${SANDBOX_PROFILE}\n(allow file-write*\n${[
+  return `${SANDBOX_PROFILE.replace("(deny default)", markedDenyDefault(marker))}\n(allow file-write*\n${[
     ...recursiveRules,
     ...creationRules,
   ].join("\n")})`;
@@ -172,6 +182,7 @@ export function sandboxArguments(
   options: Readonly<{
     policy: SandboxPolicy;
     shell: Readonly<{ shell: string; args: readonly string[] }>;
+    marker?: string;
   }>,
 ): string[] {
   const definitions = [
@@ -181,7 +192,7 @@ export function sandboxArguments(
   return [
     ...definitions.flatMap((value) => ["-D", value]),
     "-p",
-    sandboxProfile(options.policy),
+    sandboxProfile(options.policy, options.marker),
     "--",
     options.shell.shell,
     ...options.shell.args,

@@ -13,6 +13,7 @@ import {
   createSandboxBashDefinition,
   createSandboxBashRuntime,
 } from "./bash.js";
+import type { SandboxDenialObserver } from "./denial-observer.js";
 import type { SandboxPolicy } from "./policy.js";
 
 const directories: string[] = [];
@@ -101,6 +102,38 @@ describe("Sandbox Bash runtime", () => {
       ),
     ).resolves.toEqual({ exitCode: 0 });
     expect(output.join("")).toBe(`forwarded:${realpathSync(workspace)}`);
+  });
+
+  it("registers a unique kernel-report marker for each protected Bash invocation", async () => {
+    const { executable, policy, workspace } = fixture();
+    const markers: string[] = [];
+    const releases: string[] = [];
+    const observer: SandboxDenialObserver = {
+      start: () => undefined,
+      registerBashInvocation(marker) {
+        markers.push(marker);
+        return () => releases.push(marker);
+      },
+      dispose: async () => undefined,
+    };
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+      denialObserver: observer,
+    });
+    for (const command of ["printf first", "printf second"]) {
+      await runtime.operations.exec(command, workspace, {
+        onData: () => undefined,
+      });
+    }
+    expect(markers).toHaveLength(2);
+    expect(new Set(markers).size).toBe(2);
+    expect(
+      markers.every((marker) => /^PIPKIN_[A-Fa-f0-9]+$/.test(marker)),
+    ).toBe(true);
+    expect(releases).toEqual(markers);
   });
 
   it("preserves Pi Bash partial updates and final result semantics", async () => {
