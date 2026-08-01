@@ -1890,7 +1890,10 @@ function invariantIssues(
         );
       }
     }
-    if (candidate.workstream.kind === "overall") {
+    if (
+      candidate.workstream.kind === "overall" &&
+      workstreamPhase(state, candidate.workstream) !== "completed"
+    ) {
       const openEpochIds = authorizedIds.filter(
         (findingId) => state.findings[findingId]?.status === "open",
       );

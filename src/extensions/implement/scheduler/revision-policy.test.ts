@@ -345,6 +345,139 @@ describe("revision policy", () => {
     );
   });
 
+  it("synchronizes canonical whole-plan findings and pending IDs after repair assessment", async () => {
+    const state = (await createSchedulerStore()).read();
+    const workstream = { kind: "overall" as const, repairId: "repair-1" };
+    const baselineId = "overall-baseline:repair-1";
+    const candidateId = "overall-repair:repair-1";
+    const findingIds = ["overall-repair-1-r1", "overall-repair-1-r2"];
+    const scope = {
+      kind: "whole_plan" as const,
+      initialTargetSha: "target-sha",
+      initialTargetTreeSha: "target-tree",
+    };
+    state.phase = "whole_plan_review";
+    state.candidates[baselineId] = {
+      id: baselineId,
+      workstream,
+      baseSha: "target-sha",
+      commitSha: "target-sha",
+      treeSha: "target-tree",
+    };
+    state.candidates[candidateId] = {
+      id: candidateId,
+      workstream,
+      baseSha: "target-sha",
+      commitSha: "repair-sha",
+      treeSha: "repair-tree",
+    };
+    state.workstreams.overall[workstream.repairId] = {
+      ...workstream,
+      phase: "candidate_ready",
+      candidateId,
+    };
+    for (const [index, id] of findingIds.entries()) {
+      state.findings[id] = {
+        id,
+        candidateId: baselineId,
+        workstream,
+        scope,
+        summary: index === 0 ? "Missing behavior" : "Coverage gap",
+        evidence: "The initial target does not satisfy this requirement.",
+        requiredChange: "Correct the repair.",
+        acceptanceCriteria: ["The requirement is satisfied."],
+        origin: "initial",
+        introducedRound: 0,
+        disposition: index === 0 ? "blocking" : "advisory",
+        status: "open",
+      };
+    }
+    state.reviews["overall:repair-1"] = {
+      candidateId,
+      comparisonBase: "target-sha",
+      previousCandidateId: baselineId,
+      round: 0,
+      pendingCorrectionIds: findingIds,
+      latestCorrection: {
+        fromCandidateId: baselineId,
+        changedPaths: ["src/repair.ts"],
+        evidence: "repair evidence",
+      },
+      evidence: ["initial whole-plan review"],
+      observations: [],
+    };
+    state.wholePlanReview = {
+      status: "repairing",
+      epoch: {
+        initialTargetSha: "target-sha",
+        initialTargetTreeSha: "target-tree",
+        findingIds,
+        pendingCorrectionIds: findingIds,
+      },
+    };
+
+    const requested = reduceRunEvent(state, {
+      kind: "review_requested",
+      workstream,
+      now: "2026-01-01T00:01:00.000Z",
+    });
+    const review = requested.effects[0]!;
+    if (review.kind !== "run_review") {
+      throw new Error("expected overall review");
+    }
+    const assessed = reduceRunEvent(requested.state, {
+      kind: "review_completed",
+      workstream,
+      leaseId: review.leaseId,
+      outcome: {
+        kind: "anchored",
+        candidateId,
+        previousCandidateId: baselineId,
+        comparisonBase: "target-sha",
+        changedPaths: ["src/repair.ts"],
+        findingEpoch: 0,
+        evidence: "repair assessment",
+        completion: {
+          publicationCommitSubject: "fix: repair whole plan",
+          assessments: [
+            {
+              id: findingIds[0]!,
+              status: "resolved",
+              evidence: "The repaired target now has the behavior.",
+            },
+            {
+              id: findingIds[1]!,
+              status: "unresolved",
+              evidence: "Representative coverage remains absent.",
+              disposition: "advisory",
+              summary: "Coverage gap",
+              requiredChange: "Add representative coverage.",
+              acceptanceCriteria: ["Coverage exercises the repair."],
+            },
+          ],
+          regressions: [],
+        },
+      },
+    });
+
+    expect(assessed.accepted).toBe(true);
+    expect(assessed.state.findings[findingIds[0]!]?.status).toBe("resolved");
+    expect(assessed.state.findings[findingIds[1]!]).toMatchObject({
+      status: "open",
+      disposition: "advisory",
+    });
+    expect(assessed.state.wholePlanReview.epoch?.pendingCorrectionIds).toEqual([
+      findingIds[1],
+    ]);
+    expect(
+      assessed.state.reviews["overall:repair-1"]?.pendingCorrectionIds,
+    ).toEqual([findingIds[1]]);
+    expect(Object.values(assessed.state.revisionAssignments)[0]).toMatchObject({
+      pendingCorrectionIds: [findingIds[1]],
+    });
+    expect(() => validateRunState(assessed.state, "test")).not.toThrow();
+  });
+
   it("retains resolved epoch IDs when final whole-plan review queues a regression repair", async () => {
     const state = (await createSchedulerStore()).read();
     const workstream = { kind: "overall" as const, repairId: "repair-1" };

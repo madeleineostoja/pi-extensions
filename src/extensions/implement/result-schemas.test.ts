@@ -110,6 +110,14 @@ describe("review completion schemas", () => {
       }),
     ).toBe(false);
     expect(
+      validates(anchoredWorkstreamReviewSchema, {
+        assessments: [],
+        regressions: [],
+        observations: [],
+        verdict: "approved",
+      }),
+    ).toBe(false);
+    expect(
       validates(initialAnchoredWorkstreamReviewSchema, {
         assessments: [],
         regressions: [],
