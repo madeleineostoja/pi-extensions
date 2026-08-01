@@ -1048,21 +1048,9 @@ export function reduceRunEvent(
             completion: event.outcome.completion,
             findings: workstreamReviewFindings(state, event.workstream),
             evidence: event.outcome.evidence,
-            ...(event.workstream.kind === "overall"
-              ? { pendingPolicy: "all_open" as const }
-              : {}),
           });
           const wholePlanEpoch = state.wholePlanReview.epoch;
-          const nextReview =
-            event.workstream.kind === "overall" && wholePlanEpoch
-              ? {
-                  ...update.review,
-                  pendingCorrectionIds: update.findings
-                    .filter((finding) => finding.status === "open")
-                    .map((finding) => finding.id),
-                }
-              : update.review;
-          state.reviews[key] = nextReview;
+          state.reviews[key] = update.review;
           for (const finding of update.findings) {
             state.findings[finding.id] = finding;
           }
@@ -1075,7 +1063,7 @@ export function reduceRunEvent(
               epoch: {
                 ...wholePlanEpoch,
                 findingIds: update.findings.map((finding) => finding.id),
-                pendingCorrectionIds: [...nextReview.pendingCorrectionIds],
+                pendingCorrectionIds: [...update.review.pendingCorrectionIds],
               },
             };
           }
@@ -2298,6 +2286,7 @@ export function reduceRunEvent(
               return finding ? [finding] : [];
             }),
             evidence: event.outcome.evidence,
+            pendingPolicy: "all_open",
           });
           if (update.findings.length < epoch.findingIds.length) {
             return reject(
@@ -2580,9 +2569,14 @@ function queueWholePlanRepair(
       };
     }
   }
-  if (args.findingIds.some((id) => state.findings[id]?.status !== "open")) {
+  if (
+    args.findingIds.some((id) => state.findings[id]?.status !== "open") ||
+    JSON.stringify(args.epoch.findingIds) !== JSON.stringify(args.findingIds) ||
+    JSON.stringify(args.epoch.pendingCorrectionIds) !==
+      JSON.stringify(args.findingIds)
+  ) {
     return reject(
-      "whole-plan repair has missing or settled canonical findings",
+      "whole-plan repair has inconsistent open canonical finding references",
     );
   }
   state.reviews[reviewKey(workstream)] = {

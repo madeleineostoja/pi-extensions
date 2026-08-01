@@ -238,6 +238,125 @@ describe("source review worker packets", () => {
     );
   });
 
+  it("rejects incomplete, duplicate, and foreign anchored assessments", () => {
+    const initial = applyInitialWorkstreamReview({
+      workstream,
+      candidateId: previousCandidate.id,
+      comparisonBase: "base",
+      completion: {
+        publicationCommitSubject: "fix: publish workstream",
+        findings: [
+          {
+            summary: "Missing behavior",
+            evidence: "The endpoint returns 404.",
+            requiredChange: "Add the endpoint.",
+            acceptanceCriteria: ["The endpoint returns 200."],
+            disposition: "blocking",
+          },
+        ],
+      },
+      evidence: "initial review",
+    });
+    const review = retargetAnchoredReview({
+      state: initial.review,
+      candidateId: candidate.id,
+      comparisonBase: "base",
+      correction: {
+        fromCandidateId: previousCandidate.id,
+        changedPaths: ["src/endpoint.ts"],
+        evidence: "correction",
+      },
+    });
+    const completion = {
+      assessments: [
+        {
+          id: initial.findings[0]!.id,
+          status: "resolved" as const,
+          evidence: "The endpoint responds.",
+        },
+      ],
+      regressions: [],
+    };
+
+    for (const assessments of [
+      [],
+      [...completion.assessments, ...completion.assessments],
+      [{ ...completion.assessments[0]!, id: "foreign-finding" }],
+    ]) {
+      expect(() =>
+        applyAnchoredWorkstreamReview({
+          state: review,
+          workstream,
+          findings: initial.findings,
+          completion: { ...completion, assessments },
+          evidence: "assessment",
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("keeps non-causal regressions as observations without correction authority", () => {
+    const initial = applyInitialWorkstreamReview({
+      workstream,
+      candidateId: previousCandidate.id,
+      comparisonBase: "base",
+      completion: {
+        publicationCommitSubject: "fix: publish workstream",
+        findings: [
+          {
+            summary: "Missing behavior",
+            evidence: "The endpoint returns 404.",
+            requiredChange: "Add the endpoint.",
+            acceptanceCriteria: ["The endpoint returns 200."],
+            disposition: "blocking",
+          },
+        ],
+      },
+      evidence: "initial review",
+    });
+    const reviewed = applyAnchoredWorkstreamReview({
+      state: retargetAnchoredReview({
+        state: initial.review,
+        candidateId: candidate.id,
+        comparisonBase: "base",
+        correction: {
+          fromCandidateId: previousCandidate.id,
+          changedPaths: ["src/endpoint.ts"],
+          evidence: "correction",
+        },
+      }),
+      workstream,
+      findings: initial.findings,
+      completion: {
+        assessments: [
+          {
+            id: initial.findings[0]!.id,
+            status: "resolved",
+            evidence: "The endpoint responds.",
+          },
+        ],
+        regressions: [
+          {
+            summary: "Unrelated concern",
+            evidence: "Another path has a concern.",
+            requiredChange: "Fix the unrelated concern.",
+            acceptanceCriteria: ["The other path works."],
+            disposition: "blocking",
+            changedPaths: ["src/unrelated.ts"],
+          },
+        ],
+      },
+      evidence: "assessment",
+    });
+
+    expect(reviewed.findings).toHaveLength(1);
+    expect(reviewed.review.pendingCorrectionIds).toEqual([]);
+    expect(reviewed.review.observations).toContainEqual({
+      summary: "Unrelated concern",
+      evidence: "Another path has a concern.",
+    });
+  });
+
   it("retains the exact anchored finding set and correction delta", () => {
     const review: ReviewState = {
       candidateId: candidate.id,
@@ -389,7 +508,6 @@ describe("source review worker packets", () => {
         regressions: [],
       },
       evidence: "repair assessment",
-      pendingPolicy: "all_open",
     });
 
     expect(reviewed.review.pendingCorrectionIds).toEqual([

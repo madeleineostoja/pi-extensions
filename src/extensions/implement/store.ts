@@ -1890,17 +1890,31 @@ function invariantIssues(
         );
       }
     }
-    for (const findingId of authorizedIds) {
-      const finding = state.findings[findingId]!;
+    if (candidate.workstream.kind === "overall") {
+      const openEpochIds = authorizedIds.filter(
+        (findingId) => state.findings[findingId]?.status === "open",
+      );
       if (
-        finding.status === "open" &&
-        finding.disposition === "blocking" &&
-        !outstanding.has(findingId) &&
-        !["approved", "completed"].includes(
-          workstreamPhase(state, candidate.workstream) ?? "",
-        )
+        JSON.stringify(review.pendingCorrectionIds) !==
+        JSON.stringify(openEpochIds)
       ) {
-        issues.push(`review ${key} lost open blocking finding ${findingId}`);
+        issues.push(
+          `overall review ${key} does not retain every open epoch finding as pending`,
+        );
+      }
+    } else {
+      for (const findingId of authorizedIds) {
+        const finding = state.findings[findingId]!;
+        if (
+          finding.status === "open" &&
+          finding.disposition === "blocking" &&
+          !outstanding.has(findingId) &&
+          !["approved", "completed"].includes(
+            workstreamPhase(state, candidate.workstream) ?? "",
+          )
+        ) {
+          issues.push(`review ${key} lost open blocking finding ${findingId}`);
+        }
       }
     }
     if (

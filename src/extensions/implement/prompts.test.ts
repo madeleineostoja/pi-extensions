@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildAnchoredOverallReviewPrompt,
   buildAnchoredWorkstreamReviewPrompt,
+  buildInitialWorkstreamReviewPrompt,
   buildInitialOverallReviewPrompt,
   buildOverallReworkPrompt,
   buildRevisionPrompt,
@@ -101,6 +102,50 @@ describe("whole-plan and repair prompts", () => {
     expect(prompt).toContain("Only this reviewer completion may resolve");
     expect(prompt).toContain("publication counterfactual");
     expect(prompt).toContain("material shippable improvements as advisory");
+  });
+
+  it("requires initial reviewers to classify only material findings for one correction opportunity", () => {
+    const source = buildInitialWorkstreamReviewPrompt({
+      role: "reviewer",
+      completionKind: "initial-review",
+      mode: "initial",
+      identity: "run-1/source/work",
+      workspace: { path: "/worktree", mutationBoundary: "read-only" },
+      workstream: { kind: "source", id: "work" },
+      candidate: {
+        id: "candidate",
+        workstream: { kind: "source", id: "work" },
+        baseSha: "base",
+        commitSha: "tip",
+        treeSha: "tree",
+      },
+      contracts: [],
+      sourceMaterial: [],
+      corpus: [],
+      schedule: { tasks: [], workstreams: [] },
+      checkpoints: {},
+      satisfiedEvidence: {},
+      outstandingFindings: [],
+    });
+    const overall = buildInitialOverallReviewPrompt({
+      planContext: "plan",
+      candidateContext: "candidate",
+      baseSha: "base",
+      currentSha: "tip",
+    });
+
+    for (const prompt of [source, overall]) {
+      expect(prompt).toContain("Classify each finding");
+      expect(prompt).toContain("blocking");
+      expect(prompt).toContain("advisory");
+      expect(prompt).toContain("minimum observable correction");
+      expect(prompt).toContain("acceptance criteria");
+      expect(prompt).toContain("Exclude style nits, speculative improvements");
+    }
+    expect(source).toContain("publication metadata, not approval");
+    expect(source).toContain(
+      "provide it whether you approve or request changes",
+    );
   });
 
   it("limits revision completion to observed changed or unchanged evidence", () => {

@@ -63,6 +63,13 @@ describe("revision policy", () => {
               acceptanceCriteria: ["endpoint responds"],
               disposition: "blocking",
             },
+            {
+              summary: "missing representative coverage",
+              evidence: "the endpoint has no integration coverage",
+              requiredChange: "add representative coverage",
+              acceptanceCriteria: ["coverage exercises the endpoint"],
+              disposition: "advisory",
+            },
           ],
         },
       },
@@ -77,7 +84,10 @@ describe("revision policy", () => {
       candidateId: "candidate:first",
       comparisonBase: "first-sha",
       findingEpoch: 0,
-      pendingCorrectionIds: ["source-first-stream-r1"],
+      pendingCorrectionIds: [
+        "source-first-stream-r1",
+        "source-first-stream-r2",
+      ],
     });
 
     const revisionRequested = reduceRunEvent(findings.state, {
@@ -135,6 +145,112 @@ describe("revision policy", () => {
     ).toBe(false);
   });
 
+  it("gives an initial advisory one exact scheduler-owned correction assignment", async () => {
+    const state = await stateAtRevision(1, false, [
+      {
+        summary: "Representative coverage",
+        evidence: "The endpoint has no integration coverage.",
+        requiredChange: "Add representative coverage.",
+        acceptanceCriteria: ["Coverage exercises the endpoint."],
+        disposition: "advisory",
+      },
+    ]);
+
+    expect(state.workstreams.source["first-stream"]?.phase).toBe("revising");
+    expect(state.reviews["source:first-stream"]?.pendingCorrectionIds).toEqual([
+      "source-first-stream-r1",
+    ]);
+    expect(Object.values(state.revisionAssignments)[0]).toMatchObject({
+      pendingCorrectionIds: ["source-first-stream-r1"],
+    });
+    expect(state.findings["source-first-stream-r1"]).toMatchObject({
+      status: "open",
+      disposition: "advisory",
+    });
+  });
+
+  it("approves an advisory-only reassessment without waiving its finding", async () => {
+    const state = await stateAtRevision();
+    const revisionRequested = reduceRunEvent(state, {
+      kind: "revision_requested",
+      workstream: { kind: "source", id: "first-stream" },
+      now: "2026-01-01T00:02:00.000Z",
+    });
+    const revision = revisionRequested.effects[0]!;
+    if (revision.kind !== "run_revision") {
+      throw new Error("expected revision");
+    }
+    const admitted = reduceRunEvent(revisionRequested.state, {
+      kind: "revision_completed",
+      workstream: revision.workstream,
+      leaseId: revision.leaseId,
+      assignmentId: revision.assignmentId,
+      outcome: {
+        kind: "candidate_ready",
+        candidate: candidate("revision:first", "revision-sha", "revision-tree"),
+        correction: {
+          fromCandidateId: "candidate:first",
+          changedPaths: ["src/endpoint.ts"],
+          evidence: "revision artifact",
+        },
+      },
+    });
+    const reviewRequested = reduceRunEvent(admitted.state, {
+      kind: "review_requested",
+      workstream: { kind: "source", id: "first-stream" },
+      now: "2026-01-01T00:03:00.000Z",
+    });
+    const review = reviewRequested.effects[0]!;
+    if (review.kind !== "run_review") {
+      throw new Error("expected review");
+    }
+    const assessed = reduceRunEvent(reviewRequested.state, {
+      kind: "review_completed",
+      workstream: review.workstream,
+      leaseId: review.leaseId,
+      outcome: {
+        kind: "anchored",
+        candidateId: "revision:first",
+        previousCandidateId: "candidate:first",
+        comparisonBase: "base-sha",
+        changedPaths: ["src/endpoint.ts"],
+        findingEpoch: 0,
+        evidence: "assessment artifact",
+        completion: {
+          assessments: [
+            {
+              id: "source-first-stream-r1",
+              status: "unresolved",
+              evidence: "A representative scenario remains uncovered.",
+              disposition: "advisory",
+              summary: "Representative coverage",
+              requiredChange: "Cover the remaining scenario.",
+              acceptanceCriteria: ["The remaining scenario is covered."],
+            },
+          ],
+          regressions: [],
+        },
+      },
+    });
+
+    expect(assessed.state.workstreams.source["first-stream"]?.phase).toBe(
+      "approved",
+    );
+    expect(
+      assessed.state.reviews["source:first-stream"]?.pendingCorrectionIds,
+    ).toEqual([]);
+    expect(assessed.state.findings["source-first-stream-r1"]).toMatchObject({
+      status: "open",
+      disposition: "advisory",
+      summary: "Representative coverage",
+    });
+    expect(
+      Object.values(assessed.state.revisionAssignments).some(
+        (assignment) => assignment.status === "open",
+      ),
+    ).toBe(false);
+  });
+
   it("rejects removed findings and invalid historical assignment snapshots", async () => {
     const state = await stateAtRevision();
     const finding = state.findings["source-first-stream-r1"]!;
@@ -158,6 +274,74 @@ describe("revision policy", () => {
     assignment.pendingCorrectionIds = ["unknown-finding"];
     expect(() => validateRunState(invalidSnapshot, "test")).toThrow(
       "revision assignment",
+    );
+  });
+
+  it("requires overall reviews and epochs to retain the same open canonical IDs", async () => {
+    const state = await stateAtRevision();
+    const workstream = { kind: "overall" as const, repairId: "repair-1" };
+    const candidateId = "overall-baseline:repair-1";
+    const findingId = "overall-repair-1-r1";
+    state.candidates[candidateId] = {
+      id: candidateId,
+      workstream,
+      baseSha: "target-sha",
+      commitSha: "target-sha",
+      treeSha: "target-tree",
+    };
+    state.workstreams.overall[workstream.repairId] = {
+      ...workstream,
+      phase: "candidate_ready",
+      candidateId,
+    };
+    state.findings[findingId] = {
+      id: findingId,
+      candidateId,
+      workstream,
+      scope: {
+        kind: "whole_plan",
+        initialTargetSha: "target-sha",
+        initialTargetTreeSha: "target-tree",
+      },
+      summary: "Missing whole-plan behavior",
+      evidence: "The published target misses required behavior.",
+      requiredChange: "Restore the required behavior.",
+      acceptanceCriteria: ["The target satisfies the whole-plan contract."],
+      origin: "initial",
+      introducedRound: 0,
+      disposition: "advisory",
+      status: "open",
+    };
+    state.reviews["overall:repair-1"] = {
+      candidateId,
+      comparisonBase: "target-sha",
+      round: 0,
+      pendingCorrectionIds: [findingId],
+      evidence: ["initial whole-plan review"],
+      observations: [],
+    };
+    state.wholePlanReview = {
+      status: "repairing",
+      epoch: {
+        initialTargetSha: "target-sha",
+        initialTargetTreeSha: "target-tree",
+        findingIds: [findingId],
+        pendingCorrectionIds: [findingId],
+      },
+    };
+
+    expect(() => validateRunState(state, "test")).not.toThrow();
+
+    const lostByReview = structuredClone(state);
+    lostByReview.reviews["overall:repair-1"]!.pendingCorrectionIds = [];
+    expect(() => validateRunState(lostByReview, "test")).toThrow(
+      "overall review overall:repair-1 does not retain every open epoch finding as pending",
+    );
+
+    const staleEpoch = structuredClone(state);
+    staleEpoch.findings[findingId]!.status = "resolved";
+    expect(() => validateRunState(staleEpoch, "test")).toThrow(
+      "whole-plan review epoch has an invalid pending finding",
     );
   });
 
@@ -310,7 +494,25 @@ describe("revision policy", () => {
   });
 });
 
-async function stateAtRevision(concurrency = 1, independent = false) {
+async function stateAtRevision(
+  concurrency = 1,
+  independent = false,
+  findings: Array<{
+    summary: string;
+    evidence: string;
+    requiredChange: string;
+    acceptanceCriteria: string[];
+    disposition: "blocking" | "advisory";
+  }> = [
+    {
+      summary: "missing behavior",
+      evidence: "the endpoint is incomplete",
+      requiredChange: "complete the endpoint",
+      acceptanceCriteria: ["endpoint responds"],
+      disposition: "blocking",
+    },
+  ],
+) {
   const store = await createSchedulerStore(concurrency, independent);
   const started = reduceRunEvent(store.read(), {
     kind: "workstreams_selected",
@@ -354,15 +556,7 @@ async function stateAtRevision(concurrency = 1, independent = false) {
       evidence: "review artifact",
       completion: {
         publicationCommitSubject: "fix: implement first task",
-        findings: [
-          {
-            summary: "missing behavior",
-            evidence: "the endpoint is incomplete",
-            requiredChange: "complete the endpoint",
-            acceptanceCriteria: ["endpoint responds"],
-            disposition: "blocking",
-          },
-        ],
+        findings,
       },
     },
   }).state;

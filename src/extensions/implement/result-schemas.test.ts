@@ -2,6 +2,8 @@ import Ajv from "ajv";
 import { describe, expect, it } from "vitest";
 import {
   anchoredWorkstreamReviewSchema,
+  initialAnchoredWorkstreamReviewSchema,
+  initialOverallReviewSchema,
   initialWorkstreamReviewSchema,
   repositoryStateReviewSchema,
 } from "./result-schemas.js";
@@ -27,6 +29,7 @@ describe("review completion schemas", () => {
       }),
     ).toBe(true);
     expect(validates(repositoryStateReviewSchema, { findings: [] })).toBe(true);
+    expect(validates(initialOverallReviewSchema, { findings: [] })).toBe(true);
   });
 
   it("rejects verdicts, unknown fields, and missing direct dispositions", () => {
@@ -40,6 +43,17 @@ describe("review completion schemas", () => {
     expect(
       validates(repositoryStateReviewSchema, {
         findings: [{ ...finding, disposition: undefined }],
+      }),
+    ).toBe(false);
+    expect(
+      validates(initialOverallReviewSchema, {
+        findings: [{ ...finding, acceptanceCriteria: [] }],
+      }),
+    ).toBe(false);
+    expect(
+      validates(initialWorkstreamReviewSchema, {
+        findings: [],
+        publicationCommitSubject: "invalid subject",
       }),
     ).toBe(false);
   });
@@ -77,5 +91,25 @@ describe("review completion schemas", () => {
         regressions: [],
       }),
     ).toBe(false);
+    expect(
+      validates(anchoredWorkstreamReviewSchema, {
+        assessments: [
+          {
+            id: "finding-1",
+            status: "resolved",
+            evidence: "Verified.",
+            disposition: "advisory",
+          },
+        ],
+        regressions: [{ ...finding, changedPaths: [] }],
+      }),
+    ).toBe(false);
+    expect(
+      validates(initialAnchoredWorkstreamReviewSchema, {
+        assessments: [],
+        regressions: [],
+        publicationCommitSubject: "fix: complete repair",
+      }),
+    ).toBe(true);
   });
 });

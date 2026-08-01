@@ -925,8 +925,11 @@ export function applyAnchoredWorkstreamReview(args: {
     introducedRound: nextRound,
     status: "open" as const,
   }));
+  const pendingPolicy =
+    args.pendingPolicy ??
+    (args.workstream.kind === "overall" ? "all_open" : "blocking");
   const pendingCorrectionIds =
-    args.pendingPolicy === "all_open"
+    pendingPolicy === "all_open"
       ? [...updated, ...regressions]
           .filter((finding) => finding.status === "open")
           .map((finding) => finding.id)
