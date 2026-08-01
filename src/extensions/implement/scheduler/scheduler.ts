@@ -1048,10 +1048,36 @@ export function reduceRunEvent(
             completion: event.outcome.completion,
             findings: workstreamReviewFindings(state, event.workstream),
             evidence: event.outcome.evidence,
+            ...(event.workstream.kind === "overall"
+              ? { pendingPolicy: "all_open" as const }
+              : {}),
           });
-          state.reviews[key] = update.review;
+          const wholePlanEpoch = state.wholePlanReview.epoch;
+          const nextReview =
+            event.workstream.kind === "overall" && wholePlanEpoch
+              ? {
+                  ...update.review,
+                  pendingCorrectionIds: update.findings
+                    .filter((finding) => finding.status === "open")
+                    .map((finding) => finding.id),
+                }
+              : update.review;
+          state.reviews[key] = nextReview;
           for (const finding of update.findings) {
             state.findings[finding.id] = finding;
+          }
+          if (event.workstream.kind === "overall") {
+            if (!wholePlanEpoch) {
+              return reject("overall repair review has no canonical epoch");
+            }
+            state.wholePlanReview = {
+              ...state.wholePlanReview,
+              epoch: {
+                ...wholePlanEpoch,
+                findingIds: update.findings.map((finding) => finding.id),
+                pendingCorrectionIds: [...nextReview.pendingCorrectionIds],
+              },
+            };
           }
         }
       } catch (error) {

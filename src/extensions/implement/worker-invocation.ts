@@ -65,7 +65,7 @@ const completionContracts = {
     role: "reviewer",
     readOnly: true,
     description:
-      "Assess the initial overall repair and author its publication subject.",
+      "Assess an anchored changed candidate and author its first publication subject.",
     schema: initialAnchoredWorkstreamReviewSchema,
   },
   "anchored-review": {

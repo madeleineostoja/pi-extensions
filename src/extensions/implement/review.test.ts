@@ -261,7 +261,7 @@ describe("source review worker packets", () => {
 
     expect(result).toMatchObject({
       role: "reviewer",
-      completionKind: "anchored-review",
+      completionKind: "initial-anchored-review",
       mode: "anchored",
       identity: "run-1/work/candidate:work:tip",
       outstandingFindings: [{ id: "finding-1" }],
@@ -328,6 +328,79 @@ describe("source review worker packets", () => {
     expect(anchored).toContain("Comparison base: base");
     expect(anchored).toContain("base..tip");
     expect(anchored).not.toContain("diff --git");
+    expect(anchored).toContain("publication counterfactual");
+    expect(anchored).toContain("Only this reviewer completion may resolve");
+    expect(anchored).toContain(
+      "Author one concise Conventional Commit subject",
+    );
+    expect(initial).toContain("Exclude style nits, speculative improvements");
+  });
+
+  it("keeps open whole-plan advisories pending during the Task-1 repair policy", () => {
+    const baseline = applyInitialWorkstreamReview({
+      workstream: { kind: "overall", repairId: "repair" },
+      candidateId: previousCandidate.id,
+      comparisonBase: previousCandidate.baseSha,
+      completion: {
+        findings: [
+          {
+            summary: "Blocking behavior",
+            evidence: "The endpoint returns 404.",
+            requiredChange: "Add the endpoint.",
+            acceptanceCriteria: ["The endpoint returns 200."],
+            disposition: "blocking",
+          },
+          {
+            summary: "Representative coverage",
+            evidence: "No integration coverage exists.",
+            requiredChange: "Add representative coverage.",
+            acceptanceCriteria: ["Coverage exercises the endpoint."],
+            disposition: "advisory",
+          },
+        ],
+      },
+      evidence: "initial whole-plan review",
+    });
+    const reviewed = applyAnchoredWorkstreamReview({
+      state: retargetAnchoredReview({
+        state: baseline.review,
+        candidateId: candidate.id,
+        comparisonBase: "base",
+        correction: {
+          fromCandidateId: previousCandidate.id,
+          changedPaths: ["src/endpoint.ts"],
+          evidence: "repair",
+        },
+      }),
+      workstream: { kind: "overall", repairId: "repair" },
+      findings: baseline.findings,
+      completion: {
+        publicationCommitSubject: "fix: repair whole plan",
+        assessments: [
+          {
+            id: baseline.findings[0]!.id,
+            status: "resolved",
+            evidence: "The endpoint returns 200.",
+          },
+          {
+            id: baseline.findings[1]!.id,
+            status: "unresolved",
+            evidence: "Coverage remains absent.",
+            disposition: "advisory",
+            summary: "Representative coverage",
+            requiredChange: "Add representative coverage.",
+            acceptanceCriteria: ["Coverage exercises the endpoint."],
+          },
+        ],
+        regressions: [],
+      },
+      evidence: "repair assessment",
+      pendingPolicy: "all_open",
+    });
+
+    expect(reviewed.review.pendingCorrectionIds).toEqual([
+      baseline.findings[1]!.id,
+    ]);
   });
 
   it("records a subject on the first overall repair review", () => {
@@ -383,6 +456,57 @@ describe("source review worker packets", () => {
     expect(reviewed.review.publicationCommitSubject).toBe(
       "fix: repair whole plan",
     );
+  });
+
+  it("authors a publication subject on the first changed repository-state reassessment", () => {
+    const initial = applyInitialWorkstreamReview({
+      workstream,
+      candidateId: previousCandidate.id,
+      comparisonBase: previousCandidate.baseSha,
+      completion: {
+        findings: [
+          {
+            summary: "Missing behavior",
+            evidence: "The endpoint returns 404.",
+            requiredChange: "Add the endpoint.",
+            acceptanceCriteria: ["The endpoint returns 200."],
+            disposition: "blocking",
+          },
+        ],
+      },
+      evidence: "repository-state review",
+    });
+    const reviewed = applyAnchoredWorkstreamReview({
+      state: retargetAnchoredReview({
+        state: initial.review,
+        candidateId: candidate.id,
+        comparisonBase: "base",
+        correction: {
+          fromCandidateId: previousCandidate.id,
+          changedPaths: ["src/endpoint.ts"],
+          evidence: "correction",
+        },
+      }),
+      workstream,
+      findings: initial.findings,
+      completion: {
+        publicationCommitSubject: "fix: publish changed repository state",
+        assessments: [
+          {
+            id: initial.findings[0]!.id,
+            status: "resolved",
+            evidence: "The endpoint returns 200.",
+          },
+        ],
+        regressions: [],
+      },
+      evidence: "anchored review",
+    });
+
+    expect(reviewed.review).toMatchObject({
+      pendingCorrectionIds: [],
+      publicationCommitSubject: "fix: publish changed repository state",
+    });
   });
 
   it("preserves the initial publication subject through a correction review", () => {

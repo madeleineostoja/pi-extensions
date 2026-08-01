@@ -1455,23 +1455,53 @@ function invariantIssues(
     );
   }
   if (wholePlanEpoch) {
-    const originalIds = new Set(wholePlanEpoch.findingIds);
-    if (originalIds.size !== wholePlanEpoch.findingIds.length) {
-      issues.push("whole-plan review epoch repeats an original finding ID");
+    const epochIds = new Set(wholePlanEpoch.findingIds);
+    if (epochIds.size !== wholePlanEpoch.findingIds.length) {
+      issues.push("whole-plan review epoch repeats a canonical finding ID");
     }
-    if (
-      !wholePlanEpoch.findingIds.every(
-        (findingId) => state.findings[findingId] !== undefined,
-      )
-    ) {
-      issues.push("whole-plan review epoch lost a canonical finding");
+    const pendingIds = new Set(wholePlanEpoch.pendingCorrectionIds);
+    if (pendingIds.size !== wholePlanEpoch.pendingCorrectionIds.length) {
+      issues.push("whole-plan review epoch repeats a pending finding ID");
     }
+    for (const findingId of wholePlanEpoch.findingIds) {
+      const finding = state.findings[findingId];
+      if (!finding) {
+        issues.push("whole-plan review epoch lost a canonical finding");
+      } else if (
+        finding.scope.kind !== "whole_plan" ||
+        finding.scope.initialTargetSha !== wholePlanEpoch.initialTargetSha ||
+        finding.scope.initialTargetTreeSha !==
+          wholePlanEpoch.initialTargetTreeSha
+      ) {
+        issues.push(
+          `whole-plan review epoch has a finding outside its immutable scope: ${findingId}`,
+        );
+      }
+    }
+    for (const findingId of wholePlanEpoch.pendingCorrectionIds) {
+      const finding = state.findings[findingId];
+      if (
+        !epochIds.has(findingId) ||
+        !finding ||
+        finding.status !== "open" ||
+        finding.scope.kind !== "whole_plan" ||
+        finding.scope.initialTargetSha !== wholePlanEpoch.initialTargetSha ||
+        finding.scope.initialTargetTreeSha !==
+          wholePlanEpoch.initialTargetTreeSha
+      ) {
+        issues.push("whole-plan review epoch has an invalid pending finding");
+      }
+    }
+    const openEpochIds = wholePlanEpoch.findingIds.filter(
+      (findingId) => state.findings[findingId]?.status === "open",
+    );
     if (
-      wholePlanEpoch.pendingCorrectionIds.some(
-        (findingId) => state.findings[findingId]?.status !== "open",
-      )
+      JSON.stringify(openEpochIds) !==
+      JSON.stringify(wholePlanEpoch.pendingCorrectionIds)
     ) {
-      issues.push("whole-plan review epoch has an unknown pending finding");
+      issues.push(
+        "whole-plan review epoch does not retain every open finding as pending",
+      );
     }
     const latestCandidate = wholePlanEpoch.latestRepair
       ? state.candidates[wholePlanEpoch.latestRepair.candidateId]
@@ -1948,6 +1978,19 @@ function invariantIssues(
   for (const [key, assignment] of Object.entries(state.revisionAssignments)) {
     const candidate = state.candidates[assignment.candidateId];
     const review = state.reviews[workstreamIdentity(assignment.workstream)];
+    const hasInvalidFindingSnapshot = assignment.pendingCorrectionIds.some(
+      (findingId) => {
+        const finding = state.findings[findingId];
+        return (
+          !finding ||
+          (assignment.workstream.kind === "source"
+            ? finding.workstream.kind !== "source" ||
+              finding.workstream.id !== assignment.workstream.id
+            : finding.scope.kind !== "whole_plan" ||
+              !state.wholePlanReview.epoch?.findingIds.includes(findingId))
+        );
+      },
+    );
     if (
       key !== assignment.id ||
       !candidate ||
@@ -1955,6 +1998,7 @@ function invariantIssues(
       assignment.comparisonBase !== candidate.commitSha ||
       new Set(assignment.pendingCorrectionIds).size !==
         assignment.pendingCorrectionIds.length ||
+      hasInvalidFindingSnapshot ||
       (assignment.status === "open" &&
         (!review ||
           review.candidateId !== assignment.candidateId ||
@@ -2241,9 +2285,12 @@ function invariantIssues(
       }
     }
     for (const [id, finding] of Object.entries(previous.findings)) {
-      if (
+      const retained = state.findings[id];
+      if (!retained) {
+        issues.push(`finding ${id} was removed`);
+      } else if (
         finding.status === "resolved" &&
-        state.findings[id]?.status !== "resolved"
+        retained.status !== "resolved"
       ) {
         issues.push(`resolved finding ${id} was reopened`);
       }

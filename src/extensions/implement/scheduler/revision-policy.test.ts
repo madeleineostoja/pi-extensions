@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { reduceRunEvent } from "./scheduler.js";
+import { validateRunState } from "../store.js";
 import {
   cleanupSchedulerStores,
   createSchedulerStore,
@@ -132,6 +133,32 @@ describe("revision policy", () => {
         },
       }).accepted,
     ).toBe(false);
+  });
+
+  it("rejects removed findings and invalid historical assignment snapshots", async () => {
+    const state = await stateAtRevision();
+    const finding = state.findings["source-first-stream-r1"]!;
+    const withAdvisory = structuredClone(state);
+    withAdvisory.findings["source-first-stream-advisory"] = {
+      ...finding,
+      id: "source-first-stream-advisory",
+      disposition: "advisory",
+    };
+    expect(() => validateRunState(withAdvisory, "test", state)).not.toThrow();
+
+    const withoutAdvisory = structuredClone(withAdvisory);
+    delete withoutAdvisory.findings["source-first-stream-advisory"];
+    expect(() =>
+      validateRunState(withoutAdvisory, "test", withAdvisory),
+    ).toThrow("finding source-first-stream-advisory was removed");
+
+    const invalidSnapshot = structuredClone(state);
+    const assignment = Object.values(invalidSnapshot.revisionAssignments)[0]!;
+    assignment.status = "completed";
+    assignment.pendingCorrectionIds = ["unknown-finding"];
+    expect(() => validateRunState(invalidSnapshot, "test")).toThrow(
+      "revision assignment",
+    );
   });
 
   it("settles the first unchanged revision as no progress without a duplicate revision", async () => {

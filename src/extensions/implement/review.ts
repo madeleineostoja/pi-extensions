@@ -117,7 +117,7 @@ export type InitialSourceReviewPacket = ReviewPacket & {
 
 export type AnchoredSourceReviewPacket = ReviewPacket & {
   role: "reviewer";
-  completionKind: "anchored-review";
+  completionKind: "initial-anchored-review" | "anchored-review";
   identity: string;
   workspace: { path: string; mutationBoundary: string };
   mode: "anchored";
@@ -412,7 +412,9 @@ export function buildSourceReviewWorkerPacket(args: {
   }
   return {
     ...common,
-    completionKind: "anchored-review",
+    completionKind: args.review.publicationCommitSubject
+      ? "anchored-review"
+      : "initial-anchored-review",
     mode: "anchored",
     previousCandidate: args.packet.previousCandidate,
     latestCorrection: args.review.latestCorrection,
@@ -830,6 +832,7 @@ export function applyAnchoredWorkstreamReview(args: {
     | InitialAnchoredWorkstreamReviewCompletion;
   findings: ReviewFinding[];
   evidence: string;
+  pendingPolicy?: "blocking" | "all_open";
 }): { review: ReviewState; findings: ReviewFinding[] } {
   assertAssessmentCoverage(
     args.state.pendingCorrectionIds,
@@ -922,21 +925,34 @@ export function applyAnchoredWorkstreamReview(args: {
     introducedRound: nextRound,
     status: "open" as const,
   }));
-  const pendingCorrectionIds = [
-    ...args.state.pendingCorrectionIds.filter((id) => {
-      const finding = updated.find((candidate) => candidate.id === id);
-      return !resolved.has(id) && finding?.disposition === "blocking";
-    }),
-    ...regressions
-      .filter((finding) => finding.disposition === "blocking")
-      .map((finding) => finding.id),
-  ];
+  const pendingCorrectionIds =
+    args.pendingPolicy === "all_open"
+      ? [...updated, ...regressions]
+          .filter((finding) => finding.status === "open")
+          .map((finding) => finding.id)
+      : [
+          ...args.state.pendingCorrectionIds.filter((id) => {
+            const finding = updated.find((candidate) => candidate.id === id);
+            return !resolved.has(id) && finding?.disposition === "blocking";
+          }),
+          ...regressions
+            .filter((finding) => finding.disposition === "blocking")
+            .map((finding) => finding.id),
+        ];
+  if (
+    !args.state.publicationCommitSubject &&
+    !("publicationCommitSubject" in args.completion)
+  ) {
+    throw new Error(
+      "The first anchored changed-candidate review must author a publication subject.",
+    );
+  }
   if (
     "publicationCommitSubject" in args.completion &&
     args.state.publicationCommitSubject
   ) {
     throw new Error(
-      "Only the first overall repair review may author a publication subject.",
+      "An anchored review cannot replace its publication subject.",
     );
   }
   return {
