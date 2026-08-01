@@ -138,6 +138,9 @@ describe("whole-plan and repair prompts", () => {
       expect(prompt).toContain("Classify each finding");
       expect(prompt).toContain("blocking");
       expect(prompt).toContain("advisory");
+      expect(prompt).toContain("publication counterfactual");
+      expect(prompt).toContain("one initial");
+      expect(prompt).toContain("do not return an approval verdict");
       expect(prompt).toContain("minimum observable correction");
       expect(prompt).toContain("acceptance criteria");
       expect(prompt).toContain("Exclude style nits, speculative improvements");

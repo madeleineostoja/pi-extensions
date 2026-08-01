@@ -2569,11 +2569,17 @@ function queueWholePlanRepair(
       };
     }
   }
+  const openEpochFindingIds = args.epoch.findingIds.filter(
+    (id) => state.findings[id]?.status === "open",
+  );
   if (
-    args.findingIds.some((id) => state.findings[id]?.status !== "open") ||
-    JSON.stringify(args.epoch.findingIds) !== JSON.stringify(args.findingIds) ||
+    args.epoch.findingIds.some(
+      (id) => state.findings[id]?.scope.kind !== "whole_plan",
+    ) ||
     JSON.stringify(args.epoch.pendingCorrectionIds) !==
-      JSON.stringify(args.findingIds)
+      JSON.stringify(openEpochFindingIds) ||
+    JSON.stringify(args.findingIds) !==
+      JSON.stringify(args.epoch.pendingCorrectionIds)
   ) {
     return reject(
       "whole-plan repair has inconsistent open canonical finding references",

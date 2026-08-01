@@ -345,6 +345,122 @@ describe("revision policy", () => {
     );
   });
 
+  it("retains resolved epoch IDs when final whole-plan review queues a regression repair", async () => {
+    const state = (await createSchedulerStore()).read();
+    const workstream = { kind: "overall" as const, repairId: "repair-1" };
+    const baselineId = "overall-baseline:repair-1";
+    const publishedId = "overall-published:repair-1";
+    const findingIds = ["overall-repair-1-r1", "overall-repair-1-r2"];
+    const scope = {
+      kind: "whole_plan" as const,
+      initialTargetSha: "target-sha",
+      initialTargetTreeSha: "target-tree",
+    };
+    state.candidates[baselineId] = {
+      id: baselineId,
+      workstream,
+      baseSha: "target-sha",
+      commitSha: "target-sha",
+      treeSha: "target-tree",
+    };
+    state.candidates[publishedId] = {
+      id: publishedId,
+      workstream,
+      baseSha: "target-sha",
+      commitSha: "repair-sha",
+      treeSha: "repair-tree",
+    };
+    state.workstreams.overall[workstream.repairId] = {
+      ...workstream,
+      phase: "completed",
+      candidateId: publishedId,
+    };
+    for (const [index, id] of findingIds.entries()) {
+      state.findings[id] = {
+        id,
+        candidateId: baselineId,
+        workstream,
+        scope,
+        summary: `Resolved finding ${index + 1}`,
+        evidence: "The repair verified this requirement.",
+        requiredChange: "Keep the repaired behavior.",
+        acceptanceCriteria: ["The requirement remains satisfied."],
+        origin: "initial",
+        introducedRound: 0,
+        disposition: "blocking",
+        status: "resolved",
+      };
+    }
+    state.reviews["overall:repair-1"] = {
+      candidateId: publishedId,
+      comparisonBase: "target-sha",
+      previousCandidateId: baselineId,
+      round: 1,
+      pendingCorrectionIds: [],
+      latestCorrection: {
+        fromCandidateId: baselineId,
+        changedPaths: ["src/repair.ts"],
+        evidence: "repair evidence",
+      },
+      evidence: ["repair review"],
+      observations: [],
+      publicationCommitSubject: "fix: repair whole plan",
+    };
+    state.phase = "whole_plan_review";
+    state.wholePlanReview = {
+      status: "reviewing",
+      epoch: {
+        initialTargetSha: "target-sha",
+        initialTargetTreeSha: "target-tree",
+        findingIds,
+        pendingCorrectionIds: [],
+        latestRepair: {
+          candidateId: publishedId,
+          targetBaseSha: "target-sha",
+          publishedCommitSha: "published-sha",
+          publishedTreeSha: "published-tree",
+          changedPaths: ["src/repair.ts"],
+        },
+      },
+    };
+
+    const queued = reduceRunEvent(state, {
+      kind: "whole_plan_review_completed",
+      outcome: {
+        kind: "anchored",
+        reviewedTargetSha: "published-sha",
+        reviewedTargetTreeSha: "published-tree",
+        evidence: "final whole-plan review",
+        completion: {
+          assessments: [],
+          regressions: [
+            {
+              summary: "Repair regression",
+              evidence: "The repair omits an edge case.",
+              requiredChange: "Handle the edge case.",
+              acceptanceCriteria: ["The edge case is handled."],
+              disposition: "blocking",
+              changedPaths: ["src/repair.ts"],
+            },
+          ],
+        },
+      },
+    });
+
+    expect(queued.accepted).toBe(true);
+    expect(queued.state.wholePlanReview).toMatchObject({
+      status: "repairing",
+      epoch: {
+        findingIds: [...findingIds, "overall-repair-1-r3"],
+        pendingCorrectionIds: ["overall-repair-1-r3"],
+      },
+    });
+    expect(
+      queued.state.reviews["overall:overall-repair-1"]?.pendingCorrectionIds,
+    ).toEqual(["overall-repair-1-r3"]);
+    expect(() => validateRunState(queued.state, "test")).not.toThrow();
+  });
+
   it("settles the first unchanged revision as no progress without a duplicate revision", async () => {
     const state = await stateAtRevision();
     const settled = requestAndLeaveUnchanged(state, "first wording");

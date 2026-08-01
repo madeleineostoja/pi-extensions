@@ -47,6 +47,11 @@ describe("review completion schemas", () => {
     ).toBe(false);
     expect(
       validates(initialOverallReviewSchema, {
+        findings: [{ ...finding, unexpected: "authority" }],
+      }),
+    ).toBe(false);
+    expect(
+      validates(initialOverallReviewSchema, {
         findings: [{ ...finding, acceptanceCriteria: [] }],
       }),
     ).toBe(false);
