@@ -106,6 +106,31 @@ describe("Sandbox policy", () => {
     expect(policy.writableRoots).not.toContain(realpathSync(root));
   });
 
+  it("normalizes the configured and standard temporary roots", async () => {
+    const workspace = directory("temporary-workspace");
+    const temporary = directory("temporary-root");
+    const alias = join(dirname(temporary), `${basename(temporary)}-alias`);
+    directories.push(alias);
+    symlinkSync(temporary, alias);
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: workspace,
+      homeDir: directory("temporary-home"),
+      temporaryDir: alias,
+      env: { TMPDIR: alias },
+    });
+    const canonicalTemporary = realpathSync(temporary);
+    expect(policy.temporaryRoots).toEqual(
+      expect.arrayContaining([
+        canonicalTemporary,
+        realpathSync("/tmp"),
+        realpathSync("/var/tmp"),
+      ]),
+    );
+    expect(
+      policy.temporaryRoots.filter((root) => root === canonicalTemporary),
+    ).toHaveLength(1);
+  });
+
   it("grants only reviewed package-cache purposes and their final effective roots", async () => {
     const root = directory("reviewed-caches");
     const workspace = join(root, "workspace");
@@ -150,6 +175,12 @@ describe("Sandbox policy", () => {
     expect(policy.writableRoots).not.toContain(realpathSync(home));
     expect(policy.writableRoots).not.toContain(
       realpathSync(join(home, "Library", "pnpm")),
+    );
+    expect(policy.writableRoots).not.toContain(
+      realpathSync(join(home, "Library", "Caches")),
+    );
+    expect(policy.writableRoots).not.toContain(
+      join(realpathSync(home), ".cargo"),
     );
     expect(policy.writableRoots).not.toContain(
       join(realpathSync(home), "pnpm-bin"),

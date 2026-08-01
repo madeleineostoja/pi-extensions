@@ -323,13 +323,14 @@ describe("Implement managed runtime integration", () => {
       ).toContain(`cwd=${realpathSync(workspace)}`);
       expect(existsSync(workspaceFile)).toBe(true);
       expect(invocation.cwd).toBe(realpathSync(workspace));
-      expect(invocation.args.slice(0, 4)).toEqual([
+      expect(invocation.args.slice(0, 5)).toEqual([
         "run",
+        "--no-diagnostics",
         "--config",
         expect.stringMatching(/pipkin-nono-manifest\.json$/),
         "--",
       ]);
-      expect(invocation.args[4]).toBeTruthy();
+      expect(invocation.args[5]).toBeTruthy();
       expect(invocation.manifest.filesystem.grants).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
