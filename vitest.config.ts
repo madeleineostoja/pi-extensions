@@ -1,7 +1,6 @@
 import { defineConfig } from "vitest/config";
 
 const features = [
-  "guard",
   "sandbox",
   "readonly",
   "context",

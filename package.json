@@ -21,7 +21,7 @@
   ],
   "pi": {
     "extensions": [
-      "./src/extensions/guard/index.ts",
+      "./src/extensions/sandbox/index.ts",
       "./src/extensions/readonly/index.ts",
       "./src/extensions/context/index.ts",
       "./src/extensions/ui/index.ts",
@@ -39,7 +39,6 @@
     "#test/*": "./test/support/*.ts"
   },
   "scripts": {
-    "postinstall": "node scripts/install-nono.mjs",
     "lint": "oxlint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -57,7 +56,6 @@
     "fs-native-extensions": "^1.5.0",
     "p-queue": "^9.3.2",
     "svelte-language-server": "0.17.19",
-    "tar": "7.5.22",
     "typescript": "5.7.3",
     "typescript-language-server": "4.3.3",
     "zod": "^4.4.3"

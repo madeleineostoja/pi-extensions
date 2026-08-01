@@ -11,7 +11,7 @@ Pipkin replaces Pi's footer with a compact display of:
 - active-branch cost across model switches;
 - prompt-cache hit rate;
 - context-window usage;
-- extension statuses such as Guard mode, readonly mode, active agents, or pending papercuts.
+- extension statuses such as Sandbox mode, readonly mode, active agents, or pending papercuts.
 
 Cost includes assistant usage and prompt-cache read/write pricing on the active branch. Subscription-auth responses are excluded, and cost disappears when the branch contains only subscription usage. Cache hit rate appears after cache activity exists.
 

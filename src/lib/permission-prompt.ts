@@ -1,4 +1,5 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { promptForAction } from "./action-prompt.js";
 
 export type PermissionPromptUI = Pick<ExtensionUIContext, "select" | "input">;
 
@@ -26,47 +27,32 @@ export type PromptForPermissionOptions<T extends string> = {
 export async function promptForPermission<T extends string>(
   options: PromptForPermissionOptions<T>,
 ): Promise<PermissionPromptResult<T>> {
-  const promptText = [options.title, options.detail].filter(Boolean).join("\n");
-  const labels = options.choices.map((choice) => choice.label);
-
+  const result = await promptForAction(options);
+  if (result.kind === "aborted") {
+    return result;
+  }
+  const selectedChoice = options.choices.find(
+    (choice) => choice.value === result.value,
+  );
+  if (!selectedChoice?.input) {
+    return result;
+  }
   try {
-    const selectedLabel = options.signal
-      ? await options.ui.select(promptText, labels, { signal: options.signal })
-      : await options.ui.select(promptText, labels);
-
-    if (selectedLabel === undefined) {
-      return { kind: "aborted" };
-    }
-
-    const selectedChoice = options.choices[labels.indexOf(selectedLabel)];
-    if (!selectedChoice) {
-      return { kind: "aborted" };
-    }
-
-    if (!selectedChoice.input) {
-      return { kind: "selected", value: selectedChoice.value };
-    }
-
     const message =
       (await options.ui.input(
         selectedChoice.input.title,
         selectedChoice.input.placeholder,
       )) ?? "";
-
-    return { kind: "selected", value: selectedChoice.value, message };
-  } catch (err) {
-    if (isAbortError(err)) {
+    return { ...result, message };
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      error.name === "AbortError"
+    ) {
       return { kind: "aborted" };
     }
-    throw err;
+    throw error;
   }
-}
-
-function isAbortError(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "name" in err &&
-    err.name === "AbortError"
-  );
 }

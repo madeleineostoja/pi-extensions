@@ -1,39 +1,17 @@
 # Safety
 
-Guard is Pipkin's sole owner of Bash, filesystem reachability, protected explicit reads, and semantic Bash confirmation. Readonly remains a separate confirmation owner for `edit` and `write`.
+Sandbox is Pipkin's repository-write boundary for model Bash and direct `write` and `edit` calls. Readonly remains a separate confirmation owner for `edit` and `write`.
 
-## Guard modes
+## Sandbox
 
-On supported macOS arm64 and x64 hosts, Guard runs agent Bash and trusted user `!` / `!!` Bash through managed Nono when its health probe succeeds. Nono receives a fixed capability manifest with explicit file or directory grants and **unrestricted networking**. It confines filesystem reachability; it does not prevent network exfiltration.
+On macOS, Sandbox starts enabled for every main and child Pi session. Model Bash runs under macOS Seatbelt through `/usr/bin/sandbox-exec`; its descendants can write only the canonical repository workspace, required Git administration state, canonical temporary roots, and reviewed npm/pnpm cache roots. Direct `write` and `edit` calls are separately checked against the canonical workspace and cannot escape through ordinary traversal or symlinks.
 
-`guard` means the Nono sandbox is active. `guard: tools-only` means Nono is unhealthy: agent Bash is blocked, while trusted `!` and `!!` commands run locally with one bounded warning. `guard: local` means either an unsupported platform or a supported-Mac session with the sandbox switched off. Local mode makes no confinement claim, but semantic confirmation and protected explicit-read checks still apply. Run `npm install` (or `npm run postinstall`) from the Pipkin root and reload or restart Pi to recover managed Nono; Guard does not install or repair it at runtime.
+`/sandbox` opens a compact panel showing the current state, canonical workspace, and extra writable roots. `/sandbox on` and `/sandbox off` change future model Bash and direct-tool calls in the current session. The footer shows `sandbox` when enabled and `sandbox off` after an explicit disable. Existing sandboxed descendants retain their inherited kernel policy.
 
-Use `/guard` to toggle the current **Sandbox on/off** and **Semantic guard on/off** states. Both reset to on when a new session starts. Unsupported hosts never use Nono; their UI-backed agent Bash still receives semantic confirmation, and protected explicit reads remain guarded.
+Linux reports `sandbox unavailable` and uses ordinary local model Bash without direct-tool gating. A macOS policy-initialization failure also reports unavailable, but keeps model Bash and direct mutations blocked until `/sandbox off` is chosen explicitly; reload the session to retry initialization. User `!` and `!!` Bash remains ordinary user shell execution on every platform.
 
-## Filesystem capabilities
-
-On a supported Mac, Guard builds a fixed sandbox from the canonical session cwd, ordinary temporary/cache roots, required system and device roots, and narrow read-only Pi introspection roots. Where present, `/dev/dtracehelper` is an exact read/write device grant and `/nix` is read-only for ordinary macOS/Nix command execution; Guard does not grant `/dev` broadly. Direct authorization always uses canonical paths. Nono also receives trusted operational aliases for those canonical roots, so platform tools can open paths such as `/etc`, `/private/etc`, temporary aliases, and inherited executable directories without making their parent roots reachable.
-
-Existing inherited `PATH` directories, ordinary Git configuration and ignore files, system/toolchain roots, and Pi's `<agent-dir>/pipkin`, `bin`, `extensions`, `skills`, `prompts`, and `themes` roots are read-only. Only the workspace, temporary roots, and recognized caches are writable. For a validated linked Git worktree, Guard also grants that worktree's registered Git administration and common Git directory, which gives ordinary Git commands the same capability as a normal checkout's `.git`. The registration must point back to the canonical worktree; malformed or one-way `.git` indirection receives no expansion. This does not grant sibling working trees or attempt per-ref confinement inside shared Git administration.
-
-Guard does not grant the agent root, `auth.json`, session files, general home access, credential files, SSH/GPG material, authentication sockets, broad `/var` or `/private`, or toolchain/configuration writes by default.
-
-Direct filesystem access outside that sandbox offers **Allow once** or **Block** in the interactive TUI. An approval applies only to the current tool call; it is not remembered and does not expand later Nono manifests. Bash cannot reach an outside path unless it belongs to the fixed sandbox or the sandbox is switched off. Failed Bash commands are never retried.
-
-Guard protects explicit reads of workspace `.env` files, project private-key names/extensions, and designated home credential files. Protected reads also offer only **Allow once** or **Block** and prompt again on later access. Directory `grep` and Bash can still read protected content inside their fixed filesystem capabilities; Guard is not a per-file Bash secret filter. File-targeted `grep` and explicit `read` remain protected.
-
-## Bash confirmation
-
-Before agent Bash starts, Guard assesses the final command and shows one ordered prompt for likely data loss or destructive external actions: **Allow once**, **Allow all this session**, or **Block**. Routine commands, including clean Git-tracked file moves and removals, do not prompt. Allowing all switches the semantic guard off for the rest of that session; it changes neither the sandbox nor Readonly. No-UI calls pass semantic prompting without waiting, but supported-Mac workers remain sandboxed and protected direct reads stay closed without one-shot approval.
-
-Trusted `!` and `!!` commands share the same fixed Nono sandbox when healthy, while preserving Pi's context behavior. They do not receive model-origin semantic prompts.
-
-## Scope limits
-
-Pipkin's tests use fake Nono executables to verify its manifests, invocation, lifecycle, and managed-worker composition. The installed managed binary remains subject to Guard's production fail-closed health probe, including allowed and denied filesystem access; Pipkin's repository suite does not re-test Nono's confinement implementation.
-
-Guard mediates Pi's Bash definition and selected direct filesystem tools. It does not mediate extension JavaScript, provider traffic, Web Fetch, direct RPC `{type:"bash"}`, or subprocesses owned by other extensions. Use an outer VM, container, or restricted environment when network isolation or broader process isolation is required.
+Sandbox permits broad filesystem reads, unrestricted networking, repository destruction, and shared Git-state changes. It does not protect secrets or prevent data from reaching providers or network services. It does not constrain extension JavaScript, extension-owned processes, provider traffic, Web Fetch, custom tools, language servers, remote mutations, or inherited credentials. Hostile or unattended work needs an external boundary such as a devcontainer, VM, or remote sandbox.
 
 ## Readonly
 
-Readonly keeps the established `/readonly` and `Ctrl+R` workflow for resolved `edit` and `write` calls. It is independent from Guard: accepting an edit does not expand sandbox reachability or approve Bash, and a one-shot Guard approval does not approve a later edit.
+Readonly keeps the established `/readonly` and `Ctrl+R` workflow for resolved `edit` and `write` calls. It is independent from Sandbox: accepting an edit does not expand Sandbox reachability, and turning Sandbox off does not disable Readonly.

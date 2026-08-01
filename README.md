@@ -9,7 +9,7 @@
   </p>
 </div>
 
-Pipkin is an extension for the [Pi](https://pi.dev) agent harness that brings a satchel of goodies. It can orchestrate teams of agents to autonomously implement plans, optimise context on the fly, guardrail running processes, and much more.
+Pipkin is an extension for the [Pi](https://pi.dev) agent harness that brings a satchel of goodies. It can orchestrate teams of agents to autonomously implement plans, optimise context on the fly, contain repository-write Bash on macOS, and much more.
 
 ## Getting setup
 
@@ -58,7 +58,7 @@ This makes it practical to give Pipkin a serious implementation plan and let it 
 
 Pipkin's first layers are deliberately about control:
 
-- **Guard** is the sole Bash, filesystem, protected-read, and semantic-confirmation owner. Supported Macs use a fixed managed Nono sandbox; unsupported sessions or sessions with the sandbox switched off retain semantic and protected-read checks without a confinement claim.
+- **Sandbox** owns model Bash and direct `write`/`edit` containment. On macOS it confines model Bash descendants to the canonical repository, required Git state, temporary roots, and reviewed package caches; direct tools stay within the workspace. Linux reports Sandbox as unavailable and uses local Bash.
 - **Readonly** separately checkpoints resolved tools named `edit` and `write`. Toggle its established workflow with `Ctrl+R` or `/readonly`.
 
 **[Safety →](docs/features/safety.md)**
@@ -103,7 +103,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 | Surface                           | What it does                                                   |
 | --------------------------------- | -------------------------------------------------------------- |
-| `/guard`                          | Toggle the session sandbox and semantic guard                  |
+| `/sandbox [on\|off]`              | Inspect or change the current repository-write Sandbox mode    |
 | `/readonly [on\|off]`             | Toggle approval for resolved `edit` and `write` tools          |
 | `context_recall`                  | Recover the original content behind an elision stub            |
 | `lsp`                             | Make semantic source queries or inspect language-server status |
@@ -116,7 +116,9 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 ## Limits
 
-Pipkin extensions are trusted code with the permissions of the Pi process. Guard does not confine JavaScript-side network calls made by trusted extensions, provider traffic, Web Fetch, direct RPC Bash, or language servers. Nono-managed Bash networking is unrestricted. Readonly steps aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
+On enabled macOS sessions, Sandbox lets model Bash and descendants write only the canonical repository, its required Git administration, temporary roots, and reviewed package caches; direct `write` and `edit` stay within the canonical workspace. It allows broad reads and unrestricted networking, and repository and shared Git state remain mutable.
+
+Pipkin extensions are trusted code with the permissions of the Pi process. Sandbox does not confine extension JavaScript, extension-owned processes, provider traffic, Web Fetch, direct RPC Bash, language servers, remote mutations, inherited credentials, or hostile repository code. Use a VM, devcontainer, remote sandbox, or equivalent external boundary for hostile or unattended work. Readonly steps aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
 
 Those are operating constraints, not footnotes. The feature guides spell out where each boundary begins and ends.
 

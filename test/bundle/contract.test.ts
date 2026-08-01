@@ -25,7 +25,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const expectedExtensions = [
-  "./src/extensions/guard/index.ts",
+  "./src/extensions/sandbox/index.ts",
   "./src/extensions/readonly/index.ts",
   "./src/extensions/context/index.ts",
   "./src/extensions/ui/index.ts",
@@ -54,7 +54,7 @@ const expectedTools = {
 };
 
 const expectedCommands = {
-  guard: "src/extensions/guard/index.ts",
+  sandbox: "src/extensions/sandbox/index.ts",
   readonly: "src/extensions/readonly/index.ts",
   agents: "src/extensions/subagents/index.ts",
   implement: "src/extensions/implement/index.ts",
@@ -65,7 +65,7 @@ const expectedCommands = {
 const expectedRenderers = {};
 
 const safetyPaths = [
-  "src/extensions/guard/index.ts",
+  "src/extensions/sandbox/index.ts",
   "src/extensions/readonly/index.ts",
 ];
 const managedGlobalSymbols = [
@@ -397,15 +397,15 @@ describe("Pipkin bundle", () => {
     );
   });
 
-  it("keeps safety startup and reload handlers ordered and registers Guard", async () => {
+  it("keeps safety startup and reload handlers ordered and registers Sandbox", async () => {
     const fixture = await loadBundle();
     await assertSafetyOrder(fixture, "startup");
     expect(provenanceMap(safetyExtensions(fixture.result), "tools")).toEqual(
-      expectedProvenance({ bash: "src/extensions/guard/index.ts" }),
+      expectedProvenance({ bash: "src/extensions/sandbox/index.ts" }),
     );
     expect(provenanceMap(safetyExtensions(fixture.result), "commands")).toEqual(
       expectedProvenance({
-        guard: "src/extensions/guard/index.ts",
+        sandbox: "src/extensions/sandbox/index.ts",
         readonly: "src/extensions/readonly/index.ts",
       }),
     );

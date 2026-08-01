@@ -80,7 +80,7 @@ Nested Explore runs created by managed Pipkin workflows use the same runtime and
 
 Subagents inherit the parent extension environment and active tools, except public agent tools are withheld to prevent recursive fan-out. Explore and Review retain shell access for discovery and checks. Their read-only behavior is a trusted-model instruction, not technical confinement.
 
-Public subagents share the invoking session's filesystem and **do not receive isolated Git worktrees**. Do not edit files that a child currently owns. If implementation needs strong workspace separation and publication control, use [Implement](implementation.md), whose trusted managed workers run in owned disposable worktrees.
+Public subagents share the invoking session's filesystem and **do not receive isolated Git worktrees**. Each child independently starts Sandbox from its own runtime cwd; a parent that turned Sandbox off does not disable later children. Do not edit files that a child currently owns. If implementation needs strong workspace separation and publication control, use [Implement](implementation.md), whose trusted managed workers run in owned disposable worktrees.
 
 ## Model routing
 

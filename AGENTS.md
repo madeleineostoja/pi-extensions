@@ -44,6 +44,6 @@ Vitest projects run adjacent feature/library tests and the root bundle contract.
 ## Development workflow
 
 - To add a feature, create `src/extensions/<feature>/index.ts`, add it in its intentional position to `package.json#pi.extensions`, add adjacent behavior tests, extend `test/bundle/` if public registrations or ordering change, and update the relevant concept guide plus the root README.
-- Root registration order is a runtime contract. Guard and Readonly lead the bundle; Subagents precedes Implement.
+- Root registration order is a runtime contract. Sandbox and Readonly lead the bundle; Subagents precedes Implement.
 - Prefer root-level validation before handoff. For TypeScript changes, run the narrowest relevant test and `npm run check`; run bundle tests when manifest entries, registrations, internal imports, or lifecycle ordering change.
 - If changing Pi extension APIs or TUI integrations, verify against the local Pi docs referenced in the harness instructions rather than relying on memory.

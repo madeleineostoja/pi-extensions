@@ -233,7 +233,7 @@ describe("status line sanitization", () => {
     const result = buildStatusLine(
       new Map([
         ["z", "z-status"],
-        ["pipkin.guard", "guard-status"],
+        ["pipkin.sandbox", "sandbox-status"],
         ["pipkin.implement.status", "implement-status"],
         ["pipkin.papercuts.status", "papercuts-status"],
         ["a", "a-status"],
@@ -249,9 +249,9 @@ describe("status line sanitization", () => {
       result.indexOf("readonly-status"),
     );
     expect(result.indexOf("readonly-status")).toBeLessThan(
-      result.indexOf("guard-status"),
+      result.indexOf("sandbox-status"),
     );
-    expect(result.indexOf("guard-status")).toBeLessThan(
+    expect(result.indexOf("sandbox-status")).toBeLessThan(
       result.indexOf("a-status"),
     );
     expect(result.indexOf("a-status")).toBeLessThan(result.indexOf("z-status"));

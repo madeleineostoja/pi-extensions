@@ -197,7 +197,7 @@ const STATUS_ORDER = new Map([
   ["pipkin.implement.status", 0],
   ["pipkin.papercuts.status", 1],
   ["pipkin.readonly.mode", 2],
-  ["pipkin.guard", 3],
+  ["pipkin.sandbox", 3],
 ]);
 
 export function buildStatusLine(

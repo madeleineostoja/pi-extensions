@@ -72,7 +72,7 @@ Once no safe work, lease, publication transaction, or projection debt remains, a
 
 ## Protecting the target checkout
 
-The invoking checkout remains orchestrator-owned. Managed agents do not run while integration or publication is active, and publication does not run while managed agents are active.
+The invoking checkout remains orchestrator-owned. Managed agents do not run while integration or publication is active, and publication does not run while managed agents are active. Each worker receives its controlled worktree cwd and initializes its own enabled Sandbox policy there.
 
 Before and after managed work, Pipkin verifies:
 
