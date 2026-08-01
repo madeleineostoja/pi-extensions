@@ -157,7 +157,7 @@ describe("checkout store transitions", () => {
     );
   });
 
-  it("rejects version-7 retained state rather than interpreting it as active", () => {
+  it("rejects retained legacy state", () => {
     const directory = root();
     const lease = fakeLease(directory);
     const store = createPlanningRun({
@@ -177,40 +177,14 @@ describe("checkout store transitions", () => {
       },
       workerConcurrency: 1,
     });
-    writeFileSync(store.path, JSON.stringify({ ...store.read(), version: 7 }));
 
-    expect(() => RunStore.open(lease, store.path)).toThrow(
-      "legacy schema version 7",
-    );
-  });
-
-  it("rejects legacy state rather than interpreting it as an active operation", () => {
-    const directory = root();
-    const lease = fakeLease(directory);
-    const store = createPlanningRun({
-      lease,
-      runId: "run-1",
-      checkout: {
-        root: directory,
-        gitDir: join(directory, ".git"),
-        commonGitDir: join(directory, ".git"),
-        branchRef: "main",
-        startHead: "base-sha",
-      },
-      source: {
-        entry: { path: join(directory, "plan.md"), normalizedHash: sha256("") },
-        corpus: [{ path: join(directory, "plan.md"), hash: sha256("") }],
-        protectedArtifactHashes: { [join(directory, "plan.md")]: sha256("") },
-      },
-      workerConcurrency: 1,
-    });
-    const legacy = { ...store.read(), version: 4 };
-    writeFileSync(store.path, JSON.stringify(legacy));
-
-    expect(() => RunStore.open(lease, store.path)).toThrow(StateError);
-    expect(() => RunStore.open(lease, store.path)).toThrow(
-      "legacy schema version 4",
-    );
+    for (const version of [7, 4]) {
+      writeFileSync(store.path, JSON.stringify({ ...store.read(), version }));
+      expect(() => RunStore.open(lease, store.path)).toThrow(StateError);
+      expect(() => RunStore.open(lease, store.path)).toThrow(
+        `legacy schema version ${version}`,
+      );
+    }
   });
 
   it("binds an exact retained plan after interruption between plan and state persistence", async () => {

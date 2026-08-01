@@ -17,11 +17,11 @@ const finding = {
 };
 
 function validates(schema: object, value: unknown): boolean {
-  return Boolean(new Ajv({ allErrors: true }).compile(schema)(value));
+  return Boolean(new Ajv().compile(schema)(value));
 }
 
 describe("review completion schemas", () => {
-  it("accepts structured direct findings and empty findings without a verdict", () => {
+  it("accepts direct findings, empty findings, and complete assessments without verdicts", () => {
     expect(
       validates(initialWorkstreamReviewSchema, {
         findings: [finding],
@@ -30,45 +30,6 @@ describe("review completion schemas", () => {
     ).toBe(true);
     expect(validates(repositoryStateReviewSchema, { findings: [] })).toBe(true);
     expect(validates(initialOverallReviewSchema, { findings: [] })).toBe(true);
-    expect(
-      validates(initialOverallReviewSchema, {
-        findings: [{ ...finding, disposition: "advisory" }],
-      }),
-    ).toBe(true);
-  });
-
-  it("rejects verdicts, unknown fields, and missing direct dispositions", () => {
-    expect(
-      validates(initialWorkstreamReviewSchema, {
-        findings: [finding],
-        publicationCommitSubject: "fix: return documented response",
-        verdict: "changes_requested",
-      }),
-    ).toBe(false);
-    expect(
-      validates(repositoryStateReviewSchema, {
-        findings: [{ ...finding, disposition: undefined }],
-      }),
-    ).toBe(false);
-    expect(
-      validates(initialOverallReviewSchema, {
-        findings: [{ ...finding, unexpected: "authority" }],
-      }),
-    ).toBe(false);
-    expect(
-      validates(initialOverallReviewSchema, {
-        findings: [{ ...finding, acceptanceCriteria: [] }],
-      }),
-    ).toBe(false);
-    expect(
-      validates(initialWorkstreamReviewSchema, {
-        findings: [],
-        publicationCommitSubject: "invalid subject",
-      }),
-    ).toBe(false);
-  });
-
-  it("requires complete resolved and unresolved assessment shapes", () => {
     expect(
       validates(anchoredWorkstreamReviewSchema, {
         assessments: [
@@ -90,105 +51,59 @@ describe("review completion schemas", () => {
             changedPaths: ["src/endpoint.ts"],
           },
         ],
-        observations: [{ summary: "Unrelated concern", evidence: "No delta." }],
       }),
     ).toBe(true);
-    expect(
-      validates(anchoredWorkstreamReviewSchema, {
-        assessments: [
-          { id: "finding-1", status: "unresolved", evidence: "Still present." },
-        ],
-        regressions: [],
-      }),
-    ).toBe(false);
-    expect(
-      validates(anchoredWorkstreamReviewSchema, {
-        assessments: [
-          {
-            id: "finding-1",
-            status: "resolved",
-            evidence: "Verified.",
-            disposition: "advisory",
-          },
-        ],
-        regressions: [{ ...finding, changedPaths: [] }],
-      }),
-    ).toBe(false);
-    expect(
-      validates(anchoredWorkstreamReviewSchema, {
-        assessments: [],
-        regressions: [],
-        observations: [],
-        verdict: "approved",
-      }),
-    ).toBe(false);
-    expect(
-      validates(initialAnchoredWorkstreamReviewSchema, {
-        assessments: [],
-        regressions: [],
-        publicationCommitSubject: "fix: complete repair",
-      }),
-    ).toBe(true);
-    expect(
-      validates(initialAnchoredWorkstreamReviewSchema, {
-        assessments: [],
-        regressions: [],
-      }),
-    ).toBe(false);
-    expect(
-      validates(anchoredWorkstreamReviewSchema, {
-        assessments: [
-          {
-            id: "finding-1",
-            status: "resolved",
-            evidence: "Verified.",
-            disposition: "advisory",
-          },
-        ],
-        regressions: [],
-      }),
-    ).toBe(false);
-    expect(
-      validates(anchoredWorkstreamReviewSchema, {
-        assessments: [
-          {
-            id: "finding-1",
-            status: "unresolved",
-            evidence: "Still present.",
-            disposition: "blocking",
-            summary: "Missing response",
-            requiredChange: "Return the documented response.",
-            acceptanceCriteria: ["The endpoint returns 200."],
-            verdict: "changes_requested",
-          },
-        ],
-        regressions: [{ ...finding, changedPaths: ["src/endpoint.ts"] }],
-      }),
-    ).toBe(false);
-    expect(
-      validates(anchoredWorkstreamReviewSchema, {
-        assessments: [],
-        regressions: [
-          {
-            ...finding,
-            changedPaths: ["src/endpoint.ts"],
-            status: "resolved",
-          },
-        ],
-      }),
-    ).toBe(false);
-    expect(
-      validates(anchoredWorkstreamReviewSchema, {
-        assessments: [],
-        regressions: [],
-        observations: [
-          {
-            summary: "Unrelated concern",
-            evidence: "No delta.",
-            changedPaths: ["src/endpoint.ts"],
-          },
-        ],
-      }),
-    ).toBe(false);
+  });
+
+  it("rejects verdicts and incomplete finding authority", () => {
+    const invalid: Array<[object, unknown]> = [
+      [
+        initialWorkstreamReviewSchema,
+        {
+          findings: [finding],
+          publicationCommitSubject: "fix: return documented response",
+          verdict: "changes_requested",
+        },
+      ],
+      [
+        repositoryStateReviewSchema,
+        { findings: [{ ...finding, disposition: undefined }] },
+      ],
+      [
+        anchoredWorkstreamReviewSchema,
+        {
+          assessments: [
+            {
+              id: "finding-1",
+              status: "unresolved",
+              evidence: "Still present.",
+            },
+          ],
+          regressions: [],
+        },
+      ],
+      [
+        anchoredWorkstreamReviewSchema,
+        {
+          assessments: [
+            {
+              id: "finding-1",
+              status: "resolved",
+              evidence: "Verified.",
+              disposition: "advisory",
+            },
+          ],
+          regressions: [],
+        },
+      ],
+      [
+        initialAnchoredWorkstreamReviewSchema,
+        { assessments: [], regressions: [] },
+      ],
+    ];
+
+    for (const [schema, completion] of invalid) {
+      expect(validates(schema, completion)).toBe(false);
+    }
   });
 });

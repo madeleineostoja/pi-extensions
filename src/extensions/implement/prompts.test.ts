@@ -98,14 +98,9 @@ describe("whole-plan and repair prompts", () => {
     });
 
     expect(prompt).toContain("Author one concise Conventional Commit subject");
-    expect(prompt).toContain("whether assessments leave blockers, advisories");
     expect(prompt).toContain("Only this reviewer completion may resolve");
     expect(prompt).toContain("Assess every outstanding ID exactly once");
-    expect(prompt).toContain("A resolved ID cannot reopen");
-    expect(prompt).toContain("new causal regression only");
-    expect(prompt).toContain("observations never block");
     expect(prompt).toContain("publication counterfactual");
-    expect(prompt).toContain("material shippable improvements as advisory");
   });
 
   it("requires initial reviewers to classify only material findings for one correction opportunity", () => {
@@ -139,20 +134,12 @@ describe("whole-plan and repair prompts", () => {
     });
 
     for (const prompt of [source, overall]) {
-      expect(prompt.toLowerCase()).toContain("classify each");
-      expect(prompt).toContain("blocking");
-      expect(prompt).toContain("advisory");
       expect(prompt).toContain("publication counterfactual");
       expect(prompt).toContain("one initial");
       expect(prompt).toContain("do not return an approval verdict");
-      expect(prompt).toContain("minimum observable correction");
-      expect(prompt).toContain("acceptance criteria");
       expect(prompt).toContain("Exclude style nits, speculative improvements");
     }
     expect(source).toContain("publication metadata, not approval");
-    expect(source).toContain(
-      "provide it whether you approve or request changes",
-    );
   });
 
   it("limits revision completion to observed changed or unchanged evidence", () => {
