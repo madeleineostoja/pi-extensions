@@ -328,12 +328,6 @@ describe("source review worker packets", () => {
     expect(anchored).toContain("Comparison base: base");
     expect(anchored).toContain("base..tip");
     expect(anchored).not.toContain("diff --git");
-    expect(anchored).toContain("publication counterfactual");
-    expect(anchored).toContain("Only this reviewer completion may resolve");
-    expect(anchored).toContain(
-      "Author one concise Conventional Commit subject",
-    );
-    expect(initial).toContain("Exclude style nits, speculative improvements");
   });
 
   it("keeps open whole-plan advisories pending during the Task-1 repair policy", () => {

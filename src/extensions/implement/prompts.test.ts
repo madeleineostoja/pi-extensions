@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAnchoredOverallReviewPrompt,
+  buildAnchoredWorkstreamReviewPrompt,
   buildInitialOverallReviewPrompt,
   buildOverallReworkPrompt,
   buildRevisionPrompt,
@@ -55,6 +56,51 @@ describe("whole-plan and repair prompts", () => {
     expect(anchored).toContain("Comparison base SHA: run-base");
     expect(anchored).toContain("run-base..current-repair");
     expect(repair).toContain("run-base..current-repair");
+  });
+
+  it("requires reviewer-owned publication disposition and first changed-candidate metadata", () => {
+    const prompt = buildAnchoredWorkstreamReviewPrompt({
+      role: "reviewer",
+      completionKind: "initial-anchored-review",
+      mode: "anchored",
+      identity: "run-1/work/candidate",
+      workspace: { path: "/worktree", mutationBoundary: "read-only" },
+      workstream: { kind: "source", id: "work" },
+      candidate: {
+        id: "candidate",
+        workstream: { kind: "source", id: "work" },
+        baseSha: "base",
+        commitSha: "candidate-sha",
+        treeSha: "candidate-tree",
+      },
+      previousCandidate: {
+        id: "previous",
+        workstream: { kind: "source", id: "work" },
+        baseSha: "base",
+        commitSha: "previous-sha",
+        treeSha: "previous-tree",
+      },
+      comparisonBase: "base",
+      findingEpoch: 1,
+      latestCorrection: {
+        fromCandidateId: "previous",
+        changedPaths: ["src/endpoint.ts"],
+        evidence: "correction",
+      },
+      contracts: [],
+      sourceMaterial: [],
+      corpus: [],
+      schedule: { tasks: [], workstreams: [] },
+      checkpoints: {},
+      satisfiedEvidence: {},
+      outstandingFindings: [],
+    });
+
+    expect(prompt).toContain("Author one concise Conventional Commit subject");
+    expect(prompt).toContain("whether assessments leave blockers, advisories");
+    expect(prompt).toContain("Only this reviewer completion may resolve");
+    expect(prompt).toContain("publication counterfactual");
+    expect(prompt).toContain("material shippable improvements as advisory");
   });
 
   it("limits revision completion to observed changed or unchanged evidence", () => {
