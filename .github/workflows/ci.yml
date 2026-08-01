@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  check:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,10 +14,21 @@ jobs:
         with:
           node-version: 24
           cache: npm
-
       - run: npm ci --frozen-lockfile
-
       - run: npm run lint
       - run: npm run format:check
       - run: npm run typecheck
+
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --frozen-lockfile
       - run: npm run test

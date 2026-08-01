@@ -1,0 +1,266 @@
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import {
+  createBashToolDefinition,
+  createLocalBashOperations,
+  getShellConfig,
+  type BashOperations,
+} from "@earendil-works/pi-coding-agent";
+import type { SandboxPolicy } from "./policy.js";
+import { SANDBOX_EXECUTABLE, sandboxArguments } from "./seatbelt.js";
+
+const MAX_TIMEOUT_MS = 2_147_483_647;
+const TERMINATION_WAIT_MS = 5_000;
+const TERMINATION_POLL_MS = 10;
+
+type ActiveInvocation = Readonly<{
+  terminate: () => void;
+  settled: Promise<void>;
+}>;
+
+function timeoutMs(timeout: number | undefined): number | undefined {
+  if (timeout === undefined) {
+    return undefined;
+  }
+  if (!Number.isFinite(timeout) || timeout <= 0) {
+    throw new Error("Invalid timeout: must be a finite number of seconds");
+  }
+  const milliseconds = timeout * 1000;
+  if (milliseconds > MAX_TIMEOUT_MS) {
+    throw new Error(
+      `Invalid timeout: maximum is ${MAX_TIMEOUT_MS / 1000} seconds`,
+    );
+  }
+  return milliseconds;
+}
+
+function terminate(child: ChildProcess): void {
+  if (!child.pid) {
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(child.pid, "SIGKILL");
+    } catch {}
+  }
+}
+
+async function waitForProcessTree(pid: number): Promise<boolean> {
+  if (process.platform === "win32") {
+    return true;
+  }
+  const deadline = Date.now() + TERMINATION_WAIT_MS;
+  while (true) {
+    try {
+      process.kill(-pid, 0);
+    } catch {
+      return true;
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, TERMINATION_POLL_MS));
+  }
+}
+
+export type SandboxBashRuntime = Readonly<{
+  operations: BashOperations;
+  dispose: () => Promise<void>;
+}>;
+
+export type SandboxSpawn = (
+  command: string,
+  args: readonly string[],
+  options: Parameters<typeof spawn>[2],
+) => ChildProcess;
+
+export function createSandboxBashRuntime(
+  options: Readonly<{
+    policy?: SandboxPolicy;
+    enabled: () => boolean;
+    supportedMac?: boolean;
+    unavailableReason?: string;
+    shellPath?: string;
+    spawn?: SandboxSpawn;
+    sandboxExecutable?: string;
+  }>,
+): SandboxBashRuntime {
+  const local = createLocalBashOperations({ shellPath: options.shellPath });
+  const active = new Set<ActiveInvocation>();
+  const supportedMac = options.supportedMac ?? process.platform === "darwin";
+  let disposed = false;
+  let disposing: Promise<void> | undefined;
+
+  const protectedOperations: BashOperations = {
+    async exec(command, cwd, execution) {
+      if (disposed) {
+        throw new Error("Sandbox: Bash is shutting down.");
+      }
+      if (!options.policy) {
+        throw new Error(
+          options.unavailableReason ?? "Sandbox: Bash is unavailable.",
+        );
+      }
+      if (execution.signal?.aborted) {
+        throw new Error("aborted");
+      }
+      const timeout = timeoutMs(execution.timeout);
+      const configuredShell = getShellConfig(options.shellPath);
+      const shell = {
+        shell: configuredShell.shell,
+        args:
+          configuredShell.commandTransport === "stdin"
+            ? configuredShell.args
+            : ["-s"],
+      };
+      const args = sandboxArguments({ policy: options.policy, shell });
+      return new Promise<{ exitCode: number | null }>(
+        (resolveResult, reject) => {
+          let child: ChildProcess;
+          let timer: NodeJS.Timeout | undefined;
+          let abort: (() => void) | undefined;
+          let finished = false;
+          let terminationError: Error | undefined;
+          let terminatedPid: number | undefined;
+          let invocation: ActiveInvocation | undefined;
+          let settleInvocation: () => void = () => undefined;
+          const output: Buffer[] = [];
+          const cleanup = () => {
+            if (timer) {
+              clearTimeout(timer);
+            }
+            if (abort) {
+              execution.signal?.removeEventListener("abort", abort);
+            }
+            if (invocation) {
+              active.delete(invocation);
+            }
+            settleInvocation();
+          };
+          const finish = (result: { exitCode: number | null } | Error) => {
+            if (finished) {
+              return;
+            }
+            finished = true;
+            cleanup();
+            result instanceof Error ? reject(result) : resolveResult(result);
+          };
+          const stop = (error: Error) => {
+            if (terminationError) {
+              return;
+            }
+            terminationError = error;
+            terminatedPid = child.pid;
+            terminate(child);
+          };
+          try {
+            child = (options.spawn ?? spawn)(
+              options.sandboxExecutable ?? SANDBOX_EXECUTABLE,
+              args,
+              {
+                cwd,
+                detached: process.platform !== "win32",
+                env: { ...process.env, ...execution.env },
+                stdio: ["pipe", "pipe", "pipe"],
+                windowsHide: true,
+              },
+            );
+          } catch (error) {
+            finish(error instanceof Error ? error : new Error(String(error)));
+            return;
+          }
+          invocation = {
+            terminate: () => stop(new Error("aborted")),
+            settled: new Promise<void>((settle) => (settleInvocation = settle)),
+          };
+          active.add(invocation);
+          const onData = (data: Buffer) => {
+            output.push(data);
+            execution.onData(data);
+          };
+          child.stdout?.on("data", onData);
+          child.stderr?.on("data", onData);
+          child.once("error", (error) => {
+            if (child.pid) {
+              stop(terminationError ?? error);
+            } else {
+              finish(new Error(`Sandbox: launch failed: ${error.message}`));
+            }
+          });
+          child.once("close", (exitCode) => {
+            void (async () => {
+              if (
+                terminationError &&
+                terminatedPid !== undefined &&
+                !(await waitForProcessTree(terminatedPid))
+              ) {
+                finish(
+                  new Error(
+                    `${terminationError.message}; process tree did not terminate`,
+                  ),
+                );
+                return;
+              }
+              if (!terminationError && [64, 65, 70].includes(exitCode ?? -1)) {
+                finish(
+                  new Error(
+                    `Sandbox: sandbox-exec rejected the launch: ${Buffer.concat(output).toString().trim()}`,
+                  ),
+                );
+                return;
+              }
+              finish(terminationError ?? { exitCode });
+            })();
+          });
+          abort = () => stop(new Error("aborted"));
+          execution.signal?.addEventListener("abort", abort, { once: true });
+          if (timeout !== undefined) {
+            timer = setTimeout(
+              () => stop(new Error(`timeout:${execution.timeout}`)),
+              timeout,
+            );
+          }
+          child.stdin?.on("error", () => undefined);
+          child.stdin?.end(command);
+        },
+      );
+    },
+  };
+
+  return {
+    operations: {
+      exec(command, cwd, execution) {
+        if (!supportedMac || !options.enabled()) {
+          return local.exec(command, cwd, execution);
+        }
+        return protectedOperations.exec(command, cwd, execution);
+      },
+    },
+    async dispose() {
+      if (!disposing) {
+        disposed = true;
+        const invocations = [...active];
+        for (const invocation of invocations) {
+          invocation.terminate();
+        }
+        disposing = Promise.allSettled(
+          invocations.map((invocation) => invocation.settled),
+        ).then(() => undefined);
+      }
+      await disposing;
+    },
+  };
+}
+
+export function createSandboxBashDefinition(
+  sessionCwd: string,
+  runtime: SandboxBashRuntime,
+  shellPath?: string,
+) {
+  return createBashToolDefinition(sessionCwd, {
+    operations: runtime.operations,
+    shellPath,
+  });
+}
