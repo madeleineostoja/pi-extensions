@@ -6,6 +6,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -145,6 +146,54 @@ describe("Sandbox policy", () => {
     );
     expect(policy.writableRoots).not.toContain(policy.git!.worktreeGitDir);
     expect(policy.writableRoots).not.toContain(realpathSync(root));
+  });
+
+  it("grants dependency installations from a containing package workspace", async () => {
+    const root = directory("nested-worktree");
+    const linked = join(root, ".pi", "worktrees", "linked");
+    const temporary = directory("nested-temporary");
+    const home = directory("nested-home");
+    const rootModules = join(root, "node_modules");
+    const packageRoot = join(root, "packages", "feature");
+    const packageModules = join(packageRoot, "node_modules");
+    const escapedPackageRoot = join(root, "packages", "escaped");
+    const escapedModules = join(escapedPackageRoot, "node_modules");
+    const escapedTarget = directory("escaped-modules");
+    git(root, ["init"]);
+    git(root, ["config", "user.email", "test@example.com"]);
+    git(root, ["config", "user.name", "Test"]);
+    writeFileSync(join(root, "package.json"), '{"private":true}\n');
+    writeFileSync(join(root, ".gitignore"), ".pi/\nnode_modules/\n");
+    mkdirSync(rootModules);
+    mkdirSync(packageModules, { recursive: true });
+    mkdirSync(escapedPackageRoot, { recursive: true });
+    writeFileSync(join(packageRoot, "package.json"), '{"private":true}\n');
+    writeFileSync(
+      join(escapedPackageRoot, "package.json"),
+      '{"private":true}\n',
+    );
+    symlinkSync(escapedTarget, escapedModules);
+    git(root, ["add", "package.json", ".gitignore", "packages"]);
+    git(root, ["commit", "-m", "initial"]);
+    git(root, ["worktree", "add", "-b", "linked", linked]);
+
+    const policy = await resolveSandboxPolicy({
+      sessionCwd: linked,
+      homeDir: home,
+      temporaryDir: temporary,
+      standardTemporaryRoots: [],
+      env: {},
+    });
+
+    expect(policy.workspaceRoot).toBe(realpathSync(linked));
+    expect(policy.writableRoots).toEqual(
+      expect.arrayContaining([
+        realpathSync(rootModules),
+        realpathSync(packageModules),
+      ]),
+    );
+    expect(policy.writableRoots).not.toContain(realpathSync(root));
+    expect(policy.writableRoots).not.toContain(realpathSync(escapedTarget));
   });
 
   it("normalizes the configured and standard temporary roots", async () => {

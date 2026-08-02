@@ -218,6 +218,85 @@ function cacheRoot(
   }
 }
 
+function ancestorPackageWorkspace(workspaceRoot: string): string | undefined {
+  let cursor = dirname(workspaceRoot);
+  while (true) {
+    try {
+      if (statSync(join(cursor, "package.json")).isFile()) {
+        return cursor;
+      }
+    } catch {}
+    const parent = dirname(cursor);
+    if (parent === cursor) {
+      return undefined;
+    }
+    cursor = parent;
+  }
+}
+
+async function dependencyInstallationRoots(
+  workspaceRoot: string,
+  gitRunner: GitRunner,
+): Promise<readonly string[]> {
+  const candidate = ancestorPackageWorkspace(workspaceRoot);
+  if (!candidate) {
+    return [];
+  }
+  const worktrees = await gitRunner(workspaceRoot, [
+    "worktree",
+    "list",
+    "--porcelain",
+    "-z",
+  ]);
+  if (worktrees.exitCode !== 0) {
+    return [];
+  }
+  let packageWorkspace: string;
+  try {
+    packageWorkspace = canonicalExisting(candidate);
+  } catch {
+    return [];
+  }
+  const registered = worktrees.stdout
+    .split("\0")
+    .filter((field) => field.startsWith("worktree "))
+    .map((field) => field.slice("worktree ".length));
+  if (
+    !registered.some((path) => {
+      try {
+        return canonicalExisting(path) === packageWorkspace;
+      } catch {
+        return false;
+      }
+    })
+  ) {
+    return [];
+  }
+  const manifests = await gitRunner(packageWorkspace, [
+    "ls-files",
+    "-z",
+    "--",
+    "package.json",
+    ":(glob)**/package.json",
+  ]);
+  if (manifests.exitCode !== 0) {
+    return [];
+  }
+  const roots = manifests.stdout.split("\0").flatMap((manifest) => {
+    if (!manifest) {
+      return [];
+    }
+    const path = join(packageWorkspace, dirname(manifest), "node_modules");
+    try {
+      const canonical = canonicalExisting(path);
+      return isUnder(canonical, packageWorkspace) ? [canonical] : [];
+    } catch {
+      return [];
+    }
+  });
+  return normalizeRoots(roots);
+}
+
 export async function resolveSandboxPolicy(
   options: Readonly<{
     sessionCwd: string;
@@ -229,7 +308,8 @@ export async function resolveSandboxPolicy(
   }>,
 ): Promise<SandboxPolicy> {
   const sessionCwd = canonicalExisting(options.sessionCwd);
-  const git = await resolveGit(sessionCwd, options.gitRunner ?? runGit);
+  const gitRunner = options.gitRunner ?? runGit;
+  const git = await resolveGit(sessionCwd, gitRunner);
   const workspaceRoot = git?.worktreeRoot ?? sessionCwd;
   const env = options.env ?? process.env;
   const home = options.homeDir ?? homedir();
@@ -251,11 +331,15 @@ export async function resolveSandboxPolicy(
     .flatMap((root) => (root ? [cacheRoot(root)] : []))
     .filter((root): root is NonNullable<typeof root> => root !== undefined);
   const cacheRoots = normalizeRoots(cacheCandidates.map((root) => root.path));
+  const dependencyRoots = git
+    ? await dependencyInstallationRoots(workspaceRoot, gitRunner)
+    : [];
   const writableRoots = normalizeRoots([
     workspaceRoot,
     ...(git ? [git.worktreeGitDir, git.commonGitDir] : []),
     ...temporaryRoots,
     ...cacheRoots,
+    ...dependencyRoots,
   ]);
   const recursiveRoots = new Set(writableRoots);
   const creationRoots = Object.freeze([
