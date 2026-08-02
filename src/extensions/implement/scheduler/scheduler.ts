@@ -303,7 +303,6 @@ export type SchedulerEvent =
               evidence: string;
               requiredChange: string;
               acceptanceCriteria: string[];
-              disposition: "blocking" | "advisory";
             }>;
             evidence: string;
             reviewedTargetSha: string;
@@ -990,7 +989,13 @@ export function reduceRunEvent(
             state.findings[finding.id] = finding;
           }
         } else if (event.outcome.kind === "repository_state") {
-          const review = workstreamReviewState(state, event.workstream);
+          if (event.workstream.kind !== "source") {
+            return reject(
+              "only source workstreams may record satisfaction reviews",
+            );
+          }
+          const sourceWorkstream = event.workstream;
+          const review = workstreamReviewState(state, sourceWorkstream);
           if (!review || review.candidateId !== event.outcome.candidateId) {
             return reject(
               "repository-state review is not bound to its candidate",
@@ -1001,15 +1006,8 @@ export function reduceRunEvent(
               ...finding,
               id: `${reviewKey(event.workstream).replace(":", "-")}-repository-${review.round + 1}-${index + 1}`,
               candidateId: event.outcome.candidateId,
-              workstream: event.workstream,
-              scope:
-                event.workstream.kind === "source"
-                  ? { kind: "source" as const, id: event.workstream.id }
-                  : {
-                      kind: "whole_plan" as const,
-                      initialTargetSha: review.comparisonBase,
-                      initialTargetTreeSha: review.comparisonBase,
-                    },
+              workstream: sourceWorkstream,
+              scope: { kind: "source" as const, id: sourceWorkstream.id },
               origin: "regression" as const,
               introducedRound: review.round + 1,
               status: "open" as const,
@@ -1048,8 +1046,7 @@ export function reduceRunEvent(
             completion: event.outcome.completion,
             findings: workstreamReviewFindings(state, event.workstream),
             evidence: event.outcome.evidence,
-            pendingPolicy:
-              event.workstream.kind === "overall" ? "all_open" : "blocking",
+            correctionPaths: event.outcome.changedPaths,
           });
           const wholePlanEpoch = state.wholePlanReview.epoch;
           state.reviews[key] = update.review;
@@ -2288,7 +2285,7 @@ export function reduceRunEvent(
               return finding ? [finding] : [];
             }),
             evidence: event.outcome.evidence,
-            pendingPolicy: "all_open",
+            correctionPaths: epoch.latestRepair.changedPaths,
           });
           if (update.findings.length < epoch.findingIds.length) {
             return reject(
@@ -2298,43 +2295,24 @@ export function reduceRunEvent(
           for (const finding of update.findings) {
             state.findings[finding.id] = finding;
           }
-          const nextReview = {
-            ...update.review,
-            pendingCorrectionIds: update.findings
-              .filter((finding) => finding.status === "open")
-              .map((finding) => finding.id),
-          };
+          const nextReview = update.review;
           state.reviews[reviewKey(workstream)] = nextReview;
           const nextEpoch = {
             ...epoch,
             findingIds: update.findings.map((finding) => finding.id),
             pendingCorrectionIds: nextReview.pendingCorrectionIds,
           };
-          if (nextReview.pendingCorrectionIds.length === 0) {
-            state.wholePlanReview = {
-              status: "approved",
-              evidence: event.outcome.evidence,
-              reviewedTargetSha: event.outcome.reviewedTargetSha,
-              reviewedTargetTreeSha: event.outcome.reviewedTargetTreeSha,
-              epoch: nextEpoch,
-              ...(state.wholePlanReview.reviewRetry
-                ? { reviewRetry: state.wholePlanReview.reviewRetry }
-                : {}),
-            };
-            return accept();
-          }
-          return queueWholePlanRepair(
-            state,
-            {
-              repairId: nextOverallRepairId(state),
-              targetSha: event.outcome.reviewedTargetSha,
-              targetTreeSha: event.outcome.reviewedTargetTreeSha,
-              findingIds: nextReview.pendingCorrectionIds,
-              evidence: event.outcome.evidence,
-              epoch: nextEpoch,
-            },
-            reject,
-          );
+          state.wholePlanReview = {
+            status: "approved",
+            evidence: event.outcome.evidence,
+            reviewedTargetSha: event.outcome.reviewedTargetSha,
+            reviewedTargetTreeSha: event.outcome.reviewedTargetTreeSha,
+            epoch: nextEpoch,
+            ...(state.wholePlanReview.reviewRetry
+              ? { reviewRetry: state.wholePlanReview.reviewRetry }
+              : {}),
+          };
+          return accept();
         } catch (error) {
           return reject(error instanceof Error ? error.message : String(error));
         }
@@ -2467,14 +2445,6 @@ export function reduceRunEvent(
 
 type WholePlanEpoch = NonNullable<RunState["wholePlanReview"]["epoch"]>;
 
-function nextOverallRepairId(state: RunState): string {
-  let number = 1;
-  while (state.workstreams.overall[`overall-repair-${number}`]) {
-    number++;
-  }
-  return `overall-repair-${number}`;
-}
-
 function queueWholePlanRepair(
   state: RunState,
   args: {
@@ -2489,7 +2459,6 @@ function queueWholePlanRepair(
       evidence: string;
       requiredChange: string;
       acceptanceCriteria: string[];
-      disposition: "blocking" | "advisory";
     }>;
     evidence: string;
     epoch: WholePlanEpoch;

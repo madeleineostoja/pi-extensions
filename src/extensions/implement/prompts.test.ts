@@ -59,7 +59,7 @@ describe("whole-plan and repair prompts", () => {
     expect(repair).toContain("run-base..current-repair");
   });
 
-  it("requires reviewer-owned publication disposition and first changed-candidate metadata", () => {
+  it("requires reviewer-owned reassessment and first changed-candidate metadata", () => {
     const prompt = buildAnchoredWorkstreamReviewPrompt({
       role: "reviewer",
       completionKind: "initial-anchored-review",
@@ -100,10 +100,11 @@ describe("whole-plan and repair prompts", () => {
     expect(prompt).toContain("Author one concise Conventional Commit subject");
     expect(prompt).toContain("Only this reviewer completion may resolve");
     expect(prompt).toContain("Assess every outstanding ID exactly once");
-    expect(prompt).toContain("publication counterfactual");
+    expect(prompt).toContain("direct causal regressions only");
+    expect(prompt).not.toMatch(/blocking|advisory|disposition/);
   });
 
-  it("requires initial reviewers to classify only material findings for one correction opportunity", () => {
+  it("requires initial reviewers to report only material findings for one correction opportunity", () => {
     const source = buildInitialWorkstreamReviewPrompt({
       role: "reviewer",
       completionKind: "initial-review",
@@ -134,10 +135,11 @@ describe("whole-plan and repair prompts", () => {
     });
 
     for (const prompt of [source, overall]) {
-      expect(prompt).toContain("publication counterfactual");
+      expect(prompt).toContain("direct material findings");
       expect(prompt).toContain("one initial");
       expect(prompt).toContain("do not return an approval verdict");
       expect(prompt).toContain("Exclude style nits, speculative improvements");
+      expect(prompt).not.toMatch(/blocking|advisory|disposition/);
     }
     expect(source).toContain("publication metadata, not approval");
   });

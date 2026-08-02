@@ -62,14 +62,12 @@ describe("revision policy", () => {
               evidence: "the endpoint is incomplete",
               requiredChange: "complete the endpoint",
               acceptanceCriteria: ["endpoint responds"],
-              disposition: "blocking",
             },
             {
               summary: "missing representative coverage",
               evidence: "the endpoint has no integration coverage",
               requiredChange: "add representative coverage",
               acceptanceCriteria: ["coverage exercises the endpoint"],
-              disposition: "advisory",
             },
           ],
         },
@@ -146,14 +144,13 @@ describe("revision policy", () => {
     ).toBe(false);
   });
 
-  it("gives an initial advisory one exact scheduler-owned correction assignment", async () => {
+  it("gives every initial finding one exact scheduler-owned correction assignment", async () => {
     const state = await stateAtRevision(1, false, [
       {
         summary: "Representative coverage",
         evidence: "The endpoint has no integration coverage.",
         requiredChange: "Add representative coverage.",
         acceptanceCriteria: ["Coverage exercises the endpoint."],
-        disposition: "advisory",
       },
     ]);
 
@@ -166,11 +163,10 @@ describe("revision policy", () => {
     });
     expect(state.findings["source-first-stream-r1"]).toMatchObject({
       status: "open",
-      disposition: "advisory",
     });
   });
 
-  it("binds repository-state findings to their assessment and gives an advisory one correction", async () => {
+  it("binds repository-state findings to their assessment and gives one correction", async () => {
     const store = await createSchedulerStore();
     const sourceWorkstream = { kind: "source" as const, id: "first-stream" };
     const selected = reduceRunEvent(store.read(), {
@@ -275,7 +271,6 @@ describe("revision policy", () => {
               evidence: "The target lacks an integration scenario.",
               requiredChange: "Add representative coverage.",
               acceptanceCriteria: ["Coverage exercises the task."],
-              disposition: "advisory",
             },
           ],
         },
@@ -292,7 +287,6 @@ describe("revision policy", () => {
     });
     expect(reassessed.state.findings[pendingId]).toMatchObject({
       status: "open",
-      disposition: "advisory",
       scope: { kind: "source", id: "first-stream" },
     });
     expect(Object.values(reassessed.state.revisionAssignments)).toContainEqual(
@@ -322,11 +316,10 @@ describe("revision policy", () => {
       },
       status: "open",
     });
-    expect(completed.state.findings[ids[1]!]?.disposition).toBe("advisory");
     expect(() => validate(completed.state)).not.toThrow();
   });
 
-  it("approves an advisory-only reassessment without waiving its finding", async () => {
+  it("approves a final reassessment without waiving its residual finding", async () => {
     const state = await stateAtRevision();
     const revisionRequested = reduceRunEvent(state, {
       kind: "revision_requested",
@@ -379,7 +372,6 @@ describe("revision policy", () => {
               id: "source-first-stream-r1",
               status: "unresolved",
               evidence: "A representative scenario remains uncovered.",
-              disposition: "advisory",
               summary: "Representative coverage",
               requiredChange: "Cover the remaining scenario.",
               acceptanceCriteria: ["The remaining scenario is covered."],
@@ -398,7 +390,6 @@ describe("revision policy", () => {
     ).toEqual([]);
     expect(assessed.state.findings["source-first-stream-r1"]).toMatchObject({
       status: "open",
-      disposition: "advisory",
       summary: "Representative coverage",
     });
     expect(
@@ -408,21 +399,19 @@ describe("revision policy", () => {
     ).toBe(false);
   });
 
-  it("creates the next assignment from only reassessed open blockers", async () => {
+  it("settles final source review with residual findings and no next assignment", async () => {
     const state = await stateAtRevision(1, false, [
       {
         summary: "Missing behavior",
         evidence: "The endpoint is incomplete.",
         requiredChange: "Complete the endpoint.",
         acceptanceCriteria: ["The endpoint responds."],
-        disposition: "blocking",
       },
       {
         summary: "Coverage gap",
         evidence: "The endpoint has no integration coverage.",
         requiredChange: "Add representative coverage.",
         acceptanceCriteria: ["Coverage exercises the endpoint."],
-        disposition: "advisory",
       },
     ]);
     const revisionRequested = reduceRunEvent(state, {
@@ -476,7 +465,6 @@ describe("revision policy", () => {
               id: "source-first-stream-r1",
               status: "unresolved",
               evidence: "The endpoint remains incomplete.",
-              disposition: "blocking",
               summary: "Missing behavior",
               requiredChange: "Complete the endpoint.",
               acceptanceCriteria: ["The endpoint responds."],
@@ -494,42 +482,32 @@ describe("revision policy", () => {
 
     expect(
       reassessed.state.reviews["source:first-stream"]?.pendingCorrectionIds,
-    ).toEqual(["source-first-stream-r1"]);
+    ).toEqual([]);
     expect(
-      Object.values(reassessed.state.revisionAssignments).find(
+      Object.values(reassessed.state.revisionAssignments).some(
         (assignment) => assignment.status === "open",
       ),
-    ).toMatchObject({ pendingCorrectionIds: ["source-first-stream-r1"] });
+    ).toBe(false);
     expect(reassessed.state.findings["source-first-stream-r2"]?.status).toBe(
       "resolved",
-    );
-  });
-
-  it("rejects a source review that drops an open blocker from correction authority", async () => {
-    const state = await stateAtRevision();
-    state.reviews["source:first-stream"]!.pendingCorrectionIds = [];
-
-    expect(invariantIssues(state)).toContain(
-      "review source:first-stream lost open blocking finding source-first-stream-r1",
     );
   });
 
   it("rejects removed findings and invalid historical assignment snapshots", async () => {
     const state = await stateAtRevision();
     const finding = state.findings["source-first-stream-r1"]!;
-    const withAdvisory = structuredClone(state);
-    withAdvisory.findings["source-first-stream-advisory"] = {
+    const withAdditionalFinding = structuredClone(state);
+    withAdditionalFinding.findings["source-first-stream-additional"] = {
       ...finding,
-      id: "source-first-stream-advisory",
-      disposition: "advisory",
+      id: "source-first-stream-additional",
     };
-    expect(() => validate(withAdvisory, state)).not.toThrow();
+    expect(() => validate(withAdditionalFinding, state)).not.toThrow();
 
-    const withoutAdvisory = structuredClone(withAdvisory);
-    delete withoutAdvisory.findings["source-first-stream-advisory"];
-    expect(invariantIssues(withoutAdvisory, withAdvisory)).toContain(
-      "finding source-first-stream-advisory was removed",
-    );
+    const withoutAdditionalFinding = structuredClone(withAdditionalFinding);
+    delete withoutAdditionalFinding.findings["source-first-stream-additional"];
+    expect(
+      invariantIssues(withoutAdditionalFinding, withAdditionalFinding),
+    ).toContain("finding source-first-stream-additional was removed");
 
     const invalidSnapshot = structuredClone(state);
     const assignment = Object.values(invalidSnapshot.revisionAssignments)[0]!;
@@ -540,20 +518,12 @@ describe("revision policy", () => {
     );
   });
 
-  it("requires overall reviews and epochs to retain the same open canonical IDs", async () => {
+  it("rejects divergent overall review and epoch pending authorities", async () => {
     const state = (await wholePlanRepairResult()).state;
-    const findingId = "overall-repair-1-r1";
+    state.reviews["overall:repair-1"]!.pendingCorrectionIds = [];
 
-    const lostByReview = structuredClone(state);
-    lostByReview.reviews["overall:repair-1"]!.pendingCorrectionIds = [];
-    expect(invariantIssues(lostByReview)).toContain(
-      "overall review overall:repair-1 does not retain every open epoch finding as pending",
-    );
-
-    const staleEpoch = structuredClone(state);
-    staleEpoch.findings[findingId]!.status = "resolved";
-    expect(invariantIssues(staleEpoch)).toContain(
-      "whole-plan review epoch has an invalid pending finding",
+    expect(invariantIssues(state)).toContain(
+      "overall review overall:repair-1 does not match its epoch pending findings",
     );
   });
 
@@ -619,7 +589,6 @@ describe("revision policy", () => {
               id: findingIds[1]!,
               status: "unresolved",
               evidence: "Representative coverage remains absent.",
-              disposition: "advisory",
               summary: "Coverage gap",
               requiredChange: "Add representative coverage.",
               acceptanceCriteria: ["Coverage exercises the repair."],
@@ -633,11 +602,10 @@ describe("revision policy", () => {
     expect(assessed.state.findings[findingIds[0]!]?.status).toBe("resolved");
     expect(assessed.state.findings[findingIds[1]!]).toMatchObject({
       status: "open",
-      disposition: "advisory",
     });
-    expect(assessed.state.wholePlanReview.epoch?.pendingCorrectionIds).toEqual([
-      findingIds[1],
-    ]);
+    expect(assessed.state.wholePlanReview.epoch?.pendingCorrectionIds).toEqual(
+      [],
+    );
     expect(() => validate(assessed.state)).not.toThrow();
   });
 
@@ -814,14 +782,12 @@ async function wholePlanRepairResult() {
           evidence: "The reviewed target misses the contract.",
           requiredChange: "Restore the required behavior.",
           acceptanceCriteria: ["The whole plan is satisfied."],
-          disposition: "blocking",
         },
         {
           summary: "Representative verification",
           evidence: "The target has no representative verification.",
           requiredChange: "Add representative verification.",
           acceptanceCriteria: ["Verification covers the target."],
-          disposition: "advisory",
         },
       ],
       evidence: "whole-plan review artifact",
@@ -839,14 +805,12 @@ async function stateAtRevision(
     evidence: string;
     requiredChange: string;
     acceptanceCriteria: string[];
-    disposition: "blocking" | "advisory";
   }> = [
     {
       summary: "missing behavior",
       evidence: "the endpoint is incomplete",
       requiredChange: "complete the endpoint",
       acceptanceCriteria: ["endpoint responds"],
-      disposition: "blocking",
     },
   ],
 ) {

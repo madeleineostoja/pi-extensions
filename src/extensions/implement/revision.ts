@@ -286,6 +286,11 @@ export async function runRevision(args: {
     packet.reviewComparisonBase,
     observation.head,
   );
+  const correctionChangedPaths = await changedPathsBetween(
+    workspaceGit,
+    packet.candidate.commitSha,
+    observation.head,
+  );
   const evidenceStatus =
     providerFailure || response?.status !== "completed"
       ? "unavailable"
@@ -344,7 +349,7 @@ export async function runRevision(args: {
     candidate,
     correction: {
       fromCandidateId: packet.candidate.id,
-      changedPaths: reviewChangedPaths,
+      changedPaths: correctionChangedPaths,
       evidence: evidencePath,
     },
   };

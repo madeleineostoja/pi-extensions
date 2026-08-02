@@ -13,7 +13,6 @@ const finding = {
   evidence: "The endpoint returns 404.",
   requiredChange: "Return the documented response.",
   acceptanceCriteria: ["The endpoint returns 200."],
-  disposition: "blocking",
 };
 
 function validates(schema: object, value: unknown): boolean {
@@ -21,7 +20,7 @@ function validates(schema: object, value: unknown): boolean {
 }
 
 describe("review completion schemas", () => {
-  it("accepts direct findings, empty findings, and complete assessments without verdicts", () => {
+  it("accepts verdict-free findings and complete final assessments", () => {
     expect(
       validates(initialWorkstreamReviewSchema, {
         findings: [finding],
@@ -38,24 +37,17 @@ describe("review completion schemas", () => {
             id: "finding-2",
             status: "unresolved",
             evidence: "Coverage remains incomplete.",
-            disposition: "advisory",
             summary: "Coverage gap",
             requiredChange: "Add representative coverage.",
             acceptanceCriteria: ["Coverage exercises the endpoint."],
           },
         ],
-        regressions: [
-          {
-            ...finding,
-            disposition: "advisory",
-            changedPaths: ["src/endpoint.ts"],
-          },
-        ],
+        regressions: [{ ...finding, changedPaths: ["src/endpoint.ts"] }],
       }),
     ).toBe(true);
   });
 
-  it("rejects verdicts and incomplete finding authority", () => {
+  it("rejects verdicts, dispositions, and incomplete finding authority", () => {
     const invalid: Array<[object, unknown]> = [
       [
         initialWorkstreamReviewSchema,
@@ -67,7 +59,7 @@ describe("review completion schemas", () => {
       ],
       [
         repositoryStateReviewSchema,
-        { findings: [{ ...finding, disposition: undefined }] },
+        { findings: [{ ...finding, disposition: "blocking" }] },
       ],
       [
         anchoredWorkstreamReviewSchema,

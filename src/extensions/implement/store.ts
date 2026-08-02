@@ -227,7 +227,6 @@ const findingSchema = z
     acceptanceCriteria: z.array(nonEmpty).min(1),
     origin: z.enum(["initial", "regression"]),
     introducedRound: z.number().int().nonnegative(),
-    disposition: z.enum(["blocking", "advisory"]),
     status: z.enum(["open", "resolved"]),
   })
   .strict();
@@ -1492,17 +1491,6 @@ function invariantIssues(
         issues.push("whole-plan review epoch has an invalid pending finding");
       }
     }
-    const openEpochIds = wholePlanEpoch.findingIds.filter(
-      (findingId) => state.findings[findingId]?.status === "open",
-    );
-    if (
-      JSON.stringify(openEpochIds) !==
-      JSON.stringify(wholePlanEpoch.pendingCorrectionIds)
-    ) {
-      issues.push(
-        "whole-plan review epoch does not retain every open finding as pending",
-      );
-    }
     const latestCandidate = wholePlanEpoch.latestRepair
       ? state.candidates[wholePlanEpoch.latestRepair.candidateId]
       : undefined;
@@ -1892,33 +1880,12 @@ function invariantIssues(
     }
     if (
       candidate.workstream.kind === "overall" &&
-      workstreamPhase(state, candidate.workstream) !== "completed"
+      JSON.stringify(review.pendingCorrectionIds) !==
+        JSON.stringify(state.wholePlanReview.epoch?.pendingCorrectionIds)
     ) {
-      const openEpochIds = authorizedIds.filter(
-        (findingId) => state.findings[findingId]?.status === "open",
+      issues.push(
+        `overall review ${key} does not match its epoch pending findings`,
       );
-      if (
-        JSON.stringify(review.pendingCorrectionIds) !==
-        JSON.stringify(openEpochIds)
-      ) {
-        issues.push(
-          `overall review ${key} does not retain every open epoch finding as pending`,
-        );
-      }
-    } else {
-      for (const findingId of authorizedIds) {
-        const finding = state.findings[findingId]!;
-        if (
-          finding.status === "open" &&
-          finding.disposition === "blocking" &&
-          !outstanding.has(findingId) &&
-          !["approved", "completed"].includes(
-            workstreamPhase(state, candidate.workstream) ?? "",
-          )
-        ) {
-          issues.push(`review ${key} lost open blocking finding ${findingId}`);
-        }
-      }
     }
     if (
       review.previousCandidateId &&
@@ -1960,15 +1927,6 @@ function invariantIssues(
         !review ||
         review.candidateId !== candidateId ||
         review.pendingCorrectionIds.length > 0 ||
-        Object.values(state.findings).some(
-          (finding) =>
-            finding.status === "open" &&
-            finding.disposition === "blocking" &&
-            (workstream.kind === "source"
-              ? finding.workstream.kind === "source" &&
-                finding.workstream.id === workstream.id
-              : state.wholePlanReview.epoch?.findingIds.includes(finding.id)),
-        ) ||
         (candidate.baseSha !== candidate.commitSha &&
           !review.publicationCommitSubject)
       ) {

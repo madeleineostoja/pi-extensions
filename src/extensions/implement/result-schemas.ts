@@ -1,10 +1,6 @@
 import { Type, type Static } from "typebox";
 
 const nonEmptyString = () => Type.String({ minLength: 1 });
-const findingDispositionSchema = Type.Union([
-  Type.Literal("blocking"),
-  Type.Literal("advisory"),
-]);
 const commitMessageString = (options: { description?: string } = {}) =>
   Type.String({
     minLength: 1,
@@ -79,7 +75,6 @@ export const directReviewFindingSchema = Type.Object(
     evidence: nonEmptyString(),
     requiredChange: nonEmptyString(),
     acceptanceCriteria: Type.Array(nonEmptyString(), { minItems: 1 }),
-    disposition: findingDispositionSchema,
   },
   { additionalProperties: false },
 );
@@ -120,7 +115,6 @@ const findingAssessmentSchema = Type.Union([
       id: nonEmptyString(),
       status: Type.Literal("unresolved"),
       evidence: nonEmptyString(),
-      disposition: findingDispositionSchema,
       summary: nonEmptyString(),
       requiredChange: nonEmptyString(),
       acceptanceCriteria: Type.Array(nonEmptyString(), { minItems: 1 }),
@@ -134,7 +128,6 @@ const regressionFindingSchema = Type.Object(
     evidence: nonEmptyString(),
     requiredChange: nonEmptyString(),
     acceptanceCriteria: Type.Array(nonEmptyString(), { minItems: 1 }),
-    disposition: findingDispositionSchema,
     changedPaths: Type.Array(nonEmptyString(), { minItems: 1 }),
   },
   { additionalProperties: false },

@@ -169,7 +169,6 @@ async function overallFixture() {
         origin: "initial",
         introducedRound: 0,
         status: "open",
-        disposition: "blocking",
         summary: "Repair app behavior",
         evidence: "app.txt still contains the baseline behavior",
         requiredChange: "Update app.txt",

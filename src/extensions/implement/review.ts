@@ -793,11 +793,10 @@ export function applyInitialWorkstreamReview(args: {
     args.scope ??
     (args.workstream.kind === "source"
       ? { kind: "source" as const, id: args.workstream.id }
-      : {
-          kind: "whole_plan" as const,
-          initialTargetSha: args.comparisonBase,
-          initialTargetTreeSha: args.comparisonBase,
-        });
+      : undefined);
+  if (!scope) {
+    throw new Error("Whole-plan findings require an observed target tree.");
+  }
   const findings = args.completion.findings.map((finding, index) => ({
     scope,
     ...finding,
@@ -832,7 +831,7 @@ export function applyAnchoredWorkstreamReview(args: {
     | InitialAnchoredWorkstreamReviewCompletion;
   findings: ReviewFinding[];
   evidence: string;
-  pendingPolicy?: "blocking" | "all_open";
+  correctionPaths: string[];
 }): { review: ReviewState; findings: ReviewFinding[] } {
   assertAssessmentCoverage(
     args.state.pendingCorrectionIds,
@@ -846,9 +845,14 @@ export function applyAnchoredWorkstreamReview(args: {
       return (
         !finding ||
         finding.status !== "open" ||
-        (args.workstream.kind === "source" &&
-          (finding.workstream.kind !== "source" ||
-            finding.workstream.id !== args.workstream.id))
+        (args.workstream.kind === "source"
+          ? finding.workstream.kind !== "source" ||
+            finding.workstream.id !== args.workstream.id ||
+            finding.scope.kind !== "source" ||
+            finding.scope.id !== args.workstream.id
+          : finding.workstream.kind !== "overall" ||
+            finding.workstream.repairId !== args.workstream.repairId ||
+            finding.scope.kind !== "whole_plan")
       );
     })
   ) {
@@ -861,11 +865,6 @@ export function applyAnchoredWorkstreamReview(args: {
     ]),
   );
   const nextRound = args.state.round + 1;
-  const resolved = new Set(
-    args.completion.assessments
-      .filter((assessment) => assessment.status === "resolved")
-      .map((assessment) => assessment.id),
-  );
   const updated = args.findings.map((finding) => {
     const assessment = assessments.get(finding.id);
     if (!assessment) {
@@ -886,12 +885,11 @@ export function applyAnchoredWorkstreamReview(args: {
           evidence: assessment.evidence,
           requiredChange: assessment.requiredChange,
           acceptanceCriteria: assessment.acceptanceCriteria,
-          disposition: assessment.disposition,
         };
   });
-  const latestPaths = new Set(args.state.latestCorrection?.changedPaths ?? []);
+  const correctionPaths = new Set(args.correctionPaths);
   const qualifying = args.completion.regressions.filter((finding) =>
-    finding.changedPaths.some((path) => latestPaths.has(path)),
+    finding.changedPaths.some((path) => correctionPaths.has(path)),
   );
   const observations = [
     ...(args.completion.observations ?? []),
@@ -908,40 +906,15 @@ export function applyAnchoredWorkstreamReview(args: {
     evidence: finding.evidence,
     requiredChange: finding.requiredChange,
     acceptanceCriteria: finding.acceptanceCriteria,
-    disposition: finding.disposition,
     id: `${reviewKey(args.workstream).replace(":", "-")}-r${nextNumber + index}`,
     candidateId: args.state.candidateId,
     workstream: args.workstream,
-    scope:
-      args.findings[0]?.scope ??
-      (args.workstream.kind === "source"
-        ? { kind: "source" as const, id: args.workstream.id }
-        : {
-            kind: "whole_plan" as const,
-            initialTargetSha: args.state.comparisonBase,
-            initialTargetTreeSha: args.state.comparisonBase,
-          }),
+    scope: regressionScope(args.workstream, args.findings),
     origin: "regression" as const,
     introducedRound: nextRound,
     status: "open" as const,
   }));
-  const pendingPolicy =
-    args.pendingPolicy ??
-    (args.workstream.kind === "overall" ? "all_open" : "blocking");
-  const pendingCorrectionIds =
-    pendingPolicy === "all_open"
-      ? [...updated, ...regressions]
-          .filter((finding) => finding.status === "open")
-          .map((finding) => finding.id)
-      : [
-          ...args.state.pendingCorrectionIds.filter((id) => {
-            const finding = updated.find((candidate) => candidate.id === id);
-            return !resolved.has(id) && finding?.disposition === "blocking";
-          }),
-          ...regressions
-            .filter((finding) => finding.disposition === "blocking")
-            .map((finding) => finding.id),
-        ];
+  const pendingCorrectionIds: string[] = [];
   if (
     !args.state.publicationCommitSubject &&
     !("publicationCommitSubject" in args.completion)
@@ -996,6 +969,20 @@ export function retargetAnchoredReview(args: {
     previousCandidateId: args.state.candidateId,
     latestCorrection: args.correction,
   };
+}
+
+function regressionScope(
+  workstream: RuntimeWorkstream,
+  findings: ReviewFinding[],
+): ReviewFinding["scope"] {
+  const scope = findings[0]?.scope;
+  if (scope) {
+    return scope;
+  }
+  if (workstream.kind === "source") {
+    return { kind: "source", id: workstream.id };
+  }
+  throw new Error("Whole-plan regressions require an observed target tree.");
 }
 
 function reviewEvidencePath(
