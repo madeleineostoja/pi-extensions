@@ -35,7 +35,7 @@ describe("Context epoch rendering", () => {
           decision("standard-stale", 9_200),
         ],
       }),
-    ).toBe("context · pruned 2 results (~18k tokens) · warm");
+    ).toBe("context · pruned 2 results (~18k tokens)");
   });
 
   it("renders legacy epochs without fabricating a token total", () => {
@@ -44,7 +44,7 @@ describe("Context epoch rendering", () => {
         kind: "tail",
         decisions: [decision("standard-stale")],
       }),
-    ).toBe("context · pruned 1 result · tail");
+    ).toBe("context · pruned 1 result");
   });
 
   it("expands to a reason/count/savings breakdown", () => {
@@ -62,21 +62,21 @@ describe("Context epoch rendering", () => {
       ),
     ).toBe(
       [
-        "context · pruned 3 results (~18k tokens) · known-cold",
+        "context · pruned 3 results (~18k tokens)",
         "  superseded reads · 2 results · ~17k",
         "  consumed bash · 1 result · ~1k",
       ].join("\n"),
     );
   });
 
-  it("renders every epoch kind and hides invalid data", () => {
+  it("hides internal epoch kinds and invalid data", () => {
     for (const kind of ["known-cold", "warm", "tail"] as const) {
       expect(
         render({
           kind,
           decisions: [decision("standard-stale", 1_000)],
         }),
-      ).toContain(`· ${kind}`);
+      ).toBe("context · pruned 1 result (~1k tokens)");
     }
     expect(render({ kind: "tail", decisions: [] })).toBeUndefined();
   });
