@@ -27,6 +27,7 @@ import {
   WorkerPacketError,
 } from "./worker-invocation.js";
 import { overallRepairWorkspace } from "./overall-repair.js";
+import { sourceResidualContext } from "./whole-plan-review.js";
 import { workstreamWorkspace } from "./workstream-candidate.js";
 import { writeAtomicJson } from "./atomic-json.js";
 import {
@@ -681,9 +682,11 @@ async function runOverallAnchoredReview(args: {
   }
   const packet: OverallAnchoredReviewPacket = {
     role: "reviewer",
-    completionKind: review.publicationCommitSubject
-      ? "anchored-review"
-      : "initial-anchored-review",
+    completionKind:
+      review.latestCorrection?.mode === "unchanged" ||
+      review.publicationCommitSubject
+        ? "anchored-review"
+        : "initial-anchored-review",
     identity: `${args.state.run.id}/${args.workstream.repairId}/${candidate.id}`,
     workspace: {
       path: workspace.worktreePath,
@@ -698,7 +701,8 @@ async function runOverallAnchoredReview(args: {
       null,
       2,
     ),
-    candidateContext: `Run base: ${args.state.run.checkout.startHead}\nHistorical workstream base: ${candidate.baseSha}\nComparison base: ${review.comparisonBase}\nPrevious candidate: ${previousCandidate.commitSha}\nCandidate: ${candidate.commitSha}\nCanonical comparison paths: ${review.latestCorrection?.changedPaths.join(", ") || "none"}\nFinding epoch: ${review.round}\nPrior review evidence: ${JSON.stringify(review.evidence)}\nCurrent verification: ${JSON.stringify(candidate.implementationEvidence?.verification ?? [])}\nCurrent evidence status: ${candidate.evidenceStatus ?? "unavailable"}\nCurrent uncertainty: ${candidate.implementationEvidence?.uncertainty ?? "none"}\nCumulative publication subject: ${review.publicationCommitSubject ?? "not yet authored"}`,
+    candidateContext: `Run base: ${args.state.run.checkout.startHead}\nHistorical workstream base: ${candidate.baseSha}\nComparison base: ${review.comparisonBase}\nPrevious candidate: ${previousCandidate.commitSha}\nCandidate: ${candidate.commitSha}\nCanonical comparison paths: ${review.latestCorrection?.changedPaths.join(", ") || "none"}\nFinding epoch: ${review.round}\nPrior review evidence: ${JSON.stringify(review.evidence)}\nCurrent verification: ${JSON.stringify(candidate.implementationEvidence?.verification ?? [])}\nCurrent evidence status: ${candidate.evidenceStatus ?? "unavailable"}\nCurrent uncertainty: ${candidate.implementationEvidence?.uncertainty ?? "none"}\nCumulative publication subject: ${review.publicationCommitSubject ?? "not yet authored"}
+Open source review context: ${JSON.stringify(sourceResidualContext(args.state, args.plan), null, 2)}`,
     previousCandidate,
     candidate,
     comparisonBase: review.comparisonBase,
@@ -987,10 +991,7 @@ export function retargetAnchoredReview(args: {
     throw new Error("A correction must begin at the reviewed candidate.");
   }
   const mode =
-    args.candidateId === args.state.candidateId ? "unchanged" : "changed";
-  if (mode === "unchanged" && args.correction.changedPaths.length > 0) {
-    throw new Error("An unchanged correction cannot retain changed paths.");
-  }
+    args.correction.changedPaths.length === 0 ? "unchanged" : "changed";
   return {
     ...args.state,
     candidateId: args.candidateId,

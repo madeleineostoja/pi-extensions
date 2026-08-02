@@ -208,6 +208,40 @@ export async function runOverallRepair(args: {
     observation,
     admission,
   });
+  if (
+    admission.kind === "unchanged" &&
+    observation.head === baseline.commitSha &&
+    observation.tree === baseline.treeSha &&
+    completion &&
+    !failure
+  ) {
+    return {
+      candidate: {
+        id: `overall:${args.state.run.id}:${args.repairId}:${observation.head}`,
+        workstream: {
+          kind: "overall",
+          repairId: args.repairId,
+        } satisfies RuntimeWorkstream,
+        baseSha: baseline.commitSha,
+        commitSha: observation.head,
+        treeSha: observation.tree!,
+        evidenceStatus: "reported",
+        observationArtifact: artifactPath,
+        changedPaths: [],
+        implementationEvidence: {
+          summary: completion.summary,
+          verification: completion.verification,
+          ...(completion.uncertainty
+            ? { uncertainty: completion.uncertainty }
+            : {}),
+          artifactPath,
+          changedPaths: [],
+        },
+      },
+      checkpoints: {},
+      satisfied: {},
+    };
+  }
   if (admission.kind !== "admitted") {
     if (admission.kind === "quarantined" || admission.kind === "unsafe") {
       throw new WorkstreamCandidateLifecycleError(
@@ -217,11 +251,14 @@ export async function runOverallRepair(args: {
         observation,
       );
     }
-    const evidence = failure
-      ? message(failure)
-      : result && result.status !== "completed"
-        ? result.error
-        : "Overall repair must produce a non-empty candidate delta.";
+    const evidence =
+      admission.kind === "unchanged" && observation.head !== baseline.commitSha
+        ? "Overall repair created a same-tree commit instead of retaining the exact baseline."
+        : failure
+          ? message(failure)
+          : result && result.status !== "completed"
+            ? result.error
+            : "Overall repair must produce a non-empty candidate delta.";
     throw new WorkstreamCandidateLifecycleError(
       evidence,
       failure instanceof WorkerPacketError

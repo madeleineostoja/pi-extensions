@@ -761,7 +761,11 @@ export function reduceRunEvent(
           reject,
         );
       }
-      if (event.category === "hook_rejected" && candidateId) {
+      if (
+        event.category === "hook_rejected" &&
+        candidateId &&
+        event.workstream.kind === "source"
+      ) {
         return createRevisionAssignment(
           state,
           event.workstream,
@@ -1137,6 +1141,33 @@ export function reduceRunEvent(
       }
       const settledReview = state.reviews[key]!;
       const settledCandidate = state.candidates[event.outcome.candidateId]!;
+      if (
+        event.workstream.kind === "overall" &&
+        settledReview.latestCorrection?.mode === "unchanged"
+      ) {
+        const epoch = state.wholePlanReview.epoch;
+        if (!epoch) {
+          return reject("unchanged overall repair has no review epoch");
+        }
+        workstream.phase = "completed";
+        state.wholePlanReview = {
+          status: "approved",
+          evidence: event.outcome.evidence,
+          reviewedTargetSha: epoch.initialTargetSha,
+          reviewedTargetTreeSha: epoch.initialTargetTreeSha,
+          epoch: {
+            ...epoch,
+            findingIds: workstreamReviewFindings(state, event.workstream).map(
+              (finding) => finding.id,
+            ),
+            pendingCorrectionIds: [],
+          },
+          ...(state.wholePlanReview.reviewRetry
+            ? { reviewRetry: state.wholePlanReview.reviewRetry }
+            : {}),
+        };
+        return accept();
+      }
       if (
         event.outcome.kind === "anchored" &&
         event.workstream.kind === "source"
@@ -1822,12 +1853,21 @@ export function reduceRunEvent(
           evidence: event.outcome.evidence,
           ...(event.outcome.command ? { command: event.outcome.command } : {}),
         });
-        return createRevisionAssignment(
+        if (event.workstream.kind === "source") {
+          return createRevisionAssignment(
+            state,
+            event.workstream,
+            candidateId,
+            [],
+            event.outcome.evidence,
+            reject,
+          );
+        }
+        return failRun(
           state,
-          event.workstream,
-          candidateId,
-          [],
+          "runtime",
           event.outcome.evidence,
+          new Date().toISOString(),
           reject,
         );
       }
@@ -2186,7 +2226,12 @@ export function reduceRunEvent(
           return reject("overall publication has no retained review epoch");
         }
         state.wholePlanReview = {
-          status: "pending",
+          status: "approved",
+          evidence:
+            state.reviews[reviewKey(event.workstream)]?.evidence.at(-1) ??
+            "Final overall repair review settled.",
+          reviewedTargetSha: receipt.publishedCommitSha,
+          reviewedTargetTreeSha: receipt.publishedTreeSha,
           epoch: {
             ...epoch,
             latestRepair: {

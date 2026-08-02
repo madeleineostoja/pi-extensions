@@ -224,7 +224,13 @@ function notifyAttentionTransition(
     return;
   }
   if (event.kind === "run_completed") {
-    ctx.ui.notify(`Implement completed run ${state.run.id}.`, "info");
+    const residuals = (state.wholePlanReview.epoch?.findingIds ?? []).filter(
+      (id) => state.findings[id]?.status === "open",
+    ).length;
+    ctx.ui.notify(
+      `Implement completed run ${state.run.id}${residuals > 0 ? ` with ${residuals} residual findings.` : "."}`,
+      "info",
+    );
     return;
   }
   if (event.kind === "run_incomplete") {

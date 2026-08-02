@@ -64,6 +64,12 @@ export function formatStatus(state: RunState): string {
     (finding) => finding.status === "open",
   );
   const openFindings = openFindingRecords.length;
+  const finalResiduals = (
+    state.wholePlanReview.epoch?.findingIds ?? []
+  ).flatMap((id) => {
+    const finding = state.findings[id];
+    return finding?.status === "open" ? [finding] : [];
+  });
   const terminalLanes = [
     ...Object.values(state.workstreams.source)
       .filter(
@@ -136,6 +142,9 @@ export function formatStatus(state: RunState): string {
     `Workstreams: ${phases || "none"}`,
     `Active processes: ${activeProcesses || "none"}`,
     `Open findings: ${openFindings}`,
+    ...(finalResiduals.length > 0
+      ? [`Final residual findings: ${finalResiduals.length}`]
+      : []),
     ...(openFindingRecords.length > 0
       ? [
           `Open finding evidence: ${openFindingRecords

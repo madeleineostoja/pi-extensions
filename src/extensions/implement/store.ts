@@ -1900,8 +1900,12 @@ function invariantIssues(
     }
     if (
       review.latestCorrection?.mode === "unchanged" &&
-      (review.candidateId !== review.previousCandidateId ||
-        review.latestCorrection.changedPaths.length > 0)
+      (review.latestCorrection.changedPaths.length > 0 ||
+        !review.previousCandidateId ||
+        state.candidates[review.previousCandidateId]?.commitSha !==
+          candidate.commitSha ||
+        state.candidates[review.previousCandidateId]?.treeSha !==
+          candidate.treeSha)
     ) {
       issues.push(`review ${key} has an invalid unchanged correction anchor`);
     }
