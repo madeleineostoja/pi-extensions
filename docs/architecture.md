@@ -29,13 +29,13 @@ Feature subfolders represent established cohesive clusters rather than a univers
 
 Generic modules shared by at least two features live in `src/lib/`. There is no barrel: consumers import the concrete capability through `#lib/*`, which keeps dependencies visible.
 
-`#subagents/runtime` is the only declared cross-feature capability. Implement consumes Subagents' managed runtime without importing or registering its extension root. A new mapping needs a real consumer, a narrow producer-owned type, an acyclic graph, package-import declaration, loader and TypeScript coverage, and an update to this document and repository guidance.
+`#sandbox/runtime` is a Sandbox-owned capability consumed by Subagents to snapshot the invoking session's Sandbox mode for a child. `#subagents/runtime` is consumed by Implement for the managed runtime. Neither consumer imports or registers the producer's extension root. A new mapping needs a real consumer, a narrow producer-owned type, an acyclic graph, package-import declaration, loader and TypeScript coverage, and an update to this document and repository guidance.
 
 ## Separate loaders, explicit coordination
 
 Pi loads entrypoints through separate Jiti instances. Code may share pure helpers and typed protocols, but it must not rely on mutable module-singleton identity crossing those loader graphs.
 
-Subagents is the existing explicit exception: its coordinator is keyed by Pi's event bus, which gives it a stable host identity across runtime reload boundaries.
+Subagents' coordinator and Sandbox's child-mode handoff are explicit exceptions: both are keyed by Pi's event bus, which gives them stable host identity across runtime reload boundaries. Each managed child receives a distinct event bus, so its extension lifecycle and runtime remain isolated from its parent. Sandbox records the parent's current mode against that child bus before construction and consumes it at child startup; this is a spawn-time snapshot, not live synchronization.
 
 ## Files shared by concurrent features
 
@@ -45,7 +45,7 @@ Subagents is the existing explicit exception: its coordinator is keyed by Pi's e
 
 ## Lifecycle
 
-Long-lived resources start at `session_start` or on demand and dispose idempotently at `session_shutdown`. Features that subscribe directly to `pi.events` remove those listeners during disposal.
+Long-lived resources start at `session_start` or on demand and dispose idempotently at `session_shutdown`. Features that subscribe directly to `pi.events` remove those listeners during disposal. Sandbox host bindings and pending child handoffs are likewise disposed idempotently.
 
 State belongs to the narrowest durable owner:
 

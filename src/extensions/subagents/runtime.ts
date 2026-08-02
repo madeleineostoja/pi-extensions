@@ -3,11 +3,13 @@ import type {
   AgentToolResult,
   ExtensionAPI,
   ExtensionContext,
+  EventBus,
   SessionStats,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
   createAgentSession,
+  createEventBus,
   DefaultResourceLoader,
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -18,6 +20,7 @@ import {
 import { StringEnum } from "@earendil-works/pi-ai";
 import { completeText, type CompleteTextDeps } from "#lib/complete";
 import { parseModelRef } from "#lib/model-ref";
+import { prepareSandboxChild } from "#sandbox/runtime";
 import type { ModelPreset, ThinkingLevel } from "#lib/config";
 import { Type, type Static, type TSchema } from "typebox";
 import type { Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
@@ -559,17 +562,21 @@ function resolveSystemPromptInput<TSchemaValue extends TSchema | undefined>(
   };
 }
 
-async function createPromptResourceLoader(
-  cwd: string,
-  promptInput: { prompt: string; mode: PromptMode },
-): Promise<{ agentDir: string; resourceLoader: DefaultResourceLoader }> {
+async function createChildResourceLoader(options: {
+  cwd: string;
+  promptInput?: { prompt: string; mode: PromptMode };
+  eventBus: EventBus;
+}): Promise<{ agentDir: string; resourceLoader: DefaultResourceLoader }> {
   const agentDir = getAgentDir();
   const resourceLoader = new DefaultResourceLoader({
-    cwd,
+    cwd: options.cwd,
     agentDir,
-    ...(promptInput.mode === "replace"
-      ? { systemPrompt: promptInput.prompt }
-      : { appendSystemPrompt: [promptInput.prompt] }),
+    eventBus: options.eventBus,
+    ...(options.promptInput === undefined
+      ? {}
+      : options.promptInput.mode === "replace"
+        ? { systemPrompt: options.promptInput.prompt }
+        : { appendSystemPrompt: [options.promptInput.prompt] }),
   });
   await resourceLoader.reload();
   return { agentDir, resourceLoader };
@@ -1267,14 +1274,24 @@ export class SubagentRuntime {
     record.initialization = new Promise<void>((resolve) => {
       record.resolveInitialization = resolve;
     });
+    let releaseSandboxChild: { dispose: () => void } | undefined;
     try {
       const { model } = resolveModelRef(input.ctx, record.model);
       const registered = this.pi.getActiveTools?.();
       const nested = isNestedOwner(record.owner);
       const promptInput = resolveSystemPromptInput(input);
-      const resources = promptInput
-        ? await createPromptResourceLoader(record.cwd, promptInput)
+      const childEventBus = createEventBus();
+      releaseSandboxChild = this.pi.events
+        ? prepareSandboxChild(this.pi.events, childEventBus)
         : undefined;
+      const resources =
+        promptInput || releaseSandboxChild
+          ? await createChildResourceLoader({
+              cwd: record.cwd,
+              promptInput,
+              eventBus: childEventBus,
+            })
+          : undefined;
       const profileTools = publicAgentProfile(record.type)?.tools;
       const allowExplore = isExploreEligible(record.type) && !nested;
       const completionTools = record.completion
@@ -1516,6 +1533,8 @@ export class SubagentRuntime {
           abortHandler: () => void session!.abort(),
           shutdownHandler: () => {},
         });
+        releaseSandboxChild?.dispose();
+        releaseSandboxChild = undefined;
       } finally {
         record.resolveInitialization?.();
         record.resolveInitialization = undefined;
@@ -1571,6 +1590,7 @@ export class SubagentRuntime {
       this.fail(record.id, error);
       return record.finalization ?? projectSnapshot(record);
     } finally {
+      releaseSandboxChild?.dispose();
       input.signal?.removeEventListener("abort", abort);
       record.resolveInitialization?.();
       record.resolveInitialization = undefined;

@@ -104,11 +104,9 @@ describe("Sandbox lifecycle", () => {
     await session.sessionShutdown(ctx as never);
   });
 
-  it("initializes a child policy independently after a parent turns Sandbox off", async () => {
-    const parent = createSandboxSessionState();
-    parent.reset(policy);
-    parent.setEnabled(false);
+  it("applies inherited disabled mode after resolving the child policy", async () => {
     const child = createSandboxSessionState();
+    child.setEnabled(true);
     const childPolicy = { ...policy, sessionCwd: "/workspace/child" };
     const { controller: session, state } = controller({
       state: child,
@@ -117,9 +115,9 @@ describe("Sandbox lifecycle", () => {
       createDenialObserver: () => observer().value,
     });
     const ctx = { ...context(), cwd: "/workspace/child" };
-    await session.sessionStart({} as never, ctx as never);
-    expect(parent.enabled()).toBe(false);
-    expect(state.enabled()).toBe(true);
+    await session.sessionStart({} as never, ctx as never, false);
+
+    expect(state.enabled()).toBe(false);
     expect(state.policy()).toBe(childPolicy);
     await session.sessionShutdown(ctx as never);
   });
@@ -146,17 +144,23 @@ describe("Sandbox lifecycle", () => {
     const first = observer();
     const second = observer();
     const observers = [first, second];
-    const { controller: session, denials } = controller({
+    const {
+      controller: session,
+      denials,
+      state: sessionState,
+    } = controller({
       supportedMac: true,
       resolvePolicy: async () => policy,
       createDenialObserver: () => observers.shift()!.value,
     });
     const ctx = context();
-    await session.sessionStart({} as never, ctx as never);
+    await session.sessionStart({} as never, ctx as never, false);
+    expect(sessionState.enabled()).toBe(false);
     denials.recordDirect({ tool: "write", reason: "blocked" });
     await session.sessionShutdown(ctx as never);
     expect(denials.snapshot()).toEqual({ count: 0, recent: [] });
     await session.sessionStart({} as never, ctx as never);
+    expect(sessionState.enabled()).toBe(true);
     expect(first.dispose).toHaveBeenCalledOnce();
     expect(second.start).toHaveBeenCalledOnce();
     await session.sessionShutdown(ctx as never);

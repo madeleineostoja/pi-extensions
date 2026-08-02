@@ -116,7 +116,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 ## Limits
 
-On enabled macOS sessions, Sandbox lets model Bash and descendants write only the canonical repository, its required Git administration, temporary roots, and reviewed package caches; direct `write` and `edit` stay within the canonical workspace. It allows broad reads and unrestricted networking, and repository and shared Git state remain mutable.
+On enabled macOS sessions, Sandbox lets model Bash and descendants write only the canonical repository, its required Git administration, temporary roots, and reviewed package caches; direct `write` and `edit` stay within the canonical workspace. `/sandbox off` also applies to Pipkin subagents spawned afterward. It allows broad reads and unrestricted networking, and repository and shared Git state remain mutable.
 
 Pipkin extensions are trusted code with the permissions of the Pi process. Sandbox does not confine extension JavaScript, extension-owned processes, provider traffic, Web Fetch, direct RPC Bash, language servers, remote mutations, inherited credentials, or hostile repository code. Use a VM, devcontainer, remote sandbox, or equivalent external boundary for hostile or unattended work. Readonly steps aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
 

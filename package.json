@@ -35,6 +35,7 @@
   },
   "imports": {
     "#lib/*": "./src/lib/*.ts",
+    "#sandbox/runtime": "./src/extensions/sandbox/runtime.ts",
     "#subagents/runtime": "./src/extensions/subagents/runtime.ts",
     "#test/*": "./test/support/*.ts"
   },

@@ -920,8 +920,10 @@ describe("public subagent tools", () => {
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
       agentDir: "/tmp/pipkin-subagents-config",
+      eventBus: expect.anything(),
       appendSystemPrompt: [GENERAL_PROMPT],
     });
+    expect(resourceLoaderConstructions[0].options.eventBus).not.toBe(pi.events);
     expect(reloadMock).toHaveBeenCalledBefore(createSession);
     expect(createSession.mock.calls[0][0]).toMatchObject({
       agentDir: "/tmp/pipkin-subagents-config",
@@ -953,6 +955,7 @@ describe("public subagent tools", () => {
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
       agentDir: "/tmp/pipkin-subagents-config",
+      eventBus: expect.anything(),
       systemPrompt: EXPLORE_PROMPT,
     });
     expect(reloadMock).toHaveBeenCalledBefore(createSession);
@@ -987,6 +990,7 @@ describe("public subagent tools", () => {
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
       agentDir: "/tmp/pipkin-subagents-config",
+      eventBus: expect.anything(),
       appendSystemPrompt: [REVIEW_PROMPT],
     });
     expect(createSession.mock.calls[0][0]).toMatchObject({
@@ -1022,6 +1026,7 @@ describe("public subagent tools", () => {
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
       agentDir: "/tmp/pipkin-subagents-config",
+      eventBus: expect.anything(),
       systemPrompt: "Internal instructions",
     });
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([

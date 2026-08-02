@@ -5,6 +5,7 @@ import {
   SessionManager,
   SettingsManager,
   type AgentSession,
+  type EventBus,
 } from "@earendil-works/pi-coding-agent";
 import { createFauxCore } from "@earendil-works/pi-ai";
 
@@ -25,6 +26,7 @@ export async function createManagedSessionHarness(
     extensionFactories?: ConstructorParameters<
       typeof DefaultResourceLoader
     >[0]["extensionFactories"];
+    eventBus?: EventBus;
   } = {},
 ) {
   const faux = createFauxCore({
@@ -84,6 +86,7 @@ export async function createManagedSessionHarness(
       cwd,
       agentDir: cwd,
       settingsManager,
+      eventBus: harnessOptions.eventBus,
       extensionFactories: harnessOptions.extensionFactories,
       noExtensions: true,
       noSkills: true,

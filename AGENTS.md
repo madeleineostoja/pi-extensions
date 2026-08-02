@@ -17,7 +17,7 @@
 
 - Use relative imports within a feature.
 - Import concrete generic helpers through `#lib/*`, for example `#lib/file-lease`.
-- `#subagents/runtime` is the only declared cross-feature capability import. Production code must not import another feature's `index.ts` or an unlisted extension internal.
+- `#sandbox/runtime` lets Subagents snapshot Sandbox session-mode inheritance. `#subagents/runtime` lets Implement consume the managed agent runtime. Production code must not import another feature's `index.ts` or an unlisted extension internal.
 - Direct capability coupling is allowed only when the producer owns the capability, the dependency is narrow and typed, the graph is acyclic, and the import neither registers an extension nor assumes mutable module-singleton identity.
 - Add a new cross-feature mapping only after there is a real consumer. Define the narrow source-owned capability, add its `package.json#imports` mapping, cover Pi Jiti/Vitest/TypeScript resolution, document the dependency here and in `docs/architecture.md`, and keep the producer registration root private.
 - Keep feature-specific code with its owner. Add a `src/lib` module only when at least two features need it.
@@ -26,7 +26,7 @@
 
 - Pi loads entrypoints through separate Jiti instances. Share pure helpers and explicit capability modules, not mutable module singletons.
 - Start long-lived resources at `session_start` or on demand. Dispose them idempotently at `session_shutdown`.
-- Explicitly remove direct `pi.events` listeners during disposal. Stateful cross-entrypoint coordination needs an explicit host identity; the Subagents event-bus-keyed coordinator is the existing exception.
+- Explicitly remove direct `pi.events` listeners during disposal. Stateful cross-entrypoint coordination needs an explicit host identity; the Subagents coordinator and Sandbox child-mode handoff are event-bus-keyed exceptions.
 
 ## Commands
 

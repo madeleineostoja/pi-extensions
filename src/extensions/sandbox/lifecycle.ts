@@ -34,7 +34,11 @@ export function createSandboxSessionController(options: {
   let shutdown: Promise<void> | undefined;
 
   return {
-    async sessionStart(_event: SessionStartEvent, ctx: ExtensionContext) {
+    async sessionStart(
+      _event: SessionStartEvent,
+      ctx: ExtensionContext,
+      inheritedEnabled?: boolean,
+    ) {
       await shutdown;
       shutdown = undefined;
       let policy;
@@ -49,6 +53,9 @@ export function createSandboxSessionController(options: {
         }
       }
       options.state.reset(policy, failure);
+      if (inheritedEnabled !== undefined) {
+        options.state.setEnabled(inheritedEnabled);
+      }
       options.denials.reset();
       if (options.supportedMac) {
         try {

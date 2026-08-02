@@ -69,6 +69,7 @@ const safetyPaths = [
   "src/extensions/readonly/index.ts",
 ];
 const managedGlobalSymbols = [
+  Symbol.for("pipkin:sandbox:runtime"),
   Symbol.for("pipkin:subagents:manager"),
   Symbol.for("pipkin:lsp:pool"),
   Symbol.for("pipkin:lsp:unavailable-warnings"),
@@ -419,14 +420,17 @@ describe("Pipkin bundle", () => {
   it("resolves internal modules without mutating Pipkin runtime state", async () => {
     vi.resetModules();
     const before = snapshotGlobalSymbols();
-    const [{ getConfigPath }, { getSubagentRuntime }] = await Promise.all([
-      import("#lib/config"),
-      import("#subagents/runtime"),
-    ]);
+    const [{ getConfigPath }, { bindSandboxHost }, { getSubagentRuntime }] =
+      await Promise.all([
+        import("#lib/config"),
+        import("#sandbox/runtime"),
+        import("#subagents/runtime"),
+      ]);
 
     expect(getConfigPath("/tmp/pipkin-agent")).toBe(
       "/tmp/pipkin-agent/pipkin/config.json",
     );
+    expect(bindSandboxHost).toBeTypeOf("function");
     expect(getSubagentRuntime).toBeTypeOf("function");
     expect(snapshotGlobalSymbols()).toEqual(before);
   });

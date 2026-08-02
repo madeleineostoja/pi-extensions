@@ -4,9 +4,9 @@ Sandbox is Pipkin's repository-write boundary for model Bash and direct `write` 
 
 ## Sandbox
 
-On macOS, Sandbox starts enabled for every main and child Pi session. Model Bash runs under macOS Seatbelt through `/usr/bin/sandbox-exec`; its descendants can write only the canonical repository workspace, required Git administration state, canonical temporary roots, and reviewed npm/pnpm cache roots. Direct `write` and `edit` calls are separately checked against the canonical workspace and cannot escape through ordinary traversal or symlinks.
+On macOS, Sandbox starts enabled for main sessions. Child sessions resolve their own policy from their runtime cwd and snapshot their parent's current Sandbox mode when spawned. Model Bash runs under macOS Seatbelt through `/usr/bin/sandbox-exec`; its descendants can write only the canonical repository workspace, required Git administration state, canonical temporary roots, and reviewed npm/pnpm cache roots. Direct `write` and `edit` calls are separately checked against the canonical workspace and cannot escape through ordinary traversal or symlinks.
 
-`/sandbox` opens a compact panel showing the current state, canonical workspace, and extra writable roots. `/sandbox on` and `/sandbox off` change future model Bash and direct-tool calls in the current session. The footer shows `sandbox` when enabled and `sandbox off` after an explicit disable. Existing sandboxed descendants retain their inherited kernel policy.
+`/sandbox` opens a compact panel showing the current state, canonical workspace, and extra writable roots. `/sandbox on` and `/sandbox off` change future model Bash and direct-tool calls in the current session; `/sandbox off` also affects subsequently spawned Pipkin subagents. The footer shows `sandbox` when enabled and `sandbox off` after an explicit disable. Existing child sessions and already-running sandboxed descendants are unaffected by later toggles.
 
 Linux reports `sandbox unavailable` and uses ordinary local model Bash without direct-tool gating. A macOS policy-initialization failure also reports unavailable, but keeps model Bash and direct mutations blocked until `/sandbox off` is chosen explicitly; reload the session to retry initialization. User `!` and `!!` Bash remains ordinary user shell execution on every platform.
 
