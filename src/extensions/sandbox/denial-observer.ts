@@ -10,10 +10,11 @@ const LOG_PREDICATE = `eventMessage CONTAINS[c] "${MARKER_PREFIX}"`;
 
 type BashInvocation = {
   timer?: NodeJS.Timeout;
+  onWriteDenial?: (denial: SandboxWriteDenial) => void;
   release: () => void;
 };
 
-type WriteDenial = Readonly<{
+export type SandboxWriteDenial = Readonly<{
   process: string;
   pid: number;
   operation: string;
@@ -28,13 +29,16 @@ export type SandboxLogSpawn = (
 
 export type SandboxDenialObserver = Readonly<{
   start: () => void;
-  registerBashInvocation: (marker: string) => () => void;
+  registerBashInvocation: (
+    marker: string,
+    onWriteDenial?: (denial: SandboxWriteDenial) => void,
+  ) => () => void;
   dispose: () => Promise<void>;
 }>;
 
 export function parseSandboxWriteDenial(
   message: unknown,
-): WriteDenial | undefined {
+): SandboxWriteDenial | undefined {
   if (typeof message !== "string") {
     return undefined;
   }
@@ -56,13 +60,26 @@ export function parseSandboxWriteDenial(
 function markerIn(
   message: string,
   markers: Map<string, BashInvocation>,
-): string | undefined {
+): BashInvocation | undefined {
   for (const line of message.split("\n")) {
-    if (markers.has(line)) {
-      return line;
+    const invocation = markers.get(line);
+    if (invocation) {
+      return invocation;
     }
   }
   return undefined;
+}
+
+function bounded(value: string): string {
+  return Array.from(value, (character) =>
+    /\p{C}/u.test(character) ? "�" : character,
+  )
+    .join("")
+    .slice(0, 512);
+}
+
+export function formatSandboxWriteDenial(denial: SandboxWriteDenial): string {
+  return `\nSandbox: the active repository-write Sandbox blocked ${bounded(denial.operation)} ${bounded(denial.path)} (${bounded(denial.process)}, pid ${denial.pid}). Use an allowed writable root; do not change Sandbox settings unless the user asks.\n`;
 }
 
 export function createSandboxDenialObserver(options: {
@@ -80,8 +97,13 @@ export function createSandboxDenialObserver(options: {
     try {
       const message = JSON.parse(line).eventMessage;
       const denial = parseSandboxWriteDenial(message);
-      if (denial && typeof message === "string" && markerIn(message, markers)) {
+      const invocation =
+        typeof message === "string" ? markerIn(message, markers) : undefined;
+      if (denial && invocation) {
         options.denials.recordBash(denial);
+        try {
+          invocation.onWriteDenial?.(denial);
+        } catch {}
       }
     } catch {}
   };
@@ -139,7 +161,7 @@ export function createSandboxDenialObserver(options: {
         });
       } catch {}
     },
-    registerBashInvocation(marker) {
+    registerBashInvocation(marker, onWriteDenial) {
       if (
         !marker.startsWith(MARKER_PREFIX) ||
         !/^[A-Za-z0-9_]+$/.test(marker)
@@ -147,6 +169,7 @@ export function createSandboxDenialObserver(options: {
         throw new Error("Sandbox: invalid denial marker.");
       }
       const invocation: BashInvocation = {
+        onWriteDenial,
         release: () => {
           if (invocation.timer) {
             return;

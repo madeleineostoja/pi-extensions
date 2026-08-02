@@ -7,7 +7,10 @@ import {
   getShellConfig,
   type BashOperations,
 } from "@earendil-works/pi-coding-agent";
-import type { SandboxDenialObserver } from "./denial-observer.js";
+import {
+  formatSandboxWriteDenial,
+  type SandboxDenialObserver,
+} from "./denial-observer.js";
 import type { SandboxPolicy } from "./policy.js";
 import { SANDBOX_EXECUTABLE, sandboxArguments } from "./seatbelt.js";
 
@@ -222,8 +225,16 @@ export function createSandboxBashRuntime(
             terminate(child);
           };
           try {
-            releaseDenial =
-              options.denialObserver?.registerBashInvocation(marker);
+            releaseDenial = options.denialObserver?.registerBashInvocation(
+              marker,
+              (denial) => {
+                if (!finished) {
+                  execution.onData(
+                    Buffer.from(formatSandboxWriteDenial(denial)),
+                  );
+                }
+              },
+            );
             child = (options.spawn ?? spawn)(
               options.sandboxExecutable ?? SANDBOX_EXECUTABLE,
               args,

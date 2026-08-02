@@ -1,8 +1,9 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createSandboxDenialObserver,
+  formatSandboxWriteDenial,
   parseSandboxWriteDenial,
 } from "./denial-observer.js";
 import { createSandboxDenialRecorder } from "./denials.js";
@@ -46,12 +47,19 @@ describe("Sandbox denial observer", () => {
       spawn: () => child as never,
     });
     observer.start();
-    const release = observer.registerBashInvocation("PIPKIN_ABC123");
+    const report = vi.fn();
+    const release = observer.registerBashInvocation("PIPKIN_ABC123", report);
     child.stdout.write(
       '{"eventMessage":"Sandbox: touch(42) deny(1) file-write-create ',
     );
     child.stdout.write('/tmp/blocked\\nPIPKIN_ABC123"}\n');
     await new Promise((resolve) => setImmediate(resolve));
+    expect(report).toHaveBeenCalledWith({
+      process: "touch",
+      pid: 42,
+      operation: "file-write-create",
+      path: "/tmp/blocked",
+    });
     expect(recorder.snapshot()).toMatchObject({
       count: 1,
       recent: [
@@ -78,6 +86,19 @@ describe("Sandbox denial observer", () => {
     release();
     await observer.dispose();
     expect(child.killed).toBe(true);
+  });
+
+  it("formats an agent-facing Sandbox instruction", () => {
+    expect(
+      formatSandboxWriteDenial({
+        process: "touch",
+        pid: 42,
+        operation: "file-write-create",
+        path: "/tmp/blocked",
+      }),
+    ).toBe(
+      "\nSandbox: the active repository-write Sandbox blocked file-write-create /tmp/blocked (touch, pid 42). Use an allowed writable root; do not change Sandbox settings unless the user asks.\n",
+    );
   });
 
   it("preserves UTF-8 split across log chunks", async () => {

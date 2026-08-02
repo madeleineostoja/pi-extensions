@@ -104,6 +104,38 @@ describe("Sandbox Bash runtime", () => {
     expect(output.join("")).toBe(`forwarded:${realpathSync(workspace)}`);
   });
 
+  it("appends an active kernel denial to native Bash output", async () => {
+    const { executable, policy, workspace } = fixture();
+    const observer: SandboxDenialObserver = {
+      start: () => undefined,
+      registerBashInvocation(_marker, onWriteDenial) {
+        onWriteDenial?.({
+          process: "touch",
+          pid: 42,
+          operation: "file-write-create",
+          path: "/tmp/blocked",
+        });
+        return () => undefined;
+      },
+      dispose: async () => undefined,
+    };
+    const output: Buffer[] = [];
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+      denialObserver: observer,
+    });
+    await runtime.operations.exec("printf done", workspace, {
+      onData: (data) => output.push(data),
+    });
+    expect(Buffer.concat(output).toString()).toContain(
+      "the active repository-write Sandbox blocked file-write-create /tmp/blocked",
+    );
+    expect(Buffer.concat(output).toString()).toContain("allowed writable root");
+  });
+
   it("registers a unique kernel-report marker for each protected Bash invocation", async () => {
     const { executable, policy, workspace } = fixture();
     const markers: string[] = [];
