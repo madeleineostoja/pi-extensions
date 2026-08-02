@@ -140,6 +140,17 @@ function appendAttentionLines(
       `    last failure · ${failure.category} · ${shorten(failure.evidence)}`,
     );
   }
+  const review =
+    state.reviews[
+      workstream.kind === "source"
+        ? `source:${workstream.id}`
+        : `overall:${workstream.repairId}`
+    ];
+  if (review?.latestCorrection) {
+    lines.push(
+      `    final review · ${review.latestCorrection.mode} correction · ${shorten(review.latestCorrection.evidence)}`,
+    );
+  }
   const findings = Object.values(state.findings).filter(
     (finding) =>
       finding.status === "open" && sameWorkstream(finding.workstream),

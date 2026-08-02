@@ -55,7 +55,14 @@ export type ReviewState = {
     fromCandidateId: string;
     changedPaths: string[];
     evidence: string;
+    mode: "changed" | "unchanged";
+    summary?: string;
+    verification?: string[];
+    uncertainty?: string;
+    artifactPath?: string;
   };
+  repositoryAssessment?: { targetSha: string };
+  correctionConsumed: boolean;
   evidence: string[];
   observations: Array<{ summary: string; evidence: string }>;
   publicationCommitSubject?: string;
@@ -169,6 +176,7 @@ export type ReviewOutcome =
       comparisonBase: string;
       changedPaths: string[];
       findingEpoch: number;
+      assessedTargetSha?: string;
       completion:
         | AnchoredWorkstreamReviewCompletion
         | InitialAnchoredWorkstreamReviewCompletion;
@@ -412,9 +420,11 @@ export function buildSourceReviewWorkerPacket(args: {
   }
   return {
     ...common,
-    completionKind: args.review.publicationCommitSubject
-      ? "anchored-review"
-      : "initial-anchored-review",
+    completionKind:
+      args.review.latestCorrection.mode === "unchanged" ||
+      args.review.publicationCommitSubject
+        ? "anchored-review"
+        : "initial-anchored-review",
     mode: "anchored",
     previousCandidate: args.packet.previousCandidate,
     latestCorrection: args.review.latestCorrection,
@@ -464,6 +474,8 @@ export async function runWorkstreamReview(args: {
       entry.workstream.id === runtime.id,
   );
   const review = workstreamReviewState(args.state, args.workstream);
+  const assessedTargetSha =
+    assessment?.targetSha ?? review?.repositoryAssessment?.targetSha;
   const previousCandidate = review?.previousCandidateId
     ? args.state.candidates[review.previousCandidateId]
     : undefined;
@@ -491,7 +503,7 @@ export async function runWorkstreamReview(args: {
       await observeCandidateWorkspace(workspaceGit),
     );
   }
-  if (assessment && (await args.git.head()) !== assessment.targetSha) {
+  if (assessedTargetSha && (await args.git.head()) !== assessedTargetSha) {
     throw new Error(
       "Repository-state assessment target changed before review.",
     );
@@ -500,7 +512,7 @@ export async function runWorkstreamReview(args: {
     review && previousCandidate
       ? await changedPathsBetween(
           workspaceGit,
-          review.comparisonBase,
+          previousCandidate.commitSha,
           candidate.commitSha,
         )
       : undefined;
@@ -553,7 +565,7 @@ export async function runWorkstreamReview(args: {
     (await workspaceGit.tree()) !== candidate.treeSha ||
     !(await workspaceGit.isClean()) ||
     (await workspaceGit.activeOperation()) ||
-    (assessment && (await args.git.head()) !== assessment.targetSha)
+    (assessedTargetSha && (await args.git.head()) !== assessedTargetSha)
   ) {
     throw new ReviewWorkspaceSafetyError(
       "The reviewer changed the assessed repository state.",
@@ -588,6 +600,9 @@ export async function runWorkstreamReview(args: {
           comparisonBase: review!.comparisonBase,
           changedPaths: [...actualChangedPaths!],
           findingEpoch: review!.round,
+          ...(review?.repositoryAssessment
+            ? { assessedTargetSha: review.repositoryAssessment.targetSha }
+            : {}),
           completion: result.result as AnchoredWorkstreamReviewCompletion,
           evidence,
         }
@@ -813,6 +828,7 @@ export function applyInitialWorkstreamReview(args: {
       comparisonBase: args.comparisonBase,
       round: 0,
       pendingCorrectionIds: findings.map((finding) => finding.id),
+      correctionConsumed: findings.length > 0,
       evidence: [args.evidence],
       observations: [],
       ...("publicationCommitSubject" in args.completion
@@ -914,8 +930,15 @@ export function applyAnchoredWorkstreamReview(args: {
     introducedRound: nextRound,
     status: "open" as const,
   }));
+  if (
+    args.state.latestCorrection?.mode === "unchanged" &&
+    args.completion.regressions.length > 0
+  ) {
+    throw new Error("An unchanged correction cannot introduce regressions.");
+  }
   const pendingCorrectionIds: string[] = [];
   if (
+    args.state.latestCorrection?.mode === "changed" &&
     !args.state.publicationCommitSubject &&
     !("publicationCommitSubject" in args.completion)
   ) {
@@ -954,20 +977,26 @@ export function retargetAnchoredReview(args: {
     fromCandidateId: string;
     changedPaths: string[];
     evidence: string;
+    summary?: string;
+    verification?: string[];
+    uncertainty?: string;
+    artifactPath?: string;
   };
 }): ReviewState {
   if (args.state.candidateId !== args.correction.fromCandidateId) {
     throw new Error("A correction must begin at the reviewed candidate.");
   }
-  if (args.candidateId === args.state.candidateId) {
-    throw new Error("Tracked rework must create a new candidate identity.");
+  const mode =
+    args.candidateId === args.state.candidateId ? "unchanged" : "changed";
+  if (mode === "unchanged" && args.correction.changedPaths.length > 0) {
+    throw new Error("An unchanged correction cannot retain changed paths.");
   }
   return {
     ...args.state,
     candidateId: args.candidateId,
     comparisonBase: args.comparisonBase,
     previousCandidateId: args.state.candidateId,
-    latestCorrection: args.correction,
+    latestCorrection: { ...args.correction, mode },
   };
 }
 

@@ -243,9 +243,16 @@ const reviewStateSchema = z
         fromCandidateId: nonEmpty,
         changedPaths: z.array(nonEmpty),
         evidence: nonEmpty,
+        mode: z.enum(["changed", "unchanged"]),
+        summary: nonEmpty.optional(),
+        verification: z.array(nonEmpty).min(1).optional(),
+        uncertainty: nonEmpty.optional(),
+        artifactPath: nonEmpty.optional(),
       })
       .strict()
       .optional(),
+    repositoryAssessment: z.object({ targetSha: nonEmpty }).strict().optional(),
+    correctionConsumed: z.boolean(),
     evidence: z.array(nonEmpty).min(1),
     observations: z.array(
       z.object({ summary: nonEmpty, evidence: nonEmpty }).strict(),
@@ -310,9 +317,6 @@ const revisionAssignmentSchema = z
     evidence: z.array(nonEmpty),
     status: z.enum(["open", "completed", "blocked"]),
     executionFailures: z.number().int().nonnegative(),
-    noProgress: z
-      .object({ signature: nonEmpty, attempts: z.number().int().nonnegative() })
-      .strict(),
   })
   .strict();
 
@@ -542,7 +546,6 @@ const failureSchema = z
       "stopped",
       "interrupted",
       "semantic_blocked",
-      "no_progress",
       "workspace_unsafe",
       "protocol_failure",
       "provider_failure",
@@ -1894,6 +1897,13 @@ function invariantIssues(
         review.latestCorrection.fromCandidateId !== review.previousCandidateId)
     ) {
       issues.push(`review ${key} has an invalid correction anchor`);
+    }
+    if (
+      review.latestCorrection?.mode === "unchanged" &&
+      (review.candidateId !== review.previousCandidateId ||
+        review.latestCorrection.changedPaths.length > 0)
+    ) {
+      issues.push(`review ${key} has an invalid unchanged correction anchor`);
     }
     if (
       candidate.integrationBaseSha !== undefined &&

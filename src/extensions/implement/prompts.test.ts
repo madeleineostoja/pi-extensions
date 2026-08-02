@@ -87,6 +87,7 @@ describe("whole-plan and repair prompts", () => {
         fromCandidateId: "previous",
         changedPaths: ["src/endpoint.ts"],
         evidence: "correction",
+        mode: "changed",
       },
       contracts: [],
       sourceMaterial: [],
@@ -98,6 +99,10 @@ describe("whole-plan and repair prompts", () => {
     });
 
     expect(prompt).toContain("Author one concise Conventional Commit subject");
+    expect(prompt).toContain("Correction mode: changed");
+    expect(prompt).toContain(
+      "final source review: no further source correction follows",
+    );
     expect(prompt).toContain("Only this reviewer completion may resolve");
     expect(prompt).toContain("Assess every outstanding ID exactly once");
     expect(prompt).toContain("direct causal regressions only");

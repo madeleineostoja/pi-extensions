@@ -94,6 +94,11 @@ export function formatStatus(state: RunState): string {
       ...(review?.previousCandidateId
         ? [`previous candidate ${review.previousCandidateId}`]
         : []),
+      ...(review?.latestCorrection
+        ? [
+            `final review ${review.latestCorrection.mode} correction · ${review.latestCorrection.evidence}`,
+          ]
+        : []),
     ].join(" · ");
   });
   const reconciliation = Object.values(state.reconciliationAssignments).map(
@@ -114,6 +119,10 @@ export function formatStatus(state: RunState): string {
             : "pending"
     }`;
   });
+  const satisfaction = Object.values(state.satisfaction.receipts).map(
+    (receipt) =>
+      `${receipt.workstream.id}: ${receipt.candidateId} @ ${receipt.assessedTargetSha}`,
+  );
   const publicationUncertainty =
     state.failure?.category === "publication_uncertain"
       ? state.failure.reason
@@ -154,6 +163,9 @@ export function formatStatus(state: RunState): string {
         ]
       : []),
     `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted; ${Object.keys(state.publication.supersessions).length} superseded; ${Object.keys(state.publication.abandonments).length} abandoned`,
+    ...(satisfaction.length > 0
+      ? [`Satisfaction receipts: ${satisfaction.join("; ")}`]
+      : []),
     ...(publication.length > 0
       ? [`Publication intents: ${publication.join("; ")}`]
       : []),

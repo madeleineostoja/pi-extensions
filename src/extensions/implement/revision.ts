@@ -52,7 +52,14 @@ export type RevisionOutcome =
         evidence: string;
       };
     }
-  | { kind: "unchanged"; evidence: string };
+  | {
+      kind: "unchanged";
+      evidence: string;
+      summary: string;
+      verification: string[];
+      uncertainty?: string;
+      artifactPath: string;
+    };
 
 export class RevisionFailure extends Error {
   constructor(
@@ -264,15 +271,25 @@ export async function runRevision(args: {
           observation,
         );
       }
-      writeRevisionEvidence(args.artifactsPath, args.effect.assignmentId, {
-        packet,
-        completion: response.result,
-        observation,
-        outcome: "unchanged",
-      });
+      const artifactPath = writeRevisionEvidence(
+        args.artifactsPath,
+        args.effect.assignmentId,
+        {
+          packet,
+          completion: response.result,
+          observation,
+          outcome: "unchanged",
+        },
+      );
       return {
         kind: "unchanged",
-        evidence: "Revision left the candidate tree unchanged.",
+        evidence: response.result.evidence,
+        summary: response.result.summary,
+        verification: response.result.verification,
+        ...(response.result.uncertainty
+          ? { uncertainty: response.result.uncertainty }
+          : {}),
+        artifactPath,
       };
     }
     throw new RevisionFailure(
@@ -351,6 +368,16 @@ export async function runRevision(args: {
       fromCandidateId: packet.candidate.id,
       changedPaths: correctionChangedPaths,
       evidence: evidencePath,
+      ...(completion
+        ? {
+            summary: completion.summary,
+            verification: completion.verification,
+            ...(completion.uncertainty
+              ? { uncertainty: completion.uncertainty }
+              : {}),
+            artifactPath: evidencePath,
+          }
+        : {}),
     },
   };
 }

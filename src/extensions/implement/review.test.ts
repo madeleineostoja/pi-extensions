@@ -152,6 +152,55 @@ describe("canonical review findings", () => {
     expect(assessed.review.pendingCorrectionIds).toEqual([]);
   });
 
+  it("anchors unchanged corrections to the same candidate and rejects regressions", () => {
+    const initial = initialReview();
+    const review = retargetAnchoredReview({
+      state: initial.review,
+      candidateId: previousCandidate.id,
+      comparisonBase: "base",
+      correction: {
+        fromCandidateId: previousCandidate.id,
+        changedPaths: [],
+        evidence: "tests could not start",
+        summary: "No safe source change",
+        verification: ["test command was blocked"],
+        uncertainty: "dependency installation unavailable",
+        artifactPath: "/artifacts/unchanged.json",
+      },
+    });
+
+    expect(review.latestCorrection).toMatchObject({
+      mode: "unchanged",
+      evidence: "tests could not start",
+      verification: ["test command was blocked"],
+    });
+    expect(() =>
+      applyAnchoredWorkstreamReview({
+        state: review,
+        workstream,
+        findings: initial.findings,
+        completion: {
+          assessments: initial.findings.map((finding) => ({
+            id: finding.id,
+            status: "resolved" as const,
+            evidence: "Reviewed.",
+          })),
+          regressions: [
+            {
+              summary: "Impossible regression",
+              evidence: "No change exists.",
+              requiredChange: "None.",
+              acceptanceCriteria: ["None."],
+              changedPaths: ["src/endpoint.ts"],
+            },
+          ],
+        },
+        evidence: "assessment",
+        correctionPaths: [],
+      }),
+    ).toThrow("An unchanged correction cannot introduce regressions.");
+  });
+
   it("rejects duplicate, missing, and foreign assessments", () => {
     const { initial, review } = correctionReview();
     const resolved = {

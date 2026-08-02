@@ -292,6 +292,84 @@ describe("revision policy", () => {
     expect(Object.values(reassessed.state.revisionAssignments)).toContainEqual(
       expect.objectContaining({ pendingCorrectionIds: [pendingId] }),
     );
+
+    const correctionRequested = reduceRunEvent(reassessed.state, {
+      kind: "revision_requested",
+      workstream: sourceWorkstream,
+      now: "2026-01-01T00:04:00.000Z",
+    });
+    const correction = correctionRequested.effects[0]!;
+    if (correction.kind !== "run_revision") {
+      throw new Error("expected correction");
+    }
+    const unchanged = reduceRunEvent(correctionRequested.state, {
+      kind: "revision_completed",
+      workstream: correction.workstream,
+      leaseId: correction.leaseId,
+      assignmentId: correction.assignmentId,
+      outcome: {
+        kind: "unchanged",
+        evidence: "test command could not start",
+        summary: "No safe change",
+        verification: ["inspected the target"],
+        uncertainty: "dependency installation unavailable",
+        artifactPath: "/artifacts/revision.json",
+      },
+    });
+    const finalRequested = reduceRunEvent(unchanged.state, {
+      kind: "review_requested",
+      workstream: sourceWorkstream,
+      now: "2026-01-01T00:05:00.000Z",
+    });
+    const finalReview = finalRequested.effects[0]!;
+    if (finalReview.kind !== "run_review") {
+      throw new Error("expected final review");
+    }
+    const settled = reduceRunEvent(finalRequested.state, {
+      kind: "review_completed",
+      workstream: finalReview.workstream,
+      leaseId: finalReview.leaseId,
+      outcome: {
+        kind: "anchored",
+        candidateId: satisfiedCandidate.id,
+        previousCandidateId: satisfiedCandidate.id,
+        comparisonBase: "base-sha",
+        changedPaths: [],
+        findingEpoch: 1,
+        assessedTargetSha: "target-sha",
+        evidence: "final assessment",
+        completion: {
+          assessments: [
+            {
+              id: pendingId,
+              status: "unresolved",
+              evidence: "Coverage remains unavailable.",
+              summary: "Representative coverage",
+              requiredChange: "Add representative coverage.",
+              acceptanceCriteria: ["Coverage exercises the task."],
+            },
+          ],
+          regressions: [],
+        },
+      },
+    });
+
+    expect(settled.state.workstreams.source["first-stream"]?.phase).toBe(
+      "completed",
+    );
+    expect(Object.values(settled.state.satisfaction.receipts)).toContainEqual(
+      expect.objectContaining({
+        candidateId: satisfiedCandidate.id,
+        assessedTargetSha: "target-sha",
+      }),
+    );
+    expect(settled.state.reviews["source:first-stream"]).toMatchObject({
+      pendingCorrectionIds: [],
+      latestCorrection: {
+        mode: "unchanged",
+        artifactPath: "/artifacts/revision.json",
+      },
+    });
   });
 
   it("creates one canonical whole-plan finding ledger shared with its repair", async () => {
@@ -545,7 +623,7 @@ describe("revision policy", () => {
       phase: "candidate_ready",
       candidateId,
     };
-    state.reviews["overall:repair-1"] = {
+    ((state.reviews["overall:repair-1"] = {
       ...state.reviews["overall:repair-1"]!,
       candidateId,
       previousCandidateId: baselineId,
@@ -553,8 +631,10 @@ describe("revision policy", () => {
         fromCandidateId: baselineId,
         changedPaths: ["src/repair.ts"],
         evidence: "repair evidence",
+        mode: "changed",
       },
-    };
+    }),
+      {});
 
     const requested = reduceRunEvent(state, {
       kind: "review_requested",
@@ -609,53 +689,76 @@ describe("revision policy", () => {
     expect(() => validate(assessed.state)).not.toThrow();
   });
 
-  it("settles the first unchanged revision as no progress without a duplicate revision", async () => {
-    const state = await stateAtRevision();
-    const settled = requestAndLeaveUnchanged(state, "first wording");
-    const assignment = Object.values(settled.revisionAssignments)[0]!;
-
-    expect(settled.phase).toBe("running");
-    expect(settled.workstreams.source).toMatchObject({
-      "first-stream": {
-        phase: "failed",
+  it("sends an unchanged correction through one final review without failing the lane", async () => {
+    const settled = requestAndLeaveUnchanged(
+      await stateAtRevision(),
+      "verification could not start",
+    );
+    const requested = reduceRunEvent(settled, {
+      kind: "review_requested",
+      workstream: { kind: "source", id: "first-stream" },
+      now: "2026-01-01T00:03:00.000Z",
+    });
+    const review = requested.effects[0]!;
+    if (review.kind !== "run_review") {
+      throw new Error("expected final review");
+    }
+    const assessed = reduceRunEvent(requested.state, {
+      kind: "review_completed",
+      workstream: review.workstream,
+      leaseId: review.leaseId,
+      outcome: {
+        kind: "anchored",
         candidateId: "candidate:first",
+        previousCandidateId: "candidate:first",
+        comparisonBase: "base-sha",
+        changedPaths: [],
+        findingEpoch: 0,
+        evidence: "final review artifact",
+        completion: {
+          assessments: [
+            {
+              id: "source-first-stream-r1",
+              status: "unresolved",
+              evidence: "The missing behavior remains.",
+              summary: "missing behavior",
+              requiredChange: "complete the endpoint",
+              acceptanceCriteria: ["endpoint responds"],
+            },
+          ],
+          regressions: [],
+        },
       },
-      "second-stream": { phase: "dependency_skipped" },
     });
-    expect(assignment).toMatchObject({
-      status: "blocked",
-      noProgress: { attempts: 1 },
+
+    expect(assessed.state.workstreams.source["first-stream"]?.phase).toBe(
+      "approved",
+    );
+    expect(assessed.state.reviews["source:first-stream"]).toMatchObject({
+      pendingCorrectionIds: [],
+      latestCorrection: {
+        mode: "unchanged",
+        evidence: "verification could not start",
+      },
     });
-    expect(settled.reviews["source:first-stream"]).toMatchObject({
-      candidateId: "candidate:first",
-      pendingCorrectionIds: ["source-first-stream-r1"],
-    });
-    expect(settled.candidates["candidate:first"]).toBeDefined();
-    expect(Object.values(settled.failures)).toContainEqual(
-      expect.objectContaining({
-        category: "no_progress",
-        assignment: "blocked",
-        evidence: "first wording",
-      }),
+    expect(assessed.state.findings["source-first-stream-r1"]?.status).toBe(
+      "open",
     );
     expect(
-      reduceRunEvent(settled, {
-        kind: "revision_requested",
-        workstream: { kind: "source", id: "first-stream" },
-        now: "2026-01-01T00:03:00.000Z",
-      }),
-    ).toMatchObject({ accepted: false, effects: [] });
-    expect(reduceRunEvent(settled, { kind: "run_incomplete" })).toMatchObject({
-      accepted: true,
-      state: { phase: "incomplete" },
-    });
+      Object.values(assessed.state.revisionAssignments).some(
+        (assignment) => assignment.status === "open",
+      ),
+    ).toBe(false);
+    expect(Object.values(assessed.state.failures)).toEqual([]);
   });
 
   it("leaves independent workstreams active after an unchanged revision settles", async () => {
     const state = await stateAtRevision(2, true);
     const settled = requestAndLeaveUnchanged(state, "no semantic change");
 
-    expect(settled.workstreams.source["first-stream"]?.phase).toBe("failed");
+    expect(settled.workstreams.source["first-stream"]?.phase).toBe(
+      "candidate_ready",
+    );
     expect(settled.workstreams.source["second-stream"]?.phase).toBe(
       "implementing",
     );
@@ -670,7 +773,7 @@ describe("revision policy", () => {
     );
   });
 
-  it("keeps protocol retries separate from semantic no progress", async () => {
+  it("keeps protocol retries separate from semantic correction settlement", async () => {
     let state = await stateAtRevision();
     for (let attempt = 1; attempt <= 3; attempt++) {
       const requested = reduceRunEvent(state, {
@@ -696,9 +799,9 @@ describe("revision policy", () => {
     expect(Object.values(state.failures)).toContainEqual(
       expect.objectContaining({ category: "protocol_failure" }),
     );
-    expect(
-      Object.values(state.revisionAssignments)[0]?.noProgress.attempts,
-    ).toBe(0);
+    expect(Object.values(state.revisionAssignments)[0]?.executionFailures).toBe(
+      3,
+    );
   });
 
   it("uses an exact scheduler-owned workspace recreation operation", async () => {
