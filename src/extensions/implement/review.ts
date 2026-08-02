@@ -27,6 +27,7 @@ import {
   WorkerPacketError,
 } from "./worker-invocation.js";
 import { overallRepairWorkspace } from "./overall-repair.js";
+import { sourceResidualContext } from "./whole-plan-review.js";
 import { workstreamWorkspace } from "./workstream-candidate.js";
 import { writeAtomicJson } from "./atomic-json.js";
 import {
@@ -50,12 +51,19 @@ export type ReviewState = {
   comparisonBase: string;
   previousCandidateId?: string;
   round: number;
-  outstandingIds: string[];
+  pendingCorrectionIds: string[];
   latestCorrection?: {
     fromCandidateId: string;
     changedPaths: string[];
     evidence: string;
+    mode: "changed" | "unchanged";
+    summary?: string;
+    verification?: string[];
+    uncertainty?: string;
+    artifactPath?: string;
   };
+  repositoryAssessment?: { targetSha: string };
+  correctionConsumed: boolean;
   evidence: string[];
   observations: Array<{ summary: string; evidence: string }>;
   publicationCommitSubject?: string;
@@ -65,6 +73,13 @@ export type ReviewFinding = DirectReviewFinding & {
   id: string;
   candidateId: string;
   workstream: RuntimeWorkstream;
+  scope:
+    | { kind: "source"; id: string }
+    | {
+        kind: "whole_plan";
+        initialTargetSha: string;
+        initialTargetTreeSha: string;
+      };
   origin: "initial" | "regression";
   introducedRound: number;
   status: "open" | "resolved";
@@ -110,7 +125,7 @@ export type InitialSourceReviewPacket = ReviewPacket & {
 
 export type AnchoredSourceReviewPacket = ReviewPacket & {
   role: "reviewer";
-  completionKind: "anchored-review";
+  completionKind: "initial-anchored-review" | "anchored-review";
   identity: string;
   workspace: { path: string; mutationBoundary: string };
   mode: "anchored";
@@ -162,6 +177,7 @@ export type ReviewOutcome =
       comparisonBase: string;
       changedPaths: string[];
       findingEpoch: number;
+      assessedTargetSha?: string;
       completion:
         | AnchoredWorkstreamReviewCompletion
         | InitialAnchoredWorkstreamReviewCompletion;
@@ -185,18 +201,18 @@ export function workstreamReviewFindings(
   state: RunState,
   workstream: RuntimeWorkstream,
 ): ReviewFinding[] {
-  return Object.values(state.findings).filter((finding) => {
-    if (finding.workstream.kind === "source" && workstream.kind === "source") {
-      return finding.workstream.id === workstream.id;
-    }
-    if (
-      finding.workstream.kind === "overall" &&
-      workstream.kind === "overall"
-    ) {
-      return finding.workstream.repairId === workstream.repairId;
-    }
-    return false;
-  });
+  if (workstream.kind === "overall") {
+    const ids = state.wholePlanReview.epoch?.findingIds ?? [];
+    return ids.flatMap((id) => {
+      const finding = state.findings[id];
+      return finding ? [finding] : [];
+    });
+  }
+  return Object.values(state.findings).filter(
+    (finding) =>
+      finding.workstream.kind === "source" &&
+      finding.workstream.id === workstream.id,
+  );
 }
 
 export function buildReviewPacket(args: {
@@ -278,11 +294,11 @@ export function buildReviewPacket(args: {
       ? { uncertainty: candidate.implementationEvidence.uncertainty }
       : {}),
     outstandingFindings: workstreamReviewFindings(args.state, args.workstream)
-      .filter((finding) => review?.outstandingIds.includes(finding.id))
+      .filter((finding) => review?.pendingCorrectionIds.includes(finding.id))
       .sort(
         (left, right) =>
-          review!.outstandingIds.indexOf(left.id) -
-          review!.outstandingIds.indexOf(right.id),
+          review!.pendingCorrectionIds.indexOf(left.id) -
+          review!.pendingCorrectionIds.indexOf(right.id),
       ),
     ...(review?.latestCorrection
       ? { latestCorrection: review.latestCorrection }
@@ -368,7 +384,7 @@ export function buildSourceReviewWorkerPacket(args: {
       mode: "initial",
     };
   }
-  const outstandingIds = args.packet.outstandingFindings.map(
+  const pendingCorrectionIds = args.packet.outstandingFindings.map(
     (finding) => finding.id,
   );
   if (
@@ -385,7 +401,7 @@ export function buildSourceReviewWorkerPacket(args: {
     !args.review.latestCorrection ||
     args.review.latestCorrection.fromCandidateId !==
       args.packet.previousCandidate.id ||
-    !sameIds(outstandingIds, args.review.outstandingIds) ||
+    !sameIds(pendingCorrectionIds, args.review.pendingCorrectionIds) ||
     !sameIds(
       args.actualChangedPaths ?? [],
       args.review.latestCorrection.changedPaths,
@@ -405,7 +421,11 @@ export function buildSourceReviewWorkerPacket(args: {
   }
   return {
     ...common,
-    completionKind: "anchored-review",
+    completionKind:
+      args.review.latestCorrection.mode === "unchanged" ||
+      args.review.publicationCommitSubject
+        ? "anchored-review"
+        : "initial-anchored-review",
     mode: "anchored",
     previousCandidate: args.packet.previousCandidate,
     latestCorrection: args.review.latestCorrection,
@@ -455,6 +475,8 @@ export async function runWorkstreamReview(args: {
       entry.workstream.id === runtime.id,
   );
   const review = workstreamReviewState(args.state, args.workstream);
+  const assessedTargetSha =
+    assessment?.targetSha ?? review?.repositoryAssessment?.targetSha;
   const previousCandidate = review?.previousCandidateId
     ? args.state.candidates[review.previousCandidateId]
     : undefined;
@@ -482,7 +504,7 @@ export async function runWorkstreamReview(args: {
       await observeCandidateWorkspace(workspaceGit),
     );
   }
-  if (assessment && (await args.git.head()) !== assessment.targetSha) {
+  if (assessedTargetSha && (await args.git.head()) !== assessedTargetSha) {
     throw new Error(
       "Repository-state assessment target changed before review.",
     );
@@ -491,7 +513,7 @@ export async function runWorkstreamReview(args: {
     review && previousCandidate
       ? await changedPathsBetween(
           workspaceGit,
-          review.comparisonBase,
+          previousCandidate.commitSha,
           candidate.commitSha,
         )
       : undefined;
@@ -544,7 +566,7 @@ export async function runWorkstreamReview(args: {
     (await workspaceGit.tree()) !== candidate.treeSha ||
     !(await workspaceGit.isClean()) ||
     (await workspaceGit.activeOperation()) ||
-    (assessment && (await args.git.head()) !== assessment.targetSha)
+    (assessedTargetSha && (await args.git.head()) !== assessedTargetSha)
   ) {
     throw new ReviewWorkspaceSafetyError(
       "The reviewer changed the assessed repository state.",
@@ -579,6 +601,9 @@ export async function runWorkstreamReview(args: {
           comparisonBase: review!.comparisonBase,
           changedPaths: [...actualChangedPaths!],
           findingEpoch: review!.round,
+          ...(review?.repositoryAssessment
+            ? { assessedTargetSha: review.repositoryAssessment.targetSha }
+            : {}),
           completion: result.result as AnchoredWorkstreamReviewCompletion,
           evidence,
         }
@@ -641,7 +666,7 @@ async function runOverallAnchoredReview(args: {
   const available = new Map(
     completeFindings.map((finding) => [finding.id, finding]),
   );
-  const findings = review.outstandingIds.map((id) => {
+  const findings = review.pendingCorrectionIds.map((id) => {
     const finding = available.get(id);
     if (!finding || finding.status !== "open") {
       throw new WorkerPacketError(
@@ -650,16 +675,18 @@ async function runOverallAnchoredReview(args: {
     }
     return finding;
   });
-  if (new Set(review.outstandingIds).size !== findings.length) {
+  if (new Set(review.pendingCorrectionIds).size !== findings.length) {
     throw new WorkerPacketError(
       "Overall repair review has duplicate anchored finding references.",
     );
   }
   const packet: OverallAnchoredReviewPacket = {
     role: "reviewer",
-    completionKind: review.publicationCommitSubject
-      ? "anchored-review"
-      : "initial-anchored-review",
+    completionKind:
+      review.latestCorrection?.mode === "unchanged" ||
+      review.publicationCommitSubject
+        ? "anchored-review"
+        : "initial-anchored-review",
     identity: `${args.state.run.id}/${args.workstream.repairId}/${candidate.id}`,
     workspace: {
       path: workspace.worktreePath,
@@ -674,7 +701,8 @@ async function runOverallAnchoredReview(args: {
       null,
       2,
     ),
-    candidateContext: `Run base: ${args.state.run.checkout.startHead}\nHistorical workstream base: ${candidate.baseSha}\nComparison base: ${review.comparisonBase}\nPrevious candidate: ${previousCandidate.commitSha}\nCandidate: ${candidate.commitSha}\nCanonical comparison paths: ${review.latestCorrection?.changedPaths.join(", ") || "none"}\nFinding epoch: ${review.round}\nPrior review evidence: ${JSON.stringify(review.evidence)}\nCurrent verification: ${JSON.stringify(candidate.implementationEvidence?.verification ?? [])}\nCurrent evidence status: ${candidate.evidenceStatus ?? "unavailable"}\nCurrent uncertainty: ${candidate.implementationEvidence?.uncertainty ?? "none"}\nCumulative publication subject: ${review.publicationCommitSubject ?? "not yet authored"}`,
+    candidateContext: `Run base: ${args.state.run.checkout.startHead}\nHistorical workstream base: ${candidate.baseSha}\nComparison base: ${review.comparisonBase}\nPrevious candidate: ${previousCandidate.commitSha}\nCandidate: ${candidate.commitSha}\nCorrection mode: ${review.latestCorrection?.mode ?? "unknown"}\nCanonical comparison paths: ${review.latestCorrection?.changedPaths.join(", ") || "none"}\nCorrection evidence: ${review.latestCorrection?.evidence ?? "none"}\nCorrection summary: ${review.latestCorrection?.summary ?? "none"}\nCorrection verification: ${JSON.stringify(review.latestCorrection?.verification ?? [])}\nCorrection uncertainty: ${review.latestCorrection?.uncertainty ?? "none"}\nCorrection artifact: ${review.latestCorrection?.artifactPath ?? "none"}\nFinding epoch: ${review.round}\nPrior review evidence: ${JSON.stringify(review.evidence)}\nCurrent verification: ${JSON.stringify(candidate.implementationEvidence?.verification ?? [])}\nCurrent evidence status: ${candidate.evidenceStatus ?? "unavailable"}\nCurrent uncertainty: ${candidate.implementationEvidence?.uncertainty ?? "none"}\nCumulative publication subject: ${review.publicationCommitSubject ?? "not yet authored"}
+Open source review context: ${JSON.stringify(sourceResidualContext(args.state, args.plan), null, 2)}`,
     previousCandidate,
     candidate,
     comparisonBase: review.comparisonBase,
@@ -778,25 +806,33 @@ export function applyInitialWorkstreamReview(args: {
     | InitialWorkstreamReviewCompletion
     | RepositoryStateReviewCompletion;
   evidence: string;
+  scope?: ReviewFinding["scope"];
 }): { review: ReviewState; findings: ReviewFinding[] } {
-  const findings =
-    args.completion.verdict === "changes_requested"
-      ? args.completion.findings.map((finding, index) => ({
-          ...finding,
-          id: `${reviewKey(args.workstream).replace(":", "-")}-r${index + 1}`,
-          candidateId: args.candidateId,
-          workstream: args.workstream,
-          origin: "initial" as const,
-          introducedRound: 0,
-          status: "open" as const,
-        }))
-      : [];
+  const scope =
+    args.scope ??
+    (args.workstream.kind === "source"
+      ? { kind: "source" as const, id: args.workstream.id }
+      : undefined);
+  if (!scope) {
+    throw new Error("Whole-plan findings require an observed target tree.");
+  }
+  const findings = args.completion.findings.map((finding, index) => ({
+    scope,
+    ...finding,
+    id: `${reviewKey(args.workstream).replace(":", "-")}-r${index + 1}`,
+    candidateId: args.candidateId,
+    workstream: args.workstream,
+    origin: "initial" as const,
+    introducedRound: 0,
+    status: "open" as const,
+  }));
   return {
     review: {
       candidateId: args.candidateId,
       comparisonBase: args.comparisonBase,
       round: 0,
-      outstandingIds: findings.map((finding) => finding.id),
+      pendingCorrectionIds: findings.map((finding) => finding.id),
+      correctionConsumed: findings.length > 0,
       evidence: [args.evidence],
       observations: [],
       ...("publicationCommitSubject" in args.completion
@@ -815,11 +851,33 @@ export function applyAnchoredWorkstreamReview(args: {
     | InitialAnchoredWorkstreamReviewCompletion;
   findings: ReviewFinding[];
   evidence: string;
+  correctionPaths: string[];
 }): { review: ReviewState; findings: ReviewFinding[] } {
   assertAssessmentCoverage(
-    args.state.outstandingIds,
+    args.state.pendingCorrectionIds,
     args.completion.assessments,
   );
+  if (
+    new Set(args.findings.map((finding) => finding.id)).size !==
+      args.findings.length ||
+    args.state.pendingCorrectionIds.some((id) => {
+      const finding = args.findings.find((candidate) => candidate.id === id);
+      return (
+        !finding ||
+        finding.status !== "open" ||
+        (args.workstream.kind === "source"
+          ? finding.workstream.kind !== "source" ||
+            finding.workstream.id !== args.workstream.id ||
+            finding.scope.kind !== "source" ||
+            finding.scope.id !== args.workstream.id
+          : finding.workstream.kind !== "overall" ||
+            finding.workstream.repairId !== args.workstream.repairId ||
+            finding.scope.kind !== "whole_plan")
+      );
+    })
+  ) {
+    throw new Error("Anchored review does not own its pending findings.");
+  }
   const assessments = new Map(
     args.completion.assessments.map((assessment) => [
       assessment.id,
@@ -827,26 +885,31 @@ export function applyAnchoredWorkstreamReview(args: {
     ]),
   );
   const nextRound = args.state.round + 1;
-  const resolved = new Set(
-    args.completion.assessments
-      .filter((assessment) => assessment.status === "resolved")
-      .map((assessment) => assessment.id),
-  );
   const updated = args.findings.map((finding) => {
     const assessment = assessments.get(finding.id);
-    return assessment
+    if (!assessment) {
+      return finding;
+    }
+    if (finding.status !== "open") {
+      throw new Error("Anchored review cannot reopen a resolved finding.");
+    }
+    return assessment.status === "resolved"
       ? {
           ...finding,
-          status:
-            assessment.status === "resolved"
-              ? ("resolved" as const)
-              : finding.status,
+          status: "resolved" as const,
+          evidence: assessment.evidence,
         }
-      : finding;
+      : {
+          ...finding,
+          summary: assessment.summary,
+          evidence: assessment.evidence,
+          requiredChange: assessment.requiredChange,
+          acceptanceCriteria: assessment.acceptanceCriteria,
+        };
   });
-  const latestPaths = new Set(args.state.latestCorrection?.changedPaths ?? []);
+  const correctionPaths = new Set(args.correctionPaths);
   const qualifying = args.completion.regressions.filter((finding) =>
-    finding.changedPaths.some((path) => latestPaths.has(path)),
+    finding.changedPaths.some((path) => correctionPaths.has(path)),
   );
   const observations = [
     ...(args.completion.observations ?? []),
@@ -866,20 +929,33 @@ export function applyAnchoredWorkstreamReview(args: {
     id: `${reviewKey(args.workstream).replace(":", "-")}-r${nextNumber + index}`,
     candidateId: args.state.candidateId,
     workstream: args.workstream,
+    scope: regressionScope(args.workstream, args.findings),
     origin: "regression" as const,
     introducedRound: nextRound,
     status: "open" as const,
   }));
-  const outstandingIds = [
-    ...args.state.outstandingIds.filter((id) => !resolved.has(id)),
-    ...regressions.map((finding) => finding.id),
-  ];
+  if (
+    args.state.latestCorrection?.mode === "unchanged" &&
+    args.completion.regressions.length > 0
+  ) {
+    throw new Error("An unchanged correction cannot introduce regressions.");
+  }
+  const pendingCorrectionIds: string[] = [];
+  if (
+    args.state.latestCorrection?.mode === "changed" &&
+    !args.state.publicationCommitSubject &&
+    !("publicationCommitSubject" in args.completion)
+  ) {
+    throw new Error(
+      "The first anchored changed-candidate review must author a publication subject.",
+    );
+  }
   if (
     "publicationCommitSubject" in args.completion &&
     args.state.publicationCommitSubject
   ) {
     throw new Error(
-      "Only the first overall repair review may author a publication subject.",
+      "An anchored review cannot replace its publication subject.",
     );
   }
   return {
@@ -889,7 +965,7 @@ export function applyAnchoredWorkstreamReview(args: {
         ? { publicationCommitSubject: args.completion.publicationCommitSubject }
         : {}),
       round: nextRound,
-      outstandingIds,
+      pendingCorrectionIds,
       evidence: [...args.state.evidence, args.evidence],
       observations: [...args.state.observations, ...observations],
     },
@@ -905,21 +981,38 @@ export function retargetAnchoredReview(args: {
     fromCandidateId: string;
     changedPaths: string[];
     evidence: string;
+    summary?: string;
+    verification?: string[];
+    uncertainty?: string;
+    artifactPath?: string;
   };
 }): ReviewState {
   if (args.state.candidateId !== args.correction.fromCandidateId) {
     throw new Error("A correction must begin at the reviewed candidate.");
   }
-  if (args.candidateId === args.state.candidateId) {
-    throw new Error("Tracked rework must create a new candidate identity.");
-  }
+  const mode =
+    args.correction.changedPaths.length === 0 ? "unchanged" : "changed";
   return {
     ...args.state,
     candidateId: args.candidateId,
     comparisonBase: args.comparisonBase,
     previousCandidateId: args.state.candidateId,
-    latestCorrection: args.correction,
+    latestCorrection: { ...args.correction, mode },
   };
+}
+
+function regressionScope(
+  workstream: RuntimeWorkstream,
+  findings: ReviewFinding[],
+): ReviewFinding["scope"] {
+  const scope = findings[0]?.scope;
+  if (scope) {
+    return scope;
+  }
+  if (workstream.kind === "source") {
+    return { kind: "source", id: workstream.id };
+  }
+  throw new Error("Whole-plan regressions require an observed target tree.");
 }
 
 function reviewEvidencePath(
@@ -963,10 +1056,10 @@ function sameIds(left: string[], right: string[]): boolean {
 }
 
 function assertAssessmentCoverage(
-  outstandingIds: string[],
+  pendingCorrectionIds: string[],
   assessments: AnchoredWorkstreamReviewCompletion["assessments"],
 ): void {
-  const expected = new Set(outstandingIds);
+  const expected = new Set(pendingCorrectionIds);
   const seen = new Set<string>();
   for (const assessment of assessments) {
     if (!expected.has(assessment.id) || seen.has(assessment.id)) {

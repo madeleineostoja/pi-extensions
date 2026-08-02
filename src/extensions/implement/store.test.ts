@@ -157,7 +157,7 @@ describe("checkout store transitions", () => {
     );
   });
 
-  it("rejects legacy state rather than interpreting it as an active operation", () => {
+  it("rejects retained legacy state", () => {
     const directory = root();
     const lease = fakeLease(directory);
     const store = createPlanningRun({
@@ -177,13 +177,14 @@ describe("checkout store transitions", () => {
       },
       workerConcurrency: 1,
     });
-    const legacy = { ...store.read(), version: 4 };
-    writeFileSync(store.path, JSON.stringify(legacy));
 
-    expect(() => RunStore.open(lease, store.path)).toThrow(StateError);
-    expect(() => RunStore.open(lease, store.path)).toThrow(
-      "legacy schema version 4",
-    );
+    for (const version of [7, 4]) {
+      writeFileSync(store.path, JSON.stringify({ ...store.read(), version }));
+      expect(() => RunStore.open(lease, store.path)).toThrow(StateError);
+      expect(() => RunStore.open(lease, store.path)).toThrow(
+        `legacy schema version ${version}`,
+      );
+    }
   });
 
   it("binds an exact retained plan after interruption between plan and state persistence", async () => {

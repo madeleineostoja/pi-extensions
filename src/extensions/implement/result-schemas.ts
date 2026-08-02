@@ -79,57 +79,49 @@ export const directReviewFindingSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const approvalSchema = Type.Object(
-  { verdict: Type.Literal("approved") },
-  { additionalProperties: false },
-);
-const changesRequestedReviewSchema = Type.Object(
-  {
-    verdict: Type.Literal("changes_requested"),
-    findings: Type.Array(directReviewFindingSchema, { minItems: 1 }),
-  },
-  { additionalProperties: false },
-);
 const publicationCommitSubject = () =>
   commitMessageString({
     description:
       "Conventional Commit subject for the complete reviewed workstream, not an internal checkpoint or correction commit.",
   });
 
-export const initialWorkstreamReviewSchema = Type.Union([
-  Type.Object(
-    {
-      verdict: Type.Literal("approved"),
-      publicationCommitSubject: publicationCommitSubject(),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      verdict: Type.Literal("changes_requested"),
-      findings: Type.Array(directReviewFindingSchema, { minItems: 1 }),
-      publicationCommitSubject: publicationCommitSubject(),
-    },
-    { additionalProperties: false },
-  ),
-]);
-export const repositoryStateReviewSchema = Type.Union([
-  approvalSchema,
-  changesRequestedReviewSchema,
-]);
-export const initialOverallReviewSchema = Type.Union([
-  approvalSchema,
-  changesRequestedReviewSchema,
-]);
-
-const findingAssessmentSchema = Type.Object(
+export const initialWorkstreamReviewSchema = Type.Object(
   {
-    id: nonEmptyString(),
-    status: Type.Union([Type.Literal("resolved"), Type.Literal("unresolved")]),
-    evidence: nonEmptyString(),
+    findings: Type.Array(directReviewFindingSchema),
+    publicationCommitSubject: publicationCommitSubject(),
   },
   { additionalProperties: false },
 );
+export const repositoryStateReviewSchema = Type.Object(
+  { findings: Type.Array(directReviewFindingSchema) },
+  { additionalProperties: false },
+);
+export const initialOverallReviewSchema = Type.Object(
+  { findings: Type.Array(directReviewFindingSchema) },
+  { additionalProperties: false },
+);
+
+const findingAssessmentSchema = Type.Union([
+  Type.Object(
+    {
+      id: nonEmptyString(),
+      status: Type.Literal("resolved"),
+      evidence: nonEmptyString(),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      id: nonEmptyString(),
+      status: Type.Literal("unresolved"),
+      evidence: nonEmptyString(),
+      summary: nonEmptyString(),
+      requiredChange: nonEmptyString(),
+      acceptanceCriteria: Type.Array(nonEmptyString(), { minItems: 1 }),
+    },
+    { additionalProperties: false },
+  ),
+]);
 const regressionFindingSchema = Type.Object(
   {
     summary: nonEmptyString(),

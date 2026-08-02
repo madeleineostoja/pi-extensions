@@ -64,6 +64,12 @@ export function formatStatus(state: RunState): string {
     (finding) => finding.status === "open",
   );
   const openFindings = openFindingRecords.length;
+  const finalResiduals = (
+    state.wholePlanReview.epoch?.findingIds ?? []
+  ).flatMap((id) => {
+    const finding = state.findings[id];
+    return finding?.status === "open" ? [finding] : [];
+  });
   const terminalLanes = [
     ...Object.values(state.workstreams.source)
       .filter(
@@ -94,6 +100,11 @@ export function formatStatus(state: RunState): string {
       ...(review?.previousCandidateId
         ? [`previous candidate ${review.previousCandidateId}`]
         : []),
+      ...(review?.latestCorrection
+        ? [
+            `final review ${review.latestCorrection.mode} correction · ${review.latestCorrection.evidence}`,
+          ]
+        : []),
     ].join(" · ");
   });
   const reconciliation = Object.values(state.reconciliationAssignments).map(
@@ -114,6 +125,10 @@ export function formatStatus(state: RunState): string {
             : "pending"
     }`;
   });
+  const satisfaction = Object.values(state.satisfaction.receipts).map(
+    (receipt) =>
+      `${receipt.workstream.id}: ${receipt.candidateId} @ ${receipt.assessedTargetSha}`,
+  );
   const publicationUncertainty =
     state.failure?.category === "publication_uncertain"
       ? state.failure.reason
@@ -127,6 +142,9 @@ export function formatStatus(state: RunState): string {
     `Workstreams: ${phases || "none"}`,
     `Active processes: ${activeProcesses || "none"}`,
     `Open findings: ${openFindings}`,
+    ...(finalResiduals.length > 0
+      ? [`Final residual findings: ${finalResiduals.length}`]
+      : []),
     ...(openFindingRecords.length > 0
       ? [
           `Open finding evidence: ${openFindingRecords
@@ -154,6 +172,9 @@ export function formatStatus(state: RunState): string {
         ]
       : []),
     `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted; ${Object.keys(state.publication.supersessions).length} superseded; ${Object.keys(state.publication.abandonments).length} abandoned`,
+    ...(satisfaction.length > 0
+      ? [`Satisfaction receipts: ${satisfaction.join("; ")}`]
+      : []),
     ...(publication.length > 0
       ? [`Publication intents: ${publication.join("; ")}`]
       : []),

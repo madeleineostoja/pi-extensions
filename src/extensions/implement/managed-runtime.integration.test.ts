@@ -76,7 +76,7 @@ describe("Implement managed runtime integration", () => {
         fauxToolCall(
           MANAGED_COMPLETION_TOOL_NAME,
           {
-            verdict: "approved",
+            findings: [],
             publicationCommitSubject: "feat: publish workstream",
           },
           { id: "completion" },
@@ -119,7 +119,7 @@ describe("Implement managed runtime integration", () => {
     expect(result).toEqual({
       status: "completed",
       result: {
-        verdict: "approved",
+        findings: [],
         publicationCommitSubject: "feat: publish workstream",
       },
     });
@@ -146,7 +146,7 @@ describe("Implement managed runtime integration", () => {
         fauxToolCall(
           MANAGED_COMPLETION_TOOL_NAME,
           {
-            verdict: "approved",
+            findings: [],
             publicationCommitSubject: "feat: publish workstream",
           },
           { id: "completion" },
@@ -180,7 +180,7 @@ describe("Implement managed runtime integration", () => {
     await expect(client.waitFor(handle)).resolves.toEqual({
       status: "completed",
       result: {
-        verdict: "approved",
+        findings: [],
         publicationCommitSubject: "feat: publish workstream",
       },
     });

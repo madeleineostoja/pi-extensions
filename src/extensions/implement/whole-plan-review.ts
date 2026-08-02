@@ -30,9 +30,7 @@ export type WholePlanReviewPacket = {
   candidateContext: string;
   receipts: RunState["publication"]["receipts"];
   uncertainty: string[];
-  outstandingFindings: NonNullable<
-    RunState["wholePlanReview"]["epoch"]
-  >["findings"];
+  outstandingFindings: RunState["findings"][string][];
 };
 
 export function buildWholePlanReviewPacket(args: {
@@ -64,6 +62,7 @@ export function buildWholePlanReviewPacket(args: {
   const uncertainty = Object.values(args.state.candidates)
     .flatMap((candidate) => candidate.implementationEvidence?.uncertainty ?? [])
     .filter((value, index, all) => all.indexOf(value) === index);
+  const sourceResiduals = sourceResidualContext(args.state, args.plan);
   return {
     role: "reviewer",
     completionKind: args.completionKind,
@@ -109,6 +108,10 @@ export function buildWholePlanReviewPacket(args: {
       ),
       "## Publication receipts",
       JSON.stringify(args.state.publication.receipts, null, 2),
+      "## Open source review context",
+      sourceResiduals.length > 0
+        ? JSON.stringify(sourceResiduals, null, 2)
+        : "No open source findings.",
       "## Implementer uncertainty",
       uncertainty.length > 0
         ? uncertainty.map((item) => `- ${item}`).join("\n")
@@ -117,6 +120,51 @@ export function buildWholePlanReviewPacket(args: {
     receipts: args.state.publication.receipts,
     uncertainty,
   };
+}
+
+export function sourceResidualContext(state: RunState, plan: ExecutionPlan) {
+  return plan.workstreams.flatMap((workstream) =>
+    Object.values(state.findings)
+      .filter(
+        (finding) =>
+          finding.status === "open" &&
+          finding.workstream.kind === "source" &&
+          finding.workstream.id === workstream.id,
+      )
+      .sort((left, right) => left.introducedRound - right.introducedRound)
+      .map((finding) => {
+        const candidate = state.candidates[finding.candidateId];
+        const review = state.reviews[`source:${workstream.id}`];
+        const receipt = Object.values(state.satisfaction.receipts).find(
+          (entry) => entry.workstream.id === workstream.id,
+        );
+        return {
+          workstreamId: workstream.id,
+          taskIds: workstream.taskIds,
+          candidateId: finding.candidateId,
+          candidate: candidate
+            ? { commitSha: candidate.commitSha, treeSha: candidate.treeSha }
+            : undefined,
+          delivery: receipt
+            ? { kind: "satisfaction", targetSha: receipt.assessedTargetSha }
+            : Object.values(state.publication.receipts).some((entry) => {
+                  const published = state.candidates[entry.candidateId];
+                  return (
+                    published?.workstream.kind === "source" &&
+                    published.workstream.id === workstream.id
+                  );
+                })
+              ? { kind: "publication" }
+              : undefined,
+          summary: finding.summary,
+          evidence: finding.evidence,
+          requiredChange: finding.requiredChange,
+          acceptanceCriteria: finding.acceptanceCriteria,
+          latestReviewEvidence: review?.evidence.at(-1),
+          uncertainty: candidate?.implementationEvidence?.uncertainty,
+        };
+      }),
+  );
 }
 
 export async function runWholePlanReview(args: {
@@ -168,10 +216,8 @@ export async function runWholePlanReview(args: {
     );
   }
   const outstandingFindings = anchored
-    ? epoch!.outstandingFindingIds.map((id) => {
-        const finding = epoch!.findings.find(
-          (candidate) => candidate.id === id,
-        );
+    ? epoch!.pendingCorrectionIds.map((id) => {
+        const finding = args.state.findings[id];
         if (!finding) {
           throw new Error(
             "Whole-plan review has a missing current anchored finding.",
@@ -181,7 +227,7 @@ export async function runWholePlanReview(args: {
       })
     : [];
   if (
-    new Set(anchored ? epoch!.outstandingFindingIds : []).size !==
+    new Set(anchored ? epoch!.pendingCorrectionIds : []).size !==
     outstandingFindings.length
   ) {
     throw new Error(
@@ -259,7 +305,7 @@ export async function runWholePlanReview(args: {
     });
     return;
   }
-  if (completion.verdict === "approved") {
+  if (completion.findings.length === 0) {
     await args.dispatch({
       kind: "whole_plan_review_completed",
       outcome: {
@@ -284,12 +330,7 @@ export async function runWholePlanReview(args: {
         commitSha: target,
         treeSha: await args.git.treeAt(target),
       },
-      findings: completion.findings.map((finding) => ({
-        summary: finding.summary,
-        evidence: finding.evidence,
-        requiredChange: finding.requiredChange,
-        acceptanceCriteria: finding.acceptanceCriteria,
-      })),
+      findings: completion.findings,
       evidence,
       reviewedTargetSha: target,
       reviewedTargetTreeSha: targetTree,

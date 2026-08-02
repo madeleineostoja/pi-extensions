@@ -161,6 +161,11 @@ async function overallFixture() {
         id: "overall-finding-1",
         candidateId: baseline.id,
         workstream: baseline.workstream,
+        scope: {
+          kind: "whole_plan",
+          initialTargetSha: baseSha,
+          initialTargetTreeSha: treeSha,
+        },
         origin: "initial",
         introducedRound: 0,
         status: "open",
@@ -168,6 +173,16 @@ async function overallFixture() {
         evidence: "app.txt still contains the baseline behavior",
         requiredChange: "Update app.txt",
         acceptanceCriteria: ["app.txt contains the repaired behavior"],
+      },
+    },
+    reviews: {
+      [`overall:${repairId}`]: {
+        candidateId: baseline.id,
+        comparisonBase: baseSha,
+        round: 0,
+        pendingCorrectionIds: ["overall-finding-1"],
+        evidence: ["whole-plan review"],
+        observations: [],
       },
     },
   } as unknown as RunState;

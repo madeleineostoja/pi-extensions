@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAnchoredOverallReviewPrompt,
+  buildAnchoredWorkstreamReviewPrompt,
+  buildInitialWorkstreamReviewPrompt,
   buildInitialOverallReviewPrompt,
   buildOverallReworkPrompt,
   buildRevisionPrompt,
@@ -57,13 +59,104 @@ describe("whole-plan and repair prompts", () => {
     expect(repair).toContain("run-base..current-repair");
   });
 
+  it("requires reviewer-owned reassessment and first changed-candidate metadata", () => {
+    const prompt = buildAnchoredWorkstreamReviewPrompt({
+      role: "reviewer",
+      completionKind: "initial-anchored-review",
+      mode: "anchored",
+      identity: "run-1/work/candidate",
+      workspace: { path: "/worktree", mutationBoundary: "read-only" },
+      workstream: { kind: "source", id: "work" },
+      candidate: {
+        id: "candidate",
+        workstream: { kind: "source", id: "work" },
+        baseSha: "base",
+        commitSha: "candidate-sha",
+        treeSha: "candidate-tree",
+      },
+      previousCandidate: {
+        id: "previous",
+        workstream: { kind: "source", id: "work" },
+        baseSha: "base",
+        commitSha: "previous-sha",
+        treeSha: "previous-tree",
+      },
+      comparisonBase: "base",
+      findingEpoch: 1,
+      latestCorrection: {
+        fromCandidateId: "previous",
+        changedPaths: ["src/endpoint.ts"],
+        evidence: "correction",
+        mode: "changed",
+      },
+      contracts: [],
+      sourceMaterial: [],
+      corpus: [],
+      schedule: { tasks: [], workstreams: [] },
+      checkpoints: {},
+      satisfiedEvidence: {},
+      outstandingFindings: [],
+    });
+
+    expect(prompt).toContain("Author one concise Conventional Commit subject");
+    expect(prompt).toContain("Correction mode: changed");
+    expect(prompt).toContain(
+      "final source review: no further source correction follows",
+    );
+    expect(prompt).toContain("Only this reviewer completion may resolve");
+    expect(prompt).toContain("Assess every outstanding ID exactly once");
+    expect(prompt).toContain("direct causal regressions only");
+    expect(prompt).not.toMatch(/blocking|advisory|disposition/);
+  });
+
+  it("requires initial reviewers to report only material findings for one correction opportunity", () => {
+    const source = buildInitialWorkstreamReviewPrompt({
+      role: "reviewer",
+      completionKind: "initial-review",
+      mode: "initial",
+      identity: "run-1/source/work",
+      workspace: { path: "/worktree", mutationBoundary: "read-only" },
+      workstream: { kind: "source", id: "work" },
+      candidate: {
+        id: "candidate",
+        workstream: { kind: "source", id: "work" },
+        baseSha: "base",
+        commitSha: "tip",
+        treeSha: "tree",
+      },
+      contracts: [],
+      sourceMaterial: [],
+      corpus: [],
+      schedule: { tasks: [], workstreams: [] },
+      checkpoints: {},
+      satisfiedEvidence: {},
+      outstandingFindings: [],
+    });
+    const overall = buildInitialOverallReviewPrompt({
+      planContext: "plan",
+      candidateContext: "candidate",
+      baseSha: "base",
+      currentSha: "tip",
+    });
+
+    for (const prompt of [source, overall]) {
+      expect(prompt).toContain("direct material findings");
+      expect(prompt).toContain("one initial");
+      expect(prompt).toContain("do not return an approval verdict");
+      expect(prompt).toContain("Exclude style nits, speculative improvements");
+      expect(prompt).not.toMatch(/blocking|advisory|disposition/);
+    }
+    expect(source).toContain("publication metadata, not approval");
+  });
+
   it("limits revision completion to observed changed or unchanged evidence", () => {
     const prompt = buildRevisionPrompt({
       workspace: { path: "/worktree", mutationBoundary: "owned" },
       candidate: { id: "candidate", commitSha: "candidate-sha" },
       comparisonBase: "candidate-sha",
       findingEpoch: 1,
-      outstandingFindingIds: ["finding-1"],
+      pendingCorrectionIds: ["finding-1"],
+      authority: { kind: "review_findings" },
       findings: [
         {
           id: "finding-1",

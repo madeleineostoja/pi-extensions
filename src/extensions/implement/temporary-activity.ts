@@ -140,6 +140,17 @@ function appendAttentionLines(
       `    last failure · ${failure.category} · ${shorten(failure.evidence)}`,
     );
   }
+  const review =
+    state.reviews[
+      workstream.kind === "source"
+        ? `source:${workstream.id}`
+        : `overall:${workstream.repairId}`
+    ];
+  if (review?.latestCorrection) {
+    lines.push(
+      `    final review · ${review.latestCorrection.mode} correction · ${shorten(review.latestCorrection.evidence)}`,
+    );
+  }
   const findings = Object.values(state.findings).filter(
     (finding) =>
       finding.status === "open" && sameWorkstream(finding.workstream),
@@ -213,7 +224,13 @@ function notifyAttentionTransition(
     return;
   }
   if (event.kind === "run_completed") {
-    ctx.ui.notify(`Implement completed run ${state.run.id}.`, "info");
+    const residuals = (state.wholePlanReview.epoch?.findingIds ?? []).filter(
+      (id) => state.findings[id]?.status === "open",
+    ).length;
+    ctx.ui.notify(
+      `Implement completed run ${state.run.id}${residuals > 0 ? ` with ${residuals} residual findings.` : "."}`,
+      "info",
+    );
     return;
   }
   if (event.kind === "run_incomplete") {

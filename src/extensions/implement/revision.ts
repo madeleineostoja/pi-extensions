@@ -36,7 +36,8 @@ export type RevisionPacket = {
   comparisonBase: string;
   reviewComparisonBase: string;
   findingEpoch: number;
-  outstandingFindingIds: string[];
+  pendingCorrectionIds: string[];
+  authority: RunState["revisionAssignments"][string]["authority"];
   findings: RunState["findings"][string][];
   evidence: string[];
   requirements: RequirementsContext;
@@ -52,7 +53,14 @@ export type RevisionOutcome =
         evidence: string;
       };
     }
-  | { kind: "unchanged"; evidence: string };
+  | {
+      kind: "unchanged";
+      evidence: string;
+      summary: string;
+      verification: string[];
+      uncertainty?: string;
+      artifactPath: string;
+    };
 
 export class RevisionFailure extends Error {
   constructor(
@@ -87,19 +95,30 @@ export function buildRevisionPacket(args: {
     review.comparisonBase === "" ||
     review.candidateId !== candidate.id ||
     review.round !== assignment.findingEpoch ||
-    !sameIds(review.outstandingIds, assignment.outstandingFindingIds)
+    !sameIds(review.pendingCorrectionIds, assignment.pendingCorrectionIds) ||
+    new Set(assignment.pendingCorrectionIds).size !==
+      assignment.pendingCorrectionIds.length ||
+    (assignment.authority.kind === "review_findings" &&
+      assignment.pendingCorrectionIds.length === 0) ||
+    (assignment.authority.kind === "delivery_gate" &&
+      (args.effect.workstream.kind !== "source" ||
+        assignment.pendingCorrectionIds.length > 0))
   ) {
     throw new RevisionFailure(
       "protocol_failure",
       `Revision assignment ${args.effect.assignmentId} is no longer current.`,
     );
   }
-  const findings = assignment.outstandingFindingIds.map((id) => {
+  const findings = assignment.pendingCorrectionIds.map((id) => {
     const finding = args.state.findings[id];
     if (
       !finding ||
       finding.status !== "open" ||
-      !sameWorkstream(finding.workstream, args.effect.workstream)
+      !findingIsAuthorizedForRevision(
+        args.state,
+        finding,
+        args.effect.workstream,
+      )
     ) {
       throw new RevisionFailure(
         "protocol_failure",
@@ -145,7 +164,8 @@ export function buildRevisionPacket(args: {
     comparisonBase: assignment.comparisonBase,
     reviewComparisonBase: review.comparisonBase,
     findingEpoch: assignment.findingEpoch,
-    outstandingFindingIds: [...assignment.outstandingFindingIds],
+    pendingCorrectionIds: [...assignment.pendingCorrectionIds],
+    authority: assignment.authority,
     findings,
     evidence: [...assignment.evidence],
     requirements,
@@ -258,15 +278,25 @@ export async function runRevision(args: {
           observation,
         );
       }
-      writeRevisionEvidence(args.artifactsPath, args.effect.assignmentId, {
-        packet,
-        completion: response.result,
-        observation,
-        outcome: "unchanged",
-      });
+      const artifactPath = writeRevisionEvidence(
+        args.artifactsPath,
+        args.effect.assignmentId,
+        {
+          packet,
+          completion: response.result,
+          observation,
+          outcome: "unchanged",
+        },
+      );
       return {
         kind: "unchanged",
-        evidence: "Revision left the candidate tree unchanged.",
+        evidence: response.result.evidence,
+        summary: response.result.summary,
+        verification: response.result.verification,
+        ...(response.result.uncertainty
+          ? { uncertainty: response.result.uncertainty }
+          : {}),
+        artifactPath,
       };
     }
     throw new RevisionFailure(
@@ -278,6 +308,11 @@ export async function runRevision(args: {
   const reviewChangedPaths = await changedPathsBetween(
     workspaceGit,
     packet.reviewComparisonBase,
+    observation.head,
+  );
+  const correctionChangedPaths = await changedPathsBetween(
+    workspaceGit,
+    packet.candidate.commitSha,
     observation.head,
   );
   const evidenceStatus =
@@ -338,8 +373,18 @@ export async function runRevision(args: {
     candidate,
     correction: {
       fromCandidateId: packet.candidate.id,
-      changedPaths: reviewChangedPaths,
+      changedPaths: correctionChangedPaths,
       evidence: evidencePath,
+      ...(completion
+        ? {
+            summary: completion.summary,
+            verification: completion.verification,
+            ...(completion.uncertainty
+              ? { uncertainty: completion.uncertainty }
+              : {}),
+            artifactPath: evidencePath,
+          }
+        : {}),
     },
   };
 }
@@ -427,6 +472,17 @@ function workstreamKey(workstream: RuntimeWorkstream): string {
   return workstream.kind === "source"
     ? `source:${workstream.id}`
     : `overall:${workstream.repairId}`;
+}
+
+function findingIsAuthorizedForRevision(
+  state: RunState,
+  finding: RunState["findings"][string],
+  workstream: RuntimeWorkstream,
+): boolean {
+  return workstream.kind === "source"
+    ? sameWorkstream(finding.workstream, workstream)
+    : finding.scope.kind === "whole_plan" &&
+        state.wholePlanReview.epoch?.findingIds.includes(finding.id) === true;
 }
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {

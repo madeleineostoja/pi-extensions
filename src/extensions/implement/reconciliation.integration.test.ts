@@ -196,7 +196,7 @@ async function reconciliationFixture(
         candidateId: candidate.id,
         comparisonBase: baseSha,
         round: 0,
-        outstandingIds: [],
+        pendingCorrectionIds: [],
         evidence: ["initial review"],
         observations: [],
         publicationCommitSubject: "feat: publish candidate",

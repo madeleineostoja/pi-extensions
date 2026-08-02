@@ -336,7 +336,8 @@ export function createRuntime(args: {
           roles: args.roles,
         });
         const projectionDebt =
-          outcome.kind !== "repository_state" ||
+          (outcome.kind !== "repository_state" &&
+            !(outcome.kind === "anchored" && outcome.assessedTargetSha)) ||
           effect.workstream.kind !== "source"
             ? undefined
             : (() => {
@@ -364,7 +365,7 @@ export function createRuntime(args: {
                 });
                 return {
                   ...projection,
-                  reason: "Approve repository-state satisfaction assessment.",
+                  reason: "Approve exact-target satisfaction assessment.",
                   artifactPath: projection.canonicalPath,
                 };
               })();
@@ -422,7 +423,7 @@ export function createRuntime(args: {
           candidate.commitSha !== candidate.baseSha &&
           (!review ||
             review.candidateId !== candidate.id ||
-            review.outstandingIds.length > 0 ||
+            review.pendingCorrectionIds.length > 0 ||
             !review.publicationCommitSubject)
         ) {
           throw new Error(

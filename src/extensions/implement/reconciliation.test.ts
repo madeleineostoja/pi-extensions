@@ -301,7 +301,7 @@ async function failedReplay(
       candidateId: "candidate:first",
       evidence: "initial review",
       completion: {
-        verdict: "approved",
+        findings: [],
         publicationCommitSubject: "feat: publish candidate",
       },
     },

@@ -6,7 +6,6 @@ import {
 } from "../candidate-replay.js";
 import {
   boundedFailureOutput,
-  noProgressSignature,
   type FailureCategory,
   type FailureCommandEvidence,
 } from "../failure-policy.js";
@@ -16,6 +15,7 @@ import {
   applyInitialWorkstreamReview,
   retargetAnchoredReview,
   reviewKey,
+  workstreamReviewFindings,
   workstreamReviewState,
   type ReviewOutcome,
 } from "../review.js";
@@ -125,9 +125,20 @@ export type SchedulerEvent =
               fromCandidateId: string;
               changedPaths: string[];
               evidence: string;
+              summary?: string;
+              verification?: string[];
+              uncertainty?: string;
+              artifactPath?: string;
             };
           }
-        | { kind: "unchanged"; evidence: string };
+        | {
+            kind: "unchanged";
+            evidence: string;
+            summary?: string;
+            verification?: string[];
+            uncertainty?: string;
+            artifactPath?: string;
+          };
     }
   | {
       kind: "revision_failed";
@@ -750,13 +761,19 @@ export function reduceRunEvent(
           reject,
         );
       }
-      if (event.category === "hook_rejected" && candidateId) {
-        return createRevisionAssignment(
+      if (
+        event.category === "hook_rejected" &&
+        candidateId &&
+        event.workstream.kind === "source"
+      ) {
+        return createDeliveryGateRemediation(
           state,
           event.workstream,
           candidateId,
-          [],
+          event.category,
+          `${event.effect}_hook`,
           event.evidence,
+          event.command,
           reject,
         );
       }
@@ -850,6 +867,8 @@ export function reduceRunEvent(
         if (event.workstream.kind === "overall") {
           const review = workstreamReviewState(state, event.workstream);
           if (review) {
+            const implementationEvidence =
+              event.outcome.candidate.implementationEvidence;
             try {
               state.reviews[reviewKey(event.workstream)] =
                 retargetAnchoredReview({
@@ -862,10 +881,23 @@ export function reduceRunEvent(
                     fromCandidateId: review.candidateId,
                     changedPaths: event.outcome.candidate.changedPaths ?? [],
                     evidence:
-                      event.outcome.candidate.implementationEvidence
-                        ?.artifactPath ??
+                      implementationEvidence?.artifactPath ??
                       event.outcome.candidate.observationArtifact ??
                       "Overall repair candidate was observed.",
+                    ...(implementationEvidence
+                      ? {
+                          summary: implementationEvidence.summary,
+                          verification: [
+                            ...implementationEvidence.verification,
+                          ],
+                          ...(implementationEvidence.uncertainty
+                            ? {
+                                uncertainty: implementationEvidence.uncertainty,
+                              }
+                            : {}),
+                          artifactPath: implementationEvidence.artifactPath,
+                        }
+                      : {}),
                   },
                 });
             } catch (error) {
@@ -988,34 +1020,50 @@ export function reduceRunEvent(
             state.findings[finding.id] = finding;
           }
         } else if (event.outcome.kind === "repository_state") {
-          const review = workstreamReviewState(state, event.workstream);
+          if (event.workstream.kind !== "source") {
+            return reject(
+              "only source workstreams may record satisfaction reviews",
+            );
+          }
+          const sourceWorkstream = event.workstream;
+          const review = workstreamReviewState(state, sourceWorkstream);
           if (!review || review.candidateId !== event.outcome.candidateId) {
             return reject(
               "repository-state review is not bound to its candidate",
             );
           }
-          const findings =
-            event.outcome.completion.verdict === "changes_requested"
-              ? event.outcome.completion.findings.map((finding, index) => ({
-                  ...finding,
-                  id: `${reviewKey(event.workstream).replace(":", "-")}-repository-${review.round + 1}-${index + 1}`,
-                  candidateId: event.outcome.candidateId,
-                  workstream: event.workstream,
-                  origin: "regression" as const,
-                  introducedRound: review.round + 1,
-                  status: "open" as const,
-                }))
-              : [];
+          const findings = event.outcome.completion.findings.map(
+            (finding, index) => ({
+              ...finding,
+              id: `${reviewKey(event.workstream).replace(":", "-")}-repository-${review.round + 1}-${index + 1}`,
+              candidateId: event.outcome.candidateId,
+              workstream: sourceWorkstream,
+              scope: { kind: "source" as const, id: sourceWorkstream.id },
+              origin: "regression" as const,
+              introducedRound: review.round + 1,
+              status: "open" as const,
+            }),
+          );
+          const correctionConsumed = review.correctionConsumed;
           state.reviews[key] = {
             ...review,
             round: review.round + 1,
-            outstandingIds: findings.map((finding) => finding.id),
+            pendingCorrectionIds: correctionConsumed
+              ? []
+              : findings.map((finding) => finding.id),
+            correctionConsumed: correctionConsumed || findings.length > 0,
+            repositoryAssessment: {
+              targetSha: event.outcome.assessedTargetSha,
+            },
             evidence: [...review.evidence, event.outcome.evidence],
           };
           for (const finding of findings) {
             state.findings[finding.id] = finding;
           }
-          assessment!.status = findings.length === 0 ? "approved" : "rejected";
+          assessment!.status =
+            findings.length === 0 || correctionConsumed
+              ? "approved"
+              : "rejected";
         } else {
           const review = workstreamReviewState(state, event.workstream);
           if (
@@ -1024,6 +1072,8 @@ export function reduceRunEvent(
             review.previousCandidateId !== event.outcome.previousCandidateId ||
             review.comparisonBase !== event.outcome.comparisonBase ||
             review.round !== event.outcome.findingEpoch ||
+            review.repositoryAssessment?.targetSha !==
+              event.outcome.assessedTargetSha ||
             !samePaths(
               review.latestCorrection?.changedPaths ?? [],
               event.outcome.changedPaths,
@@ -1037,14 +1087,27 @@ export function reduceRunEvent(
             state: review,
             workstream: event.workstream,
             completion: event.outcome.completion,
-            findings: Object.values(state.findings).filter((finding) =>
-              sameWorkstream(finding.workstream, event.workstream),
-            ),
+            findings: workstreamReviewFindings(state, event.workstream),
             evidence: event.outcome.evidence,
+            correctionPaths: event.outcome.changedPaths,
           });
+          const wholePlanEpoch = state.wholePlanReview.epoch;
           state.reviews[key] = update.review;
           for (const finding of update.findings) {
             state.findings[finding.id] = finding;
+          }
+          if (event.workstream.kind === "overall") {
+            if (!wholePlanEpoch) {
+              return reject("overall repair review has no canonical epoch");
+            }
+            state.wholePlanReview = {
+              ...state.wholePlanReview,
+              epoch: {
+                ...wholePlanEpoch,
+                findingIds: update.findings.map((finding) => finding.id),
+                pendingCorrectionIds: [...update.review.pendingCorrectionIds],
+              },
+            };
           }
         }
       } catch (error) {
@@ -1052,14 +1115,15 @@ export function reduceRunEvent(
       }
       settleLease(state, lease, event.kind, event);
       completeOperationalRetries(state, event.workstream, "review");
-      const outstandingFindingIds = state.reviews[key]!.outstandingIds;
-      if (outstandingFindingIds.length > 0) {
+      const pendingCorrectionIds = state.reviews[key]!.pendingCorrectionIds;
+      if (pendingCorrectionIds.length > 0) {
         return createRevisionAssignment(
           state,
           event.workstream,
           event.outcome.candidateId,
-          outstandingFindingIds,
-          event.outcome.evidence,
+          pendingCorrectionIds,
+          { kind: "review_findings" },
+          [event.outcome.evidence],
           reject,
         );
       }
@@ -1093,6 +1157,79 @@ export function reduceRunEvent(
             : [],
         );
       }
+      const settledReview = state.reviews[key]!;
+      const settledCandidate = state.candidates[event.outcome.candidateId]!;
+      if (
+        event.workstream.kind === "overall" &&
+        settledReview.latestCorrection?.mode === "unchanged"
+      ) {
+        const epoch = state.wholePlanReview.epoch;
+        if (!epoch) {
+          return reject("unchanged overall repair has no review epoch");
+        }
+        workstream.phase = "completed";
+        state.wholePlanReview = {
+          status: "approved",
+          evidence: event.outcome.evidence,
+          reviewedTargetSha: epoch.initialTargetSha,
+          reviewedTargetTreeSha: epoch.initialTargetTreeSha,
+          epoch: {
+            ...epoch,
+            findingIds: workstreamReviewFindings(state, event.workstream).map(
+              (finding) => finding.id,
+            ),
+            pendingCorrectionIds: [],
+          },
+          ...(state.wholePlanReview.reviewRetry
+            ? { reviewRetry: state.wholePlanReview.reviewRetry }
+            : {}),
+        };
+        return accept();
+      }
+      if (
+        event.outcome.kind === "anchored" &&
+        event.workstream.kind === "source"
+      ) {
+        const assessedTargetSha = event.outcome.assessedTargetSha;
+        if (
+          assessedTargetSha !== undefined &&
+          settledReview.repositoryAssessment?.targetSha === assessedTargetSha &&
+          settledCandidate.commitSha === settledCandidate.baseSha
+        ) {
+          const receiptId = `satisfaction:${event.outcome.candidateId}:${assessedTargetSha}`;
+          state.satisfaction.receipts[receiptId] = {
+            id: receiptId,
+            candidateId: event.outcome.candidateId,
+            workstream: event.workstream,
+            assessedTargetSha,
+            evidence: event.outcome.evidence,
+            assessedAt: new Date().toISOString(),
+          };
+          const assessment = Object.values(state.satisfaction.assessments).find(
+            (entry) =>
+              entry.candidateId === event.outcome.candidateId &&
+              entry.targetSha === assessedTargetSha &&
+              sameWorkstream(entry.workstream, event.workstream),
+          );
+          if (assessment) {
+            assessment.status = "approved";
+          }
+          workstream.phase = "completed";
+          if (
+            event.projectionDebt &&
+            !state.projectionDebt.some(
+              (debt) => debt.id === event.projectionDebt!.id,
+            )
+          ) {
+            state.projectionDebt.push(event.projectionDebt);
+          }
+          return accept(
+            event.projectionDebt
+              ? [{ kind: "run_projection", debtId: event.projectionDebt.id }]
+              : [],
+          );
+        }
+      }
       approveWorkstream(state, event.workstream);
       return accept();
     }
@@ -1121,51 +1258,85 @@ export function reduceRunEvent(
       ) {
         return reject("revision result does not own its exact assignment");
       }
-      if (event.outcome.kind === "unchanged") {
-        const candidate = state.candidates[assignment.candidateId];
-        if (!candidate) {
-          return reject("revision assignment lost its candidate");
-        }
-        const signature = noProgressSignature({
-          workstream: workstreamId(event.workstream),
-          candidateTree: candidate.treeSha,
-          findingEpoch: assignment.findingEpoch,
-          outstandingFindingIds: assignment.outstandingFindingIds,
-        });
-        assignment.noProgress = {
-          signature,
-          attempts:
-            assignment.noProgress.signature === signature
-              ? assignment.noProgress.attempts + 1
-              : 1,
-        };
-        settleLease(state, lease, event.kind, event);
-        recordFailure(state, {
-          category: "no_progress",
-          assignment: "blocked",
-          workstream: event.workstream,
-          candidateId: candidate.id,
-          gate: "revision",
-          evidence: event.outcome.evidence,
-        });
-        assignment.status = "blocked";
-        failWorkstream(state, event.workstream);
-        return accept();
-      }
-      const candidate = event.outcome.candidate;
+      const previousCandidate = state.candidates[assignment.candidateId];
       const review = workstreamReviewState(state, event.workstream);
       if (
-        !sameWorkstream(candidate.workstream, event.workstream) ||
-        candidate.baseSha !==
-          state.candidates[assignment.candidateId]?.baseSha ||
-        candidate.integrationBaseSha !==
-          state.candidates[assignment.candidateId]?.integrationBaseSha ||
-        event.outcome.correction.fromCandidateId !== assignment.candidateId ||
+        !previousCandidate ||
         !review ||
         review.candidateId !== assignment.candidateId ||
         review.round !== assignment.findingEpoch ||
-        JSON.stringify(review.outstandingIds) !==
-          JSON.stringify(assignment.outstandingFindingIds)
+        JSON.stringify(review.pendingCorrectionIds) !==
+          JSON.stringify(assignment.pendingCorrectionIds)
+      ) {
+        return reject("revision completion is stale for its review epoch");
+      }
+      if (event.outcome.kind === "unchanged") {
+        if (assignment.authority.kind === "delivery_gate") {
+          settleLease(state, lease, event.kind, event);
+          if (assignment.authority.attempt >= MAX_DELIVERY_GATE_ATTEMPTS) {
+            assignment.status = "blocked";
+            recordFailure(state, {
+              category: assignment.authority.category,
+              assignment: "blocked",
+              workstream: event.workstream,
+              candidateId: previousCandidate.id,
+              gate: assignment.authority.gate,
+              evidence: event.outcome.evidence,
+            });
+            failWorkstream(state, event.workstream);
+            return accept();
+          }
+          assignment.status = "completed";
+          return createRevisionAssignment(
+            state,
+            event.workstream,
+            previousCandidate.id,
+            [],
+            {
+              ...assignment.authority,
+              attempt: assignment.authority.attempt + 1,
+            },
+            [...assignment.evidence, event.outcome.evidence],
+            reject,
+          );
+        }
+        try {
+          state.reviews[reviewKey(event.workstream)] = retargetAnchoredReview({
+            state: review,
+            candidateId: previousCandidate.id,
+            comparisonBase: review.comparisonBase,
+            correction: {
+              fromCandidateId: previousCandidate.id,
+              changedPaths: [],
+              evidence: event.outcome.evidence,
+              ...(event.outcome.summary
+                ? { summary: event.outcome.summary }
+                : {}),
+              ...(event.outcome.verification
+                ? { verification: event.outcome.verification }
+                : {}),
+              ...(event.outcome.uncertainty
+                ? { uncertainty: event.outcome.uncertainty }
+                : {}),
+              ...(event.outcome.artifactPath
+                ? { artifactPath: event.outcome.artifactPath }
+                : {}),
+            },
+          });
+        } catch (error) {
+          return reject(error instanceof Error ? error.message : String(error));
+        }
+        assignment.status = "completed";
+        settleLease(state, lease, event.kind, event);
+        workstream.phase = "candidate_ready";
+        return accept();
+      }
+      const candidate = event.outcome.candidate;
+      if (
+        !sameWorkstream(candidate.workstream, event.workstream) ||
+        candidate.baseSha !== previousCandidate.baseSha ||
+        candidate.integrationBaseSha !== previousCandidate.integrationBaseSha ||
+        event.outcome.correction.fromCandidateId !== assignment.candidateId
       ) {
         return reject("revision completion is stale for its review epoch");
       }
@@ -1729,12 +1900,23 @@ export function reduceRunEvent(
           evidence: event.outcome.evidence,
           ...(event.outcome.command ? { command: event.outcome.command } : {}),
         });
-        return createRevisionAssignment(
+        if (event.workstream.kind === "source") {
+          return createDeliveryGateRemediation(
+            state,
+            event.workstream,
+            candidateId,
+            "hook_rejected",
+            "reconciliation_hook",
+            event.outcome.evidence,
+            event.outcome.command,
+            reject,
+          );
+        }
+        return failRun(
           state,
-          event.workstream,
-          candidateId,
-          [],
+          "runtime",
           event.outcome.evidence,
+          new Date().toISOString(),
           reject,
         );
       }
@@ -2093,7 +2275,12 @@ export function reduceRunEvent(
           return reject("overall publication has no retained review epoch");
         }
         state.wholePlanReview = {
-          status: "pending",
+          status: "approved",
+          evidence:
+            state.reviews[reviewKey(event.workstream)]?.evidence.at(-1) ??
+            "Final overall repair review settled.",
+          reviewedTargetSha: receipt.publishedCommitSha,
+          reviewedTargetTreeSha: receipt.publishedTreeSha,
           epoch: {
             ...epoch,
             latestRepair: {
@@ -2234,8 +2421,18 @@ export function reduceRunEvent(
       }
       if (event.outcome.kind === "anchored") {
         const epoch = state.wholePlanReview.epoch;
+        const latestCandidate = epoch?.latestRepair
+          ? state.candidates[epoch.latestRepair.candidateId]
+          : undefined;
+        const workstream = latestCandidate?.workstream;
+        const review = workstream
+          ? workstreamReviewState(state, workstream)
+          : undefined;
         if (
           !epoch?.latestRepair ||
+          !latestCandidate ||
+          !workstream ||
+          !review ||
           epoch.latestRepair.publishedCommitSha !==
             event.outcome.reviewedTargetSha ||
           epoch.latestRepair.publishedTreeSha !==
@@ -2245,62 +2442,33 @@ export function reduceRunEvent(
             "anchored whole-plan review lost its published repair boundary",
           );
         }
-        const expected = new Set(epoch.outstandingFindingIds);
-        const assessments = new Map(
-          event.outcome.completion.assessments.map((assessment) => [
-            assessment.id,
-            assessment,
-          ]),
-        );
-        if (
-          event.outcome.completion.assessments.length !== expected.size ||
-          assessments.size !== expected.size ||
-          [...expected].some((findingId) => !assessments.has(findingId))
-        ) {
-          return reject(
-            "anchored whole-plan review must assess each outstanding finding exactly once",
-          );
-        }
-        const changedPaths = new Set(epoch.latestRepair.changedPaths);
-        const regressions = event.outcome.completion.regressions.filter(
-          (finding) =>
-            finding.changedPaths.some((path) => changedPaths.has(path)),
-        );
-        const assessedFindings = epoch.findings.map((finding) => {
-          const assessment = expected.has(finding.id)
-            ? assessments.get(finding.id)
-            : undefined;
-          return assessment
-            ? { ...finding, evidence: assessment.evidence }
-            : finding;
-        });
-        const unresolved = assessedFindings.filter(
-          (finding) =>
-            expected.has(finding.id) &&
-            assessments.get(finding.id)?.status === "unresolved",
-        );
-        const nextFindings = [
-          ...unresolved,
-          ...regressions.map((finding, index) => ({
-            id: `whole-plan-regression-${epoch.findings.length + index + 1}`,
-            summary: finding.summary,
-            evidence: finding.evidence,
-            requiredChange: finding.requiredChange,
-            acceptanceCriteria: finding.acceptanceCriteria,
-          })),
-        ];
-        const nextEpoch = {
-          ...epoch,
-          findings: [
-            ...assessedFindings,
-            ...nextFindings.filter(
-              (finding) =>
-                !assessedFindings.some((known) => known.id === finding.id),
-            ),
-          ],
-          outstandingFindingIds: nextFindings.map((finding) => finding.id),
-        };
-        if (nextFindings.length === 0) {
+        try {
+          const update = applyAnchoredWorkstreamReview({
+            state: review,
+            workstream,
+            completion: event.outcome.completion,
+            findings: epoch.findingIds.flatMap((id) => {
+              const finding = state.findings[id];
+              return finding ? [finding] : [];
+            }),
+            evidence: event.outcome.evidence,
+            correctionPaths: epoch.latestRepair.changedPaths,
+          });
+          if (update.findings.length < epoch.findingIds.length) {
+            return reject(
+              "anchored whole-plan review lost a canonical finding",
+            );
+          }
+          for (const finding of update.findings) {
+            state.findings[finding.id] = finding;
+          }
+          const nextReview = update.review;
+          state.reviews[reviewKey(workstream)] = nextReview;
+          const nextEpoch = {
+            ...epoch,
+            findingIds: update.findings.map((finding) => finding.id),
+            pendingCorrectionIds: nextReview.pendingCorrectionIds,
+          };
           state.wholePlanReview = {
             status: "approved",
             evidence: event.outcome.evidence,
@@ -2312,19 +2480,9 @@ export function reduceRunEvent(
               : {}),
           };
           return accept();
+        } catch (error) {
+          return reject(error instanceof Error ? error.message : String(error));
         }
-        return queueWholePlanRepair(
-          state,
-          {
-            repairId: nextOverallRepairId(state),
-            targetSha: event.outcome.reviewedTargetSha,
-            targetTreeSha: event.outcome.reviewedTargetTreeSha,
-            findings: nextFindings,
-            evidence: event.outcome.evidence,
-            epoch: nextEpoch,
-          },
-          reject,
-        );
       }
       const { repairId, candidate } = event.outcome;
       if (
@@ -2345,14 +2503,14 @@ export function reduceRunEvent(
           targetSha: event.outcome.reviewedTargetSha,
           targetTreeSha: event.outcome.reviewedTargetTreeSha,
           candidate,
-          findings: initialFindings,
+          findingIds: initialFindings.map((finding) => finding.id),
+          initialFindings,
           evidence: event.outcome.evidence,
           epoch: {
             initialTargetSha: event.outcome.reviewedTargetSha,
             initialTargetTreeSha: event.outcome.reviewedTargetTreeSha,
-            originalFindingIds: initialFindings.map((finding) => finding.id),
-            outstandingFindingIds: initialFindings.map((finding) => finding.id),
-            findings: initialFindings,
+            findingIds: initialFindings.map((finding) => finding.id),
+            pendingCorrectionIds: initialFindings.map((finding) => finding.id),
           },
         },
         reject,
@@ -2453,15 +2611,6 @@ export function reduceRunEvent(
 }
 
 type WholePlanEpoch = NonNullable<RunState["wholePlanReview"]["epoch"]>;
-type WholePlanEpochFinding = WholePlanEpoch["findings"][number];
-
-function nextOverallRepairId(state: RunState): string {
-  let number = 1;
-  while (state.workstreams.overall[`overall-repair-${number}`]) {
-    number++;
-  }
-  return `overall-repair-${number}`;
-}
 
 function queueWholePlanRepair(
   state: RunState,
@@ -2470,7 +2619,14 @@ function queueWholePlanRepair(
     targetSha: string;
     targetTreeSha: string;
     candidate?: RunState["candidates"][string];
-    findings: WholePlanEpochFinding[];
+    findingIds: string[];
+    initialFindings?: Array<{
+      id: string;
+      summary: string;
+      evidence: string;
+      requiredChange: string;
+      acceptanceCriteria: string[];
+    }>;
     evidence: string;
     epoch: WholePlanEpoch;
   },
@@ -2479,7 +2635,7 @@ function queueWholePlanRepair(
   if (
     !safeId(args.repairId) ||
     state.workstreams.overall[args.repairId] ||
-    args.findings.length === 0
+    args.findingIds.length === 0
   ) {
     return reject("whole-plan findings have an invalid repair identity");
   }
@@ -2515,20 +2671,67 @@ function queueWholePlanRepair(
     phase: "queued",
     candidateId: candidate.id,
   };
-  const update = applyInitialWorkstreamReview({
-    workstream,
+  if (
+    args.findingIds.length === 0 ||
+    new Set(args.findingIds).size !== args.findingIds.length
+  ) {
+    return reject("whole-plan repair has invalid canonical finding references");
+  }
+  if (args.initialFindings) {
+    if (
+      args.initialFindings.length !== args.findingIds.length ||
+      args.initialFindings.some(
+        (finding, index) => finding.id !== args.findingIds[index],
+      )
+    ) {
+      return reject(
+        "whole-plan initial findings do not match their canonical IDs",
+      );
+    }
+    for (const finding of args.initialFindings) {
+      if (state.findings[finding.id]) {
+        return reject("whole-plan canonical finding ID already exists");
+      }
+      state.findings[finding.id] = {
+        ...finding,
+        candidateId: candidate.id,
+        workstream,
+        scope: {
+          kind: "whole_plan",
+          initialTargetSha: args.epoch.initialTargetSha,
+          initialTargetTreeSha: args.epoch.initialTargetTreeSha,
+        },
+        origin: "initial",
+        introducedRound: 0,
+        status: "open",
+      };
+    }
+  }
+  const openEpochFindingIds = args.epoch.findingIds.filter(
+    (id) => state.findings[id]?.status === "open",
+  );
+  if (
+    args.epoch.findingIds.some(
+      (id) => state.findings[id]?.scope.kind !== "whole_plan",
+    ) ||
+    JSON.stringify(args.epoch.pendingCorrectionIds) !==
+      JSON.stringify(openEpochFindingIds) ||
+    JSON.stringify(args.findingIds) !==
+      JSON.stringify(args.epoch.pendingCorrectionIds)
+  ) {
+    return reject(
+      "whole-plan repair has inconsistent open canonical finding references",
+    );
+  }
+  state.reviews[reviewKey(workstream)] = {
     candidateId: candidate.id,
     comparisonBase: candidate.integrationBaseSha ?? candidate.baseSha,
-    completion: {
-      verdict: "changes_requested",
-      findings: args.findings.map(({ id: _, ...finding }) => finding),
-    },
-    evidence: args.evidence,
-  });
-  state.reviews[reviewKey(workstream)] = update.review;
-  for (const finding of update.findings) {
-    state.findings[finding.id] = finding;
-  }
+    round: 0,
+    pendingCorrectionIds: [...args.findingIds],
+    correctionConsumed: true,
+    evidence: [args.evidence],
+    observations: [],
+  };
   state.wholePlanReview = {
     status: "repairing",
     epoch: args.epoch,
@@ -2985,12 +3188,69 @@ function retainedObservation(
   };
 }
 
+const MAX_DELIVERY_GATE_ATTEMPTS = 3;
+
+function createDeliveryGateRemediation(
+  state: RunState,
+  workstream: Extract<RuntimeWorkstream, { kind: "source" }>,
+  candidateId: string,
+  category: FailureCategory,
+  gate: string,
+  evidence: string,
+  command: FailureCommandEvidence | undefined,
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
+  const fingerprint = sha256(
+    JSON.stringify({ category, gate, command: command?.command }),
+  );
+  const previousAttempt = Math.max(
+    0,
+    ...Object.values(state.revisionAssignments)
+      .filter(
+        (assignment) =>
+          assignment.workstream.kind === "source" &&
+          assignment.workstream.id === workstream.id &&
+          assignment.authority.kind === "delivery_gate" &&
+          assignment.authority.fingerprint === fingerprint,
+      )
+      .map((assignment) =>
+        assignment.authority.kind === "delivery_gate"
+          ? assignment.authority.attempt
+          : 0,
+      ),
+  );
+  const attempt = previousAttempt + 1;
+  if (attempt > MAX_DELIVERY_GATE_ATTEMPTS) {
+    recordFailure(state, {
+      category,
+      assignment: "blocked",
+      workstream,
+      candidateId,
+      gate,
+      evidence,
+      ...(command ? { command } : {}),
+    });
+    failWorkstream(state, workstream);
+    return { state, effects: [], accepted: true };
+  }
+  return createRevisionAssignment(
+    state,
+    workstream,
+    candidateId,
+    [],
+    { kind: "delivery_gate", category, gate, fingerprint, attempt },
+    [evidence],
+    reject,
+  );
+}
+
 function createRevisionAssignment(
   state: RunState,
   workstream: RuntimeWorkstream,
   candidateId: string,
-  outstandingFindingIds: string[],
-  evidence: string,
+  pendingCorrectionIds: string[],
+  authority: RunState["revisionAssignments"][string]["authority"],
+  evidence: string[],
   reject: (error: string) => SchedulerTransition,
 ): SchedulerTransition {
   const candidate = state.candidates[candidateId];
@@ -3008,11 +3268,15 @@ function createRevisionAssignment(
     );
   }
   if (
-    JSON.stringify(review.outstandingIds) !==
-    JSON.stringify(outstandingFindingIds)
+    JSON.stringify(review.pendingCorrectionIds) !==
+      JSON.stringify(pendingCorrectionIds) ||
+    (authority.kind === "review_findings" &&
+      pendingCorrectionIds.length === 0) ||
+    (authority.kind === "delivery_gate" &&
+      (workstream.kind !== "source" || pendingCorrectionIds.length > 0))
   ) {
     return reject(
-      "revision assignment findings do not match the active review epoch",
+      "revision assignment authority does not match the active review epoch",
     );
   }
   const id = `revision:${workstreamId(workstream)}:${candidate.commitSha}:${review.round}:${Object.keys(state.revisionAssignments).length + 1}`;
@@ -3026,19 +3290,11 @@ function createRevisionAssignment(
     candidateId,
     comparisonBase: candidate.commitSha,
     findingEpoch: review.round,
-    outstandingFindingIds: [...outstandingFindingIds],
-    evidence: [boundedFailureOutput(evidence)],
+    pendingCorrectionIds: [...pendingCorrectionIds],
+    authority,
+    evidence: evidence.map((entry) => boundedFailureOutput(entry)),
     status: "open",
     executionFailures: 0,
-    noProgress: {
-      signature: noProgressSignature({
-        workstream: workstreamId(workstream),
-        candidateTree: candidate.treeSha,
-        findingEpoch: review.round,
-        outstandingFindingIds,
-      }),
-      attempts: 0,
-    },
   };
   runtime.phase = "revising";
   return { state, effects: [], accepted: true };
@@ -3300,7 +3556,8 @@ function reviewIsCurrentForReconciliation(
   candidateId: string,
 ): boolean {
   return (
-    review.candidateId === candidateId && review.outstandingIds.length === 0
+    review.candidateId === candidateId &&
+    review.pendingCorrectionIds.length === 0
   );
 }
 
