@@ -37,6 +37,7 @@ export type RevisionPacket = {
   reviewComparisonBase: string;
   findingEpoch: number;
   pendingCorrectionIds: string[];
+  authority: RunState["revisionAssignments"][string]["authority"];
   findings: RunState["findings"][string][];
   evidence: string[];
   requirements: RequirementsContext;
@@ -96,7 +97,12 @@ export function buildRevisionPacket(args: {
     review.round !== assignment.findingEpoch ||
     !sameIds(review.pendingCorrectionIds, assignment.pendingCorrectionIds) ||
     new Set(assignment.pendingCorrectionIds).size !==
-      assignment.pendingCorrectionIds.length
+      assignment.pendingCorrectionIds.length ||
+    (assignment.authority.kind === "review_findings" &&
+      assignment.pendingCorrectionIds.length === 0) ||
+    (assignment.authority.kind === "delivery_gate" &&
+      (args.effect.workstream.kind !== "source" ||
+        assignment.pendingCorrectionIds.length > 0))
   ) {
     throw new RevisionFailure(
       "protocol_failure",
@@ -159,6 +165,7 @@ export function buildRevisionPacket(args: {
     reviewComparisonBase: review.comparisonBase,
     findingEpoch: assignment.findingEpoch,
     pendingCorrectionIds: [...assignment.pendingCorrectionIds],
+    authority: assignment.authority,
     findings,
     evidence: [...assignment.evidence],
     requirements,

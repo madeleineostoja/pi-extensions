@@ -108,7 +108,7 @@ Implement state is versioned. Before upgrading to an incompatible lifecycle vers
 
 One OS-backed lease protects each checkout's active run and destructive cleanup. Linked checkouts have independent state and can run separately. A second run in the same checkout is rejected.
 
-Failures retain their real category, candidate, lifecycle gate, target evidence, and workspace observation. Failed replay reconciliation retains the exact failed target, replay disposition, canonical relevant paths, candidate identity, and bounded staging and hook evidence; it never guesses from a later target. The scheduler—not a model—selects a bounded review retry, the one candidate correction, failed-target reconciliation, workspace recreation, or operational retry. Revision and reconciliation packets bind exact observed candidates and comparison bases; a reconciliation integration base remains the review base through later revisions. Provider/protocol attempts remain bounded separately. An admitted unchanged correction retains its candidate, worktree, worker evidence, and final review anchor; it settles through the same bounded final review rather than failing the lane.
+Failures retain their real category, candidate, lifecycle gate, target evidence, and workspace observation. Failed replay reconciliation retains the exact failed target, replay disposition, canonical relevant paths, candidate identity, and bounded staging and hook evidence; it never guesses from a later target. The scheduler—not a model—selects a bounded review retry, the one candidate correction, failed-target reconciliation, workspace recreation, or operational retry. Revision and reconciliation packets bind exact observed candidates and comparison bases; a reconciliation integration base remains the review base through later revisions. Provider/protocol attempts remain bounded separately. An admitted unchanged correction retains its candidate, worktree, worker evidence, and final review anchor; it settles through the same bounded final review rather than failing the lane. A post-review delivery-gate rejection receives bounded remediation from fresh workers using the exact retained gate evidence. Changed remediation is reviewed before publication retries; unchanged remediation never blindly republishes the same candidate.
 
 Stopping is transient while owned processes settle. Failed, incomplete, and completed runs are terminal. A crash-retained active run is terminalized as interrupted under the checkout lease without launching workers. Cleanup settles exact durable publication and projection transactions first, preserves published target and plan changes, and removes only resources Pipkin can prove it owns.
 
@@ -143,7 +143,7 @@ Implementers choose appropriate project verification. There is no configured val
 
 ## Development tests
 
-Implement tests are partitioned by the boundary they exercise. `implement-unit` owns packet, parser, reducer, scheduler, model, and scripted worker behavior and does not invoke Git. `implement-integration` owns managed Pi runtime integration and focused real-Git contracts such as worktrees, hooks, replay, index behavior, and publication durability. `implement-e2e` is serial and owns the complete correction/publication journey.
+Implement tests are partitioned by the boundary they exercise. `implement-unit` owns packet, parser, reducer, scheduler, model, and scripted worker behavior and does not invoke Git. `implement-integration` owns managed Pi runtime integration and focused real-Git contracts such as worktrees, hooks, replay, index behavior, and publication durability.
 
 Run the layers independently or together from the repository root:
 
@@ -151,7 +151,6 @@ Run the layers independently or together from the repository root:
 npm run test:subagents
 npm run test:implement:unit
 npm run test:implement:integration
-npm run test:implement:e2e
 npm run test:implement
 npm run test
 ```

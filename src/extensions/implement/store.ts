@@ -314,6 +314,18 @@ const revisionAssignmentSchema = z
     comparisonBase: nonEmpty,
     findingEpoch: z.number().int().nonnegative(),
     pendingCorrectionIds: z.array(nonEmpty),
+    authority: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("review_findings") }).strict(),
+      z
+        .object({
+          kind: z.literal("delivery_gate"),
+          category: z.enum(failureCategories),
+          gate: nonEmpty,
+          fingerprint: nonEmpty,
+          attempt: z.number().int().positive(),
+        })
+        .strict(),
+    ]),
     evidence: z.array(nonEmpty),
     status: z.enum(["open", "completed", "blocked"]),
     executionFailures: z.number().int().nonnegative(),
@@ -1980,6 +1992,12 @@ function invariantIssues(
         );
       },
     );
+    const hasInvalidAuthority =
+      (assignment.authority.kind === "review_findings" &&
+        assignment.pendingCorrectionIds.length === 0) ||
+      (assignment.authority.kind === "delivery_gate" &&
+        (assignment.workstream.kind !== "source" ||
+          assignment.pendingCorrectionIds.length > 0));
     if (
       key !== assignment.id ||
       !candidate ||
@@ -1988,6 +2006,7 @@ function invariantIssues(
       new Set(assignment.pendingCorrectionIds).size !==
         assignment.pendingCorrectionIds.length ||
       hasInvalidFindingSnapshot ||
+      hasInvalidAuthority ||
       (assignment.status === "open" &&
         (!review ||
           review.candidateId !== assignment.candidateId ||
@@ -2358,7 +2377,9 @@ function invariantIssues(
         retained.comparisonBase !== assignment.comparisonBase ||
         retained.findingEpoch !== assignment.findingEpoch ||
         JSON.stringify(retained.pendingCorrectionIds) !==
-          JSON.stringify(assignment.pendingCorrectionIds)
+          JSON.stringify(assignment.pendingCorrectionIds) ||
+        JSON.stringify(retained.authority) !==
+          JSON.stringify(assignment.authority)
       ) {
         issues.push(
           `revision assignment ${id} rewrites its immutable identity`,

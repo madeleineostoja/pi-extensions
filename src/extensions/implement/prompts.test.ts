@@ -156,6 +156,7 @@ describe("whole-plan and repair prompts", () => {
       comparisonBase: "candidate-sha",
       findingEpoch: 1,
       pendingCorrectionIds: ["finding-1"],
+      authority: { kind: "review_findings" },
       findings: [
         {
           id: "finding-1",

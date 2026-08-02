@@ -202,6 +202,170 @@ describe("replay preparation policy", () => {
     ).toBeDefined();
   });
 
+  it("reviews a changed delivery-gate remediation before retrying publication", async () => {
+    const requested = await requestedReconciliation();
+    const rejected = rejectReconciliationHook(
+      requested.state,
+      requested.effect,
+      "src/endpoint.ts: lint failed",
+    );
+    const assignment = Object.values(rejected.state.revisionAssignments)[0]!;
+
+    expect(assignment).toMatchObject({
+      authority: {
+        kind: "delivery_gate",
+        gate: "reconciliation_hook",
+        attempt: 1,
+      },
+      pendingCorrectionIds: [],
+      status: "open",
+    });
+
+    const revisionRequested = reduceRunEvent(rejected.state, {
+      kind: "revision_requested",
+      workstream: requested.effect.workstream,
+      now: "2026-01-01T00:03:00.000Z",
+    });
+    const revision = revisionRequested.effects[0]!;
+    if (revision.kind !== "run_revision") {
+      throw new Error("expected delivery-gate remediation");
+    }
+    const remediated = reduceRunEvent(revisionRequested.state, {
+      kind: "revision_completed",
+      workstream: revision.workstream,
+      leaseId: revision.leaseId,
+      assignmentId: revision.assignmentId,
+      outcome: {
+        kind: "candidate_ready",
+        candidate: {
+          ...candidate(),
+          id: "candidate:lint-fixed",
+          commitSha: "lint-fixed-sha",
+          treeSha: "lint-fixed-tree",
+          changedPaths: ["src/endpoint.ts"],
+        },
+        correction: {
+          fromCandidateId: requested.candidateId,
+          changedPaths: ["src/endpoint.ts"],
+          evidence: "lint remediation artifact",
+        },
+      },
+    });
+
+    expect(remediated.state.workstreams.source["first-stream"]).toMatchObject({
+      phase: "candidate_ready",
+      candidateId: "candidate:lint-fixed",
+    });
+    expect(remediated.state.revisionAssignments[assignment.id]?.status).toBe(
+      "completed",
+    );
+    expect(remediated.state.reviews["source:first-stream"]).toMatchObject({
+      candidateId: "candidate:lint-fixed",
+      previousCandidateId: requested.candidateId,
+      latestCorrection: { mode: "changed" },
+    });
+    const reviewRequested = reduceRunEvent(remediated.state, {
+      kind: "review_requested",
+      workstream: requested.effect.workstream,
+      now: "2026-01-01T00:04:00.000Z",
+    });
+    const review = reviewRequested.effects[0]!;
+    if (review.kind !== "run_review") {
+      throw new Error("expected remediation review");
+    }
+    const reviewed = reduceRunEvent(reviewRequested.state, {
+      kind: "review_completed",
+      workstream: review.workstream,
+      leaseId: review.leaseId,
+      outcome: {
+        kind: "anchored",
+        candidateId: "candidate:lint-fixed",
+        previousCandidateId: requested.candidateId,
+        comparisonBase: "base-sha",
+        changedPaths: ["src/endpoint.ts"],
+        findingEpoch: 0,
+        evidence: "remediation review artifact",
+        completion: { assessments: [], regressions: [] },
+      },
+    });
+    const reconciliationRequested = reduceRunEvent(reviewed.state, {
+      kind: "reconciliation_requested",
+      workstream: requested.effect.workstream,
+      now: "2026-01-01T00:05:00.000Z",
+    });
+    const reconciliation = reconciliationRequested.effects[0]!;
+    if (reconciliation.kind !== "run_reconciliation") {
+      throw new Error("expected publication retry reconciliation");
+    }
+    const rejectedAgain = rejectReconciliationHook(
+      reconciliationRequested.state,
+      reconciliation,
+      "src/other.ts: formatting failed",
+    );
+
+    expect(
+      Object.values(rejectedAgain.state.revisionAssignments).find(
+        (candidate) => candidate.status === "open",
+      )?.authority,
+    ).toMatchObject({ kind: "delivery_gate", attempt: 2 });
+  });
+
+  it("retries unchanged delivery remediation without retrying publication", async () => {
+    const requested = await requestedReconciliation();
+    let state = rejectReconciliationHook(
+      requested.state,
+      requested.effect,
+      "src/endpoint.ts: lint failed",
+    ).state;
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const revisionRequested = reduceRunEvent(state, {
+        kind: "revision_requested",
+        workstream: requested.effect.workstream,
+        now: `2026-01-01T00:0${attempt + 2}:00.000Z`,
+      });
+      const revision = revisionRequested.effects[0]!;
+      if (revision.kind !== "run_revision") {
+        throw new Error("expected delivery-gate remediation");
+      }
+      const unchanged = reduceRunEvent(revisionRequested.state, {
+        kind: "revision_completed",
+        workstream: revision.workstream,
+        leaseId: revision.leaseId,
+        assignmentId: revision.assignmentId,
+        outcome: {
+          kind: "unchanged",
+          evidence: `remediation ${attempt} could not fix lint`,
+        },
+      });
+      expect(unchanged.effects).toEqual([]);
+      state = unchanged.state;
+      if (attempt < 3) {
+        expect(state.workstreams.source["first-stream"]?.phase).toBe(
+          "revising",
+        );
+        expect(
+          Object.values(state.revisionAssignments).find(
+            (assignment) => assignment.status === "open",
+          )?.authority,
+        ).toMatchObject({ kind: "delivery_gate", attempt: attempt + 1 });
+      }
+    }
+
+    expect(state.workstreams.source["first-stream"]?.phase).toBe("failed");
+    expect(Object.values(state.revisionAssignments).at(-1)).toMatchObject({
+      authority: { kind: "delivery_gate", attempt: 3 },
+      status: "blocked",
+    });
+    expect(Object.values(state.failures)).toContainEqual(
+      expect.objectContaining({
+        category: "hook_rejected",
+        assignment: "blocked",
+        gate: "reconciliation_hook",
+      }),
+    );
+  });
+
   it("retains the exact failed replay target instead of inferring a later one", async () => {
     const requested = await requestedReconciliation();
 
@@ -256,6 +420,37 @@ describe("replay preparation policy", () => {
     ]);
   });
 });
+
+function rejectReconciliationHook(
+  state: RunState,
+  effect: Extract<
+    ReturnType<typeof reduceRunEvent>["effects"][number],
+    { kind: "run_reconciliation" }
+  >,
+  output: string,
+) {
+  return reduceRunEvent(state, {
+    kind: "reconciliation_completed",
+    workstream: effect.workstream,
+    leaseId: effect.leaseId,
+    outcome: {
+      kind: "hook_rejected",
+      evidence: output,
+      command: {
+        command: "git commit",
+        cwd: "/tmp/staging",
+        exitCode: 1,
+        timedOut: false,
+        output,
+      },
+      workspace: {
+        id: "staging-hook-rejected",
+        changedPaths: ["src/endpoint.ts"],
+        stateEvidence: "hook rejected",
+      },
+    },
+  });
+}
 
 async function requestedReconciliation() {
   const store = await createSchedulerStore();

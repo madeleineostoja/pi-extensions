@@ -397,6 +397,62 @@ describe("revision policy", () => {
     expect(() => validate(completed.state)).not.toThrow();
   });
 
+  it("retains unchanged overall repair evidence for final review", async () => {
+    const queued = await wholePlanRepairResult();
+    for (const source of Object.values(queued.state.workstreams.source)) {
+      source.phase = "completed";
+    }
+    const selected = reduceRunEvent(queued.state, {
+      kind: "workstreams_selected",
+      now: "2026-01-01T00:01:00.000Z",
+      baseShas: {},
+    });
+    const implementation = selected.effects[0]!;
+    if (implementation.kind !== "run_implementation") {
+      throw new Error("expected overall repair implementation");
+    }
+    const completed = reduceRunEvent(selected.state, {
+      kind: "implementation_completed",
+      workstream: implementation.workstream,
+      leaseId: implementation.leaseId,
+      outcome: {
+        kind: "candidate_ready",
+        candidate: {
+          id: "overall:run-1:repair-1:target-sha",
+          workstream: implementation.workstream,
+          baseSha: "target-sha",
+          commitSha: "target-sha",
+          treeSha: "target-tree",
+          changedPaths: [],
+          evidenceStatus: "reported",
+          observationArtifact: "/artifacts/repair.json",
+          implementationEvidence: {
+            summary: "The target already satisfies the requested behavior.",
+            verification: ["Inspected the existing behavior."],
+            uncertainty: "Runtime verification could not start.",
+            artifactPath: "/artifacts/repair.json",
+            changedPaths: [],
+          },
+        },
+        checkpoints: {},
+        satisfied: {},
+      },
+    });
+
+    expect(
+      completed.state.reviews["overall:repair-1"]?.latestCorrection,
+    ).toEqual({
+      fromCandidateId: "overall-baseline:run-1:repair-1:target-sha",
+      changedPaths: [],
+      evidence: "/artifacts/repair.json",
+      mode: "unchanged",
+      summary: "The target already satisfies the requested behavior.",
+      verification: ["Inspected the existing behavior."],
+      uncertainty: "Runtime verification could not start.",
+      artifactPath: "/artifacts/repair.json",
+    });
+  });
+
   it("approves a final reassessment without waiving its residual finding", async () => {
     const state = await stateAtRevision();
     const revisionRequested = reduceRunEvent(state, {

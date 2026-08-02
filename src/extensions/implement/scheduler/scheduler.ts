@@ -766,12 +766,14 @@ export function reduceRunEvent(
         candidateId &&
         event.workstream.kind === "source"
       ) {
-        return createRevisionAssignment(
+        return createDeliveryGateRemediation(
           state,
           event.workstream,
           candidateId,
-          [],
+          event.category,
+          `${event.effect}_hook`,
           event.evidence,
+          event.command,
           reject,
         );
       }
@@ -865,6 +867,8 @@ export function reduceRunEvent(
         if (event.workstream.kind === "overall") {
           const review = workstreamReviewState(state, event.workstream);
           if (review) {
+            const implementationEvidence =
+              event.outcome.candidate.implementationEvidence;
             try {
               state.reviews[reviewKey(event.workstream)] =
                 retargetAnchoredReview({
@@ -877,10 +881,23 @@ export function reduceRunEvent(
                     fromCandidateId: review.candidateId,
                     changedPaths: event.outcome.candidate.changedPaths ?? [],
                     evidence:
-                      event.outcome.candidate.implementationEvidence
-                        ?.artifactPath ??
+                      implementationEvidence?.artifactPath ??
                       event.outcome.candidate.observationArtifact ??
                       "Overall repair candidate was observed.",
+                    ...(implementationEvidence
+                      ? {
+                          summary: implementationEvidence.summary,
+                          verification: [
+                            ...implementationEvidence.verification,
+                          ],
+                          ...(implementationEvidence.uncertainty
+                            ? {
+                                uncertainty: implementationEvidence.uncertainty,
+                              }
+                            : {}),
+                          artifactPath: implementationEvidence.artifactPath,
+                        }
+                      : {}),
                   },
                 });
             } catch (error) {
@@ -1105,7 +1122,8 @@ export function reduceRunEvent(
           event.workstream,
           event.outcome.candidateId,
           pendingCorrectionIds,
-          event.outcome.evidence,
+          { kind: "review_findings" },
+          [event.outcome.evidence],
           reject,
         );
       }
@@ -1253,6 +1271,35 @@ export function reduceRunEvent(
         return reject("revision completion is stale for its review epoch");
       }
       if (event.outcome.kind === "unchanged") {
+        if (assignment.authority.kind === "delivery_gate") {
+          settleLease(state, lease, event.kind, event);
+          if (assignment.authority.attempt >= MAX_DELIVERY_GATE_ATTEMPTS) {
+            assignment.status = "blocked";
+            recordFailure(state, {
+              category: assignment.authority.category,
+              assignment: "blocked",
+              workstream: event.workstream,
+              candidateId: previousCandidate.id,
+              gate: assignment.authority.gate,
+              evidence: event.outcome.evidence,
+            });
+            failWorkstream(state, event.workstream);
+            return accept();
+          }
+          assignment.status = "completed";
+          return createRevisionAssignment(
+            state,
+            event.workstream,
+            previousCandidate.id,
+            [],
+            {
+              ...assignment.authority,
+              attempt: assignment.authority.attempt + 1,
+            },
+            [...assignment.evidence, event.outcome.evidence],
+            reject,
+          );
+        }
         try {
           state.reviews[reviewKey(event.workstream)] = retargetAnchoredReview({
             state: review,
@@ -1854,12 +1901,14 @@ export function reduceRunEvent(
           ...(event.outcome.command ? { command: event.outcome.command } : {}),
         });
         if (event.workstream.kind === "source") {
-          return createRevisionAssignment(
+          return createDeliveryGateRemediation(
             state,
             event.workstream,
             candidateId,
-            [],
+            "hook_rejected",
+            "reconciliation_hook",
             event.outcome.evidence,
+            event.outcome.command,
             reject,
           );
         }
@@ -3139,12 +3188,69 @@ function retainedObservation(
   };
 }
 
+const MAX_DELIVERY_GATE_ATTEMPTS = 3;
+
+function createDeliveryGateRemediation(
+  state: RunState,
+  workstream: Extract<RuntimeWorkstream, { kind: "source" }>,
+  candidateId: string,
+  category: FailureCategory,
+  gate: string,
+  evidence: string,
+  command: FailureCommandEvidence | undefined,
+  reject: (error: string) => SchedulerTransition,
+): SchedulerTransition {
+  const fingerprint = sha256(
+    JSON.stringify({ category, gate, command: command?.command }),
+  );
+  const previousAttempt = Math.max(
+    0,
+    ...Object.values(state.revisionAssignments)
+      .filter(
+        (assignment) =>
+          assignment.workstream.kind === "source" &&
+          assignment.workstream.id === workstream.id &&
+          assignment.authority.kind === "delivery_gate" &&
+          assignment.authority.fingerprint === fingerprint,
+      )
+      .map((assignment) =>
+        assignment.authority.kind === "delivery_gate"
+          ? assignment.authority.attempt
+          : 0,
+      ),
+  );
+  const attempt = previousAttempt + 1;
+  if (attempt > MAX_DELIVERY_GATE_ATTEMPTS) {
+    recordFailure(state, {
+      category,
+      assignment: "blocked",
+      workstream,
+      candidateId,
+      gate,
+      evidence,
+      ...(command ? { command } : {}),
+    });
+    failWorkstream(state, workstream);
+    return { state, effects: [], accepted: true };
+  }
+  return createRevisionAssignment(
+    state,
+    workstream,
+    candidateId,
+    [],
+    { kind: "delivery_gate", category, gate, fingerprint, attempt },
+    [evidence],
+    reject,
+  );
+}
+
 function createRevisionAssignment(
   state: RunState,
   workstream: RuntimeWorkstream,
   candidateId: string,
   pendingCorrectionIds: string[],
-  evidence: string,
+  authority: RunState["revisionAssignments"][string]["authority"],
+  evidence: string[],
   reject: (error: string) => SchedulerTransition,
 ): SchedulerTransition {
   const candidate = state.candidates[candidateId];
@@ -3163,10 +3269,14 @@ function createRevisionAssignment(
   }
   if (
     JSON.stringify(review.pendingCorrectionIds) !==
-    JSON.stringify(pendingCorrectionIds)
+      JSON.stringify(pendingCorrectionIds) ||
+    (authority.kind === "review_findings" &&
+      pendingCorrectionIds.length === 0) ||
+    (authority.kind === "delivery_gate" &&
+      (workstream.kind !== "source" || pendingCorrectionIds.length > 0))
   ) {
     return reject(
-      "revision assignment findings do not match the active review epoch",
+      "revision assignment authority does not match the active review epoch",
     );
   }
   const id = `revision:${workstreamId(workstream)}:${candidate.commitSha}:${review.round}:${Object.keys(state.revisionAssignments).length + 1}`;
@@ -3181,7 +3291,8 @@ function createRevisionAssignment(
     comparisonBase: candidate.commitSha,
     findingEpoch: review.round,
     pendingCorrectionIds: [...pendingCorrectionIds],
-    evidence: [boundedFailureOutput(evidence)],
+    authority,
+    evidence: evidence.map((entry) => boundedFailureOutput(entry)),
     status: "open",
     executionFailures: 0,
   };

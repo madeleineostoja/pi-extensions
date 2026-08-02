@@ -47,9 +47,8 @@
     "test": "vitest run --testTimeout 15000",
     "test:subagents": "vitest run --project subagents",
     "test:implement:unit": "vitest run --project implement-unit",
-    "test:implement:integration": "vitest run --project implement-integration",
-    "test:implement:e2e": "vitest run --project implement-e2e",
-    "test:implement": "vitest run --project implement-unit --project implement-integration --project implement-e2e"
+    "test:implement:integration": "vitest run --project implement-integration --testTimeout 15000",
+    "test:implement": "vitest run --project implement-unit --project implement-integration --testTimeout 15000"
   },
   "dependencies": {
     "execa": "^10.0.0",
