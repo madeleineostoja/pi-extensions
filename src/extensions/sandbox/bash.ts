@@ -17,6 +17,7 @@ import { SANDBOX_EXECUTABLE, sandboxArguments } from "./seatbelt.js";
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const TERMINATION_WAIT_MS = 5_000;
 const TERMINATION_POLL_MS = 10;
+const OUTPUT_DRAIN_TIMEOUT_MS = 2_000;
 const LAUNCH_MARKER = "__PIPKIN_SANDBOX_LAUNCHED__\n";
 const LAUNCH_PREFIX = `printf '${LAUNCH_MARKER}'\n`;
 const MAX_LAUNCH_DIAGNOSTIC_BYTES = 64 * 1024;
@@ -111,6 +112,7 @@ export function createSandboxBashRuntime(
     spawn?: SandboxSpawn;
     sandboxExecutable?: string;
     denialObserver?: SandboxDenialObserver;
+    outputDrainTimeoutMs?: number;
   }>,
 ): SandboxBashRuntime {
   const local = createLocalBashOperations({ shellPath: options.shellPath });
@@ -184,20 +186,26 @@ export function createSandboxBashRuntime(
         (resolveResult, reject) => {
           let child: ChildProcess;
           let timer: NodeJS.Timeout | undefined;
+          let outputDrainTimer: NodeJS.Timeout | undefined;
           let abort: (() => void) | undefined;
           let finished = false;
+          let completing = false;
           let terminationError: Error | undefined;
           let terminatedPid: number | undefined;
           let invocation: ActiveInvocation | undefined;
           let settleInvocation: () => void = () => undefined;
           let launchDiagnostics = Buffer.alloc(0);
           let launchConfirmed = false;
+          let exitedCode: number | null | undefined;
           let launchOutput = Buffer.alloc(0);
           let releaseDenial: (() => void) | undefined;
           const launchMarker = Buffer.from(LAUNCH_MARKER);
           const cleanup = () => {
             if (timer) {
               clearTimeout(timer);
+            }
+            if (outputDrainTimer) {
+              clearTimeout(outputDrainTimer);
             }
             if (abort) {
               execution.signal?.removeEventListener("abort", abort);
@@ -255,7 +263,57 @@ export function createSandboxBashRuntime(
             settled: new Promise<void>((settle) => (settleInvocation = settle)),
           };
           active.add(invocation);
-          const onData = (data: Buffer) => execution.onData(data);
+          const complete = (exitCode: number | null) => {
+            if (completing || finished) {
+              return;
+            }
+            completing = true;
+            void (async () => {
+              if (
+                terminationError &&
+                terminatedPid !== undefined &&
+                !(await waitForProcessTree(terminatedPid))
+              ) {
+                finish(
+                  new Error(
+                    `${terminationError.message}; process tree did not terminate`,
+                  ),
+                );
+                return;
+              }
+              if (!terminationError && !launchConfirmed) {
+                const diagnostic = launchDiagnostics.toString().trim();
+                const failure = sandboxRejected(launchDiagnostics)
+                  ? "sandbox-exec rejected the launch"
+                  : "sandbox-exec exited before shell startup";
+                finish(
+                  new Error(
+                    `Sandbox: ${failure}: ${diagnostic || `exit code ${exitCode ?? "unknown"}`}`,
+                  ),
+                );
+                return;
+              }
+              finish(terminationError ?? { exitCode });
+            })();
+          };
+          const refreshOutputDrain = () => {
+            const exitCode = exitedCode;
+            if (exitCode === undefined) {
+              return;
+            }
+            if (outputDrainTimer) {
+              clearTimeout(outputDrainTimer);
+            }
+            outputDrainTimer = setTimeout(() => {
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+              complete(exitCode);
+            }, options.outputDrainTimeoutMs ?? OUTPUT_DRAIN_TIMEOUT_MS);
+          };
+          const onData = (data: Buffer) => {
+            refreshOutputDrain();
+            execution.onData(data);
+          };
           const onStderr = (data: Buffer) => {
             if (!launchConfirmed) {
               launchDiagnostics = appendLaunchDiagnostic(
@@ -306,35 +364,11 @@ export function createSandboxBashRuntime(
               finish(new Error(`Sandbox: launch failed: ${error.message}`));
             }
           });
-          child.once("close", (exitCode) => {
-            void (async () => {
-              if (
-                terminationError &&
-                terminatedPid !== undefined &&
-                !(await waitForProcessTree(terminatedPid))
-              ) {
-                finish(
-                  new Error(
-                    `${terminationError.message}; process tree did not terminate`,
-                  ),
-                );
-                return;
-              }
-              if (!terminationError && !launchConfirmed) {
-                const diagnostic = launchDiagnostics.toString().trim();
-                const failure = sandboxRejected(launchDiagnostics)
-                  ? "sandbox-exec rejected the launch"
-                  : "sandbox-exec exited before shell startup";
-                finish(
-                  new Error(
-                    `Sandbox: ${failure}: ${diagnostic || `exit code ${exitCode ?? "unknown"}`}`,
-                  ),
-                );
-                return;
-              }
-              finish(terminationError ?? { exitCode });
-            })();
+          child.once("exit", (exitCode) => {
+            exitedCode = exitCode;
+            refreshOutputDrain();
           });
+          child.once("close", complete);
           abort = () => stop(new Error("aborted"));
           execution.signal?.addEventListener("abort", abort, { once: true });
           if (timeout !== undefined) {

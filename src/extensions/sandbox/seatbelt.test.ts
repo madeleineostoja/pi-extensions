@@ -27,7 +27,13 @@ describe("Sandbox Seatbelt profile", () => {
       '(global-name "com.apple.system.opendirectoryd.libinfo")',
     );
     expect(SANDBOX_PROFILE).toContain(
-      '(allow file-ioctl (regex #"^/dev/ttys[0-9]+"))',
+      '(allow file-write-data file-ioctl\n  (literal "/dev/dtracehelper"))',
+    );
+    expect(SANDBOX_PROFILE).toContain(
+      '(allow file-write-data\n  (literal "/dev/tty")\n  (literal "/dev/fd/1")\n  (literal "/dev/fd/2"))',
+    );
+    expect(SANDBOX_PROFILE).toContain(
+      '(allow file-ioctl (regex #"^/dev/ttys[0-9]+$"))',
     );
     expect(SANDBOX_PROFILE).toContain(
       '(ipc-posix-name-regex #"^/__KMP_REGISTERED_LIB_[0-9]+$")',

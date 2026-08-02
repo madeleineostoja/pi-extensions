@@ -15,6 +15,12 @@ export const SANDBOX_PROFILE = String.raw`(version 1)
   (require-all
     (path "/dev/null")
     (vnode-type CHARACTER-DEVICE)))
+(allow file-write-data file-ioctl
+  (literal "/dev/dtracehelper"))
+(allow file-write-data
+  (literal "/dev/tty")
+  (literal "/dev/fd/1")
+  (literal "/dev/fd/2"))
 (allow sysctl-read
   (sysctl-name "hw.activecpu")
   (sysctl-name "hw.busfrequency_compat")
@@ -91,9 +97,9 @@ export const SANDBOX_PROFILE = String.raw`(version 1)
 (allow file-read* file-write* file-ioctl (literal "/dev/ptmx"))
 (allow file-read* file-write*
   (require-all
-    (regex #"^/dev/ttys[0-9]+")
+    (regex #"^/dev/ttys[0-9]+$")
     (extension "com.apple.sandbox.pty")))
-(allow file-ioctl (regex #"^/dev/ttys[0-9]+"))
+(allow file-ioctl (regex #"^/dev/ttys[0-9]+$"))
 (allow ipc-posix-shm-read* (ipc-posix-name-prefix "apple.cfprefs."))
 (allow user-preference-read)
 (allow system-socket

@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import {
   chmodSync,
   existsSync,
@@ -8,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createSandboxBashDefinition,
@@ -244,6 +246,39 @@ printf last`,
     expect(text.endsWith("last")).toBe(true);
     expect(text).not.toContain("__PIPKIN_SANDBOX_LAUNCHED__");
     expect(text.length).toBeGreaterThan(16_384);
+  });
+
+  it("bounds idle output draining after the sandbox process exits", async () => {
+    const { policy, workspace } = fixture();
+    const child = new EventEmitter();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    Object.assign(child, { stdin, stdout, stderr });
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      outputDrainTimeoutMs: 20,
+      spawn: () => {
+        queueMicrotask(() => {
+          stdout.write("__PIPKIN_SANDBOX_LAUNCHED__\ndone");
+          child.emit("exit", 0);
+          setTimeout(() => stdout.write(" and"), 10);
+          setTimeout(() => stdout.write(" drained"), 25);
+        });
+        return child as never;
+      },
+    });
+    const output: string[] = [];
+    await expect(
+      runtime.operations.exec("printf ignored", workspace, {
+        onData: (data) => output.push(data.toString()),
+      }),
+    ).resolves.toEqual({ exitCode: 0 });
+    expect(output.join("")).toBe("done and drained");
+    expect(stdout.destroyed).toBe(true);
+    expect(stderr.destroyed).toBe(true);
   });
 
   it("preserves ordinary nonzero shell exits, including sandbox-exec statuses", async () => {
