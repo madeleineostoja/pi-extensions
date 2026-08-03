@@ -54,6 +54,18 @@ function recall(entries: unknown[]) {
 }
 
 describe("context_recall", () => {
+  it("advertises retained outcomes as immediately recallable", () => {
+    const { definition } = recall([]);
+
+    expect(definition.description).toContain(
+      "retained by an outcome tool or hidden behind a Context pruning stub",
+    );
+    expect(definition.promptSnippet).toContain("retained outcome");
+    expect(definition.promptGuidelines[0]).toContain(
+      "returned by bash_outcome or another recallable outcome",
+    );
+  });
+
   it("returns stored full content unchanged", async () => {
     const content = [
       { type: "text" as const, text: "first" },

@@ -26,13 +26,13 @@ export function registerBashOutcomeTool(pi: ExtensionAPI): void {
     name: "bash_outcome",
     label: "bash_outcome",
     description:
-      "Run Bash through Sandbox when the next reasoning step only needs success. Successful ordinary Bash output remains recallable; failures remain visible.",
+      "Run Bash through Sandbox when exit status alone answers the current question. Successful output remains immediately recallable; failures remain visible.",
     promptSnippet:
-      "bash_outcome — run Bash when only success matters next; recall its ordinary result if needed",
+      "bash_outcome — run an action or validation when exit status alone is enough; recall successful output if needed",
     promptGuidelines: [
-      "Use bash_outcome when the next reasoning step only needs to know whether the Bash command succeeded. The command may take any finite duration.",
-      "On success, the same result ordinary Bash would have returned remains available through context_recall, subject to normal Bash output limits.",
-      "Use bash when successful output may affect the next decision; failure output remains visible normally.",
+      "Use bash_outcome for an action or validation when exit status alone answers the current question, especially when successful output may be noisy. The command may take any finite duration.",
+      "Use bash for inspection, discovery, diagnostics, or when successful output informs reasoning or reporting, such as search results, diffs, listings, warnings, skipped tests, or test counts.",
+      "After a successful bash_outcome, use context_recall with its tool-call ID if that execution's output later becomes relevant; do not rerun solely to inspect it. Failure output remains visible, including for chained commands.",
     ],
     parameters: BashOutcomeParams,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -63,12 +63,18 @@ export function registerBashOutcomeTool(pi: ExtensionAPI): void {
       );
     },
     renderResult(result, options, theme, context) {
-      if (context.isError || options.isPartial) {
+      if (context.isError) {
+        return new Text(theme.fg("error", firstText(result.content)), 0, 0);
+      }
+      if (options.isPartial) {
+        if (!options.expanded) {
+          return new Text(theme.fg("muted", "Running…"), 0, 0);
+        }
+        const output = firstText(result.content);
         return new Text(
-          theme.fg(
-            context.isError ? "error" : "warning",
-            firstText(result.content),
-          ),
+          output.length > 0
+            ? theme.fg("toolOutput", output)
+            : theme.fg("muted", "Running…"),
           0,
           0,
         );
@@ -77,14 +83,14 @@ export function registerBashOutcomeTool(pi: ExtensionAPI): void {
         firstText(result.content).split("\n", 1)[0] ??
         "Bash command succeeded.";
       if (!options.expanded) {
-        return new Text(theme.fg("success", status), 0, 0);
+        return new Text(theme.fg("toolOutput", status), 0, 0);
       }
       const retained = decodeRetainedResult(result.details);
       const content =
         retained === undefined ? undefined : retainedText(retained.content);
       return new Text(
         [
-          theme.fg("success", status),
+          theme.fg("toolOutput", status),
           ...(content === undefined ? [] : [theme.fg("toolOutput", content)]),
         ].join("\n"),
         0,

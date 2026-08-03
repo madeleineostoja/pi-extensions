@@ -67,7 +67,7 @@ Pipkin's first layers are deliberately about control:
 
 ### Context
 
-Long sessions collect a remarkable amount of baggage. **Context Prune** uses deterministic, persisted epochs to replace stale output, superseded and repeated reads, and already-consumed command results with small, reasoned stubs while keeping every original result available through `context_recall`. Choose `bash_outcome` whenever the next reasoning step needs only success or failure, regardless of the command's finite duration; choose `bash` when successful output may affect that step. Managed process outcomes likewise retain one bounded point-in-time result for recall, while failures remain visible. Pi remains responsible for context pressure and compaction.
+Long sessions collect a remarkable amount of baggage. **Context Prune** uses deterministic, persisted epochs to replace stale output, superseded and repeated reads, and already-consumed command results with small, reasoned stubs while keeping every original result available through `context_recall`. Choose `bash_outcome` for actions or validations when exit status alone answers the current question; choose `bash` for inspection, diagnostics, or when successful output informs reasoning or reporting. Successful outcomes remain immediately recallable and failures remain visible. Managed process outcomes likewise retain one bounded point-in-time result for recall. Pi remains responsible for context pressure and compaction.
 
 **[Context →](docs/features/context.md)**
 
@@ -115,8 +115,8 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | ------------------------------------- | -------------------------------------------------------------------- |
 | `/sandbox [on\|off]`                  | Inspect or change the current repository-write Sandbox mode          |
 | `/readonly [on\|off]`                 | Toggle approval for resolved `edit` and `write` tools                |
-| `context_recall`                      | Recover the original content behind an elision stub                  |
-| `bash_outcome`                        | Run Bash when only successful outcome matters; recall output         |
+| `context_recall`                      | Recover a retained outcome or content behind an elision stub         |
+| `bash_outcome`                        | Run Bash when exit status alone answers the current question         |
 | `lsp`                                 | Make semantic source queries or inspect language-server status       |
 | `start_process`                       | Start independent foreground non-interactive managed work            |
 | `get_process_result` / `stop_process` | Join, inspect, or explicitly stop a managed process                  |

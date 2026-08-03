@@ -23,7 +23,7 @@ describe("retained result", () => {
     expect(retained.content).toEqual([
       {
         type: "text",
-        text: 'Build succeeded.\nThe Bash result is retained; call context_recall("call-123") to inspect it.',
+        text: 'Build succeeded.\nThe Bash result is retained; call context_recall("call-123") to inspect this result rather than repeat the operation.',
       },
     ]);
     expect(decodeRetainedResult(retained.details)).toEqual(ordinary);
@@ -39,7 +39,7 @@ describe("retained result", () => {
     );
 
     expect(retained.content[0]?.text).toBe(
-      'Managed process process-1 is completed.\nThe managed process result is retained; call context_recall("process-call") to inspect it.',
+      'Managed process process-1 is completed.\nThe managed process result is retained; call context_recall("process-call") to inspect this result rather than repeat the operation.',
     );
   });
 

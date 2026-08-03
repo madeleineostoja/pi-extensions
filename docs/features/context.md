@@ -30,7 +30,7 @@ New epoch decisions persist their estimated token savings alongside the reason a
 
 ### Recall exactly what you need
 
-Pass the ID printed in a stub:
+Pass the tool-call ID returned by a recallable outcome or printed in a pruning stub:
 
 ```json
 { "id": "TOOL_CALL_ID" }
@@ -60,4 +60,6 @@ For example, start overlapping finite work, continue independent work, then call
 
 ## Bash outcomes
 
-Choose `bash_outcome` when the next reasoning step only needs to know whether Bash succeeded, regardless of the command's finite duration. It shares Sandbox's ordinary Bash execution and leaves failures visible normally. On success it returns a concise status while retaining the same ordinary bounded Bash result for `context_recall`; choose ordinary `bash` when successful output may affect the next decision. An optional display-only label is control-safe normalized, whitespace-collapsed, and must be 1–80 Unicode code points; it never changes the command.
+Choose `bash_outcome` for an action or validation when exit status alone answers the current question, especially when successful output may be noisy and regardless of the command's finite duration. Choose ordinary `bash` for inspection, discovery, diagnostics, or when successful output informs reasoning or reporting, such as search results, diffs, listings, warnings, skipped tests, or test counts.
+
+`bash_outcome` shares Sandbox's ordinary Bash execution. While it runs, the collapsed tool row stays compact and expansion reveals accumulated output. Failures remain visible, including for chained commands. On success it returns a concise status while retaining the same ordinary bounded Bash result for immediate `context_recall`; inspect that execution through recall instead of rerunning solely to recover its output. An optional display-only label is control-safe normalized, whitespace-collapsed, and must be 1–80 Unicode code points; it never changes the command.

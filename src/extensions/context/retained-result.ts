@@ -44,7 +44,7 @@ export function retainResult(
     content: [
       {
         type: "text",
-        text: `${summary}\nThe ${label} result is retained; call context_recall("${toolCallId}") to inspect it.`,
+        text: `${summary}\nThe ${label} result is retained; call context_recall("${toolCallId}") to inspect this result rather than repeat the operation.`,
       },
     ],
     details: { retainedResult: envelope },
