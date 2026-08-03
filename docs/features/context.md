@@ -42,4 +42,12 @@ The full call returns the original stored content blocks unchanged. For one-text
 { "id": "TOOL_CALL_ID", "lines": "40-80" }
 ```
 
-Missing IDs, invalid ranges, non-text or multi-block slices, unavailable content, and empty slices are real tool failures. Recall does not alter the original pruning decision.
+Or search one text result with a non-empty case-insensitive literal. Search returns up to ten source-ordered matches with three surrounding lines, preserving the original numbered source text:
+
+```json
+{ "id": "TOOL_CALL_ID", "find": "AssertionError" }
+```
+
+`lines` and `find` cannot be combined. Missing IDs, invalid ranges, empty literals, non-text or multi-block slices/searches, unavailable content, and empty slices are real tool failures. A search with no matches succeeds and says so. Search output is bounded; narrow the literal when it reports omitted matches or truncation.
+
+Recall also keeps a bounded source label for terminal presentation, such as the originating tool or Bash command. That label is metadata only: it is never prepended to or substituted for the recalled model content. Recall does not alter the original pruning decision.
