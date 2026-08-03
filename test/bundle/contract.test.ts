@@ -565,6 +565,7 @@ describe("Pipkin bundle", () => {
       { bindSandboxHost },
       { executeSandboxBash },
       { getSubagentRuntime },
+      { generateSessionName },
     ] = await Promise.all([
       import("#lib/config"),
       import("#lib/ui/metrics"),
@@ -573,6 +574,7 @@ describe("Pipkin bundle", () => {
       import("#sandbox/runtime"),
       import("#sandbox/bash"),
       import("#subagents/runtime"),
+      import("#personality/session-name"),
     ]);
 
     expect(getConfigPath("/tmp/pipkin-agent")).toBe(
@@ -584,6 +586,7 @@ describe("Pipkin bundle", () => {
     expect(bindSandboxHost).toBeTypeOf("function");
     expect(executeSandboxBash).toBeTypeOf("function");
     expect(getSubagentRuntime).toBeTypeOf("function");
+    expect(generateSessionName).toBeTypeOf("function");
     expect(snapshotGlobalSymbols()).toEqual(before);
   });
 

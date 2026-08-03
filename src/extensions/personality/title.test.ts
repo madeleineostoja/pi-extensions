@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeTitle, buildTitlePrompt } from "./title.js";
+import {
+  buildImplementTitlePrompt,
+  buildTitlePrompt,
+  sanitizeTitle,
+} from "./title.js";
 
 describe("sanitizeTitle", () => {
   it("normalizes model output into a single title", () => {
@@ -47,5 +51,15 @@ describe("buildTitlePrompt", () => {
     expect(result.userText).toContain(
       "Prompt 2:\nThe auto-name extension uses the second prompt",
     );
+  });
+
+  it("requires an Implement-prefixed title for active runs", () => {
+    const result = buildImplementTitlePrompt(
+      "# Managed processes\n\n- [ ] Add tests",
+    );
+
+    expect(result.systemPrompt).toContain("active Pipkin Implement run");
+    expect(result.systemPrompt).toContain("beginning with Implement");
+    expect(result.userText).toContain("# Managed processes");
   });
 });

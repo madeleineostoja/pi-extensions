@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   implementMenuActions,
+  readImplementPlanExcerpt,
   registerImplementCommand,
   runMenuActions,
 } from "./command.js";
@@ -98,10 +99,31 @@ describe("/implement command", () => {
     ]);
   });
 
+  it("uses only a bounded beginning of the root plan for session naming", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipkin-implement-command-"));
+    temporaryDirectories.add(root);
+    const plan = join(root, "plan.md");
+    writeFileSync(
+      plan,
+      Array.from({ length: 100 }, (_, index) =>
+        index === 0 ? "# Managed processes" : `line-${index}-${"x".repeat(5)}`,
+      ).join("\n"),
+    );
+
+    const excerpt = await readImplementPlanExcerpt(root, "plan.md");
+
+    expect(excerpt).toContain("# Managed processes");
+    expect(excerpt).toContain("line-79-");
+    expect(excerpt).not.toContain("line-80-");
+    expect(excerpt.length).toBeLessThanOrEqual(4_000);
+  });
+
   it("returns an all-checked plan as a no-op without allocating a run", async () => {
     let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
+    const setSessionName = vi.fn();
     const pi = {
       on() {},
+      setSessionName,
       registerCommand(_name: string, command: { handler: typeof handler }) {
         handler = command.handler;
       },
@@ -128,5 +150,6 @@ describe("/implement command", () => {
         level: "info",
       },
     ]);
+    expect(setSessionName).not.toHaveBeenCalled();
   });
 });

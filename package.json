@@ -41,6 +41,7 @@
     "#sandbox/runtime": "./src/extensions/sandbox/runtime.ts",
     "#sandbox/bash": "./src/extensions/sandbox/bash-capability.ts",
     "#subagents/runtime": "./src/extensions/subagents/runtime.ts",
+    "#personality/session-name": "./src/extensions/personality/session-name.ts",
     "#test/*": "./test/support/*.ts"
   },
   "scripts": {

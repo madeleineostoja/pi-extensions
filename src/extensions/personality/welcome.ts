@@ -100,6 +100,7 @@ export function registerWelcome(
       clear();
     }
   });
+  pi.on("session_info_changed", clear);
   pi.on("session_shutdown", clear);
 }
 

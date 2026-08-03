@@ -1,18 +1,13 @@
-import type { UserMessage } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { completeText } from "#lib/complete";
-import type { ModelPreset } from "#lib/config";
-import { parseModelRef } from "#lib/model-ref";
-import { buildTitlePrompt, sanitizeTitle } from "./utils.js";
+import {
+  generateSessionName,
+  type SessionNameOptions,
+} from "./session-name.js";
 
-export type SessionNamingOptions = {
-  utility: ModelPreset | undefined;
-  utilityIssue: string | undefined;
-  configPath: string;
-};
+export type SessionNamingOptions = SessionNameOptions;
 
 export function registerSessionNaming(
   pi: ExtensionAPI,
@@ -55,11 +50,7 @@ export function registerSessionNaming(
     }
 
     const prompt = event.prompt?.trim();
-
-    if (pi.getSessionName()) {
-      return;
-    }
-    if (!prompt) {
+    if (pi.getSessionName() || !prompt) {
       return;
     }
     if (titlePromptsThisSession.length < 3) {
@@ -77,12 +68,10 @@ export function registerSessionNaming(
       ? AbortSignal.any([ctx.signal, abortController.signal])
       : abortController.signal;
 
-    void generateNameAsync(
+    void generateSessionName(
       ctx,
-      utility,
-      utilityIssue,
-      configPath,
-      [...titlePromptsThisSession],
+      { utility, utilityIssue, configPath },
+      { kind: "ordinary", promptText: [...titlePromptsThisSession] },
       signal,
     ).then((result) => {
       if (generation !== sessionGeneration) {
@@ -96,7 +85,7 @@ export function registerSessionNaming(
         attemptedThisSession = false;
       }
       if (result.outcome !== "success") {
-        const msg =
+        const message =
           result.outcome === "preflight-failure"
             ? result.message
             : result.outcome === "unknown-error"
@@ -104,123 +93,8 @@ export function registerSessionNaming(
               : result.outcome === "aborted"
                 ? "Title generation was aborted."
                 : result.message || "Model returned an invalid title.";
-        maybeWarn(ctx, msg);
+        maybeWarn(ctx, message);
       }
     });
   });
-}
-
-type GenerateResult =
-  | { outcome: "success"; title: string }
-  | { outcome: "preflight-failure"; message: string }
-  | { outcome: "aborted" }
-  | { outcome: "invalid-output"; raw?: string; message?: string }
-  | { outcome: "unknown-error"; message: string };
-
-async function generateNameAsync(
-  ctx: ExtensionContext,
-  utility: ModelPreset | undefined,
-  utilityIssue: string | undefined,
-  configPath: string,
-  promptText: string | readonly string[],
-  signal: AbortSignal,
-): Promise<GenerateResult> {
-  const localTitle = fallbackTitle(promptText);
-
-  try {
-    if (!utility) {
-      if (localTitle) {
-        return { outcome: "success", title: localTitle };
-      }
-      return {
-        outcome: "preflight-failure",
-        message: `Pipkin config ${configPath}: utility preset ${utilityIssue ?? "is unavailable"}.`,
-      };
-    }
-
-    const parsed = parseModelRef(utility.model);
-    if (!parsed) {
-      return {
-        outcome: "preflight-failure",
-        message: `Pipkin config ${configPath}: utility preset is invalid.`,
-      };
-    }
-
-    const model = ctx.modelRegistry.find(parsed.provider, parsed.id);
-    if (!model) {
-      const message = `Model not found: ${utility.model}`;
-      return { outcome: "preflight-failure", message };
-    }
-
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) {
-      const message = auth.ok
-        ? `No API key for ${model.provider}`
-        : `Auth error: ${auth.error}`;
-      return { outcome: "preflight-failure", message };
-    }
-
-    const { systemPrompt, userText } = buildTitlePrompt(promptText);
-
-    const userMessage: UserMessage = {
-      role: "user",
-      content: [{ type: "text", text: userText }],
-      timestamp: Date.now(),
-    };
-
-    const result = await completeText(
-      model,
-      { systemPrompt, messages: [userMessage] },
-      {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-        maxTokens: 1024,
-        reasoning: utility.thinking as never,
-        signal,
-      },
-    );
-
-    if (!result.ok) {
-      if (result.reason === "aborted") {
-        return { outcome: "aborted" };
-      }
-      if (result.reason === "error") {
-        return {
-          outcome: "unknown-error",
-          message: result.message || "Provider returned an error",
-        };
-      }
-      if (localTitle) {
-        return { outcome: "success", title: localTitle };
-      }
-      if (result.reason === "length") {
-        return {
-          outcome: "invalid-output",
-          raw: result.text,
-          message: "Model hit token limit without producing text",
-        };
-      }
-      return { outcome: "invalid-output", raw: result.text };
-    }
-
-    const title = sanitizeTitle(result.text);
-    if (!title) {
-      if (localTitle) {
-        return { outcome: "success", title: localTitle };
-      }
-      return { outcome: "invalid-output", raw: result.text };
-    }
-
-    return { outcome: "success", title };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { outcome: "unknown-error", message };
-  }
-}
-
-function fallbackTitle(promptText: string | readonly string[]): string | null {
-  const prompt = (Array.isArray(promptText) ? promptText : [promptText])
-    .map((p) => p.trim())
-    .find(Boolean);
-  return prompt ? sanitizeTitle(prompt) : null;
 }

@@ -1,1 +1,5 @@
-export { sanitizeTitle, buildTitlePrompt } from "./title.js";
+export {
+  buildImplementTitlePrompt,
+  buildTitlePrompt,
+  sanitizeTitle,
+} from "./title.js";
