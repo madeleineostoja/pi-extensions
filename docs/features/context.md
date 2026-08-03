@@ -51,3 +51,7 @@ Or search one text result with a non-empty case-insensitive literal. Search retu
 `lines` and `find` cannot be combined. Missing IDs, invalid ranges, empty literals, non-text or multi-block slices/searches, unavailable content, and empty slices are real tool failures. A search with no matches succeeds and says so. Search output is bounded; narrow the literal when it reports omitted matches or truncation.
 
 Recall also keeps a bounded source label for terminal presentation, such as the originating tool or Bash command. That label is metadata only: it is never prepended to or substituted for the recalled model content. Recall does not alter the original pruning decision.
+
+## Bash outcomes
+
+Use `bash_outcome` only when the next reasoning step needs to know whether Bash succeeded. It shares Sandbox's ordinary Bash execution, accepts any finite duration, and leaves failures visible normally. On success it returns a concise status while retaining the same ordinary bounded Bash result for `context_recall`; use ordinary `bash` when successful output may affect the next decision. An optional display-only label is control-safe normalized, whitespace-collapsed, and must be 1–80 Unicode code points; it never changes the command.

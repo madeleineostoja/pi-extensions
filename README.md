@@ -65,7 +65,7 @@ Pipkin's first layers are deliberately about control:
 
 ### Context
 
-Long sessions collect a remarkable amount of baggage. **Context Prune** uses deterministic, persisted epochs to replace stale output, superseded and repeated reads, and already-consumed command results with small, reasoned stubs while keeping every original result available through `context_recall`. Pi remains responsible for context pressure and compaction.
+Long sessions collect a remarkable amount of baggage. **Context Prune** uses deterministic, persisted epochs to replace stale output, superseded and repeated reads, and already-consumed command results with small, reasoned stubs while keeping every original result available through `context_recall`. `bash_outcome` keeps successful ordinary Bash output out of the immediate reasoning step when only success matters, while retaining it for recall under normal Bash output limits; failures remain visible. Pi remains responsible for context pressure and compaction.
 
 **[Context →](docs/features/context.md)**
 
@@ -106,6 +106,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | `/sandbox [on\|off]`              | Inspect or change the current repository-write Sandbox mode    |
 | `/readonly [on\|off]`             | Toggle approval for resolved `edit` and `write` tools          |
 | `context_recall`                  | Recover the original content behind an elision stub            |
+| `bash_outcome`                    | Run Bash when only successful outcome matters; recall output   |
 | `lsp`                             | Make semantic source queries or inspect language-server status |
 | `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents         |
 | `get_subagent_result`             | Inspect or join a background agent                             |

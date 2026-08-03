@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { stripVTControlCharacters } from "node:util";
 import { Type } from "typebox";
+import { decodeRetainedResult, hasRetainedResult } from "./retained-result.ts";
 
 const RecallParams = Type.Object(
   {
@@ -41,7 +42,10 @@ type ToolResult = {
   toolCallId: string;
   toolName?: string;
   content: unknown;
+  details?: unknown;
+  isError?: boolean;
 };
+type RecalledResult = { content: unknown; retainedDetails?: unknown };
 type ToolCall = { name: string; arguments: unknown };
 type RecallSourceDisplay = {
   toolName?: string;
@@ -109,15 +113,21 @@ export function registerRecallTool(pi: ExtensionAPI): void {
         );
       }
       const source = resolveSourceDisplay(ctx, params.id);
+      const recalled = resolveRecalledResult(result, params.id);
       if (params.lines === undefined && params.find === undefined) {
-        if (!hasContentBlocks(result.content)) {
+        if (!hasContentBlocks(recalled.content)) {
           throw new Error(
             `context_recall: content for id=${shortenedId(params.id)} is unavailable`,
           );
         }
         return {
-          content: result.content,
-          details: recallDetails(params.id, source, { type: "full" }),
+          content: recalled.content,
+          details: recallDetails(
+            params.id,
+            source,
+            { type: "full" },
+            recalled.retainedDetails,
+          ),
         };
       }
       if (params.lines !== undefined) {
@@ -127,7 +137,7 @@ export function registerRecallTool(pi: ExtensionAPI): void {
             `context_recall: invalid lines argument "${params.lines}"`,
           );
         }
-        const block = sliceableTextBlock(result.content);
+        const block = sliceableTextBlock(recalled.content);
         if (!block) {
           throw new Error(
             `context_recall: lines slicing requires one text content block for id=${shortenedId(params.id)}`,
@@ -141,13 +151,15 @@ export function registerRecallTool(pi: ExtensionAPI): void {
         }
         return {
           content: [{ type: "text" as const, text }],
-          details: recallDetails(params.id, source, {
-            type: "lines",
-            lines: params.lines,
-          }),
+          details: recallDetails(
+            params.id,
+            source,
+            { type: "lines", lines: params.lines },
+            recalled.retainedDetails,
+          ),
         };
       }
-      const block = sliceableTextBlock(result.content);
+      const block = sliceableTextBlock(recalled.content);
       if (!block) {
         throw new Error(
           `context_recall: literal search requires one text content block for id=${shortenedId(params.id)}`,
@@ -156,7 +168,12 @@ export function registerRecallTool(pi: ExtensionAPI): void {
       const search = searchText(block.text, params.find!, params.id);
       return {
         content: [{ type: "text" as const, text: search.text }],
-        details: recallDetails(params.id, source, search.selector),
+        details: recallDetails(
+          params.id,
+          source,
+          search.selector,
+          recalled.retainedDetails,
+        ),
       };
     },
     renderResult(result, _options, theme, _context) {
@@ -337,15 +354,21 @@ function recallDetails(
   id: string,
   source: RecallSourceDisplay,
   selector: RecallSelector,
+  retainedDetails?: unknown,
 ): {
   id: string;
   lines?: string;
   source: RecallSourceDisplay;
   selector: RecallSelector;
+  retainedDetails?: unknown;
 } {
-  return selector.type === "lines"
-    ? { id, lines: selector.lines, source, selector }
-    : { id, source, selector };
+  const details =
+    selector.type === "lines"
+      ? { id, lines: selector.lines, source, selector }
+      : { id, source, selector };
+  return retainedDetails === undefined
+    ? details
+    : { ...details, retainedDetails };
 }
 
 function resolveSourceDisplay(
@@ -387,6 +410,22 @@ function findToolResult(
     }
   }
   return undefined;
+}
+
+function resolveRecalledResult(result: ToolResult, id: string): RecalledResult {
+  const retained = decodeRetainedResult(result.details);
+  if (retained) {
+    return { content: retained.content, retainedDetails: retained.details };
+  }
+  if (result.toolName === "bash_outcome" && !result.isError) {
+    const status = hasRetainedResult(result.details)
+      ? "malformed"
+      : "unavailable";
+    throw new Error(
+      `context_recall: retained Bash content for id=${shortenedId(id)} is ${status}`,
+    );
+  }
+  return { content: result.content };
 }
 
 function findToolCall(ctx: ExtensionContext, id: string): ToolCall | undefined {

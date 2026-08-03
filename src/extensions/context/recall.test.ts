@@ -1,11 +1,15 @@
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
+  SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseLineRange, registerRecallTool } from "./recall.ts";
 
-function toolResult(id: string, content: unknown) {
+function toolResult(id: string, content: unknown, details?: unknown) {
   return {
     type: "message",
     id: `entry-${id}`,
@@ -16,6 +20,7 @@ function toolResult(id: string, content: unknown) {
       toolCallId: id,
       toolName: "read",
       content,
+      details,
       isError: false,
     },
   };
@@ -241,6 +246,156 @@ describe("context_recall", () => {
     await expect(execute({ id: "multi", find: "one" })).rejects.toThrow(
       "literal search requires one text",
     );
+  });
+
+  it("prefers validated retained Bash content and rejects malformed projections", async () => {
+    const retained = await recall([
+      toolResult(
+        "outcome",
+        [{ type: "text", text: "Bash command succeeded." }],
+        {
+          retainedResult: {
+            type: "pipkin.context.retained-result",
+            version: 1,
+            result: {
+              content: [{ type: "text", text: "first\nsecond" }],
+              details: { truncation: { truncated: false } },
+            },
+          },
+        },
+      ),
+    ]).execute({ id: "outcome", lines: "2" });
+    expect(retained.content).toEqual([{ type: "text", text: "second" }]);
+    expect(retained.details.retainedDetails).toEqual({
+      truncation: { truncated: false },
+    });
+
+    await expect(
+      recall([
+        {
+          type: "message",
+          id: "entry-broken",
+          parentId: null,
+          timestamp: "now",
+          message: {
+            role: "toolResult",
+            toolCallId: "broken",
+            toolName: "bash_outcome",
+            content: [{ type: "text", text: "Bash command succeeded." }],
+            details: { retainedResult: { version: 1 } },
+            isError: false,
+          },
+        },
+      ]).execute({ id: "broken" }),
+    ).rejects.toThrow("retained Bash content");
+  });
+
+  it("recalls ordinary failed Bash outcomes without exposing success projections", async () => {
+    const entries = [
+      {
+        type: "message",
+        id: "entry-failure",
+        parentId: null,
+        timestamp: "now",
+        message: {
+          role: "toolResult",
+          toolCallId: "failure",
+          toolName: "bash_outcome",
+          content: [{ type: "text", text: "exit 1\nAssertionError" }],
+          isError: true,
+        },
+      },
+    ];
+    const execute = recall(entries).execute;
+
+    await expect(execute({ id: "failure" })).resolves.toMatchObject({
+      content: [{ type: "text", text: "exit 1\nAssertionError" }],
+    });
+    await expect(execute({ id: "failure", lines: "2" })).resolves.toMatchObject(
+      {
+        content: [{ type: "text", text: "AssertionError" }],
+      },
+    );
+    await expect(
+      execute({ id: "failure", find: "assertionerror" }),
+    ).resolves.toMatchObject({
+      content: [
+        { type: "text", text: expect.stringContaining("2 | AssertionError") },
+      ],
+    });
+  });
+
+  it("retains recalled outcomes through persisted, resumed, forked, and in-memory sessions", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "pipkin-context-recall-"));
+    const ordinary = {
+      content: [{ type: "text", text: "first\nneedle\nthird" }],
+      details: { truncation: { truncated: false } },
+    };
+    const details = {
+      retainedResult: {
+        type: "pipkin.context.retained-result",
+        version: 1,
+        result: ordinary,
+      },
+    };
+    const message = {
+      role: "toolResult" as const,
+      toolCallId: "outcome",
+      toolName: "bash_outcome",
+      content: [{ type: "text" as const, text: "Bash command succeeded." }],
+      details,
+      isError: false,
+      timestamp: 1,
+    };
+    const recallFrom = async (
+      manager: SessionManager,
+      params: { id: string; lines?: string; find?: string },
+    ) => {
+      const execute = recall(manager.getEntries()).execute;
+      return execute(params);
+    };
+    const appendOutcome = (manager: SessionManager) => {
+      manager.appendMessage({
+        role: "assistant",
+        content: [],
+        timestamp: 0,
+      } as never);
+      manager.appendMessage(message);
+    };
+    try {
+      const persisted = SessionManager.create("/work", sessionDir);
+      appendOutcome(persisted);
+      const file = persisted.getSessionFile()!;
+      const resumed = SessionManager.open(file, sessionDir);
+      const forked = SessionManager.forkFrom(file, "/fork", sessionDir);
+      const inMemory = SessionManager.inMemory("/work");
+      appendOutcome(inMemory);
+
+      await expect(
+        recallFrom(persisted, { id: "outcome" }),
+      ).resolves.toMatchObject({
+        content: ordinary.content,
+      });
+      await expect(
+        recallFrom(resumed, { id: "outcome", lines: "2" }),
+      ).resolves.toMatchObject({
+        content: [{ type: "text", text: "needle" }],
+      });
+      await expect(
+        recallFrom(forked, { id: "outcome", find: "needle" }),
+      ).resolves.toMatchObject({
+        content: [
+          { type: "text", text: expect.stringContaining("2 | needle") },
+        ],
+      });
+      await expect(
+        recallFrom(inMemory, { id: "outcome" }),
+      ).resolves.toMatchObject({
+        details: { retainedDetails: ordinary.details },
+      });
+    } finally {
+      rmSync(sessionDir, { force: true, recursive: true });
+    }
   });
 
   it("keeps source display metadata separate and uses safe fallbacks", async () => {

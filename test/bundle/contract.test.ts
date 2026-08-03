@@ -45,6 +45,7 @@ const manifest = JSON.parse(
 };
 
 const expectedTools = {
+  bash_outcome: "src/extensions/context/index.ts",
   context_recall: "src/extensions/context/index.ts",
   lsp: "src/extensions/lsp/index.ts",
   Agent: "src/extensions/subagents/index.ts",
@@ -70,6 +71,7 @@ const safetyPaths = [
 ];
 const managedGlobalSymbols = [
   Symbol.for("pipkin:sandbox:runtime"),
+  Symbol.for("pipkin:sandbox:bash"),
   Symbol.for("pipkin:subagents:manager"),
   Symbol.for("pipkin:lsp:pool"),
   Symbol.for("pipkin:lsp:unavailable-warnings"),
@@ -420,17 +422,23 @@ describe("Pipkin bundle", () => {
   it("resolves internal modules without mutating Pipkin runtime state", async () => {
     vi.resetModules();
     const before = snapshotGlobalSymbols();
-    const [{ getConfigPath }, { bindSandboxHost }, { getSubagentRuntime }] =
-      await Promise.all([
-        import("#lib/config"),
-        import("#sandbox/runtime"),
-        import("#subagents/runtime"),
-      ]);
+    const [
+      { getConfigPath },
+      { bindSandboxHost },
+      { executeSandboxBash },
+      { getSubagentRuntime },
+    ] = await Promise.all([
+      import("#lib/config"),
+      import("#sandbox/runtime"),
+      import("#sandbox/bash"),
+      import("#subagents/runtime"),
+    ]);
 
     expect(getConfigPath("/tmp/pipkin-agent")).toBe(
       "/tmp/pipkin-agent/pipkin/config.json",
     );
     expect(bindSandboxHost).toBeTypeOf("function");
+    expect(executeSandboxBash).toBeTypeOf("function");
     expect(getSubagentRuntime).toBeTypeOf("function");
     expect(snapshotGlobalSymbols()).toEqual(before);
   });
