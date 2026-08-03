@@ -141,7 +141,7 @@ export function createSandboxDenialObserver(options: {
             "--predicate",
             LOG_PREDICATE,
           ],
-          { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+          { stdio: ["ignore", "pipe", "pipe"] },
         );
         child = current;
         current.stdout?.on("data", (data: Buffer) =>

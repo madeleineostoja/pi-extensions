@@ -66,7 +66,6 @@ describe("Sandbox direct writes", () => {
     for (const [path, target] of [
       [join(outside, "file.txt"), join(outside, "file.txt")],
       ["../workspace-copy/file.txt", join(outside, "file.txt")],
-      [`${outside}\\..\\workspace\\file.txt`, undefined],
       ["file-link", join(outside, "file.txt")],
       ["directory-link/new.txt", join(outside, "new.txt")],
       ["dangling-link", join(outside, "missing.txt")],

@@ -2579,10 +2579,7 @@ function assertContainedRealpath(
 ): void {
   const actual = realpathSync(path);
   const relativePath = relative(realpathSync(root), actual);
-  if (
-    relativePath === ".." ||
-    relativePath.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
-  ) {
+  if (relativePath === ".." || relativePath.startsWith("../")) {
     throw new StateError(message, path);
   }
 }

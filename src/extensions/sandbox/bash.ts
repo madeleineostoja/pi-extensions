@@ -63,9 +63,6 @@ function terminate(child: ChildProcess): void {
 }
 
 async function waitForProcessTree(pid: number): Promise<boolean> {
-  if (process.platform === "win32") {
-    return true;
-  }
   const deadline = Date.now() + TERMINATION_WAIT_MS;
   while (true) {
     try {
@@ -248,10 +245,9 @@ export function createSandboxBashRuntime(
               args,
               {
                 cwd,
-                detached: process.platform !== "win32",
+                detached: true,
                 env: execution.env ?? process.env,
                 stdio: ["pipe", "pipe", "pipe"],
-                windowsHide: true,
               },
             );
           } catch (error) {

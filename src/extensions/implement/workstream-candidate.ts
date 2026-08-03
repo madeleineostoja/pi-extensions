@@ -718,10 +718,7 @@ function protectedPathInWorktree(
     canonicalPath(state.run.checkout.root),
     canonicalPath(path),
   );
-  if (
-    relativePath === ".." ||
-    relativePath.startsWith(`..${process.platform === "win32" ? "\\\\" : "/"}`)
-  ) {
+  if (relativePath === ".." || relativePath.startsWith("../")) {
     return undefined;
   }
   return relativePath;
