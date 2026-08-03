@@ -76,6 +76,8 @@ export function resolveImplementRoles(
 const READ_ONLY_TOOLS = [
   "read",
   "bash",
+  "bash_outcome",
+  "context_recall",
   "grep",
   "find",
   "ls",
@@ -98,9 +100,17 @@ export function readOnlyWorkerTools(activeTools?: string[]): {
   tools: string[];
   excludeTools: string[];
 } {
+  const selected = READ_ONLY_TOOLS.filter(
+    (name) => activeTools?.includes(name) ?? name !== "lsp",
+  );
+  const bashActive = selected.includes("bash");
+  const recallActive = bashActive && selected.includes("context_recall");
   return {
-    tools: READ_ONLY_TOOLS.filter(
-      (name) => activeTools?.includes(name) ?? name !== "lsp",
+    tools: selected.filter(
+      (name) =>
+        (name !== "context_recall" || recallActive) &&
+        (name !== "bash_outcome" ||
+          (recallActive && selected.includes("bash_outcome"))),
     ),
     excludeTools: MUTATING_TOOLS,
   };

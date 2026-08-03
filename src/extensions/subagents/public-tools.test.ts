@@ -708,7 +708,14 @@ describe("public subagent tools", () => {
   });
 
   it("runs pipkin-implement managed background sessions and waits for completion", async () => {
-    const { pi } = makePi(["read", "bash", "Agent", "edit"]);
+    const { pi } = makePi([
+      "read",
+      "bash",
+      "bash_outcome",
+      "context_recall",
+      "Agent",
+      "edit",
+    ]);
     const promptDone = deferred<void>();
     const { session } = makeSession("implemented");
     session.prompt = vi.fn(() => promptDone.promise);
@@ -754,6 +761,8 @@ describe("public subagent tools", () => {
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
+      "bash_outcome",
+      "context_recall",
       "edit",
       "explore",
     ]);
@@ -769,6 +778,8 @@ describe("public subagent tools", () => {
     const { pi } = makePi([
       "read",
       "bash",
+      "bash_outcome",
+      "context_recall",
       ...publicAgentTools,
       "edit",
       "explore",
@@ -817,12 +828,16 @@ describe("public subagent tools", () => {
     expect(general.session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
+      "bash_outcome",
+      "context_recall",
       "edit",
       "explore",
     ]);
     expect(explore.session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
+      "bash_outcome",
+      "context_recall",
       "grep",
       "find",
       "ls",
@@ -830,6 +845,8 @@ describe("public subagent tools", () => {
     expect(review.session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
+      "bash_outcome",
+      "context_recall",
       "grep",
       "find",
       "ls",
@@ -838,6 +855,8 @@ describe("public subagent tools", () => {
     expect(internal.session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
+      "bash_outcome",
+      "context_recall",
       "edit",
     ]);
   });
@@ -865,13 +884,53 @@ describe("public subagent tools", () => {
     });
 
     expect(createSession.mock.calls[0][0]).toMatchObject({
-      tools: ["read", "explore", "bash"],
+      tools: ["read", "explore"],
     });
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "explore",
-      "bash",
     ]);
+  });
+
+  it("removes Context Bash companions when their active capability is incomplete", async () => {
+    const bashFree = makePi(["read", "bash_outcome", "context_recall"]);
+    const missingRecall = makePi(["read", "bash", "bash_outcome"]);
+    const bashFreeSession = makeSession("bash-free");
+    const missingRecallSession = makeSession("missing-recall");
+    const runtime = new SubagentRuntime(bashFree.pi as never, {
+      createSession: vi.fn(async () => ({ session: bashFreeSession.session })),
+    });
+
+    await runtime.runPublicAgent({
+      type: "Explore",
+      prompt: "map it",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+    });
+    const missingRecallRuntime = new SubagentRuntime(
+      missingRecall.pi as never,
+      {
+        createSession: vi.fn(async () => ({
+          session: missingRecallSession.session,
+        })),
+      },
+    );
+    await missingRecallRuntime.runPublicAgent({
+      type: "Review",
+      prompt: "review it",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+    });
+
+    expect(bashFreeSession.session.setActiveToolsByName).toHaveBeenCalledWith([
+      "read",
+      "grep",
+      "find",
+      "ls",
+    ]);
+    expect(
+      missingRecallSession.session.setActiveToolsByName,
+    ).toHaveBeenCalledWith(["read", "bash", "grep", "find", "ls", "explore"]);
   });
 
   it("runs foreground agents to completion after binding inherited extensions", async () => {

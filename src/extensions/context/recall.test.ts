@@ -398,6 +398,74 @@ describe("context_recall", () => {
     }
   });
 
+  it("renders source-aware recall accounting without changing recalled content", async () => {
+    const entries = [
+      toolCall("bash-id", "bash", {
+        command: [
+          "printf first",
+          "\u001b[31msecond\u001b[0m",
+          "x".repeat(200),
+        ].join("\n"),
+      }),
+      toolResult("bash-id", [{ type: "text", text: "first\nsecond" }]),
+    ];
+    const { definition, execute } = recall(entries);
+    const result = await execute({ id: "bash-id", find: "second" });
+    const theme = {
+      bold: (text: string) => text,
+      fg: (_color: string, text: string) => text,
+    };
+    const call = definition.renderCall({ id: "bash-id" }, theme, {});
+    const collapsed = definition
+      .renderResult(result, { expanded: false, isPartial: false }, theme, {
+        isError: false,
+      })
+      .render(120)
+      .join("\n");
+    const expanded = definition
+      .renderResult(result, { expanded: true, isPartial: false }, theme, {
+        isError: false,
+      })
+      .render(120)
+      .join("\n");
+
+    expect(call.render(120).join("\n")).toContain("bash-id");
+    expect(
+      definition
+        .renderResult(result, { expanded: false, isPartial: false }, theme, {
+          isError: false,
+        })
+        .render(20)
+        .every((line: string) => line.length <= 20),
+    ).toBe(true);
+    expect(collapsed.replaceAll("\\n", " ").replace(/\s+/g, " ")).toContain(
+      "printf first second",
+    );
+    expect(collapsed.replace(/\s+/g, " ")).toContain("1 matches");
+    expect(expanded).toContain("tool call ID: bash-id");
+    expect(expanded).toContain("literal: second");
+    expect(expanded).toContain("2 | second");
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: expect.stringContaining("2 | second"),
+      },
+    ]);
+    expect(
+      definition
+        .renderResult(
+          {
+            content: [{ type: "text", text: "context_recall: unavailable" }],
+          },
+          { expanded: false, isPartial: false },
+          theme,
+          { isError: true },
+        )
+        .render(120)
+        .join("\n"),
+    ).toContain("unavailable");
+  });
+
   it("keeps source display metadata separate and uses safe fallbacks", async () => {
     const bash = await recall([
       toolCall("bash-id", "bash", {

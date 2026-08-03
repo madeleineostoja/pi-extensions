@@ -40,13 +40,20 @@ describe("managed Pipkin Implement worker tools", () => {
     const selection = readOnlyWorkerTools([
       "read",
       "bash",
+      "bash_outcome",
+      "context_recall",
       "Agent",
       "get_subagent_result",
       "steer_subagent",
       "edit",
     ]);
 
-    expect(selection.tools).toEqual(["read", "bash"]);
+    expect(selection.tools).toEqual([
+      "read",
+      "bash",
+      "bash_outcome",
+      "context_recall",
+    ]);
     expect(selection.excludeTools).toEqual(
       expect.arrayContaining([
         "Agent",
@@ -56,5 +63,17 @@ describe("managed Pipkin Implement worker tools", () => {
         "write",
       ]),
     );
+  });
+
+  it("does not retain Context Bash companions after active-tool filtering", () => {
+    expect(
+      readOnlyWorkerTools(["read", "bash_outcome", "context_recall"]).tools,
+    ).toEqual(["read"]);
+    expect(readOnlyWorkerTools(["read", "bash", "bash_outcome"]).tools).toEqual(
+      ["read", "bash"],
+    );
+    expect(
+      readOnlyWorkerTools(["read", "bash", "context_recall"]).tools,
+    ).toEqual(["read", "bash", "context_recall"]);
   });
 });

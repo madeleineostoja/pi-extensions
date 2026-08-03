@@ -77,6 +77,74 @@ describe("bash_outcome", () => {
     expect(executeSandboxBash).not.toHaveBeenCalled();
   });
 
+  it("renders bounded command calls and retained output only when expanded", async () => {
+    const { definition } = outcome();
+    const theme = {
+      bold: (text: string) => text,
+      fg: (_color: string, text: string) => text,
+    };
+    const call = definition.renderCall(
+      {
+        command: ["printf first", "\u001b[31msecond\u001b[0m"].join("\n"),
+        label: "ignored",
+      },
+      theme,
+      {},
+    );
+    expect(call.render(20).every((line: string) => line.length <= 20)).toBe(
+      true,
+    );
+    expect(
+      call.render(120).join("\n").replaceAll("\\n", " ").replace(/\s+/g, " "),
+    ).toContain("printf first second");
+    expect(call.render(120).join("\n")).not.toContain("ignored");
+
+    const result = {
+      content: [
+        {
+          type: "text" as const,
+          text: 'Build succeeded.\nThe Bash result is retained; call context_recall("call") to inspect it.',
+        },
+      ],
+      details: {
+        retainedResult: {
+          type: "pipkin.context.retained-result" as const,
+          version: 1 as const,
+          result: {
+            content: [{ type: "text" as const, text: "ordinary output" }],
+          },
+        },
+      },
+    };
+    const collapsed = definition
+      .renderResult(result, { expanded: false, isPartial: false }, theme, {
+        isError: false,
+      })
+      .render(120)
+      .join("\n");
+    const expanded = definition
+      .renderResult(result, { expanded: true, isPartial: false }, theme, {
+        isError: false,
+      })
+      .render(120)
+      .join("\n");
+
+    expect(collapsed.trimEnd()).toBe("Build succeeded.");
+    expect(collapsed).not.toContain("ordinary output");
+    expect(expanded.match(/ordinary output/g)).toHaveLength(1);
+    expect(
+      definition
+        .renderResult(
+          { ...result, details: { retainedResult: { version: 1 } } },
+          { expanded: true, isPartial: false },
+          theme,
+          { isError: false },
+        )
+        .render(120)
+        .join("\n"),
+    ).not.toContain("retainedResult");
+  });
+
   it("rejects inactive Bash and propagates Sandbox failures unchanged", async () => {
     const inactive = outcome(["bash_outcome"]);
     await expect(

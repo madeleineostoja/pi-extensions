@@ -7,7 +7,9 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { stripVTControlCharacters } from "node:util";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { formatBashTarget } from "./bash-target.ts";
 import { decodeRetainedResult, hasRetainedResult } from "./retained-result.ts";
 
 const RecallParams = Type.Object(
@@ -52,6 +54,24 @@ type RecallSourceDisplay = {
   target: string;
   fullToolCallId: string;
 };
+type RenderSource = {
+  toolName?: string;
+  target: string;
+  fullToolCallId?: string;
+};
+type RenderSelector = {
+  type: string;
+  lines?: string;
+  find?: string;
+  totalMatches?: number;
+  selectedMatchAnchors?: number;
+  visibleSelectedMatchAnchors?: number;
+  visibleMatchingLines?: number;
+  outputTruncated?: boolean;
+  windows?: number;
+  sourceLines?: number;
+};
+type RenderDetails = { source?: RenderSource; selector?: RenderSelector };
 type RecallSelector =
   | { type: "full" }
   | { type: "lines"; lines: string }
@@ -176,23 +196,48 @@ export function registerRecallTool(pi: ExtensionAPI): void {
         ),
       };
     },
-    renderResult(result, _options, theme, _context) {
-      const recalled = result as unknown as {
-        details?: { id?: string };
-        isError?: boolean;
-        content: unknown;
-      };
-      const details = recalled.details;
-      const error = recalled.isError ? firstText(recalled.content) : undefined;
-      return {
-        render: () => [
+    renderCall(args, theme) {
+      return new Text(
+        `${theme.fg("toolTitle", theme.bold("context_recall"))} ${theme.fg("accent", shortenedId(args.id))}`,
+        0,
+        0,
+      );
+    },
+    renderResult(result, options, theme, context) {
+      if (context.isError || options.isPartial) {
+        return new Text(
           theme.fg(
-            error ? "error" : "success",
-            error ?? `Recalled ${details?.id ?? "content"}`,
+            context.isError ? "error" : "warning",
+            firstText(result.content),
           ),
-        ],
-        invalidate: () => {},
-      };
+          0,
+          0,
+        );
+      }
+      const details = renderDetails(result.details);
+      const source = details?.source;
+      const target = source?.target ?? "content";
+      const summary = selectorSummary(details?.selector);
+      const lines = [
+        `${theme.fg("success", "Recalled")} ${theme.fg("accent", target)}${summary === "" ? "" : ` · ${theme.fg("muted", summary)}`}`,
+      ];
+      if (options.expanded) {
+        if (source?.toolName) {
+          lines.push(theme.fg("dim", `source tool: ${source.toolName}`));
+        }
+        if (source?.fullToolCallId) {
+          lines.push(theme.fg("dim", `tool call ID: ${source.fullToolCallId}`));
+        }
+        const accounting = selectorAccounting(details?.selector);
+        if (accounting) {
+          lines.push(theme.fg("dim", accounting));
+        }
+        const content = renderedContent(result.content);
+        if (content) {
+          lines.push(theme.fg("toolOutput", content));
+        }
+      }
+      return new Text(lines.join("\n"), 0, 0);
     },
   });
 }
@@ -466,13 +511,6 @@ function commandFrom(arguments_: unknown): string | undefined {
   return typeof command === "string" ? command : undefined;
 }
 
-function formatBashTarget(command: string): string {
-  const normalized = controlSafeText(command);
-  return normalized.length > 0
-    ? truncateLine(normalized, MAX_DISPLAY_CHARS).text
-    : "Bash command";
-}
-
 function safeToolName(name: string): string | undefined {
   if (/^[a-z][a-z0-9_-]*$/i.test(name)) {
     return truncateLine(name, MAX_DISPLAY_CHARS).text;
@@ -550,10 +588,163 @@ function sliceLines(text: string, start: number, end: number): string {
   return lines.slice(start - 1, end).join("\n");
 }
 
+function renderDetails(value: unknown): RenderDetails | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const source = isRecord(value.source)
+    ? renderSource(value.source)
+    : undefined;
+  const selector = isRecord(value.selector)
+    ? renderSelector(value.selector)
+    : undefined;
+  return source || selector ? { source, selector } : undefined;
+}
+
+function renderSource(
+  value: Record<string, unknown>,
+): RenderSource | undefined {
+  if (typeof value.target !== "string") {
+    return undefined;
+  }
+  const toolName =
+    typeof value.toolName === "string"
+      ? safeToolName(value.toolName)
+      : undefined;
+  const fullToolCallId =
+    typeof value.fullToolCallId === "string"
+      ? controlSafeText(value.fullToolCallId)
+      : undefined;
+  return {
+    target: formatBashTarget(value.target),
+    ...(toolName === undefined ? {} : { toolName }),
+    ...(fullToolCallId === undefined || fullToolCallId === ""
+      ? {}
+      : { fullToolCallId }),
+  };
+}
+
+function renderSelector(
+  value: Record<string, unknown>,
+): RenderSelector | undefined {
+  if (typeof value.type !== "string") {
+    return undefined;
+  }
+  return {
+    type: value.type,
+    ...(typeof value.lines === "string" ? { lines: value.lines } : {}),
+    ...(typeof value.find === "string" ? { find: value.find } : {}),
+    ...(typeof value.totalMatches === "number"
+      ? { totalMatches: value.totalMatches }
+      : {}),
+    ...(typeof value.selectedMatchAnchors === "number"
+      ? { selectedMatchAnchors: value.selectedMatchAnchors }
+      : {}),
+    ...(typeof value.visibleSelectedMatchAnchors === "number"
+      ? { visibleSelectedMatchAnchors: value.visibleSelectedMatchAnchors }
+      : {}),
+    ...(typeof value.visibleMatchingLines === "number"
+      ? { visibleMatchingLines: value.visibleMatchingLines }
+      : {}),
+    ...(typeof value.outputTruncated === "boolean"
+      ? { outputTruncated: value.outputTruncated }
+      : {}),
+    ...(typeof value.windows === "number" ? { windows: value.windows } : {}),
+    ...(typeof value.sourceLines === "number"
+      ? { sourceLines: value.sourceLines }
+      : {}),
+  };
+}
+
+function selectorSummary(selector: RenderSelector | undefined): string {
+  if (!selector) {
+    return "";
+  }
+  if (selector.type === "full") {
+    return "full result";
+  }
+  if (selector.type === "lines") {
+    return selector.lines
+      ? `lines ${controlSafeText(selector.lines)}`
+      : "lines";
+  }
+  if (selector.type === "find") {
+    if (selector.totalMatches === 0) {
+      return "no matches";
+    }
+    return Number.isSafeInteger(selector.totalMatches)
+      ? `${selector.totalMatches} matches`
+      : "literal search";
+  }
+  return "result";
+}
+
+function selectorAccounting(
+  selector: RenderSelector | undefined,
+): string | undefined {
+  if (!selector) {
+    return undefined;
+  }
+  if (selector.type === "full") {
+    return "selector: full retained result";
+  }
+  if (selector.type === "lines") {
+    return selector.lines
+      ? `selector: lines ${controlSafeText(selector.lines)}`
+      : "selector: lines";
+  }
+  if (selector.type !== "find") {
+    return "selector: result";
+  }
+  const details = [
+    selector.find === undefined
+      ? "literal search"
+      : `literal: ${formatSearchQuery(selector.find)}`,
+    Number.isSafeInteger(selector.totalMatches)
+      ? `matches: ${selector.totalMatches}`
+      : undefined,
+    Number.isSafeInteger(selector.selectedMatchAnchors)
+      ? `anchors: ${selector.selectedMatchAnchors}`
+      : undefined,
+    Number.isSafeInteger(selector.visibleSelectedMatchAnchors)
+      ? `visible anchors: ${selector.visibleSelectedMatchAnchors}`
+      : undefined,
+    Number.isSafeInteger(selector.visibleMatchingLines)
+      ? `visible matching lines: ${selector.visibleMatchingLines}`
+      : undefined,
+    Number.isSafeInteger(selector.windows)
+      ? `windows: ${selector.windows}`
+      : undefined,
+    Number.isSafeInteger(selector.sourceLines)
+      ? `source lines: ${selector.sourceLines}`
+      : undefined,
+    selector.outputTruncated ? "output truncated" : undefined,
+  ].filter((detail): detail is string => detail !== undefined);
+  return details.join(" · ");
+}
+
+function renderedContent(content: unknown): string | undefined {
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  const text = content
+    .filter(isTextBlock)
+    .map((block) => block.text)
+    .join("\n");
+  if (text) {
+    return text;
+  }
+  return content.length > 0 ? "Recalled non-text content." : undefined;
+}
+
 function firstText(content: unknown): string {
   return Array.isArray(content) && isTextBlock(content[0])
     ? content[0].text
     : "context_recall failed";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isTextBlock(value: unknown): value is TextBlock {

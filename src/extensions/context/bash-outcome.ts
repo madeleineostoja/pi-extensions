@@ -1,8 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { executeSandboxBash } from "#sandbox/bash";
 import { Type } from "typebox";
-import { retainResult } from "./retained-result.ts";
+import { formatBashTarget } from "./bash-target.ts";
+import { decodeRetainedResult, retainResult } from "./retained-result.ts";
 
 const BashOutcomeParams = Type.Object(
   {
@@ -53,7 +55,76 @@ export function registerBashOutcomeTool(pi: ExtensionAPI): void {
       });
       return retainResult(result, `${label} succeeded.`, toolCallId);
     },
+    renderCall(args, theme) {
+      return new Text(
+        `${theme.fg("toolTitle", theme.bold("bash_outcome"))} ${theme.fg("accent", `$ ${formatBashTarget(args.command)}`)}`,
+        0,
+        0,
+      );
+    },
+    renderResult(result, options, theme, context) {
+      if (context.isError || options.isPartial) {
+        return new Text(
+          theme.fg(
+            context.isError ? "error" : "warning",
+            firstText(result.content),
+          ),
+          0,
+          0,
+        );
+      }
+      const status =
+        firstText(result.content).split("\n", 1)[0] ??
+        "Bash command succeeded.";
+      if (!options.expanded) {
+        return new Text(theme.fg("success", status), 0, 0);
+      }
+      const retained = decodeRetainedResult(result.details);
+      const content =
+        retained === undefined ? undefined : retainedText(retained.content);
+      return new Text(
+        [
+          theme.fg("success", status),
+          ...(content === undefined ? [] : [theme.fg("toolOutput", content)]),
+        ].join("\n"),
+        0,
+        0,
+      );
+    },
   });
+}
+
+function retainedText(content: unknown): string | undefined {
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  const text = content
+    .filter(
+      (block): block is { type: "text"; text: string } =>
+        typeof block === "object" &&
+        block !== null &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+    )
+    .map((block) => block.text)
+    .join("\n");
+  return (
+    text || (content.length > 0 ? "Retained non-text content." : undefined)
+  );
+}
+
+function firstText(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "bash_outcome failed";
+  }
+  const text = content.find(
+    (block): block is { type: "text"; text: string } =>
+      typeof block === "object" &&
+      block !== null &&
+      (block as { type?: unknown }).type === "text" &&
+      typeof (block as { text?: unknown }).text === "string",
+  );
+  return text?.text ?? "bash_outcome failed";
 }
 
 export function normalizeLabel(label: string): string {

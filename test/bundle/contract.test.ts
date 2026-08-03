@@ -398,6 +398,28 @@ describe("Pipkin bundle", () => {
     expect(ownerMap(fixture.result.extensions, "messageRenderers")).toEqual(
       expectedProvenance(expectedRenderers),
     );
+    const context = fixture.result.extensions.find(
+      (extension) =>
+        relativeExtensionPath(extension) === "src/extensions/context/index.ts",
+    );
+    expect(
+      context?.tools.get("bash_outcome")?.definition.renderCall,
+    ).toBeTypeOf("function");
+    expect(
+      context?.tools.get("bash_outcome")?.definition.renderResult,
+    ).toBeTypeOf("function");
+    expect(
+      context?.tools.get("context_recall")?.definition.renderCall,
+    ).toBeTypeOf("function");
+    expect(
+      context?.tools.get("context_recall")?.definition.renderResult,
+    ).toBeTypeOf("function");
+    expect(
+      context?.tools.get("bash_outcome")?.definition.renderShell,
+    ).toBeUndefined();
+    expect(
+      context?.tools.get("context_recall")?.definition.renderShell,
+    ).toBeUndefined();
   });
 
   it("keeps safety startup and reload handlers ordered and registers Sandbox", async () => {
@@ -412,7 +434,6 @@ describe("Pipkin bundle", () => {
         readonly: "src/extensions/readonly/index.ts",
       }),
     );
-
     await fixture.loader.reload();
     fixture.result = fixture.loader.getExtensions();
     expect(fixture.result.errors).toEqual([]);
