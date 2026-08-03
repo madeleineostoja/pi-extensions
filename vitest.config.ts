@@ -12,6 +12,7 @@ const features = [
   "papercuts",
   "btw",
 ];
+const setupFiles = ["./test/support/isolate-agent-dir.ts"];
 
 export default defineConfig({
   test: {
@@ -20,6 +21,7 @@ export default defineConfig({
         test: {
           name,
           include: [`src/extensions/${name}/**/*.test.ts`],
+          setupFiles,
           environment: "node",
           globals: false,
         },
@@ -29,6 +31,7 @@ export default defineConfig({
           name: "implement-unit",
           include: ["src/extensions/implement/**/*.test.ts"],
           exclude: ["src/extensions/implement/**/*.integration.test.ts"],
+          setupFiles,
           environment: "node",
           globals: false,
         },
@@ -37,6 +40,7 @@ export default defineConfig({
         test: {
           name: "implement-integration",
           include: ["src/extensions/implement/**/*.integration.test.ts"],
+          setupFiles,
           environment: "node",
           globals: false,
         },
@@ -45,6 +49,7 @@ export default defineConfig({
         test: {
           name: "lib",
           include: ["src/lib/**/*.test.ts"],
+          setupFiles,
           environment: "node",
           globals: false,
         },
@@ -53,6 +58,7 @@ export default defineConfig({
         test: {
           name: "bundle",
           include: ["test/bundle/**/*.test.ts"],
+          setupFiles,
           environment: "node",
           globals: false,
           fileParallelism: false,

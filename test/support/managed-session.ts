@@ -7,7 +7,7 @@ import {
   type AgentSession,
   type EventBus,
 } from "@earendil-works/pi-coding-agent";
-import { createFauxCore } from "@earendil-works/pi-ai";
+import { createFauxCore, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 
 export const MANAGED_TEST_PROVIDER = "managed-completion-test";
 export const MANAGED_TEST_MODEL = "managed-completion-model";
@@ -39,7 +39,11 @@ export async function createManagedSessionHarness(
     throw new Error("Missing faux test model.");
   }
   faux.setResponses(responses);
-  const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false });
+  const modelRuntime = await ModelRuntime.create({
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+    allowModelNetwork: false,
+  });
   modelRuntime.registerProvider(MANAGED_TEST_PROVIDER, {
     api: fauxModel.api,
     baseUrl: fauxModel.baseUrl,
