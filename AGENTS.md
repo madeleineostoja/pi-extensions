@@ -17,9 +17,9 @@
 
 - Use relative imports within a feature.
 - Import concrete generic helpers through `#lib/*`, for example `#lib/file-lease`.
-- `#sandbox/runtime` lets Subagents snapshot Sandbox session-mode inheritance. `#sandbox/bash` lets Context compose the current host's ordinary Sandbox Bash execution. `#subagents/runtime` lets Implement consume the managed agent runtime. Production code must not import another feature's `index.ts` or an unlisted extension internal.
+- `#sandbox/runtime` lets Subagents snapshot Sandbox session-mode inheritance. `#sandbox/bash` lets Context compose the current host's ordinary Sandbox Bash execution. `#subagents/runtime` lets Implement consume the managed agent runtime. `#ui/status` lets status producers publish immediately through the UI-owned stateless footer capability. `#lib/ui/*` resolves shared presentation helpers. Production code must not import another feature's `index.ts` or an unlisted extension internal.
 - Direct capability coupling is allowed only when the producer owns the capability, the dependency is narrow and typed, the graph is acyclic, and the import neither registers an extension nor assumes mutable module-singleton identity.
-- Add a new cross-feature mapping only after there is a real consumer. Define the narrow source-owned capability, add its `package.json#imports` mapping, cover Pi Jiti/Vitest/TypeScript resolution, document the dependency here and in `docs/architecture.md`, and keep the producer registration root private.
+- Add a new cross-feature mapping only after there is a real consumer. Define the narrow source-owned capability, add its `package.json#imports` mapping, cover Pi Jiti/Vitest/TypeScript resolution, document the dependency here and in `docs/architecture.md`, and keep the producer registration root private. `#ui/status` is UI-owned and may be consumed by producers such as Sandbox, Readonly, and Papercuts; it never imports them or registers the UI extension.
 - Keep feature-specific code with its owner. Add a `src/lib` module only when at least two features need it.
 
 ## Lifecycle

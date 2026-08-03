@@ -2,7 +2,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { promptForAction } from "#lib/action-prompt";
+import { promptForAction } from "#lib/ui/action-prompt";
 import type { SandboxSessionState } from "./state.js";
 import {
   sandboxStatus,

@@ -50,12 +50,12 @@ describe("Sandbox status", () => {
     const { ctx, statuses } = context();
     state.reset(policy);
     syncSandboxStatus(ctx as never, state, true);
-    expect(statuses.get("pipkin.sandbox")).toBe(
-      "<success>󰒃</success> <success>sandbox</success>",
+    expect(statuses.get("pipkin:status:0100:sandbox")).toBe(
+      "<success>󰒃</success> <muted>sandbox</muted>",
     );
     state.setEnabled(false);
     syncSandboxStatus(ctx as never, state, true);
-    expect(statuses.get("pipkin.sandbox")).toBe(
+    expect(statuses.get("pipkin:status:0100:sandbox")).toBe(
       "<warning>󰒃</warning> <warning>sandbox off</warning>",
     );
   });

@@ -1,6 +1,8 @@
 import { basename } from "node:path";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { formatCompactTokens, formatUsdCost } from "#lib/ui/metrics";
+import { parsePipkinStatusKey } from "./status.js";
 
 export type ThinkingLevel =
   | "off"
@@ -16,29 +18,6 @@ export type FooterModel =
 export type ContextUsageInfo =
   | { percent: number | null; contextWindow: number }
   | undefined;
-
-export function formatCompactTokens(n: number): string {
-  if (n < 1000) {
-    return n.toString();
-  }
-  if (n < 10000) {
-    return `${(n / 1000).toFixed(1)}k`;
-  }
-  if (n < 1000000) {
-    return `${Math.round(n / 1000)}k`;
-  }
-  if (n < 10000000) {
-    return `${(n / 1000000).toFixed(1)}M`;
-  }
-  return `${Math.round(n / 1000000)}M`;
-}
-
-export function formatCost(cost: number): string {
-  const cents = Math.round(cost * 100);
-  const dollars = Math.floor(cents / 100);
-  const rem = cents % 100;
-  return `$${dollars}.${rem.toString().padStart(2, "0")}`;
-}
 
 export function formatModelName(
   model: FooterModel,
@@ -120,7 +99,7 @@ export function buildRightSegment(
   );
 
   if (!hideCost) {
-    parts.push(theme.fg("muted", formatCost(cost)));
+    parts.push(theme.fg("muted", formatUsdCost(cost)));
   }
 
   if (cacheHitRate !== undefined) {
@@ -193,22 +172,26 @@ export function hasPrivateUseGlyph(text: string): boolean {
   return PRIVATE_USE_GLYPH_PATTERN.test(text);
 }
 
-const STATUS_ORDER = new Map([
-  ["pipkin.implement.status", 0],
-  ["pipkin.papercuts.status", 1],
-  ["pipkin.readonly.mode", 2],
-  ["pipkin.sandbox", 3],
-]);
-
 export function buildStatusLine(
   statuses: ReadonlyMap<string, string>,
   theme: Theme,
 ): string {
   const sorted = Array.from(statuses.entries())
     .sort(([a], [b]) => {
-      const aOrder = STATUS_ORDER.get(a) ?? Number.MAX_SAFE_INTEGER;
-      const bOrder = STATUS_ORDER.get(b) ?? Number.MAX_SAFE_INTEGER;
-      return aOrder === bOrder ? a.localeCompare(b) : aOrder - bOrder;
+      const aStatus = parsePipkinStatusKey(a);
+      const bStatus = parsePipkinStatusKey(b);
+      if (aStatus && bStatus) {
+        return aStatus.priority === bStatus.priority
+          ? a.localeCompare(b)
+          : aStatus.priority - bStatus.priority;
+      }
+      if (aStatus) {
+        return -1;
+      }
+      if (bStatus) {
+        return 1;
+      }
+      return a.localeCompare(b);
     })
     .map(([, text]) => {
       const sanitized = sanitizeStatusText(text);

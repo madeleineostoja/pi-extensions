@@ -1,7 +1,8 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { promptForAction } from "./action-prompt.js";
+import { promptForAction, type ActionPromptUI } from "./ui/action-prompt.js";
 
-export type PermissionPromptUI = Pick<ExtensionUIContext, "select" | "input">;
+export type PermissionPromptUI = ActionPromptUI &
+  Pick<ExtensionUIContext, "input">;
 
 export type PermissionPromptChoice<T extends string> = {
   value: T;

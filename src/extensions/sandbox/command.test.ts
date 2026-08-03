@@ -27,6 +27,7 @@ function commandFixture(supportedMac: boolean) {
   const notify = vi.fn();
   const setStatus = vi.fn();
   const select = vi.fn();
+  const custom = vi.fn().mockResolvedValue({ kind: "aborted" });
   return {
     ctx: {
       mode: "tui",
@@ -34,6 +35,7 @@ function commandFixture(supportedMac: boolean) {
       ui: {
         notify,
         select,
+        custom,
         setStatus,
         theme: { fg: (_tone: string, text: string) => text },
       },
@@ -41,6 +43,7 @@ function commandFixture(supportedMac: boolean) {
     handler: handler!,
     notify,
     select,
+    custom,
     setStatus,
     state,
   };
@@ -69,14 +72,30 @@ describe("Sandbox command", () => {
     );
   });
 
+  it("uses native selection when custom UI is unavailable in RPC mode", async () => {
+    const fixture = commandFixture(true);
+    fixture.ctx.mode = "rpc";
+    fixture.custom.mockResolvedValue(undefined);
+    fixture.select
+      .mockResolvedValueOnce("Turn off")
+      .mockResolvedValueOnce("Close");
+
+    await expect(fixture.handler("", fixture.ctx)).resolves.toBeUndefined();
+
+    expect(fixture.state.enabled()).toBe(false);
+    expect(fixture.select).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining(
+        "Sandbox: sandbox\n\nState: On\nWorkspace: /workspace",
+      ),
+      ["Turn off", "Close"],
+    );
+  });
+
   it("offers only an unavailable panel and rejects enabling on Linux", async () => {
     const fixture = commandFixture(false);
-    fixture.select.mockResolvedValueOnce("Close");
     await fixture.handler("", fixture.ctx);
-    expect(fixture.select).toHaveBeenCalledWith(
-      expect.stringContaining("Sandbox: sandbox unavailable"),
-      ["Close"],
-    );
+    expect(fixture.custom).toHaveBeenCalledOnce();
     await fixture.handler("on", fixture.ctx);
     expect(fixture.notify).toHaveBeenLastCalledWith(
       "sandbox: unavailable on this platform",

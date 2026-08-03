@@ -446,11 +446,15 @@ describe("Pipkin bundle", () => {
     const before = snapshotGlobalSymbols();
     const [
       { getConfigPath },
+      { formatCompactTokens },
+      { setPipkinStatus },
       { bindSandboxHost },
       { executeSandboxBash },
       { getSubagentRuntime },
     ] = await Promise.all([
       import("#lib/config"),
+      import("#lib/ui/metrics"),
+      import("#ui/status"),
       import("#sandbox/runtime"),
       import("#sandbox/bash"),
       import("#subagents/runtime"),
@@ -459,6 +463,8 @@ describe("Pipkin bundle", () => {
     expect(getConfigPath("/tmp/pipkin-agent")).toBe(
       "/tmp/pipkin-agent/pipkin/config.json",
     );
+    expect(formatCompactTokens(1_500)).toBe("1.5k");
+    expect(setPipkinStatus).toBeTypeOf("function");
     expect(bindSandboxHost).toBeTypeOf("function");
     expect(executeSandboxBash).toBeTypeOf("function");
     expect(getSubagentRuntime).toBeTypeOf("function");

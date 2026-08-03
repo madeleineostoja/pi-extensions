@@ -83,10 +83,10 @@ describe("Sandbox lifecycle", () => {
     expect(state.enabled()).toBe(true);
     expect(state.policy()).toBe(policy);
     expect(watched.start).toHaveBeenCalledOnce();
-    expect(ctx.statuses.get("pipkin.sandbox")).toContain("sandbox");
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain("sandbox");
     await session.sessionShutdown(ctx as never);
     expect(watched.dispose).toHaveBeenCalledOnce();
-    expect(ctx.statuses.get("pipkin.sandbox")).toBeUndefined();
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toBeUndefined();
   });
 
   it("keeps macOS Bash fail-closed when policy resolution fails", async () => {
@@ -103,7 +103,9 @@ describe("Sandbox lifecycle", () => {
     expect(bash.definition.name).toBe("bash");
     expect(state.policy()).toBeUndefined();
     expect(state.unavailableReason()).toContain("Git failed");
-    expect(ctx.statuses.get("pipkin.sandbox")).toContain("unavailable");
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain(
+      "unavailable",
+    );
     expect(state.enabled()).toBe(true);
     await session.sessionShutdown(ctx as never);
   });
@@ -140,7 +142,9 @@ describe("Sandbox lifecycle", () => {
     expect(bash.definition.name).toBe("bash");
     expect(state.policy()).toBeUndefined();
     expect(createDenialObserver).not.toHaveBeenCalled();
-    expect(ctx.statuses.get("pipkin.sandbox")).toContain("unavailable");
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain(
+      "unavailable",
+    );
     await session.sessionShutdown(ctx as never);
   });
 

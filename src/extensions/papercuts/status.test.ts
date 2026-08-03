@@ -4,10 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerProposalTool } from "./proposal-tool.js";
-import {
-  createPapercutStatusController,
-  PAPERCUT_STATUS_KEY,
-} from "./status.js";
+import { createPapercutStatusController } from "./status.js";
 import { createPapercutStore } from "./store.js";
 
 const loadGate = vi.hoisted(() => ({
@@ -43,6 +40,7 @@ vi.mock("./store.js", async (importOriginal) => {
 });
 
 const roots: string[] = [];
+const PAPERCUT_STATUS_KEY = "pipkin:status:0300:papercuts";
 
 function repo(): string {
   const root = mkdtempSync(join(tmpdir(), "pipkin-papercuts-status-"));
