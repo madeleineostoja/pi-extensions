@@ -63,7 +63,7 @@ describe("whole-plan and repair prompts", () => {
   });
 
   it("requires reviewer-owned reassessment and first changed-candidate metadata", () => {
-    const prompt = buildAnchoredWorkstreamReviewPrompt({
+    const packet: Parameters<typeof buildAnchoredWorkstreamReviewPrompt>[0] = {
       role: "reviewer",
       completionKind: "initial-anchored-review",
       mode: "anchored",
@@ -88,6 +88,8 @@ describe("whole-plan and repair prompts", () => {
       findingEpoch: 1,
       latestCorrection: {
         fromCandidateId: "previous",
+        rangeBaseSha: "previous-sha",
+        rangeHeadSha: "candidate-sha",
         changedPaths: ["src/endpoint.ts"],
         evidence: "correction",
         mode: "changed",
@@ -99,10 +101,31 @@ describe("whole-plan and repair prompts", () => {
       checkpoints: {},
       satisfiedEvidence: {},
       outstandingFindings: [],
+    };
+    const prompt = buildAnchoredWorkstreamReviewPrompt(packet);
+    const unchangedPrompt = buildAnchoredWorkstreamReviewPrompt({
+      ...packet,
+      candidate: {
+        ...packet.previousCandidate,
+        id: "unchanged",
+      },
+      latestCorrection: {
+        ...packet.latestCorrection,
+        rangeHeadSha: "previous-sha",
+        changedPaths: [],
+        mode: "unchanged",
+      },
     });
 
     expect(prompt).toContain("Author one concise Conventional Commit subject");
     expect(prompt).toContain("Correction mode: changed");
+    expect(prompt).toContain("Correction range: previous-sha..candidate-sha");
+    expect(prompt).toContain("git diff --stat base..candidate-sha");
+    expect(prompt).not.toContain("git diff --stat previous-sha..candidate-sha");
+    expect(unchangedPrompt).toContain(
+      "Correction range: previous-sha..previous-sha",
+    );
+    expect(unchangedPrompt).toContain("git diff --stat base..previous-sha");
     expect(prompt).toContain(
       "final source review: no further source correction follows",
     );

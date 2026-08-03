@@ -1,7 +1,10 @@
 import { ReconciliationFailure } from "../reconciliation.js";
 import { RevisionFailure } from "../revision.js";
 import { WorkerPacketError } from "../worker-invocation.js";
-import { ReviewWorkspaceSafetyError } from "../review.js";
+import {
+  ReviewEpochMismatchError,
+  ReviewWorkspaceSafetyError,
+} from "../review.js";
 import { PublicationError } from "../publication.js";
 import type { ExecutionPlan } from "../execution-plan.js";
 import {
@@ -793,6 +796,8 @@ export class SchedulerActor {
         ) {
           const reviewFailure =
             error instanceof ReviewWorkspaceSafetyError ? error : undefined;
+          const epochMismatch =
+            error instanceof ReviewEpochMismatchError ? error : undefined;
           await this.dispatch({
             kind: "effect_failed",
             category: reviewFailure
@@ -812,6 +817,7 @@ export class SchedulerActor {
             ...(reviewFailure?.observation
               ? { observation: reviewFailure.observation }
               : {}),
+            ...(epochMismatch ? { nonRetryable: true } : {}),
             ...(effect.kind === "run_publication" &&
             error instanceof PublicationError &&
             error.outcome.kind === "retry_from_base"

@@ -235,6 +235,8 @@ const findingSchema = z
 const reviewStateSchema = z
   .object({
     candidateId: nonEmpty,
+    candidateCommitSha: nonEmpty,
+    candidateTreeSha: nonEmpty,
     comparisonBase: nonEmpty,
     previousCandidateId: nonEmpty.optional(),
     round: z.number().int().nonnegative(),
@@ -242,6 +244,8 @@ const reviewStateSchema = z
     latestCorrection: z
       .object({
         fromCandidateId: nonEmpty,
+        rangeBaseSha: nonEmpty,
+        rangeHeadSha: nonEmpty,
         changedPaths: z.array(nonEmpty),
         evidence: nonEmpty,
         mode: z.enum(["changed", "unchanged"]),
@@ -622,7 +626,7 @@ const wholePlanReviewSchema = z
 
 export const RunStateSchema = z
   .object({
-    version: z.literal(9),
+    version: z.literal(10),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -858,7 +862,7 @@ export function createPlanningRun(args: {
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
   const state: RunState = {
-    version: 9,
+    version: 10,
     revision: 0,
     run: {
       id: args.runId,
@@ -964,7 +968,7 @@ export class RunStore {
         const next = validateRunState(
           {
             ...update(structuredClone(current)),
-            version: 9,
+            version: 10,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -1872,6 +1876,12 @@ function invariantIssues(
     ) {
       issues.push(`review ${key} does not match its workstream candidate`);
     }
+    if (
+      review.candidateCommitSha !== candidate.commitSha ||
+      review.candidateTreeSha !== candidate.treeSha
+    ) {
+      issues.push(`review ${key} does not retain its exact candidate identity`);
+    }
     const outstanding = new Set(review.pendingCorrectionIds);
     if (outstanding.size !== review.pendingCorrectionIds.length) {
       issues.push(`review ${key} repeats an outstanding finding ID`);
@@ -1912,7 +1922,9 @@ function invariantIssues(
       review.previousCandidateId &&
       (!state.candidates[review.previousCandidateId] ||
         !review.latestCorrection ||
-        review.latestCorrection.fromCandidateId !== review.previousCandidateId)
+        review.latestCorrection.fromCandidateId !==
+          review.previousCandidateId ||
+        review.latestCorrection.rangeHeadSha !== candidate.commitSha)
     ) {
       issues.push(`review ${key} has an invalid correction anchor`);
     }
@@ -1920,6 +1932,8 @@ function invariantIssues(
       review.latestCorrection?.mode === "unchanged" &&
       (review.latestCorrection.changedPaths.length > 0 ||
         !review.previousCandidateId ||
+        review.latestCorrection.rangeBaseSha !== candidate.commitSha ||
+        review.latestCorrection.rangeHeadSha !== candidate.commitSha ||
         state.candidates[review.previousCandidateId]?.commitSha !==
           candidate.commitSha ||
         state.candidates[review.previousCandidateId]?.treeSha !==

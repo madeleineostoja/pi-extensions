@@ -419,6 +419,8 @@ async function completedSchedulerStore(draft: string) {
     };
     state.reviews[`source:${workstream.id}`] = {
       candidateId,
+      candidateCommitSha: "base-sha",
+      candidateTreeSha: "base-tree",
       comparisonBase: "base-sha",
       round: 0,
       pendingCorrectionIds: [],

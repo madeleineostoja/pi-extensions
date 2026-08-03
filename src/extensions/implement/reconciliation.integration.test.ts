@@ -4,8 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { TaskWorkspaceManager } from "./candidate-worker.js";
+import { ScriptedSubagentClient } from "./e2e-test-support.js";
+import { compileExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
 import { ExecGitClient } from "./git.js";
+import { buildMaterialStore } from "./material-store.js";
+import { parsePlan } from "./plan.js";
 import { runReconciliation } from "./reconciliation.js";
+import { writeSourceCorpus } from "./requirements-context.js";
+import { retargetAnchoredReview, runWorkstreamReview } from "./review.js";
+import { sha256 } from "./source-integrity.js";
 import type { SchedulerEffect } from "./scheduler/scheduler.js";
 import type { ImplementRoles, SubagentClient } from "./subagents.js";
 import type { RunState } from "./store.js";
@@ -75,6 +82,111 @@ describe("semantic reconciliation admission", () => {
     );
   });
 
+  it("reviews a reconciled candidate against the target-relative Git range", async () => {
+    const fixture = await reconciliationFixture(
+      "first=candidate\nsecond=base\n",
+      "first=base\nsecond=target\n",
+      { distinctRangePaths: true },
+    );
+    const reconciliation = await runReconciliation({
+      state: fixture.state,
+      effect: fixture.effect,
+      git: fixture.git,
+      subagents: mergingWorker("first=candidate\nsecond=target\n"),
+      artifactsPath: join(fixture.root, "artifacts"),
+      roles,
+    });
+    const plan = reviewPlan(fixture.root, fixture.candidate.baseSha);
+    const review = retargetAnchoredReview({
+      state: {
+        candidateId: fixture.candidate.id,
+        candidateCommitSha: fixture.candidate.commitSha,
+        candidateTreeSha: fixture.candidate.treeSha,
+        comparisonBase: fixture.candidate.baseSha,
+        round: 0,
+        pendingCorrectionIds: [],
+        correctionConsumed: false,
+        evidence: ["initial review"],
+        observations: [],
+        publicationCommitSubject: "feat: publish candidate",
+      },
+      candidate: reconciliation.candidate,
+      comparisonBase: fixture.targetSha,
+      correctionRange: {
+        baseSha: fixture.targetSha,
+        headSha: reconciliation.candidate.commitSha,
+      },
+      correction: reconciliation.correction,
+    });
+    const state = {
+      ...fixture.state,
+      executionPlan: {
+        path: join(
+          fixture.root,
+          ".pi",
+          "pipkin",
+          "implement",
+          "runs",
+          "run-1",
+          "execution-plan.json",
+        ),
+        hash: plan.executionPlanHash,
+      },
+      workstreams: {
+        source: {
+          "first-stream": {
+            ...fixture.state.workstreams.source["first-stream"],
+            phase: "candidate_ready",
+            taskIds: ["preserve-behavior"],
+            candidateId: reconciliation.candidate.id,
+          },
+        },
+        overall: {},
+      },
+      tasks: {},
+      candidates: {
+        [fixture.candidate.id]: fixture.candidate,
+        [reconciliation.candidate.id]: reconciliation.candidate,
+      },
+      findings: {},
+      reviews: { "source:first-stream": review },
+      satisfaction: { assessments: {}, receipts: {} },
+    } as unknown as RunState;
+    const reviewer = new ScriptedSubagentClient(
+      [
+        {
+          status: "completed",
+          result: { assessments: [], regressions: [] },
+        },
+      ],
+      [fixture.root],
+    );
+
+    const outcome = await runWorkstreamReview({
+      state,
+      plan,
+      workstream: fixture.candidate.workstream,
+      git: fixture.git,
+      subagents: reviewer,
+      artifactsPath: join(fixture.root, "artifacts"),
+      roles,
+    });
+
+    expect(outcome).toMatchObject({
+      kind: "anchored",
+      correctionRangeBaseSha: fixture.targetSha,
+      correctionRangeHeadSha: reconciliation.candidate.commitSha,
+      changedPaths: ["candidate-only.txt", "shared.txt"],
+    });
+    expect(reviewer.invocations).toHaveLength(1);
+    expect(reviewer.invocations[0]?.prompt).toContain(
+      `git diff --stat ${fixture.targetSha}..${reconciliation.candidate.commitSha}`,
+    );
+    expect(reviewer.invocations[0]?.prompt).not.toContain(
+      `git diff --stat ${fixture.candidate.commitSha}..${reconciliation.candidate.commitSha}`,
+    );
+  });
+
   it("keeps an observed textual-conflict merge when semantic completion is unavailable", async () => {
     const fixture = await reconciliationFixture(
       "first=candidate\nsecond=base\n",
@@ -116,6 +228,7 @@ describe("semantic reconciliation admission", () => {
 async function reconciliationFixture(
   candidateContent: string,
   targetContent: string,
+  options: { distinctRangePaths?: boolean } = {},
 ) {
   const root = repository();
   const gitClient = new ExecGitClient(root);
@@ -142,6 +255,13 @@ async function reconciliationFixture(
   const workspaceGit = gitClient.forWorktree(workspace.worktreePath);
   writeFileSync(join(workspace.worktreePath, "shared.txt"), candidateContent);
   git(workspace.worktreePath, "add", "shared.txt");
+  if (options.distinctRangePaths) {
+    writeFileSync(
+      join(workspace.worktreePath, "candidate-only.txt"),
+      "candidate\n",
+    );
+    git(workspace.worktreePath, "add", "candidate-only.txt");
+  }
   git(workspace.worktreePath, "commit", "-m", "feat: candidate");
   const candidate = {
     id: "candidate:first",
@@ -149,7 +269,9 @@ async function reconciliationFixture(
     baseSha,
     commitSha: await workspaceGit.head(),
     treeSha: await workspaceGit.tree(),
-    changedPaths: ["shared.txt"],
+    changedPaths: options.distinctRangePaths
+      ? ["candidate-only.txt", "shared.txt"]
+      : ["shared.txt"],
     implementationEvidence: {
       summary: "candidate",
       verification: ["candidate checked"],
@@ -157,6 +279,10 @@ async function reconciliationFixture(
   };
   writeFileSync(join(root, "shared.txt"), targetContent);
   git(root, "add", "shared.txt");
+  if (options.distinctRangePaths) {
+    writeFileSync(join(root, "target-only.txt"), "target\n");
+    git(root, "add", "target-only.txt");
+  }
   git(root, "commit", "-m", "feat: target");
   const targetSha = await gitClient.head();
   const targetTreeSha = await gitClient.tree();
@@ -213,8 +339,12 @@ async function reconciliationFixture(
         targetTreeSha,
         disposition: "overlap",
         paths: {
-          candidate: ["shared.txt"],
-          target: ["shared.txt"],
+          candidate: options.distinctRangePaths
+            ? ["candidate-only.txt", "shared.txt"]
+            : ["shared.txt"],
+          target: options.distinctRangePaths
+            ? ["shared.txt", "target-only.txt"]
+            : ["shared.txt"],
           replay: ["shared.txt"],
         },
         operationId: "reconciliation:run-1:1",
@@ -246,6 +376,62 @@ async function reconciliationFixture(
     state,
     effect,
   };
+}
+
+function reviewPlan(root: string, baseSha: string): ExecutionPlan {
+  const planPath = join(root, "review-plan.md");
+  const content = "# Plan\n\n- [ ] Preserve behavior\n";
+  writeFileSync(planPath, content);
+  const parsed = parsePlan(planPath, content);
+  const materialStore = buildMaterialStore({
+    plan: parsed,
+    planPath,
+    repoRoot: root,
+  });
+  const compiled = compileExecutionPlan(
+    {
+      version: 1,
+      tasks: [
+        {
+          id: "preserve-behavior",
+          planIndex: 1,
+          title: "Preserve behavior",
+          dependsOn: [],
+          supportingDocuments: [],
+          compiledContract: {
+            objective: "Preserve candidate and integrated target behavior.",
+            inScope: ["Reconciled contribution"],
+            acceptanceCriteria: ["Both behaviors remain present."],
+            outOfScope: ["Unrelated changes"],
+          },
+        },
+      ],
+      workstreams: [
+        {
+          id: "first-stream",
+          taskIds: ["preserve-behavior"],
+          dependsOn: [],
+        },
+      ],
+    },
+    {
+      plan: parsed,
+      planHash: sha256(content),
+      materialStore,
+      checkoutId: join(root, ".git"),
+      baseSha,
+      workerConcurrency: 1,
+    },
+  );
+  if (!compiled.ok) {
+    throw new Error(compiled.reason);
+  }
+  writeSourceCorpus(
+    join(root, ".pi", "pipkin", "implement", "runs", "run-1"),
+    materialStore,
+    compiled.value,
+  );
+  return compiled.value;
 }
 
 function mergingWorker(

@@ -282,6 +282,8 @@ describe("replay preparation policy", () => {
         candidateId: "candidate:lint-fixed",
         previousCandidateId: requested.candidateId,
         comparisonBase: "base-sha",
+        correctionRangeBaseSha: "candidate-sha",
+        correctionRangeHeadSha: "lint-fixed-sha",
         changedPaths: ["src/endpoint.ts"],
         findingEpoch: 0,
         evidence: "remediation review artifact",

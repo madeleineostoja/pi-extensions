@@ -102,6 +102,51 @@ describe("semantic reconciliation assignments", () => {
     ).toEqual(["blocked", "blocked"]);
   });
 
+  it("settles an invalid local review epoch without operational retries", async () => {
+    const replay = await failedReplay();
+    const state = {
+      ...replay.state,
+      workstreams: {
+        ...replay.state.workstreams,
+        source: {
+          ...replay.state.workstreams.source,
+          "first-stream": {
+            ...replay.state.workstreams.source["first-stream"]!,
+            phase: "candidate_ready" as const,
+          },
+        },
+      },
+      reconciliationAssignments: {},
+    };
+    const requested = reduceRunEvent(state, {
+      kind: "review_requested",
+      workstream: replay.workstream,
+      now: "2026-01-01T00:03:00.000Z",
+    });
+    const review = requested.effects[0]!;
+    if (review.kind !== "run_review") {
+      throw new Error("expected review");
+    }
+    const failed = reduceRunEvent(requested.state, {
+      kind: "effect_failed",
+      effect: "review",
+      workstream: review.workstream,
+      leaseId: review.leaseId,
+      category: "protocol_failure",
+      nonRetryable: true,
+      evidence: "Reviewer packet does not match its anchored review epoch.",
+    });
+
+    expect(failed.accepted).toBe(true);
+    expect(failed.state.workstreams.source["first-stream"]?.phase).toBe(
+      "failed",
+    );
+    expect(failed.state.operationalRetries).toEqual({});
+    expect(Object.values(failed.state.failures)).toContainEqual(
+      expect.objectContaining({ assignment: "blocked" }),
+    );
+  });
+
   it("changes semantic context only for observed candidate tree or failed target changes", async () => {
     const original = await failedReplay();
     const changedTree = await failedReplay({ candidateTreeSha: "other-tree" });
@@ -206,11 +251,11 @@ describe("semantic reconciliation assignments", () => {
           ...candidate("reconciled-sha", "reconciled-tree"),
           id: "reconciliation:first-stream:reconciled-sha",
           integrationBaseSha: "failed-target-sha",
-          changedPaths: ["src/endpoint.ts"],
+          changedPaths: ["src/integrated.ts"],
         },
         correction: {
           fromCandidateId: "candidate:first",
-          changedPaths: ["src/endpoint.ts"],
+          changedPaths: ["src/integrated.ts"],
           evidence: "reconciliation observation",
         },
       },
@@ -225,7 +270,51 @@ describe("semantic reconciliation assignments", () => {
       previousCandidateId: "candidate:first",
       candidateId: "reconciliation:first-stream:reconciled-sha",
       comparisonBase: "failed-target-sha",
+      candidateCommitSha: "reconciled-sha",
+      candidateTreeSha: "reconciled-tree",
+      latestCorrection: {
+        rangeBaseSha: "failed-target-sha",
+        rangeHeadSha: "reconciled-sha",
+        changedPaths: ["src/integrated.ts"],
+      },
     });
+
+    const reviewRequested = reduceRunEvent(completed.state, {
+      kind: "review_requested",
+      workstream: effect.workstream,
+      now: "2026-01-01T00:04:00.000Z",
+    });
+    const review = reviewRequested.effects[0]!;
+    if (review.kind !== "run_review") {
+      throw new Error("expected reconciled review");
+    }
+    const reviewed = reduceRunEvent(reviewRequested.state, {
+      kind: "review_completed",
+      workstream: review.workstream,
+      leaseId: review.leaseId,
+      outcome: {
+        kind: "anchored",
+        candidateId: "reconciliation:first-stream:reconciled-sha",
+        previousCandidateId: "candidate:first",
+        comparisonBase: "failed-target-sha",
+        correctionRangeBaseSha: "failed-target-sha",
+        correctionRangeHeadSha: "reconciled-sha",
+        changedPaths: ["src/integrated.ts"],
+        findingEpoch: 0,
+        evidence: "reconciled review",
+        completion: { assessments: [], regressions: [] },
+      },
+    });
+    expect(reviewed.state.workstreams.source["first-stream"]?.phase).toBe(
+      "approved",
+    );
+    expect(
+      reduceRunEvent(reviewed.state, {
+        kind: "reconciliation_requested",
+        workstream: effect.workstream,
+        now: "2026-01-01T00:05:00.000Z",
+      }).effects,
+    ).toContainEqual(expect.objectContaining({ kind: "run_reconciliation" }));
     expect(
       Object.values(completed.state.reconciliationAssignments)[0],
     ).toMatchObject({ status: "completed", targetSha: "failed-target-sha" });

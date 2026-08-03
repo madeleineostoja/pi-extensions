@@ -97,6 +97,7 @@ export type SchedulerEvent =
       category: FailureCategory;
       observation?: WorkspaceObservation;
       command?: FailureCommandEvidence;
+      nonRetryable?: boolean;
       provenNoWrite?: boolean;
     }
   | {
@@ -722,7 +723,9 @@ export function reduceRunEvent(
         assignment:
           event.category === "hook_rejected"
             ? "candidate_revision"
-            : "operational_retry",
+            : event.nonRetryable
+              ? "blocked"
+              : "operational_retry",
         workstream: event.workstream,
         ...(candidateId ? { candidateId } : {}),
         gate: event.effect,
@@ -730,6 +733,10 @@ export function reduceRunEvent(
         ...(event.command ? { command: event.command } : {}),
         ...(event.observation ? { observation: event.observation } : {}),
       });
+      if (event.nonRetryable) {
+        failWorkstream(state, event.workstream);
+        return accept();
+      }
       if (event.category === "workspace_unsafe") {
         if (
           isKnownOwnedDirtyWorkspace(state, event.workstream, event.observation)
@@ -881,10 +888,14 @@ export function reduceRunEvent(
               state.reviews[reviewKey(event.workstream)] =
                 retargetAnchoredReview({
                   state: review,
-                  candidateId: event.outcome.candidate.id,
+                  candidate: event.outcome.candidate,
                   comparisonBase:
                     event.outcome.candidate.integrationBaseSha ??
                     event.outcome.candidate.baseSha,
+                  correctionRange: {
+                    baseSha: state.candidates[review.candidateId]!.commitSha,
+                    headSha: event.outcome.candidate.commitSha,
+                  },
                   correction: {
                     fromCandidateId: review.candidateId,
                     changedPaths: event.outcome.candidate.changedPaths ?? [],
@@ -1017,6 +1028,10 @@ export function reduceRunEvent(
           const update = applyInitialWorkstreamReview({
             workstream: event.workstream,
             candidateId: event.outcome.candidateId,
+            candidateCommitSha:
+              state.candidates[event.outcome.candidateId]!.commitSha,
+            candidateTreeSha:
+              state.candidates[event.outcome.candidateId]!.treeSha,
             comparisonBase:
               state.candidates[event.outcome.candidateId]!.integrationBaseSha ??
               state.candidates[event.outcome.candidateId]!.baseSha,
@@ -1079,6 +1094,10 @@ export function reduceRunEvent(
             review.candidateId !== event.outcome.candidateId ||
             review.previousCandidateId !== event.outcome.previousCandidateId ||
             review.comparisonBase !== event.outcome.comparisonBase ||
+            review.latestCorrection?.rangeBaseSha !==
+              event.outcome.correctionRangeBaseSha ||
+            review.latestCorrection?.rangeHeadSha !==
+              event.outcome.correctionRangeHeadSha ||
             review.round !== event.outcome.findingEpoch ||
             review.repositoryAssessment?.targetSha !==
               event.outcome.assessedTargetSha ||
@@ -1323,8 +1342,12 @@ export function reduceRunEvent(
         try {
           state.reviews[reviewKey(event.workstream)] = retargetAnchoredReview({
             state: review,
-            candidateId: previousCandidate.id,
+            candidate: previousCandidate,
             comparisonBase: review.comparisonBase,
+            correctionRange: {
+              baseSha: previousCandidate.commitSha,
+              headSha: previousCandidate.commitSha,
+            },
             correction: {
               fromCandidateId: previousCandidate.id,
               changedPaths: [],
@@ -1367,8 +1390,12 @@ export function reduceRunEvent(
       try {
         state.reviews[reviewKey(event.workstream)] = retargetAnchoredReview({
           state: review,
-          candidateId: candidate.id,
+          candidate,
           comparisonBase: review.comparisonBase,
+          correctionRange: {
+            baseSha: previousCandidate.commitSha,
+            headSha: candidate.commitSha,
+          },
           correction: event.outcome.correction,
         });
       } catch (error) {
@@ -1712,8 +1739,12 @@ export function reduceRunEvent(
       try {
         state.reviews[reviewKey(event.workstream)] = retargetAnchoredReview({
           state: review,
-          candidateId: candidate.id,
+          candidate,
           comparisonBase: assignment.targetSha,
+          correctionRange: {
+            baseSha: assignment.targetSha,
+            headSha: candidate.commitSha,
+          },
           correction: event.outcome.correction,
         });
       } catch (error) {
@@ -2773,6 +2804,8 @@ function queueWholePlanRepair(
   }
   state.reviews[reviewKey(workstream)] = {
     candidateId: candidate.id,
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
     comparisonBase: candidate.integrationBaseSha ?? candidate.baseSha,
     round: 0,
     pendingCorrectionIds: [...args.findingIds],

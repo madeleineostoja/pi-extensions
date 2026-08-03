@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { workstreamWorkspace } from "./workstream-candidate.js";
+import type { RunState } from "./store.js";
+import { WorkerPacketError } from "./worker-invocation.js";
 import {
   applyAnchoredWorkstreamReview,
   applyInitialWorkstreamReview,
+  buildSourceReviewWorkerPacket,
+  ReviewEpochMismatchError,
   retargetAnchoredReview,
 } from "./review.js";
 
@@ -24,6 +29,8 @@ function initialReview() {
   return applyInitialWorkstreamReview({
     workstream,
     candidateId: previousCandidate.id,
+    candidateCommitSha: previousCandidate.commitSha,
+    candidateTreeSha: previousCandidate.treeSha,
     comparisonBase: "base",
     completion: {
       publicationCommitSubject: "feat: publish workstream",
@@ -52,8 +59,12 @@ function correctionReview() {
     initial,
     review: retargetAnchoredReview({
       state: initial.review,
-      candidateId: candidate.id,
+      candidate,
       comparisonBase: "base",
+      correctionRange: {
+        baseSha: previousCandidate.commitSha,
+        headSha: candidate.commitSha,
+      },
       correction: {
         fromCandidateId: previousCandidate.id,
         changedPaths: ["src/incidental.ts"],
@@ -64,6 +75,12 @@ function correctionReview() {
 }
 
 describe("canonical review findings", () => {
+  it("classifies anchored epoch mismatches as packet failures", () => {
+    expect(new ReviewEpochMismatchError("mismatch")).toBeInstanceOf(
+      WorkerPacketError,
+    );
+  });
+
   it("assigns every initial finding once and retains narrowed residuals without pending work", () => {
     const { initial, review } = correctionReview();
 
@@ -116,6 +133,101 @@ describe("canonical review findings", () => {
     );
   });
 
+  it("materializes a reconciled review packet against its integration-base range", () => {
+    const reconciliationCandidate = {
+      ...candidate,
+      id: "reconciliation:work:tip",
+      commitSha: "reconciled",
+      treeSha: "reconciled-tree",
+      integrationBaseSha: "integrated",
+      changedPaths: ["src/integrated.ts"],
+    };
+    const review = retargetAnchoredReview({
+      state: {
+        ...initialReview().review,
+        pendingCorrectionIds: [],
+        correctionConsumed: false,
+      },
+      candidate: reconciliationCandidate,
+      comparisonBase: "integrated",
+      correctionRange: { baseSha: "integrated", headSha: "reconciled" },
+      correction: {
+        fromCandidateId: previousCandidate.id,
+        changedPaths: ["src/integrated.ts"],
+        evidence: "reconciliation",
+      },
+    });
+    const state = {
+      run: { id: "run", checkout: { root: "/checkout" } },
+      workstreams: {
+        source: {
+          work: {
+            kind: "source",
+            id: "work",
+            baseSha: "base",
+            candidateId: reconciliationCandidate.id,
+          },
+        },
+        overall: {},
+      },
+      candidates: {
+        [previousCandidate.id]: previousCandidate,
+        [reconciliationCandidate.id]: reconciliationCandidate,
+      },
+      findings: {},
+    } as unknown as RunState;
+    const packet = buildSourceReviewWorkerPacket({
+      state,
+      workstream,
+      workspacePath: workstreamWorkspace(state, workstream.id).worktreePath,
+      review,
+      actualChangedPaths: ["src/integrated.ts"],
+      packet: {
+        workstream,
+        candidate: reconciliationCandidate,
+        previousCandidate,
+        contracts: [],
+        sourceMaterial: [],
+        corpus: [],
+        schedule: { tasks: [], workstreams: [] },
+        checkpoints: {},
+        satisfiedEvidence: {},
+        outstandingFindings: [],
+        latestCorrection: review.latestCorrection,
+        comparisonBase: review.comparisonBase,
+        findingEpoch: review.round,
+      },
+    });
+
+    expect(packet.latestCorrection).toMatchObject({
+      rangeBaseSha: "integrated",
+      rangeHeadSha: "reconciled",
+      changedPaths: ["src/integrated.ts"],
+    });
+    expect(() =>
+      buildSourceReviewWorkerPacket({
+        state,
+        workstream,
+        workspacePath: workstreamWorkspace(state, workstream.id).worktreePath,
+        review: {
+          ...review,
+          latestCorrection: {
+            ...review.latestCorrection!,
+            rangeHeadSha: previousCandidate.commitSha,
+          },
+        },
+        actualChangedPaths: ["src/integrated.ts"],
+        packet: {
+          ...packet,
+          latestCorrection: {
+            ...packet.latestCorrection!,
+            rangeHeadSha: previousCandidate.commitSha,
+          },
+        },
+      }),
+    ).toThrow(ReviewEpochMismatchError);
+  });
+
   it("uses the exact reviewed correction boundary for causal regressions", () => {
     const { initial, review } = correctionReview();
     const assessed = applyAnchoredWorkstreamReview({
@@ -156,8 +268,12 @@ describe("canonical review findings", () => {
     const initial = initialReview();
     const review = retargetAnchoredReview({
       state: initial.review,
-      candidateId: previousCandidate.id,
+      candidate: previousCandidate,
       comparisonBase: "base",
+      correctionRange: {
+        baseSha: previousCandidate.commitSha,
+        headSha: previousCandidate.commitSha,
+      },
       correction: {
         fromCandidateId: previousCandidate.id,
         changedPaths: [],
@@ -234,6 +350,8 @@ describe("canonical review findings", () => {
       applyInitialWorkstreamReview({
         workstream: { kind: "overall", repairId: "repair" },
         candidateId: "candidate:repair",
+        candidateCommitSha: "target-sha",
+        candidateTreeSha: "target-tree",
         comparisonBase: "target-sha",
         completion: { findings: [] },
         evidence: "review",
