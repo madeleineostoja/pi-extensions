@@ -61,6 +61,9 @@ describe("record_papercut", () => {
 
   it("enforces every public observation bound, shape, and trim rule", () => {
     expect(Check(PapercutObservationSchema, observation)).toBe(true);
+    expect(Check(PapercutObservationSchema, { ...observation, key: "a" })).toBe(
+      true,
+    );
     expect(
       Check(PapercutObservationSchema, {
         ...observation,
@@ -87,6 +90,17 @@ describe("record_papercut", () => {
         Check(PapercutObservationSchema, { ...observation, [field]: value }),
       ).toBe(false);
     }
+    expect(
+      Check(PapercutObservationSchema, {
+        ...observation,
+        key: "a".repeat(65),
+      }),
+    ).toBe(false);
+    for (const key of ["-leading-hyphen", "trailing-hyphen-"]) {
+      expect(Check(PapercutObservationSchema, { ...observation, key })).toBe(
+        false,
+      );
+    }
     for (const field of [
       "title",
       "task",
@@ -104,6 +118,12 @@ describe("record_papercut", () => {
     ).toBe(false);
     expect(
       Check(PapercutObservationSchema, { ...observation, workarounds: [] }),
+    ).toBe(false);
+    expect(
+      Check(PapercutObservationSchema, {
+        ...observation,
+        workarounds: ["a".repeat(1_001)],
+      }),
     ).toBe(false);
     expect(
       Check(PapercutObservationSchema, {

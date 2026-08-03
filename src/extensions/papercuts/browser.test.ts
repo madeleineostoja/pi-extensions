@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatPapercutSummary, registerPapercutsBrowser } from "./browser.js";
 import { createPapercutStatusController } from "./status.js";
@@ -24,6 +25,18 @@ const observation = {
   evidence: "Observed output",
   workarounds: ["Inspected scripts.", "Took the detour."],
   taskOutcome: "Continued safely.",
+};
+
+const nearLimitObservation = {
+  ...observation,
+  title: "t".repeat(120),
+  task: "t".repeat(1_000),
+  incident: "i".repeat(2_000),
+  evidence: "e".repeat(2_000),
+  workarounds: Array.from({ length: 5 }, () => "w".repeat(1_000)),
+  taskOutcome: "o".repeat(1_000),
+  guardrailCandidate: "g".repeat(1_000),
+  suggestedDestination: "tooling" as const,
 };
 
 const record = {
@@ -76,6 +89,13 @@ function browserHarness(selections: string[]) {
     pi,
     ui,
     renders: () => components.map((component) => component.render(48)),
+    actionLabels: () =>
+      components.map((component) => {
+        const rendered = component.render(48);
+        return ["Close Finding", "Back"].filter((label) =>
+          rendered.some((line) => line.includes(label)),
+        );
+      }),
     command: () => command!,
   };
 }
@@ -114,7 +134,7 @@ describe("papercuts browser", () => {
     expect(summary).toMatch(/record.* omitted/);
   });
 
-  it("shows complete open detail through a width-safe action panel and closes it", async () => {
+  it("shows complete near-limit open detail through a width-safe action panel and closes it", async () => {
     const root = repo();
     const status = createPapercutStatusController();
     const ctx = {
@@ -123,10 +143,10 @@ describe("papercuts browser", () => {
       hasUI: true,
       ui: undefined as never,
     };
-    await (await status.storeFor(ctx as never)).record(observation);
+    await (await status.storeFor(ctx as never)).record(nearLimitObservation);
     const harness = browserHarness([
       "Open (1)",
-      "finding — A finding",
+      `finding — ${nearLimitObservation.title}`,
       "Back",
       "Back",
     ]);
@@ -137,23 +157,29 @@ describe("papercuts browser", () => {
 
     const rendered = harness.renders()[0];
     const detail = rendered.join("\n");
-    expect(detail).toContain("Title: A finding");
+    expect(detail).toContain("Title:");
     expect(detail).toContain("Key: finding");
-    expect(detail).toContain("Assigned task: An unrelated task");
-    expect(detail).toContain("Incident: A detour");
-    expect(detail).toContain("Evidence: Observed output");
-    expect(detail).toContain("1. Inspected scripts.");
-    expect(detail).toContain("2. Took the detour.");
-    expect(detail).toContain("Task outcome: Continued safely.");
+    expect(detail).toContain("Assigned task:");
+    expect(detail).toContain("Incident:");
+    expect(detail).toContain("Evidence:");
+    expect(detail).toContain("1.");
+    expect(detail).toContain("5.");
+    expect(detail).toContain("Task outcome:");
+    expect(detail).toContain("Guardrail candidate:");
+    expect(detail).toContain("Suggested destination: tooling");
     expect(detail).toContain("Occurrences: 1");
     expect(detail).toContain("First seen:");
     expect(detail).toContain("Last seen:");
-    expect(detail).toContain("Close Finding");
-    expect(detail).toContain("Back");
+    expect(harness.actionLabels()).toEqual([["Close Finding", "Back"]]);
+    expect(
+      rendered.findIndex((line) => line.includes("Close Finding")),
+    ).toBeGreaterThan(
+      rendered.findIndex((line) => line.includes("Last seen:")),
+    );
     expect(detail).not.toMatch(
       /copy|clipboard|editor|work on|edit|delete|ignore|reopen/i,
     );
-    expect(rendered.every((line) => line.length <= 48)).toBe(true);
+    expect(rendered.every((line) => visibleWidth(line) <= 48)).toBe(true);
     expect(
       (await (await status.storeFor(ctx as never)).load()).records[0],
     ).toMatchObject({
@@ -190,7 +216,7 @@ describe("papercuts browser", () => {
 
     const detail = harness.renders()[0].join("\n");
     expect(detail).toContain("Exercised workarounds:");
-    expect(detail).toContain("Back");
+    expect(harness.actionLabels()).toEqual([["Back"]]);
     expect(detail).not.toContain("Close Finding");
     expect((await store.load()).records[0]).toMatchObject({
       status: "closed",

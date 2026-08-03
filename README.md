@@ -98,11 +98,13 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 - **UI** keeps cwd, branch, model, thinking, cost, cache hit rate, context usage, and ordered extension state in one compact footer, with a bounded live Activity view for current work.
 - **Personality** gives unnamed sessions useful titles and a brief fresh-session greeting, so `/resume` is less of an archaeological dig.
-- **Papercuts** is an experimental inbox for factual incidental friction: exercised workarounds that can recur into repository guidance or small fixes.
+- **Papercuts** is an experimental inbox for factual incidental friction. An agent records it only when the friction was incidental to a different assigned subject, concretely encountered, worked around through an action it actually took, and followed by task completion or safe continuation. It excludes ordinary proportionate procedures and the current task's own findings.
+
+A failed command or user-visible failure is not required: an agent might recover from a flaky test with a narrower command, discover and use an undocumented validation convention, or perform avoidable manual worktree setup before safely continuing. Records are factual candidates for repository guidance or small fixes, never automatic remediation. Closing a finding retains its recurrence count; a later observation automatically reopens it.
 
 **[Interface and Personality →](docs/features/interface-and-personality.md)**
 
-**[Workflow tools →](docs/features/workflow-tools.md)**
+**[Papercuts workflow →](docs/features/workflow-tools.md#papercuts)**
 
 ## Commands
 

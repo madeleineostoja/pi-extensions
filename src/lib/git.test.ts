@@ -1,6 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -184,6 +185,27 @@ describe("gitPrimaryWorktreeRoot", () => {
     roots.push(staleRoot);
     renameSync(root, staleRoot);
     await expect(gitPrimaryWorktreeRoot(linked)).rejects.toThrow();
+    expect(existsSync(join(linked, ".pi"))).toBe(false);
+  });
+
+  it("does not fall back to a linked worktree when Git reports no primary entry", async () => {
+    const root = repo();
+    git(root, "commit", "--allow-empty", "-qm", "initial");
+    const linked = linkedWorktree(root);
+    const bin = mkdtempSync(join(tmpdir(), "pi-git-no-primary-bin-"));
+    roots.push(bin);
+    const shim = join(bin, "git");
+    writeFileSync(shim, "#!/bin/sh\nexit 0\n");
+    chmodSync(shim, 0o755);
+    const path = process.env.PATH ?? "";
+    process.env.PATH = `${bin}:${path}`;
+    try {
+      await expect(gitPrimaryWorktreeRoot(linked)).rejects.toThrow(
+        "Git did not report a primary worktree",
+      );
+    } finally {
+      process.env.PATH = path;
+    }
     expect(existsSync(join(linked, ".pi"))).toBe(false);
   });
 

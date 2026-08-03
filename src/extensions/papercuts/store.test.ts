@@ -139,7 +139,21 @@ describe("papercut incident store", () => {
         ),
       ),
       persistedFile([persistedRecord({ key: "Invalid-key" })]),
-      persistedFile([persistedRecord({ title: " " })]),
+      ...[
+        "key",
+        "title",
+        "task",
+        "incident",
+        "evidence",
+        "workarounds",
+        "taskOutcome",
+      ].flatMap((field) => [
+        persistedFile([persistedRecord({ [field]: undefined })]),
+        persistedFile([persistedRecord({ [field]: 1 })]),
+      ]),
+      ...["title", "task", "incident", "evidence", "taskOutcome"].map((field) =>
+        persistedFile([persistedRecord({ [field]: " " })]),
+      ),
       persistedFile([persistedRecord({ title: "x".repeat(121) })]),
       persistedFile([persistedRecord({ task: "x".repeat(1_001) })]),
       persistedFile([persistedRecord({ incident: "x".repeat(2_001) })]),
@@ -150,10 +164,17 @@ describe("papercut incident store", () => {
       persistedFile([persistedRecord({ workarounds: Array(6).fill("done") })]),
       persistedFile([persistedRecord({ taskOutcome: "x".repeat(1_001) })]),
       persistedFile([persistedRecord({ guardrailCandidate: " " })]),
+      persistedFile([
+        persistedRecord({ guardrailCandidate: "x".repeat(1_001) }),
+      ]),
       persistedFile([persistedRecord({ status: "resolved" })]),
       persistedFile([persistedRecord({ occurrences: 0 })]),
+      persistedFile([persistedRecord({ occurrences: 1.5 })]),
       persistedFile([persistedRecord({ occurrences: 2_147_483_648 })]),
-      persistedFile([persistedRecord({ firstSeenAt: "2025-01-01T00:00:00Z" })]),
+      ...["firstSeenAt", "lastSeenAt"].flatMap((field) => [
+        persistedFile([persistedRecord({ [field]: "not-a-timestamp" })]),
+        persistedFile([persistedRecord({ [field]: "2025-01-01T00:00:00Z" })]),
+      ]),
       persistedFile([persistedRecord({ suggestedDestination: "other" })]),
     ];
     for (const text of cases) {
@@ -386,9 +407,10 @@ describe("papercut incident store", () => {
     expect(readFileSync(store.registryPath, "utf8")).toBe(
       '{"version":1,"records":[]}',
     );
-    expect(() => parsePapercutFile("x".repeat(1_048_577))).toThrow(
-      "size limit",
-    );
+    const oversized = "x".repeat(1_048_577);
+    writeFileSync(store.registryPath, oversized);
+    await expect(store.load()).rejects.toThrow("size limit");
+    expect(readFileSync(store.registryPath, "utf8")).toBe(oversized);
   });
 
   it("serializes independent process observations", async () => {
