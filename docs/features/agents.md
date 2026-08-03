@@ -78,7 +78,7 @@ Nested Explore runs created by managed Pipkin workflows use the same runtime and
 
 ## Context and tool boundaries
 
-Subagents inherit the parent extension environment and active tools, except public agent tools are withheld to prevent recursive fan-out. Where Bash is available, `bash_outcome` and `context_recall` are available with it: choose the outcome tool when only success or failure matters for the next reasoning step, regardless of finite duration, and use Bash when successful output may change that step. Successful output remains recallable under ordinary Bash limits and failures stay visible. A child's retained Bash output belongs only to that in-memory child session for its lifetime; its final answer is the parent-visible handoff.
+Subagents inherit the parent extension environment and active tools, except public agent tools (`Agent`, `get_subagent_result`, and `steer_subagent`) are withheld to prevent recursive fan-out. General, Explore, and Review may also use `record_papercut` for qualifying incidental friction. It is the sole controlled personal-metadata write: it does not permit source, dependency, or Git changes. Where Bash is available, `bash_outcome` and `context_recall` are available with it: choose the outcome tool when only success or failure matters for the next reasoning step, regardless of finite duration, and use Bash when successful output may change that step. Successful output remains recallable under ordinary Bash limits and failures stay visible. A child's retained Bash output belongs only to that in-memory child session for its lifetime; its final answer is the parent-visible handoff.
 
 Explore and Review retain shell access for discovery and checks. Their read-only behavior is a trusted-model instruction, not technical confinement.
 
@@ -91,7 +91,7 @@ Public subagents share the invoking session's filesystem and **do not receive is
 - General inherits the parent model and thinking.
 - Explicit `model` or `thinking` arguments apply to one invocation.
 
-Implement uses the same runtime internally, routing planners and reviewers to `high` and implementers and recovery to `medium`. See [Configuration](../configuration.md).
+Implement uses the same runtime internally, routing planner and reviewer work to `high` and implementation, revision, repair, and reconciliation work to `medium`. See [Configuration](../configuration.md).
 
 ## Deliberate limits
 

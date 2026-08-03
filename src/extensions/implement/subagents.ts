@@ -83,6 +83,7 @@ const READ_ONLY_TOOLS = [
   "ls",
   "explore",
   "lsp",
+  "record_papercut",
 ];
 const PUBLIC_AGENT_TOOLS = ["Agent", "get_subagent_result", "steer_subagent"];
 const MUTATING_TOOLS = ["edit", "write", ...PUBLIC_AGENT_TOOLS];

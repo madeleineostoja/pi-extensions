@@ -818,13 +818,13 @@ describe("public subagent tools", () => {
       const activeTools = vi.mocked(session.setActiveToolsByName).mock
         .calls[0][0];
       expect(activeTools).not.toEqual(expect.arrayContaining(publicAgentTools));
-      expect(activeTools).not.toContain("record_papercut");
     }
     expect(general.session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
       "bash_outcome",
       "context_recall",
+      "record_papercut",
       "edit",
       "explore",
     ]);
@@ -836,6 +836,7 @@ describe("public subagent tools", () => {
       "grep",
       "find",
       "ls",
+      "record_papercut",
     ]);
     expect(review.session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
@@ -846,6 +847,7 @@ describe("public subagent tools", () => {
       "find",
       "ls",
       "explore",
+      "record_papercut",
     ]);
     expect(internal.session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
@@ -922,10 +924,19 @@ describe("public subagent tools", () => {
       "grep",
       "find",
       "ls",
+      "record_papercut",
     ]);
     expect(
       missingRecallSession.session.setActiveToolsByName,
-    ).toHaveBeenCalledWith(["read", "bash", "grep", "find", "ls", "explore"]);
+    ).toHaveBeenCalledWith([
+      "read",
+      "bash",
+      "grep",
+      "find",
+      "ls",
+      "explore",
+      "record_papercut",
+    ]);
   });
 
   it("runs foreground agents to completion after binding inherited extensions", async () => {
@@ -990,6 +1001,7 @@ describe("public subagent tools", () => {
     expect(EXPLORE_PROMPT).toContain("Use lsp when available");
     expect(EXPLORE_PROMPT).toContain("broad, literal, or non-semantic");
     expect(EXPLORE_PROMPT).toContain("fall back to search and reads");
+    expect(EXPLORE_PROMPT).toContain("sole allowed personal-metadata write");
     expect(EXPLORE_PROMPT).not.toContain("Use the find tool");
     expect(EXPLORE_PROMPT).not.toContain("NOT bash grep/rg");
 
@@ -1016,7 +1028,7 @@ describe("public subagent tools", () => {
     expect(createSession.mock.calls[0][0]).toMatchObject({
       agentDir: "/tmp/pipkin-subagents-config",
       resourceLoader: resourceLoaderConstructions[0].loader,
-      tools: ["read", "bash", "grep", "find", "ls"],
+      tools: ["read", "bash", "grep", "find", "ls", "record_papercut"],
     });
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
@@ -1024,10 +1036,12 @@ describe("public subagent tools", () => {
       "grep",
       "find",
       "ls",
+      "record_papercut",
     ]);
   });
 
   it("uses append-mode prompt loading and pinned tools for Review", async () => {
+    expect(REVIEW_PROMPT).toContain("sole allowed personal-metadata write");
     const { pi } = makePi(["read", "bash", "edit", "write", "Agent"]);
     const { session } = makeSession("review result");
     const createSession = vi.fn(async (_options: any) => ({ session }));
@@ -1050,7 +1064,15 @@ describe("public subagent tools", () => {
     expect(createSession.mock.calls[0][0]).toMatchObject({
       agentDir: "/tmp/pipkin-subagents-config",
       resourceLoader: resourceLoaderConstructions[0].loader,
-      tools: ["read", "bash", "grep", "find", "ls", "explore"],
+      tools: [
+        "read",
+        "bash",
+        "grep",
+        "find",
+        "ls",
+        "explore",
+        "record_papercut",
+      ],
     });
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
@@ -1059,6 +1081,7 @@ describe("public subagent tools", () => {
       "find",
       "ls",
       "explore",
+      "record_papercut",
     ]);
   });
 

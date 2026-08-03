@@ -263,7 +263,12 @@ const publicToolNames = new Set([
   "get_subagent_result",
   "steer_subagent",
 ]);
-const childWithheldTools = new Set(["record_papercut"]);
+const papercutEligibleTypes = new Set<string>([
+  ...PUBLIC_BUILTIN_TYPES,
+  "pipkin:implement:planner",
+  "pipkin:implement:implementer",
+  "pipkin:implement:reviewer",
+]);
 const sessionStartReasons = new Set(["startup", "new", "resume", "fork"]);
 const retirementShutdownReasons = new Set(["quit", "new", "resume", "fork"]);
 export function withoutPublicAgentTools(names: string[]): string[] {
@@ -272,11 +277,15 @@ export function withoutPublicAgentTools(names: string[]): string[] {
 
 function normalizeActiveToolNames(
   names: string[],
-  options: { allowExplore: boolean; registered?: readonly string[] },
+  options: {
+    allowExplore: boolean;
+    allowPapercut: boolean;
+    registered?: readonly string[];
+  },
 ): string[] {
   const normalized = withoutPublicAgentTools(names).filter(
     (name) =>
-      !childWithheldTools.has(name) &&
+      (options.allowPapercut || name !== "record_papercut") &&
       (options.allowExplore || name !== "explore") &&
       (name !== "lsp" || options.registered?.includes("lsp") !== false),
   );
@@ -292,19 +301,17 @@ function normalizeActiveToolNames(
   );
 }
 
-const readOnlyToolNames = normalizeActiveToolNames(
-  [
-    "read",
-    "bash",
-    "bash_outcome",
-    "context_recall",
-    "grep",
-    "find",
-    "ls",
-    "lsp",
-  ],
-  { allowExplore: false },
-);
+const readOnlyToolNames = [
+  "read",
+  "bash",
+  "bash_outcome",
+  "context_recall",
+  "grep",
+  "find",
+  "ls",
+  "lsp",
+  "record_papercut",
+];
 const defaultSystemPromptMode: PromptMode = "append";
 const EXPLORE_TOOL_INACTIVITY_MS = 120_000;
 const EXPLORE_TOOL_INACTIVITY_POLL_MS = 10_000;
@@ -569,6 +576,10 @@ function isNestedOwner(
 
 function isExploreEligible(type: string): boolean {
   return exploreEligibleTypes.has(type) && type !== "Explore";
+}
+
+function isPapercutEligible(type: string): boolean {
+  return papercutEligibleTypes.has(type);
 }
 
 function resolveSystemPromptInput<TSchemaValue extends TSchema | undefined>(
@@ -1340,6 +1351,7 @@ export class SubagentRuntime {
           : undefined;
       const profileTools = publicAgentProfile(record.type)?.tools;
       const allowExplore = isExploreEligible(record.type) && !nested;
+      const allowPapercut = isPapercutEligible(record.type);
       const completionTools = record.completion
         ? [MANAGED_COMPLETION_TOOL_NAME]
         : [];
@@ -1350,6 +1362,7 @@ export class SubagentRuntime {
               ...new Set([
                 ...normalizeActiveToolNames(input.tools, {
                   allowExplore,
+                  allowPapercut,
                   registered,
                 }),
                 ...completionTools,
@@ -1362,6 +1375,7 @@ export class SubagentRuntime {
               ...new Set([
                 ...normalizeActiveToolNames(profileTools, {
                   allowExplore,
+                  allowPapercut,
                   registered,
                 }),
                 ...completionTools,
@@ -1389,7 +1403,7 @@ export class SubagentRuntime {
                 explicitTools ??
                 normalizeActiveToolNames(
                   [...readOnlyToolNames, ...completionTools],
-                  { allowExplore, registered },
+                  { allowExplore, allowPapercut, registered },
                 ),
               excludeTools: excludeTools ?? [
                 "explore",
@@ -1735,6 +1749,7 @@ export class SubagentRuntime {
     const registered = getActiveTools?.();
     const allowExplore =
       isExploreEligible(record.type) && !isNestedOwner(record.owner);
+    const allowPapercut = isPapercutEligible(record.type);
     const completionTools = record.completion
       ? [MANAGED_COMPLETION_TOOL_NAME]
       : [];
@@ -1745,6 +1760,7 @@ export class SubagentRuntime {
       session.setActiveToolsByName(
         normalizeActiveToolNames([...new Set(activeTools)], {
           allowExplore,
+          allowPapercut,
           registered,
         }),
       );
@@ -1755,7 +1771,7 @@ export class SubagentRuntime {
       session.setActiveToolsByName(
         normalizeActiveToolNames(
           [...new Set([...profileTools, ...completionTools])],
-          { allowExplore, registered },
+          { allowExplore, allowPapercut, registered },
         ),
       );
       return;
@@ -1772,7 +1788,7 @@ export class SubagentRuntime {
     session.setActiveToolsByName(
       normalizeActiveToolNames(
         [...new Set([...activeTools, ...completionTools])],
-        { allowExplore, registered },
+        { allowExplore, allowPapercut, registered },
       ),
     );
   }

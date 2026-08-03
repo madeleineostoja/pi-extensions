@@ -55,6 +55,8 @@ A repository and its linked worktrees share one atomically published, leased reg
 
 Pipkin excludes these paths through the common Git directory's `info/exclude`; it does not change committed `.gitignore`. The footer shows the current host's open count after session start and successful local mutations. Non-interactive `/papercuts` prints a bounded deterministic summary.
 
+The interactive host, public General, Explore, and Review agents, and Implement's planner, review, implementation, revision, repair, and reconciliation workers record directly to this same registry. For repository-preserving workers, it is the sole controlled metadata write; it does not expose source-editing, Git, orchestration, or public-agent controls. Records are not relayed through worker completion data or another persistence path.
+
 ## BTW: ask without changing the subject
 
 `/btw` is for the question you want answered but do not want folded into the main agent conversation:
