@@ -22,6 +22,7 @@ import {
   type RunListing,
 } from "./controls.js";
 import { createTemporaryActivity } from "./temporary-activity.js";
+import { createTerminalHandoffPublisher } from "./terminal-handoff-publisher.js";
 import type { RunState } from "./store.js";
 
 type TemporaryActivity = ReturnType<typeof createTemporaryActivity>;
@@ -34,6 +35,7 @@ export function registerImplementCommand(
   let active: ActiveRun | undefined;
   let activity: TemporaryActivity | undefined;
   let lifecycle = Promise.resolve();
+  const handoffPublisher = createTerminalHandoffPublisher(pi);
 
   const runLifecycle = <T>(operation: () => Promise<T>): Promise<T> => {
     const result = lifecycle.then(operation, operation);
@@ -44,8 +46,13 @@ export function registerImplementCommand(
     return result;
   };
 
-  pi.on("session_shutdown", (_event, ctx) =>
-    runLifecycle(async () => {
+  pi.on("agent_settled", (_event, ctx) => {
+    handoffPublisher.flush(ctx);
+  });
+
+  pi.on("session_shutdown", (_event, ctx) => {
+    handoffPublisher.dispose();
+    return runLifecycle(async () => {
       activity?.clear();
       activity = undefined;
       const stopping = active;
@@ -57,8 +64,8 @@ export function registerImplementCommand(
         });
         notifyResourceReleaseFailures(ctx, stopping.runId, failures);
       }
-    }),
-  );
+    });
+  });
 
   pi.registerCommand("implement", {
     description: "Run and inspect strict implementation plans",
@@ -261,6 +268,13 @@ export function registerImplementCommand(
       );
       return;
     }
+    if (handoffPublisher.hasPending()) {
+      ctx.ui.notify(
+        "Implement has an undelivered terminal handoff in this session.",
+        "warning",
+      );
+      return;
+    }
     if (!roles || !config) {
       ctx.ui.notify(
         `Pipkin config ${config?.path ?? "is unavailable"} is missing a valid medium or high model preset.`,
@@ -277,7 +291,18 @@ export function registerImplementCommand(
       event: Parameters<
         NonNullable<Parameters<typeof startRun>[0]["onTransition"]>
       >[1],
-    ) => nextActivity.update(state, event);
+    ) => {
+      try {
+        nextActivity.update(state, event);
+      } catch {
+        // Activity projection is not state authority.
+      }
+      try {
+        handoffPublisher.capture(state, event, ctx);
+      } catch {
+        // Transcript delivery is not state authority.
+      }
+    };
     try {
       if (parsed.restart) {
         const checkoutRoot = await resolveCheckoutRoot(ctx.cwd);

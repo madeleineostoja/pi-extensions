@@ -1,7 +1,9 @@
 import Ajv from "ajv";
 import { describe, expect, it } from "vitest";
 import {
+  anchoredOverallReviewSchema,
   anchoredWorkstreamReviewSchema,
+  initialAnchoredOverallReviewSchema,
   initialAnchoredWorkstreamReviewSchema,
   initialOverallReviewSchema,
   initialWorkstreamReviewSchema,
@@ -28,7 +30,27 @@ describe("review completion schemas", () => {
       }),
     ).toBe(true);
     expect(validates(repositoryStateReviewSchema, { findings: [] })).toBe(true);
-    expect(validates(initialOverallReviewSchema, { findings: [] })).toBe(true);
+    expect(
+      validates(initialOverallReviewSchema, {
+        findings: [],
+        handoffDraft: "## Delivered behavior\n\nReviewed delivery handoff.",
+      }),
+    ).toBe(true);
+    expect(
+      validates(initialAnchoredOverallReviewSchema, {
+        assessments: [],
+        regressions: [],
+        publicationCommitSubject: "fix: repair complete plan",
+        handoffDraft: "## Delivered behavior\n\nRepaired delivery handoff.",
+      }),
+    ).toBe(true);
+    expect(
+      validates(anchoredOverallReviewSchema, {
+        assessments: [],
+        regressions: [],
+        handoffDraft: "## Delivered behavior\n\nReassessed delivery handoff.",
+      }),
+    ).toBe(true);
     expect(
       validates(anchoredWorkstreamReviewSchema, {
         assessments: [
@@ -62,6 +84,14 @@ describe("review completion schemas", () => {
         { findings: [{ ...finding, disposition: "blocking" }] },
       ],
       [
+        initialWorkstreamReviewSchema,
+        {
+          findings: [],
+          publicationCommitSubject: "fix: return documented response",
+          handoffDraft: "Source review must not carry a handoff.",
+        },
+      ],
+      [
         anchoredWorkstreamReviewSchema,
         {
           assessments: [
@@ -91,6 +121,29 @@ describe("review completion schemas", () => {
       [
         initialAnchoredWorkstreamReviewSchema,
         { assessments: [], regressions: [] },
+      ],
+      [initialOverallReviewSchema, { findings: [], handoffDraft: "   " }],
+      [
+        initialAnchoredOverallReviewSchema,
+        {
+          assessments: [],
+          regressions: [],
+          publicationCommitSubject: "fix: repair complete plan",
+          handoffDraft: "   ",
+        },
+      ],
+      [
+        anchoredOverallReviewSchema,
+        { assessments: [], regressions: [], handoffDraft: "x".repeat(12_001) },
+      ],
+      [
+        anchoredOverallReviewSchema,
+        {
+          assessments: [],
+          regressions: [],
+          handoffDraft: "Complete replacement.",
+          disposition: "advisory",
+        },
       ],
     ];
 

@@ -34,6 +34,7 @@ import {
 } from "./source-integrity.js";
 
 const nonEmpty = z.string().trim().min(1);
+const handoffDraft = z.string().min(1).max(12_000).regex(/\S/);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const id = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/);
 
@@ -576,6 +577,7 @@ const failureSchema = z
 const wholePlanReviewSchema = z
   .object({
     status: z.enum(["pending", "reviewing", "repairing", "approved"]),
+    handoffDraft: handoffDraft.optional(),
     reviewedTargetSha: nonEmpty.optional(),
     reviewedTargetTreeSha: nonEmpty.optional(),
     evidence: nonEmpty.optional(),
@@ -613,13 +615,14 @@ const wholePlanReviewSchema = z
       review.status !== "approved" ||
       (review.reviewedTargetSha !== undefined &&
         review.reviewedTargetTreeSha !== undefined &&
-        review.evidence !== undefined),
-    "An approved whole-plan review requires immutable target identity and evidence.",
+        review.evidence !== undefined &&
+        review.handoffDraft !== undefined),
+    "An approved whole-plan review requires immutable target identity, evidence, and handoff draft.",
   );
 
 export const RunStateSchema = z
   .object({
-    version: z.literal(8),
+    version: z.literal(9),
     revision: z.number().int().nonnegative(),
     run: z
       .object({
@@ -855,7 +858,7 @@ export function createPlanningRun(args: {
   const now = args.now ?? new Date().toISOString();
   const path = runStatePath(args.lease.paths, args.runId);
   const state: RunState = {
-    version: 8,
+    version: 9,
     revision: 0,
     run: {
       id: args.runId,
@@ -961,7 +964,7 @@ export class RunStore {
         const next = validateRunState(
           {
             ...update(structuredClone(current)),
-            version: 8,
+            version: 9,
             revision: current.revision + 1,
             updatedAt: new Date().toISOString(),
           },
@@ -1165,9 +1168,9 @@ export function validateRunState(
   if (!parsed.success) {
     const version = versionOf(value);
     const message =
-      version !== undefined && version < 8
+      version !== undefined && version < 9
         ? `Run state uses legacy schema version ${version}; settle and clean it with the previous runtime before deploying this version.`
-        : version === undefined || version !== 8
+        : version === undefined || version !== 9
           ? "Run state has an unsupported schema."
           : "Run state is invalid.";
     throw new StateError(
@@ -1533,9 +1536,12 @@ function invariantIssues(
   }
   if (
     state.phase === "completed" &&
-    state.wholePlanReview.status !== "approved"
+    (state.wholePlanReview.status !== "approved" ||
+      !state.wholePlanReview.handoffDraft?.trim())
   ) {
-    issues.push("a completed run requires an approved whole-plan review");
+    issues.push(
+      "a completed run requires an approved whole-plan review with a handoff draft",
+    );
   }
   if (state.phase === "incomplete") {
     if (!bound) {

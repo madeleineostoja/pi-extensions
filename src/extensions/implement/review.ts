@@ -15,8 +15,10 @@ import {
   type WorkerSchedule,
 } from "./requirements-context.js";
 import {
+  type AnchoredOverallReviewCompletion,
   type AnchoredWorkstreamReviewCompletion,
   type DirectReviewFinding,
+  type InitialAnchoredOverallReviewCompletion,
   type InitialAnchoredWorkstreamReviewCompletion,
   type InitialWorkstreamReviewCompletion,
   type RepositoryStateReviewCompletion,
@@ -139,7 +141,7 @@ export type SourceReviewWorkerPacket =
 
 export type OverallAnchoredReviewPacket = {
   role: "reviewer";
-  completionKind: "initial-anchored-review" | "anchored-review";
+  completionKind: "initial-anchored-overall-review" | "anchored-overall-review";
   identity: string;
   workspace: { path: string; mutationBoundary: string };
   planContext: string;
@@ -152,6 +154,7 @@ export type OverallAnchoredReviewPacket = {
   publicationCommitSubject?: string;
   completeFindings: ReviewFinding[];
   outstandingFindings: ReviewFinding[];
+  priorHandoffDraft: string;
 };
 
 export type ReviewOutcome =
@@ -180,7 +183,9 @@ export type ReviewOutcome =
       assessedTargetSha?: string;
       completion:
         | AnchoredWorkstreamReviewCompletion
-        | InitialAnchoredWorkstreamReviewCompletion;
+        | InitialAnchoredWorkstreamReviewCompletion
+        | AnchoredOverallReviewCompletion
+        | InitialAnchoredOverallReviewCompletion;
       evidence: string;
     };
 
@@ -685,8 +690,8 @@ async function runOverallAnchoredReview(args: {
     completionKind:
       review.latestCorrection?.mode === "unchanged" ||
       review.publicationCommitSubject
-        ? "anchored-review"
-        : "initial-anchored-review",
+        ? "anchored-overall-review"
+        : "initial-anchored-overall-review",
     identity: `${args.state.run.id}/${args.workstream.repairId}/${candidate.id}`,
     workspace: {
       path: workspace.worktreePath,
@@ -694,20 +699,30 @@ async function runOverallAnchoredReview(args: {
         "Read-only candidate worktree; do not mutate Git or protected corpus.",
     },
     planContext: JSON.stringify(
-      loadRequirementsContext(
-        dirname(args.state.executionPlan!.path),
-        args.plan,
-      ),
+      {
+        sourcePlan: args.state.run.source,
+        intendedOutcome:
+          "Deliver the complete compiled plan on the reviewed target with durable publication or satisfaction evidence.",
+        requirements: loadRequirementsContext(
+          dirname(args.state.executionPlan!.path),
+          args.plan,
+        ),
+      },
       null,
       2,
     ),
     candidateContext: `Run base: ${args.state.run.checkout.startHead}\nHistorical workstream base: ${candidate.baseSha}\nComparison base: ${review.comparisonBase}\nPrevious candidate: ${previousCandidate.commitSha}\nCandidate: ${candidate.commitSha}\nCorrection mode: ${review.latestCorrection?.mode ?? "unknown"}\nCanonical comparison paths: ${review.latestCorrection?.changedPaths.join(", ") || "none"}\nCorrection evidence: ${review.latestCorrection?.evidence ?? "none"}\nCorrection summary: ${review.latestCorrection?.summary ?? "none"}\nCorrection verification: ${JSON.stringify(review.latestCorrection?.verification ?? [])}\nCorrection uncertainty: ${review.latestCorrection?.uncertainty ?? "none"}\nCorrection artifact: ${review.latestCorrection?.artifactPath ?? "none"}\nFinding epoch: ${review.round}\nPrior review evidence: ${JSON.stringify(review.evidence)}\nCurrent verification: ${JSON.stringify(candidate.implementationEvidence?.verification ?? [])}\nCurrent evidence status: ${candidate.evidenceStatus ?? "unavailable"}\nCurrent uncertainty: ${candidate.implementationEvidence?.uncertainty ?? "none"}\nCumulative publication subject: ${review.publicationCommitSubject ?? "not yet authored"}
+Publication evidence: ${JSON.stringify(args.state.publication.receipts)}
+Satisfaction evidence: ${JSON.stringify(args.state.satisfaction.receipts)}
 Open source review context: ${JSON.stringify(sourceResidualContext(args.state, args.plan), null, 2)}`,
     previousCandidate,
     candidate,
     comparisonBase: review.comparisonBase,
     findingEpoch: review.round,
     priorReviewEvidence: [...review.evidence],
+    priorHandoffDraft:
+      args.state.wholePlanReview.handoffDraft ??
+      "No prior handoff draft was retained.",
     ...(review.publicationCommitSubject
       ? { publicationCommitSubject: review.publicationCommitSubject }
       : {}),
@@ -743,7 +758,8 @@ Open source review context: ${JSON.stringify(sourceResidualContext(args.state, a
         currentCandidate: workerPacket.candidate.commitSha,
         worktreePath: workerPacket.workspace.path,
         authorPublicationCommitSubject:
-          workerPacket.completionKind === "initial-anchored-review",
+          workerPacket.completionKind === "initial-anchored-overall-review",
+        latestHandoffDraft: workerPacket.priorHandoffDraft,
       }),
   });
   let result:
@@ -792,8 +808,8 @@ Open source review context: ${JSON.stringify(sourceResidualContext(args.state, a
     changedPaths: actualChangedPaths,
     findingEpoch: review.round,
     completion: result.result as
-      | AnchoredWorkstreamReviewCompletion
-      | InitialAnchoredWorkstreamReviewCompletion,
+      | AnchoredOverallReviewCompletion
+      | InitialAnchoredOverallReviewCompletion,
     evidence,
   };
 }

@@ -24,6 +24,7 @@ describe("whole-plan and repair prompts", () => {
       baseSha: "run-base",
       previousCandidate: "previous-repair",
       currentCandidate: "current-repair",
+      latestHandoffDraft: "Prior handoff.",
       outstandingFindings: [],
     });
     const repair = buildOverallReworkPrompt({
@@ -56,6 +57,8 @@ describe("whole-plan and repair prompts", () => {
     expect(initial).toContain("run-base..published-current");
     expect(anchored).toContain("Comparison base SHA: run-base");
     expect(anchored).toContain("run-base..current-repair");
+    expect(anchored).toContain("Latest handoff draft");
+    expect(anchored).toContain("Preserve unaffected prose");
     expect(repair).toContain("run-base..current-repair");
   });
 
@@ -147,6 +150,9 @@ describe("whole-plan and repair prompts", () => {
       expect(prompt).not.toMatch(/blocking|advisory|disposition/);
     }
     expect(source).toContain("publication metadata, not approval");
+    expect(overall).toContain("Finalize the complete findings array");
+    expect(overall).toContain("roughly 150–300 words");
+    expect(overall).toContain("Material residual findings");
   });
 
   it("limits revision completion to observed changed or unchanged evidence", () => {

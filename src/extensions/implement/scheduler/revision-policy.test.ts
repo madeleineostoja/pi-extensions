@@ -3,6 +3,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { reduceRunEvent } from "./scheduler.js";
 import { validateRunState } from "../store.js";
 import {
+  publicationIntentId,
+  publicationPreparationId,
+  stagingIdentity,
+} from "../candidate-replay.js";
+import {
   cleanupSchedulerStores,
   createSchedulerStore,
 } from "./scheduler-test-support.js";
@@ -372,6 +377,71 @@ describe("revision policy", () => {
     });
   });
 
+  it("stores an initial approval draft and refuses blank drafts before completion", async () => {
+    const state = (await createSchedulerStore()).read();
+    state.phase = "whole_plan_review";
+    state.wholePlanReview = { status: "reviewing" };
+    const blank = reduceRunEvent(state, {
+      kind: "whole_plan_review_completed",
+      outcome: {
+        kind: "approved",
+        evidence: "initial review evidence",
+        handoffDraft: "   ",
+        reviewedTargetSha: "target-sha",
+        reviewedTargetTreeSha: "target-tree",
+      },
+    });
+    expect(blank.accepted).toBe(false);
+
+    for (const handoffDraft of [undefined, "   "]) {
+      const withoutDraft = structuredClone(state);
+      withoutDraft.wholePlanReview = {
+        status: "approved",
+        evidence: "initial review evidence",
+        ...(handoffDraft === undefined ? {} : { handoffDraft }),
+        reviewedTargetSha: "target-sha",
+        reviewedTargetTreeSha: "target-tree",
+      };
+      for (const workstream of Object.values(withoutDraft.workstreams.source)) {
+        workstream.phase = "completed";
+      }
+      expect(
+        reduceRunEvent(withoutDraft, {
+          kind: "run_completed",
+          targetSha: "target-sha",
+          targetTreeSha: "target-tree",
+        }).accepted,
+      ).toBe(false);
+    }
+
+    const approved = reduceRunEvent(state, {
+      kind: "whole_plan_review_completed",
+      outcome: {
+        kind: "approved",
+        evidence: "initial review evidence",
+        handoffDraft: "Initial approved reviewer handoff.",
+        reviewedTargetSha: "target-sha",
+        reviewedTargetTreeSha: "target-tree",
+      },
+    });
+    expect(approved.accepted).toBe(true);
+    expect(approved.state.wholePlanReview).toMatchObject({
+      status: "approved",
+      handoffDraft: "Initial approved reviewer handoff.",
+    });
+
+    for (const workstream of Object.values(approved.state.workstreams.source)) {
+      workstream.phase = "completed";
+    }
+    expect(
+      reduceRunEvent(approved.state, {
+        kind: "run_completed",
+        targetSha: "target-sha",
+        targetTreeSha: "target-tree",
+      }).accepted,
+    ).toBe(true);
+  });
+
   it("creates one canonical whole-plan finding ledger shared with its repair", async () => {
     const completed = await wholePlanRepairResult();
     const ids = ["overall-repair-1-r1", "overall-repair-1-r2"];
@@ -379,6 +449,7 @@ describe("revision policy", () => {
     expect(completed.accepted).toBe(true);
     expect(completed.state.wholePlanReview).toMatchObject({
       status: "repairing",
+      handoffDraft: "Initial whole-plan handoff.",
       epoch: { findingIds: ids, pendingCorrectionIds: ids },
     });
     expect(completed.state.reviews["overall:repair-1"]).toMatchObject({
@@ -450,6 +521,50 @@ describe("revision policy", () => {
       verification: ["Inspected the existing behavior."],
       uncertainty: "Runtime verification could not start.",
       artifactPath: "/artifacts/repair.json",
+    });
+
+    const reviewRequested = reduceRunEvent(completed.state, {
+      kind: "review_requested",
+      workstream: implementation.workstream,
+      now: "2026-01-01T00:02:00.000Z",
+    });
+    const review = reviewRequested.effects[0]!;
+    if (review.kind !== "run_review") {
+      throw new Error("expected final overall review");
+    }
+    const settled = reduceRunEvent(reviewRequested.state, {
+      kind: "review_completed",
+      workstream: review.workstream,
+      leaseId: review.leaseId,
+      outcome: {
+        kind: "anchored",
+        candidateId: "overall:run-1:repair-1:target-sha",
+        previousCandidateId: "overall-baseline:run-1:repair-1:target-sha",
+        comparisonBase: "target-sha",
+        changedPaths: [],
+        findingEpoch: 0,
+        evidence: "unchanged overall repair assessment",
+        completion: {
+          assessments: completed.state.wholePlanReview.epoch!.findingIds.map(
+            (id) => ({
+              id,
+              status: "unresolved" as const,
+              evidence: "Open.",
+              summary: "Residual whole-plan finding.",
+              requiredChange: "Resolve the retained finding.",
+              acceptanceCriteria: ["The finding is resolved."],
+            }),
+          ),
+          regressions: [],
+          handoffDraft: "Replacement handoff after unchanged repair.",
+        },
+      },
+    });
+
+    expect(settled.accepted).toBe(true);
+    expect(settled.state.wholePlanReview).toMatchObject({
+      status: "approved",
+      handoffDraft: "Replacement handoff after unchanged repair.",
     });
   });
 
@@ -715,6 +830,7 @@ describe("revision policy", () => {
         evidence: "repair assessment",
         completion: {
           publicationCommitSubject: "fix: repair whole plan",
+          handoffDraft: "Replacement whole-plan handoff.",
           assessments: [
             {
               id: findingIds[0]!,
@@ -742,7 +858,236 @@ describe("revision policy", () => {
     expect(assessed.state.wholePlanReview.epoch?.pendingCorrectionIds).toEqual(
       [],
     );
+    expect(assessed.state.wholePlanReview.handoffDraft).toBe(
+      "Replacement whole-plan handoff.",
+    );
     expect(() => validate(assessed.state)).not.toThrow();
+
+    const reconciliation = reduceRunEvent(assessed.state, {
+      kind: "reconciliation_requested",
+      workstream,
+      now: "2026-01-01T00:02:00.000Z",
+    });
+    const reconciliationEffect = reconciliation.effects[0]!;
+    if (reconciliationEffect.kind !== "run_reconciliation") {
+      throw new Error("expected overall repair reconciliation");
+    }
+    const candidate = reconciliation.state.candidates[candidateId]!;
+    const staging = stagingIdentity({
+      runId: reconciliation.state.run.id,
+      operationId: reconciliationEffect.leaseId,
+      candidateId: candidate.id,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      targetBaseSha: candidate.baseSha,
+      targetRef: reconciliation.state.run.checkout.branchRef,
+    });
+    const preparationInput = {
+      operationId: reconciliationEffect.leaseId,
+      candidateId: candidate.id,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      targetBaseSha: candidate.baseSha,
+      targetRef: reconciliation.state.run.checkout.branchRef,
+      preparedCommitSha: "published-repair-sha",
+      preparedTreeSha: "published-repair-tree",
+      stagingWorktree: join(
+        reconciliation.state.run.checkout.root,
+        ".pi",
+        "pipkin",
+        "implement",
+        "worktrees",
+        reconciliation.state.run.id,
+        staging.id,
+      ),
+      stagingBranch: staging.branchName,
+      replayPatchHash: "a".repeat(64),
+      changedPaths: ["src/repair.ts"],
+      disposition: "same_base" as const,
+      hookEvidence: "commit hook passed",
+      hookCommand: {
+        command: "git commit",
+        cwd: "staging",
+        exitCode: 0,
+        timedOut: false,
+        output: "passed",
+      },
+    };
+    const preparation = {
+      id: publicationPreparationId({
+        runId: reconciliation.state.run.id,
+        preparation: preparationInput,
+      }),
+      ...preparationInput,
+    };
+    const prepared = reduceRunEvent(reconciliation.state, {
+      kind: "publication_preparation_recorded",
+      operationId: reconciliationEffect.leaseId,
+      preparation,
+    });
+    const intent = {
+      id: publicationIntentId({
+        runId: prepared.state.run.id,
+        operationId: reconciliationEffect.leaseId,
+        preparation,
+      }),
+      operationId: reconciliationEffect.leaseId,
+      workstream,
+      candidateId: candidate.id,
+      preparationId: preparation.id,
+      targetBaseSha: preparation.targetBaseSha,
+      preparedCommitSha: preparation.preparedCommitSha,
+      preparedTreeSha: preparation.preparedTreeSha,
+      targetRef: preparation.targetRef,
+      protectedArtifactSnapshots: {},
+      protectedArtifactHashes: {},
+    };
+    const intended = reduceRunEvent(prepared.state, {
+      kind: "publication_intent_recorded",
+      operationId: reconciliationEffect.leaseId,
+      intent,
+    });
+    const publication = reduceRunEvent(intended.state, {
+      kind: "reconciliation_completed",
+      workstream,
+      leaseId: reconciliationEffect.leaseId,
+      outcome: {
+        kind: "prepared",
+        evidence: "prepared overall repair",
+        workspace: {
+          id: staging.id,
+          checkpoint: preparation.preparedCommitSha,
+          changedPaths: preparation.changedPaths,
+          targetSha: preparation.targetBaseSha,
+          stateEvidence: "prepared overall repair",
+          stagingComparison: {
+            baseSha: preparation.targetBaseSha,
+            treeSha: preparation.preparedTreeSha,
+          },
+        },
+      },
+    });
+    const publicationEffect = publication.effects[0]!;
+    if (publicationEffect.kind !== "run_publication") {
+      throw new Error("expected overall repair publication");
+    }
+    const receipted = reduceRunEvent(publication.state, {
+      kind: "publication_receipt_recorded",
+      operationId: publicationEffect.leaseId,
+      receipt: {
+        operationId: publicationEffect.leaseId,
+        intentId: intent.id,
+        candidateId: candidate.id,
+        targetBaseSha: intent.targetBaseSha,
+        publishedCommitSha: intent.preparedCommitSha,
+        publishedTreeSha: intent.preparedTreeSha,
+        targetRef: intent.targetRef,
+        protectedArtifactHashes: intent.protectedArtifactHashes,
+        publishedAt: "2026-01-01T00:03:00.000Z",
+      },
+    });
+    const published = reduceRunEvent(receipted.state, {
+      kind: "publication_completed",
+      workstream,
+      leaseId: publicationEffect.leaseId,
+      intentId: intent.id,
+    });
+
+    expect(published.accepted).toBe(true);
+    expect(published.state.wholePlanReview).toMatchObject({
+      status: "approved",
+      handoffDraft: "Replacement whole-plan handoff.",
+      reviewedTargetSha: "published-repair-sha",
+      reviewedTargetTreeSha: "published-repair-tree",
+    });
+  });
+
+  it("replaces the draft on a later anchored review while residual findings remain deliverable", async () => {
+    const state = (await wholePlanRepairResult()).state;
+    const repairId = "repair-1";
+    const workstream = { kind: "overall" as const, repairId };
+    const baselineId = "overall-baseline:run-1:repair-1:target-sha";
+    const candidateId = "overall-repair:repair-1";
+    const findingIds = ["overall-repair-1-r1", "overall-repair-1-r2"];
+    state.phase = "whole_plan_review";
+    state.candidates[candidateId] = {
+      id: candidateId,
+      workstream,
+      baseSha: "target-sha",
+      commitSha: "repair-sha",
+      treeSha: "repair-tree",
+    };
+    state.workstreams.overall[repairId] = {
+      ...state.workstreams.overall[repairId]!,
+      phase: "completed",
+      candidateId,
+    };
+    state.reviews["overall:repair-1"] = {
+      ...state.reviews["overall:repair-1"]!,
+      candidateId,
+      previousCandidateId: baselineId,
+      latestCorrection: {
+        fromCandidateId: baselineId,
+        changedPaths: ["src/repair.ts"],
+        evidence: "repair evidence",
+        mode: "changed",
+      },
+      publicationCommitSubject: "fix: repair whole plan",
+    };
+    state.wholePlanReview = {
+      status: "reviewing",
+      handoffDraft: "Initial whole-plan handoff.",
+      epoch: {
+        ...state.wholePlanReview.epoch!,
+        latestRepair: {
+          candidateId,
+          targetBaseSha: "target-sha",
+          publishedCommitSha: "repair-sha",
+          publishedTreeSha: "repair-tree",
+          changedPaths: ["src/repair.ts"],
+        },
+      },
+    };
+
+    const reviewed = reduceRunEvent(state, {
+      kind: "whole_plan_review_completed",
+      outcome: {
+        kind: "anchored",
+        evidence: "later overall review evidence",
+        reviewedTargetSha: "repair-sha",
+        reviewedTargetTreeSha: "repair-tree",
+        completion: {
+          assessments: findingIds.map((id) => ({
+            id,
+            status: "unresolved" as const,
+            evidence: "Representative verification remains unavailable.",
+            summary: "Representative verification",
+            requiredChange: "Add representative verification.",
+            acceptanceCriteria: ["Verification covers the target."],
+          })),
+          regressions: [],
+          handoffDraft: "Final replacement handoff with residual verification.",
+        },
+      },
+    });
+
+    expect(reviewed.accepted).toBe(true);
+    expect(reviewed.state.wholePlanReview).toMatchObject({
+      status: "approved",
+      handoffDraft: "Final replacement handoff with residual verification.",
+    });
+    expect(reviewed.state.findings[findingIds[0]!]?.status).toBe("open");
+    expect(reviewed.effects).toEqual([]);
+    for (const source of Object.values(reviewed.state.workstreams.source)) {
+      source.phase = "completed";
+    }
+    const terminal = reduceRunEvent(reviewed.state, {
+      kind: "run_completed",
+      targetSha: "repair-sha",
+      targetTreeSha: "repair-tree",
+    });
+    expect(terminal.accepted).toBe(true);
+    expect(terminal.effects).toEqual([]);
   });
 
   it("sends an unchanged correction through one final review without failing the lane", async () => {
@@ -950,6 +1295,7 @@ async function wholePlanRepairResult() {
         },
       ],
       evidence: "whole-plan review artifact",
+      handoffDraft: "Initial whole-plan handoff.",
       reviewedTargetSha: "target-sha",
       reviewedTargetTreeSha: "target-tree",
     },

@@ -9,7 +9,7 @@ import {
 import { sha256 } from "./source-integrity.js";
 import { loadRequirementsContext } from "./requirements-context.js";
 import {
-  type AnchoredWorkstreamReviewCompletion,
+  type AnchoredOverallReviewCompletion,
   type InitialOverallReviewCompletion,
 } from "./result-schemas.js";
 import type { SchedulerEvent } from "./scheduler/scheduler.js";
@@ -20,7 +20,7 @@ import { spawnValidatedWorker } from "./worker-invocation.js";
 
 export type WholePlanReviewPacket = {
   role: "reviewer";
-  completionKind: "initial-overall-review" | "anchored-review";
+  completionKind: "initial-overall-review" | "anchored-overall-review";
   identity: string;
   workspace: { path: string; mutationBoundary: string };
   target: { commitSha: string; treeSha: string };
@@ -31,6 +31,8 @@ export type WholePlanReviewPacket = {
   receipts: RunState["publication"]["receipts"];
   uncertainty: string[];
   outstandingFindings: RunState["findings"][string][];
+  canonicalFindings: RunState["findings"][string][];
+  priorHandoffDraft?: string;
 };
 
 export function buildWholePlanReviewPacket(args: {
@@ -52,17 +54,43 @@ export function buildWholePlanReviewPacket(args: {
     args.plan,
   );
   const completed = Object.values(args.state.workstreams.source).map(
-    (workstream) => ({
-      id: workstream.id,
-      candidateId: workstream.candidateId,
-      phase: workstream.phase,
-      tasks: workstream.taskIds,
-    }),
+    (workstream) => {
+      const candidate = workstream.candidateId
+        ? args.state.candidates[workstream.candidateId]
+        : undefined;
+      const publication = Object.values(args.state.publication.receipts).find(
+        (receipt) => receipt.candidateId === workstream.candidateId,
+      );
+      const satisfaction = Object.values(args.state.satisfaction.receipts).find(
+        (receipt) => receipt.candidateId === workstream.candidateId,
+      );
+      return {
+        id: workstream.id,
+        taskIds: workstream.taskIds,
+        candidate: candidate
+          ? {
+              id: candidate.id,
+              commitSha: candidate.commitSha,
+              treeSha: candidate.treeSha,
+              changedPaths: candidate.changedPaths ?? [],
+              implementationEvidence: inlineImplementationEvidence(
+                candidate.implementationEvidence,
+              ),
+            }
+          : undefined,
+        delivery: publication
+          ? { kind: "publication", receipt: publication }
+          : satisfaction
+            ? { kind: "satisfaction", receipt: satisfaction }
+            : undefined,
+      };
+    },
   );
   const uncertainty = Object.values(args.state.candidates)
     .flatMap((candidate) => candidate.implementationEvidence?.uncertainty ?? [])
     .filter((value, index, all) => all.indexOf(value) === index);
   const sourceResiduals = sourceResidualContext(args.state, args.plan);
+  const latestOverallRepair = latestOverallRepairContext(args.state);
   return {
     role: "reviewer",
     completionKind: args.completionKind,
@@ -79,7 +107,26 @@ export function buildWholePlanReviewPacket(args: {
     baseSha: args.state.run.checkout.startHead,
     ...(args.previousSha ? { previousSha: args.previousSha } : {}),
     outstandingFindings: args.outstandingFindings,
+    canonicalFindings:
+      args.state.wholePlanReview.epoch?.findingIds.flatMap((id) => {
+        const finding = args.state.findings[id];
+        return finding ? [finding] : [];
+      }) ?? [],
+    ...(args.state.wholePlanReview.handoffDraft
+      ? { priorHandoffDraft: args.state.wholePlanReview.handoffDraft }
+      : {}),
     planContext: [
+      "## Source plan identity and intended outcome",
+      JSON.stringify(
+        {
+          source: args.state.run.source,
+          executionPlanHash: args.plan.executionPlanHash,
+          intendedOutcome:
+            "Deliver the complete compiled plan on the reviewed target with durable publication or satisfaction evidence.",
+        },
+        null,
+        2,
+      ),
       "## Complete compiled contracts",
       JSON.stringify(requirements.contracts, null, 2),
       "## Complete frozen source corpus",
@@ -92,33 +139,60 @@ export function buildWholePlanReviewPacket(args: {
     candidateContext: [
       `Run base: ${args.state.run.checkout.startHead}`,
       `Current target: ${args.currentTargetSha}`,
-      "## Source workstreams and verification evidence",
+      "## Delivered workstreams, public behavior, interfaces, and implementation decisions",
+      JSON.stringify(completed, null, 2),
+      ...(latestOverallRepair
+        ? [
+            "## Latest published whole-plan repair candidate",
+            JSON.stringify(latestOverallRepair, null, 2),
+          ]
+        : []),
+      "## Publication and satisfaction evidence",
       JSON.stringify(
-        completed.map((workstream) => ({
-          ...workstream,
-          verification: workstream.candidateId
-            ? inlineImplementationEvidence(
-                args.state.candidates[workstream.candidateId]
-                  ?.implementationEvidence,
-              )
-            : undefined,
-        })),
+        {
+          publication: args.state.publication.receipts,
+          satisfaction: args.state.satisfaction.receipts,
+        },
         null,
         2,
       ),
-      "## Publication receipts",
-      JSON.stringify(args.state.publication.receipts, null, 2),
       "## Open source review context",
       sourceResiduals.length > 0
         ? JSON.stringify(sourceResiduals, null, 2)
         : "No open source findings.",
-      "## Implementer uncertainty",
+      "## Retained verification and uncertainty",
       uncertainty.length > 0
         ? uncertainty.map((item) => `- ${item}`).join("\n")
-        : "None retained.",
+        : "No retained uncertainty.",
     ].join("\n\n"),
     receipts: args.state.publication.receipts,
     uncertainty,
+  };
+}
+
+function latestOverallRepairContext(state: RunState) {
+  const latestRepair = state.wholePlanReview.epoch?.latestRepair;
+  const candidate = latestRepair
+    ? state.candidates[latestRepair.candidateId]
+    : undefined;
+  if (!latestRepair || !candidate) {
+    return undefined;
+  }
+  return {
+    id: candidate.id,
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    changedPaths: candidate.changedPaths ?? latestRepair.changedPaths,
+    evidenceStatus: candidate.evidenceStatus ?? "unavailable",
+    implementationEvidence: inlineImplementationEvidence(
+      candidate.implementationEvidence,
+    ),
+    publication: Object.values(state.publication.receipts).filter(
+      (receipt) => receipt.candidateId === candidate.id,
+    ),
+    satisfaction: Object.values(state.satisfaction.receipts).filter(
+      (receipt) => receipt.candidateId === candidate.id,
+    ),
   };
 }
 
@@ -240,7 +314,9 @@ export async function runWholePlanReview(args: {
     currentTargetSha: target,
     currentTargetTreeSha: targetTree,
     ...(anchored ? { previousSha: anchored.targetBaseSha } : {}),
-    completionKind: anchored ? "anchored-review" : "initial-overall-review",
+    completionKind: anchored
+      ? "anchored-overall-review"
+      : "initial-overall-review",
     outstandingFindings,
   });
   const handle = await spawnValidatedWorker({
@@ -258,7 +334,9 @@ export async function runWholePlanReview(args: {
             candidateContext: workerPacket.candidateContext,
             baseSha: workerPacket.baseSha,
             outstandingFindings: workerPacket.outstandingFindings as never,
+            completeFindings: workerPacket.canonicalFindings as never,
             previousCandidate: workerPacket.previousSha!,
+            latestHandoffDraft: workerPacket.priorHandoffDraft!,
             currentCandidate: workerPacket.target.commitSha,
             worktreePath: workerPacket.workspace.path,
           })
@@ -297,7 +375,7 @@ export async function runWholePlanReview(args: {
       kind: "whole_plan_review_completed",
       outcome: {
         kind: "anchored",
-        completion: result.result as AnchoredWorkstreamReviewCompletion,
+        completion: result.result as AnchoredOverallReviewCompletion,
         evidence,
         reviewedTargetSha: target,
         reviewedTargetTreeSha: targetTree,
@@ -311,6 +389,7 @@ export async function runWholePlanReview(args: {
       outcome: {
         kind: "approved",
         evidence,
+        handoffDraft: completion.handoffDraft,
         reviewedTargetSha: target,
         reviewedTargetTreeSha: targetTree,
       },
@@ -332,6 +411,7 @@ export async function runWholePlanReview(args: {
       },
       findings: completion.findings,
       evidence,
+      handoffDraft: completion.handoffDraft,
       reviewedTargetSha: target,
       reviewedTargetTreeSha: targetTree,
     },
@@ -348,6 +428,7 @@ export async function completeWholePlanRun(args: {
     review.status !== "approved" ||
     !review.reviewedTargetSha ||
     !review.reviewedTargetTreeSha ||
+    !review.handoffDraft?.trim() ||
     !(await args.git.isCleanExcept(
       Object.keys(args.state.protectedArtifactHashes),
     )) ||
