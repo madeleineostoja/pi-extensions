@@ -64,6 +64,7 @@ const expectedTools = {
   package_search: "src/extensions/reference/index.ts",
   code_search: "src/extensions/reference/index.ts",
   web_fetch: "src/extensions/web/index.ts",
+  batch_web_fetch: "src/extensions/web/index.ts",
   propose_papercut: "src/extensions/papercuts/index.ts",
 };
 
@@ -446,9 +447,13 @@ describe("Pipkin bundle", () => {
         relativeExtensionPath(extension) === "src/extensions/web/index.ts",
     );
     const webFetch = web?.tools.get("web_fetch")?.definition;
+    const batchWebFetch = web?.tools.get("batch_web_fetch")?.definition;
     expect(webFetch?.renderShell).toBeUndefined();
     expect(webFetch?.renderCall).toBeUndefined();
     expect(webFetch?.renderResult).toBeUndefined();
+    expect(batchWebFetch?.renderShell).toBeUndefined();
+    expect(batchWebFetch?.renderCall).toBeUndefined();
+    expect(batchWebFetch?.renderResult).toBeUndefined();
     await expect(
       webFetch?.execute(
         "blocked-web-fetch",

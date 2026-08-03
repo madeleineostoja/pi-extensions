@@ -96,6 +96,40 @@ describe("context epochs", () => {
     );
   });
 
+  it("treats successful Web Fetch results as ordinary standard-stale results", () => {
+    const singleContent = `Requested URL: https://example.com/one\n\n${"first result ".repeat(400)}`;
+    const batchContent = `# Batch Web Fetch\n\n## Item 1: https://example.com/two\nStatus: succeeded\n\n${"second result ".repeat(400)}`;
+    const single = toolResult("web-single", singleContent, "web_fetch");
+    const batch = toolResult("web-batch", batchContent, "batch_web_fetch");
+    for (const source of [single, batch]) {
+      const messages = [
+        source,
+        { role: "user" as const, content: "one" },
+        { role: "user" as const, content: "two" },
+        { role: "user" as const, content: "three" },
+        { role: "user" as const, content: "four" },
+      ];
+      const appended: any[] = [];
+      const append = (type: string, data: any) => appended.push({ type, data });
+      const result = makeContextHook(createPruningState(), append)(
+        { type: "context", messages } as any,
+        context(messages, [], append).ctx as any,
+      );
+
+      expect(appended[0]?.data.decisions).toEqual([
+        expect.objectContaining({
+          sourceToolCallId: source.toolCallId,
+          reason: "standard-stale",
+        }),
+      ]);
+      expect((result.messages[0] as any).content[0].text).toContain(
+        `context_recall("${source.toolCallId}")`,
+      );
+    }
+    expect(single.content[0].text).toBe(singleContent);
+    expect(batch.content[0].text).toBe(batchContent);
+  });
+
   it("replays a legacy v1 epoch without changing its stored stub", () => {
     const stub =
       '[tool result elided: stale. Call context_recall("source") to retrieve.]';

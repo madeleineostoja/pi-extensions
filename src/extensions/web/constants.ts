@@ -12,4 +12,9 @@ export const LIMITS = {
   maxChars: 40_000,
   urlChars: 2_000,
   metadataChars: 512,
+  batchItems: 8,
+  batchWorkers: 4,
+  batchDeadlineMs: 120_000,
+  batchItemReserveBytes: 3_072,
+  batchItemReserveLines: 12,
 } as const;

@@ -29,7 +29,20 @@ export const WebFetchParameters = Type.Object(
 export type WebFetchInput = Static<typeof WebFetchParameters>;
 export type NormalizedWebFetchInput = Required<WebFetchInput>;
 
+export const BatchWebFetchParameters = Type.Object(
+  {
+    requests: Type.Array(WebFetchParameters, {
+      minItems: 1,
+      maxItems: LIMITS.batchItems,
+      description: "One to eight public Web Fetch requests.",
+    }),
+  },
+  { additionalProperties: false },
+);
+export type BatchWebFetchInput = Static<typeof BatchWebFetchParameters>;
+
 export function normalizeInput(input: WebFetchInput): NormalizedWebFetchInput {
+  assertInputShape(input);
   const url = input.url.trim();
   if (
     !url ||
@@ -52,4 +65,65 @@ export function normalizeInput(input: WebFetchInput): NormalizedWebFetchInput {
     removeImages: input.removeImages ?? true,
     includeReplies: input.includeReplies ?? "extractors",
   };
+}
+
+export function normalizeBatchInput(
+  input: BatchWebFetchInput,
+): NormalizedWebFetchInput[] {
+  if (
+    !isRecord(input) ||
+    !hasOnly(input, ["requests"]) ||
+    !Array.isArray(input.requests) ||
+    input.requests.length < 1 ||
+    input.requests.length > LIMITS.batchItems
+  ) {
+    throw new WebError(
+      "content",
+      "Batch Web Fetch requires one to eight valid requests.",
+    );
+  }
+  return input.requests.map((request) => normalizeInput(request));
+}
+
+function assertInputShape(input: WebFetchInput): void {
+  if (
+    !isRecord(input) ||
+    !hasOnly(input, [
+      "url",
+      "format",
+      "maxChars",
+      "timeoutMs",
+      "removeImages",
+      "includeReplies",
+    ]) ||
+    typeof input.url !== "string" ||
+    (input.format !== undefined &&
+      !["markdown", "html", "text", "json", "raw"].includes(input.format)) ||
+    (input.maxChars !== undefined &&
+      (!Number.isInteger(input.maxChars) ||
+        input.maxChars < 1 ||
+        input.maxChars > LIMITS.maxChars)) ||
+    (input.timeoutMs !== undefined &&
+      (!Number.isInteger(input.timeoutMs) ||
+        input.timeoutMs < 1_000 ||
+        input.timeoutMs > LIMITS.maxTimeoutMs)) ||
+    (input.removeImages !== undefined &&
+      typeof input.removeImages !== "boolean") ||
+    (input.includeReplies !== undefined &&
+      typeof input.includeReplies !== "boolean" &&
+      input.includeReplies !== "extractors")
+  ) {
+    throw new WebError("content", "Web Fetch request has an invalid schema.");
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnly(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
 }

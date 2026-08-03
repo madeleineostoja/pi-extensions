@@ -3,7 +3,7 @@ import {
   type AgentToolUpdateCallback,
 } from "@earendil-works/pi-coding-agent";
 import { ArtifactStore, ARTIFACT_LIMITS, type Artifact } from "./artifacts.js";
-import { assertActive } from "./cancellation.js";
+import { assertActive, type Deadline } from "./cancellation.js";
 import { LIMITS } from "./constants.js";
 import { abortReason, WebError } from "./errors.js";
 import {
@@ -27,10 +27,11 @@ export type WebFetchResult = {
   details: Record<string, unknown>;
 };
 
-type WebFetchDependencies = {
+export type WebFetchDependencies = {
   transport?: WebTransport;
   extractHtml?: typeof extractHtml;
   artifacts?: ArtifactStore;
+  deadline?: Deadline;
 };
 
 export async function executeWebFetch(
@@ -40,7 +41,8 @@ export async function executeWebFetch(
   dependencies: WebFetchDependencies = {},
 ): Promise<WebFetchResult> {
   const request = normalizeInput(input);
-  const deadline = createInvocationDeadline(request.timeoutMs);
+  const deadline =
+    dependencies.deadline ?? createInvocationDeadline(request.timeoutMs);
   const transport = dependencies.transport ?? createWebTransport();
   const extract = dependencies.extractHtml ?? extractHtml;
   const artifacts = dependencies.artifacts ?? new ArtifactStore();
