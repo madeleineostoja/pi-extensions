@@ -1,7 +1,10 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createEventBus } from "@earendil-works/pi-coding-agent";
+import {
+  createEventBus,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   createManagedSessionHarness,
@@ -13,12 +16,31 @@ import { executeSandboxBash } from "#sandbox/bash";
 import { bindSandboxBashExecutor } from "../../src/extensions/sandbox/bash-binding.ts";
 import context from "../../src/extensions/context/index.ts";
 import sandbox from "../../src/extensions/sandbox/index.ts";
-import { bindSandboxHost } from "../../src/extensions/sandbox/runtime.ts";
+import {
+  bindSandboxHost,
+  prepareSandboxChild,
+} from "../../src/extensions/sandbox/runtime.ts";
 import { SubagentRuntime } from "../../src/extensions/subagents/runtime.ts";
 import { RuntimeSubagentClient } from "../../src/extensions/implement/subagents.ts";
 import { afterEach, describe, expect, it } from "vitest";
 
 const directories: string[] = [];
+
+function captureChildSandboxMode(value: { mode?: boolean }) {
+  return (pi: ExtensionAPI): void => {
+    pi.on("session_start", () => {
+      const probeBus = createEventBus();
+      const pending = prepareSandboxChild(pi.events, probeBus);
+      if (!pending) {
+        return;
+      }
+      const probe = bindSandboxHost(probeBus, () => true);
+      value.mode = probe.inheritedEnabled;
+      probe.dispose();
+      pending.dispose();
+    });
+  };
+}
 
 afterEach(async () => {
   while (directories.length) {
@@ -37,6 +59,7 @@ describe("Sandbox child binding", () => {
       content: [{ type: "text" as const, text: "parent executor" }],
       details: undefined,
     }));
+    const childSandbox = {} as { mode?: boolean };
     const harness = await createManagedSessionHarness(
       [
         fauxAssistantMessage(
@@ -58,7 +81,13 @@ describe("Sandbox child binding", () => {
         ),
         fauxAssistantMessage("child handoff"),
       ],
-      { extensionFactories: [sandbox, context] },
+      {
+        extensionFactories: [
+          sandbox,
+          context,
+          captureChildSandboxMode(childSandbox),
+        ],
+      },
     );
     const runtime = new SubagentRuntime(
       {
@@ -140,6 +169,7 @@ describe("Sandbox child binding", () => {
         ]),
       );
       expect(childBus).not.toBe(parentBus);
+      expect(childSandbox.mode).toBe(false);
       await expect(
         executeSandboxBash(childBus, {
           toolCallId: "child-after-shutdown",

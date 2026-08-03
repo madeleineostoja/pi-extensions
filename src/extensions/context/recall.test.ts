@@ -171,8 +171,9 @@ describe("context_recall", () => {
     ]).execute;
     const matches = await execute({ id: "source", find: "match" });
     expect(matches.content[0].text).toContain(
-      "Additional matches were not selected as anchors",
+      "Additional matches were not selected as anchors; narrow the literal to select a smaller set.",
     );
+    expect(matches.content[0].text).toContain("11 | match 10");
     expect(matches.content[0].text).not.toContain("matches shown");
     expect(matches.details.selector).toMatchObject({
       totalMatches: 11,
@@ -216,9 +217,14 @@ describe("context_recall", () => {
     );
   });
 
-  it("identifies whitespace-sensitive literals without changing their meaning", async () => {
+  it("identifies whitespace-sensitive literals with unambiguous labels", async () => {
     const execute = recall([
-      toolResult("source", [{ type: "text", text: "foo bar\nfoo\tbar" }]),
+      toolResult("source", [
+        {
+          type: "text",
+          text: 'foo bar\nfoo\tbar\nfoo\\tbar\nfoo\\nbar\nquoted "value" \\tail',
+        },
+      ]),
     ]).execute;
     const repeatedSpace = await execute({ id: "source", find: "foo  bar" });
     expect(repeatedSpace.content[0].text).toContain(
@@ -226,8 +232,21 @@ describe("context_recall", () => {
     );
     const tab = await execute({ id: "source", find: "foo\tbar" });
     expect(tab.content[0].text).toContain('Matches for "foo\\tbar"');
+    const literalTab = await execute({ id: "source", find: "foo\\tbar" });
+    expect(literalTab.content[0].text).toContain('Matches for "foo\\\\tbar"');
     const newline = await execute({ id: "source", find: "foo\nbar" });
     expect(newline.content[0].text).toContain('No matches for "foo\\nbar"');
+    const literalNewline = await execute({ id: "source", find: "foo\\nbar" });
+    expect(literalNewline.content[0].text).toContain(
+      'Matches for "foo\\\\nbar"',
+    );
+    const quoted = await execute({
+      id: "source",
+      find: 'quoted "value" \\tail',
+    });
+    expect(quoted.content[0].text).toContain(
+      'Matches for "quoted \\"value\\" \\\\tail"',
+    );
   });
 
   it("rejects searches and slices for image or multi-block sources", async () => {

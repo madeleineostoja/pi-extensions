@@ -309,7 +309,7 @@ function searchText(
   ];
   if (matches.length > selected.length) {
     projection.push(
-      "Additional matches were not selected as anchors; narrow the literal to see them.",
+      "Additional matches were not selected as anchors; narrow the literal to select a smaller set.",
     );
   }
   projection.push("");
@@ -525,6 +525,12 @@ function shortenedId(value: string): string {
 
 function formatSearchQuery(value: string): string {
   const escaped = Array.from(stripVTControlCharacters(value), (character) => {
+    if (character === "\\") {
+      return "\\\\";
+    }
+    if (character === '"') {
+      return '\\"';
+    }
     if (character === "\t") {
       return "\\t";
     }
