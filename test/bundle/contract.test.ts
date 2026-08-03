@@ -40,6 +40,7 @@ const expectedExtensions = [
   "./src/extensions/subagents/index.ts",
   "./src/extensions/implement/index.ts",
   "./src/extensions/reference/index.ts",
+  "./src/extensions/web/index.ts",
   "./src/extensions/papercuts/index.ts",
   "./src/extensions/btw/index.ts",
 ];
@@ -62,6 +63,7 @@ const expectedTools = {
   docs: "src/extensions/reference/index.ts",
   package_search: "src/extensions/reference/index.ts",
   code_search: "src/extensions/reference/index.ts",
+  web_fetch: "src/extensions/web/index.ts",
   propose_papercut: "src/extensions/papercuts/index.ts",
 };
 
@@ -439,6 +441,23 @@ describe("Pipkin bundle", () => {
     expect(
       context?.tools.get("context_recall")?.definition.renderShell,
     ).toBeUndefined();
+    const web = fixture.result.extensions.find(
+      (extension) =>
+        relativeExtensionPath(extension) === "src/extensions/web/index.ts",
+    );
+    const webFetch = web?.tools.get("web_fetch")?.definition;
+    expect(webFetch?.renderShell).toBeUndefined();
+    expect(webFetch?.renderCall).toBeUndefined();
+    expect(webFetch?.renderResult).toBeUndefined();
+    await expect(
+      webFetch?.execute(
+        "blocked-web-fetch",
+        { url: "http://localhost" },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).rejects.toThrow("localhost");
   });
 
   it("keeps safety startup and reload handlers ordered and registers Sandbox", async () => {
@@ -456,7 +475,68 @@ describe("Pipkin bundle", () => {
     await fixture.loader.reload();
     fixture.result = fixture.loader.getExtensions();
     expect(fixture.result.errors).toEqual([]);
+    expect(provenanceMap(fixture.result.extensions, "tools")).toEqual(
+      expectedProvenance(expectedTools),
+    );
     await assertSafetyOrder(fixture, "reload");
+  });
+
+  it("persists a native error result for a forbidden web target", async () => {
+    const fixture = await loadBundle();
+    const faux = createFauxCore({});
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall(
+          "web_fetch",
+          { url: "http://localhost" },
+          { id: "blocked-web-fetch" },
+        ),
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("acknowledged"),
+    ]);
+    const sessionManager = SessionManager.inMemory(ROOT);
+    const resourceLoader = Object.create(
+      fixture.loader,
+    ) as DefaultResourceLoader;
+    resourceLoader.getExtensions = () => ({
+      ...fixture.result,
+      extensions: fixture.result.extensions.filter(
+        (extension) =>
+          relativeExtensionPath(extension) === "src/extensions/web/index.ts",
+      ),
+    });
+    const { session } = await createAgentSession({
+      cwd: ROOT,
+      model: faux.getModel(),
+      resourceLoader,
+      sessionManager,
+      settingsManager: SettingsManager.inMemory(),
+      tools: ["web_fetch"],
+    });
+
+    try {
+      await session.bindExtensions({ mode: "tui", uiContext: {} as never });
+      session.agent.streamFunction = faux.streamSimple;
+      await session.agent.prompt("fetch localhost");
+      const result = sessionManager
+        .buildSessionContext()
+        .messages.find(
+          (message) =>
+            message.role === "toolResult" &&
+            message.toolCallId === "blocked-web-fetch",
+        );
+
+      expect(result).toMatchObject({
+        isError: true,
+        content: [{ type: "text", text: expect.stringContaining("localhost") }],
+      });
+    } finally {
+      await (
+        session as unknown as { _extensionRunner: ExtensionRunner }
+      )._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+      session.dispose();
+    }
   });
 
   it("persists a native error result for a blocked direct write", async () => {

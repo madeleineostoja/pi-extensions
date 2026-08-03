@@ -10,6 +10,7 @@ const features = [
   "lsp",
   "subagents",
   "reference",
+  "web",
   "papercuts",
   "btw",
 ];

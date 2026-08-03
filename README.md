@@ -88,6 +88,10 @@ They can run in the foreground or alongside independent parent work, accept stee
 
 **[Reference →](docs/features/reference.md)**
 
+**Web Fetch** provides `web_fetch` for bounded readable retrieval from direct public URLs. It complements Reference: use `docs` for known-library documentation, `package_search` for package discovery, and `code_search` for public GitHub source.
+
+**[Web Fetch →](docs/features/web-fetch.md)**
+
 The read-only **LSP** tool finds definitions, types, implementations, references, symbols, hover information, and diagnostics for TypeScript/JavaScript, Svelte, and provisioned Ruby projects. It follows a pull-only model where the agent uses it deliberately, rather than interrupting turns with noise.
 
 **BTW** handles the small question that would otherwise derail the main thread: `/btw <question>` answers from current session context in a disposable full-screen surface and leaves the transcript alone.
@@ -116,6 +120,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | `docs`                            | Retrieve bounded Context7 documentation                              |
 | `package_search`                  | Discover separately ranked Context7, npm, and public GitHub packages |
 | `code_search`                     | Search bounded observed usage in explicitly public GitHub source     |
+| `web_fetch`                       | Retrieve bounded readable content from one public URL                |
 | `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents               |
 | `get_subagent_result`             | Inspect or join a background agent                                   |
 | `steer_subagent`                  | Queue guidance for a running background agent                        |
@@ -139,6 +144,7 @@ Those are operating constraints, not footnotes. The feature guides spell out whe
 - [Agents](docs/features/agents.md)
 - [Implementation](docs/features/implementation.md)
 - [Reference](docs/features/reference.md)
+- [Web Fetch](docs/features/web-fetch.md)
 - [Interface and Personality](docs/features/interface-and-personality.md)
 - [Workflow tools](docs/features/workflow-tools.md)
 - [Architecture](docs/architecture.md)

@@ -1,0 +1,15 @@
+export const LIMITS = {
+  responseBytes: 5 * 1024 * 1024,
+  requestBodyBytes: 1024 * 1024,
+  redirects: 5,
+  metaRefreshes: 5,
+  alternates: 3,
+  resultBytes: 48 * 1024,
+  resultLines: 1_900,
+  defaultTimeoutMs: 15_000,
+  maxTimeoutMs: 120_000,
+  defaultMaxChars: 40_000,
+  maxChars: 40_000,
+  urlChars: 2_000,
+  metadataChars: 512,
+} as const;

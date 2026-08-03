@@ -15,10 +15,11 @@ The root manifest loads the complete bundle in this order:
 7. Subagents
 8. Implement
 9. Reference
-10. Papercuts
-11. BTW
+10. Web Fetch
+11. Papercuts
+12. BTW
 
-Order is a runtime contract. Sandbox then Readonly form the safety prefix: Sandbox owns model Bash and direct workspace-write containment; Readonly retains the independent edit/write workflow. Subagents precedes Implement because Implement consumes its managed runtime.
+Order is a runtime contract. Sandbox then Readonly form the safety prefix: Sandbox owns model Bash and direct workspace-write containment; Readonly retains the independent edit/write workflow. Subagents precedes Implement because Implement consumes its managed runtime. Web Fetch follows Reference: Reference retains `docs`, `package_search`, and `code_search`, while Web Fetch owns direct public URL retrieval through `web_fetch`.
 
 The bundle integration suite loads the actual manifest through Pi's loader. It checks inventory, public registration ownership, source provenance, internal imports, startup/reload behavior, and safety ordering rather than recreating extension discovery in test code.
 
