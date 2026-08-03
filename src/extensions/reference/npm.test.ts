@@ -110,6 +110,26 @@ describe("npm package search boundary", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("normalizes temporary setup and cleanup failures without replacing cancellation", async () => {
+    await expect(
+      searchNpm("widget", 1, new AbortController().signal, {
+        makeDirectory: async () => {
+          throw new Error("/private/tmp/secret");
+        },
+      }),
+    ).rejects.toThrow("temporary setup failed");
+
+    const controller = new AbortController();
+    controller.abort("cancelled");
+    await expect(
+      searchNpm("widget", 1, controller.signal, {
+        removeDirectory: async () => {
+          throw new Error("/private/tmp/secret");
+        },
+      }),
+    ).rejects.toThrow("cancelled");
+  });
+
   it("constructs a credential-free allowlisted environment", () => {
     const environment = npmEnvironment(
       "/tmp/home",

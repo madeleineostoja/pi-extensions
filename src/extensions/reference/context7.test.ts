@@ -6,6 +6,22 @@ const response = (body: string, status = 200, headers?: HeadersInit) =>
   new Response(body, { status, headers });
 
 describe("Context7 fixed transport", () => {
+  it("does not issue an auth-bound request for a pre-cancelled caller", async () => {
+    const controller = new AbortController();
+    controller.abort("cancelled");
+    const fetcher = vi.fn();
+    const client = createContext7Transport({
+      fetch: fetcher as typeof fetch,
+      token: "secret",
+      signal: controller.signal,
+    });
+    await expect(client.search("widget", "question")).rejects.toMatchObject({
+      kind: "cancelled",
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    client.dispose();
+  });
+
   it("uses fixed endpoints and origin-scoped bearer authorization", async () => {
     const fetcher = vi.fn(async () =>
       response(
@@ -94,7 +110,11 @@ describe("Context7 fixed transport", () => {
             {
               codeTitle: "Install",
               codeLanguage: "ts",
-              codeList: [{ code: "const x = 1;\n\tuse(x)", codeId: "install" }],
+              codeId: "install",
+              codeList: [
+                { code: "const x = 1;\n\tuse(x)" },
+                { code: "const y = 2;\n\tuse(y)" },
+              ],
             },
           ],
           infoSnippets: [
@@ -113,6 +133,12 @@ describe("Context7 fixed transport", () => {
           language: "ts",
           location: "install",
           text: "const x = 1;\n\tuse(x)",
+        },
+        {
+          title: "Install",
+          language: "ts",
+          location: "install",
+          text: "const y = 2;\n\tuse(y)",
         },
         { title: "Guide", location: "guide", text: "First\nsecond" },
       ],

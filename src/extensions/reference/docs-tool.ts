@@ -242,13 +242,13 @@ function resolveDirect(input: NormalizedInput): Resolved {
   const parsed = parseContext7Id(input.subject)!;
   const existing = parsed.pin;
   const requested = input.version && normalizeVersion(input.version);
-  if (existing && requested && existing !== requested) {
+  if (existing !== undefined && requested && existing !== requested) {
     throw new Error(
       "The direct Context7 ID and version input specify conflicting exact versions.",
     );
   }
   const id =
-    existing || !input.version
+    existing !== undefined || !input.version
       ? input.subject
       : `${input.subject}/${input.version}`;
   if (!validId(id)) {
@@ -258,8 +258,13 @@ function resolveDirect(input: NormalizedInput): Resolved {
     id,
     subject: input.subject,
     mode: "direct",
-    state: existing || input.version ? "exact-version" : "provider-current",
-    ...(existing || requested ? { pin: existing ?? requested } : {}),
+    state:
+      existing !== undefined || input.version
+        ? "exact-version"
+        : "provider-current",
+    ...(existing !== undefined || requested !== undefined
+      ? { pin: existing ?? requested }
+      : {}),
     warnings: [],
   };
 }

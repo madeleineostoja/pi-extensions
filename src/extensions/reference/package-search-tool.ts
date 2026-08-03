@@ -465,17 +465,25 @@ function integer(value: unknown): number | undefined {
     : undefined;
 }
 function canonicalGithubUrl(value: unknown): string | undefined {
-  const raw = text(value, 500);
-  if (!raw) {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.length > 500 ||
+    hasControl(value)
+  ) {
     return undefined;
   }
+  const raw = value;
   try {
     const url = new URL(raw);
     return url.origin === "https://github.com" &&
       url.protocol === "https:" &&
       !url.username &&
-      !url.password
-      ? url.toString()
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      /^\/[^/]+\/[^/]+\/?$/.test(url.pathname)
+      ? raw
       : undefined;
   } catch {
     return undefined;

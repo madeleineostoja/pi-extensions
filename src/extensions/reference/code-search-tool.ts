@@ -1,7 +1,7 @@
 import { Type, type Static } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadGithubAuth } from "./auth.js";
-import { LIMITS, boundedText, byteLength, hasControl } from "./bounds.js";
+import { LIMITS, byteLength, hasControl } from "./bounds.js";
 import {
   createGithubSearch,
   normalizeGithubError,
@@ -217,22 +217,10 @@ function buildResult(input: NormalizedInput, payload: unknown): ToolResult {
       discarded++;
       continue;
     }
-    const match = normalizeMatch(item, repository, index + 1);
-    if (match) {
-      const textMatches = object(item)?.text_matches;
-      locallyTruncated ||=
-        Array.isArray(textMatches) &&
-        (textMatches.length > LIMITS.fragmentsPerMatch ||
-          textMatches.some((entry) => {
-            const fragment = object(entry);
-            return (
-              (typeof fragment?.fragment === "string" &&
-                fragment.fragment.length > LIMITS.fragmentChars) ||
-              (Array.isArray(fragment?.matches) &&
-                fragment.matches.length > LIMITS.offsetCount)
-            );
-          }));
-      results.push(match);
+    const normalized = normalizeMatch(item, repository, index + 1);
+    if (normalized) {
+      locallyTruncated ||= normalized.truncated;
+      results.push(normalized.match);
     } else {
       discarded++;
     }
@@ -289,7 +277,7 @@ function normalizeMatch(
   value: unknown,
   repository: Record<string, unknown>,
   rank: number,
-): CodeMatch | undefined {
+): { match: CodeMatch; truncated: boolean } | undefined {
   const item = object(value)!;
   const owner = strictText(
     object(repository.owner)?.login,
@@ -311,54 +299,89 @@ function normalizeMatch(
   ) {
     return undefined;
   }
-  const fragments = Array.isArray(item.text_matches)
+  const rawFragments = Array.isArray(item.text_matches)
     ? item.text_matches
-        .slice(0, LIMITS.fragmentsPerMatch)
-        .flatMap(normalizeFragment)
     : [];
+  const normalizedFragments = rawFragments
+    .slice(0, LIMITS.fragmentsPerMatch)
+    .flatMap(normalizeFragment);
+  const fragments = normalizedFragments.map(({ fragment }) => fragment);
   return {
-    rank,
-    repository: `${owner}/${name}`,
-    revision,
-    path,
-    url,
-    ...(fragments.length ? { fragments } : {}),
+    match: {
+      rank,
+      repository: `${owner}/${name}`,
+      revision,
+      path,
+      url,
+      ...(fragments.length ? { fragments } : {}),
+    },
+    truncated:
+      rawFragments.length > LIMITS.fragmentsPerMatch ||
+      normalizedFragments.some((fragment) => fragment.truncated),
   };
 }
-function normalizeFragment(
-  value: unknown,
-): Array<{ text: string; offsets: number[][] }> {
+function normalizeFragment(value: unknown): Array<{
+  fragment: { text: string; offsets: number[][] };
+  truncated: boolean;
+}> {
   const fragment = object(value);
-  const textValue = text(fragment?.fragment, LIMITS.fragmentChars);
+  const textValue = fragmentText(fragment?.fragment, LIMITS.fragmentChars);
   if (!fragment || !textValue) {
     return [];
   }
-  const offsets = Array.isArray(fragment.matches)
-    ? fragment.matches.slice(0, LIMITS.offsetCount).flatMap((match) => {
-        const indices = object(match)?.indices;
-        return Array.isArray(indices) &&
-          indices.length === 2 &&
-          indices.every(
-            (offset) =>
-              typeof offset === "number" &&
-              Number.isSafeInteger(offset) &&
-              offset >= 0,
-          )
-          ? [indices as number[]]
-          : [];
-      })
-    : [];
-  return [{ text: textValue, offsets }];
+  const rawOffsets = Array.isArray(fragment.matches) ? fragment.matches : [];
+  let truncated = textValue.truncated || rawOffsets.length > LIMITS.offsetCount;
+  const offsets = rawOffsets.slice(0, LIMITS.offsetCount).flatMap((match) => {
+    const indices = object(match)?.indices;
+    const valid =
+      Array.isArray(indices) &&
+      indices.length === 2 &&
+      indices.every(
+        (offset) =>
+          typeof offset === "number" &&
+          Number.isSafeInteger(offset) &&
+          offset >= 0,
+      ) &&
+      (indices[0] as number) <= (indices[1] as number) &&
+      (indices[1] as number) <= textValue.value.length;
+    if (!valid) {
+      truncated = true;
+      return [];
+    }
+    return [indices as number[]];
+  });
+  return [{ fragment: { text: textValue.value, offsets }, truncated }];
 }
 function object(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
 }
-function text(value: unknown, maximum: number): string | undefined {
-  return typeof value === "string" && !hasControl(value)
-    ? boundedText(value, maximum) || undefined
-    : undefined;
+function fragmentText(
+  value: unknown,
+  maximum: number,
+): { value: string; truncated: boolean } | undefined {
+  if (
+    typeof value !== "string" ||
+    [...value].some(
+      (character) => hasControl(character) && !/[\n\t]/.test(character),
+    )
+  ) {
+    return undefined;
+  }
+  const normalized = value
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    .trim();
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.length <= maximum
+    ? { value: normalized, truncated: false }
+    : {
+        value: `${normalized.slice(0, Math.max(0, maximum - 1))}…`,
+        truncated: true,
+      };
 }
 function strictText(value: unknown, maximum: number): string | undefined {
   return typeof value === "string" &&
@@ -368,18 +391,25 @@ function strictText(value: unknown, maximum: number): string | undefined {
     : undefined;
 }
 function canonicalBlobUrl(value: unknown): string | undefined {
-  const raw = text(value, 300);
-  if (!raw) {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.length > 300 ||
+    hasControl(value)
+  ) {
     return undefined;
   }
+  const raw = value;
   try {
     const url = new URL(raw);
     return url.origin === "https://github.com" &&
       url.protocol === "https:" &&
       !url.username &&
       !url.password &&
-      /\/[^/]+\/[^/]+\/blob\//.test(url.pathname)
-      ? url.toString()
+      !url.search &&
+      !url.hash &&
+      /^\/[^/]+\/[^/]+\/blob\/[^/]+\/.+/.test(url.pathname)
+      ? raw
       : undefined;
   } catch {
     return undefined;

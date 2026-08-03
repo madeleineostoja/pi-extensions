@@ -50,17 +50,38 @@ export async function searchNpm(
   query: string,
   limit: number,
   signal: AbortSignal,
-  dependencies: { run?: NpmRun; executable?: string } = {},
+  dependencies: {
+    run?: NpmRun;
+    executable?: string;
+    makeDirectory?: typeof mkdtemp;
+    writeConfig?: typeof writeFile;
+    removeDirectory?: typeof rm;
+  } = {},
 ): Promise<{ results: NpmPackage[]; discarded: number; truncated: boolean }> {
   if (signal.aborted) {
     throw aborted(signal);
   }
-  const directory = await mkdtemp(join(tmpdir(), "pipkin-npm-"));
+  let directory: string;
+  try {
+    directory = await (dependencies.makeDirectory ?? mkdtemp)(
+      join(tmpdir(), "pipkin-npm-"),
+    );
+  } catch {
+    throw new NpmError("provider", "npm search temporary setup failed.");
+  }
+  let primaryError: unknown;
   const userconfig = join(directory, "user.npmrc");
   const globalconfig = join(directory, "global.npmrc");
   const cache = join(directory, "cache");
   try {
-    await Promise.all([writeFile(userconfig, ""), writeFile(globalconfig, "")]);
+    try {
+      await Promise.all([
+        (dependencies.writeConfig ?? writeFile)(userconfig, ""),
+        (dependencies.writeConfig ?? writeFile)(globalconfig, ""),
+      ]);
+    } catch {
+      throw new NpmError("provider", "npm search temporary setup failed.");
+    }
     const args = [
       "search",
       "--json",
@@ -125,8 +146,29 @@ export async function searchNpm(
       throw new NpmError("provider", "npm search failed.");
     }
     return parseNpm(completed.stdout, limit);
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    await rm(directory, { force: true, recursive: true });
+    await cleanupDirectory(
+      dependencies.removeDirectory ?? rm,
+      directory,
+      primaryError,
+    );
+  }
+}
+
+async function cleanupDirectory(
+  removeDirectory: typeof rm,
+  directory: string,
+  primaryError: unknown,
+): Promise<void> {
+  try {
+    await removeDirectory(directory, { force: true, recursive: true });
+  } catch {
+    if (primaryError === undefined) {
+      throw new NpmError("provider", "npm search temporary cleanup failed.");
+    }
   }
 }
 
@@ -247,14 +289,24 @@ function packageFieldsWereShortened(value: unknown): boolean {
       [item?.date, LIMITS.dateChars],
       [item?.license, LIMITS.languageChars],
       [publisher?.username, LIMITS.languageChars],
-      [links?.homepage, 300],
-      [links?.repository, 300],
     ].some(
       ([field, maximum]) =>
-        typeof field === "string" && field.length > Number(maximum),
+        typeof field === "string" &&
+        (!optional(field, Number(maximum)) || field.length > Number(maximum)),
     ) ||
+    (typeof publisher?.username === "string" &&
+      publisher.username.includes("@")) ||
+    (typeof links?.homepage === "string" && !safeUrl(links.homepage)) ||
+    (typeof links?.repository === "string" &&
+      !safeRepositoryUrl(links.repository)) ||
     (Array.isArray(item?.keywords) &&
-      item.keywords.length > LIMITS.keywordCount)
+      (item.keywords.length > LIMITS.keywordCount ||
+        item.keywords.some(
+          (keyword) =>
+            typeof keyword !== "string" ||
+            !optional(keyword, LIMITS.languageChars) ||
+            keyword.length > LIMITS.languageChars,
+        )))
   );
 }
 
@@ -263,8 +315,13 @@ function field(
   maximum: number,
   validate: (value: string) => boolean,
 ): string | undefined {
-  const text = optional(value, maximum);
-  return text && validate(text) ? text : undefined;
+  return typeof value === "string" &&
+    !hasControl(value) &&
+    value.length <= maximum &&
+    value.trim() &&
+    validate(value.trim())
+    ? value.trim()
+    : undefined;
 }
 function optional(value: unknown, maximum: number): string | undefined {
   if (typeof value !== "string" || hasControl(value)) {
@@ -280,23 +337,27 @@ function validVersion(value: string): boolean {
   return /^[0-9A-Za-z][0-9A-Za-z._+-]*$/.test(value);
 }
 function safeUrl(value: unknown): string | undefined {
-  const text = optional(value, 300);
-  if (!text) {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.length > 300 ||
+    hasControl(value)
+  ) {
     return undefined;
   }
   try {
-    const url = new URL(text);
+    const url = new URL(value);
     return (url.protocol === "https:" || url.protocol === "http:") &&
       !url.username &&
       !url.password
-      ? url.toString()
+      ? value
       : undefined;
   } catch {
     return undefined;
   }
 }
 function safeRepositoryUrl(value: unknown): string | undefined {
-  return typeof value === "string"
+  return typeof value === "string" && value.length <= 300
     ? safeUrl(value.replace(/^git\+/, "").replace(/\.git$/, ""))
     : undefined;
 }

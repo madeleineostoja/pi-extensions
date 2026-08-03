@@ -158,7 +158,7 @@ function boundBody(
         return;
       }
       try {
-        const next = await reader.read();
+        const next = await readWithAbort(reader, signal);
         if (next.done) {
           controller.close();
           reader.releaseLock();
@@ -187,6 +187,29 @@ function boundBody(
     async cancel() {
       await reader.cancel();
     },
+  });
+}
+
+function readWithAbort(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      reject(cancelled(signal));
+      void reader.cancel();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(
+      (result) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(result);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
   });
 }
 

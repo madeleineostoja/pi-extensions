@@ -84,6 +84,36 @@ describe("GitHub fixed fetch adapter", () => {
     );
   });
 
+  it("cancels a stalled body read with the caller's classification", async () => {
+    const controller = new AbortController();
+    let cancelled = false;
+    let started!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        started();
+        return new Promise<void>(() => {});
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = await createGithubFetch(
+      vi.fn(async () => new Response(body)) as typeof fetch,
+    )(
+      new Request("https://api.github.com/search/code", {
+        signal: controller.signal,
+      }),
+    );
+    const read = response.text();
+    await reading;
+    controller.abort("cancelled");
+    await expect(read).rejects.toMatchObject({ kind: "cancelled" });
+    expect(cancelled).toBe(true);
+  });
+
   it("enforces the raw response limit before a consumer parses JSON", async () => {
     const body = new ReadableStream<Uint8Array>({
       start(controller) {

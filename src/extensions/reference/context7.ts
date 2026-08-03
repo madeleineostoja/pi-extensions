@@ -81,7 +81,11 @@ export function createContext7Transport(options: {
     Math.max(0, deadline - now()),
   );
   const abort = () => controller.abort();
-  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) {
+    controller.abort();
+  } else {
+    options.signal?.addEventListener("abort", abort, { once: true });
+  }
   const request = async (
     path: string,
     query: Record<string, string>,
@@ -174,6 +178,12 @@ async function requestJson(
         "Context7 is temporarily unavailable.",
       );
     }
+    const body = await readBoundedBytes(
+      response,
+      options.signal,
+      options.deadline,
+      options.now,
+    );
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
       if (location) {
@@ -199,14 +209,7 @@ async function requestJson(
         continue;
       }
       if (response.status === 301 && options.acceptsLogicalRedirect) {
-        return parseJson(
-          await readBounded(
-            response,
-            options.signal,
-            options.deadline,
-            options.now,
-          ),
-        );
+        return parseJson(decodeResponse(body));
       }
       throw new Context7Error(
         "redirect",
@@ -266,14 +269,7 @@ async function requestJson(
         "Context7 returned an unsupported documentation response.",
       );
     }
-    return parseJson(
-      await readBounded(
-        response,
-        options.signal,
-        options.deadline,
-        options.now,
-      ),
-    );
+    return parseJson(decodeResponse(body));
   }
 }
 
@@ -288,20 +284,21 @@ function parseJson(text: string): unknown {
   }
 }
 
-async function readBounded(
+async function readBoundedBytes(
   response: SafeResponse,
   signal: AbortSignal,
   deadline: number,
   now: () => number,
-): Promise<string> {
+): Promise<Uint8Array> {
   if (Number(response.headers.get("content-length")) > LIMITS.responseBytes) {
+    await response.body?.cancel();
     throw new Context7Error(
       "oversized",
       "Context7 response exceeded the supported size limit.",
     );
   }
   if (!response.body) {
-    return "";
+    return new Uint8Array();
   }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -339,10 +336,12 @@ async function readBounded(
   } finally {
     reader.releaseLock();
   }
+  return concat(chunks, bytes);
+}
+
+function decodeResponse(bytes: Uint8Array): string {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(
-      concat(chunks, bytes),
-    );
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
     throw new Context7Error(
       "malformed",
@@ -357,9 +356,8 @@ function readWithAbort(
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
   return new Promise((resolve, reject) => {
     const onAbort = () => {
-      void reader
-        .cancel()
-        .finally(() => reject(new DOMException("Aborted", "AbortError")));
+      reject(new DOMException("Aborted", "AbortError"));
+      void reader.cancel();
     };
     signal.addEventListener("abort", onAbort, { once: true });
     reader.read().then(
@@ -625,8 +623,22 @@ function parseCodeSnippets(
         truncations,
         "code language",
       );
+    const location =
+      entry &&
+      optionalText(
+        entry.codeId,
+        LIMITS.urlChars,
+        truncations,
+        "code source identifier",
+      );
     const codeList = entry && array(entry.codeList);
-    if (!entry || !codeList || title === false || language === false) {
+    if (
+      !entry ||
+      !codeList ||
+      title === false ||
+      language === false ||
+      location === false
+    ) {
       throw malformedContext();
     }
     if (codeList.length > LIMITS.codeEntries) {
@@ -639,15 +651,7 @@ function parseCodeSnippets(
       }
       const code = object(codeItem);
       const text = code && requiredText(code.code, LIMITS.snippetChars);
-      const location =
-        code &&
-        optionalText(
-          code.codeId,
-          LIMITS.urlChars,
-          truncations,
-          "code source identifier",
-        );
-      if (!code || !text || location === false) {
+      if (!code || !text) {
         throw malformedContext();
       }
       if (text.truncated) {
@@ -727,47 +731,39 @@ export function parseContext7Id(value: string): Context7Id | undefined {
     return undefined;
   }
   const parts = value.slice(1).split("/");
-  if (parts.length < 2) {
+  if (parts.length < 2 || parts.length > 3) {
     return undefined;
   }
-  const final = parts.at(-1)!;
-  const at = final.indexOf("@");
+  const [owner, library, slashPin] = parts;
+  if (!owner || !library || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(owner)) {
+    return undefined;
+  }
+  const at = library.indexOf("@");
+  if (at >= 0) {
+    if (parts.length !== 2 || library.indexOf("@", at + 1) >= 0) {
+      return undefined;
+    }
+    const name = library.slice(0, at);
+    const pin = library.slice(at + 1);
+    return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) && validVersionPart(pin)
+      ? { id: value, pin: normalizeVersion(pin) }
+      : undefined;
+  }
   if (
-    !parts
-      .slice(0, -1)
-      .every((part) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(part)) ||
-    !(at >= 0
-      ? /^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/.test(final)
-      : /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(final))
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(library) ||
+    (slashPin !== undefined && !validVersionPart(slashPin))
   ) {
     return undefined;
   }
-  if (at >= 0) {
-    const library = final.slice(0, at);
-    const version = final.slice(at + 1);
-    if (
-      !library ||
-      !validVersionPart(version) ||
-      final.indexOf("@", at + 1) >= 0
-    ) {
-      return undefined;
-    }
-    return { id: value, pin: normalizeVersion(version) };
-  }
-  const pin =
-    parts.length === 3 && validSlashVersion(final)
-      ? normalizeVersion(final)
-      : undefined;
-  return { id: value, ...(pin ? { pin } : {}) };
+  return slashPin
+    ? { id: value, pin: normalizeVersion(slashPin) }
+    : { id: value };
 }
 
 export function validId(value: string): boolean {
   return parseContext7Id(value) !== undefined;
 }
 
-function validSlashVersion(value: string): boolean {
-  return value === "latest" || /^v?\d[A-Za-z0-9._-]*$/i.test(value);
-}
 function validVersionPart(value: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value);
 }

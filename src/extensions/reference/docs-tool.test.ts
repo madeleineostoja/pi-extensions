@@ -93,6 +93,28 @@ describe("docs resolution", () => {
     );
   });
 
+  it("uses a named nonnumeric advertised pin as an exact target", async () => {
+    const client = transport({
+      search: vi.fn(async () => [
+        {
+          id: "/acme/widget",
+          title: "Acme Widget",
+          versions: [{ label: "beta" }],
+        },
+      ]),
+    });
+    const result = await executeDocs({ ...input, version: "beta" }, undefined, {
+      transport: () => client,
+    });
+    expect(client.context).toHaveBeenCalledWith(
+      "/acme/widget/beta",
+      input.question,
+    );
+    expect(result.details).toMatchObject({
+      version: { state: "exact-version", pin: "beta" },
+    });
+  });
+
   it("fails unavailable pins and direct conflicts before network work", async () => {
     const client = transport();
     await expect(
@@ -200,13 +222,20 @@ describe("docs resolution", () => {
     ).rejects.toThrow("valid direct");
     await expect(
       executeDocs(
-        { subject: "/acme/widget@1", question: "x", version: "2" },
+        { subject: "/acme/widget@beta", question: "x", version: "other" },
         undefined,
         {
           transport: () => client,
         },
       ),
     ).rejects.toThrow("conflicting");
+    await expect(
+      executeDocs(
+        { subject: "/acme/widget/beta/extra", question: "x" },
+        undefined,
+        { transport: () => client },
+      ),
+    ).rejects.toThrow("valid direct");
     await expect(
       executeDocs(
         { subject: "/acme/widget", question: "x", version: "1.x" },
