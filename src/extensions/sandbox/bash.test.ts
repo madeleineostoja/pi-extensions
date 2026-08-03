@@ -3,6 +3,7 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -528,6 +529,47 @@ printf last`,
     }
   });
 
+  it("gives public Bash and managed leases the same protected environment", async () => {
+    const { executable, policy, workspace } = fixture();
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+    });
+    const ctx = {
+      model: { provider: "test-provider", id: "test-model" },
+      thinkingLevel: "high",
+      sessionManager: {
+        getSessionId: () => "shared-session",
+        getSessionFile: () => join(workspace, "session.jsonl"),
+      },
+    } as never;
+    const sessionFile = join(workspace, "session.jsonl");
+    const command = `test "$PI_SESSION_FILE" = ${JSON.stringify(sessionFile)} && printf "%s|%s|%s|%s" "$PI_SESSION_ID" "$PI_PROVIDER" "$PI_MODEL" "$PI_REASONING_LEVEL"`;
+    const definition = createSandboxBashDefinition(workspace, runtime);
+    const foreground = await definition.execute(
+      "foreground-call",
+      { command },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const managedOutput: Buffer[] = [];
+    const lease = await runtime.startManaged({
+      toolCallId: "managed-call",
+      command,
+      cwd: workspace,
+      ctx,
+      signal: undefined,
+      onOutput: ({ data }) => managedOutput.push(data),
+    });
+    await lease.completion;
+    expect(Buffer.concat(managedOutput).toString()).toBe(
+      foreground.content[0]?.type === "text" ? foreground.content[0].text : "",
+    );
+  });
+
   it("starts managed local execution only after launch and preserves tagged streams", async () => {
     const { workspace } = fixture();
     const runtime = createSandboxBashRuntime({
@@ -564,6 +606,75 @@ printf last`,
         expect.objectContaining({ stream: "stderr", text: "err" }),
       ]),
     );
+  });
+
+  it("gives SIGKILL a fresh deadline when a managed child ignores SIGTERM", async () => {
+    const { executable, policy, workspace } = fixture();
+    const readyPath = join(workspace, "managed-ready");
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+      terminationWaitMs: 100,
+    });
+    const program = `const { writeFileSync } = require("node:fs"); process.on("SIGTERM", () => {}); writeFileSync(${JSON.stringify(readyPath)}, String(process.pid)); setInterval(() => {}, 1_000);`;
+    const lease = await runtime.startManaged({
+      toolCallId: "managed-stop",
+      command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(program)}`,
+      cwd: workspace,
+      ctx: {
+        sessionManager: {
+          getSessionId: () => "managed-session",
+          getSessionFile: () => undefined,
+        },
+      } as never,
+      signal: undefined,
+      onOutput: () => undefined,
+    });
+    await waitForFile(readyPath);
+    const pid = Number(readFileSync(readyPath, "utf8"));
+    await expect(lease.stop()).resolves.toMatchObject({
+      termination: "stopped",
+      outputComplete: true,
+    });
+    expect(processExists(pid)).toBe(false);
+  });
+
+  it("terminates a live managed process tree during runtime disposal", async () => {
+    const { workspace } = fixture();
+    const readyPath = join(workspace, "managed-tree");
+    const runtime = createSandboxBashRuntime({
+      enabled: () => false,
+      supportedMac: false,
+      terminationWaitMs: 250,
+    });
+    const descendant = "setInterval(() => {}, 1_000)";
+    const program = `const { spawn } = require("node:child_process"); const { writeFileSync } = require("node:fs"); const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "ignore" }); writeFileSync(${JSON.stringify(readyPath)}, process.pid + ":" + child.pid); setInterval(() => {}, 1_000);`;
+    const lease = await runtime.startManaged({
+      toolCallId: "managed-shutdown",
+      command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(program)}`,
+      cwd: workspace,
+      ctx: {
+        sessionManager: {
+          getSessionId: () => "managed-session",
+          getSessionFile: () => undefined,
+        },
+      } as never,
+      signal: undefined,
+      onOutput: () => undefined,
+    });
+    await waitForFile(readyPath);
+    const [parentPid, descendantPid] = readFileSync(readyPath, "utf8")
+      .split(":")
+      .map(Number);
+    await expect(runtime.dispose()).resolves.toBeUndefined();
+    await expect(lease.completion).resolves.toMatchObject({
+      termination: "shutdown",
+    });
+    expect(processExists(parentPid)).toBe(false);
+    expect(processExists(descendantPid)).toBe(false);
+    await expect(runtime.dispose()).resolves.toBeUndefined();
   });
 
   it("rejects managed spawn failure without an uncaught child error", async () => {

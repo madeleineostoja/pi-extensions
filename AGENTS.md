@@ -12,6 +12,7 @@
 ## Scope
 
 - This is for personal use by one user. When carrying out solution design you do not need to account for general user adoption, configurability, maintaining backwards compatibility, etc
+- Windows is unsupported. Do not add Windows-specific compatibility or test accommodations
 
 ## Imports and ownership
 

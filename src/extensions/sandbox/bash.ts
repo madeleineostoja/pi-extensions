@@ -31,7 +31,7 @@ const MAX_LAUNCH_DIAGNOSTIC_BYTES = 64 * 1024;
 
 function denialMarker(correlation?: string): string {
   const suffix = correlation?.replaceAll(/[^a-zA-Z0-9]/g, "").slice(-24);
-  return `PIPKIN_${suffix ? `${suffix}_` : ""}${randomUUID().replaceAll("-", "")}`;
+  return `PIPKIN_${suffix ?? ""}${randomUUID().replaceAll("-", "")}`;
 }
 
 type ActiveInvocation = Readonly<{
@@ -41,7 +41,16 @@ type ActiveInvocation = Readonly<{
 
 type BashExecution = Parameters<BashOperations["exec"]>[2];
 
-function managedEnvironment(request: SandboxManagedRequest): NodeJS.ProcessEnv {
+type PreparedBashLaunch = Readonly<{
+  marker: string | undefined;
+  protectedLaunch: boolean;
+  spawn: () => ChildProcess;
+  start: (child: ChildProcess) => void;
+}>;
+
+function executionEnvironment(
+  request?: SandboxManagedRequest,
+): NodeJS.ProcessEnv {
   const pathKey =
     Object.keys(process.env).find((key) => key.toLowerCase() === "path") ??
     "PATH";
@@ -59,17 +68,19 @@ function managedEnvironment(request: SandboxManagedRequest): NodeJS.ProcessEnv {
   delete env.PI_PROVIDER;
   delete env.PI_MODEL;
   delete env.PI_REASONING_LEVEL;
-  env.PI_SESSION_ID = request.ctx.sessionManager.getSessionId();
-  const sessionFile = request.ctx.sessionManager.getSessionFile();
-  if (sessionFile) {
-    env.PI_SESSION_FILE = sessionFile;
-  }
-  if (request.ctx.model) {
-    env.PI_PROVIDER = request.ctx.model.provider;
-    env.PI_MODEL = request.ctx.model.id;
-  }
-  if (request.ctx.thinkingLevel) {
-    env.PI_REASONING_LEVEL = request.ctx.thinkingLevel;
+  if (request) {
+    env.PI_SESSION_ID = request.ctx.sessionManager.getSessionId();
+    const sessionFile = request.ctx.sessionManager.getSessionFile();
+    if (sessionFile) {
+      env.PI_SESSION_FILE = sessionFile;
+    }
+    if (request.ctx.model) {
+      env.PI_PROVIDER = request.ctx.model.provider;
+      env.PI_MODEL = request.ctx.model.id;
+    }
+    if (request.ctx.thinkingLevel) {
+      env.PI_REASONING_LEVEL = request.ctx.thinkingLevel;
+    }
   }
   return env;
 }
@@ -162,6 +173,7 @@ export function createSandboxBashRuntime(
     sandboxExecutable?: string;
     denialObserver?: SandboxDenialObserver;
     outputDrainTimeoutMs?: number;
+    terminationWaitMs?: number;
   }>,
 ): SandboxBashRuntime {
   const local = createLocalBashOperations({ shellPath: options.shellPath });
@@ -174,6 +186,62 @@ export function createSandboxBashRuntime(
   const supportedMac = options.supportedMac ?? process.platform === "darwin";
   let disposed = false;
   let disposing: Promise<void> | undefined;
+  const terminationWaitMs = options.terminationWaitMs ?? TERMINATION_WAIT_MS;
+
+  const prepareLaunch = (request: {
+    command: string;
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    protectedLaunch: boolean;
+    correlation?: string;
+  }): PreparedBashLaunch => {
+    const shell = getShellConfig(options.shellPath);
+    const marker = request.protectedLaunch
+      ? denialMarker(request.correlation)
+      : undefined;
+    const args = request.protectedLaunch
+      ? sandboxArguments({
+          policy: options.policy!,
+          shell: {
+            shell: shell.shell,
+            args: shell.commandTransport === "stdin" ? shell.args : ["-s"],
+          },
+          marker: marker!,
+        })
+      : shell.commandTransport === "stdin"
+        ? shell.args
+        : [...shell.args, request.command];
+    const executable = request.protectedLaunch
+      ? (options.sandboxExecutable ?? SANDBOX_EXECUTABLE)
+      : shell.shell;
+    return {
+      marker,
+      protectedLaunch: request.protectedLaunch,
+      spawn: () =>
+        (options.spawn ?? spawn)(executable, args, {
+          cwd: request.cwd,
+          detached: process.platform !== "win32",
+          env: request.env,
+          stdio: [
+            shell.commandTransport === "stdin" || request.protectedLaunch
+              ? "pipe"
+              : "ignore",
+            "pipe",
+            "pipe",
+          ],
+          windowsHide: true,
+        }),
+      start(child) {
+        if (request.protectedLaunch) {
+          child.stdin?.on("error", () => undefined);
+          child.stdin?.end(`${LAUNCH_PREFIX}${request.command}`);
+        } else if (shell.commandTransport === "stdin") {
+          child.stdin?.on("error", () => undefined);
+          child.stdin?.end(request.command);
+        }
+      },
+    };
+  };
 
   const localOperations: BashOperations = {
     async exec(command, cwd, execution) {
@@ -222,20 +290,13 @@ export function createSandboxBashRuntime(
         throw new Error("aborted");
       }
       const timeout = timeoutMs(execution.timeout);
-      const configuredShell = getShellConfig(options.shellPath);
-      const shell = {
-        shell: configuredShell.shell,
-        args:
-          configuredShell.commandTransport === "stdin"
-            ? configuredShell.args
-            : ["-s"],
-      };
-      const marker = denialMarker();
-      const args = sandboxArguments({
-        policy: options.policy,
-        shell,
-        marker,
+      const launch = prepareLaunch({
+        command,
+        cwd,
+        env: execution.env ?? executionEnvironment(),
+        protectedLaunch: true,
       });
+      const marker = launch.marker!;
       return new Promise<{ exitCode: number | null }>(
         (resolveResult, reject) => {
           let child: ChildProcess;
@@ -297,17 +358,7 @@ export function createSandboxBashRuntime(
                 }
               },
             );
-            child = (options.spawn ?? spawn)(
-              options.sandboxExecutable ?? SANDBOX_EXECUTABLE,
-              args,
-              {
-                cwd,
-                detached: process.platform !== "win32",
-                env: execution.env ?? process.env,
-                stdio: ["pipe", "pipe", "pipe"],
-                windowsHide: true,
-              },
-            );
+            child = launch.spawn();
           } catch (error) {
             finish(error instanceof Error ? error : new Error(String(error)));
             return;
@@ -326,7 +377,10 @@ export function createSandboxBashRuntime(
               if (
                 terminationError &&
                 terminatedPid !== undefined &&
-                !(await waitForProcessTree(terminatedPid))
+                !(await waitForProcessTree(
+                  terminatedPid,
+                  Date.now() + terminationWaitMs,
+                ))
               ) {
                 finish(
                   new Error(
@@ -431,8 +485,7 @@ export function createSandboxBashRuntime(
               timeout,
             );
           }
-          child.stdin?.on("error", () => undefined);
-          child.stdin?.end(`${LAUNCH_PREFIX}${command}`);
+          launch.start(child);
         },
       );
     },
@@ -452,43 +505,17 @@ export function createSandboxBashRuntime(
         options.unavailableReason ?? "Sandbox: Bash is unavailable.",
       );
     }
-    const shell = getShellConfig(options.shellPath);
-    const protectedLaunch = supportedMac && options.enabled();
-    const marker = protectedLaunch
-      ? denialMarker(request.toolCallId)
-      : undefined;
-    const shellArgs =
-      shell.commandTransport === "stdin"
-        ? shell.args
-        : [...shell.args, request.command];
-    const args = protectedLaunch
-      ? sandboxArguments({
-          policy: options.policy!,
-          shell: {
-            shell: shell.shell,
-            args: shell.commandTransport === "stdin" ? shell.args : ["-s"],
-          },
-          marker: marker!,
-        })
-      : shellArgs;
-    const executable = protectedLaunch
-      ? (options.sandboxExecutable ?? SANDBOX_EXECUTABLE)
-      : shell.shell;
+    const prepared = prepareLaunch({
+      command: request.command,
+      cwd: request.cwd,
+      env: executionEnvironment(request),
+      protectedLaunch: supportedMac && options.enabled(),
+      correlation: request.toolCallId,
+    });
+    const { marker, protectedLaunch } = prepared;
     let child: ChildProcess;
     try {
-      child = (options.spawn ?? spawn)(executable, args, {
-        cwd: request.cwd,
-        detached: process.platform !== "win32",
-        env: managedEnvironment(request),
-        stdio: [
-          shell.commandTransport === "stdin" || protectedLaunch
-            ? "pipe"
-            : "ignore",
-          "pipe",
-          "pipe",
-        ],
-        windowsHide: true,
-      });
+      child = prepared.spawn();
     } catch (error) {
       throw new Error(
         `Sandbox: launch failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -592,7 +619,7 @@ export function createSandboxBashRuntime(
         })
       : undefined;
     child.stdout?.on("data", (data: Buffer) => {
-      if (!protectedLaunch) {
+      if (!protectedLaunch || launchConfirmed) {
         request.onOutput({ stream: "stdout", data });
         return;
       }
@@ -677,7 +704,7 @@ export function createSandboxBashRuntime(
           if (!pid) {
             return;
           }
-          const deadline = Date.now() + TERMINATION_WAIT_MS;
+          const deadline = Date.now() + terminationWaitMs;
           try {
             process.kill(-pid, "SIGTERM");
           } catch {
@@ -693,7 +720,9 @@ export function createSandboxBashRuntime(
                 child.kill("SIGKILL");
               } catch {}
             }
-            if (!(await waitForProcessTree(pid, deadline))) {
+            if (
+              !(await waitForProcessTree(pid, Date.now() + terminationWaitMs))
+            ) {
               throw new Error("Sandbox: process group did not terminate");
             }
           }
@@ -712,13 +741,7 @@ export function createSandboxBashRuntime(
     };
     request.signal?.addEventListener("abort", abort, { once: true });
     try {
-      if (protectedLaunch) {
-        child.stdin?.on("error", () => undefined);
-        child.stdin?.end(`${LAUNCH_PREFIX}${request.command}`);
-      } else if (shell.commandTransport === "stdin") {
-        child.stdin?.on("error", () => undefined);
-        child.stdin?.end(request.command);
-      }
+      prepared.start(child);
       if (!protectedLaunch) {
         setImmediate(confirmLaunch);
       }
