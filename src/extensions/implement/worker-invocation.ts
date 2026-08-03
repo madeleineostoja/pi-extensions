@@ -1,7 +1,9 @@
 import { isAbsolute } from "node:path";
 import type { Static } from "typebox";
 import {
+  anchoredOverallReviewSchema,
   anchoredWorkstreamReviewSchema,
+  initialAnchoredOverallReviewSchema,
   initialAnchoredWorkstreamReviewSchema,
   initialOverallReviewSchema,
   initialWorkstreamReviewSchema,
@@ -73,6 +75,20 @@ const completionContracts = {
     readOnly: true,
     description: "Assess every outstanding finding.",
     schema: anchoredWorkstreamReviewSchema,
+  },
+  "initial-anchored-overall-review": {
+    role: "reviewer",
+    readOnly: true,
+    description:
+      "Assess an anchored whole-plan repair and author its publication subject and replacement handoff.",
+    schema: initialAnchoredOverallReviewSchema,
+  },
+  "anchored-overall-review": {
+    role: "reviewer",
+    readOnly: true,
+    description:
+      "Assess an anchored whole-plan repair and author its replacement handoff.",
+    schema: anchoredOverallReviewSchema,
   },
   reconciliation: {
     role: "implementer",

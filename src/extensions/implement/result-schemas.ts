@@ -1,6 +1,8 @@
 import { Type, type Static } from "typebox";
 
 const nonEmptyString = () => Type.String({ minLength: 1 });
+const handoffDraft = () =>
+  Type.String({ minLength: 1, maxLength: 12_000, pattern: "\\S" });
 const commitMessageString = (options: { description?: string } = {}) =>
   Type.String({
     minLength: 1,
@@ -97,7 +99,10 @@ export const repositoryStateReviewSchema = Type.Object(
   { additionalProperties: false },
 );
 export const initialOverallReviewSchema = Type.Object(
-  { findings: Type.Array(directReviewFindingSchema) },
+  {
+    findings: Type.Array(directReviewFindingSchema),
+    handoffDraft: handoffDraft(),
+  },
   { additionalProperties: false },
 );
 
@@ -155,6 +160,18 @@ export const initialAnchoredWorkstreamReviewSchema = Type.Object(
     ...anchoredReviewProperties,
     publicationCommitSubject: publicationCommitSubject(),
   },
+  { additionalProperties: false },
+);
+export const initialAnchoredOverallReviewSchema = Type.Object(
+  {
+    ...anchoredReviewProperties,
+    publicationCommitSubject: publicationCommitSubject(),
+    handoffDraft: handoffDraft(),
+  },
+  { additionalProperties: false },
+);
+export const anchoredOverallReviewSchema = Type.Object(
+  { ...anchoredReviewProperties, handoffDraft: handoffDraft() },
   { additionalProperties: false },
 );
 export const anchoredReviewSchema = anchoredWorkstreamReviewSchema;
@@ -217,6 +234,12 @@ export type AnchoredWorkstreamReviewCompletion = Static<
 >;
 export type InitialAnchoredWorkstreamReviewCompletion = Static<
   typeof initialAnchoredWorkstreamReviewSchema
+>;
+export type InitialAnchoredOverallReviewCompletion = Static<
+  typeof initialAnchoredOverallReviewSchema
+>;
+export type AnchoredOverallReviewCompletion = Static<
+  typeof anchoredOverallReviewSchema
 >;
 export type OverallReworkCompletion = Static<typeof overallReworkSchema>;
 export type ReconciliationCompletion = Static<

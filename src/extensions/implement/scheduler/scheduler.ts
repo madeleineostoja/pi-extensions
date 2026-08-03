@@ -9,7 +9,7 @@ import {
   type FailureCategory,
   type FailureCommandEvidence,
 } from "../failure-policy.js";
-import type { AnchoredWorkstreamReviewCompletion } from "../result-schemas.js";
+import type { AnchoredOverallReviewCompletion } from "../result-schemas.js";
 import {
   applyAnchoredWorkstreamReview,
   applyInitialWorkstreamReview,
@@ -301,6 +301,7 @@ export type SchedulerEvent =
         | {
             kind: "approved";
             evidence: string;
+            handoffDraft: string;
             reviewedTargetSha: string;
             reviewedTargetTreeSha: string;
           }
@@ -315,12 +316,13 @@ export type SchedulerEvent =
               acceptanceCriteria: string[];
             }>;
             evidence: string;
+            handoffDraft: string;
             reviewedTargetSha: string;
             reviewedTargetTreeSha: string;
           }
         | {
             kind: "anchored";
-            completion: AnchoredWorkstreamReviewCompletion;
+            completion: AnchoredOverallReviewCompletion;
             evidence: string;
             reviewedTargetSha: string;
             reviewedTargetTreeSha: string;
@@ -808,6 +810,9 @@ export function reduceRunEvent(
         retry.status = "exhausted";
         state.wholePlanReview = {
           status: "pending",
+          ...(state.wholePlanReview.handoffDraft
+            ? { handoffDraft: state.wholePlanReview.handoffDraft }
+            : {}),
           ...(state.wholePlanReview.epoch
             ? { epoch: state.wholePlanReview.epoch }
             : {}),
@@ -817,6 +822,9 @@ export function reduceRunEvent(
       }
       state.wholePlanReview = {
         status: "pending",
+        ...(state.wholePlanReview.handoffDraft
+          ? { handoffDraft: state.wholePlanReview.handoffDraft }
+          : {}),
         ...(state.wholePlanReview.epoch
           ? { epoch: state.wholePlanReview.epoch }
           : {}),
@@ -1083,6 +1091,16 @@ export function reduceRunEvent(
               "anchored review is not bound to the current comparison identity",
             );
           }
+          const handoffDraft =
+            "handoffDraft" in event.outcome.completion
+              ? event.outcome.completion.handoffDraft
+              : undefined;
+          if (
+            event.workstream.kind === "overall" &&
+            (!handoffDraft || handoffDraft.trim() === "")
+          ) {
+            return reject("overall repair review requires a handoff draft");
+          }
           const update = applyAnchoredWorkstreamReview({
             state: review,
             workstream: event.workstream,
@@ -1102,6 +1120,7 @@ export function reduceRunEvent(
             }
             state.wholePlanReview = {
               ...state.wholePlanReview,
+              handoffDraft,
               epoch: {
                 ...wholePlanEpoch,
                 findingIds: update.findings.map((finding) => finding.id),
@@ -1173,6 +1192,7 @@ export function reduceRunEvent(
           evidence: event.outcome.evidence,
           reviewedTargetSha: epoch.initialTargetSha,
           reviewedTargetTreeSha: epoch.initialTargetTreeSha,
+          handoffDraft: state.wholePlanReview.handoffDraft,
           epoch: {
             ...epoch,
             findingIds: workstreamReviewFindings(state, event.workstream).map(
@@ -2271,14 +2291,23 @@ export function reduceRunEvent(
         const receipt = state.publication.receipts[event.intentId];
         const preparation =
           state.publication.preparations[intent.preparationId];
-        if (!epoch || !candidate || !receipt || !preparation) {
-          return reject("overall publication has no retained review epoch");
+        if (
+          !epoch ||
+          !candidate ||
+          !receipt ||
+          !preparation ||
+          !state.wholePlanReview.handoffDraft?.trim()
+        ) {
+          return reject(
+            "overall publication has no retained review epoch and handoff draft",
+          );
         }
         state.wholePlanReview = {
           status: "approved",
           evidence:
             state.reviews[reviewKey(event.workstream)]?.evidence.at(-1) ??
             "Final overall repair review settled.",
+          handoffDraft: state.wholePlanReview.handoffDraft!,
           reviewedTargetSha: receipt.publishedCommitSha,
           reviewedTargetTreeSha: receipt.publishedTreeSha,
           epoch: {
@@ -2377,6 +2406,9 @@ export function reduceRunEvent(
       state.phase = "whole_plan_review";
       state.wholePlanReview = {
         status: "reviewing",
+        ...(state.wholePlanReview.handoffDraft
+          ? { handoffDraft: state.wholePlanReview.handoffDraft }
+          : {}),
         ...(state.wholePlanReview.epoch
           ? { epoch: state.wholePlanReview.epoch }
           : {}),
@@ -2408,9 +2440,13 @@ export function reduceRunEvent(
         if (state.wholePlanReview.epoch) {
           return reject("an anchored whole-plan review requires assessments");
         }
+        if (event.outcome.handoffDraft.trim() === "") {
+          return reject("whole-plan approval requires a handoff draft");
+        }
         state.wholePlanReview = {
           status: "approved",
           evidence: event.outcome.evidence,
+          handoffDraft: event.outcome.handoffDraft,
           reviewedTargetSha: event.outcome.reviewedTargetSha,
           reviewedTargetTreeSha: event.outcome.reviewedTargetTreeSha,
           ...(state.wholePlanReview.reviewRetry
@@ -2469,9 +2505,15 @@ export function reduceRunEvent(
             findingIds: update.findings.map((finding) => finding.id),
             pendingCorrectionIds: nextReview.pendingCorrectionIds,
           };
+          if (event.outcome.completion.handoffDraft.trim() === "") {
+            return reject(
+              "anchored whole-plan review requires a handoff draft",
+            );
+          }
           state.wholePlanReview = {
             status: "approved",
             evidence: event.outcome.evidence,
+            handoffDraft: event.outcome.completion.handoffDraft,
             reviewedTargetSha: event.outcome.reviewedTargetSha,
             reviewedTargetTreeSha: event.outcome.reviewedTargetTreeSha,
             epoch: nextEpoch,
@@ -2485,6 +2527,9 @@ export function reduceRunEvent(
         }
       }
       const { repairId, candidate } = event.outcome;
+      if (event.outcome.handoffDraft.trim() === "") {
+        return reject("whole-plan repair requires a handoff draft");
+      }
       if (
         candidate.baseSha !== event.outcome.reviewedTargetSha ||
         candidate.commitSha !== event.outcome.reviewedTargetSha ||
@@ -2506,6 +2551,7 @@ export function reduceRunEvent(
           findingIds: initialFindings.map((finding) => finding.id),
           initialFindings,
           evidence: event.outcome.evidence,
+          handoffDraft: event.outcome.handoffDraft,
           epoch: {
             initialTargetSha: event.outcome.reviewedTargetSha,
             initialTargetTreeSha: event.outcome.reviewedTargetTreeSha,
@@ -2563,6 +2609,7 @@ export function reduceRunEvent(
         state.projectionDebt.length > 0 ||
         Object.keys(state.processLeases).length > 0 ||
         state.wholePlanReview.status !== "approved" ||
+        !state.wholePlanReview.handoffDraft?.trim() ||
         state.wholePlanReview.reviewedTargetSha !== event.targetSha ||
         state.wholePlanReview.reviewedTargetTreeSha !== event.targetTreeSha ||
         Object.values(state.publication.intents).some(
@@ -2628,6 +2675,7 @@ function queueWholePlanRepair(
       acceptanceCriteria: string[];
     }>;
     evidence: string;
+    handoffDraft: string;
     epoch: WholePlanEpoch;
   },
   reject: (error: string) => SchedulerTransition,
@@ -2734,6 +2782,7 @@ function queueWholePlanRepair(
   };
   state.wholePlanReview = {
     status: "repairing",
+    handoffDraft: args.handoffDraft,
     epoch: args.epoch,
     ...(state.wholePlanReview.reviewRetry
       ? { reviewRetry: state.wholePlanReview.reviewRetry }
@@ -3348,6 +3397,9 @@ function failWorkstream(state: RunState, workstream: RuntimeWorkstream): void {
   ) {
     state.wholePlanReview = {
       status: "pending",
+      ...(state.wholePlanReview.handoffDraft
+        ? { handoffDraft: state.wholePlanReview.handoffDraft }
+        : {}),
       ...(state.wholePlanReview.epoch
         ? { epoch: state.wholePlanReview.epoch }
         : {}),

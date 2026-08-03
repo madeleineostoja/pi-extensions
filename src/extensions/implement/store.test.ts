@@ -178,13 +178,46 @@ describe("checkout store transitions", () => {
       workerConcurrency: 1,
     });
 
-    for (const version of [7, 4]) {
+    for (const version of [8, 7, 4]) {
       writeFileSync(store.path, JSON.stringify({ ...store.read(), version }));
       expect(() => RunStore.open(lease, store.path)).toThrow(StateError);
       expect(() => RunStore.open(lease, store.path)).toThrow(
         `legacy schema version ${version}`,
       );
     }
+  });
+
+  it("rejects an approved whole-plan state without an accepted handoff draft", async () => {
+    const directory = root();
+    const plan = planFor(directory);
+    const lease = fakeLease(directory);
+    const store = createPlanningRun({
+      lease,
+      runId: "run-1",
+      checkout: {
+        root: directory,
+        gitDir: join(directory, ".git"),
+        commonGitDir: join(directory, ".git"),
+        branchRef: "main",
+        startHead: "base-sha",
+      },
+      source: sourceIdentityForExecutionPlan(plan),
+      workerConcurrency: 1,
+    });
+    const current = store.read();
+
+    await expect(
+      store.update(current.revision, (state) => ({
+        ...state,
+        wholePlanReview: {
+          status: "approved",
+          evidence: "whole-plan review evidence",
+          handoffDraft: "   ",
+          reviewedTargetSha: "target-sha",
+          reviewedTargetTreeSha: "target-tree",
+        },
+      })),
+    ).rejects.toThrow(StateError);
   });
 
   it("binds an exact retained plan after interruption between plan and state persistence", async () => {

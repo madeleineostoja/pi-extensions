@@ -372,6 +372,50 @@ describe("revision policy", () => {
     });
   });
 
+  it("stores an initial approval draft and refuses blank drafts before completion", async () => {
+    const state = (await createSchedulerStore()).read();
+    state.phase = "whole_plan_review";
+    state.wholePlanReview = { status: "reviewing" };
+    const blank = reduceRunEvent(state, {
+      kind: "whole_plan_review_completed",
+      outcome: {
+        kind: "approved",
+        evidence: "initial review evidence",
+        handoffDraft: "   ",
+        reviewedTargetSha: "target-sha",
+        reviewedTargetTreeSha: "target-tree",
+      },
+    });
+    expect(blank.accepted).toBe(false);
+
+    const approved = reduceRunEvent(state, {
+      kind: "whole_plan_review_completed",
+      outcome: {
+        kind: "approved",
+        evidence: "initial review evidence",
+        handoffDraft: "Initial approved reviewer handoff.",
+        reviewedTargetSha: "target-sha",
+        reviewedTargetTreeSha: "target-tree",
+      },
+    });
+    expect(approved.accepted).toBe(true);
+    expect(approved.state.wholePlanReview).toMatchObject({
+      status: "approved",
+      handoffDraft: "Initial approved reviewer handoff.",
+    });
+
+    for (const workstream of Object.values(approved.state.workstreams.source)) {
+      workstream.phase = "completed";
+    }
+    expect(
+      reduceRunEvent(approved.state, {
+        kind: "run_completed",
+        targetSha: "target-sha",
+        targetTreeSha: "target-tree",
+      }).accepted,
+    ).toBe(true);
+  });
+
   it("creates one canonical whole-plan finding ledger shared with its repair", async () => {
     const completed = await wholePlanRepairResult();
     const ids = ["overall-repair-1-r1", "overall-repair-1-r2"];
@@ -379,6 +423,7 @@ describe("revision policy", () => {
     expect(completed.accepted).toBe(true);
     expect(completed.state.wholePlanReview).toMatchObject({
       status: "repairing",
+      handoffDraft: "Initial whole-plan handoff.",
       epoch: { findingIds: ids, pendingCorrectionIds: ids },
     });
     expect(completed.state.reviews["overall:repair-1"]).toMatchObject({
@@ -715,6 +760,7 @@ describe("revision policy", () => {
         evidence: "repair assessment",
         completion: {
           publicationCommitSubject: "fix: repair whole plan",
+          handoffDraft: "Replacement whole-plan handoff.",
           assessments: [
             {
               id: findingIds[0]!,
@@ -742,7 +788,97 @@ describe("revision policy", () => {
     expect(assessed.state.wholePlanReview.epoch?.pendingCorrectionIds).toEqual(
       [],
     );
+    expect(assessed.state.wholePlanReview.handoffDraft).toBe(
+      "Replacement whole-plan handoff.",
+    );
     expect(() => validate(assessed.state)).not.toThrow();
+  });
+
+  it("replaces the draft on a later anchored review while residual findings remain deliverable", async () => {
+    const state = (await wholePlanRepairResult()).state;
+    const repairId = "repair-1";
+    const workstream = { kind: "overall" as const, repairId };
+    const baselineId = "overall-baseline:run-1:repair-1:target-sha";
+    const candidateId = "overall-repair:repair-1";
+    const findingIds = ["overall-repair-1-r1", "overall-repair-1-r2"];
+    state.phase = "whole_plan_review";
+    state.candidates[candidateId] = {
+      id: candidateId,
+      workstream,
+      baseSha: "target-sha",
+      commitSha: "repair-sha",
+      treeSha: "repair-tree",
+    };
+    state.workstreams.overall[repairId] = {
+      ...state.workstreams.overall[repairId]!,
+      phase: "completed",
+      candidateId,
+    };
+    state.reviews["overall:repair-1"] = {
+      ...state.reviews["overall:repair-1"]!,
+      candidateId,
+      previousCandidateId: baselineId,
+      latestCorrection: {
+        fromCandidateId: baselineId,
+        changedPaths: ["src/repair.ts"],
+        evidence: "repair evidence",
+        mode: "changed",
+      },
+      publicationCommitSubject: "fix: repair whole plan",
+    };
+    state.wholePlanReview = {
+      status: "reviewing",
+      handoffDraft: "Initial whole-plan handoff.",
+      epoch: {
+        ...state.wholePlanReview.epoch!,
+        latestRepair: {
+          candidateId,
+          targetBaseSha: "target-sha",
+          publishedCommitSha: "repair-sha",
+          publishedTreeSha: "repair-tree",
+          changedPaths: ["src/repair.ts"],
+        },
+      },
+    };
+
+    const reviewed = reduceRunEvent(state, {
+      kind: "whole_plan_review_completed",
+      outcome: {
+        kind: "anchored",
+        evidence: "later overall review evidence",
+        reviewedTargetSha: "repair-sha",
+        reviewedTargetTreeSha: "repair-tree",
+        completion: {
+          assessments: findingIds.map((id) => ({
+            id,
+            status: "unresolved" as const,
+            evidence: "Representative verification remains unavailable.",
+            summary: "Representative verification",
+            requiredChange: "Add representative verification.",
+            acceptanceCriteria: ["Verification covers the target."],
+          })),
+          regressions: [],
+          handoffDraft: "Final replacement handoff with residual verification.",
+        },
+      },
+    });
+
+    expect(reviewed.accepted).toBe(true);
+    expect(reviewed.state.wholePlanReview).toMatchObject({
+      status: "approved",
+      handoffDraft: "Final replacement handoff with residual verification.",
+    });
+    expect(reviewed.state.findings[findingIds[0]!]?.status).toBe("open");
+    for (const source of Object.values(reviewed.state.workstreams.source)) {
+      source.phase = "completed";
+    }
+    expect(
+      reduceRunEvent(reviewed.state, {
+        kind: "run_completed",
+        targetSha: "repair-sha",
+        targetTreeSha: "repair-tree",
+      }).accepted,
+    ).toBe(true);
   });
 
   it("sends an unchanged correction through one final review without failing the lane", async () => {
@@ -950,6 +1086,7 @@ async function wholePlanRepairResult() {
         },
       ],
       evidence: "whole-plan review artifact",
+      handoffDraft: "Initial whole-plan handoff.",
       reviewedTargetSha: "target-sha",
       reviewedTargetTreeSha: "target-tree",
     },

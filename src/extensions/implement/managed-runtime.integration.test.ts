@@ -140,6 +140,121 @@ describe("Implement managed runtime integration", () => {
     await runtime.dispose();
   });
 
+  it("retries a malformed whole-plan handoff draft once", async () => {
+    const harness = await createManagedSessionHarness([
+      fauxAssistantMessage(
+        fauxToolCall(
+          MANAGED_COMPLETION_TOOL_NAME,
+          { findings: [], handoffDraft: "   " },
+          { id: "invalid-completion" },
+        ),
+      ),
+      fauxAssistantMessage(
+        fauxToolCall(
+          MANAGED_COMPLETION_TOOL_NAME,
+          { findings: [], handoffDraft: "Complete reviewer handoff." },
+          { id: "valid-completion" },
+        ),
+      ),
+    ]);
+    const extension = pi();
+    const runtime = new SubagentRuntime(extension as never, {
+      createSession: harness.createSession,
+    });
+    const client = new RuntimeSubagentClient(
+      extension as never,
+      managedSessionContext(harness) as never,
+      "run-1",
+    );
+
+    const handle = await spawnValidatedWorker({
+      packet: {
+        role: "reviewer" as const,
+        completionKind: "initial-overall-review" as const,
+        identity: "run-1/whole-plan/current",
+        workspace: { path: MANAGED_TEST_CWD },
+      },
+      subagents: client,
+      roles: roles(),
+      taskId: "whole-plan",
+      description: "Review complete run",
+      render: () => "Review the complete run.",
+    });
+
+    await expect(client.waitFor(handle)).resolves.toEqual({
+      status: "completed",
+      result: { findings: [], handoffDraft: "Complete reviewer handoff." },
+    });
+    expect(harness.faux.state.callCount).toBe(2);
+    expect(harness.sessions[0]?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "invalid-completion",
+          isError: true,
+        }),
+      ]),
+    );
+    await runtime.dispose();
+  });
+
+  it("retries a malformed anchored overall handoff draft once", async () => {
+    const harness = await createManagedSessionHarness([
+      fauxAssistantMessage(
+        fauxToolCall(
+          MANAGED_COMPLETION_TOOL_NAME,
+          { assessments: [], regressions: [], handoffDraft: "   " },
+          { id: "invalid-completion" },
+        ),
+      ),
+      fauxAssistantMessage(
+        fauxToolCall(
+          MANAGED_COMPLETION_TOOL_NAME,
+          {
+            assessments: [],
+            regressions: [],
+            handoffDraft: "Complete replacement reviewer handoff.",
+          },
+          { id: "valid-completion" },
+        ),
+      ),
+    ]);
+    const extension = pi();
+    const runtime = new SubagentRuntime(extension as never, {
+      createSession: harness.createSession,
+    });
+    const client = new RuntimeSubagentClient(
+      extension as never,
+      managedSessionContext(harness) as never,
+      "run-1",
+    );
+
+    const handle = await spawnValidatedWorker({
+      packet: {
+        role: "reviewer" as const,
+        completionKind: "anchored-overall-review" as const,
+        identity: "run-1/whole-plan/repaired",
+        workspace: { path: MANAGED_TEST_CWD },
+      },
+      subagents: client,
+      roles: roles(),
+      taskId: "whole-plan",
+      description: "Review repaired complete run",
+      render: () => "Review the repaired complete run.",
+    });
+
+    await expect(client.waitFor(handle)).resolves.toEqual({
+      status: "completed",
+      result: {
+        assessments: [],
+        regressions: [],
+        handoffDraft: "Complete replacement reviewer handoff.",
+      },
+    });
+    expect(harness.faux.state.callCount).toBe(2);
+    await runtime.dispose();
+  });
+
   it("passes a large rendered prompt to a managed child", async () => {
     const harness = await createManagedSessionHarness([
       fauxAssistantMessage(
