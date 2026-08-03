@@ -270,15 +270,34 @@ function normalizeActiveToolNames(
   names: string[],
   options: { allowExplore: boolean; registered?: readonly string[] },
 ): string[] {
-  return withoutPublicAgentTools(names).filter(
+  const normalized = withoutPublicAgentTools(names).filter(
     (name) =>
       (options.allowExplore || name !== "explore") &&
       (name !== "lsp" || options.registered?.includes("lsp") !== false),
   );
+  const active = (name: string) =>
+    normalized.includes(name) && options.registered?.includes(name) !== false;
+  const bashActive = active("bash");
+  const recallActive = bashActive && active("context_recall");
+  return normalized.filter(
+    (name) =>
+      (name !== "bash" || bashActive) &&
+      (name !== "context_recall" || recallActive) &&
+      (name !== "bash_outcome" || (recallActive && active("bash_outcome"))),
+  );
 }
 
 const readOnlyToolNames = normalizeActiveToolNames(
-  ["read", "bash", "grep", "find", "ls", "lsp"],
+  [
+    "read",
+    "bash",
+    "bash_outcome",
+    "context_recall",
+    "grep",
+    "find",
+    "ls",
+    "lsp",
+  ],
   { allowExplore: false },
 );
 const defaultSystemPromptMode: PromptMode = "append";

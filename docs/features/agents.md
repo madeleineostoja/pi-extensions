@@ -78,7 +78,9 @@ Nested Explore runs created by managed Pipkin workflows use the same runtime and
 
 ## Context and tool boundaries
 
-Subagents inherit the parent extension environment and active tools, except public agent tools are withheld to prevent recursive fan-out. Explore and Review retain shell access for discovery and checks. Their read-only behavior is a trusted-model instruction, not technical confinement.
+Subagents inherit the parent extension environment and active tools, except public agent tools are withheld to prevent recursive fan-out. Where Bash is available, `bash_outcome` and `context_recall` are available with it: choose the outcome tool when only success or failure matters for the next reasoning step, regardless of finite duration, and use Bash when successful output may change that step. Successful output remains recallable under ordinary Bash limits and failures stay visible. A child's retained Bash output belongs only to that in-memory child session for its lifetime; its final answer is the parent-visible handoff.
+
+Explore and Review retain shell access for discovery and checks. Their read-only behavior is a trusted-model instruction, not technical confinement.
 
 Public subagents share the invoking session's filesystem and **do not receive isolated Git worktrees**. Each child resolves Sandbox policy from its own runtime cwd and snapshots the invoking session's current Sandbox mode when spawned. Turning Sandbox off affects later children but does not change children already running. Do not edit files that a child currently owns. If implementation needs strong workspace separation and publication control, use [Implement](implementation.md), whose trusted managed workers run in owned disposable worktrees.
 

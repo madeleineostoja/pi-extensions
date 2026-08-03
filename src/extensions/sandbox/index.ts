@@ -14,6 +14,7 @@ export default function (pi: ExtensionAPI): void {
     state,
     denials,
     supportedMac,
+    host: pi.events,
   });
 
   let hostBinding: SandboxHostBinding | undefined;
@@ -22,9 +23,12 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_start", async (event, ctx) => {
     hostBinding?.dispose();
     hostBinding = bindSandboxHost(pi.events, state.enabled);
-    pi.registerTool(
-      await session.sessionStart(event, ctx, hostBinding.inheritedEnabled),
+    const started = await session.sessionStart(
+      event,
+      ctx,
+      hostBinding.inheritedEnabled,
     );
+    pi.registerTool(started.definition);
   });
   pi.on("session_shutdown", async (_event, ctx) => {
     const binding = hostBinding;

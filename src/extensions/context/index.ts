@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerBashOutcomeTool } from "./bash-outcome.ts";
 import { renderEpochEntry } from "./epoch-renderer.ts";
 import { EPOCH_TYPE } from "./policy.ts";
 import { createPruningFlow } from "./pruning.ts";
@@ -11,4 +12,5 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => pruning.sessionStart(ctx));
   pi.on("context", pruning.context);
   registerRecallTool(pi);
+  registerBashOutcomeTool(pi);
 }

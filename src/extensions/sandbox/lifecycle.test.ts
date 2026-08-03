@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SandboxDenialObserver } from "./denial-observer.js";
 import { createSandboxDenialRecorder } from "./denials.js";
+import { executeSandboxBash } from "./bash-capability.js";
 import { createSandboxSessionController } from "./lifecycle.js";
 import type { SandboxPolicy } from "./policy.js";
 import { createSandboxSessionState } from "./state.js";
@@ -50,17 +51,20 @@ function controller(options: {
 }) {
   const state = options.state ?? createSandboxSessionState();
   const denials = createSandboxDenialRecorder();
+  const host = {};
   return {
     controller: createSandboxSessionController({
       state,
       denials,
       supportedMac: options.supportedMac,
+      host: host as never,
       resolvePolicy: options.resolvePolicy,
       createDenialObserver: options.createDenialObserver
         ? () => options.createDenialObserver!()
         : undefined,
     }),
     denials,
+    host,
     state,
   };
 }
@@ -75,7 +79,7 @@ describe("Sandbox lifecycle", () => {
     });
     const ctx = context();
     const bash = await session.sessionStart({} as never, ctx as never);
-    expect(bash.name).toBe("bash");
+    expect(bash.definition.name).toBe("bash");
     expect(state.enabled()).toBe(true);
     expect(state.policy()).toBe(policy);
     expect(watched.start).toHaveBeenCalledOnce();
@@ -96,7 +100,7 @@ describe("Sandbox lifecycle", () => {
     });
     const ctx = context();
     const bash = await session.sessionStart({} as never, ctx as never);
-    expect(bash.name).toBe("bash");
+    expect(bash.definition.name).toBe("bash");
     expect(state.policy()).toBeUndefined();
     expect(state.unavailableReason()).toContain("Git failed");
     expect(ctx.statuses.get("pipkin.sandbox")).toContain("unavailable");
@@ -133,11 +137,60 @@ describe("Sandbox lifecycle", () => {
     });
     const ctx = context();
     const bash = await session.sessionStart({} as never, ctx as never);
-    expect(bash.name).toBe("bash");
+    expect(bash.definition.name).toBe("bash");
     expect(state.policy()).toBeUndefined();
     expect(createDenialObserver).not.toHaveBeenCalled();
     expect(ctx.statuses.get("pipkin.sandbox")).toContain("unavailable");
     await session.sessionShutdown(ctx as never);
+  });
+
+  it("binds only the current executor and revokes it before replacement and shutdown", async () => {
+    const { controller: session, host } = controller({ supportedMac: false });
+    const ctx = { ...context(), cwd: process.cwd() };
+    const executionContext = {
+      sessionManager: {
+        getSessionFile: () => undefined,
+        getSessionId: () => "test-session",
+      },
+    } as never;
+    const request = (command: string, timeout?: number) => ({
+      toolCallId: "call",
+      params: timeout === undefined ? { command } : { command, timeout },
+      signal: undefined,
+      onUpdate: undefined,
+      ctx: executionContext,
+    });
+
+    const started = await session.sessionStart({} as never, ctx as never);
+    const updates: unknown[] = [];
+    const publicResult = await started.definition.execute(
+      "public-call",
+      { command: "printf first" },
+      undefined,
+      (update) => updates.push(update),
+      executionContext,
+    );
+    const delegatedResult = await executeSandboxBash(
+      host as never,
+      request("printf first"),
+    );
+    expect(delegatedResult).toEqual(publicResult);
+    expect(updates).not.toHaveLength(0);
+    await expect(
+      executeSandboxBash(host as never, request("printf never", 0)),
+    ).rejects.toThrow("Invalid timeout");
+
+    await session.sessionStart({} as never, ctx as never);
+    await expect(
+      executeSandboxBash(host as never, request("printf second")),
+    ).resolves.toMatchObject({
+      content: [{ type: "text", text: "second" }],
+    });
+
+    await session.sessionShutdown(ctx as never);
+    await expect(
+      executeSandboxBash(host as never, request("printf never")),
+    ).rejects.toThrow("unavailable");
   });
 
   it("resets session diagnostics and replaces the observer on restart", async () => {

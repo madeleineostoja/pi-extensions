@@ -84,13 +84,20 @@ export async function createManagedSessionHarness(
     retry: { enabled: false },
   });
   const sessions: AgentSession[] = [];
+  const eventBuses: EventBus[] = [];
   const createSession = async (options: CreateSessionOptions = {}) => {
     const cwd = options.cwd ?? MANAGED_TEST_CWD;
+    const eventBus =
+      harnessOptions.eventBus ??
+      (options.resourceLoader as { eventBus?: EventBus } | undefined)?.eventBus;
+    if (eventBus) {
+      eventBuses.push(eventBus);
+    }
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir: cwd,
       settingsManager,
-      eventBus: harnessOptions.eventBus,
+      eventBus,
       extensionFactories: harnessOptions.extensionFactories,
       noExtensions: true,
       noSkills: true,
@@ -112,7 +119,7 @@ export async function createManagedSessionHarness(
     sessions.push(created.session);
     return { session: created.session };
   };
-  return { createSession, faux, model, modelRegistry, sessions };
+  return { createSession, eventBuses, faux, model, modelRegistry, sessions };
 }
 
 export function managedSessionContext(harness: {

@@ -36,6 +36,7 @@
   "imports": {
     "#lib/*": "./src/lib/*.ts",
     "#sandbox/runtime": "./src/extensions/sandbox/runtime.ts",
+    "#sandbox/bash": "./src/extensions/sandbox/bash-capability.ts",
     "#subagents/runtime": "./src/extensions/subagents/runtime.ts",
     "#test/*": "./test/support/*.ts"
   },
