@@ -25,8 +25,10 @@ Personality gives an unnamed session a short descriptive title from its early no
 
 Naming runs asynchronously and never delays the main agent turn. Up to three early prompts may provide context if naming has not completed yet. Personality never replaces a manually assigned or existing name.
 
-If the utility model cannot run, Pipkin derives a local fallback from the initial prompt. Titles use the first non-empty generated line, strip labels and surrounding quotes, collapse whitespace, and stop at 40 characters on a word boundary.
+A successful Implement run or restart also receives an asynchronous `Implement …` title from the beginning of its root plan. It replaces any existing name because the active run owns the session identity; unavailable or invalid generation falls back to `Implement run`. Blocked, control, and all-checked no-op commands do not rename the session.
 
-On an empty fresh TUI startup or `/new` session, Personality also shows a synchronous one- or two-line greeting. It uses the optional configured nickname and local time band, includes only the current workspace basename as muted detail, and disappears on the first accepted input. It never appears on reload, resume, or fork, waits for no model or history lookup, and never changes session naming.
+If the utility model cannot run, ordinary naming derives a local fallback from the initial prompt. Titles use the first non-empty generated line, strip labels and surrounding quotes, collapse whitespace, and stop at 40 characters on a word boundary.
+
+On an empty fresh TUI startup or `/new` session, Personality also shows a synchronous one- or two-line greeting. It uses the optional configured nickname and local time band, includes only the current workspace basename as muted detail, and disappears on the first accepted input or session-name update. It never appears on reload, resume, or fork, waits for no model or history lookup, and never changes session naming.
 
 See [Configuration](../configuration.md#model-presets) for the `utility` route and [nickname](../configuration.md#nickname) for the greeting setting.

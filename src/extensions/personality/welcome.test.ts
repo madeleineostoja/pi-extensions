@@ -101,6 +101,19 @@ describe("Welcome", () => {
     expect(setHeader).toHaveBeenCalledTimes(2);
   });
 
+  it("clears the header when the canonical session name changes", () => {
+    const { handlers, ctx, setHeader } = fixture();
+    sessionStart(handlers, "startup", ctx);
+    const changed = handlers.get("session_info_changed")?.[0];
+    if (!changed) {
+      throw new Error("session_info_changed handler was not registered");
+    }
+
+    changed({ name: "Implement managed processes" }, ctx);
+
+    expect(setHeader).toHaveBeenLastCalledWith(undefined);
+  });
+
   it("clears the header idempotently on shutdown", () => {
     const { handlers, ctx, setHeader } = fixture();
     sessionStart(handlers, "startup", ctx);

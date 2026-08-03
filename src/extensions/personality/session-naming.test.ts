@@ -284,6 +284,30 @@ describe("automatic session naming", () => {
     expect(notifications).toEqual([]);
   });
 
+  it("does not overwrite an Implement title set while ordinary naming is pending", async () => {
+    const { handlers, setSessionName } = makeFakePi();
+    const { ctx } = makeExtensionCtx();
+    const beforeAgentStart = getBeforeAgentStartHandler(handlers);
+    let resolveComplete: (value: unknown) => void = () => {};
+    completeTextMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveComplete = resolve;
+      }),
+    );
+
+    await beforeAgentStart({ prompt: "Ordinary prompt" }, ctx);
+    setSessionName("Implement managed processes");
+    resolveComplete({
+      ok: true,
+      text: "Ordinary title",
+      stopReason: "stop",
+    });
+    await flushPromises();
+
+    expect(setSessionName).toHaveBeenCalledTimes(1);
+    expect(setSessionName).toHaveBeenCalledWith("Implement managed processes");
+  });
+
   it("retries transient failures with accumulated early prompts", async () => {
     const { handlers } = makeFakePi();
     const { ctx } = makeExtensionCtx();

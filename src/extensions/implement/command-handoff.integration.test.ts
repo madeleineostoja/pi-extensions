@@ -349,6 +349,7 @@ function commandFixture(options?: {
       command = next;
     },
     appendEntry,
+    setSessionName() {},
     sendMessage() {
       throw new Error("Terminal handoffs must not enter agent context.");
     },

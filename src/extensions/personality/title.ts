@@ -60,6 +60,17 @@ export function buildTitlePrompt(promptContext: string | readonly string[]): {
   return { systemPrompt, userText };
 }
 
+export function buildImplementTitlePrompt(planExcerpt: string): {
+  systemPrompt: string;
+  userText: string;
+} {
+  return {
+    systemPrompt:
+      "You name coding sessions. This is an active Pipkin Implement run. Reply with a concise title only, beginning with Implement. No quotes, no punctuation at the end.",
+    userText: `Give this active Implement run a short descriptive title (3–6 words, max 40 characters) based only on this root plan excerpt:\n\n${planExcerpt}`,
+  };
+}
+
 function formatPromptContext(prompts: string[]): string {
   const text =
     prompts.length <= 1

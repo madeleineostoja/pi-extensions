@@ -1,8 +1,10 @@
+import { resolve } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import type { ConfigSnapshot } from "#lib/config";
+import { presetIssue, type ConfigSnapshot } from "#lib/config";
+import { generateSessionName } from "#personality/session-name";
 import { resolveImplementRoles } from "./subagents.js";
 import { parseCommand, usage, type ParsedCommand } from "./parser.js";
 import {
@@ -35,7 +37,15 @@ export function registerImplementCommand(
   let active: ActiveRun | undefined;
   let activity: ImplementActivity | undefined;
   let lifecycle = Promise.resolve();
+  let sessionGeneration = 0;
+  let namingAbortController: AbortController | undefined;
   const handoffPublisher = createTerminalHandoffPublisher(pi);
+
+  pi.on("session_start", () => {
+    sessionGeneration++;
+    namingAbortController?.abort();
+    namingAbortController = undefined;
+  });
 
   const runLifecycle = <T>(operation: () => Promise<T>): Promise<T> => {
     const result = lifecycle.then(operation, operation);
@@ -51,6 +61,9 @@ export function registerImplementCommand(
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    sessionGeneration++;
+    namingAbortController?.abort();
+    namingAbortController = undefined;
     handoffPublisher.dispose();
     return runLifecycle(async () => {
       activity?.clear();
@@ -259,6 +272,7 @@ export function registerImplementCommand(
     parsed: Extract<ParsedCommand, { kind: "execution" }>,
     ctx: ExtensionCommandContext,
   ): Promise<void> {
+    const executionGeneration = sessionGeneration;
     if (active) {
       ctx.ui.notify(
         "Implement already has an active run in this session.",
@@ -331,6 +345,7 @@ export function registerImplementCommand(
       }
       active = result.active;
       nextActivity.update(active.store.read());
+      beginSessionNaming(parsed.planPath, ctx, executionGeneration);
       ctx.ui.notify(`Implement started run ${active.runId}.`, "info");
     } catch (error) {
       nextActivity.clear();
@@ -339,6 +354,72 @@ export function registerImplementCommand(
       ctx.ui.notify(`Implement blocked: ${reason}`, "warning");
     }
   }
+
+  function beginSessionNaming(
+    planPath: string,
+    ctx: ExtensionCommandContext,
+    executionGeneration: number,
+  ): void {
+    if (executionGeneration !== sessionGeneration) {
+      return;
+    }
+    namingAbortController?.abort();
+    const abortController = new AbortController();
+    namingAbortController = abortController;
+    const generation = executionGeneration;
+
+    void readImplementPlanExcerpt(ctx.cwd, planPath)
+      .then((planExcerpt) =>
+        generateSessionName(
+          ctx,
+          {
+            utility: config?.config.models.utility,
+            utilityIssue: config
+              ? presetIssue(config, "utility")?.message
+              : undefined,
+            configPath: config?.path ?? "is unavailable",
+          },
+          { kind: "implement", planExcerpt },
+          abortController.signal,
+        ),
+      )
+      .then((result) => {
+        if (
+          generation !== sessionGeneration ||
+          namingAbortController !== abortController ||
+          result.outcome !== "success"
+        ) {
+          return;
+        }
+        namingAbortController = undefined;
+        pi.setSessionName(result.title);
+      });
+  }
+}
+
+const MAX_IMPLEMENT_PLAN_EXCERPT_LINES = 80;
+const MAX_IMPLEMENT_PLAN_EXCERPT_CHARS = 4_000;
+
+export async function readImplementPlanExcerpt(
+  cwd: string,
+  planPath: string,
+): Promise<string> {
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const content = await readFile(resolvePlanPath(cwd, planPath), "utf-8");
+    return content
+      .split(/\r?\n/)
+      .slice(0, MAX_IMPLEMENT_PLAN_EXCERPT_LINES)
+      .join("\n")
+      .slice(0, MAX_IMPLEMENT_PLAN_EXCERPT_CHARS)
+      .trimEnd();
+  } catch {
+    return "";
+  }
+}
+
+function resolvePlanPath(cwd: string, planPath: string): string {
+  return resolve(cwd, planPath);
 }
 
 async function resourceReleaseFailures(
