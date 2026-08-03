@@ -60,6 +60,14 @@ export type ActiveRun = {
   actor: SchedulerActor;
   lease: CheckoutLeaseCapability;
   store: RunStore;
+  git: ExecGitClient;
+};
+
+export type CompletedRunResources = {
+  runId: string;
+  lease: CheckoutLeaseCapability;
+  store: RunStore;
+  git: ExecGitClient;
 };
 
 export async function startRun(args: {
@@ -69,6 +77,7 @@ export async function startRun(args: {
   roles: ImplementRoles;
   workerConcurrency: number;
   onTransition?: SchedulerActorOptions["onTransition"];
+  onCompleted?: (run: CompletedRunResources) => void;
 }): Promise<{ kind: "no-op" } | { kind: "started"; active: ActiveRun }> {
   const planPath = resolve(args.ctx.cwd, args.planPath);
   const content = await readText(planPath);
@@ -124,6 +133,7 @@ export async function startRun(args: {
       source,
       workerConcurrency: args.workerConcurrency,
     });
+    const completedRun = { runId, lease, store, git };
     const actor = createRuntime({
       pi: args.pi,
       ctx: args.ctx,
@@ -135,10 +145,18 @@ export async function startRun(args: {
       materialStore,
       checkoutIdentity,
       baseSha,
-      onTransition: args.onTransition,
+      onTransition: (state, event) => {
+        try {
+          args.onTransition?.(state, event);
+        } finally {
+          if (event.kind === "run_completed") {
+            args.onCompleted?.(completedRun);
+          }
+        }
+      },
     });
     await actor.start();
-    return { kind: "started", active: { runId, actor, lease, store } };
+    return { kind: "started", active: { runId, actor, lease, store, git } };
   } catch (error) {
     await lease.release();
     throw error;
@@ -241,6 +259,7 @@ export function expectedTargetHead(
 export async function stopRun(
   active: ActiveRun,
   category: NonNullable<RunState["failure"]>["category"] = "stopped",
+  beforeRelease?: (run: ActiveRun) => Promise<void>,
 ): Promise<void> {
   try {
     await active.actor.stop(
@@ -249,6 +268,7 @@ export async function stopRun(
         : "Stopped by user.",
       category,
     );
+    await beforeRelease?.(active);
   } finally {
     await active.lease.release();
   }

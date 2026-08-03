@@ -1,11 +1,7 @@
 import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { ExecGitClient, type GitClient } from "./git.js";
-import {
-  projectedArtifactPaths,
-  sweepOwnedRunResources,
-  trashRun,
-} from "./cleanup.js";
+import { sweepOwnedRunResources, trashRun } from "./cleanup.js";
 import {
   acquireCheckoutLease,
   checkoutPaths,
@@ -247,7 +243,7 @@ export async function cleanupCompletedRun(args: {
   checkoutRoot: string;
   runId: string;
   prospectiveStart?: boolean;
-}): Promise<string[]> {
+}): Promise<void> {
   assertRunId(args.runId);
   const git = new ExecGitClient(args.checkoutRoot);
   const lease = await acquireCheckoutLease({
@@ -260,9 +256,9 @@ export async function cleanupCompletedRun(args: {
       await assertProspectiveRunPreflight(git);
     }
     if (removeRetainedTrash(lease, args.runId)) {
-      return [];
+      return;
     }
-    return await cleanupWithLease({ lease, git, runId: args.runId });
+    await cleanupWithLease({ lease, git, runId: args.runId });
   } finally {
     await lease.release();
   }
@@ -273,7 +269,7 @@ export async function cleanupWithLease(args: {
   git: GitClient;
   runId: string;
   allowIncomplete?: boolean;
-}): Promise<string[]> {
+}): Promise<void> {
   const store = openExactRun(args.lease, args.runId);
   await assertCurrentRunAuthority(store, args.git, args.lease);
   await terminalizeInterruptedRun(store);
@@ -299,15 +295,31 @@ export async function cleanupWithLease(args: {
     );
   }
   await sweepOwnedRunResources({ lease: args.lease, store, git: args.git });
-  const projected = projectedArtifactPaths(state);
   trashRun({ lease: args.lease, store });
-  return projected;
+}
+
+export async function releaseCompletedRunResources(args: {
+  lease: CheckoutLeaseCapability;
+  store: RunStore;
+  git: GitClient;
+}): Promise<void> {
+  await assertCurrentRunAuthority(args.store, args.git, args.lease);
+  const state = args.store.read();
+  if (state.phase !== "completed") {
+    throw new Error("Only completed runs release resources automatically.");
+  }
+  if (Object.keys(state.processLeases).length > 0) {
+    throw new Error(
+      "Run retains unresolved process ownership and cannot release resources.",
+    );
+  }
+  await sweepOwnedRunResources(args);
 }
 
 export async function cleanupRun(args: {
   checkoutRoot: string;
   runId: string;
-}): Promise<string[]> {
+}): Promise<void> {
   assertRunId(args.runId);
   const git = new ExecGitClient(args.checkoutRoot);
   const checkoutIdentity = await git.checkoutIdentity();
@@ -319,9 +331,9 @@ export async function cleanupRun(args: {
   });
   try {
     if (removeRetainedTrash(lease, args.runId)) {
-      return [];
+      return;
     }
-    return await cleanupWithLease({
+    await cleanupWithLease({
       lease,
       git,
       runId: args.runId,

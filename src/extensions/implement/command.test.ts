@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { registerImplementCommand, runMenuActions } from "./command.js";
+import {
+  implementMenuActions,
+  registerImplementCommand,
+  runMenuActions,
+} from "./command.js";
+import type { RunListing } from "./controls.js";
+import type { RunState } from "./store.js";
 
 const config = {
   path: "/agent/pipkin/config.json",
@@ -28,6 +34,37 @@ afterEach(() => {
 });
 
 describe("/implement command", () => {
+  it("offers one top-level cleanup action for completed run history", () => {
+    const runs = [
+      {
+        kind: "run",
+        runId: "completed-1",
+        state: { phase: "completed" } as RunState,
+      },
+      {
+        kind: "run",
+        runId: "failed-1",
+        state: { phase: "failed" } as RunState,
+      },
+      { kind: "historical", runId: "legacy" },
+      {
+        kind: "run",
+        runId: "completed-2",
+        state: { phase: "completed" } as RunState,
+      },
+    ] satisfies RunListing[];
+
+    expect(implementMenuActions(runs)).toEqual([
+      "New run",
+      "Clean completed runs (2)",
+      "Close",
+    ]);
+    expect(implementMenuActions(runs.slice(1, 3))).toEqual([
+      "New run",
+      "Close",
+    ]);
+  });
+
   it("offers terminal and interrupted retained runs cleanup without continue", () => {
     expect(runMenuActions("failed", true)).toEqual([
       "Status",

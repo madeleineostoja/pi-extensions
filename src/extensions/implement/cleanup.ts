@@ -1,14 +1,12 @@
 import {
   existsSync,
   mkdirSync,
-  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
 } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { stagingIdentity } from "./candidate-replay.js";
-import { sha256 } from "./source-integrity.js";
 import type { GitClient } from "./git.js";
 import type { CheckoutLeaseCapability, RunState, RunStore } from "./store.js";
 
@@ -108,21 +106,6 @@ export async function sweepOwnedRunResources(args: {
       `Owned resources remain after cleanup: ${remaining.join(", ")}`,
     );
   }
-}
-
-export function projectedArtifactPaths(state: RunState): string[] {
-  return Object.entries(state.protectedArtifactHashes)
-    .filter(([path, hash]) => {
-      try {
-        return (
-          sha256(readFileSync(path, "utf-8")) === hash &&
-          state.run.source.protectedArtifactHashes[path] !== hash
-        );
-      } catch {
-        return false;
-      }
-    })
-    .map(([path]) => path);
 }
 
 export function trashRun(args: {

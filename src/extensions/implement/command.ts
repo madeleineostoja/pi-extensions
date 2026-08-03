@@ -5,7 +5,12 @@ import type {
 import type { ConfigSnapshot } from "#lib/config";
 import { resolveImplementRoles } from "./subagents.js";
 import { parseCommand, usage, type ParsedCommand } from "./parser.js";
-import { stopRun, startRun, type ActiveRun } from "./run.js";
+import {
+  stopRun,
+  startRun,
+  type ActiveRun,
+  type CompletedRunResources,
+} from "./run.js";
 import {
   cleanupCompletedRun,
   cleanupRun,
@@ -13,6 +18,7 @@ import {
   formatStatus,
   inspectRun,
   listCheckoutRuns,
+  releaseCompletedRunResources,
   type RunListing,
 } from "./controls.js";
 import { createTemporaryActivity } from "./temporary-activity.js";
@@ -27,36 +33,53 @@ export function registerImplementCommand(
   const roles = config && resolveImplementRoles(config.config.models);
   let active: ActiveRun | undefined;
   let activity: TemporaryActivity | undefined;
+  let lifecycle = Promise.resolve();
 
-  pi.on("session_shutdown", async () => {
-    activity?.clear();
-    activity = undefined;
-    const stopping = active;
-    active = undefined;
-    if (stopping) {
-      await stopRun(stopping, "interrupted");
-    }
-  });
+  const runLifecycle = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = lifecycle.then(operation, operation);
+    lifecycle = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  };
+
+  pi.on("session_shutdown", (_event, ctx) =>
+    runLifecycle(async () => {
+      activity?.clear();
+      activity = undefined;
+      const stopping = active;
+      active = undefined;
+      if (stopping) {
+        const failures: string[] = [];
+        await stopRun(stopping, "interrupted", async (run) => {
+          failures.push(...(await resourceReleaseFailures(run)));
+        });
+        notifyResourceReleaseFailures(ctx, stopping.runId, failures);
+      }
+    }),
+  );
 
   pi.registerCommand("implement", {
     description: "Run and inspect strict implementation plans",
-    handler: async (input: string, ctx: ExtensionCommandContext) => {
-      const parsed = input.trim()
-        ? parseCommand(input)
-        : await showImplementMenu(ctx, active);
-      if (!parsed) {
-        return;
-      }
-      if (parsed.kind === "error") {
-        ctx.ui.notify(parsed.message, "warning");
-        return;
-      }
-      if (parsed.kind === "control") {
-        await handleControl(parsed, ctx);
-        return;
-      }
-      await handleExecution(parsed, ctx);
-    },
+    handler: (input: string, ctx: ExtensionCommandContext) =>
+      runLifecycle(async () => {
+        const parsed = input.trim()
+          ? parseCommand(input)
+          : await showImplementMenu(ctx, active);
+        if (!parsed) {
+          return;
+        }
+        if (parsed.kind === "error") {
+          ctx.ui.notify(parsed.message, "warning");
+          return;
+        }
+        if (parsed.kind === "control") {
+          await handleControl(parsed, ctx);
+          return;
+        }
+        await handleExecution(parsed, ctx);
+      }),
   });
 
   async function handleControl(
@@ -74,8 +97,17 @@ export function registerImplementCommand(
         active = undefined;
         activity?.clear();
         activity = undefined;
-        await stopRun(stopping);
-        ctx.ui.notify("Implement stopped and failed safely.", "info");
+        const failures: string[] = [];
+        await stopRun(stopping, "stopped", async (run) => {
+          failures.push(...(await resourceReleaseFailures(run)));
+        });
+        notifyResourceReleaseFailures(ctx, stopping.runId, failures);
+        ctx.ui.notify(
+          stopping.store.read().phase === "completed"
+            ? `Implement completed run ${stopping.runId} before stop settled.`
+            : "Implement stopped and failed safely.",
+          "info",
+        );
         return;
       }
       if (parsed.name === "status") {
@@ -104,6 +136,49 @@ export function registerImplementCommand(
         ctx.ui.notify(inspectRun(checkoutRoot, parsed.runId), "info");
         return;
       }
+      if (parsed.name === "cleanup-completed") {
+        const runIds = completedRunIds(orderedRuns(checkoutRoot, active));
+        if (runIds.length === 0) {
+          ctx.ui.notify("Implement has no completed runs to clean.", "info");
+          return;
+        }
+        if (!ctx.hasUI) {
+          throw new Error(
+            "Cleaning completed run history requires interactive confirmation.",
+          );
+        }
+        const confirmed = await ctx.ui.confirm(
+          "Clean completed runs",
+          `Delete retained state and evidence for ${runIds.length} completed ${runIds.length === 1 ? "run" : "runs"}? Published commits and projected plan changes remain.`,
+        );
+        if (!confirmed) {
+          return;
+        }
+        const failures: string[] = [];
+        let cleaned = 0;
+        for (const runId of runIds) {
+          try {
+            await cleanup(runId, checkoutRoot);
+            cleaned += 1;
+          } catch (error) {
+            failures.push(
+              `${runId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+        if (failures.length > 0) {
+          ctx.ui.notify(
+            `Implement cleaned ${cleaned} completed ${cleaned === 1 ? "run" : "runs"}; blocked ${failures.length}: ${failures.join("; ")}`,
+            "warning",
+          );
+          return;
+        }
+        ctx.ui.notify(
+          `Implement cleaned ${cleaned} completed ${cleaned === 1 ? "run" : "runs"}.`,
+          "info",
+        );
+        return;
+      }
       if (!parsed.runId) {
         throw new Error("Cleanup requires a run ID.");
       }
@@ -122,8 +197,7 @@ export function registerImplementCommand(
           return;
         }
       }
-      const projected = await cleanup(parsed.runId, checkoutRoot);
-      notifyProjectedChanges(ctx, projected);
+      await cleanup(parsed.runId, checkoutRoot);
       ctx.ui.notify(`Implement cleaned run ${parsed.runId}.`, "info");
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -131,12 +205,10 @@ export function registerImplementCommand(
     }
   }
 
-  async function cleanup(
-    runId: string,
-    checkoutRoot: string,
-  ): Promise<string[]> {
+  async function cleanup(runId: string, checkoutRoot: string): Promise<void> {
     if (active?.runId !== runId) {
-      return cleanupRun({ checkoutRoot, runId });
+      await cleanupRun({ checkoutRoot, runId });
+      return;
     }
     const owned = active;
     const state = owned.store.read();
@@ -145,17 +217,37 @@ export function registerImplementCommand(
     activity = undefined;
     if (state.phase === "completed") {
       try {
-        return await cleanupWithLease({
+        await cleanupWithLease({
           lease: owned.lease,
-          git: new (await import("./git.js")).ExecGitClient(checkoutRoot),
+          git: owned.git,
           runId,
         });
       } finally {
         await owned.lease.release();
       }
+      return;
     }
     await stopRun(owned);
-    return cleanupRun({ checkoutRoot, runId });
+    await cleanupRun({ checkoutRoot, runId });
+  }
+
+  async function finalizeCompletedRun(
+    run: CompletedRunResources,
+    ctx: ExtensionCommandContext,
+  ): Promise<void> {
+    if (active?.runId !== run.runId) {
+      return;
+    }
+    const failures = await resourceReleaseFailures(run);
+    active = undefined;
+    activity?.clear();
+    activity = undefined;
+    try {
+      await run.lease.release();
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
+    notifyResourceReleaseFailures(ctx, run.runId, failures);
   }
 
   async function handleExecution(
@@ -202,6 +294,9 @@ export function registerImplementCommand(
         roles,
         workerConcurrency: config.config.implement.workerConcurrency,
         onTransition,
+        onCompleted: (run) => {
+          void runLifecycle(() => finalizeCompletedRun(run, ctx));
+        },
       });
       if (result.kind === "no-op") {
         nextActivity.clear();
@@ -221,6 +316,33 @@ export function registerImplementCommand(
       const reason = error instanceof Error ? error.message : String(error);
       ctx.ui.notify(`Implement blocked: ${reason}`, "warning");
     }
+  }
+}
+
+async function resourceReleaseFailures(
+  run: CompletedRunResources,
+): Promise<string[]> {
+  if (run.store.read().phase !== "completed") {
+    return [];
+  }
+  try {
+    await releaseCompletedRunResources(run);
+    return [];
+  } catch (error) {
+    return [error instanceof Error ? error.message : String(error)];
+  }
+}
+
+function notifyResourceReleaseFailures(
+  ctx: Pick<ExtensionCommandContext, "ui">,
+  runId: string,
+  failures: string[],
+): void {
+  if (failures.length > 0) {
+    ctx.ui.notify(
+      `Implement completed run ${runId}, but automatic resource cleanup was blocked: ${failures.join("; ")}`,
+      "warning",
+    );
   }
 }
 
@@ -245,10 +367,10 @@ async function showImplementMenu(
   while (true) {
     const runs = orderedRuns(root, active);
     const labels = runs.map(runMenuLabel);
+    const menuActions = implementMenuActions(runs);
     const selected = await ctx.ui.select("Implement", [
       ...labels,
-      "New run",
-      "Close",
+      ...menuActions,
     ]);
     if (!selected || selected === "Close") {
       return;
@@ -258,6 +380,9 @@ async function showImplementMenu(
       return planPath?.trim()
         ? { kind: "execution", planPath: planPath.trim() }
         : undefined;
+    }
+    if (selected === cleanCompletedRunsLabel(runs)) {
+      return { kind: "control", name: "cleanup-completed" };
     }
     const index = labels.indexOf(selected);
     const run = runs[index];
@@ -316,6 +441,11 @@ async function showRunMenu(
   };
 }
 
+export function implementMenuActions(runs: RunListing[]): string[] {
+  const cleanup = cleanCompletedRunsLabel(runs);
+  return ["New run", ...(cleanup ? [cleanup] : []), "Close"];
+}
+
 export function runMenuActions(
   phase: RunState["phase"],
   current: boolean,
@@ -345,6 +475,17 @@ function orderedRuns(
     state: active.store.read(),
   };
   return [current, ...runs.filter((run) => run.runId !== active.runId)];
+}
+
+function completedRunIds(runs: RunListing[]): string[] {
+  return runs.flatMap((run) =>
+    run.kind === "run" && run.state.phase === "completed" ? [run.runId] : [],
+  );
+}
+
+function cleanCompletedRunsLabel(runs: RunListing[]): string | undefined {
+  const count = completedRunIds(runs).length;
+  return count > 0 ? `Clean completed runs (${count})` : undefined;
 }
 
 function runMenuLabel(run: RunListing): string {
@@ -386,18 +527,6 @@ function formatRunListing(run: RunListing): string {
   return run.kind === "run"
     ? formatStatus(run.state)
     : `Historical artifact: ${run.runId} (manual inspection/removal only)`;
-}
-
-function notifyProjectedChanges(
-  ctx: ExtensionCommandContext,
-  projected: string[],
-): void {
-  if (projected.length > 0) {
-    ctx.ui.notify(
-      `Projected tracked files are now ordinary working changes; commit or revert before the next run: ${projected.join(", ")}`,
-      "warning",
-    );
-  }
 }
 
 async function resolveCheckoutRoot(cwd: string): Promise<string> {

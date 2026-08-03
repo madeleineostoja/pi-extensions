@@ -6,7 +6,7 @@ export type ParsedCommand =
     }
   | {
       kind: "control";
-      name: "status" | "stop" | "cleanup" | "inspect";
+      name: "status" | "stop" | "cleanup" | "cleanup-completed" | "inspect";
       runId?: string;
     }
   | { kind: "error"; message: string };

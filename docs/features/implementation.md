@@ -4,7 +4,7 @@ Implement is Pipkin's autonomous software implementation system and parallel age
 
 Before coding starts, a high-reasoning planner reads the complete linked plan material and creates one immutable, dependency-aware schedule. It groups work at stable implementation and review boundaries: shared context and cumulative review can justify a multi-task workstream, while a narrower revision scope can justify a split, including a dependent chain. Dedicated implementer and reviewer agents then work in isolated Git worktrees, with Pipkin supplying each trusted managed worker its owned worktree cwd. Independent workstreams proceed concurrently up to the configured capacity; capacity is useful, not a requirement to split or to fill every slot. Review findings create exact bounded revision assignments, and a final review checks the result as a whole.
 
-The complete source plan is the shipment boundary. An approved intermediate candidate can establish a contract for a dependent workstream, but it must remain coherent and safe to publish. The target branch has one controlled writer. Pipkin integrates approved work serially, runs ordinary Git hooks, verifies the commit it prepared, and uses compare-and-swap protection when advancing the branch. Durable state and retained evidence make interrupted and failed runs inspectable and safely cleanable.
+The complete source plan is the shipment boundary. An approved intermediate candidate can establish a contract for a dependent workstream, but it must remain coherent and safe to publish. The target branch has one controlled writer. Pipkin integrates approved work serially, runs ordinary Git hooks, verifies the commit it prepared, and uses compare-and-swap protection when advancing the branch. Durable state and retained evidence keep completed runs inspectable after their disposable Git resources are released, while interrupted and failed runs retain their workspaces for diagnosis and safe cleanup.
 
 This is not a public-agent fan-out or a prompt loop around a checklist. Implement owns scheduling, workspace isolation, review, revision policy, publication, and plan projection as one system.
 
@@ -66,7 +66,7 @@ The result is parallel work where it is safe and a single accountable lane where
 
 ## Delivery outcomes
 
-A run is `completed` only after every source workstream is delivered, projected, and approved by whole-plan review. A lane that exhausts its bounded worker, review, revision, reconciliation, hook, or workspace-recreation policy becomes `failed`; queued descendants with an unavailable direct dependency become `dependency_skipped`. Their candidates, findings, worktrees, and bounded evidence remain retained and unpublished. Independent lanes continue, and any successful publication keeps its checkbox projection.
+A run is `completed` only after every source workstream is delivered, projected, and approved by whole-plan review. Once completion is durable, Pipkin best-effort removes the run's owned candidate and staging worktrees and branches, releases the checkout lease, and retains its state, frozen inputs, execution plan, and bounded evidence. Cleanup failure does not change the successful outcome; it warns and leaves the remaining resources for explicit cleanup. A lane that exhausts its bounded worker, review, revision, reconciliation, hook, or workspace-recreation policy becomes `failed`; queued descendants with an unavailable direct dependency become `dependency_skipped`. Their candidates, findings, worktrees, and bounded evidence remain retained and unpublished. Independent lanes continue, and any successful publication keeps its checkbox projection.
 
 Once no safe work, lease, publication transaction, or projection debt remains, a partial run settles as `incomplete`. Failed and skipped source tasks stay unchecked, and whole-plan review does not run over a partial result. `incomplete` is terminal, blocks another run in the same checkout until confirmed cleanup, and is distinct from `failed`, which is reserved for explicit stop/interruption or a target, ownership, persistence, projection, or publication-safety boundary that cannot be proven. Pipkin does not roll back, auto-resume, or publish retained candidates.
 
@@ -83,7 +83,7 @@ Before and after managed work, Pipkin verifies:
 
 A boundary problem reports the exact paths and terminally fails the run. A boundary change during managed work is a safety failure because Pipkin cannot safely attribute its source.
 
-Published commits are never rolled back just because a later checkbox projection or owned-resource cleanup needs another attempt. Plan checkbox changes are expected dirt while the run is active and ordinary working changes after it completes.
+Published commits are never rolled back just because a later checkbox projection or owned-resource cleanup needs another attempt. Plan checkbox changes are expected dirt while the run is active and ordinary working changes after it completes. Resource cleanup preserves these projections silently.
 
 ## Durable state and failure policy
 
@@ -110,7 +110,7 @@ One OS-backed lease protects each checkout's active run and destructive cleanup.
 
 Failures retain their real category, candidate, lifecycle gate, target evidence, and workspace observation. Failed replay reconciliation retains the exact failed target, replay disposition, canonical relevant paths, candidate identity, and bounded staging and hook evidence; it never guesses from a later target. The scheduler—not a model—selects a bounded review retry, the one candidate correction, failed-target reconciliation, workspace recreation, or operational retry. Revision and reconciliation packets bind exact observed candidates and comparison bases; a reconciliation integration base remains the review base through later revisions. Provider/protocol attempts remain bounded separately. An admitted unchanged correction retains its candidate, worktree, worker evidence, and final review anchor; it settles through the same bounded final review rather than failing the lane. A post-review delivery-gate rejection receives bounded remediation from fresh workers using the exact retained gate evidence. Changed remediation is reviewed before publication retries; unchanged remediation never blindly republishes the same candidate.
 
-Stopping is transient while owned processes settle. Failed, incomplete, and completed runs are terminal. A crash-retained active run is terminalized as interrupted under the checkout lease without launching workers. Cleanup settles exact durable publication and projection transactions first, preserves published target and plan changes, and removes only resources Pipkin can prove it owns.
+Stopping is transient while owned processes settle. Failed, incomplete, and completed runs are terminal. A crash-retained active run is terminalized as interrupted under the checkout lease without launching workers. Cleanup settles exact durable publication and projection transactions first, preserves published target and plan changes, and removes only resources Pipkin can prove it owns. The top-level menu offers **Clean completed runs (N)** when completed history exists; after confirmation it removes those retained records and any proven owned resources left by a blocked automatic release, without including failed, incomplete, or historical entries.
 
 ## Commands
 
@@ -128,7 +128,7 @@ Stopping is transient while owned processes settle. Failed, incomplete, and comp
 | Command   | Purpose                                                                                         |
 | --------- | ----------------------------------------------------------------------------------------------- |
 | `status`  | Show terminal outcome, lane phases, findings, failures, assignments, leases, receipts, and debt |
-| `inspect` | Show durable state, retained candidates, and evidence paths for one run                         |
+| `inspect` | Show durable state and evidence paths for one run; failed candidates may retain workspaces      |
 | `stop`    | Settle owned processes and terminally fail the active run safely                                |
 | `restart` | Clean a completed run after new-run preflight and start again                                   |
 | `cleanup` | Terminalize interrupted runs, settle durable transactions, and remove provably owned resources  |
