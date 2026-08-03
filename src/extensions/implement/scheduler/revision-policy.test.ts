@@ -3,6 +3,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { reduceRunEvent } from "./scheduler.js";
 import { validateRunState } from "../store.js";
 import {
+  publicationIntentId,
+  publicationPreparationId,
+  stagingIdentity,
+} from "../candidate-replay.js";
+import {
   cleanupSchedulerStores,
   createSchedulerStore,
 } from "./scheduler-test-support.js";
@@ -388,6 +393,27 @@ describe("revision policy", () => {
     });
     expect(blank.accepted).toBe(false);
 
+    for (const handoffDraft of [undefined, "   "]) {
+      const withoutDraft = structuredClone(state);
+      withoutDraft.wholePlanReview = {
+        status: "approved",
+        evidence: "initial review evidence",
+        ...(handoffDraft === undefined ? {} : { handoffDraft }),
+        reviewedTargetSha: "target-sha",
+        reviewedTargetTreeSha: "target-tree",
+      };
+      for (const workstream of Object.values(withoutDraft.workstreams.source)) {
+        workstream.phase = "completed";
+      }
+      expect(
+        reduceRunEvent(withoutDraft, {
+          kind: "run_completed",
+          targetSha: "target-sha",
+          targetTreeSha: "target-tree",
+        }).accepted,
+      ).toBe(false);
+    }
+
     const approved = reduceRunEvent(state, {
       kind: "whole_plan_review_completed",
       outcome: {
@@ -495,6 +521,50 @@ describe("revision policy", () => {
       verification: ["Inspected the existing behavior."],
       uncertainty: "Runtime verification could not start.",
       artifactPath: "/artifacts/repair.json",
+    });
+
+    const reviewRequested = reduceRunEvent(completed.state, {
+      kind: "review_requested",
+      workstream: implementation.workstream,
+      now: "2026-01-01T00:02:00.000Z",
+    });
+    const review = reviewRequested.effects[0]!;
+    if (review.kind !== "run_review") {
+      throw new Error("expected final overall review");
+    }
+    const settled = reduceRunEvent(reviewRequested.state, {
+      kind: "review_completed",
+      workstream: review.workstream,
+      leaseId: review.leaseId,
+      outcome: {
+        kind: "anchored",
+        candidateId: "overall:run-1:repair-1:target-sha",
+        previousCandidateId: "overall-baseline:run-1:repair-1:target-sha",
+        comparisonBase: "target-sha",
+        changedPaths: [],
+        findingEpoch: 0,
+        evidence: "unchanged overall repair assessment",
+        completion: {
+          assessments: completed.state.wholePlanReview.epoch!.findingIds.map(
+            (id) => ({
+              id,
+              status: "unresolved" as const,
+              evidence: "Open.",
+              summary: "Residual whole-plan finding.",
+              requiredChange: "Resolve the retained finding.",
+              acceptanceCriteria: ["The finding is resolved."],
+            }),
+          ),
+          regressions: [],
+          handoffDraft: "Replacement handoff after unchanged repair.",
+        },
+      },
+    });
+
+    expect(settled.accepted).toBe(true);
+    expect(settled.state.wholePlanReview).toMatchObject({
+      status: "approved",
+      handoffDraft: "Replacement handoff after unchanged repair.",
     });
   });
 
@@ -792,6 +862,144 @@ describe("revision policy", () => {
       "Replacement whole-plan handoff.",
     );
     expect(() => validate(assessed.state)).not.toThrow();
+
+    const reconciliation = reduceRunEvent(assessed.state, {
+      kind: "reconciliation_requested",
+      workstream,
+      now: "2026-01-01T00:02:00.000Z",
+    });
+    const reconciliationEffect = reconciliation.effects[0]!;
+    if (reconciliationEffect.kind !== "run_reconciliation") {
+      throw new Error("expected overall repair reconciliation");
+    }
+    const candidate = reconciliation.state.candidates[candidateId]!;
+    const staging = stagingIdentity({
+      runId: reconciliation.state.run.id,
+      operationId: reconciliationEffect.leaseId,
+      candidateId: candidate.id,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      targetBaseSha: candidate.baseSha,
+      targetRef: reconciliation.state.run.checkout.branchRef,
+    });
+    const preparationInput = {
+      operationId: reconciliationEffect.leaseId,
+      candidateId: candidate.id,
+      candidateCommitSha: candidate.commitSha,
+      candidateTreeSha: candidate.treeSha,
+      targetBaseSha: candidate.baseSha,
+      targetRef: reconciliation.state.run.checkout.branchRef,
+      preparedCommitSha: "published-repair-sha",
+      preparedTreeSha: "published-repair-tree",
+      stagingWorktree: join(
+        reconciliation.state.run.checkout.root,
+        ".pi",
+        "pipkin",
+        "implement",
+        "worktrees",
+        reconciliation.state.run.id,
+        staging.id,
+      ),
+      stagingBranch: staging.branchName,
+      replayPatchHash: "a".repeat(64),
+      changedPaths: ["src/repair.ts"],
+      disposition: "same_base" as const,
+      hookEvidence: "commit hook passed",
+      hookCommand: {
+        command: "git commit",
+        cwd: "staging",
+        exitCode: 0,
+        timedOut: false,
+        output: "passed",
+      },
+    };
+    const preparation = {
+      id: publicationPreparationId({
+        runId: reconciliation.state.run.id,
+        preparation: preparationInput,
+      }),
+      ...preparationInput,
+    };
+    const prepared = reduceRunEvent(reconciliation.state, {
+      kind: "publication_preparation_recorded",
+      operationId: reconciliationEffect.leaseId,
+      preparation,
+    });
+    const intent = {
+      id: publicationIntentId({
+        runId: prepared.state.run.id,
+        operationId: reconciliationEffect.leaseId,
+        preparation,
+      }),
+      operationId: reconciliationEffect.leaseId,
+      workstream,
+      candidateId: candidate.id,
+      preparationId: preparation.id,
+      targetBaseSha: preparation.targetBaseSha,
+      preparedCommitSha: preparation.preparedCommitSha,
+      preparedTreeSha: preparation.preparedTreeSha,
+      targetRef: preparation.targetRef,
+      protectedArtifactSnapshots: {},
+      protectedArtifactHashes: {},
+    };
+    const intended = reduceRunEvent(prepared.state, {
+      kind: "publication_intent_recorded",
+      operationId: reconciliationEffect.leaseId,
+      intent,
+    });
+    const publication = reduceRunEvent(intended.state, {
+      kind: "reconciliation_completed",
+      workstream,
+      leaseId: reconciliationEffect.leaseId,
+      outcome: {
+        kind: "prepared",
+        evidence: "prepared overall repair",
+        workspace: {
+          id: staging.id,
+          checkpoint: preparation.preparedCommitSha,
+          changedPaths: preparation.changedPaths,
+          targetSha: preparation.targetBaseSha,
+          stateEvidence: "prepared overall repair",
+          stagingComparison: {
+            baseSha: preparation.targetBaseSha,
+            treeSha: preparation.preparedTreeSha,
+          },
+        },
+      },
+    });
+    const publicationEffect = publication.effects[0]!;
+    if (publicationEffect.kind !== "run_publication") {
+      throw new Error("expected overall repair publication");
+    }
+    const receipted = reduceRunEvent(publication.state, {
+      kind: "publication_receipt_recorded",
+      operationId: publicationEffect.leaseId,
+      receipt: {
+        operationId: publicationEffect.leaseId,
+        intentId: intent.id,
+        candidateId: candidate.id,
+        targetBaseSha: intent.targetBaseSha,
+        publishedCommitSha: intent.preparedCommitSha,
+        publishedTreeSha: intent.preparedTreeSha,
+        targetRef: intent.targetRef,
+        protectedArtifactHashes: intent.protectedArtifactHashes,
+        publishedAt: "2026-01-01T00:03:00.000Z",
+      },
+    });
+    const published = reduceRunEvent(receipted.state, {
+      kind: "publication_completed",
+      workstream,
+      leaseId: publicationEffect.leaseId,
+      intentId: intent.id,
+    });
+
+    expect(published.accepted).toBe(true);
+    expect(published.state.wholePlanReview).toMatchObject({
+      status: "approved",
+      handoffDraft: "Replacement whole-plan handoff.",
+      reviewedTargetSha: "published-repair-sha",
+      reviewedTargetTreeSha: "published-repair-tree",
+    });
   });
 
   it("replaces the draft on a later anchored review while residual findings remain deliverable", async () => {

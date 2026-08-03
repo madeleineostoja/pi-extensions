@@ -279,6 +279,38 @@ describe("terminal handoff rendering", () => {
     );
   });
 
+  it("reports retained source candidates without receipts as unpublished", () => {
+    const state = terminalState("incomplete");
+    addPublishedSource(
+      state,
+      "first-stream",
+      "candidate-published",
+      "published-first",
+      "2026-01-01T00:00:00.000Z",
+    );
+    state.candidates["candidate-unpublished"] = {
+      id: "candidate-unpublished",
+      workstream: { kind: "source", id: "second-stream" },
+      baseSha: "published-first",
+      commitSha: "candidate-second",
+      treeSha: "tree-candidate-second",
+    };
+    state.workstreams.source["second-stream"]!.phase = "candidate_ready";
+    state.workstreams.source["second-stream"]!.candidateId =
+      "candidate-unpublished";
+
+    const handoff = renderTerminalHandoff(state);
+
+    expect(handoff).toContain("first-stream · publication receipt");
+    expect(handoff).toContain("Source workstreams proven delivered:");
+    expect(handoff).toContain(
+      "source:second-stream · candidate:candidate-unpublished · unpublished / not delivered (no publication or satisfaction receipt)",
+    );
+    expect(handoff).not.toContain(
+      "source:first-stream · candidate:candidate-published · unpublished",
+    );
+  });
+
   it("reports exhausted whole-plan review retries as the incomplete terminal blocker", () => {
     const state = terminalState("incomplete");
     state.wholePlanReview.reviewRetry = {

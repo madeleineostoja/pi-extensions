@@ -198,12 +198,17 @@ describe("Implement managed runtime integration", () => {
     await runtime.dispose();
   });
 
-  it("retries a malformed anchored overall handoff draft once", async () => {
+  it("retries a malformed initial anchored overall completion once", async () => {
     const harness = await createManagedSessionHarness([
       fauxAssistantMessage(
         fauxToolCall(
           MANAGED_COMPLETION_TOOL_NAME,
-          { assessments: [], regressions: [], handoffDraft: "   " },
+          {
+            assessments: [],
+            regressions: [],
+            publicationCommitSubject: "fix: publish overall repair",
+            handoffDraft: "   ",
+          },
           { id: "invalid-completion" },
         ),
       ),
@@ -213,6 +218,7 @@ describe("Implement managed runtime integration", () => {
           {
             assessments: [],
             regressions: [],
+            publicationCommitSubject: "fix: publish overall repair",
             handoffDraft: "Complete replacement reviewer handoff.",
           },
           { id: "valid-completion" },
@@ -232,7 +238,7 @@ describe("Implement managed runtime integration", () => {
     const handle = await spawnValidatedWorker({
       packet: {
         role: "reviewer" as const,
-        completionKind: "anchored-overall-review" as const,
+        completionKind: "initial-anchored-overall-review" as const,
         identity: "run-1/whole-plan/repaired",
         workspace: { path: MANAGED_TEST_CWD },
       },
@@ -248,6 +254,7 @@ describe("Implement managed runtime integration", () => {
       result: {
         assessments: [],
         regressions: [],
+        publicationCommitSubject: "fix: publish overall repair",
         handoffDraft: "Complete replacement reviewer handoff.",
       },
     });

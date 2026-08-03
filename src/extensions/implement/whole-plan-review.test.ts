@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { buildAnchoredOverallReviewPrompt } from "./prompts.js";
-import { buildWholePlanReviewPacket } from "./whole-plan-review.js";
+import {
+  buildWholePlanReviewPacket,
+  completeWholePlanRun,
+} from "./whole-plan-review.js";
 import {
   cleanupSchedulerStores,
   createUnboundSchedulerRun,
@@ -9,6 +12,30 @@ import {
 afterEach(() => cleanupSchedulerStores());
 
 describe("whole-plan review packet", () => {
+  it("rejects closure when an approved review omits or blanks its draft", async () => {
+    for (const handoffDraft of [undefined, "   "]) {
+      const { run } = createUnboundSchedulerRun();
+      const state = run.read();
+      state.wholePlanReview = {
+        status: "approved",
+        evidence: "whole-plan evidence",
+        ...(handoffDraft === undefined ? {} : { handoffDraft }),
+        reviewedTargetSha: "target-sha",
+        reviewedTargetTreeSha: "target-tree",
+      };
+
+      await expect(
+        completeWholePlanRun({
+          state,
+          git: {} as never,
+          dispatch: async () => undefined,
+        }),
+      ).rejects.toThrow(
+        "Whole-plan closure cannot prove the reviewed target boundary.",
+      );
+    }
+  });
+
   it("includes the latest published overall repair evidence in an anchored review", async () => {
     const { run: store, plan } = createUnboundSchedulerRun();
     await store.bindExecutionPlan(plan);

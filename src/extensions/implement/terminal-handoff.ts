@@ -97,6 +97,11 @@ function renderRetained(state: RunState): string {
       MAX_LIST_ITEMS,
     ),
     ...renderList(
+      "Unpublished candidates and undelivered workstreams",
+      unpublishedSourceWork(state),
+      MAX_LIST_ITEMS,
+    ),
+    ...renderList(
       "Retained failure evidence",
       failureEvidence(state),
       MAX_LIST_ITEMS,
@@ -243,6 +248,46 @@ function terminalReason(state: RunState): { category: string; reason: string } {
         ? "No further safe work remained."
         : "The run ended without a retained failure record.",
   };
+}
+
+function unpublishedSourceWork(state: RunState): string[] {
+  const receiptCandidateIds = new Set([
+    ...Object.values(state.publication.receipts).map(
+      (receipt) => receipt.candidateId,
+    ),
+    ...Object.values(state.satisfaction.receipts).map(
+      (receipt) => receipt.candidateId,
+    ),
+  ]);
+  const deliveredWorkstreamIds = new Set(
+    deliveredSourceWorkstreams(state).map((delivery) => delivery.workstreamId),
+  );
+  const candidateWorkstreams = new Set<string>();
+  const candidates = Object.values(state.candidates).flatMap((candidate) => {
+    if (
+      candidate.workstream.kind !== "source" ||
+      receiptCandidateIds.has(candidate.id)
+    ) {
+      return [];
+    }
+    candidateWorkstreams.add(candidate.workstream.id);
+    return [
+      `source:${candidate.workstream.id} · candidate:${candidate.id} · unpublished / not delivered (no publication or satisfaction receipt)`,
+    ];
+  });
+  const withoutCandidates = Object.values(state.workstreams.source)
+    .filter(
+      (workstream) =>
+        !candidateWorkstreams.has(workstream.id) &&
+        !deliveredWorkstreamIds.has(workstream.id) &&
+        workstream.phase !== "failed" &&
+        workstream.phase !== "dependency_skipped",
+    )
+    .map(
+      (workstream) =>
+        `source:${workstream.id} · no retained candidate · not delivered (no publication or satisfaction receipt)`,
+    );
+  return [...candidates, ...withoutCandidates].sort(compare);
 }
 
 function terminalWorkstreams(

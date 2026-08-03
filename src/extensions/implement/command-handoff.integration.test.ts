@@ -3,8 +3,11 @@ import type { ActiveRun, CompletedRunResources } from "./run.js";
 import type { RunState } from "./store.js";
 import {
   cleanupSchedulerStores,
+  createSchedulerStore,
   createUnboundSchedulerRun,
 } from "./scheduler/scheduler-test-support.js";
+import { SchedulerActor } from "./scheduler/scheduler-actor.js";
+import { renderTerminalHandoff } from "./terminal-handoff.js";
 
 const mocks = vi.hoisted(() => ({
   releaseResources: vi.fn(),
@@ -109,6 +112,12 @@ describe("/implement terminal handoff lifecycle", () => {
         display: true,
       });
       expect(message.content).toContain("first-stream · satisfaction receipt");
+      expect(message.content).toContain(
+        "source:second-stream · candidate:candidate-unpublished · unpublished / not delivered",
+      );
+      expect(message.content).not.toContain(
+        "source:first-stream · candidate:candidate-first · unpublished",
+      );
       expect(message.content).toContain(`/implement inspect ${state.run.id}`);
       expect(message.content).toContain(`/implement cleanup ${state.run.id}`);
       if (state.phase === "failed") {
@@ -116,6 +125,93 @@ describe("/implement terminal handoff lifecycle", () => {
       }
       mocks.startRun.mockReset();
     }
+  });
+
+  it("captures only persisted completion, cleans busy resources, and delivers the immutable handoff after settle", async () => {
+    const fixture = commandFixture({
+      sendMessage(message, options) {
+        fixture.messages.push({ message, options });
+      },
+    });
+    const store = await completedSchedulerStore("Persisted reviewer handoff.");
+    const calls: string[] = [];
+    let actor: SchedulerActor | undefined;
+    mocks.releaseResources.mockImplementation(async () => {
+      calls.push("resources");
+    });
+    mocks.startRun.mockImplementation(async (options: StartOptions) => {
+      const active = persistedActiveRun(store, options, calls);
+      actor = active.actor;
+      return { kind: "started", active };
+    });
+
+    await fixture.command.handler("plan.md", fixture.busy);
+    await expect(
+      actor!.dispatch({
+        kind: "run_completed",
+        targetSha: "wrong-target",
+        targetTreeSha: "target-tree",
+      }),
+    ).rejects.toThrow();
+    expect(fixture.messages).toEqual([]);
+
+    await actor!.dispatch(completedEvent());
+    const captured = renderTerminalHandoff(store.read());
+    await vi.waitFor(() => expect(calls).toEqual(["resources", "lease"]));
+    expect(fixture.messages).toEqual([]);
+
+    await fixture.settle(true);
+    await fixture.settle(true);
+    expect(fixture.messages).toHaveLength(1);
+    expect((fixture.messages[0]!.message as { content: string }).content).toBe(
+      captured,
+    );
+
+    await actor!.dispatch(completedEvent(), {
+      kind: "complete_whole_plan_run",
+    } as never);
+    expect(fixture.messages).toHaveLength(1);
+  });
+
+  it("publishes persisted incomplete and stopped terminal transitions", async () => {
+    const incompleteFixture = commandFixture();
+    const incompleteStore = await incompleteSchedulerStore();
+    let incompleteActor: SchedulerActor | undefined;
+    mocks.startRun.mockImplementation(async (options: StartOptions) => {
+      const active = persistedActiveRun(incompleteStore, options, []);
+      incompleteActor = active.actor;
+      return { kind: "started", active };
+    });
+
+    await incompleteFixture.command.handler("plan.md", incompleteFixture.idle);
+    await incompleteActor!.dispatch({ kind: "run_incomplete" });
+    expect(incompleteStore.read().phase).toBe("incomplete");
+    expect(
+      (incompleteFixture.messages[0]!.message as { content: string }).content,
+    ).toContain("Implement run run-1 · incomplete");
+
+    mocks.startRun.mockReset();
+    const stoppedFixture = commandFixture();
+    const stoppedStore = await createSchedulerStore();
+    let stoppedActor: SchedulerActor | undefined;
+    mocks.startRun.mockImplementation(async (options: StartOptions) => {
+      const active = persistedActiveRun(stoppedStore, options, []);
+      stoppedActor = active.actor;
+      return { kind: "started", active };
+    });
+
+    await stoppedFixture.command.handler("plan.md", stoppedFixture.idle);
+    await stoppedActor!.stop(
+      "Session interrupted with retained evidence.",
+      "interrupted",
+    );
+    expect(stoppedStore.read().phase).toBe("failed");
+    const stoppedHandoff = stoppedFixture.messages[0]!.message as {
+      content: string;
+    };
+    expect(stoppedHandoff.content).toContain("Terminal category: interrupted");
+    expect(stoppedHandoff.content).toContain("/implement inspect run-1");
+    expect(stoppedHandoff.content).toContain("/implement cleanup run-1");
   });
 
   it("retains a failed completed send through cleanup, blocks starts, and retries once settled", async () => {
@@ -280,6 +376,88 @@ function commandFixture(options?: {
   };
 }
 
+async function incompleteSchedulerStore() {
+  const store = await completedSchedulerStore("Initial reviewer handoff.");
+  const state = store.read();
+  state.wholePlanReview = {
+    status: "pending",
+    handoffDraft: "Initial reviewer handoff.",
+    reviewRetry: {
+      attempts: 3,
+      status: "exhausted",
+      evidence: ["malformed overall review"],
+    },
+  };
+  await store.update(state.revision, () => state);
+  return store;
+}
+
+async function completedSchedulerStore(draft: string) {
+  const store = await createSchedulerStore();
+  const state = store.read();
+  state.phase = "whole_plan_review";
+  for (const workstream of Object.values(state.workstreams.source)) {
+    const candidateId = `candidate:${workstream.id}`;
+    workstream.phase = "completed";
+    workstream.baseSha = "base-sha";
+    workstream.candidateId = candidateId;
+    state.candidates[candidateId] = {
+      id: candidateId,
+      workstream: { kind: "source", id: workstream.id },
+      baseSha: "base-sha",
+      commitSha: "base-sha",
+      treeSha: "base-tree",
+    };
+    state.reviews[`source:${workstream.id}`] = {
+      candidateId,
+      comparisonBase: "base-sha",
+      round: 0,
+      pendingCorrectionIds: [],
+      correctionConsumed: false,
+      evidence: ["persisted review evidence"],
+      observations: [],
+    };
+  }
+  state.wholePlanReview = {
+    status: "approved",
+    handoffDraft: draft,
+    evidence: "persisted whole-plan review evidence",
+    reviewedTargetSha: "target-sha",
+    reviewedTargetTreeSha: "target-tree",
+  };
+  await store.update(state.revision, () => state);
+  return store;
+}
+
+function persistedActiveRun(
+  store: Awaited<ReturnType<typeof createSchedulerStore>>,
+  options: StartOptions,
+  calls: string[],
+): ActiveRun {
+  let active: ActiveRun;
+  const actor = new SchedulerActor({
+    store,
+    onTransition(state, event) {
+      options.onTransition?.(state, event);
+      if (event.kind === "run_completed") {
+        options.onCompleted?.(active as CompletedRunResources);
+      }
+    },
+  });
+  active = {
+    runId: store.read().run.id,
+    actor,
+    store,
+    lease: {
+      release: async () => {
+        calls.push("lease");
+      },
+    },
+    git: {},
+  } as ActiveRun;
+  return active;
+}
+
 function activeRun(
   state: RunState,
   calls?: string[],
@@ -348,20 +526,14 @@ function completedState(draft: string, residual: boolean): RunState {
 function incompleteState(): RunState {
   const state = terminalState("incomplete");
   addSatisfiedDelivery(state);
-  state.workstreams.source["second-stream"] = {
-    kind: "source",
-    id: "second-stream",
-    taskIds: ["second"],
-    dependsOn: ["first-stream"],
-    phase: "dependency_skipped",
-    baseSha: "base-sha",
-  };
+  addUnpublishedCandidate(state);
   return state;
 }
 
 function failedState(): RunState {
   const state = terminalState("failed");
   addSatisfiedDelivery(state);
+  addUnpublishedCandidate(state);
   state.failure = {
     category: "interrupted",
     reason: "Stopped with retained resources.",
@@ -376,6 +548,25 @@ function terminalState(phase: "completed" | "incomplete" | "failed"): RunState {
   const state = structuredClone(run.read());
   state.phase = phase;
   return state;
+}
+
+function addUnpublishedCandidate(state: RunState): void {
+  state.workstreams.source["second-stream"] = {
+    kind: "source",
+    id: "second-stream",
+    taskIds: ["second"],
+    dependsOn: ["first-stream"],
+    phase: "candidate_ready",
+    baseSha: "base-sha",
+    candidateId: "candidate-unpublished",
+  };
+  state.candidates["candidate-unpublished"] = {
+    id: "candidate-unpublished",
+    workstream: { kind: "source", id: "second-stream" },
+    baseSha: "base-sha",
+    commitSha: "candidate-second",
+    treeSha: "candidate-second-tree",
+  };
 }
 
 function addSatisfiedDelivery(state: RunState): void {
