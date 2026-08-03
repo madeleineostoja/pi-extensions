@@ -43,7 +43,13 @@ General agents inherit the active parent model and thinking level. BTW uses the 
 
 All four preset keys must be present and no unknown preset keys are accepted. Pipkin does not silently switch provider when a preset is missing or malformed. The presets may all reference one model if tiered routing is not useful for your setup.
 
-Pi still owns credentials and its `settings.json`. Keep API keys out of this file.
+Pi still owns model credentials and its `settings.json`. Keep API keys out of this file.
+
+## Reference credentials
+
+Reference optionally reads `<getAgentDir()>/pipkin/auth.json`, separate from `config.json`. Its bounded JSON object recognizes only optional non-empty string fields named `context7` and `github`; unrelated keys are ignored. Use `context7` for Context7 and a dedicated least-privilege `github` token limited to public repository and code search. Reference never reads GitHub CLI, repository, npm, or environment credentials.
+
+Do not place real credentials in documentation, repository files, or tool inputs.
 
 ## Implement settings
 

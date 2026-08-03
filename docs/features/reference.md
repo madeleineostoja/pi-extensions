@@ -1,11 +1,34 @@
 # Reference
 
-Reference currently exposes one tool: `docs`. It retrieves documentation from **Context7 only**. Give it a library subject and a focused question; a direct Context7 ID beginning with `/` skips library search.
+Reference exposes three bounded tools: `docs`, `package_search`, and `code_search`. They use fixed provider origins and accept only non-confidential search text. Do not send secrets, proprietary text, credentials, or sensitive identifiers to these providers.
 
-When `version` is omitted, `docs` asks Context7 for provider-current material. An explicit version is an exact pin: Pipkin compares only a trimmed, lowercase label with one leading `v` removed and underscores changed to dots. It never selects a compatible, nearest, prerelease, tag-equivalent, or current substitute. `latest` is an ordinary literal label and works only if Context7 advertises exactly that label. Named subjects examine no more than five provider-ranked candidates, prefer an exact normalized name, and visibly identify a provider-ranked fallback.
+## `docs`
 
-Results contain bounded Context7 snippets and provenance: selected ID and rank, current or exact-version state, source locations when supplied, warnings, retries, logical redirects, and visible truncation. The tool returns provider material rather than a synthesized answer.
+`docs` retrieves Context7 documentation only. Give it a library subject and focused question; a direct Context7 ID beginning with `/` skips library search. Without `version`, it requests provider-current material. An explicit version is an exact Context7 pin: Pipkin never substitutes a compatible, nearest, tag-equivalent, or current release. `latest` is an ordinary literal that must be advertised by Context7.
 
-Optional Context7 authentication is read only from `pipkin/auth.json` beneath Pi's agent directory, using its `context7` string field. The file and token are bounded; malformed credentials produce a safe actionable tool error. Requests use only the fixed `https://context7.com` origin, and bearer authorization is attached only there.
+Named subjects inspect at most five provider-ranked candidates, prefer an exact normalized name, and disclose a fallback. Results contain bounded provider snippets, selected ID/rank, version state, locations, warnings, retries, redirects, and truncation. They are provider material, not a synthesized answer.
 
-This milestone deliberately excludes project or dependency inference, manifests and lockfiles, package discovery, code search, arbitrary URLs, caches, model calls, children, subagents, and delegated research. Do not include secrets in the subject or question sent to Context7.
+## `package_search`
+
+`package_search` concurrently returns three independent groups in fixed Context7, npm, GitHub order. Each provider retains its native one-based ranks, result count, failure, discarded count, and truncation state. Pipkin does not merge, deduplicate, correlate identities, score, compare, select, or recommend between groups.
+
+- **Context7** performs library search only, with the query as both library name and search text. Its results are documentation-availability, advertised-version, and quality signals, not npm publication facts. It never retrieves documentation for this tool.
+- **npm** invokes the installed npm client once against the fixed public `https://registry.npmjs.org/` registry. Results are current values observed in npm search output, not manifest, dependency, download, vulnerability, or tarball inspection.
+- **GitHub** performs one public repository REST search at fixed `https://api.github.com`. Repository metadata is returned only after explicit `private: false` and `visibility: public` checks. Popularity and activity are discovery signals, not evidence of npm identity or suitability.
+
+One or two provider failures remain visible beside successful groups. If all providers fail, the tool reports a normal error. npm and GitHub do not retry, follow result links, use credentials from the checkout or environment, or use alternate registries/origins.
+
+## `code_search`
+
+`code_search` searches GitHub REST code search once for bounded caller search text plus optional validated `repo:owner/name`, personal-account `user:owner`, `language:`, `filename:`, and `extension:` qualifiers. GitHub syntax is allowed in the search text, but there are no path, branch, organization, sort, pagination, regex, route, or URL inputs. `owner` deliberately means a personal account; organization-wide owner search is unsupported.
+
+Every returned match is rejected before normalization unless its nested repository explicitly has `private: false` and `visibility: public`. Accepted results retain GitHub order and contain bounded repository, revision SHA, repository-relative path, canonical GitHub blob URL, and provider text-match fragments/offsets. A match is observed public usage, not proof of correctness, authority, freshness, package identity, or repository health. Reference does not fetch files, browse repositories, inspect issues/pull requests/Actions, follow URLs, clone, or claim github.com UI parity.
+
+## Authentication and limits
+
+Optional Reference credentials live only in `<getAgentDir()>/pipkin/auth.json`. The bounded JSON object recognizes these optional string fields and ignores unrelated keys:
+
+- `context7` for Context7 requests;
+- `github` for a dedicated least-privilege token capable of searching public repositories and code.
+
+Reference sends Context7 authorization only to `https://context7.com` and GitHub authorization only to `https://api.github.com`. It does not use `gh` authentication, repository config, npm config credentials, environment tokens, OAuth, GitHub Enterprise, or caller-supplied credentials. Requests, raw responses/process streams, fields, fragments, errors, and complete results are bounded; redirects are not followed for GitHub. Cancellation and one shared invocation deadline stop active provider work.

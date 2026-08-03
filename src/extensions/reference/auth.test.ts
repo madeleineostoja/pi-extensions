@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AuthError, loadContext7Auth } from "./auth.js";
+import { AuthError, loadContext7Auth, loadGithubAuth } from "./auth.js";
 import { LIMITS } from "./bounds.js";
 
 const read = (content: string | Error) => () => {
@@ -20,6 +20,10 @@ describe("Context7 agent authentication", () => {
     expect(
       loadContext7Auth("/agent", read('{"github":"ignored"}')),
     ).toBeUndefined();
+    expect(loadGithubAuth("/agent", read('{"github":"token"}'))).toBe("token");
+    expect(() =>
+      loadGithubAuth("/agent", read(JSON.stringify({ github: " bad " }))),
+    ).toThrow("GitHub credential is malformed");
   });
 
   it("treats a missing file as anonymous but keeps auth failures safe", () => {

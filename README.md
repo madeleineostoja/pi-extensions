@@ -83,7 +83,7 @@ They can run in the foreground or alongside independent parent work, accept stee
 
 ### Reference, code intelligence, and side questions
 
-**Reference** provides the bounded `docs` tool for Context7 documentation. It defaults to provider-current material, or retrieves an exact Context7 version when explicitly pinned, without inspecting the project.
+**Reference** provides bounded `docs`, `package_search`, and `code_search` tools: Context7 documentation with exact-version support, independently ranked Context7/npm/public-GitHub package discovery, and fail-closed public GitHub code matches. It does not inspect the project.
 
 **[Reference →](docs/features/reference.md)**
 
@@ -105,20 +105,22 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 ## Commands
 
-| Surface                           | What it does                                                   |
-| --------------------------------- | -------------------------------------------------------------- |
-| `/sandbox [on\|off]`              | Inspect or change the current repository-write Sandbox mode    |
-| `/readonly [on\|off]`             | Toggle approval for resolved `edit` and `write` tools          |
-| `context_recall`                  | Recover the original content behind an elision stub            |
-| `bash_outcome`                    | Run Bash when only successful outcome matters; recall output   |
-| `lsp`                             | Make semantic source queries or inspect language-server status |
-| `docs`                            | Retrieve bounded Context7 documentation                        |
-| `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents         |
-| `get_subagent_result`             | Inspect or join a background agent                             |
-| `steer_subagent`                  | Queue guidance for a running background agent                  |
-| `/implement`                      | Start, inspect, stop, or clean up implementation runs          |
-| `/papercuts` / `propose_papercut` | Capture and review durable project workflow gaps               |
-| `/btw <question>`                 | Ask an ephemeral side question from current session context    |
+| Surface                           | What it does                                                         |
+| --------------------------------- | -------------------------------------------------------------------- |
+| `/sandbox [on\|off]`              | Inspect or change the current repository-write Sandbox mode          |
+| `/readonly [on\|off]`             | Toggle approval for resolved `edit` and `write` tools                |
+| `context_recall`                  | Recover the original content behind an elision stub                  |
+| `bash_outcome`                    | Run Bash when only successful outcome matters; recall output         |
+| `lsp`                             | Make semantic source queries or inspect language-server status       |
+| `docs`                            | Retrieve bounded Context7 documentation                              |
+| `package_search`                  | Discover separately ranked Context7, npm, and public GitHub packages |
+| `code_search`                     | Search bounded observed usage in explicitly public GitHub source     |
+| `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents               |
+| `get_subagent_result`             | Inspect or join a background agent                                   |
+| `steer_subagent`                  | Queue guidance for a running background agent                        |
+| `/implement`                      | Start, inspect, stop, or clean up implementation runs                |
+| `/papercuts` / `propose_papercut` | Capture and review durable project workflow gaps                     |
+| `/btw <question>`                 | Ask an ephemeral side question from current session context          |
 
 ## Limits
 

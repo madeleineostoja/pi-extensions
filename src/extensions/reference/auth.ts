@@ -15,6 +15,21 @@ export function loadContext7Auth(
   agentDir: string,
   readFile: ReadFile = readAgentAuthFile,
 ): string | undefined {
+  return loadReferenceAuth(agentDir, "context7", readFile);
+}
+
+export function loadGithubAuth(
+  agentDir: string,
+  readFile: ReadFile = readAgentAuthFile,
+): string | undefined {
+  return loadReferenceAuth(agentDir, "github", readFile);
+}
+
+function loadReferenceAuth(
+  agentDir: string,
+  field: "context7" | "github",
+  readFile: ReadFile,
+): string | undefined {
   let raw: Buffer;
   try {
     raw = readFile(join(agentDir, "pipkin", "auth.json"));
@@ -25,12 +40,12 @@ export function loadContext7Auth(
       return undefined;
     }
     throw new AuthError(
-      "Context7 authentication file could not be read; fix or remove its Context7 credential.",
+      `${provider(field)} authentication file could not be read; fix or remove its credential.`,
     );
   }
   if (raw.byteLength > LIMITS.authFileBytes) {
     throw new AuthError(
-      "Context7 authentication data is too large; keep the credential file within the supported limit.",
+      `${provider(field)} authentication data is too large; keep the credential file within the supported limit.`,
     );
   }
   let parsed: unknown;
@@ -38,15 +53,15 @@ export function loadContext7Auth(
     parsed = JSON.parse(raw.toString("utf8"));
   } catch {
     throw new AuthError(
-      "Context7 authentication data is malformed; use valid JSON.",
+      `${provider(field)} authentication data is malformed; use valid JSON.`,
     );
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new AuthError(
-      "Context7 authentication data is malformed; use a JSON object.",
+      `${provider(field)} authentication data is malformed; use a JSON object.`,
     );
   }
-  const token = (parsed as Record<string, unknown>).context7;
+  const token = (parsed as Record<string, unknown>)[field];
   if (token === undefined) {
     return undefined;
   }
@@ -58,10 +73,14 @@ export function loadContext7Auth(
     byteLength(token) > LIMITS.tokenBytes
   ) {
     throw new AuthError(
-      "Context7 credential is malformed; provide one non-empty bounded context7 string.",
+      `${provider(field)} credential is malformed; provide one non-empty bounded ${field} string.`,
     );
   }
   return token;
+}
+
+function provider(field: "context7" | "github"): string {
+  return field === "context7" ? "Context7" : "GitHub";
 }
 
 function readAgentAuthFile(path: string): Buffer {

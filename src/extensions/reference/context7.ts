@@ -36,8 +36,10 @@ export type Context7Id = { id: string; pin?: string };
 export type Context7Candidate = {
   id: string;
   title: string;
+  description?: string;
   rank?: number;
   versions: Array<{ label: string; id?: string }>;
+  quality?: { trustScore?: number; totalSnippets?: number };
   truncations?: string[];
 };
 export type Context7Snippet = {
@@ -52,7 +54,11 @@ export type Context7Document = {
   truncations?: string[];
 };
 export type Context7Transport = {
-  search(subject: string, question: string): Promise<Context7Candidate[]>;
+  search(
+    subject: string,
+    question: string,
+    limit?: number,
+  ): Promise<Context7Candidate[]>;
   context(id: string, question: string): Promise<Context7Document>;
   retries: number;
   dispose(): void;
@@ -97,9 +103,10 @@ export function createContext7Transport(options: {
     });
   };
   return {
-    async search(subject, question) {
+    async search(subject, question, limit: number = LIMITS.candidates) {
       return parseSearch(
         await request(SEARCH_PATH, { libraryName: subject, query: question }),
+        limit,
       );
     },
     async context(id, question) {
@@ -426,14 +433,18 @@ function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function parseSearch(value: unknown): Context7Candidate[] {
+function parseSearch(
+  value: unknown,
+  limit: number = LIMITS.candidates,
+): Context7Candidate[] {
   const root = object(value);
   const results = array(root?.results ?? root?.libraries ?? value);
   if (!results) {
     throw malformedSearch();
   }
   const candidates: Context7Candidate[] = [];
-  for (const [index, item] of results.slice(0, LIMITS.candidates).entries()) {
+  const resultsTruncated = results.length > limit;
+  for (const [index, item] of results.slice(0, limit).entries()) {
     const candidate = object(item);
     const id = candidate && requiredId(candidate.id ?? candidate.libraryId);
     const title =
@@ -443,9 +454,25 @@ function parseSearch(value: unknown): Context7Candidate[] {
       throw malformedSearch();
     }
     const truncations: string[] = [];
+    if (index === 0 && resultsTruncated) {
+      truncations.push("Additional Context7 library results were omitted.");
+    }
     if (title.truncated) {
       truncations.push("A provider library title was truncated.");
     }
+    const description =
+      candidate.description === undefined
+        ? undefined
+        : optionalText(
+            candidate.description,
+            LIMITS.fieldChars,
+            truncations,
+            "description",
+          );
+    if (description === false) {
+      throw malformedSearch();
+    }
+    const quality = parseQuality(candidate, truncations);
     const rawVersions = candidate.versions;
     if (rawVersions !== undefined && !array(rawVersions)) {
       throw malformedSearch();
@@ -461,12 +488,48 @@ function parseSearch(value: unknown): Context7Candidate[] {
     candidates.push({
       id: id.id,
       title: title.value,
+      ...(description ? { description } : {}),
       rank: index + 1,
       versions,
+      ...(quality ? { quality } : {}),
       truncations,
     });
   }
   return candidates;
+}
+
+function parseQuality(
+  candidate: Record<string, unknown>,
+  truncations: string[],
+): { trustScore?: number; totalSnippets?: number } | undefined {
+  const raw = object(candidate.trustScore) ? candidate.trustScore : candidate;
+  const source = object(raw) ?? candidate;
+  const trustScore = number(source.trustScore ?? source.score);
+  const totalSnippets = number(source.totalSnippets);
+  if (trustScore === false || totalSnippets === false) {
+    throw malformedSearch();
+  }
+  if (trustScore === undefined && totalSnippets === undefined) {
+    return undefined;
+  }
+  if (trustScore !== undefined && !Number.isFinite(trustScore)) {
+    truncations.push("An invalid Context7 quality signal was omitted.");
+  }
+  return {
+    ...(typeof trustScore === "number" && Number.isFinite(trustScore)
+      ? { trustScore }
+      : {}),
+    ...(typeof totalSnippets === "number" && Number.isFinite(totalSnippets)
+      ? { totalSnippets }
+      : {}),
+  };
+}
+function number(value: unknown): number | false | undefined {
+  return value === undefined
+    ? undefined
+    : typeof value === "number"
+      ? value
+      : false;
 }
 
 function parseVersion(
