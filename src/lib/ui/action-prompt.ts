@@ -1,6 +1,7 @@
 import {
   getSelectListTheme,
   type ExtensionUIContext,
+  type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
   Container,
@@ -8,6 +9,7 @@ import {
   type SelectItem,
   SelectList,
   Text,
+  type TUI,
 } from "@earendil-works/pi-tui";
 import { Panel } from "./panel.js";
 
@@ -113,9 +115,15 @@ async function promptForNativeAction<T extends string>(
 }
 
 class ActionPromptComponent implements Component {
+  #selectedIndex = 0;
+
   constructor(
     private readonly panel: Panel,
     private readonly list: SelectList,
+    private readonly itemCount: number,
+    private readonly pageSize: number,
+    private readonly tui: Pick<TUI, "requestRender">,
+    private readonly keybindings: Pick<KeybindingsManager, "matches">,
     private readonly onDispose: () => void,
   ) {}
 
@@ -124,7 +132,32 @@ class ActionPromptComponent implements Component {
   }
 
   handleInput(data: string): void {
-    this.list.handleInput(data);
+    if (this.keybindings.matches(data, "tui.select.up")) {
+      this.#setSelectedIndex(
+        this.#selectedIndex === 0
+          ? this.itemCount - 1
+          : this.#selectedIndex - 1,
+      );
+    } else if (this.keybindings.matches(data, "tui.select.down")) {
+      this.#setSelectedIndex(
+        this.#selectedIndex === this.itemCount - 1
+          ? 0
+          : this.#selectedIndex + 1,
+      );
+    } else if (this.keybindings.matches(data, "tui.select.pageUp")) {
+      this.#setSelectedIndex(Math.max(0, this.#selectedIndex - this.pageSize));
+    } else if (this.keybindings.matches(data, "tui.select.pageDown")) {
+      this.#setSelectedIndex(
+        Math.min(this.itemCount - 1, this.#selectedIndex + this.pageSize),
+      );
+    } else if (this.keybindings.matches(data, "tui.select.confirm")) {
+      const selected = this.list.getSelectedItem();
+      if (selected) {
+        this.list.onSelect?.(selected);
+      }
+    } else if (this.keybindings.matches(data, "tui.select.cancel")) {
+      this.list.onCancel?.();
+    }
   }
 
   invalidate(): void {
@@ -133,6 +166,16 @@ class ActionPromptComponent implements Component {
 
   dispose(): void {
     this.onDispose();
+  }
+
+  #setSelectedIndex(index: number): void {
+    if (index === this.#selectedIndex) {
+      return;
+    }
+    this.#selectedIndex = index;
+    this.list.setSelectedIndex(index);
+    this.list.invalidate();
+    this.tui.requestRender();
   }
 }
 
@@ -152,7 +195,7 @@ export async function promptForAction<T extends string>(
   let removeAbortListener = () => {};
   try {
     const result = await options.ui.custom<ActionPromptResult<T> | undefined>(
-      (_tui, theme, _keybindings, done) => {
+      (tui, theme, keybindings, done) => {
         let settled = false;
         const settle = (result: ActionPromptResult<T>) => {
           if (settled) {
@@ -167,11 +210,8 @@ export async function promptForAction<T extends string>(
           label: choice.label,
           description: choice.description,
         }));
-        const list = new SelectList(
-          items,
-          Math.min(items.length, 10),
-          getSelectListTheme(),
-        );
+        const pageSize = Math.min(items.length, 10);
+        const list = new SelectList(items, pageSize, getSelectListTheme());
         list.onSelect = (item) => {
           settle({ kind: "selected", value: item.value as T });
         };
@@ -187,6 +227,10 @@ export async function promptForAction<T extends string>(
             footer: "↑↓ navigate · enter select · esc cancel",
           }),
           list,
+          items.length,
+          pageSize,
+          tui,
+          keybindings,
           () => settle({ kind: "aborted" }),
         );
         const abort = () => settle({ kind: "aborted" });

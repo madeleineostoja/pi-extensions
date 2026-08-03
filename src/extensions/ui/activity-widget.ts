@@ -11,6 +11,7 @@ import type { ActivityState } from "./activity.js";
 import { ActivityStore, type StoredActivityRecord } from "./activity-store.js";
 
 const WIDGET_KEY = "pipkin.ui.activity";
+const ACTIVITY_BODY_LINE_LIMIT = 8;
 
 class ActivityWidget implements Component {
   #disposed = false;
@@ -110,15 +111,25 @@ export function renderActivity(
   const lines = [
     theme.bold(truncateToWidth(heading, contentWidth, "…", false)),
   ];
+  const budget = recordsForBudget(records);
+  const rendered = new Set<string>();
   let bodyLines = 0;
-  let next = 0;
-  while (next < records.length && bodyLines < 8) {
-    const record = records[next];
+  for (let index = 0; index < budget.records.length; index += 1) {
+    if (bodyLines >= ACTIVITY_BODY_LINE_LIMIT) {
+      break;
+    }
+    const record = budget.records[index];
     const depth = depthFor(record, records);
     lines.push(recordLine(record, depth, contentWidth, theme, now));
+    rendered.add(record.key);
     bodyLines += 1;
-    next += 1;
-    if (record.detail && bodyLines < 8) {
+    const protectedRemaining = budget.records
+      .slice(index + 1)
+      .filter((candidate) => budget.protected.has(candidate.key)).length;
+    if (
+      record.detail &&
+      ACTIVITY_BODY_LINE_LIMIT - bodyLines > protectedRemaining
+    ) {
       const prefix = `${"  ".repeat(Math.min(depth + 1, 3))}  `;
       lines.push(
         truncateToWidth(
@@ -131,10 +142,11 @@ export function renderActivity(
       bodyLines += 1;
     }
   }
-  if (next < records.length) {
+  const overflow = records.length - rendered.size;
+  if (overflow > 0) {
     lines.push(
       truncateToWidth(
-        theme.fg("muted", `… ${records.length - next} more`),
+        theme.fg("muted", `… ${overflow} more`),
         contentWidth,
         "…",
         false,
@@ -142,6 +154,52 @@ export function renderActivity(
     );
   }
   return lines.map((line) => truncateToWidth(line, contentWidth, "…", false));
+}
+
+function recordsForBudget(records: readonly StoredActivityRecord[]): {
+  records: StoredActivityRecord[];
+  protected: Set<string>;
+} {
+  const byKey = new Map(records.map((record) => [record.key, record]));
+  const ordered: StoredActivityRecord[] = [];
+  const protectedKeys = new Set<string>();
+  const included = new Set<string>();
+  const append = (record: StoredActivityRecord, protect: boolean) => {
+    if (!included.has(record.key)) {
+      included.add(record.key);
+      ordered.push(record);
+    }
+    if (protect) {
+      protectedKeys.add(record.key);
+    }
+  };
+
+  for (const record of records) {
+    if (
+      (record.state !== "attention" && record.state !== "failed") ||
+      !record.parent ||
+      !byKey.has(`${record.parent.source}:${record.parent.id}`)
+    ) {
+      continue;
+    }
+    const path = [record];
+    const visited = new Set<string>([record.key]);
+    let parent = byKey.get(`${record.parent.source}:${record.parent.id}`);
+    while (parent && !visited.has(parent.key)) {
+      visited.add(parent.key);
+      path.push(parent);
+      parent = parent.parent
+        ? byKey.get(`${parent.parent.source}:${parent.parent.id}`)
+        : undefined;
+    }
+    for (const candidate of path.reverse().slice(-ACTIVITY_BODY_LINE_LIMIT)) {
+      append(candidate, true);
+    }
+  }
+  for (const record of records) {
+    append(record, false);
+  }
+  return { records: ordered, protected: protectedKeys };
 }
 
 function depthFor(

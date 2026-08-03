@@ -23,6 +23,7 @@ type Clock = {
   clearTimeout(timer: ReturnType<typeof setTimeout>): void;
 };
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const terminal = new Set<ActivityState>(["completed", "stopped"]);
 const settled = (record: StoredActivityRecord) => terminal.has(record.state);
 const priority = (state: ActivityState): number => {
@@ -211,7 +212,9 @@ export class ActivityStore {
         values.push(record.updatedAt + ACTIVITY_SETTLEMENT_MS);
       }
       if (!settled(record) && record.startedAt !== undefined) {
-        values.push(now + 1000 - (now % 1000));
+        values.push(
+          record.startedAt > now ? record.startedAt : now + 1000 - (now % 1000),
+        );
       }
       return values;
     });
@@ -224,7 +227,7 @@ export class ActivityStore {
           this.#expire();
           this.#notify();
         },
-        Math.max(1, next - now),
+        Math.min(MAX_TIMER_DELAY_MS, Math.max(1, next - now)),
       );
     }
   }

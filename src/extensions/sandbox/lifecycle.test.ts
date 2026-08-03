@@ -197,6 +197,24 @@ describe("Sandbox lifecycle", () => {
     ).rejects.toThrow("unavailable");
   });
 
+  it("publishes a warning count after an active-runtime denial", async () => {
+    const { controller: session, denials } = controller({
+      supportedMac: true,
+      resolvePolicy: async () => policy,
+      createDenialObserver: () => observer().value,
+    });
+    const ctx = context();
+    await session.sessionStart({} as never, ctx as never);
+    denials.recordDirect({ tool: "write", reason: "blocked" });
+
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain(
+      "sandbox · 1 denied",
+    );
+    await session.sessionShutdown(ctx as never);
+    denials.recordDirect({ tool: "write", reason: "later" });
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toBeUndefined();
+  });
+
   it("resets session diagnostics and replaces the observer on restart", async () => {
     const first = observer();
     const second = observer();

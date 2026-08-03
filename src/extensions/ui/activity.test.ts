@@ -132,6 +132,44 @@ describe("Activity", () => {
     }
   });
 
+  it("safely checkpoints accepted far-future timer boundaries", () => {
+    let now = 100;
+    const scheduled: Array<{ handler: () => void; milliseconds: number }> = [];
+    const clock = {
+      now: () => now,
+      setTimeout: vi.fn((handler: () => void, milliseconds: number) => {
+        scheduled.push({ handler, milliseconds });
+        return scheduled.length;
+      }),
+      clearTimeout: vi.fn(),
+    };
+    const store = new ActivityStore(clock as never);
+    store.accept({
+      version: 1,
+      source: "x",
+      generation: "g",
+      operation: "replace",
+    });
+    expect(
+      store.accept({
+        version: 1,
+        source: "x",
+        generation: "g",
+        operation: "upsert",
+        record: record("future", {
+          state: "completed",
+          updatedAt: ACTIVITY_TIMESTAMP_MAX,
+        }),
+      }),
+    ).toBe(true);
+    expect(scheduled.at(-1)?.milliseconds).toBe(2_147_483_647);
+
+    const first = scheduled.at(-1)!;
+    now += first.milliseconds;
+    first.handler();
+    expect(scheduled.at(-1)?.milliseconds).toBe(2_147_483_647);
+  });
+
   it("rejects oversized byte text and unsafe timestamps or progress", () => {
     expect(
       validateActivityRecord(
@@ -178,7 +216,10 @@ describe("Activity", () => {
         source: "x",
         generation: "g",
         operation: "upsert",
-        record: record(`root${index}`, { updatedAt: now }),
+        record: record(`root${index}`, {
+          state: "failed",
+          updatedAt: now,
+        }),
       });
     }
     store.accept({
@@ -189,6 +230,7 @@ describe("Activity", () => {
       record: record("settled", {
         state: "completed",
         title: "settled ancestor",
+        detail: "ancestor detail",
         updatedAt: now,
       }),
     });
@@ -201,6 +243,7 @@ describe("Activity", () => {
         parent: { source: "x", id: "settled" },
         state: "failed",
         title: "urgent child",
+        detail: "urgent detail",
         updatedAt: now,
       }),
     });
@@ -211,6 +254,7 @@ describe("Activity", () => {
     const lines = renderActivity(store.records, 24, theme, now);
     expect(lines.join("\n")).toContain("settled");
     expect(lines.join("\n")).toContain("urgent");
+    expect(lines).toContain("… 4 more");
     expect(lines).toHaveLength(10);
     expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
   });

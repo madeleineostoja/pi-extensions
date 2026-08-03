@@ -121,8 +121,8 @@ describe("promptForPermission", () => {
     ).rejects.toBe(err);
   });
 
-  it("forwards a provided signal to select", async () => {
-    const ui = makeUI({ selected: "Allow" });
+  it("forwards a provided signal to selection and steering input", async () => {
+    const ui = makeUI({ selected: "Block", input: "reason" });
     const controller = new AbortController();
 
     await promptForPermission({
@@ -133,6 +133,9 @@ describe("promptForPermission", () => {
     });
 
     expect(ui.select).toHaveBeenCalledWith("Run command?", ["Allow", "Block"], {
+      signal: controller.signal,
+    });
+    expect(ui.input).toHaveBeenCalledWith("Reason", "why?", {
       signal: controller.signal,
     });
   });

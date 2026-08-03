@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createSandboxDenialRecorder } from "./denials.js";
 import { createSandboxSessionState } from "./state.js";
 import {
   sandboxStatus,
@@ -49,14 +50,20 @@ describe("Sandbox status", () => {
     const state = createSandboxSessionState();
     const { ctx, statuses } = context();
     state.reset(policy);
-    syncSandboxStatus(ctx as never, state, true);
+    const denials = createSandboxDenialRecorder();
+    syncSandboxStatus(ctx as never, state, true, denials);
     expect(statuses.get("pipkin:status:0100:sandbox")).toBe(
       "<success>󰒃</success> <muted>sandbox</muted>",
     );
-    state.setEnabled(false);
-    syncSandboxStatus(ctx as never, state, true);
+    denials.recordDirect({ tool: "write", reason: "outside workspace" });
+    syncSandboxStatus(ctx as never, state, true, denials);
     expect(statuses.get("pipkin:status:0100:sandbox")).toBe(
-      "<warning>󰒃</warning> <warning>sandbox off</warning>",
+      "<warning>󰒃</warning> <warning>sandbox · 1 denied</warning>",
+    );
+    state.setEnabled(false);
+    syncSandboxStatus(ctx as never, state, true, denials);
+    expect(statuses.get("pipkin:status:0100:sandbox")).toBe(
+      "<warning>󰒃</warning> <warning>sandbox off · 1 denied</warning>",
     );
   });
 });

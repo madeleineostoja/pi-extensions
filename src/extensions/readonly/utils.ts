@@ -15,6 +15,39 @@ export function formatSteerTitle(path: string | undefined): string {
   return path ? `Steer the agent — ${path}` : "Steer the agent";
 }
 
+export function formatProposalDetail(
+  tool: "write" | "edit",
+  path: string | undefined,
+  input: unknown,
+): string {
+  const boundedText = (value: string, limit: number) =>
+    Array.from(value, (character) =>
+      /\p{C}/u.test(character) ? "�" : character,
+    )
+      .join("")
+      .slice(0, limit);
+  const target = boundedText(path ?? "an unspecified path", 256);
+  const raw =
+    input && typeof input === "object"
+      ? tool === "write"
+        ? (input as { content?: unknown }).content
+        : (input as { edits?: unknown }).edits
+      : undefined;
+  let proposal = "";
+  try {
+    proposal =
+      typeof raw === "string"
+        ? raw
+        : raw === undefined
+          ? ""
+          : (JSON.stringify(raw) ?? "");
+  } catch {}
+  const bounded = boundedText(proposal, 3_000);
+  return bounded
+    ? `Proposed ${tool} for ${target}:\n\n${bounded}`
+    : `Proposed ${tool} for ${target}.`;
+}
+
 export function parseReadonlyArgs(args: string): ReadonlyAction {
   const value = args.trim().toLowerCase();
   if (!value) {

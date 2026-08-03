@@ -17,6 +17,7 @@ import {
   formatDuration,
   formatUsdCost,
 } from "#lib/ui/metrics";
+import type { InspectionToolArguments } from "./inspection.js";
 import type {
   RuntimeInspection,
   RuntimeSnapshot,
@@ -52,6 +53,8 @@ export class AgentsSurface implements Component {
   #selected: Selection | undefined;
   #mode: "roster" | "inspector" = "roster";
   #roster: SelectList;
+  #rosterEntries: Entry[] = [];
+  #rosterPosition = 0;
   #actions: SelectList | undefined;
   #actionValues: Action[] = [];
   #details = false;
@@ -63,6 +66,7 @@ export class AgentsSurface implements Component {
   #contentOffset = 0;
   #focus: "actions" | "content" = "actions";
   #expandedTools = new Set<string>();
+  #inspectionPane: InspectionPane | undefined;
   #lastLost: string | undefined;
 
   constructor(
@@ -72,7 +76,7 @@ export class AgentsSurface implements Component {
     private readonly theme: Theme,
     private readonly done: () => void,
   ) {
-    this.#roster = this.#newRoster();
+    this.#roster = this.#replaceRoster(undefined, 0);
     this.#unsubscribers = runtimes.map((runtime) =>
       runtime.subscribeSnapshots(() => this.#refresh()),
     );
@@ -83,9 +87,12 @@ export class AgentsSurface implements Component {
   }
 
   invalidate(): void {
-    if (!this.#disposed) {
-      this.tui.requestRender();
+    if (this.#disposed) {
+      return;
     }
+    this.#roster.invalidate();
+    this.#actions?.invalidate();
+    this.#inspectionPane?.invalidate();
   }
 
   handleInput(data: string): void {
@@ -108,11 +115,14 @@ export class AgentsSurface implements Component {
       } else if (matchesKey(data, "up") || matchesKey(data, "k")) {
         this.#contentOffset = Math.max(0, this.#contentOffset - 1);
       } else if (matchesKey(data, "e")) {
-        const key = this.#entry()?.value;
+        const key = this.#inspectionPane?.expansionKeyAt(this.#contentOffset);
         if (key) {
-          this.#expandedTools.has(key)
-            ? this.#expandedTools.delete(key)
-            : this.#expandedTools.add(key);
+          if (this.#expandedTools.has(key)) {
+            this.#expandedTools.delete(key);
+          } else {
+            this.#expandedTools.add(key);
+          }
+          this.#inspectionPane?.setExpanded(this.#expandedTools);
         }
       } else {
         return;
@@ -124,12 +134,11 @@ export class AgentsSurface implements Component {
   }
 
   render(width: number): string[] {
-    const selected = this.#entry();
-    if (this.#mode === "inspector" && !selected) {
+    if (this.#mode === "inspector" && !this.#entry()) {
       this.#loseSelection();
     }
     const child =
-      this.#mode === "roster" ? this.#roster : this.#inspector(this.#entry());
+      this.#mode === "roster" ? this.#roster : this.#inspectorComponent();
     return new Panel({
       theme: this.theme,
       title: this.#mode === "roster" ? "Agents" : "Agent inspector",
@@ -138,7 +147,7 @@ export class AgentsSurface implements Component {
           ? "Active and retained agents"
           : this.#focus === "actions"
             ? "Actions focused · Tab: content"
-            : "Content focused · Tab: actions · ↑↓: scroll",
+            : "Content focused · Tab: actions · ↑↓: scroll · e: expand tool",
       footer:
         this.#mode === "roster"
           ? "Enter: inspect · Esc: close"
@@ -148,33 +157,23 @@ export class AgentsSurface implements Component {
   }
 
   #entries(): Entry[] {
-    const all = this.runtimes.flatMap((runtime, runtimeIndex) =>
-      runtime.snapshots({ includeNested: true }).map((snapshot) => {
-        const key = snapshot.key ?? `${runtime.scope}:${snapshot.id}`;
-        return {
-          runtime,
-          key,
-          value: `${runtimeIndex}:${key}`,
-          snapshot,
-          depth: 0,
-          section: terminal.has(snapshot.status)
-            ? ("retained" as const)
-            : ("active" as const),
-        };
-      }),
-    );
-    const byRuntime = new Map<SubagentRuntime, Entry[]>();
-    for (const entry of all) {
-      const entries = byRuntime.get(entry.runtime) ?? [];
-      entries.push(entry);
-      byRuntime.set(entry.runtime, entries);
-    }
-    const compare = (left: Entry, right: Entry) =>
-      Number(terminal.has(left.snapshot.status)) -
-        Number(terminal.has(right.snapshot.status)) ||
-      left.key.localeCompare(right.key);
     const flattened: Entry[] = [];
-    for (const entries of byRuntime.values()) {
+    for (const [runtimeIndex, runtime] of this.runtimes.entries()) {
+      const entries = runtime
+        .snapshots({ includeNested: true })
+        .map((snapshot) => {
+          const key = snapshotKey(runtime, snapshot);
+          return {
+            runtime,
+            key,
+            value: `${runtimeIndex}:${key}`,
+            snapshot,
+            depth: 0,
+            section: terminal.has(snapshot.status)
+              ? ("retained" as const)
+              : ("active" as const),
+          };
+        });
       const byId = new Map(entries.map((entry) => [entry.snapshot.id, entry]));
       const children = new Map<string, Entry[]>();
       const roots: Entry[] = [];
@@ -188,72 +187,107 @@ export class AgentsSurface implements Component {
           roots.push(entry);
         }
       }
-      const add = (
-        entry: Entry,
-        depth: number,
-        section: "active" | "retained",
-      ) => {
-        flattened.push({ ...entry, depth, section });
-        for (const child of (children.get(entry.snapshot.id) ?? []).sort(
-          compare,
-        )) {
-          add(child, depth + 1, section);
+      const seen = new Set<Entry>();
+      const add = (entry: Entry, depth: number) => {
+        if (seen.has(entry)) {
+          return;
+        }
+        seen.add(entry);
+        flattened.push({ ...entry, depth });
+        for (const child of children.get(entry.snapshot.id) ?? []) {
+          add(child, depth + 1);
         }
       };
-      for (const root of roots.sort(compare)) {
-        add(
-          root,
-          0,
-          terminal.has(root.snapshot.status) ? "retained" : "active",
-        );
+      for (const root of roots) {
+        add(root, 0);
+      }
+      for (const entry of entries) {
+        add(entry, 0);
       }
     }
-    const active = flattened.filter((entry) => entry.section === "active");
-    const retained = flattened.filter((entry) => entry.section === "retained");
-    return [...active, ...retained];
+    return [
+      ...flattened.filter((entry) => entry.section === "active"),
+      ...flattened.filter((entry) => entry.section === "retained"),
+    ];
   }
 
-  #newRoster(): SelectList {
+  #replaceRoster(
+    preferredValue: string | undefined,
+    preferredIndex: number,
+  ): SelectList {
     const entries = this.#entries();
-    const items = entries.map((entry, index) => ({
-      value: entry.value,
-      label: `${sectionPrefix(entries, index)}${"  ".repeat(Math.min(entry.depth, 3))}${entry.depth ? "↳ " : ""}${rosterLabel(entry.snapshot)}`,
-      description: rosterMetrics(entry.snapshot),
-    }));
-    const list = new SelectList(items, 12, selectTheme(this.theme));
+    this.#rosterEntries = entries;
+    const list = new SelectList(
+      entries.map((entry, index) => ({
+        value: entry.value,
+        label: `${sectionPrefix(entries, index)}${"  ".repeat(Math.min(entry.depth, 3))}${entry.depth ? "↳ " : ""}${rosterLabel(entry.snapshot)}`,
+        description: rosterMetrics(entry.snapshot),
+      })),
+      12,
+      selectTheme(this.theme),
+    );
     list.onSelect = (item) => {
-      const entry = this.#entries().find(
-        (candidate) => candidate.value === item.value,
+      const index = this.#rosterEntries.findIndex(
+        (entry) => entry.value === item.value,
       );
-      if (!entry) {
-        return;
+      const entry = this.#rosterEntries[index];
+      if (entry) {
+        this.#openInspector(entry, index);
       }
-      this.#selected = entry;
-      this.#mode = "inspector";
-      this.#details = false;
-      this.#summary = { kind: "idle" };
-      this.#contentOffset = 0;
-      this.#makeActions();
-      this.tui.requestRender();
     };
+    if (entries.length > 0) {
+      const stableIndex = entries.findIndex(
+        (entry) => entry.value === preferredValue,
+      );
+      const nextIndex =
+        stableIndex >= 0
+          ? stableIndex
+          : Math.min(Math.max(0, preferredIndex), entries.length - 1);
+      list.setSelectedIndex(nextIndex);
+      this.#rosterPosition = nextIndex;
+    } else {
+      this.#rosterPosition = 0;
+    }
     return list;
   }
 
-  #entry(): Entry | undefined {
+  #openInspector(entry: Entry, rosterPosition: number): void {
+    this.#cancelPending();
+    this.#selected = {
+      runtime: entry.runtime,
+      key: entry.key,
+      value: entry.value,
+    };
+    this.#rosterPosition = rosterPosition;
+    this.#lastLost = undefined;
+    this.#mode = "inspector";
+    this.#details = false;
+    this.#summary = { kind: "idle" };
+    this.#contentOffset = 0;
+    this.#focus = "actions";
+    this.#actions = undefined;
+    this.#actionValues = [];
+    this.#makeActions();
+    this.#rebuildInspection();
+    this.tui.requestRender();
+  }
+
+  #entry(entries = this.#entries()): Entry | undefined {
     if (!this.#selected) {
       return undefined;
     }
-    return this.#entries().find(
+    return entries.find(
       (entry) =>
         entry.runtime === this.#selected?.runtime &&
-        entry.key === this.#selected?.key,
+        entry.key === this.#selected.key,
     );
   }
 
-  #sameSelection(entry: Entry): boolean {
+  #operationIsCurrent(entry: Entry, generation: number): boolean {
     return (
       this.#mode === "inspector" &&
       !this.#disposed &&
+      generation === this.#generation &&
       this.#selected?.runtime === entry.runtime &&
       this.#selected.key === entry.key &&
       Boolean(this.#entry())
@@ -265,34 +299,59 @@ export class AgentsSurface implements Component {
       return;
     }
     if (this.#mode === "roster") {
-      const selected = this.#roster.getSelectedItem()?.value;
-      const oldIndex = this.#entries().findIndex(
-        (entry) => entry.value === selected,
+      const selectedValue = this.#roster.getSelectedItem()?.value;
+      const oldIndex = Math.max(
+        0,
+        this.#rosterEntries.findIndex((entry) => entry.value === selectedValue),
       );
-      this.#roster = this.#newRoster();
-      const next = this.#entries().findIndex(
-        (entry) => entry.value === selected,
-      );
-      this.#roster.setSelectedIndex(next >= 0 ? next : Math.max(0, oldIndex));
-    } else if (!this.#entry()) {
-      this.#loseSelection();
-      return;
+      const nextEntries = this.#entries();
+      if (
+        selectedValue &&
+        !nextEntries.some((entry) => entry.value === selectedValue)
+      ) {
+        this.#notifySelectionLoss(selectedValue);
+      }
+      this.#roster = this.#replaceRoster(selectedValue, oldIndex);
     } else {
+      const entries = this.#entries();
+      const entry = this.#entry(entries);
+      if (!entry) {
+        this.#loseSelection();
+        return;
+      }
+      this.#rosterPosition = entries.findIndex(
+        (candidate) => candidate.value === entry.value,
+      );
       this.#makeActions();
+      this.#rebuildInspection(entry);
     }
     this.tui.requestRender();
   }
 
+  #notifySelectionLoss(value: string): void {
+    if (this.#lastLost === value) {
+      return;
+    }
+    this.#lastLost = value;
+    this.ctx.ui.notify(
+      "Selected agent is no longer available; showing nearest roster entry.",
+      "warning",
+    );
+  }
+
   #loseSelection(): void {
     const lost = this.#selected?.value;
-    if (lost && this.#lastLost !== lost) {
-      this.#lastLost = lost;
-      this.ctx.ui.notify(
-        "Selected agent is no longer available; showing nearest roster entry.",
-        "warning",
-      );
+    if (lost) {
+      this.#notifySelectionLoss(lost);
     }
-    this.#back();
+    const position = this.#rosterPosition;
+    this.#cancelPending();
+    this.#selected = undefined;
+    this.#mode = "roster";
+    this.#contentOffset = 0;
+    this.#inspectionPane = undefined;
+    this.#roster = this.#replaceRoster(lost, position);
+    this.tui.requestRender();
   }
 
   #makeActions(): void {
@@ -311,11 +370,10 @@ export class AgentsSurface implements Component {
     if (values.join("|") === this.#actionValues.join("|")) {
       return;
     }
-    const selectedIndex = this.#actions
-      ? this.#actionValues.indexOf(
-          this.#actions.getSelectedItem()?.value as Action,
-        )
-      : 0;
+    const selectedValue = this.#actions?.getSelectedItem()?.value as
+      | Action
+      | undefined;
+    const oldIndex = Math.max(0, this.#actionValues.indexOf(selectedValue!));
     this.#actionValues = values;
     this.#actions = new SelectList(
       values.map((value) => ({ value, label: actionLabel(value) })),
@@ -323,37 +381,57 @@ export class AgentsSurface implements Component {
       selectTheme(this.theme),
     );
     this.#actions.onSelect = (item) => void this.#action(item.value as Action);
+    const stableIndex = selectedValue ? values.indexOf(selectedValue) : -1;
     this.#actions.setSelectedIndex(
-      Math.max(0, Math.min(selectedIndex, values.length - 1)),
+      stableIndex >= 0 ? stableIndex : Math.min(oldIndex, values.length - 1),
     );
   }
 
-  #inspector(entry: Entry | undefined): Component {
-    this.#makeActions();
-    const inspection = entry && entry.runtime.inspect(entry.snapshot.id);
-    const content = inspection
-      ? new InspectionPane(
-          inspection,
-          this.#details,
-          this.#summary,
-          this.tui,
-          this.theme,
-          this.#expandedTools,
-        )
-      : textComponent(["Agent is no longer available."]);
+  #rebuildInspection(entry = this.#entry()): void {
+    const inspection = entry?.runtime.inspect(entry.snapshot.id);
+    if (!entry || !inspection) {
+      this.#inspectionPane = undefined;
+      return;
+    }
+    if (
+      !this.#inspectionPane ||
+      this.#inspectionPane.identity !== entry.value
+    ) {
+      this.#inspectionPane = new InspectionPane(
+        entry.value,
+        inspection,
+        this.#details,
+        this.#summary,
+        this.tui,
+        this.theme,
+        this.#expandedTools,
+      );
+      return;
+    }
+    this.#inspectionPane.update(
+      inspection,
+      this.#details,
+      this.#summary,
+      this.#expandedTools,
+    );
+  }
+
+  #inspectorComponent(): Component {
+    const content =
+      this.#inspectionPane ?? textComponent(["Agent is no longer available."]);
     return {
       render: (width) => {
         const sidebarWidth = Math.min(28, Math.max(10, Math.floor(width / 3)));
         const contentWidth = Math.max(1, width - sidebarWidth - 3);
         const actions = this.#actions?.render(sidebarWidth) ?? [];
         const lines = content.render(contentWidth);
-        const visible = lines.slice(
-          this.#contentOffset,
-          this.#contentOffset + 24,
-        );
         this.#contentOffset = Math.min(
           this.#contentOffset,
           Math.max(0, lines.length - 1),
+        );
+        const visible = lines.slice(
+          this.#contentOffset,
+          this.#contentOffset + 24,
         );
         return Array.from(
           { length: Math.max(actions.length, visible.length) },
@@ -363,7 +441,10 @@ export class AgentsSurface implements Component {
           },
         );
       },
-      invalidate() {},
+      invalidate: () => {
+        this.#actions?.invalidate();
+        content.invalidate();
+      },
     };
   }
 
@@ -379,66 +460,96 @@ export class AgentsSurface implements Component {
     }
     if (action === "details") {
       this.#details = !this.#details;
+      this.#rebuildInspection(entry);
       this.tui.requestRender();
       return;
     }
     if (action === "guidance") {
-      if (!eligibleGuidance(entry)) {
-        this.#warning("Guidance is no longer available for this agent.");
-        return;
-      }
-      const message = await this.ctx.ui.input(
-        "Guidance (cooperatively queued after current tool calls)",
-      );
-      const current = this.#entry();
-      if (
-        !message?.trim() ||
-        !current ||
-        !this.#sameSelection(current) ||
-        !eligibleGuidance(current)
-      ) {
-        if (message?.trim()) {
-          this.#warning("Guidance was not delivered; agent state changed.");
-        }
-        return;
-      }
-      try {
-        await current.runtime.steer(current.snapshot.id, message);
-      } catch {
+      await this.#sendGuidance(entry);
+      return;
+    }
+    if (action === "stop") {
+      await this.#stop(entry);
+      return;
+    }
+    await this.#summarise(entry);
+  }
+
+  async #sendGuidance(entry: Entry): Promise<void> {
+    if (!eligibleGuidance(entry)) {
+      this.#warning("Guidance is no longer available for this agent.");
+      return;
+    }
+    const generation = this.#generation;
+    const message = await this.ctx.ui.input(
+      "Guidance (cooperatively queued after current tool calls)",
+    );
+    if (!message?.trim()) {
+      return;
+    }
+    const current = this.#entry();
+    if (
+      !current ||
+      !this.#operationIsCurrent(entry, generation) ||
+      !eligibleGuidance(current)
+    ) {
+      if (this.#operationIsCurrent(entry, generation)) {
         this.#warning("Guidance was not delivered; agent state changed.");
       }
       return;
     }
-    if (action === "stop") {
-      if (!eligibleStop(entry)) {
-        this.#warning("Stop is no longer available for this agent.");
-        return;
+    try {
+      await current.runtime.steer(current.snapshot.id, message);
+    } catch {
+      if (this.#operationIsCurrent(entry, generation)) {
+        this.#warning("Guidance was not delivered; agent state changed.");
       }
-      const confirmed = await this.ctx.ui.confirm(
-        "Stop agent",
-        "Stop this running agent?",
-      );
-      const current = this.#entry();
-      if (!confirmed) {
-        return;
-      }
-      if (!current || !this.#sameSelection(current) || !eligibleStop(current)) {
-        this.#warning("Agent already settled before it could be stopped.");
-        return;
-      }
-      try {
-        current.runtime.stop(current.snapshot.id);
-      } catch {
+    }
+  }
+
+  async #stop(entry: Entry): Promise<void> {
+    if (!eligibleStop(entry)) {
+      this.#warning("Stop is no longer available for this agent.");
+      return;
+    }
+    const generation = this.#generation;
+    const confirmed = await this.ctx.ui.confirm(
+      "Stop agent",
+      "Stop this running agent?",
+    );
+    if (!confirmed) {
+      return;
+    }
+    const current = this.#entry();
+    if (
+      !current ||
+      !this.#operationIsCurrent(entry, generation) ||
+      !eligibleStop(current)
+    ) {
+      if (this.#operationIsCurrent(entry, generation)) {
         this.#warning("Agent already settled before it could be stopped.");
       }
       return;
     }
+    try {
+      current.runtime.stop(current.snapshot.id);
+    } catch {
+      if (this.#operationIsCurrent(entry, generation)) {
+        this.#warning("Agent already settled before it could be stopped.");
+      }
+    }
+  }
+
+  async #summarise(entry: Entry): Promise<void> {
     this.#abort?.abort();
+    const controller = new AbortController();
     const generation = ++this.#generation;
+    this.#abort = controller;
     this.#summary = { kind: "loading" };
+    this.#rebuildInspection(entry);
     this.tui.requestRender();
     if (!this.ctx.model) {
-      this.#setSummary(entry, generation, {
+      this.#setSummary(entry, generation, controller, {
         kind: "error",
         text: "No active model. Set a model first.",
       });
@@ -447,18 +558,16 @@ export class AgentsSurface implements Component {
     const auth = await this.ctx.modelRegistry.getApiKeyAndHeaders(
       this.ctx.model,
     );
-    if (!this.#sameSelection(entry) || generation !== this.#generation) {
+    if (!this.#operationIsCurrent(entry, generation)) {
       return;
     }
     if (!auth.ok) {
-      this.#setSummary(entry, generation, {
+      this.#setSummary(entry, generation, controller, {
         kind: "error",
         text: bounded(auth.error ?? "Unable to authenticate for a summary."),
       });
       return;
     }
-    const controller = new AbortController();
-    this.#abort = controller;
     try {
       const result = await entry.runtime.summarise(
         entry.snapshot.id,
@@ -470,6 +579,7 @@ export class AgentsSurface implements Component {
       this.#setSummary(
         entry,
         generation,
+        controller,
         result.ok
           ? { kind: "result", text: bounded(result.text) }
           : {
@@ -478,22 +588,29 @@ export class AgentsSurface implements Component {
             },
       );
     } catch {
-      this.#setSummary(entry, generation, {
+      this.#setSummary(entry, generation, controller, {
         kind: "error",
         text: "Unable to summarise activity.",
       });
     }
   }
 
-  #setSummary(entry: Entry, generation: number, summary: Summary): void {
+  #setSummary(
+    entry: Entry,
+    generation: number,
+    controller: AbortController,
+    summary: Summary,
+  ): void {
     if (
-      !this.#sameSelection(entry) ||
-      generation !== this.#generation ||
-      this.#abort?.signal.aborted
+      this.#abort !== controller ||
+      controller.signal.aborted ||
+      !this.#operationIsCurrent(entry, generation)
     ) {
       return;
     }
+    this.#abort = undefined;
     this.#summary = summary;
+    this.#rebuildInspection();
     this.tui.requestRender();
   }
 
@@ -502,14 +619,21 @@ export class AgentsSurface implements Component {
     this.#refresh();
   }
 
-  #back(): void {
+  #cancelPending(): void {
     this.#generation += 1;
     this.#abort?.abort();
     this.#abort = undefined;
+  }
+
+  #back(): void {
+    const value = this.#selected?.value;
+    const position = this.#rosterPosition;
+    this.#cancelPending();
     this.#selected = undefined;
     this.#mode = "roster";
     this.#contentOffset = 0;
-    this.#roster = this.#newRoster();
+    this.#inspectionPane = undefined;
+    this.#roster = this.#replaceRoster(value, position);
     this.tui.requestRender();
   }
 
@@ -518,8 +642,9 @@ export class AgentsSurface implements Component {
       return;
     }
     this.#disposed = true;
-    this.#generation += 1;
-    this.#abort?.abort();
+    this.#cancelPending();
+    this.#inspectionPane = undefined;
+    this.#expandedTools.clear();
     for (const unsubscribe of this.#unsubscribers.splice(0)) {
       unsubscribe();
     }
@@ -528,16 +653,11 @@ export class AgentsSurface implements Component {
 }
 
 function sectionPrefix(entries: readonly Entry[], index: number): string {
-  if (index === 0) {
-    return "Active · ";
+  const entry = entries[index];
+  if (!entry || (index > 0 && entries[index - 1]?.section === entry.section)) {
+    return "";
   }
-  if (
-    entries[index - 1]?.section !== "retained" &&
-    entries[index]?.section === "retained"
-  ) {
-    return "Retained · ";
-  }
-  return "";
+  return entry.section === "active" ? "Active · " : "Retained · ";
 }
 
 function rosterLabel(snapshot: RuntimeSnapshot): string {
@@ -587,6 +707,13 @@ function displayType(snapshot: RuntimeSnapshot): string {
   return bounded(snapshot.type, 80);
 }
 
+function snapshotKey(
+  runtime: SubagentRuntime,
+  snapshot: RuntimeSnapshot,
+): string {
+  return snapshot.key ?? `${runtime.scope}:${snapshot.id}`;
+}
+
 function nestedParent(snapshot: RuntimeSnapshot): string | undefined {
   return typeof snapshot.owner === "object" && snapshot.owner.kind === "nested"
     ? snapshot.owner.parentId
@@ -616,28 +743,49 @@ function actionLabel(action: Action): string {
 function eligibleGuidance(entry: Entry): boolean {
   const current = entry.runtime.snapshot(entry.snapshot.id);
   return (
-    current?.key === entry.snapshot.key &&
-    current?.status === "running" &&
+    current !== undefined &&
+    snapshotKey(entry.runtime, current) === entry.key &&
+    current.status === "running" &&
     current.canSteer === true
   );
 }
 
 function eligibleStop(entry: Entry): boolean {
   const current = entry.runtime.snapshot(entry.snapshot.id);
-  return current?.key === entry.snapshot.key && current?.status === "running";
+  return (
+    current !== undefined &&
+    snapshotKey(entry.runtime, current) === entry.key &&
+    current.status === "running"
+  );
 }
 
+type PanePart = { component: Component; expansionKey?: string };
+type ToolRange = { key: string; start: number; end: number };
+
 class InspectionPane implements Component {
-  #components: Component[];
+  #parts: PanePart[] = [];
+  #tools = new Map<string, ToolExecutionComponent>();
+  #toolOrder: string[] = [];
+  #toolRanges: ToolRange[] = [];
 
   constructor(
+    readonly identity: string,
     inspection: RuntimeInspection,
     details: boolean,
     summary: Summary,
-    tui: TUI,
-    theme: Theme,
+    private readonly tui: TUI,
+    private readonly theme: Theme,
     expanded: ReadonlySet<string>,
   ) {
+    this.update(inspection, details, summary, expanded);
+  }
+
+  update(
+    inspection: RuntimeInspection,
+    details: boolean,
+    summary: Summary,
+    expanded: ReadonlySet<string>,
+  ): void {
     const summaryLines =
       summary.kind === "idle"
         ? []
@@ -658,53 +806,66 @@ class InspectionPane implements Component {
           ]
         : []),
     ];
-    this.#components = [textComponent(header)];
+    const parts: PanePart[] = [{ component: textComponent(header) }];
+    const seenTools = new Set<string>();
+    const duplicateCalls = new Map<string, number>();
     for (const item of chronologicalItems(inspection)) {
       if (item.kind === "assistant") {
-        this.#components.push(
-          new Markdown(item.text, 0, 0, markdownTheme(theme)),
-        );
+        parts.push({
+          component: new Markdown(item.text, 0, 0, markdownTheme(this.theme)),
+        });
+      } else if (item.kind === "final") {
+        parts.push({
+          component: styledTextComponent([`Final: ${item.text}`], (line) =>
+            this.theme.bold(line),
+          ),
+        });
       } else if (item.kind === "user") {
-        this.#components.push(
-          textComponent([theme.bold(`User: ${item.text}`)]),
-        );
-      } else if (item.kind === "tool" && safeTool(item.toolName)) {
-        const tool = new ToolExecutionComponent(
-          item.toolName,
-          item.toolCallId,
-          toolArguments(item.arguments),
-          undefined,
-          undefined,
-          tui,
-          inspection.snapshot.cwd,
-        );
-        tool.markExecutionStarted();
-        tool.setArgsComplete();
-        if (item.status !== "running") {
-          tool.updateResult({
-            content: item.result ? [{ type: "text", text: item.result }] : [],
-            isError: item.status === "failed" || item.status === "interrupted",
-          });
-        }
-        tool.setExpanded(expanded.has(item.toolCallId));
-        this.#components.push(tool);
+        parts.push({
+          component: styledTextComponent([`User: ${item.text}`], (line) =>
+            this.theme.bold(line),
+          ),
+        });
       } else if (item.kind === "tool") {
-        this.#components.push(
-          textComponent([
-            `Tool ${bounded(item.toolName)}: ${item.status}${item.toolName === "edit" || item.toolName === "write" ? " · body omitted" : " · retained output unavailable"}`,
-          ]),
+        const occurrence = duplicateCalls.get(item.toolCallId) ?? 0;
+        duplicateCalls.set(item.toolCallId, occurrence + 1);
+        const expansionKey = `${this.identity}\u0000${item.toolCallId}\u0000${occurrence}`;
+        const argumentsValue = nativeToolArguments(
+          item.toolName,
+          item.arguments,
         );
+        if (argumentsValue) {
+          let tool = this.#tools.get(expansionKey);
+          if (!tool) {
+            tool = new ToolExecutionComponent(
+              item.toolName,
+              item.toolCallId,
+              argumentsValue,
+              undefined,
+              undefined,
+              this.tui,
+              inspection.snapshot.cwd,
+            );
+            this.#tools.set(expansionKey, tool);
+          } else {
+            tool.updateArgs(argumentsValue);
+          }
+          if (item.status !== "running") {
+            const output = item.result ?? item.error;
+            tool.updateResult({
+              content: output ? [{ type: "text", text: output }] : [],
+              isError:
+                item.status === "failed" || item.status === "interrupted",
+            });
+          }
+          tool.setExpanded(expanded.has(expansionKey));
+          seenTools.add(expansionKey);
+          parts.push({ component: tool, expansionKey });
+        } else {
+          parts.push({ component: textComponent([fallbackToolLine(item)]) });
+        }
       } else {
-        this.#components.push(
-          textComponent([
-            activityLine(
-              item as Exclude<
-                RuntimeInspection["activity"][number],
-                { kind: "tool" }
-              >,
-            ),
-          ]),
-        );
+        parts.push({ component: textComponent([activityLine(item)]) });
       }
     }
     if (
@@ -712,33 +873,80 @@ class InspectionPane implements Component {
       inspection.omittedActivity ||
       inspection.compactedHistory
     ) {
-      this.#components.push(
-        textComponent([
+      parts.push({
+        component: textComponent([
           `Retention: ${inspection.omittedMessages + inspection.omittedActivity} records omitted${inspection.compactedHistory ? " · compacted history" : ""}`,
         ]),
-      );
+      });
     }
+    for (const key of this.#tools.keys()) {
+      if (!seenTools.has(key)) {
+        this.#tools.delete(key);
+      }
+    }
+    this.#parts = parts;
+    this.#toolOrder = parts.flatMap((part) =>
+      part.expansionKey ? [part.expansionKey] : [],
+    );
+    this.#toolRanges = [];
+  }
+
+  setExpanded(expanded: ReadonlySet<string>): void {
+    for (const [key, tool] of this.#tools) {
+      tool.setExpanded(expanded.has(key));
+    }
+    this.#toolRanges = [];
+  }
+
+  expansionKeyAt(offset: number): string | undefined {
+    const containing = this.#toolRanges.find(
+      (range) => offset >= range.start && offset <= range.end,
+    );
+    if (containing) {
+      return containing.key;
+    }
+    return (
+      this.#toolRanges.find((range) => range.start >= offset)?.key ??
+      this.#toolRanges.at(-1)?.key ??
+      this.#toolOrder[0]
+    );
   }
 
   invalidate(): void {
-    for (const component of this.#components) {
-      component.invalidate();
+    for (const part of this.#parts) {
+      part.component.invalidate();
     }
+    this.#toolRanges = [];
   }
 
   render(width: number): string[] {
-    return this.#components.flatMap((component) =>
-      component
-        .render(Math.max(1, width))
-        .map((line) => truncateToWidth(line, Math.max(1, width), "…", false)),
-    );
+    const safeWidth = Math.max(1, width);
+    const lines: string[] = [];
+    const ranges: ToolRange[] = [];
+    for (const part of this.#parts) {
+      const start = lines.length;
+      const rendered = part.component
+        .render(safeWidth)
+        .map((line) => truncateToWidth(line, safeWidth, "…", false));
+      lines.push(...rendered);
+      if (part.expansionKey && rendered.length > 0) {
+        ranges.push({
+          key: part.expansionKey,
+          start,
+          end: lines.length - 1,
+        });
+      }
+    }
+    this.#toolRanges = ranges;
+    return lines;
   }
 }
 
 type TimelineItem =
-  | { kind: "user" | "assistant"; text: string; timestamp?: string }
-  | Extract<RuntimeInspection["activity"][number], { kind: "tool" }>
-  | Exclude<RuntimeInspection["activity"][number], { kind: "tool" }>;
+  | { kind: "user"; text: string; timestamp?: string }
+  | { kind: "assistant"; text: string; timestamp?: string }
+  | { kind: "final"; text: string; timestamp?: string }
+  | RuntimeInspection["activity"][number];
 
 function chronologicalItems(inspection: RuntimeInspection): TimelineItem[] {
   return inspection.records.map((record) => {
@@ -746,7 +954,7 @@ function chronologicalItems(inspection: RuntimeInspection): TimelineItem[] {
       return record;
     }
     return {
-      kind: record.role === "final" ? "assistant" : record.role,
+      kind: record.role,
       text: bounded(record.text),
       ...(record.timestamp === undefined
         ? {}
@@ -767,22 +975,77 @@ function activityLine(
   return `Compaction ${item.status}${item.reason ? `: ${item.reason}` : ""}${item.error ? ` · ${bounded(item.error)}` : ""}`;
 }
 
-function safeTool(name: string): boolean {
-  return ["read", "search", "list", "bash"].includes(name);
+function fallbackToolLine(
+  item: Extract<RuntimeInspection["activity"][number], { kind: "tool" }>,
+): string {
+  const reason =
+    item.toolName === "edit" || item.toolName === "write"
+      ? "body omitted"
+      : "native replay unavailable";
+  return `Tool ${bounded(item.toolName)}: ${item.status} · ${reason}`;
 }
 
-function toolArguments(value: string | undefined): Record<string, unknown> {
+function nativeToolArguments(
+  name: string,
+  value: InspectionToolArguments | undefined,
+): Record<string, unknown> | undefined {
   if (!value) {
-    return {};
+    return undefined;
   }
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return typeof parsed === "object" && parsed !== null
-      ? (parsed as Record<string, unknown>)
-      : { detail: value };
-  } catch {
-    return { detail: value };
+  if (name === "read" && typeof value.path === "string") {
+    return compactObject({
+      path: value.path,
+      offset: numberArgument(value.offset),
+      limit: numberArgument(value.limit),
+    });
   }
+  if (name === "grep" && typeof value.pattern === "string") {
+    return compactObject({
+      pattern: value.pattern,
+      path: stringArgument(value.path),
+      glob: stringArgument(value.glob),
+      ignoreCase: booleanArgument(value.ignoreCase),
+      literal: booleanArgument(value.literal),
+      context: numberArgument(value.context),
+      limit: numberArgument(value.limit),
+    });
+  }
+  if (name === "find" && typeof value.pattern === "string") {
+    return compactObject({
+      pattern: value.pattern,
+      path: stringArgument(value.path),
+      limit: numberArgument(value.limit),
+    });
+  }
+  if (name === "bash" && typeof value.command === "string") {
+    return compactObject({
+      command: value.command,
+      timeout: numberArgument(value.timeout),
+    });
+  }
+  return undefined;
+}
+
+function compactObject(
+  value: Record<string, string | number | boolean | undefined>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).filter((entry) => entry[1] !== undefined),
+  );
+}
+
+function stringArgument(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberArgument(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function booleanArgument(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function textComponent(lines: readonly string[]): Component {
@@ -790,6 +1053,19 @@ function textComponent(lines: readonly string[]): Component {
     render: (width) =>
       lines.map((line) =>
         truncateToWidth(line, Math.max(1, width), "…", false),
+      ),
+    invalidate() {},
+  };
+}
+
+function styledTextComponent(
+  lines: readonly string[],
+  style: (line: string) => string,
+): Component {
+  return {
+    render: (width) =>
+      lines.map((line) =>
+        truncateToWidth(style(line), Math.max(1, width), "…", false),
       ),
     invalidate() {},
   };

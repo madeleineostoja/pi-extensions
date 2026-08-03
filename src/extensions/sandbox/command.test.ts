@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { registerSandboxCommand, sandboxPanelDetail } from "./command.js";
+import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+  SandboxPanel,
+  registerSandboxCommand,
+  sandboxPanelDetail,
+} from "./command.js";
+import { createSandboxDenialRecorder } from "./denials.js";
 import { createSandboxSessionState } from "./state.js";
 
 const policy = {
@@ -14,6 +20,7 @@ const policy = {
 function commandFixture(supportedMac: boolean) {
   let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
   const state = createSandboxSessionState();
+  const denials = createSandboxDenialRecorder();
   state.reset(policy);
   registerSandboxCommand({
     pi: {
@@ -22,84 +29,156 @@ function commandFixture(supportedMac: boolean) {
       },
     } as never,
     state,
+    denials,
     supportedMac,
   });
   const notify = vi.fn();
-  const setStatus = vi.fn();
-  const select = vi.fn();
-  const custom = vi.fn().mockResolvedValue({ kind: "aborted" });
+  const custom = vi.fn().mockResolvedValue(undefined);
   return {
     ctx: {
       mode: "tui",
       hasUI: true,
       ui: {
         notify,
-        select,
         custom,
-        setStatus,
+        setStatus: vi.fn(),
         theme: { fg: (_tone: string, text: string) => text },
       },
     },
     handler: handler!,
     notify,
-    select,
     custom,
-    setStatus,
     state,
+    denials,
   };
 }
 
+function panelFixture(options: {
+  supportedMac: boolean;
+  unavailable?: boolean;
+}) {
+  initTheme("dark");
+  const state = createSandboxSessionState();
+  state.reset(
+    options.unavailable ? undefined : policy,
+    "initialization failed",
+  );
+  const denials = createSandboxDenialRecorder();
+  const done = vi.fn();
+  const requestRender = vi.fn();
+  const notify = vi.fn();
+  const panel = new SandboxPanel({
+    tui: { requestRender } as never,
+    theme: {
+      fg: (_tone: string, text: string) => text,
+      bold: (text: string) => text,
+    } as Theme,
+    done,
+    ctx: {
+      mode: "tui",
+      ui: {
+        notify,
+        setStatus: vi.fn(),
+        theme: { fg: (_tone: string, text: string) => text },
+      },
+    } as never,
+    state,
+    denials,
+    supportedMac: options.supportedMac,
+  });
+  return { done, panel, requestRender, state };
+}
+
 describe("Sandbox command", () => {
-  it("shows only the changing policy details in its panel", () => {
+  it("shows truthful direct and Bash scopes plus bounded denial records", () => {
     const state = createSandboxSessionState();
+    const denials = createSandboxDenialRecorder();
     state.reset(policy);
-    expect(sandboxPanelDetail(state, true)).toBe(
-      "State: On\nWorkspace: /workspace\nAdditional writable roots:\n  /git\n  /temporary\n  /cache",
+    denials.recordDirect({
+      tool: "write",
+      requestedPath: "outside.ts",
+      target: "/outside.ts",
+      reason: "outside workspace",
+    });
+    denials.recordBash({
+      process: "node",
+      pid: 42,
+      operation: "file-write-create",
+      path: "/private/file",
+    });
+
+    expect(sandboxPanelDetail(state, true, denials)).toBe(
+      "State: on\n" +
+        "Direct write/edit scope: /workspace\n" +
+        "Sandbox Bash write scopes:\n  /workspace\n  /git\n  /temporary\n  /cache\n" +
+        "Confirmed denials: 2\nRecent denials:\n" +
+        "direct write · requested outside.ts · target /outside.ts · outside workspace\n" +
+        "bash node (pid 42) · file-write-create · /private/file",
     );
   });
 
-  it("changes supported macOS mode directly and validates arguments", async () => {
+  it("opens only a TUI custom panel and reports a bounded non-TUI fallback", async () => {
+    const fixture = commandFixture(true);
+    await fixture.handler("", fixture.ctx);
+    expect(fixture.custom).toHaveBeenCalledOnce();
+
+    await fixture.handler("", { ...fixture.ctx, mode: "rpc" });
+    expect(fixture.notify).toHaveBeenLastCalledWith(
+      expect.stringContaining("State: on"),
+      "info",
+    );
+  });
+
+  it("changes supported mode directly and rejects unavailable enabling", async () => {
     const fixture = commandFixture(true);
     await fixture.handler("off", fixture.ctx);
     expect(fixture.state.enabled()).toBe(false);
-    expect(fixture.notify).toHaveBeenLastCalledWith("sandbox: off", "info");
     await fixture.handler("on", fixture.ctx);
     expect(fixture.state.enabled()).toBe(true);
-    await fixture.handler("status", fixture.ctx);
-    expect(fixture.notify).toHaveBeenLastCalledWith(
-      "usage: /sandbox [on|off]",
-      "warning",
-    );
-  });
 
-  it("uses native selection when custom UI is unavailable in RPC mode", async () => {
-    const fixture = commandFixture(true);
-    fixture.ctx.mode = "rpc";
-    fixture.custom.mockResolvedValue(undefined);
-    fixture.select
-      .mockResolvedValueOnce("Turn off")
-      .mockResolvedValueOnce("Close");
-
-    await expect(fixture.handler("", fixture.ctx)).resolves.toBeUndefined();
-
-    expect(fixture.state.enabled()).toBe(false);
-    expect(fixture.select).toHaveBeenNthCalledWith(
-      1,
-      expect.stringContaining(
-        "Sandbox: sandbox\n\nState: On\nWorkspace: /workspace",
-      ),
-      ["Turn off", "Close"],
-    );
-  });
-
-  it("offers only an unavailable panel and rejects enabling on Linux", async () => {
-    const fixture = commandFixture(false);
-    await fixture.handler("", fixture.ctx);
-    expect(fixture.custom).toHaveBeenCalledOnce();
-    await fixture.handler("on", fixture.ctx);
-    expect(fixture.notify).toHaveBeenLastCalledWith(
+    const unsupported = commandFixture(false);
+    await unsupported.handler("on", unsupported.ctx);
+    expect(unsupported.notify).toHaveBeenLastCalledWith(
       "sandbox: unavailable on this platform",
       "warning",
     );
+  });
+
+  it("closes every panel once without relying on SettingsList", () => {
+    for (const fixture of [
+      panelFixture({ supportedMac: true }),
+      panelFixture({ supportedMac: false }),
+      panelFixture({ supportedMac: true, unavailable: true }),
+    ]) {
+      fixture.panel.handleInput("\u001b");
+      fixture.panel.handleInput("\u001b");
+      expect(fixture.done).toHaveBeenCalledOnce();
+      fixture.panel.dispose();
+    }
+  });
+
+  it("shows unavailable initialization truthfully and lets supported macOS turn it off", () => {
+    const fixture = panelFixture({ supportedMac: true, unavailable: true });
+
+    expect(fixture.panel.render(100).join("\n")).toContain(
+      "State: unavailable",
+    );
+    fixture.panel.handleInput("\r");
+
+    expect(fixture.state.enabled()).toBe(false);
+    expect(fixture.panel.render(100).join("\n")).toContain("State: off");
+    fixture.panel.dispose();
+  });
+
+  it("keeps the setting truthful after a rejected enable and renders SettingsList input", () => {
+    const fixture = panelFixture({ supportedMac: true, unavailable: true });
+    fixture.panel.handleInput("\r");
+    expect(fixture.state.enabled()).toBe(false);
+    fixture.panel.handleInput("\r");
+
+    expect(fixture.state.enabled()).toBe(false);
+    expect(fixture.panel.render(100).join("\n")).toContain("off");
+    expect(fixture.requestRender).toHaveBeenCalled();
+    fixture.panel.dispose();
   });
 });

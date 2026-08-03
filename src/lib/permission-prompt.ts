@@ -40,10 +40,16 @@ export async function promptForPermission<T extends string>(
   }
   try {
     const message =
-      (await options.ui.input(
-        selectedChoice.input.title,
-        selectedChoice.input.placeholder,
-      )) ?? "";
+      (options.signal
+        ? await options.ui.input(
+            selectedChoice.input.title,
+            selectedChoice.input.placeholder,
+            { signal: options.signal },
+          )
+        : await options.ui.input(
+            selectedChoice.input.title,
+            selectedChoice.input.placeholder,
+          )) ?? "";
     return { ...result, message };
   } catch (error) {
     if (

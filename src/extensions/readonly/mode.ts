@@ -5,7 +5,12 @@ import type {
 import { promptForPermission } from "#lib/permission-prompt";
 import { clearPipkinStatus, setPipkinStatus } from "#ui/status";
 import { resolveChoice } from "./handler";
-import { parseReadonlyArgs, extractToolPath, formatSteerTitle } from "./utils";
+import {
+  parseReadonlyArgs,
+  extractToolPath,
+  formatProposalDetail,
+  formatSteerTitle,
+} from "./utils";
 
 const READONLY_STATUS = { id: "readonly", priority: 200 } as const;
 const READONLY_ICON = "󰏯";
@@ -80,6 +85,7 @@ export function registerReadonlyMode(pi: ExtensionAPI): void {
       ui: ctx.ui,
       signal: ctx.signal,
       title: `Readonly: apply proposed ${event.toolName}?`,
+      detail: formatProposalDetail(event.toolName, path, event.input),
       choices: [
         { value: "Accept", label: "Accept" },
         { value: "Accept for this session", label: "Accept for this session" },

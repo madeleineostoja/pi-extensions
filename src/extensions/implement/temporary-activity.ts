@@ -17,6 +17,7 @@ type TransitionEvent = SchedulerEvent | { kind: "planner_bound" };
 export function createTemporaryActivity(
   events: EventBus,
   ctx: ExtensionCommandContext,
+  publisher: ActivityPublisher = createActivityPublisher(events, "implement"),
 ): {
   update(state: RunState, event?: TransitionEvent): void;
   clear(): void;
@@ -24,7 +25,6 @@ export function createTemporaryActivity(
   let plan: ExecutionPlan | undefined;
   let planPath: string | undefined;
   let enabled = true;
-  const publisher = createActivityPublisher(events, "implement");
   let published = new Set<string>();
 
   return {
@@ -48,6 +48,9 @@ export function createTemporaryActivity(
       }
     },
     clear() {
+      if (!enabled) {
+        return;
+      }
       enabled = false;
       published.clear();
       publisher.dispose();
@@ -65,8 +68,16 @@ function publishActivity(
   const current = publishedIds(state);
   const accepted = new Set<string>();
   for (const id of previous) {
-    if (!current.has(id)) {
-      publisher.remove(id);
+    if (current.has(id)) {
+      accepted.add(id);
+      continue;
+    }
+    try {
+      if (!publisher.remove(id)) {
+        accepted.add(id);
+      }
+    } catch {
+      accepted.add(id);
     }
   }
   const published = Object.values(state.tasks).filter(

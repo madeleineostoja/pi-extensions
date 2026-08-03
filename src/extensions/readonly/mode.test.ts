@@ -35,6 +35,7 @@ describe("Readonly", () => {
           prompt = title;
           return "Accept";
         },
+        custom: async () => undefined,
         input: async () => undefined,
       },
     } as unknown as ExtensionContext;
@@ -50,7 +51,9 @@ describe("Readonly", () => {
       ctx,
     );
 
-    expect(prompt).toBe("Readonly: apply proposed edit?");
+    expect(prompt).toContain(
+      "Readonly: apply proposed edit?\n\nProposed edit for src/index.ts:",
+    );
   });
 
   it("clears its namespaced status at shutdown", async () => {
