@@ -29,6 +29,7 @@
       "./src/extensions/lsp/index.ts",
       "./src/extensions/subagents/index.ts",
       "./src/extensions/implement/index.ts",
+      "./src/extensions/reference/index.ts",
       "./src/extensions/papercuts/index.ts",
       "./src/extensions/btw/index.ts"
     ]

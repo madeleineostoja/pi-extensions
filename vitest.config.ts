@@ -9,6 +9,7 @@ const features = [
   "personality",
   "lsp",
   "subagents",
+  "reference",
   "papercuts",
   "btw",
 ];

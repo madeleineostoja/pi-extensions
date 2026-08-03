@@ -14,8 +14,9 @@ The root manifest loads the complete bundle in this order:
 6. LSP
 7. Subagents
 8. Implement
-9. Papercuts
-10. BTW
+9. Reference
+10. Papercuts
+11. BTW
 
 Order is a runtime contract. Sandbox then Readonly form the safety prefix: Sandbox owns model Bash and direct workspace-write containment; Readonly retains the independent edit/write workflow. Subagents precedes Implement because Implement consumes its managed runtime.
 

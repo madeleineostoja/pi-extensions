@@ -33,6 +33,7 @@ const expectedExtensions = [
   "./src/extensions/lsp/index.ts",
   "./src/extensions/subagents/index.ts",
   "./src/extensions/implement/index.ts",
+  "./src/extensions/reference/index.ts",
   "./src/extensions/papercuts/index.ts",
   "./src/extensions/btw/index.ts",
 ];
@@ -52,6 +53,7 @@ const expectedTools = {
   get_subagent_result: "src/extensions/subagents/index.ts",
   steer_subagent: "src/extensions/subagents/index.ts",
   inspect_implement_run: "src/extensions/implement/index.ts",
+  docs: "src/extensions/reference/index.ts",
   propose_papercut: "src/extensions/papercuts/index.ts",
 };
 

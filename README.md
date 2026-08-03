@@ -81,7 +81,11 @@ They can run in the foreground or alongside independent parent work, accept stee
 
 **[Agents →](docs/features/agents.md)**
 
-### Code intelligence and side questions
+### Reference, code intelligence, and side questions
+
+**Reference** provides the bounded `docs` tool for Context7 documentation. It defaults to provider-current material, or retrieves an exact Context7 version when explicitly pinned, without inspecting the project.
+
+**[Reference →](docs/features/reference.md)**
 
 The read-only **LSP** tool finds definitions, types, implementations, references, symbols, hover information, and diagnostics for TypeScript/JavaScript, Svelte, and provisioned Ruby projects. It follows a pull-only model where the agent uses it deliberately, rather than interrupting turns with noise.
 
@@ -108,6 +112,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | `context_recall`                  | Recover the original content behind an elision stub            |
 | `bash_outcome`                    | Run Bash when only successful outcome matters; recall output   |
 | `lsp`                             | Make semantic source queries or inspect language-server status |
+| `docs`                            | Retrieve bounded Context7 documentation                        |
 | `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents         |
 | `get_subagent_result`             | Inspect or join a background agent                             |
 | `steer_subagent`                  | Queue guidance for a running background agent                  |
@@ -130,6 +135,7 @@ Those are operating constraints, not footnotes. The feature guides spell out whe
 - [Context](docs/features/context.md)
 - [Agents](docs/features/agents.md)
 - [Implementation](docs/features/implementation.md)
+- [Reference](docs/features/reference.md)
 - [Interface and Personality](docs/features/interface-and-personality.md)
 - [Workflow tools](docs/features/workflow-tools.md)
 - [Architecture](docs/architecture.md)
