@@ -68,7 +68,11 @@ const expectedCommands = {
   btw: "src/extensions/btw/index.ts",
 };
 
-const expectedRenderers = {};
+const expectedMessageRenderers = {};
+const expectedEntryRenderers = {
+  "pipkin.context.epoch.v1": "src/extensions/context/index.ts",
+  "pipkin.implement.terminal-handoff": "src/extensions/implement/index.ts",
+};
 
 const safetyPaths = [
   "src/extensions/sandbox/index.ts",
@@ -215,11 +219,11 @@ function relativeExtensionPath(extension: Extension): string {
 
 function ownerMap(
   extensions: readonly Extension[],
-  key: "messageRenderers",
+  key: "messageRenderers" | "entryRenderers",
 ): Record<string, string[]> {
   const owners = new Map<string, string[]>();
   for (const extension of extensions) {
-    for (const name of extension[key].keys()) {
+    for (const name of extension[key]?.keys() ?? []) {
       const entries = owners.get(name) ?? [];
       entries.push(relativeExtensionPath(extension));
       owners.set(name, entries);
@@ -401,7 +405,10 @@ describe("Pipkin bundle", () => {
       expectedProvenance(expectedCommands),
     );
     expect(ownerMap(fixture.result.extensions, "messageRenderers")).toEqual(
-      expectedProvenance(expectedRenderers),
+      expectedProvenance(expectedMessageRenderers),
+    );
+    expect(ownerMap(fixture.result.extensions, "entryRenderers")).toEqual(
+      expectedProvenance(expectedEntryRenderers),
     );
     const context = fixture.result.extensions.find(
       (extension) =>

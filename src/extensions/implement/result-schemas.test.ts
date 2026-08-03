@@ -33,7 +33,7 @@ describe("review completion schemas", () => {
     expect(
       validates(initialOverallReviewSchema, {
         findings: [],
-        handoffDraft: "## Delivered behavior\n\nReviewed delivery handoff.",
+        handoffDraft: "## Summary\n\nReviewed delivery handoff.",
       }),
     ).toBe(true);
     expect(
@@ -41,14 +41,14 @@ describe("review completion schemas", () => {
         assessments: [],
         regressions: [],
         publicationCommitSubject: "fix: repair complete plan",
-        handoffDraft: "## Delivered behavior\n\nRepaired delivery handoff.",
+        handoffDraft: "## Summary\n\nRepaired delivery handoff.",
       }),
     ).toBe(true);
     expect(
       validates(anchoredOverallReviewSchema, {
         assessments: [],
         regressions: [],
-        handoffDraft: "## Delivered behavior\n\nReassessed delivery handoff.",
+        handoffDraft: "## Summary\n\nReassessed delivery handoff.",
       }),
     ).toBe(true);
     expect(

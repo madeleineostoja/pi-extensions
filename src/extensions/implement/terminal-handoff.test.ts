@@ -47,14 +47,15 @@ describe("terminal handoff rendering", () => {
     expect(handoff).toMatch(
       /^Accepted reviewer handoff\.\n\nIt remains opaque\.\n\n## Delivery receipt/,
     );
-    expect(handoff).toContain("Run ID: run-1");
-    expect(handoff).toContain("Target branch: refs/heads/main");
-    expect(handoff).toContain("Final published head: published-second");
-    expect(handoff).toContain("Source workstreams proven delivered: 2");
+    expect(handoff).toContain("- Run: `run-1`");
     expect(handoff).toContain(
-      "Material final residual whole-plan findings: no",
+      "- Published: `published-second` → `refs/heads/main`",
     );
-    expect(handoff).toContain("/implement inspect run-1");
+    expect(handoff).toContain(
+      "- Delivered workstreams: `first-stream`, `second-stream`",
+    );
+    expect(handoff).toContain("- Residual findings: None.");
+    expect(handoff).toContain("`/implement inspect run-1`");
     expect(handoff).not.toContain("/worktrees/");
   });
 
@@ -92,13 +93,13 @@ describe("terminal handoff rendering", () => {
     const handoff = renderTerminalHandoff(state);
 
     expect(handoff).toContain(
-      "Material final residual whole-plan findings: yes",
+      "- Residual findings: 1 material finding retained.",
     );
-    expect(handoff).toContain("whole-open · open");
+    expect(handoff).not.toContain("whole-open");
     expect(handoff).not.toContain("whole-resolved");
   });
 
-  it("renders incomplete partial delivery, failed lanes, findings, and retained workspaces", () => {
+  it("summarizes incomplete delivery, causal failures, and findings without forensic bookkeeping", () => {
     const state = terminalState("incomplete");
     addPublishedSource(
       state,
@@ -117,6 +118,22 @@ describe("terminal handoff rendering", () => {
       "open",
       "whole plan remains open",
     );
+    state.failures["failure:protocol:first"] = {
+      id: "failure:protocol:first",
+      category: "protocol_failure",
+      assignment: "operational_retry",
+      workstream: { kind: "source", id: "first-stream" },
+      evidence: "Earlier reviewer packet mismatch.",
+      at: "2026-01-01T00:00:00.000Z",
+    };
+    state.failures["failure:protocol:second"] = {
+      id: "failure:protocol:second",
+      category: "protocol_failure",
+      assignment: "operational_retry",
+      workstream: { kind: "source", id: "first-stream" },
+      evidence: "Earlier reviewer packet mismatch.",
+      at: "2026-01-01T00:01:00.000Z",
+    };
     state.failures["failure:first"] = {
       id: "failure:first",
       category: "provider_failure",
@@ -125,21 +142,36 @@ describe("terminal handoff rendering", () => {
       evidence: "provider exhausted",
       at: "2026-01-01T00:02:00.000Z",
     };
+    state.failures["failure:skipped"] = {
+      id: "failure:skipped",
+      category: "dependency_skipped",
+      assignment: "dependency_skip",
+      workstream: { kind: "source", id: "second-stream" },
+      evidence: "first-stream was unavailable",
+      at: "2026-01-01T00:03:00.000Z",
+    };
 
     const handoff = renderTerminalHandoff(state);
 
-    expect(handoff).toContain("Implement run run-1 · incomplete");
-    expect(handoff).toContain("Terminal category: provider_failure");
-    expect(handoff).toContain("Last proven published head: published-first");
-    expect(handoff).toContain("first-stream · publication receipt");
-    expect(handoff).toContain("source:first-stream");
-    expect(handoff).toContain("source:second-stream");
-    expect(handoff).toContain("Retained failure evidence:");
-    expect(handoff).toContain("source-open · open");
-    expect(handoff).toContain("whole-open · open");
-    expect(handoff).toContain("/worktrees/run-1/first-stream");
-    expect(handoff).toContain("/implement inspect run-1");
-    expect(handoff).toContain("/implement cleanup run-1");
+    expect(handoff).toContain("## Run outcome");
+    expect(handoff).toContain(
+      "Primary blocker: `first-stream` — provider exhausted",
+    );
+    expect(handoff).toContain("- Delivered: `first-stream`");
+    expect(handoff).toContain("- Failed: None.");
+    expect(handoff).toContain("- Dependency-skipped: `second-stream`");
+    expect(handoff).toContain(
+      "Open finding in `first-stream`: source remains open",
+    );
+    expect(handoff).toContain(
+      "Open finding in `first-stream`: whole plan remains open",
+    );
+    expect(handoff).not.toContain("failure:first");
+    expect(handoff).not.toContain("Earlier reviewer packet mismatch");
+    expect(handoff).not.toContain("first-stream was unavailable");
+    expect(handoff).not.toContain("/worktrees/run-1/first-stream");
+    expect(handoff).toContain("`/implement inspect run-1`");
+    expect(handoff).toContain("`/implement cleanup run-1`");
   });
 
   it("renders failed interruption with explicit uncertainty and no guessed publication", () => {
@@ -161,13 +193,15 @@ describe("terminal handoff rendering", () => {
 
     const handoff = renderTerminalHandoff(state);
 
-    expect(handoff).toContain("Implement run run-1 · failed");
-    expect(handoff).toContain("Terminal category: interrupted");
+    expect(handoff).toContain("The run failed.");
     expect(handoff).toContain(
-      "Last proven published head: base-sha (no ref advancement is proven)",
+      "Actor stopped while retained resources were still owned.",
     );
     expect(handoff).toContain(
-      "publication · Target ref outcome was not observed.",
+      "- Last proven published head: `base-sha (no ref advancement is proven)`",
+    );
+    expect(handoff).toContain(
+      "`first-stream`: Target ref outcome was not observed.",
     );
     expect(handoff).toContain("/implement inspect run-1");
     expect(handoff).toContain("/implement cleanup run-1");
@@ -229,10 +263,12 @@ describe("terminal handoff rendering", () => {
 
     const handoff = renderTerminalHandoff(state);
 
-    expect(handoff).toContain("Target branch: refs/heads/main");
-    expect(handoff).toContain("Last proven published head: superseded-head");
+    expect(handoff).toContain("- Branch: `refs/heads/main`");
     expect(handoff).toContain(
-      "intent intent-unresolved has no durable settlement; target write outcome is uncertain.",
+      "- Last proven published head: `superseded-head`",
+    );
+    expect(handoff).toContain(
+      "Not verified: The outcome of 1 publication attempt is uncertain.",
     );
   });
 
@@ -256,7 +292,7 @@ describe("terminal handoff rendering", () => {
     };
 
     expect(renderTerminalHandoff(state)).toContain(
-      "Last proven published head: superseded-head",
+      "- Last proven published head: `superseded-head`",
     );
   });
 
@@ -273,13 +309,13 @@ describe("terminal handoff rendering", () => {
 
     const handoff = renderTerminalHandoff(state);
 
-    expect(handoff).toContain("first-stream · satisfaction receipt · base-sha");
+    expect(handoff).toContain("- Delivered: `first-stream`");
     expect(handoff).toContain(
-      "Last proven published head: base-sha (no ref advancement is proven)",
+      "- Last proven published head: `base-sha (no ref advancement is proven)`",
     );
   });
 
-  it("reports retained source candidates without receipts as unpublished", () => {
+  it("reports undelivered workstreams without exposing retained candidate identities", () => {
     const state = terminalState("incomplete");
     addPublishedSource(
       state,
@@ -301,14 +337,10 @@ describe("terminal handoff rendering", () => {
 
     const handoff = renderTerminalHandoff(state);
 
-    expect(handoff).toContain("first-stream · publication receipt");
-    expect(handoff).toContain("Source workstreams proven delivered:");
-    expect(handoff).toContain(
-      "source:second-stream · candidate:candidate-unpublished · unpublished / not delivered (no publication or satisfaction receipt)",
-    );
-    expect(handoff).not.toContain(
-      "source:first-stream · candidate:candidate-published · unpublished",
-    );
+    expect(handoff).toContain("- Delivered: `first-stream`");
+    expect(handoff).toContain("- Not delivered: `second-stream`");
+    expect(handoff).not.toContain("candidate-unpublished");
+    expect(handoff).not.toContain("candidate-published");
   });
 
   it("reports exhausted whole-plan review retries as the incomplete terminal blocker", () => {
@@ -322,16 +354,15 @@ describe("terminal handoff rendering", () => {
     const handoff = renderTerminalHandoff(state);
 
     expect(handoff).toContain(
-      "Terminal category: whole_plan_review_retry_exhausted",
+      "Whole-plan review could not complete after 3 attempts.",
     );
     expect(handoff).toContain(
-      "Terminal reason: Whole-plan review retry exhausted after 3 attempts.",
+      "Whole-plan review exhausted 3 attempts: first retry failed",
     );
-    expect(handoff).toContain("whole-plan review retry · third retry failed");
-    expect(handoff).toContain("whole-plan review retry · first retry failed");
+    expect(handoff).not.toContain("third retry failed");
   });
 
-  it("includes every cleanup-owned workspace class exactly once", () => {
+  it("hides cleanup-owned workspace locations behind durable inspection", () => {
     const state = terminalState("incomplete");
     state.candidates["candidate-first"] = candidate("candidate-first");
     state.candidates["candidate-history"] = candidate("candidate-history");
@@ -390,10 +421,13 @@ describe("terminal handoff rendering", () => {
 
     const handoff = renderTerminalHandoff(state);
 
-    expect(handoff).toContain(candidatePath);
-    expect(handoff.match(new RegExp(candidatePath, "g"))).toHaveLength(1);
-    expect(handoff).toContain("/retained/publication-staging");
-    expect(handoff).toContain(satisfactionPath);
+    expect(handoff).not.toContain(candidatePath);
+    expect(handoff).not.toContain("/retained/publication-staging");
+    expect(handoff).not.toContain(satisfactionPath);
+    expect(handoff).toContain(
+      "Detailed evidence and owned resources remain retained",
+    );
+    expect(handoff).toContain("`/implement inspect run-1`");
   });
 
   it("redacts released workspace paths from completed deterministic excerpts", () => {
@@ -483,8 +517,8 @@ describe("terminal handoff rendering", () => {
     expect(handoff.startsWith("Accepted handoff.\n\n## Delivery receipt")).toBe(
       true,
     );
-    expect(handoff).toContain("passed");
-    expect(handoff).toContain("[released workspace]");
+    expect(handoff).not.toContain("passed");
+    expect(handoff).not.toContain("[released workspace]");
     expect(handoff).not.toContain(candidatePath);
     expect(handoff).not.toContain("/released/publication-staging");
     expect(handoff).not.toContain(satisfactionPath);
@@ -511,12 +545,14 @@ describe("terminal handoff rendering", () => {
 
     const handoff = renderTerminalHandoff(state);
 
-    expect(handoff).toContain("Last proven published head: published-second");
-    expect(handoff.indexOf("first-stream · publication receipt")).toBeLessThan(
-      handoff.indexOf("second-stream · publication receipt"),
+    expect(handoff).toContain(
+      "- Last proven published head: `published-second`",
     );
-    expect(handoff.indexOf("source-a · open")).toBeLessThan(
-      handoff.indexOf("source-z · open"),
+    expect(handoff.indexOf("`first-stream`, `second-stream`")).toBeGreaterThan(
+      -1,
+    );
+    expect(handoff.indexOf("earlier by id")).toBeLessThan(
+      handoff.indexOf("later by id"),
     );
   });
 
@@ -551,12 +587,10 @@ describe("terminal handoff rendering", () => {
 
     expect(first).toBe(second);
     expect(JSON.stringify(state)).toBe(before);
-    expect(first).toContain(
-      "Source workstreams proven delivered: none recorded",
-    );
+    expect(first).toContain("- Delivered: None.");
     expect(first.length).toBeLessThanOrEqual(12_000);
     expect(first).toContain("…");
-    expect(first).toContain("more retained");
+    expect(first).not.toContain("candidate-0");
     expect(first).toContain("/implement inspect run-1");
     expect(first).toContain("/implement cleanup run-1");
   });

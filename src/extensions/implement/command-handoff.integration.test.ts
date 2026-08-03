@@ -77,15 +77,18 @@ describe("/implement terminal handoff lifecycle", () => {
       expect(fixture.messages[0]).toMatchObject({
         message: {
           customType: "pipkin.implement.terminal-handoff",
-          display: true,
-          content: expect.stringContaining(scenario.draft),
+          data: {
+            phase: "completed",
+            runId: state.run.id,
+            text: expect.stringContaining(scenario.draft),
+          },
         },
-        options: { triggerTurn: true },
+        options: undefined,
       });
       expect(
         (fixture.messages[0]!.message as { content: string }).content,
       ).toContain(
-        `Material final residual whole-plan findings: ${scenario.residual ? "yes" : "no"}`,
+        `- Residual findings: ${scenario.residual ? "1 material finding retained." : "None."}`,
       );
       mocks.startRun.mockReset();
     }
@@ -109,30 +112,23 @@ describe("/implement terminal handoff lifecycle", () => {
       const message = fixture.messages[0]!.message as { content: string };
       expect(message).toMatchObject({
         customType: "pipkin.implement.terminal-handoff",
-        display: true,
+        data: { phase: state.phase, runId: state.run.id },
       });
-      expect(message.content).toContain("first-stream · satisfaction receipt");
-      expect(message.content).toContain(
-        "source:second-stream · candidate:candidate-unpublished · unpublished / not delivered",
-      );
-      expect(message.content).not.toContain(
-        "source:first-stream · candidate:candidate-first · unpublished",
-      );
+      expect(message.content).toContain("- Delivered: `first-stream`");
+      expect(message.content).toContain("- Not delivered: `second-stream`");
+      expect(message.content).not.toContain("candidate-unpublished");
+      expect(message.content).not.toContain("candidate-first");
       expect(message.content).toContain(`/implement inspect ${state.run.id}`);
       expect(message.content).toContain(`/implement cleanup ${state.run.id}`);
       if (state.phase === "failed") {
-        expect(message.content).toContain("Terminal category: interrupted");
+        expect(message.content).toContain("Stopped with retained resources.");
       }
       mocks.startRun.mockReset();
     }
   });
 
   it("captures only persisted completion, cleans busy resources, and delivers the immutable handoff after settle", async () => {
-    const fixture = commandFixture({
-      sendMessage(message, options) {
-        fixture.messages.push({ message, options });
-      },
-    });
+    const fixture = commandFixture();
     const store = await completedSchedulerStore("Persisted reviewer handoff.");
     const calls: string[] = [];
     let actor: SchedulerActor | undefined;
@@ -188,7 +184,7 @@ describe("/implement terminal handoff lifecycle", () => {
     expect(incompleteStore.read().phase).toBe("incomplete");
     expect(
       (incompleteFixture.messages[0]!.message as { content: string }).content,
-    ).toContain("Implement run run-1 · incomplete");
+    ).toContain("The run is incomplete.");
 
     mocks.startRun.mockReset();
     const stoppedFixture = commandFixture();
@@ -209,23 +205,25 @@ describe("/implement terminal handoff lifecycle", () => {
     const stoppedHandoff = stoppedFixture.messages[0]!.message as {
       content: string;
     };
-    expect(stoppedHandoff.content).toContain("Terminal category: interrupted");
+    expect(stoppedHandoff.content).toContain(
+      "Session interrupted with retained evidence.",
+    );
     expect(stoppedHandoff.content).toContain("/implement inspect run-1");
     expect(stoppedHandoff.content).toContain("/implement cleanup run-1");
   });
 
-  it("retains a failed completed send through cleanup, blocks starts, and retries once settled", async () => {
+  it("retains a failed completed append through cleanup, blocks starts, and retries once settled", async () => {
     const state = completedState("Approved handoff.", false);
     const calls: string[] = [];
     let sendAttempts = 0;
     const fixture = commandFixture({
-      sendMessage(message, options) {
-        calls.push("send");
+      appendEntry(customType, data) {
+        calls.push("append");
         sendAttempts += 1;
         if (sendAttempts === 1) {
           throw new Error("session unavailable");
         }
-        fixture.messages.push({ message, options });
+        fixture.messages.push(entryRecord(customType, data));
       },
     });
     const run = activeRun(state, calls);
@@ -242,7 +240,7 @@ describe("/implement terminal handoff lifecycle", () => {
     options!.onTransition?.(state, completedEvent());
     options!.onCompleted?.(run as CompletedRunResources);
     await vi.waitFor(() =>
-      expect(calls).toEqual(["send", "resources", "lease"]),
+      expect(calls).toEqual(["append", "resources", "lease"]),
     );
 
     await fixture.command.handler("another-plan.md", fixture.idle);
@@ -257,7 +255,7 @@ describe("/implement terminal handoff lifecycle", () => {
 
     await fixture.settle(true);
     await fixture.settle(true);
-    expect(calls).toEqual(["send", "resources", "lease", "send"]);
+    expect(calls).toEqual(["append", "resources", "lease", "append"]);
     expect(fixture.messages).toHaveLength(1);
 
     await fixture.command.handler("another-plan.md", fixture.idle);
@@ -268,9 +266,9 @@ describe("/implement terminal handoff lifecycle", () => {
     const state = completedState("Approved despite cleanup failure.", false);
     const calls: string[] = [];
     const fixture = commandFixture({
-      sendMessage(message, options) {
-        calls.push("send");
-        fixture.messages.push({ message, options });
+      appendEntry(customType, data) {
+        calls.push("append");
+        fixture.messages.push(entryRecord(customType, data));
       },
     });
     const run = activeRun(state, calls, true);
@@ -288,7 +286,7 @@ describe("/implement terminal handoff lifecycle", () => {
     options!.onTransition?.(state, completedEvent());
     options!.onCompleted?.(run as CompletedRunResources);
     await vi.waitFor(() =>
-      expect(calls).toEqual(["send", "resources", "lease"]),
+      expect(calls).toEqual(["append", "resources", "lease"]),
     );
 
     expect(fixture.messages).toHaveLength(1);
@@ -332,16 +330,16 @@ describe("/implement terminal handoff lifecycle", () => {
 });
 
 function commandFixture(options?: {
-  sendMessage?: (message: unknown, options: unknown) => void;
+  appendEntry?: (customType: string, data: unknown) => void;
 }) {
   const handlers = new Map<string, EventHandler>();
   const messages: Message[] = [];
   const notifications: string[] = [];
   let command: Command | undefined;
-  const sendMessage =
-    options?.sendMessage ??
-    ((message: unknown, messageOptions: unknown) => {
-      messages.push({ message, options: messageOptions });
+  const appendEntry =
+    options?.appendEntry ??
+    ((customType: string, data: unknown) => {
+      messages.push(entryRecord(customType, data));
     });
   const pi = {
     on(event: string, handler: EventHandler) {
@@ -350,7 +348,10 @@ function commandFixture(options?: {
     registerCommand(_name: string, next: Command) {
       command = next;
     },
-    sendMessage,
+    appendEntry,
+    sendMessage() {
+      throw new Error("Terminal handoffs must not enter agent context.");
+    },
   };
   const context = (idle: boolean) => ({
     cwd: "/repo",
@@ -373,6 +374,14 @@ function commandFixture(options?: {
     shutdown: async () => {
       await handlers.get("session_shutdown")!({}, context(true));
     },
+  };
+}
+
+function entryRecord(customType: string, data: unknown): Message {
+  const content = (data as { text?: unknown })?.text;
+  return {
+    message: { customType, data, content },
+    options: undefined,
   };
 }
 
