@@ -1,10 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-  addExchange,
-  clearHistory,
-  getHistory,
-  getSessionKey,
-} from "./state.js";
+import { addExchange, getHistory, getSessionKey } from "./state.js";
 import { buildPrompt } from "./prompt.js";
 import { completeText } from "#lib/complete";
 import { BtwPanel } from "./panel.js";
@@ -94,7 +89,6 @@ export function registerBtwCommand(pi: ExtensionAPI): void {
           },
           abortController,
         );
-        panel.onClearHistory = () => clearHistory(sessionKey);
         active = { abort: () => abortController.abort(), close };
 
         const run = async () => {

@@ -102,6 +102,7 @@ export function immutableInspection(
 export function chronologicalInspectionRecords(
   messages: readonly InspectionMessage[],
   activity: readonly InspectionActivity[],
+  additional: readonly InspectionRecord[] = [],
 ): InspectionRecord[] {
   const records: InspectionRecord[] = [
     ...messages.flatMap((message) => {
@@ -123,6 +124,7 @@ export function chronologicalInspectionRecords(
       ];
     }),
     ...activity,
+    ...additional,
   ];
   return records
     .map((record, index) => ({ record, index }))
@@ -133,6 +135,29 @@ export function chronologicalInspectionRecords(
         ) || left.index - right.index,
     )
     .map(({ record }) => record);
+}
+
+export function projectFinalInspectionRecord(
+  value: unknown,
+  timestamp?: string,
+): InspectionRecord | undefined {
+  let serialized: string | undefined;
+  try {
+    serialized =
+      typeof value === "string" ? value : (JSON.stringify(value) ?? undefined);
+  } catch {
+    return undefined;
+  }
+  const text = serialized.replace(/\p{C}/gu, " ").trim();
+  if (!text) {
+    return undefined;
+  }
+  return {
+    kind: "message",
+    role: "final",
+    text: truncateUtf8(text),
+    ...(timestamp === undefined ? {} : { timestamp }),
+  };
 }
 
 export function projectMessages(messages: readonly unknown[]): {

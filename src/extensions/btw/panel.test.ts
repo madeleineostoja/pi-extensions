@@ -51,7 +51,7 @@ describe("BtwPanel", () => {
     expect(lines.some((line) => line.includes("Status · thinking"))).toBe(true);
     expect(
       value.render(80).some((line) => line.includes("clear history")),
-    ).toBe(true);
+    ).toBe(false);
     expect(lines.every((line) => visibleWidth(line) <= 30)).toBe(true);
     expect(lines.join("\n")).not.toMatch(/[│╭╮╰╯]/u);
   });
@@ -71,15 +71,13 @@ describe("BtwPanel", () => {
     expect(current.some((line) => line.includes("Current answer"))).toBe(true);
   });
 
-  it("scrolls retained history and clears it without closing", () => {
+  it("scrolls retained history", () => {
     const value = panel({
       history: Array.from({ length: 8 }, (_, index) => ({
         question: `q${index}`,
         answer: `a${index}`,
       })),
     });
-    const clear = vi.fn();
-    value.value.onClearHistory = clear;
 
     expect(value.value.render(80).some((line) => line.includes("q0"))).toBe(
       false,
@@ -89,12 +87,6 @@ describe("BtwPanel", () => {
     }
     expect(value.value.render(80).some((line) => line.includes("q0"))).toBe(
       true,
-    );
-    value.value.handleInput("x");
-
-    expect(clear).toHaveBeenCalledOnce();
-    expect(value.value.render(80).some((line) => line.includes("q0"))).toBe(
-      false,
     );
   });
 

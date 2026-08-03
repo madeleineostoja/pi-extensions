@@ -34,8 +34,6 @@ class BtwContent implements Component {
 }
 
 export class BtwPanel implements Component {
-  onClearHistory?: () => void;
-
   private readonly panel: Panel;
   private closed = false;
   private lastWidth = 80;
@@ -55,7 +53,7 @@ export class BtwPanel implements Component {
       theme,
       title: "/btw",
       child: new BtwContent(this),
-      footer: "esc/q abort or close · x clear history · ↑↓/Pg/Home/End scroll",
+      footer: "esc/q abort or close · ↑↓/Pg/Home/End scroll",
     });
   }
 
@@ -90,12 +88,6 @@ export class BtwPanel implements Component {
   handleInput(data: string): void {
     if (matchesKey(data, "escape") || matchesKey(data, "q")) {
       this.close();
-      return;
-    }
-    if (matchesKey(data, "x")) {
-      this.state = { ...this.state, history: [], scrollOffset: 0 };
-      this.onClearHistory?.();
-      this.tui.requestRender();
       return;
     }
     const maxScroll = Math.max(

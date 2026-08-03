@@ -111,25 +111,17 @@ export function renderActivity(
   const lines = [
     theme.bold(truncateToWidth(heading, contentWidth, "…", false)),
   ];
-  const budget = recordsForBudget(records);
+  const primaryRecords = recordsForBudget(records).slice(
+    0,
+    ACTIVITY_BODY_LINE_LIMIT,
+  );
   const rendered = new Set<string>();
-  let bodyLines = 0;
-  for (let index = 0; index < budget.records.length; index += 1) {
-    if (bodyLines >= ACTIVITY_BODY_LINE_LIMIT) {
-      break;
-    }
-    const record = budget.records[index];
+  let detailLinesRemaining = ACTIVITY_BODY_LINE_LIMIT - primaryRecords.length;
+  for (const record of primaryRecords) {
     const depth = depthFor(record, records);
     lines.push(recordLine(record, depth, contentWidth, theme, now));
     rendered.add(record.key);
-    bodyLines += 1;
-    const protectedRemaining = budget.records
-      .slice(index + 1)
-      .filter((candidate) => budget.protected.has(candidate.key)).length;
-    if (
-      record.detail &&
-      ACTIVITY_BODY_LINE_LIMIT - bodyLines > protectedRemaining
-    ) {
+    if (record.detail && detailLinesRemaining > 0) {
       const prefix = `${"  ".repeat(Math.min(depth + 1, 3))}  `;
       lines.push(
         truncateToWidth(
@@ -139,7 +131,7 @@ export function renderActivity(
           false,
         ),
       );
-      bodyLines += 1;
+      detailLinesRemaining -= 1;
     }
   }
   const overflow = records.length - rendered.size;
@@ -156,21 +148,16 @@ export function renderActivity(
   return lines.map((line) => truncateToWidth(line, contentWidth, "…", false));
 }
 
-function recordsForBudget(records: readonly StoredActivityRecord[]): {
-  records: StoredActivityRecord[];
-  protected: Set<string>;
-} {
+function recordsForBudget(
+  records: readonly StoredActivityRecord[],
+): StoredActivityRecord[] {
   const byKey = new Map(records.map((record) => [record.key, record]));
   const ordered: StoredActivityRecord[] = [];
-  const protectedKeys = new Set<string>();
   const included = new Set<string>();
-  const append = (record: StoredActivityRecord, protect: boolean) => {
+  const append = (record: StoredActivityRecord) => {
     if (!included.has(record.key)) {
       included.add(record.key);
       ordered.push(record);
-    }
-    if (protect) {
-      protectedKeys.add(record.key);
     }
   };
 
@@ -193,13 +180,13 @@ function recordsForBudget(records: readonly StoredActivityRecord[]): {
         : undefined;
     }
     for (const candidate of path.reverse().slice(-ACTIVITY_BODY_LINE_LIMIT)) {
-      append(candidate, true);
+      append(candidate);
     }
   }
   for (const record of records) {
-    append(record, false);
+    append(record);
   }
-  return { records: ordered, protected: protectedKeys };
+  return ordered;
 }
 
 function depthFor(

@@ -35,6 +35,7 @@ import {
 import {
   chronologicalInspectionRecords,
   immutableInspection,
+  projectFinalInspectionRecord,
   projectMessages,
   retainActivity,
   truncateUtf8,
@@ -1224,6 +1225,12 @@ export class SubagentRuntime {
       projected.activity,
       record.activity,
     );
+    const finalRecord = record.completion?.accepted
+      ? projectFinalInspectionRecord(
+          record.completion.payload,
+          record.completedAt,
+        )
+      : undefined;
     return immutableInspection({
       snapshot: projectSnapshot(record),
       messages: projected.messages,
@@ -1231,6 +1238,7 @@ export class SubagentRuntime {
       records: chronologicalInspectionRecords(
         projected.messages,
         retained.activity,
+        finalRecord ? [finalRecord] : [],
       ),
       omittedMessages: projected.omittedMessages,
       omittedActivity:
@@ -1977,6 +1985,12 @@ export class SubagentRuntime {
         projected.activity,
         record.activity,
       );
+      const finalRecord = record.completion?.accepted
+        ? projectFinalInspectionRecord(
+            record.completion.payload,
+            record.completedAt,
+          )
+        : undefined;
       record.retainedInspection = immutableInspection({
         snapshot: projectSnapshot(record),
         messages: projected.messages,
@@ -1984,6 +1998,7 @@ export class SubagentRuntime {
         records: chronologicalInspectionRecords(
           projected.messages,
           retainedActivity.activity,
+          finalRecord ? [finalRecord] : [],
         ),
         omittedMessages: projected.omittedMessages,
         omittedActivity:

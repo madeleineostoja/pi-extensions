@@ -7,7 +7,7 @@ import type {
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { completeText } from "#lib/complete";
 import { registerBtwCommand } from "./command.js";
-import { clearHistory, getHistory, getSessionKey } from "./state.js";
+import { getHistory } from "./state.js";
 
 const completeTextMock = vi.mocked(completeText);
 
@@ -65,13 +65,17 @@ function fixture() {
   return { command: commands.get("btw")!, handlers };
 }
 
+let nextSession = 1;
+
 function context(
   custom: ReturnType<typeof customFixture>,
   auth?: Promise<unknown>,
 ) {
   const notify = vi.fn();
+  const sessionKey = `/tmp/btw-session-${nextSession++}.json`;
   return {
     notify,
+    sessionKey,
     value: {
       mode: "tui",
       model: {
@@ -93,8 +97,8 @@ function context(
           thinkingLevel: "off",
           model: null,
         }),
-        getSessionFile: () => "/tmp/btw-session.json",
-        getSessionId: () => "btw-session",
+        getSessionFile: () => sessionKey,
+        getSessionId: () => sessionKey,
       },
     } as unknown as ExtensionCommandContext,
   };
@@ -107,12 +111,6 @@ async function flush() {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  clearHistory(
-    getSessionKey({
-      getSessionFile: () => "/tmp/btw-session.json",
-      getSessionId: () => "btw-session",
-    }),
-  );
 });
 
 afterEach(() => vi.resetAllMocks());
@@ -212,7 +210,7 @@ describe("/btw", () => {
   it("keeps successful exchanges only in the session-keyed side thread", async () => {
     const { command } = fixture();
     const custom = customFixture();
-    const { value } = context(custom);
+    const { value, sessionKey } = context(custom);
     completeTextMock.mockResolvedValue({
       ok: true,
       text: "answer",
@@ -225,7 +223,7 @@ describe("/btw", () => {
     custom.close();
     await running;
 
-    expect(getHistory("/tmp/btw-session.json")).toEqual([
+    expect(getHistory(sessionKey)).toEqual([
       { question: "question", answer: "answer" },
     ]);
   });
@@ -233,7 +231,7 @@ describe("/btw", () => {
   it("cancels and rejects stale completion after session replacement", async () => {
     const { command, handlers } = fixture();
     const custom = customFixture();
-    const { value } = context(custom);
+    const { value, sessionKey } = context(custom);
     let resolveCompletion: (value: any) => void = () => {};
     completeTextMock.mockImplementation(
       () =>
@@ -248,7 +246,7 @@ describe("/btw", () => {
     resolveCompletion({ ok: true, text: "stale", stopReason: "stop" });
     await running;
 
-    expect(getHistory("/tmp/btw-session.json")).toEqual([]);
+    expect(getHistory(sessionKey)).toEqual([]);
     expect(
       custom.component?.render(80).some((line) => line.includes("stale")),
     ).toBe(false);
@@ -257,7 +255,7 @@ describe("/btw", () => {
   it("cancels and rejects stale completion after session shutdown", async () => {
     const { command, handlers } = fixture();
     const custom = customFixture();
-    const { value } = context(custom);
+    const { value, sessionKey } = context(custom);
     let resolveCompletion: (value: any) => void = () => {};
     completeTextMock.mockImplementation(
       () =>
@@ -272,7 +270,7 @@ describe("/btw", () => {
     resolveCompletion({ ok: true, text: "stale", stopReason: "stop" });
     await running;
 
-    expect(getHistory("/tmp/btw-session.json")).toEqual([]);
+    expect(getHistory(sessionKey)).toEqual([]);
     expect(
       custom.component?.render(80).some((line) => line.includes("stale")),
     ).toBe(false);

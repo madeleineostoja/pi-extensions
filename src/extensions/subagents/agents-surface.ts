@@ -157,7 +157,8 @@ export class AgentsSurface implements Component {
   }
 
   #entries(): Entry[] {
-    const flattened: Entry[] = [];
+    const active: Entry[] = [];
+    const retained: Entry[] = [];
     for (const [runtimeIndex, runtime] of this.runtimes.entries()) {
       const entries = runtime
         .snapshots({ includeNested: true })
@@ -169,9 +170,7 @@ export class AgentsSurface implements Component {
             value: `${runtimeIndex}:${key}`,
             snapshot,
             depth: 0,
-            section: terminal.has(snapshot.status)
-              ? ("retained" as const)
-              : ("active" as const),
+            section: "active" as const,
           };
         });
       const byId = new Map(entries.map((entry) => [entry.snapshot.id, entry]));
@@ -188,27 +187,35 @@ export class AgentsSurface implements Component {
         }
       }
       const seen = new Set<Entry>();
-      const add = (entry: Entry, depth: number) => {
-        if (seen.has(entry)) {
-          return;
-        }
-        seen.add(entry);
-        flattened.push({ ...entry, depth });
-        for (const child of children.get(entry.snapshot.id) ?? []) {
-          add(child, depth + 1);
-        }
+      const addGroup = (root: Entry) => {
+        const group: Entry[] = [];
+        const add = (entry: Entry, depth: number) => {
+          if (seen.has(entry)) {
+            return;
+          }
+          seen.add(entry);
+          group.push({ ...entry, depth });
+          for (const child of children.get(entry.snapshot.id) ?? []) {
+            add(child, depth + 1);
+          }
+        };
+        add(root, 0);
+        const section = group.some(
+          (entry) => !terminal.has(entry.snapshot.status),
+        )
+          ? ("active" as const)
+          : ("retained" as const);
+        const target = section === "active" ? active : retained;
+        target.push(...group.map((entry) => ({ ...entry, section })));
       };
       for (const root of roots) {
-        add(root, 0);
+        addGroup(root);
       }
       for (const entry of entries) {
-        add(entry, 0);
+        addGroup(entry);
       }
     }
-    return [
-      ...flattened.filter((entry) => entry.section === "active"),
-      ...flattened.filter((entry) => entry.section === "retained"),
-    ];
+    return [...active, ...retained];
   }
 
   #replaceRoster(

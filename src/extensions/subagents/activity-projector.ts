@@ -1,4 +1,5 @@
 import {
+  ACTIVITY_TEXT_BYTE_LIMIT,
   createActivityPublisher,
   type ActivityPublisher,
   type ActivityState,
@@ -103,6 +104,10 @@ function agentLabel(snapshot: RuntimeSnapshot): string {
 }
 
 function activityTitle(snapshot: RuntimeSnapshot): string {
+  const description = bounded(snapshot.description, 240);
+  if (description) {
+    return description;
+  }
   if (typeof snapshot.owner === "object" && snapshot.owner.kind === "nested") {
     return "Nested agent";
   }
@@ -120,8 +125,20 @@ function timestamp(value: string | undefined): number | undefined {
 }
 
 function bounded(value: string, length: number): string {
-  const compact = value.replace(/\s+/g, " ").trim();
-  return compact.length <= length
-    ? compact
-    : `${compact.slice(0, length - 1)}…`;
+  const compact = value.replace(/\p{C}/gu, " ").replace(/\s+/g, " ").trim();
+  const characters = Array.from(compact);
+  if (
+    characters.length <= length &&
+    Buffer.byteLength(compact) <= ACTIVITY_TEXT_BYTE_LIMIT
+  ) {
+    return compact;
+  }
+  const retained = characters.slice(0, Math.max(0, length - 1));
+  while (
+    retained.length > 0 &&
+    Buffer.byteLength(`${retained.join("")}…`) > ACTIVITY_TEXT_BYTE_LIMIT
+  ) {
+    retained.pop();
+  }
+  return `${retained.join("")}…`;
 }

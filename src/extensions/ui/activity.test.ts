@@ -254,7 +254,9 @@ describe("Activity", () => {
     const lines = renderActivity(store.records, 24, theme, now);
     expect(lines.join("\n")).toContain("settled");
     expect(lines.join("\n")).toContain("urgent");
-    expect(lines).toContain("… 4 more");
+    expect(lines.join("\n")).not.toContain("ancestor detail");
+    expect(lines.join("\n")).not.toContain("urgent detail");
+    expect(lines).toContain("… 2 more");
     expect(lines).toHaveLength(10);
     expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
   });

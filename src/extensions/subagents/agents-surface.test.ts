@@ -250,12 +250,16 @@ describe("AgentsSurface roster", () => {
     ]).surface;
     const text = plain(rendered(treeSurface));
 
-    expect(text.indexOf("parent")).toBeLessThan(text.indexOf("active grand"));
+    expect(text.indexOf("parent")).toBeLessThan(text.indexOf("settled child"));
+    expect(text.indexOf("settled child")).toBeLessThan(
+      text.indexOf("active grand"),
+    );
     expect(text.indexOf("active grand")).toBeLessThan(
       text.indexOf("unrelated"),
     );
+    expect(text).toContain("  ↳ ✓ General · settled child");
     expect(text).toContain("    ↳ ● General · active grand");
-    expect(text).toContain("Retained ·   ↳ ✓ General");
+    expect(text).not.toContain("Retained ·   ↳ ✓ General");
   });
 
   it("keeps stable roster values and falls back to the nearest old position on roster and inspector loss", () => {

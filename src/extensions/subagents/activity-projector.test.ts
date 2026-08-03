@@ -5,7 +5,7 @@ import { ActivityStore } from "../ui/activity-store.js";
 import { SubagentActivityProjector } from "./activity-projector.js";
 
 describe("Subagent Activity projector", () => {
-  it("does not project the agent description or prompt", () => {
+  it("projects the bounded task description while retaining the agent type", () => {
     const events = createEventBus();
     const store = new ActivityStore();
     events.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
@@ -15,7 +15,7 @@ describe("Subagent Activity projector", () => {
           id: "agent-1",
           owner: "public-tool",
           type: "Explore",
-          description: "Inspect the secret prompt text",
+          description: "Inspect the code\ncarefully",
           rosterVisibility: "show",
           status: "running",
           timestamps: {
@@ -33,8 +33,7 @@ describe("Subagent Activity projector", () => {
     expect(store.records).toHaveLength(1);
     expect(store.records[0]).toMatchObject({
       label: "Agent · Explore",
-      title: "Explore agent",
+      title: "Inspect the code carefully",
     });
-    expect(JSON.stringify(store.records)).not.toContain("secret prompt");
   });
 });

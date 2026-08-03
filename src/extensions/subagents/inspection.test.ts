@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chronologicalInspectionRecords,
+  projectFinalInspectionRecord,
   projectMessages,
   truncateUtf8,
 } from "./inspection.js";
@@ -20,6 +21,25 @@ describe("truncateUtf8", () => {
 });
 
 describe("inspection projection", () => {
+  it("projects bounded structured managed results as final records", () => {
+    const record = projectFinalInspectionRecord(
+      { summary: `done\u001b${"x".repeat(3_000)}` },
+      "2024-01-01T00:00:00.000Z",
+    );
+
+    expect(record).toMatchObject({
+      kind: "message",
+      role: "final",
+      timestamp: "2024-01-01T00:00:00.000Z",
+    });
+    expect(record?.kind === "message" ? record.text : "").not.toContain(
+      "\u001b",
+    );
+    expect(
+      Buffer.byteLength(record?.kind === "message" ? record.text : ""),
+    ).toBeLessThanOrEqual(2048);
+  });
+
   it("retains only structured sanitized arguments needed for historical rendering", () => {
     const projected = projectMessages([
       {
