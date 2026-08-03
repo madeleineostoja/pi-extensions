@@ -59,6 +59,17 @@ describe("whole-plan and repair prompts", () => {
     expect(anchored).toContain("run-base..current-repair");
     expect(anchored).toContain("Latest handoff draft");
     expect(anchored).toContain("Preserve unaffected facts");
+    for (const prompt of [initial, anchored]) {
+      expect(prompt).toContain("handoff transfers the entire Implement run");
+      expect(prompt).toContain("cumulative verification evidence");
+      expect(prompt).toContain(
+        "do not add a gap solely because this read-only reviewer did not rerun an already evidenced check",
+      );
+      expect(prompt).toContain("orchestrator-enforced preconditions");
+      expect(prompt).toContain(
+        "report such a finding only when the candidate context explicitly reports an integrity failure",
+      );
+    }
     expect(repair).toContain("run-base..current-repair");
   });
 
@@ -180,7 +191,7 @@ describe("whole-plan and repair prompts", () => {
     );
     expect(overall).toContain("do not impose an item count");
     expect(overall).toContain(
-      "a verification gap is not itself a residual finding",
+      "A verification gap is not itself a residual finding",
     );
     expect(overall).not.toContain("Continuation context");
   });
