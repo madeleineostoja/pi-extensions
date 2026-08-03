@@ -56,7 +56,7 @@ export function formatStatus(state: RunState): string {
     ...Object.values(state.workstreams.overall).map(
       (workstream) => `${workstream.repairId}: ${workstream.phase}`,
     ),
-  ].join(", ");
+  ];
   const openFindingRecords = Object.values(state.findings).filter(
     (finding) => finding.status === "open",
   );
@@ -79,9 +79,9 @@ export function formatStatus(state: RunState): string {
       .filter((workstream) => workstream.phase === "failed")
       .map((workstream) => `${workstream.repairId}: failed`),
   ];
-  const activeProcesses = Object.values(state.processLeases)
-    .map((lease) => `${lease.kind}:${lease.id}`)
-    .join(", ");
+  const activeProcesses = Object.values(state.processLeases).map(
+    (lease) => `${lease.kind}:${lease.id}`,
+  );
   const candidateContext = Object.values(state.candidates).map((candidate) => {
     const review =
       state.reviews[
@@ -132,60 +132,87 @@ export function formatStatus(state: RunState): string {
       : Object.values(state.failures)
           .filter((failure) => failure.category === "publication_uncertain")
           .at(-1)?.evidence;
-  return [
-    `Run: ${state.run.id}`,
-    `Run start target: ${state.run.checkout.startHead}`,
-    `Phase: ${state.phase}`,
-    `Workstreams: ${phases || "none"}`,
-    `Active processes: ${activeProcesses || "none"}`,
-    `Open findings: ${openFindings}`,
-    ...(finalResiduals.length > 0
-      ? [`Final residual findings: ${finalResiduals.length}`]
-      : []),
-    ...(openFindingRecords.length > 0
-      ? [
-          `Open finding evidence: ${openFindingRecords
-            .map((finding) => `${finding.id} · ${finding.evidence}`)
-            .join("; ")}`,
-        ]
-      : []),
-    ...(terminalLanes.length > 0
-      ? [`Unavailable lanes: ${terminalLanes.join(", ")}`]
-      : []),
-    `Active revisions: ${["failed", "incomplete"].includes(state.phase) ? 0 : activeRevisions.length}`,
+  const sections = [
+    [
+      "Status:",
+      `Run: ${state.run.id}`,
+      `Run start target: ${state.run.checkout.startHead}`,
+      `Phase: ${state.phase}`,
+      `Active revisions: ${["failed", "incomplete"].includes(state.phase) ? 0 : activeRevisions.length}`,
+      ...(terminalLanes.length > 0
+        ? [`Unavailable lanes: ${terminalLanes.join(", ")}`]
+        : []),
+    ],
+    [
+      "Workstreams:",
+      ...(phases.length > 0 ? phases.map((phase) => `- ${phase}`) : ["- none"]),
+    ],
+    [
+      "Active processes:",
+      ...(activeProcesses.length > 0
+        ? activeProcesses.map((process) => `- ${process}`)
+        : ["- none"]),
+    ],
+    [
+      `Open findings: ${openFindings}`,
+      ...(finalResiduals.length > 0
+        ? [`Final residual findings: ${finalResiduals.length}`]
+        : []),
+      ...openFindingRecords.map(
+        (finding) => `- ${finding.id}: ${finding.evidence}`,
+      ),
+    ],
     ...(candidateContext.length > 0
-      ? [`Candidates: ${candidateContext.join("; ")}`]
+      ? [["Candidates:", ...candidateContext.map((item) => `- ${item}`)]]
       : []),
     ...(reconciliation.length > 0
-      ? [`Reconciliation: ${reconciliation.join("; ")}`]
+      ? [["Reconciliation:", ...reconciliation.map((item) => `- ${item}`)]]
       : []),
-    ...(latestFailure?.category === "target_moved"
-      ? [`Moved target: ${latestFailure.targetEvidence ?? "observed"}`]
-      : []),
-    ...(latestFailure
+    ...(latestFailure || state.failure
       ? [
-          `Latest failure: ${latestFailure.category} · ${latestFailure.assignment}`,
-          `Failure evidence: ${latestFailure.evidence}`,
+          [
+            "Failures:",
+            ...(latestFailure?.category === "target_moved"
+              ? [`Moved target: ${latestFailure.targetEvidence ?? "observed"}`]
+              : []),
+            ...(latestFailure
+              ? [
+                  `Latest failure: ${latestFailure.category} · ${latestFailure.assignment}`,
+                  `Failure evidence: ${latestFailure.evidence}`,
+                ]
+              : []),
+            ...(state.failure
+              ? [
+                  `Failure: ${state.failure.category} · ${state.failure.reason}`,
+                  `Failure origin: ${state.failure.originPhase} at ${state.failure.at}`,
+                ]
+              : []),
+          ],
         ]
       : []),
-    `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted; ${Object.keys(state.publication.supersessions).length} superseded; ${Object.keys(state.publication.abandonments).length} abandoned`,
-    ...(satisfaction.length > 0
-      ? [`Satisfaction receipts: ${satisfaction.join("; ")}`]
-      : []),
-    ...(publication.length > 0
-      ? [`Publication intents: ${publication.join("; ")}`]
-      : []),
-    ...(publicationUncertainty
-      ? [`Publication uncertainty: ${publicationUncertainty}`]
-      : []),
-    `Debt: ${state.projectionDebt.length > 0 ? `projection debt ${state.projectionDebt.length}` : "none"}`,
-    ...(state.failure
-      ? [
-          `Failure: ${state.failure.category} · ${state.failure.reason}`,
-          `Failure origin: ${state.failure.originPhase} at ${state.failure.at}`,
-        ]
-      : []),
-  ].join("\n");
+    [
+      `Publication: ${Object.keys(state.publication.receipts).length}/${Object.keys(state.publication.intents).length} receipted; ${Object.keys(state.publication.supersessions).length} superseded; ${Object.keys(state.publication.abandonments).length} abandoned`,
+      ...(satisfaction.length > 0
+        ? [
+            "Satisfaction receipts:",
+            ...satisfaction.map((receipt) => `- ${receipt}`),
+          ]
+        : []),
+      ...(publication.length > 0
+        ? [
+            "Publication intents:",
+            ...publication.map((intent) => `- ${intent}`),
+          ]
+        : []),
+      ...(publicationUncertainty
+        ? [`Publication uncertainty: ${publicationUncertainty}`]
+        : []),
+    ],
+    [
+      `Debt: ${state.projectionDebt.length > 0 ? `projection debt ${state.projectionDebt.length}` : "none"}`,
+    ],
+  ];
+  return sections.map((section) => section.join("\n")).join("\n\n");
 }
 
 export function inspectRun(checkoutRoot: string, runId: string): string {
@@ -213,12 +240,15 @@ export function inspectRun(checkoutRoot: string, runId: string): string {
   const worktree = join(paths.worktrees, runId);
   return [
     formatStatus(state),
-    `State: ${join(path, "run-state.json")}`,
-    `Execution plan: ${join(path, "execution-plan.json")}`,
-    `Source corpus: ${sourceCorpusPath(path)}`,
-    `Artifacts: ${artifacts}${existsSync(artifacts) ? "" : " (not retained)"}`,
-    `Retained worktree: ${existsSync(worktree) ? worktree : "none"}`,
-  ].join("\n");
+    [
+      "Paths:",
+      `- State: ${join(path, "run-state.json")}`,
+      `- Execution plan: ${join(path, "execution-plan.json")}`,
+      `- Source corpus: ${sourceCorpusPath(path)}`,
+      `- Artifacts: ${artifacts}${existsSync(artifacts) ? "" : " (not retained)"}`,
+      `- Retained worktree: ${existsSync(worktree) ? worktree : "none"}`,
+    ].join("\n"),
+  ].join("\n\n");
 }
 
 export async function assertProspectiveRunPreflight(

@@ -4,6 +4,7 @@ import {
   truncateHead,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { inspectRun, listCheckoutRuns } from "./controls.js";
 import { ExecGitClient } from "./git.js";
@@ -45,6 +46,23 @@ export function registerImplementInspectionTool(pi: ExtensionAPI): void {
       const checkoutRoot = await new ExecGitClient(ctx.cwd).root();
       return inspectImplementRun(checkoutRoot, input);
     },
+    renderCall(args, theme) {
+      const target = args.runId ? ` ${args.runId}` : " retained runs";
+      return new Text(
+        `${theme.fg("toolTitle", theme.bold("inspect_implement_run"))}${theme.fg("muted", target)}`,
+        0,
+        0,
+      );
+    },
+    renderResult(result, options, theme, context) {
+      if (context.isError) {
+        return new Text(theme.fg("error", firstText(result.content)), 0, 0);
+      }
+      if (!options.expanded || options.isPartial) {
+        return new Container();
+      }
+      return new Text(theme.fg("toolOutput", firstText(result.content)), 0, 0);
+    },
   });
 }
 
@@ -71,6 +89,20 @@ export function inspectImplementRun(
       truncated: output.truncated,
     },
   };
+}
+
+function firstText(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "inspect_implement_run failed";
+  }
+  const text = content.find(
+    (block): block is { type: "text"; text: string } =>
+      typeof block === "object" &&
+      block !== null &&
+      (block as { type?: unknown }).type === "text" &&
+      typeof (block as { text?: unknown }).text === "string",
+  );
+  return text?.text ?? "inspect_implement_run failed";
 }
 
 export function formatRunList(checkoutRoot: string): string {

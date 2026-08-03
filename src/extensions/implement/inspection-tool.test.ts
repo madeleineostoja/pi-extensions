@@ -13,6 +13,7 @@ import {
   DEFAULT_MAX_LINES,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
+import { formatStatus } from "./controls.js";
 import { checkoutPaths } from "./store.js";
 import {
   createLifecycleFixture,
@@ -140,6 +141,89 @@ describe("inspect_implement_run", () => {
       runId: "run-1",
       truncated: false,
     });
+  });
+
+  it("structures finding evidence without changing its content", async () => {
+    const run = await fixture();
+    const state = run.store.read();
+    state.findings["finding-1"] = {
+      id: "finding-1",
+      candidateId: "candidate-1",
+      workstream: { kind: "source", id: "first-stream" },
+      scope: { kind: "source", id: "first-stream" },
+      summary: "Finding summary",
+      evidence: "Detailed finding evidence",
+      requiredChange: "Required change",
+      acceptanceCriteria: ["Expected behavior"],
+      origin: "initial",
+      introducedRound: 1,
+      status: "open",
+    };
+
+    const text = formatStatus(state);
+
+    expect(text).toContain("Workstreams:\n- first-stream:");
+    expect(text).toContain(
+      "Open findings: 1\n- finding-1: Detailed finding evidence",
+    );
+  });
+
+  it("renders a quiet collapsed row and the canonical result when expanded", async () => {
+    const run = await fixture();
+    const tool = inspectionTool();
+    const result = inspectImplementRun(run.root, { runId: "run-1" });
+    const theme = {
+      bold: (text: string) => text,
+      fg: (_color: string, text: string) => text,
+    };
+
+    expect(
+      tool
+        .renderCall({ runId: "run-1" }, theme, {})
+        .render(200)
+        .map((line: string) => line.trimEnd())
+        .join("\n"),
+    ).toBe("inspect_implement_run run-1");
+    expect(
+      tool
+        .renderResult(result, { expanded: false, isPartial: false }, theme, {
+          isError: false,
+        })
+        .render(200),
+    ).toEqual([]);
+    expect(
+      tool
+        .renderResult(result, { expanded: true, isPartial: false }, theme, {
+          isError: false,
+        })
+        .render(20_000)
+        .map((line: string) => line.trimEnd())
+        .join("\n"),
+    ).toBe(result.content[0].text);
+  });
+
+  it("keeps inspection errors visible while collapsed", () => {
+    const tool = inspectionTool();
+    const theme = {
+      bold: (text: string) => text,
+      fg: (_color: string, text: string) => text,
+    };
+    const text = tool
+      .renderResult(
+        {
+          content: [
+            { type: "text", text: "Run is unavailable or historical." },
+          ],
+        },
+        { expanded: false, isPartial: false },
+        theme,
+        { isError: true },
+      )
+      .render(200)
+      .map((line: string) => line.trimEnd())
+      .join("\n");
+
+    expect(text).toBe("Run is unavailable or historical.");
   });
 
   it("rejects symlinked retained runs through durable validation", async () => {
