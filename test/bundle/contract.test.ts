@@ -37,6 +37,7 @@ const expectedExtensions = [
   "./src/extensions/ui/index.ts",
   "./src/extensions/personality/index.ts",
   "./src/extensions/lsp/index.ts",
+  "./src/extensions/processes/index.ts",
   "./src/extensions/subagents/index.ts",
   "./src/extensions/implement/index.ts",
   "./src/extensions/reference/index.ts",
@@ -55,6 +56,9 @@ const expectedTools = {
   bash_outcome: "src/extensions/context/index.ts",
   context_recall: "src/extensions/context/index.ts",
   lsp: "src/extensions/lsp/index.ts",
+  start_process: "src/extensions/processes/index.ts",
+  get_process_result: "src/extensions/processes/index.ts",
+  stop_process: "src/extensions/processes/index.ts",
   Agent: "src/extensions/subagents/index.ts",
   get_subagent_result: "src/extensions/subagents/index.ts",
   steer_subagent: "src/extensions/subagents/index.ts",
@@ -563,7 +567,7 @@ describe("Pipkin bundle", () => {
       { setPipkinStatus },
       { createActivityPublisher },
       { bindSandboxHost },
-      { executeSandboxBash },
+      { executeSandboxBash, startSandboxManagedExecution },
       { getSubagentRuntime },
     ] = await Promise.all([
       import("#lib/config"),
@@ -583,6 +587,7 @@ describe("Pipkin bundle", () => {
     expect(createActivityPublisher).toBeTypeOf("function");
     expect(bindSandboxHost).toBeTypeOf("function");
     expect(executeSandboxBash).toBeTypeOf("function");
+    expect(startSandboxManagedExecution).toBeTypeOf("function");
     expect(getSubagentRuntime).toBeTypeOf("function");
     expect(snapshotGlobalSymbols()).toEqual(before);
   });

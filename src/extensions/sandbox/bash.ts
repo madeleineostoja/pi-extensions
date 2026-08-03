@@ -13,6 +13,11 @@ import {
 } from "./denial-observer.js";
 import type { SandboxPolicy } from "./policy.js";
 import { SANDBOX_EXECUTABLE, sandboxArguments } from "./seatbelt.js";
+import type {
+  SandboxExecutionLease,
+  SandboxExecutionTerminal,
+  SandboxManagedRequest,
+} from "./bash-capability.js";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const TERMINATION_WAIT_MS = 5_000;
@@ -32,6 +37,28 @@ type ActiveInvocation = Readonly<{
 }>;
 
 type BashExecution = Parameters<BashOperations["exec"]>[2];
+
+function managedEnvironment(request: SandboxManagedRequest): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.PI_SESSION_ID;
+  delete env.PI_SESSION_FILE;
+  delete env.PI_PROVIDER;
+  delete env.PI_MODEL;
+  delete env.PI_REASONING_LEVEL;
+  env.PI_SESSION_ID = request.ctx.sessionManager.getSessionId();
+  const sessionFile = request.ctx.sessionManager.getSessionFile();
+  if (sessionFile) {
+    env.PI_SESSION_FILE = sessionFile;
+  }
+  if (request.ctx.model) {
+    env.PI_PROVIDER = request.ctx.model.provider;
+    env.PI_MODEL = request.ctx.model.id;
+  }
+  if (request.ctx.thinkingLevel) {
+    env.PI_REASONING_LEVEL = request.ctx.thinkingLevel;
+  }
+  return env;
+}
 
 function timeoutMs(timeout: number | undefined): number | undefined {
   if (timeout === undefined) {
@@ -93,6 +120,9 @@ function appendLaunchDiagnostic(output: Buffer, data: Buffer): Buffer {
 
 export type SandboxBashRuntime = Readonly<{
   operations: BashOperations;
+  startManaged: (
+    request: SandboxManagedRequest,
+  ) => Promise<SandboxExecutionLease>;
   dispose: () => Promise<void>;
 }>;
 
@@ -117,6 +147,11 @@ export function createSandboxBashRuntime(
 ): SandboxBashRuntime {
   const local = createLocalBashOperations({ shellPath: options.shellPath });
   const active = new Set<ActiveInvocation>();
+  const managed = new Set<{
+    stop: (
+      termination: "stopped" | "shutdown",
+    ) => Promise<SandboxExecutionTerminal>;
+  }>();
   const supportedMac = options.supportedMac ?? process.platform === "darwin";
   let disposed = false;
   let disposing: Promise<void> | undefined;
@@ -384,6 +419,261 @@ export function createSandboxBashRuntime(
     },
   };
 
+  const startManaged = async (
+    request: SandboxManagedRequest,
+  ): Promise<SandboxExecutionLease> => {
+    if (disposed) {
+      throw new Error("Sandbox: Bash is shutting down.");
+    }
+    if (request.signal?.aborted) {
+      throw new Error("aborted");
+    }
+    if (supportedMac && options.enabled() && !options.policy) {
+      throw new Error(
+        options.unavailableReason ?? "Sandbox: Bash is unavailable.",
+      );
+    }
+    const shell = getShellConfig(options.shellPath);
+    const protectedLaunch = supportedMac && options.enabled();
+    const marker = protectedLaunch ? denialMarker() : undefined;
+    const shellArgs =
+      shell.commandTransport === "stdin"
+        ? shell.args
+        : [...shell.args, request.command];
+    const args = protectedLaunch
+      ? sandboxArguments({
+          policy: options.policy!,
+          shell: {
+            shell: shell.shell,
+            args: shell.commandTransport === "stdin" ? shell.args : ["-s"],
+          },
+          marker: marker!,
+        })
+      : shellArgs;
+    const executable = protectedLaunch
+      ? (options.sandboxExecutable ?? SANDBOX_EXECUTABLE)
+      : shell.shell;
+    let child: ChildProcess;
+    try {
+      child = (options.spawn ?? spawn)(executable, args, {
+        cwd: request.cwd,
+        detached: process.platform !== "win32",
+        env: managedEnvironment(request),
+        stdio: [
+          shell.commandTransport === "stdin" || protectedLaunch
+            ? "pipe"
+            : "ignore",
+          "pipe",
+          "pipe",
+        ],
+        windowsHide: true,
+      });
+    } catch (error) {
+      throw new Error(
+        `Sandbox: launch failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    let termination: "natural" | "stopped" | "shutdown" = "natural";
+    let settled = false;
+    let exited = false;
+    let streamsClosed = 0;
+    let outputComplete = true;
+    let drainTimer: NodeJS.Timeout | undefined;
+    let resolveTerminal: (terminal: SandboxExecutionTerminal) => void = () =>
+      undefined;
+    let groupSettlement: Promise<void> | undefined;
+    const completion = new Promise<SandboxExecutionTerminal>((resolve) => {
+      resolveTerminal = resolve;
+    });
+    let resolveLaunch: () => void = () => undefined;
+    let rejectLaunch: (error: Error) => void = () => undefined;
+    let launchConfirmed = false;
+    const launch = new Promise<void>((resolve, reject) => {
+      resolveLaunch = resolve;
+      rejectLaunch = reject;
+    });
+    const confirmLaunch = () => {
+      if (!launchConfirmed) {
+        launchConfirmed = true;
+        resolveLaunch();
+      }
+    };
+    let owner:
+      | {
+          stop: (
+            termination: "stopped" | "shutdown",
+          ) => Promise<SandboxExecutionTerminal>;
+        }
+      | undefined;
+    const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) {
+        return;
+      }
+      const settle = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (drainTimer) {
+          clearTimeout(drainTimer);
+        }
+        if (owner) {
+          managed.delete(owner);
+        }
+        resolveTerminal({ exitCode, signal, termination, outputComplete });
+      };
+      if (groupSettlement) {
+        void groupSettlement.then(settle, settle);
+      } else {
+        settle();
+      }
+    };
+    let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
+    const maybeFinish = () => {
+      if (exited && streamsClosed >= 2) {
+        finish(exitCode, exitSignal);
+      }
+    };
+    const closeStream = () => {
+      streamsClosed += 1;
+      maybeFinish();
+    };
+    let launchOutput = Buffer.alloc(0);
+    child.stdout?.on("data", (data: Buffer) => {
+      if (!protectedLaunch) {
+        request.onOutput({ stream: "stdout", data });
+        return;
+      }
+      launchOutput = Buffer.concat([launchOutput, data]);
+      const markerIndex = launchOutput.indexOf(LAUNCH_MARKER);
+      if (markerIndex < 0) {
+        const flushLength = Math.max(
+          0,
+          launchOutput.length - LAUNCH_MARKER.length + 1,
+        );
+        if (flushLength > 0) {
+          request.onOutput({
+            stream: "stdout",
+            data: launchOutput.subarray(0, flushLength),
+          });
+          launchOutput = launchOutput.subarray(flushLength);
+        }
+        return;
+      }
+      const before = launchOutput.subarray(0, markerIndex);
+      const after = launchOutput.subarray(markerIndex + LAUNCH_MARKER.length);
+      launchOutput = Buffer.alloc(0);
+      confirmLaunch();
+      if (before.length) {
+        request.onOutput({ stream: "stdout", data: before });
+      }
+      if (after.length) {
+        request.onOutput({ stream: "stdout", data: after });
+      }
+    });
+    child.stderr?.on("data", (data: Buffer) =>
+      request.onOutput({ stream: "stderr", data }),
+    );
+    child.stdout?.once("close", closeStream);
+    child.stderr?.once("close", closeStream);
+    child.once("error", (error) => {
+      if (!launchConfirmed) {
+        rejectLaunch(new Error(`Sandbox: launch failed: ${error.message}`));
+      }
+      if (!exited) {
+        termination = termination === "natural" ? "natural" : termination;
+        exitCode = 1;
+        finish(exitCode, null);
+      }
+    });
+    child.once("exit", (code, signal) => {
+      exited = true;
+      exitCode = code;
+      exitSignal = signal;
+      if (protectedLaunch && !launchConfirmed) {
+        rejectLaunch(
+          new Error("Sandbox: sandbox-exec exited before shell startup."),
+        );
+      }
+      maybeFinish();
+      if (!settled && streamsClosed < 2) {
+        drainTimer = setTimeout(() => {
+          outputComplete = false;
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish(exitCode, exitSignal);
+        }, options.outputDrainTimeoutMs ?? OUTPUT_DRAIN_TIMEOUT_MS);
+      }
+    });
+    const stop = async (kind: "stopped" | "shutdown") => {
+      if (settled) {
+        return completion;
+      }
+      termination = kind;
+      if (!groupSettlement) {
+        const pid = child.pid;
+        groupSettlement = (async () => {
+          if (!pid) {
+            return;
+          }
+          try {
+            process.kill(-pid, "SIGTERM");
+          } catch {
+            try {
+              child.kill("SIGTERM");
+            } catch {}
+          }
+          if (!(await waitForProcessTree(pid))) {
+            try {
+              process.kill(-pid, "SIGKILL");
+            } catch {
+              try {
+                child.kill("SIGKILL");
+              } catch {}
+            }
+            if (!(await waitForProcessTree(pid))) {
+              throw new Error("Sandbox: process group did not terminate");
+            }
+          }
+        })();
+      }
+      await groupSettlement;
+      return completion;
+    };
+    owner = { stop };
+    managed.add(owner);
+    const abort = () => {
+      if (!launchConfirmed) {
+        rejectLaunch(new Error("aborted"));
+      }
+      void stop("stopped");
+    };
+    request.signal?.addEventListener("abort", abort, { once: true });
+    try {
+      if (protectedLaunch) {
+        child.stdin?.on("error", () => undefined);
+        child.stdin?.end(`${LAUNCH_PREFIX}${request.command}`);
+      } else if (shell.commandTransport === "stdin") {
+        child.stdin?.on("error", () => undefined);
+        child.stdin?.end(request.command);
+      }
+      if (!protectedLaunch) {
+        setImmediate(confirmLaunch);
+      }
+      await launch;
+      request.signal?.removeEventListener("abort", abort);
+    } catch (error) {
+      request.signal?.removeEventListener("abort", abort);
+      await stop("stopped");
+      throw error;
+    }
+    if (!child.pid) {
+      throw new Error("Sandbox: launch failed.");
+    }
+    return { pid: child.pid, completion, stop: () => stop("stopped") };
+  };
+
   return {
     operations: {
       exec(command, cwd, execution: BashExecution) {
@@ -396,6 +686,7 @@ export function createSandboxBashRuntime(
         return protectedOperations.exec(command, cwd, execution);
       },
     },
+    startManaged,
     async dispose() {
       if (!disposing) {
         disposed = true;
@@ -403,9 +694,11 @@ export function createSandboxBashRuntime(
         for (const invocation of invocations) {
           invocation.terminate();
         }
-        disposing = Promise.allSettled(
-          invocations.map((invocation) => invocation.settled),
-        ).then(() => undefined);
+        const leases = [...managed];
+        disposing = Promise.allSettled([
+          ...invocations.map((invocation) => invocation.settled),
+          ...leases.map((lease) => lease.stop("shutdown")),
+        ]).then(() => undefined);
       }
       await disposing;
     },

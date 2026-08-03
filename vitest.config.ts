@@ -8,6 +8,7 @@ const features = [
   "ui",
   "personality",
   "lsp",
+  "processes",
   "subagents",
   "reference",
   "papercuts",

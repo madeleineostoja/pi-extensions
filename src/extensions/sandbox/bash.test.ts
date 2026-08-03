@@ -527,4 +527,75 @@ printf last`,
       expect(output.join("")).toBe("local");
     }
   });
+
+  it("starts managed local execution only after launch and preserves tagged streams", async () => {
+    const { workspace } = fixture();
+    const runtime = createSandboxBashRuntime({
+      enabled: () => true,
+      supportedMac: false,
+    });
+    const output: Array<{ stream: string; text: string }> = [];
+    const lease = await runtime.startManaged({
+      toolCallId: "managed-call",
+      command: "printf out; printf err >&2",
+      cwd: workspace,
+      ctx: {
+        sessionManager: {
+          getSessionId: () => "managed-session",
+          getSessionFile: () => undefined,
+        },
+      } as never,
+      signal: undefined,
+      onOutput: (event) =>
+        output.push({
+          stream: event.stream,
+          text: event.data.toString(),
+        }),
+    });
+    await expect(lease.completion).resolves.toMatchObject({
+      exitCode: 0,
+      termination: "natural",
+      outputComplete: true,
+    });
+    expect(lease.pid).toBeGreaterThan(0);
+    expect(output).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ stream: "stdout", text: "out" }),
+        expect.objectContaining({ stream: "stderr", text: "err" }),
+      ]),
+    );
+  });
+
+  it("rejects managed spawn failure without an uncaught child error", async () => {
+    const { workspace } = fixture();
+    const runtime = createSandboxBashRuntime({
+      enabled: () => true,
+      supportedMac: false,
+      spawn: () => {
+        const child = new EventEmitter();
+        Object.assign(child, {
+          stdin: new PassThrough(),
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+        });
+        queueMicrotask(() => child.emit("error", new Error("missing shell")));
+        return child as never;
+      },
+    });
+    await expect(
+      runtime.startManaged({
+        toolCallId: "managed-call",
+        command: "printf never",
+        cwd: workspace,
+        ctx: {
+          sessionManager: {
+            getSessionId: () => "session",
+            getSessionFile: () => undefined,
+          },
+        } as never,
+        signal: undefined,
+        onOutput: () => undefined,
+      }),
+    ).rejects.toThrow("launch failed");
+  });
 });

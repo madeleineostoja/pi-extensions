@@ -61,6 +61,7 @@ Pipkin's first layers are deliberately about control:
 
 - **Sandbox** owns model Bash and direct `write`/`edit` containment. On macOS it confines model Bash descendants to the canonical repository, required Git state, temporary roots, and reviewed package caches; direct tools stay within the workspace. Linux reports Sandbox as unavailable and uses local Bash.
 - **Readonly** separately checkpoints resolved tools named `edit` and `write`. Toggle its established workflow with `Ctrl+R` or `/readonly`.
+- **Processes** starts Sandbox-owned foreground non-interactive work when useful independent work can continue. Join it once with `get_process_result`, inspect deliberately without polling, and stop no-longer-needed work explicitly.
 
 **[Safety →](docs/features/safety.md)**
 
@@ -106,22 +107,24 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 ## Commands
 
-| Surface                           | What it does                                                         |
-| --------------------------------- | -------------------------------------------------------------------- |
-| `/sandbox [on\|off]`              | Inspect or change the current repository-write Sandbox mode          |
-| `/readonly [on\|off]`             | Toggle approval for resolved `edit` and `write` tools                |
-| `context_recall`                  | Recover the original content behind an elision stub                  |
-| `bash_outcome`                    | Run Bash when only successful outcome matters; recall output         |
-| `lsp`                             | Make semantic source queries or inspect language-server status       |
-| `docs`                            | Retrieve bounded Context7 documentation                              |
-| `package_search`                  | Discover separately ranked Context7, npm, and public GitHub packages |
-| `code_search`                     | Search bounded observed usage in explicitly public GitHub source     |
-| `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents               |
-| `get_subagent_result`             | Inspect or join a background agent                                   |
-| `steer_subagent`                  | Queue guidance for a running background agent                        |
-| `/implement`                      | Start, inspect, stop, or clean up implementation runs                |
-| `/papercuts` / `propose_papercut` | Capture and review durable project workflow gaps                     |
-| `/btw <question>`                 | Ask an ephemeral side question from current session context          |
+| Surface                               | What it does                                                         |
+| ------------------------------------- | -------------------------------------------------------------------- |
+| `/sandbox [on\|off]`                  | Inspect or change the current repository-write Sandbox mode          |
+| `/readonly [on\|off]`                 | Toggle approval for resolved `edit` and `write` tools                |
+| `context_recall`                      | Recover the original content behind an elision stub                  |
+| `bash_outcome`                        | Run Bash when only successful outcome matters; recall output         |
+| `lsp`                                 | Make semantic source queries or inspect language-server status       |
+| `start_process`                       | Start independent foreground non-interactive managed work            |
+| `get_process_result` / `stop_process` | Join, inspect, or explicitly stop a managed process                  |
+| `docs`                                | Retrieve bounded Context7 documentation                              |
+| `package_search`                      | Discover separately ranked Context7, npm, and public GitHub packages |
+| `code_search`                         | Search bounded observed usage in explicitly public GitHub source     |
+| `/agents` / `Agent`                   | Run and operate General, Explore, and Review subagents               |
+| `get_subagent_result`                 | Inspect or join a background agent                                   |
+| `steer_subagent`                      | Queue guidance for a running background agent                        |
+| `/implement`                          | Start, inspect, stop, or clean up implementation runs                |
+| `/papercuts` / `propose_papercut`     | Capture and review durable project workflow gaps                     |
+| `/btw <question>`                     | Ask an ephemeral side question from current session context          |
 
 ## Limits
 

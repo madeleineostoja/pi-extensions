@@ -17,7 +17,7 @@
 
 - Use relative imports within a feature.
 - Import concrete generic helpers through `#lib/*`, for example `#lib/file-lease`.
-- `#sandbox/runtime` lets Subagents snapshot Sandbox session-mode inheritance. `#sandbox/bash` lets Context compose the current host's ordinary Sandbox Bash execution. `#subagents/runtime` lets Implement consume the managed agent runtime. `#ui/activity` lets Subagents and Implement publish bounded generic activity through the UI-owned event capability. `#ui/status` lets status producers publish immediately through the UI-owned stateless footer capability. `#lib/ui/*` resolves shared presentation helpers. Production code must not import another feature's `index.ts` or an unlisted extension internal.
+- `#sandbox/runtime` lets Subagents snapshot Sandbox session-mode inheritance. `#sandbox/bash` lets Context compose ordinary Bash and lets Processes start Sandbox-owned managed execution leases for the current host; it never exposes Sandbox runtime state or a child process. `#subagents/runtime` lets Implement consume the managed agent runtime. `#ui/activity` lets Subagents and Implement publish bounded generic activity through the UI-owned event capability. `#ui/status` lets status producers publish immediately through the UI-owned stateless footer capability. `#lib/ui/*` resolves shared presentation helpers. Production code must not import another feature's `index.ts` or an unlisted extension internal.
 - Direct capability coupling is allowed only when the producer owns the capability, the dependency is narrow and typed, the graph is acyclic, and the import neither registers an extension nor assumes mutable module-singleton identity.
 - Add a new cross-feature mapping only after there is a real consumer. Define the narrow source-owned capability, add its `package.json#imports` mapping, cover Pi Jiti/Vitest/TypeScript resolution, document the dependency here and in `docs/architecture.md`, and keep the producer registration root private. UI owns the sole bounded Activity projection and generic footer-status presentation; it never owns producer cleanup or transcript delivery. `#ui/status` is UI-owned and may be consumed by producers such as Sandbox, Readonly, and Papercuts; it never imports them or registers the UI extension. Personality owns its synchronous fresh-session Welcome header and identity behavior, while UI owns generic presentation infrastructure.
 - Keep feature-specific code with its owner. Add a `src/lib` module only when at least two features need it.
@@ -26,7 +26,7 @@
 
 - Pi loads entrypoints through separate Jiti instances. Share pure helpers and explicit capability modules, not mutable module singletons. Sandbox's executable Bash capability rendezvous through a generation-scoped binding keyed by `pi.events`; Sandbox installs it after session runtime construction and revokes it before reset and disposal.
 - Start long-lived resources at `session_start` or on demand. Dispose them idempotently at `session_shutdown`.
-- Explicitly remove direct `pi.events` listeners during disposal. Stateful cross-entrypoint coordination needs an explicit host identity; the Subagents coordinator and Sandbox child-mode handoff are event-bus-keyed exceptions.
+- Explicitly remove direct `pi.events` listeners during disposal. Stateful cross-entrypoint coordination needs an explicit host identity; the Subagents coordinator, Sandbox child-mode handoff, and Sandbox-owned managed execution lease binding are event-bus-keyed exceptions.
 
 ## Commands
 

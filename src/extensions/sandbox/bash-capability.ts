@@ -21,7 +21,42 @@ type SandboxBashExecutor = (
   request: SandboxBashRequest,
 ) => Promise<AgentToolResult<BashToolDetails | undefined>>;
 
-type Binding = { token: object; execute: SandboxBashExecutor };
+export type SandboxOutputEvent = Readonly<{
+  stream: "stdout" | "stderr";
+  data: Buffer;
+}>;
+
+export type SandboxExecutionTerminal = Readonly<{
+  exitCode: number | null;
+  signal: string | null;
+  termination: "natural" | "stopped" | "shutdown";
+  outputComplete: boolean;
+}>;
+
+export type SandboxExecutionLease = Readonly<{
+  pid: number;
+  completion: Promise<SandboxExecutionTerminal>;
+  stop: () => Promise<SandboxExecutionTerminal>;
+}>;
+
+export type SandboxManagedRequest = Readonly<{
+  toolCallId: string;
+  command: string;
+  cwd: string;
+  ctx: ExtensionContext;
+  signal: AbortSignal | undefined;
+  onOutput: (event: SandboxOutputEvent) => void;
+}>;
+
+type SandboxManagedExecutor = (
+  request: SandboxManagedRequest,
+) => Promise<SandboxExecutionLease>;
+
+type Binding = {
+  token: object;
+  execute: SandboxBashExecutor;
+  startManaged: SandboxManagedExecutor | undefined;
+};
 type SandboxBashManager = { bindings: WeakMap<object, Binding> };
 
 const managerKey = Symbol.for("pipkin:sandbox:bash");
@@ -41,4 +76,15 @@ export async function executeSandboxBash(
     throw new Error("Sandbox: Bash execution is unavailable.");
   }
   return binding.execute(request);
+}
+
+export async function startSandboxManagedExecution(
+  host: SandboxBashHost,
+  request: SandboxManagedRequest,
+): Promise<SandboxExecutionLease> {
+  const binding = getManager()?.bindings.get(host);
+  if (!binding?.startManaged) {
+    throw new Error("Sandbox: managed execution is unavailable.");
+  }
+  return binding.startManaged(request);
 }
