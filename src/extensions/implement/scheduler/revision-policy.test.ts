@@ -869,16 +869,17 @@ describe("revision policy", () => {
       handoffDraft: "Final replacement handoff with residual verification.",
     });
     expect(reviewed.state.findings[findingIds[0]!]?.status).toBe("open");
+    expect(reviewed.effects).toEqual([]);
     for (const source of Object.values(reviewed.state.workstreams.source)) {
       source.phase = "completed";
     }
-    expect(
-      reduceRunEvent(reviewed.state, {
-        kind: "run_completed",
-        targetSha: "repair-sha",
-        targetTreeSha: "repair-tree",
-      }).accepted,
-    ).toBe(true);
+    const terminal = reduceRunEvent(reviewed.state, {
+      kind: "run_completed",
+      targetSha: "repair-sha",
+      targetTreeSha: "repair-tree",
+    });
+    expect(terminal.accepted).toBe(true);
+    expect(terminal.effects).toEqual([]);
   });
 
   it("sends an unchanged correction through one final review without failing the lane", async () => {
