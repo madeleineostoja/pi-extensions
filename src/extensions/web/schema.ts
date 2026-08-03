@@ -11,7 +11,7 @@ export const WebFetchParameters = Type.Object(
       description: "Public credential-free HTTP(S) URL to retrieve.",
     }),
     format: Type.Optional(
-      StringEnum(["markdown", "html", "text", "json"] as const),
+      StringEnum(["markdown", "html", "text", "json", "raw"] as const),
     ),
     maxChars: Type.Optional(
       Type.Integer({ minimum: 1, maximum: LIMITS.maxChars }),

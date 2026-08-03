@@ -8,7 +8,8 @@ export class WebError extends Error {
       | "oversize"
       | "http"
       | "content"
-      | "extract",
+      | "extract"
+      | "artifact",
     message: string,
   ) {
     super(message);
