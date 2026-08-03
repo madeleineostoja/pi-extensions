@@ -344,6 +344,24 @@ describe("context_recall", () => {
     });
   });
 
+  it("fails closed for a malformed managed-process envelope even when details claim failure", async () => {
+    const execute = recall([
+      toolCall("malformed-process", "get_process_result", {
+        id: "process-1",
+        wait: true,
+        resultMode: "outcome",
+      }),
+      toolResult("malformed-process", [{ type: "text", text: "summary" }], {
+        retainedResult: { version: 1 },
+        snapshot: { id: "process-1", status: "failed" },
+        resultMode: "outcome",
+      }),
+    ]).execute;
+    await expect(execute({ id: "malformed-process" })).rejects.toThrow(
+      "retained managed process content",
+    );
+  });
+
   it("recalls the ordinary failed managed-process outcome fallback", async () => {
     const execute = recall([
       toolCall("failed-process", "get_process_result", {
@@ -352,7 +370,7 @@ describe("context_recall", () => {
         resultMode: "outcome",
       }),
       toolResult("failed-process", [{ type: "text", text: "exit 1\nneedle" }], {
-        snapshot: { status: "failed" },
+        snapshot: { id: "process-1", status: "failed" },
         resultMode: "outcome",
       }),
     ]).execute;

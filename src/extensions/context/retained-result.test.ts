@@ -44,8 +44,8 @@ describe("retained result", () => {
   });
 
   it("rejects oversized text, image, and combined retained payloads", () => {
-    const oversizedText = "x".repeat(DEFAULT_MAX_BYTES);
-    const oversizedImage = "x".repeat(DEFAULT_MAX_BYTES);
+    const oversizedText = "x".repeat(DEFAULT_MAX_BYTES + 1);
+    const oversizedImage = "x".repeat(DEFAULT_MAX_BYTES + 1);
     expect(() =>
       retainResult(
         { content: [{ type: "text", text: oversizedText }] },
@@ -53,15 +53,18 @@ describe("retained result", () => {
         "call",
       ),
     ).toThrow("Invalid retained result");
-    expect(() =>
-      retainResult(
-        {
-          content: [{ type: "text", text: "x".repeat(DEFAULT_MAX_BYTES - 50) }],
-        },
-        "Bash command succeeded.",
-        "call",
-      ),
-    ).toThrow("Invalid retained result");
+    const nearLimit = retainResult(
+      {
+        content: [{ type: "text", text: "x".repeat(DEFAULT_MAX_BYTES) }],
+        details: { exitCode: 0, metadata: "bounded" },
+      },
+      "Bash command succeeded.",
+      "call",
+    );
+    expect(decodeRetainedResult(nearLimit.details)).toEqual({
+      content: [{ type: "text", text: "x".repeat(DEFAULT_MAX_BYTES) }],
+      details: { exitCode: 0, metadata: "bounded" },
+    });
     expect(
       decodeRetainedResult({
         retainedResult: {
@@ -83,7 +86,7 @@ describe("retained result", () => {
           result: {
             content: [
               { type: "text", text: "x".repeat(DEFAULT_MAX_BYTES / 2) },
-              { type: "text", text: "x".repeat(DEFAULT_MAX_BYTES / 2) },
+              { type: "text", text: "x".repeat(DEFAULT_MAX_BYTES / 2 + 1) },
             ],
           },
         },

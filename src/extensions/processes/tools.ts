@@ -105,7 +105,7 @@ function boundedText(text: string): string {
       bytes + lineBytes > MAX_RESULT_BYTES - 40
     ) {
       truncated = true;
-      continue;
+      break;
     }
     selected.push(safeLine);
     bytes += lineBytes;

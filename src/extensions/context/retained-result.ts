@@ -17,6 +17,9 @@ type RetainedEnvelope = {
 };
 
 const RETAINED_KEY = "retainedResult";
+const MAX_CONTENT_BYTES = DEFAULT_MAX_BYTES;
+const MAX_DETAILS_BYTES = DEFAULT_MAX_BYTES;
+const MAX_ENVELOPE_BYTES = MAX_CONTENT_BYTES + MAX_DETAILS_BYTES + 8 * 1024;
 
 export function retainResult(
   result: Readonly<{ content: unknown; details?: unknown }>,
@@ -34,7 +37,7 @@ export function retainResult(
     version: 1,
     result: retained,
   };
-  if (encodedBytes(envelope) > DEFAULT_MAX_BYTES) {
+  if (encodedBytes(envelope) > MAX_ENVELOPE_BYTES) {
     throw new Error("Invalid retained result");
   }
   return {
@@ -60,7 +63,7 @@ export function decodeRetainedResult(
     envelope.type !== "pipkin.context.retained-result" ||
     envelope.version !== 1 ||
     !Object.hasOwn(envelope, "result") ||
-    encodedBytes(envelope) > DEFAULT_MAX_BYTES
+    encodedBytes(envelope) > MAX_ENVELOPE_BYTES
   ) {
     return undefined;
   }
@@ -80,16 +83,16 @@ function validateResult(value: unknown): RetainedResult {
     throw new Error("Invalid retained result");
   }
   const content = value.content.map(validateContentBlock);
-  if (content.length === 0) {
+  if (content.length === 0 || contentBytes(content) > MAX_CONTENT_BYTES) {
     throw new Error("Invalid retained result");
   }
   const result =
     !Object.hasOwn(value, "details") || value.details === undefined
       ? { content }
-      : !isJson(value.details) || jsonBytes(value.details) > DEFAULT_MAX_BYTES
+      : !isJson(value.details) || jsonBytes(value.details) > MAX_DETAILS_BYTES
         ? undefined
         : { content, details: value.details };
-  if (result === undefined || encodedBytes(result) > DEFAULT_MAX_BYTES) {
+  if (result === undefined || encodedBytes(result) > MAX_ENVELOPE_BYTES) {
     throw new Error("Invalid retained result");
   }
   return result;
@@ -110,6 +113,15 @@ function validateContentBlock(value: unknown): ContentBlock {
     return { type: "image", data: value.data, mimeType: value.mimeType };
   }
   throw new Error("Invalid retained result");
+}
+
+function contentBytes(content: readonly ContentBlock[]): number {
+  return content.reduce(
+    (total, block) =>
+      total +
+      Buffer.byteLength(block.type === "text" ? block.text : block.data),
+    0,
+  );
 }
 
 function jsonBytes(value: Json): number {

@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { delimiter, join } from "node:path";
 import {
   createBashToolDefinition,
   createLocalBashOperations,
+  getAgentDir,
   getShellConfig,
   type BashOperations,
 } from "@earendil-works/pi-coding-agent";
@@ -27,8 +29,9 @@ const LAUNCH_MARKER = "__PIPKIN_SANDBOX_LAUNCHED__\n";
 const LAUNCH_PREFIX = `printf '${LAUNCH_MARKER}'\n`;
 const MAX_LAUNCH_DIAGNOSTIC_BYTES = 64 * 1024;
 
-function denialMarker(): string {
-  return `PIPKIN_${randomUUID().replaceAll("-", "")}`;
+function denialMarker(correlation?: string): string {
+  const suffix = correlation?.replaceAll(/[^a-zA-Z0-9]/g, "").slice(-24);
+  return `PIPKIN_${suffix ? `${suffix}_` : ""}${randomUUID().replaceAll("-", "")}`;
 }
 
 type ActiveInvocation = Readonly<{
@@ -39,7 +42,18 @@ type ActiveInvocation = Readonly<{
 type BashExecution = Parameters<BashOperations["exec"]>[2];
 
 function managedEnvironment(request: SandboxManagedRequest): NodeJS.ProcessEnv {
-  const env = { ...process.env };
+  const pathKey =
+    Object.keys(process.env).find((key) => key.toLowerCase() === "path") ??
+    "PATH";
+  const currentPath = process.env[pathKey] ?? "";
+  const binDir = join(getAgentDir(), "bin");
+  const entries = currentPath.split(delimiter).filter(Boolean);
+  const env = {
+    ...process.env,
+    [pathKey]: entries.includes(binDir)
+      ? currentPath
+      : [binDir, currentPath].filter(Boolean).join(delimiter),
+  };
   delete env.PI_SESSION_ID;
   delete env.PI_SESSION_FILE;
   delete env.PI_PROVIDER;
@@ -89,21 +103,26 @@ function terminate(child: ChildProcess): void {
   }
 }
 
-async function waitForProcessTree(pid: number): Promise<boolean> {
+async function waitForProcessTree(
+  pid: number,
+  deadline = Date.now() + TERMINATION_WAIT_MS,
+): Promise<boolean> {
   if (process.platform === "win32") {
     return true;
   }
-  const deadline = Date.now() + TERMINATION_WAIT_MS;
   while (true) {
     try {
       process.kill(-pid, 0);
     } catch {
       return true;
     }
-    if (Date.now() >= deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
       return false;
     }
-    await new Promise((resolve) => setTimeout(resolve, TERMINATION_POLL_MS));
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(TERMINATION_POLL_MS, remaining)),
+    );
   }
 }
 
@@ -435,7 +454,9 @@ export function createSandboxBashRuntime(
     }
     const shell = getShellConfig(options.shellPath);
     const protectedLaunch = supportedMac && options.enabled();
-    const marker = protectedLaunch ? denialMarker() : undefined;
+    const marker = protectedLaunch
+      ? denialMarker(request.toolCallId)
+      : undefined;
     const shellArgs =
       shell.commandTransport === "stdin"
         ? shell.args
@@ -481,10 +502,14 @@ export function createSandboxBashRuntime(
     let drainTimer: NodeJS.Timeout | undefined;
     let resolveTerminal: (terminal: SandboxExecutionTerminal) => void = () =>
       undefined;
+    let rejectTerminal: (error: Error) => void = () => undefined;
     let groupSettlement: Promise<void> | undefined;
-    const completion = new Promise<SandboxExecutionTerminal>((resolve) => {
-      resolveTerminal = resolve;
-    });
+    const completion = new Promise<SandboxExecutionTerminal>(
+      (resolve, reject) => {
+        resolveTerminal = resolve;
+        rejectTerminal = reject;
+      },
+    );
     let resolveLaunch: () => void = () => undefined;
     let rejectLaunch: (error: Error) => void = () => undefined;
     let launchConfirmed = false;
@@ -520,10 +545,27 @@ export function createSandboxBashRuntime(
         if (owner) {
           managed.delete(owner);
         }
+        releaseDenial?.();
         resolveTerminal({ exitCode, signal, termination, outputComplete });
       };
       if (groupSettlement) {
-        void groupSettlement.then(settle, settle);
+        void groupSettlement.then(settle, (error: unknown) => {
+          if (!settled) {
+            settled = true;
+            if (drainTimer) {
+              clearTimeout(drainTimer);
+            }
+            if (owner) {
+              managed.delete(owner);
+            }
+            releaseDenial?.();
+            rejectTerminal(
+              error instanceof Error
+                ? error
+                : new Error("Sandbox: process group did not terminate"),
+            );
+          }
+        });
       } else {
         settle();
       }
@@ -540,6 +582,15 @@ export function createSandboxBashRuntime(
       maybeFinish();
     };
     let launchOutput = Buffer.alloc(0);
+    let launchDiagnostics = Buffer.alloc(0);
+    const releaseDenial = protectedLaunch
+      ? options.denialObserver?.registerBashInvocation(marker!, (denial) => {
+          request.onOutput({
+            stream: "stderr",
+            data: Buffer.from(formatSandboxWriteDenial(denial)),
+          });
+        })
+      : undefined;
     child.stdout?.on("data", (data: Buffer) => {
       if (!protectedLaunch) {
         request.onOutput({ stream: "stdout", data });
@@ -572,9 +623,12 @@ export function createSandboxBashRuntime(
         request.onOutput({ stream: "stdout", data: after });
       }
     });
-    child.stderr?.on("data", (data: Buffer) =>
-      request.onOutput({ stream: "stderr", data }),
-    );
+    child.stderr?.on("data", (data: Buffer) => {
+      if (protectedLaunch && !launchConfirmed) {
+        launchDiagnostics = appendLaunchDiagnostic(launchDiagnostics, data);
+      }
+      request.onOutput({ stream: "stderr", data });
+    });
     child.stdout?.once("close", closeStream);
     child.stderr?.once("close", closeStream);
     child.once("error", (error) => {
@@ -592,8 +646,14 @@ export function createSandboxBashRuntime(
       exitCode = code;
       exitSignal = signal;
       if (protectedLaunch && !launchConfirmed) {
+        const diagnostic = launchDiagnostics.toString().trim();
+        const failure = sandboxRejected(launchDiagnostics)
+          ? "sandbox-exec rejected the launch"
+          : "sandbox-exec exited before shell startup";
         rejectLaunch(
-          new Error("Sandbox: sandbox-exec exited before shell startup."),
+          new Error(
+            `Sandbox: ${failure}: ${diagnostic || `exit code ${code ?? "unknown"}`}`,
+          ),
         );
       }
       maybeFinish();
@@ -617,6 +677,7 @@ export function createSandboxBashRuntime(
           if (!pid) {
             return;
           }
+          const deadline = Date.now() + TERMINATION_WAIT_MS;
           try {
             process.kill(-pid, "SIGTERM");
           } catch {
@@ -624,7 +685,7 @@ export function createSandboxBashRuntime(
               child.kill("SIGTERM");
             } catch {}
           }
-          if (!(await waitForProcessTree(pid))) {
+          if (!(await waitForProcessTree(pid, deadline))) {
             try {
               process.kill(-pid, "SIGKILL");
             } catch {
@@ -632,7 +693,7 @@ export function createSandboxBashRuntime(
                 child.kill("SIGKILL");
               } catch {}
             }
-            if (!(await waitForProcessTree(pid))) {
+            if (!(await waitForProcessTree(pid, deadline))) {
               throw new Error("Sandbox: process group did not terminate");
             }
           }
@@ -695,7 +756,7 @@ export function createSandboxBashRuntime(
           invocation.terminate();
         }
         const leases = [...managed];
-        disposing = Promise.allSettled([
+        disposing = Promise.all([
           ...invocations.map((invocation) => invocation.settled),
           ...leases.map((lease) => lease.stop("shutdown")),
         ]).then(() => undefined);

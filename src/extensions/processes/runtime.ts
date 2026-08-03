@@ -10,7 +10,7 @@ const MAX_RECORDS = 32;
 const MAX_WAITERS = 16;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const MAX_PROJECTION_LINES = 200;
-const MAX_PROJECTION_BYTES = 20 * 1024;
+const MAX_PROJECTION_BYTES = 18 * 1024;
 const MAX_WAIT_TIMEOUT_SECONDS = 2_147_483_647 / 1000;
 const DEFAULT_TAIL_LINES = 80;
 const SEARCH_CONTEXT_LINES = 3;
@@ -357,9 +357,12 @@ export class ProcessRuntime {
     if (wait) {
       waitOutcome = signal?.aborted
         ? "cancelled"
-        : terminal(record.snapshot.status)
-          ? "terminal"
-          : await this.wait(record, timeoutSeconds, signal, untilContains);
+        : untilContains !== undefined &&
+            this.retainedContains(record, untilContains)
+          ? "ready"
+          : terminal(record.snapshot.status)
+            ? "terminal"
+            : await this.wait(record, timeoutSeconds, signal, untilContains);
     }
     const projection = this.project(record, selection);
     return { snapshot: copy(record.snapshot), waitOutcome, ...projection };
@@ -494,12 +497,23 @@ export class ProcessRuntime {
       const before = first.text;
       const removed = trimPartPrefix(first, retained - MAX_OUTPUT_BYTES);
       const removedText = before.slice(0, before.length - first.text.length);
-      record.firstRetainedLine += [...removedText].filter(
+      const completedLines = [...removedText].filter(
         (character) => character === "\n",
       ).length;
+      const removedWholePart = first.bytes === 0;
+      const continuesInRetainedOutput = record.output
+        .slice(1)
+        .some((part) => part.stream === first.stream);
+      record.firstRetainedLine +=
+        completedLines +
+        (removedWholePart &&
+        !before.endsWith("\n") &&
+        !continuesInRetainedOutput
+          ? 1
+          : 0);
       retained -= removed;
       dropped += removed;
-      if (first.bytes === 0) {
+      if (removedWholePart) {
         record.output.shift();
       }
     }
@@ -661,35 +675,42 @@ export class ProcessRuntime {
   }
 
   private logicalLines(record: ProcessRecord): LogicalLine[] {
-    const lines: LogicalLine[] = [];
-    let open: { stream: Stream; text: string } | undefined;
-    const flush = () => {
-      if (open) {
-        lines.push({
-          ...open,
-          number: record.firstRetainedLine + lines.length,
-        });
+    const lines: Array<LogicalLine & { order: number }> = [];
+    const open: Partial<Record<Stream, LogicalLine & { order: number }>> = {};
+    let order = 0;
+    const flush = (stream: Stream) => {
+      const line = open[stream];
+      if (line) {
+        lines.push(line);
+        delete open[stream];
       }
-      open = undefined;
     };
     for (const part of record.output) {
       for (const character of part.text) {
+        let line = open[part.stream];
+        if (!line) {
+          line = {
+            stream: part.stream,
+            text: "",
+            number: record.firstRetainedLine + order,
+            order,
+          };
+          order += 1;
+          open[part.stream] = line;
+        }
         if (character === "\n") {
-          if (!open) {
-            open = { stream: part.stream, text: "" };
-          }
-          flush();
+          flush(part.stream);
         } else {
-          if (!open || open.stream !== part.stream) {
-            flush();
-            open = { stream: part.stream, text: "" };
-          }
-          open.text += character;
+          line.text += character;
         }
       }
     }
-    flush();
-    return lines;
+    for (const stream of ["stdout", "stderr"] as const) {
+      flush(stream);
+    }
+    return lines
+      .sort((left, right) => left.order - right.order)
+      .map(({ stream, text, number }) => ({ stream, text, number }));
   }
 
   private project(

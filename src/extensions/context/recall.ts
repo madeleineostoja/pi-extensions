@@ -482,15 +482,18 @@ function resolveRecalledResult(
     !result.isError &&
     (toolCall?.name === "get_process_result" ||
       toolCall?.name === "stop_process") &&
-    isOutcomeArguments(toolCall.arguments) &&
-    !isFailedProcessOutcomeFallback(result.details)
+    isOutcomeArguments(toolCall.arguments)
   ) {
-    const status = hasRetainedResult(result.details)
-      ? "malformed"
-      : "unavailable";
-    throw new Error(
-      `context_recall: retained managed process content for id=${shortenedId(id)} is ${status}`,
-    );
+    if (hasRetainedResult(result.details)) {
+      throw new Error(
+        `context_recall: retained managed process content for id=${shortenedId(id)} is malformed`,
+      );
+    }
+    if (!isFailedProcessOutcomeFallback(result.details)) {
+      throw new Error(
+        `context_recall: retained managed process content for id=${shortenedId(id)} is unavailable`,
+      );
+    }
   }
   return { content: result.content };
 }
@@ -507,11 +510,16 @@ function isFailedProcessOutcomeFallback(details: unknown): boolean {
   if (typeof details !== "object" || details === null) {
     return false;
   }
-  const snapshot = (details as { snapshot?: unknown }).snapshot;
+  const typed = details as {
+    snapshot?: { status?: unknown; id?: unknown };
+    resultMode?: unknown;
+  };
   return (
-    typeof snapshot === "object" &&
-    snapshot !== null &&
-    (snapshot as { status?: unknown }).status === "failed"
+    typed.resultMode === "outcome" &&
+    typeof typed.snapshot === "object" &&
+    typed.snapshot !== null &&
+    typeof typed.snapshot.id === "string" &&
+    typed.snapshot.status === "failed"
   );
 }
 

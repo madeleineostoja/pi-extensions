@@ -282,6 +282,32 @@ describe("ProcessRuntime", () => {
     });
   });
 
+  it("reports retained readiness before an already-settled terminal outcome", async () => {
+    const fixture = runtime({
+      output: [{ stream: "stdout", data: Buffer.from("ready\n") }],
+      terminal: {
+        exitCode: 0,
+        signal: null,
+        termination: "natural",
+        outputComplete: true,
+      },
+    });
+    bindings.push(fixture.binding);
+    const snapshot = await start(fixture.runtime);
+    await expect(
+      fixture.runtime.result(snapshot.id, true, undefined, undefined, "ready"),
+    ).resolves.toMatchObject({ waitOutcome: "ready" });
+    await expect(
+      fixture.runtime.result(
+        snapshot.id,
+        true,
+        undefined,
+        undefined,
+        "missing",
+      ),
+    ).resolves.toMatchObject({ waitOutcome: "terminal" });
+  });
+
   it("keeps the newest contiguous tail and source-relative find line numbers", async () => {
     const fixture = runtime({ output: [] });
     bindings.push(fixture.binding);
@@ -349,8 +375,8 @@ describe("ProcessRuntime", () => {
     const fixture = runtime({
       output: [
         { stream: "stdout", data: Buffer.from("first") },
-        { stream: "stdout", data: Buffer.from(" line\\n") },
-        { stream: "stderr", data: Buffer.from("second\\n") },
+        { stream: "stdout", data: Buffer.from(" line\n") },
+        { stream: "stderr", data: Buffer.from("second\n") },
       ],
     });
     bindings.push(fixture.binding);
@@ -371,6 +397,24 @@ describe("ProcessRuntime", () => {
     expect(result.output).toContain("[stderr] second");
     expect(result.output).toContain("Final output may be incomplete.");
     expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(24 * 1024);
+  });
+
+  it("keeps same-stream continuations together across interleaved callbacks", async () => {
+    const fixture = runtime({ output: [] });
+    bindings.push(fixture.binding);
+    const snapshot = await start(fixture.runtime);
+    fixture.controls[0].write("stdout", Buffer.from("stdout "));
+    fixture.controls[0].write("stderr", Buffer.from("stderr\n"));
+    fixture.controls[0].write("stdout", Buffer.from("continuation\n"));
+    const result = await fixture.runtime.result(
+      snapshot.id,
+      false,
+      undefined,
+      undefined,
+    );
+    expect(result.output).toContain("[stdout] stdout continuation");
+    expect(result.output).toContain("[stderr] stderr");
+    expect(result.output).not.toContain("[stdout] stdout \n");
   });
 
   it("isolates observation subscribers and removes them idempotently", async () => {
