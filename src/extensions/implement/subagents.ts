@@ -91,7 +91,7 @@ const MUTATING_TOOLS = [
 ];
 
 export function mutableWorkerExcludedTools(): string[] {
-  return ["propose_papercut", ...PUBLIC_AGENT_TOOLS];
+  return ["inspect_implement_run", "propose_papercut", ...PUBLIC_AGENT_TOOLS];
 }
 
 export function readOnlyWorkerTools(activeTools?: string[]): {

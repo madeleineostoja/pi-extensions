@@ -8,6 +8,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+} from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   normalizeDiagnosticsResult,
@@ -304,7 +308,10 @@ describe("lsp tool inputs and bounded render data", () => {
     );
     const content = result.content[0]?.text ?? "";
 
-    expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(20_000);
+    expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(
+      DEFAULT_MAX_BYTES,
+    );
+    expect(content.split("\n").length).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
     expect(content).toContain("Additional results omitted");
     expect(result.details).toMatchObject({
       truncation: { symbols: false, content: true },
@@ -323,7 +330,7 @@ describe("lsp tool inputs and bounded render data", () => {
             kind: "typescript",
             state: "cooling-down",
             workspaceRoot: realpathSync(cwd),
-            reason: "x".repeat(30_000),
+            reason: `x\n`.repeat(DEFAULT_MAX_LINES + 100),
           },
         ],
       },
@@ -336,7 +343,10 @@ describe("lsp tool inputs and bounded render data", () => {
     );
     const content = result.content[0]?.text ?? "";
 
-    expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(20_000);
+    expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(
+      DEFAULT_MAX_BYTES,
+    );
+    expect(content.split("\n").length).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
     expect(content).toContain("Additional results omitted");
     expect(result.details).toMatchObject({
       truncation: { content: true },

@@ -133,6 +133,8 @@ Stopping is transient while owned processes settle. Failed, incomplete, and comp
 | `restart` | Clean a completed run after new-run preflight and start again                                   |
 | `cleanup` | Terminalize interrupted runs, settle durable transactions, and remove provably owned resources  |
 
+`inspect_implement_run` is the model-facing counterpart to `status` and `inspect`. It lists retained durable runs or summarizes one run, returning state and artifact paths for deeper diagnosis with ordinary read tools. It is read-only and unavailable to managed Implement workers.
+
 The active session also shows a diagnostic widget with overall progress, workstream stages, recent failures, and open findings.
 
 ## Models and concurrency

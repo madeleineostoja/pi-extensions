@@ -11,6 +11,7 @@ import {
   type RunState,
 } from "./store.js";
 import { reduceRunEvent } from "./scheduler/scheduler.js";
+import { sourceCorpusPath } from "./requirements-context.js";
 import {
   settleProjectionTransactions,
   settlePublicationTransactions,
@@ -189,20 +190,34 @@ export function formatStatus(state: RunState): string {
 
 export function inspectRun(checkoutRoot: string, runId: string): string {
   assertRunId(runId);
-  const path = join(checkoutPaths(checkoutRoot).runs, runId);
-  if (lstatSync(path).isSymbolicLink()) {
+  const paths = checkoutPaths(checkoutRoot);
+  const path = join(paths.runs, runId);
+  const entry = (() => {
+    try {
+      return lstatSync(path);
+    } catch {
+      throw new Error("Run is unavailable or historical; inspect it manually.");
+    }
+  })();
+  if (entry.isSymbolicLink()) {
     throw new Error("Run artifact is symlinked; inspect it manually.");
+  }
+  if (!entry.isDirectory()) {
+    throw new Error("Run is unavailable or historical; inspect it manually.");
   }
   const state = loadRunState(join(path, "run-state.json"));
   if (state.run.checkout.root !== checkoutRoot) {
     throw new Error("Run belongs to a different checkout.");
   }
   const artifacts = join(path, "artifacts");
+  const worktree = join(paths.worktrees, runId);
   return [
     formatStatus(state),
     `State: ${join(path, "run-state.json")}`,
     `Execution plan: ${join(path, "execution-plan.json")}`,
-    `Artifacts: ${existsSync(artifacts) ? artifacts : "none"}`,
+    `Source corpus: ${sourceCorpusPath(path)}`,
+    `Artifacts: ${artifacts}${existsSync(artifacts) ? "" : " (not retained)"}`,
+    `Retained worktree: ${existsSync(worktree) ? worktree : "none"}`,
   ].join("\n");
 }
 

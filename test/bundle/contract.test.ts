@@ -50,6 +50,7 @@ const expectedTools = {
   Agent: "src/extensions/subagents/index.ts",
   get_subagent_result: "src/extensions/subagents/index.ts",
   steer_subagent: "src/extensions/subagents/index.ts",
+  inspect_implement_run: "src/extensions/implement/index.ts",
   propose_papercut: "src/extensions/papercuts/index.ts",
 };
 

@@ -8,9 +8,10 @@ import {
 } from "./subagents.js";
 
 describe("managed Pipkin Implement worker tools", () => {
-  it("excludes public agent controls from mutable workers", () => {
+  it("excludes orchestration inspection and public agent controls from mutable workers", () => {
     expect(mutableWorkerExcludedTools()).toEqual(
       expect.arrayContaining([
+        "inspect_implement_run",
         "Agent",
         "get_subagent_result",
         "steer_subagent",

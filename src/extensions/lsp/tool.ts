@@ -1,9 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  truncateHead,
+  type ExtensionAPI,
+  type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { RequestCancelledError, RequestTimeoutError } from "./protocol.js";
@@ -32,7 +35,6 @@ import {
 
 const MAX_TIMEOUT_MS = 15_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
-const MAX_MODEL_OUTPUT_BYTES = 20_000;
 const OMITTED_RESULTS_LINE =
   "- … Additional results omitted to keep LSP output bounded.";
 const warningKey = Symbol.for("pipkin:lsp:unavailable-warnings");
@@ -590,7 +592,12 @@ function renderBoundedList(
       line,
       ...(hasMore ? [OMITTED_RESULTS_LINE] : []),
     ].join("\n");
-    if (Buffer.byteLength(candidate, "utf8") > MAX_MODEL_OUTPUT_BYTES) {
+    if (
+      truncateHead(candidate, {
+        maxLines: DEFAULT_MAX_LINES,
+        maxBytes: DEFAULT_MAX_BYTES,
+      }).truncated
+    ) {
       outputTruncated = true;
       break;
     }
