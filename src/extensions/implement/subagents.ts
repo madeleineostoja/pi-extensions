@@ -3,7 +3,7 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { getSubagentRuntime } from "#subagents/runtime";
-import type { RuntimeSnapshot } from "#subagents/runtime";
+import type { ImplementWorkerRole, RuntimeSnapshot } from "#subagents/runtime";
 import type { ModelPreset, ThinkingLevel } from "#lib/config";
 import type { Static, TSchema } from "typebox";
 
@@ -22,7 +22,7 @@ export type SubagentClient = {
   ): Promise<SubagentResult<TResult>>;
 };
 
-export type PiImplementWorkerRole = "implementer" | "reviewer" | "planner";
+export type PiImplementWorkerRole = ImplementWorkerRole;
 
 export type SpawnArgs<TSchemaValue extends TSchema = TSchema> = {
   type: string;

@@ -674,6 +674,7 @@ describe("SubagentRuntime", () => {
       },
       messages: [],
       activity: [],
+      records: [],
       omittedMessages: 0,
       omittedActivity: 0,
       compactedHistory: false,

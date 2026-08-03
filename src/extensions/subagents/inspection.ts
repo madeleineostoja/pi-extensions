@@ -44,10 +44,20 @@ export type InspectionActivity =
       timestamp: string;
     };
 
+export type InspectionRecord =
+  | {
+      kind: "message";
+      role: "user" | "assistant" | "final";
+      text: string;
+      timestamp?: string;
+    }
+  | InspectionActivity;
+
 export type RuntimeInspection = {
   snapshot: RuntimeSnapshot;
   messages: readonly InspectionMessage[];
   activity: readonly InspectionActivity[];
+  records: readonly InspectionRecord[];
   omittedMessages: number;
   omittedActivity: number;
   compactedHistory: boolean;
@@ -81,7 +91,38 @@ export function immutableInspection(
     snapshot: freezeValue(inspection.snapshot),
     messages: Object.freeze(inspection.messages.map(freezeValue)),
     activity: Object.freeze(inspection.activity.map(freezeValue)),
+    records: Object.freeze(inspection.records.map(freezeValue)),
   });
+}
+
+export function chronologicalInspectionRecords(
+  messages: readonly InspectionMessage[],
+  activity: readonly InspectionActivity[],
+): InspectionRecord[] {
+  const records: InspectionRecord[] = [
+    ...messages.flatMap((message) => {
+      if (
+        !message.text ||
+        !["user", "assistant", "final"].includes(message.role)
+      ) {
+        return [];
+      }
+      return [
+        {
+          kind: "message" as const,
+          role: message.role as "user" | "assistant" | "final",
+          text: message.text,
+          ...(message.timestamp === undefined
+            ? {}
+            : { timestamp: message.timestamp }),
+        },
+      ];
+    }),
+    ...activity,
+  ];
+  return records.sort((left, right) =>
+    (left.timestamp ?? "").localeCompare(right.timestamp ?? ""),
+  );
 }
 
 export function projectMessages(messages: readonly unknown[]): {

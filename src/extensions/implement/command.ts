@@ -247,8 +247,6 @@ export function registerImplementCommand(
     }
     const failures = await resourceReleaseFailures(run);
     active = undefined;
-    activity?.clear();
-    activity = undefined;
     try {
       await run.lease.release();
     } catch (error) {
@@ -283,9 +281,8 @@ export function registerImplementCommand(
       return;
     }
     activity?.clear();
-    const nextActivity = createTemporaryActivity(ctx);
+    const nextActivity = createTemporaryActivity(pi.events, ctx);
     activity = nextActivity;
-    nextActivity.starting(parsed.planPath);
     const onTransition = (
       state: RunState,
       event: Parameters<

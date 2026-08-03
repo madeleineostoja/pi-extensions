@@ -10,7 +10,7 @@ import {
   costLabel,
   elapsedLabel,
   tokenLabel,
-} from "./roster.js";
+} from "./formatters.js";
 import type { PublicAgentParams } from "./public-tools.js";
 
 type AgentToolDetails = RuntimeSnapshot;

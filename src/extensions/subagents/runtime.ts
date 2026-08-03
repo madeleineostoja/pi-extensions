@@ -33,6 +33,7 @@ import {
   type PublicBuiltinType,
 } from "./agent-profiles.js";
 import {
+  chronologicalInspectionRecords,
   immutableInspection,
   projectMessages,
   retainActivity,
@@ -44,6 +45,7 @@ export type { ThinkingLevel } from "#lib/config";
 export type {
   InspectionActivity,
   InspectionMessage,
+  InspectionRecord,
   RuntimeInspection,
 } from "./inspection.js";
 export type { PromptMode } from "./agent-profiles.js";
@@ -57,6 +59,7 @@ export type SubagentRuntimeStatus =
 
 export type ExtensionBindingStatus = "bound" | "unbound";
 export type RosterVisibility = "show" | "hide";
+export type ImplementWorkerRole = "planner" | "implementer" | "reviewer";
 
 export type RuntimeTimestamps = {
   queuedAt: string;
@@ -74,7 +77,7 @@ export type RuntimeOwner =
   | {
       kind: "pipkin:implement";
       runId: string;
-      role: string;
+      role: ImplementWorkerRole;
       taskId?: string;
     }
   | {
@@ -795,6 +798,7 @@ export class SubagentRuntime {
   #createSession: CreateSession;
   #shutdownFinalization?: Promise<void>;
   #disposal?: Promise<void>;
+  #snapshotListeners = new Set<RuntimeSubscriptionListener>();
 
   constructor(
     public pi: ExtensionAPI,
@@ -914,6 +918,7 @@ export class SubagentRuntime {
       inspectListeners: new Set(),
     };
     this.#records.set(id, record);
+    this.#notifySnapshotListeners();
     return projectSnapshot(record);
   }
 
@@ -1100,6 +1105,7 @@ export class SubagentRuntime {
     record.status = "running";
     record.startedAt = timestamp;
     record.updatedAt = timestamp;
+    this.#notifySnapshotListeners();
     return projectSnapshot(record);
   }
 
@@ -1112,6 +1118,7 @@ export class SubagentRuntime {
     record.completedAt = timestamp;
     record.updatedAt = timestamp;
     void this.#finalize(record);
+    this.#notifySnapshotListeners();
     return projectSnapshot(record);
   }
 
@@ -1124,6 +1131,7 @@ export class SubagentRuntime {
     record.completedAt = timestamp;
     record.updatedAt = timestamp;
     void this.#finalize(record);
+    this.#notifySnapshotListeners();
     return projectSnapshot(record);
   }
 
@@ -1132,6 +1140,7 @@ export class SubagentRuntime {
     this.#ensureNotTerminal(record);
     this.#markStopped(record, error);
     void this.#finalize(record);
+    this.#notifySnapshotListeners();
     return projectSnapshot(record);
   }
 
@@ -1219,6 +1228,10 @@ export class SubagentRuntime {
       snapshot: projectSnapshot(record),
       messages: projected.messages,
       activity: retained.activity,
+      records: chronologicalInspectionRecords(
+        projected.messages,
+        retained.activity,
+      ),
       omittedMessages: projected.omittedMessages,
       omittedActivity:
         (record.omittedActivity ?? 0) +
@@ -1254,6 +1267,11 @@ export class SubagentRuntime {
       },
       deps,
     );
+  }
+
+  subscribeSnapshots(listener: RuntimeSubscriptionListener): () => void {
+    this.#snapshotListeners.add(listener);
+    return () => this.#snapshotListeners.delete(listener);
   }
 
   subscribe(id: string, listener: RuntimeSubscriptionListener): () => void {
@@ -1899,6 +1917,16 @@ export class SubagentRuntime {
     record.updatedAt = timestamp;
   }
 
+  #notifySnapshotListeners(): void {
+    for (const listener of Array.from(this.#snapshotListeners)) {
+      try {
+        listener();
+      } catch {
+        // Runtime-wide observers cannot alter scheduler authority.
+      }
+    }
+  }
+
   #notifyInspectListeners(
     record: RuntimeRecord,
     options: { allowRetired?: boolean; clear?: boolean } = {},
@@ -1917,6 +1945,7 @@ export class SubagentRuntime {
         // Inspector callbacks cannot interrupt terminal cleanup or waiters.
       }
     }
+    this.#notifySnapshotListeners();
   }
 
   #finalize(
@@ -1952,6 +1981,10 @@ export class SubagentRuntime {
         snapshot: projectSnapshot(record),
         messages: projected.messages,
         activity: retainedActivity.activity,
+        records: chronologicalInspectionRecords(
+          projected.messages,
+          retainedActivity.activity,
+        ),
         omittedMessages: projected.omittedMessages,
         omittedActivity:
           (record.omittedActivity ?? 0) +

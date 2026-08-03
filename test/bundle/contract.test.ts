@@ -448,6 +448,7 @@ describe("Pipkin bundle", () => {
       { getConfigPath },
       { formatCompactTokens },
       { setPipkinStatus },
+      { createActivityPublisher },
       { bindSandboxHost },
       { executeSandboxBash },
       { getSubagentRuntime },
@@ -455,6 +456,7 @@ describe("Pipkin bundle", () => {
       import("#lib/config"),
       import("#lib/ui/metrics"),
       import("#ui/status"),
+      import("#ui/activity"),
       import("#sandbox/runtime"),
       import("#sandbox/bash"),
       import("#subagents/runtime"),
@@ -465,6 +467,7 @@ describe("Pipkin bundle", () => {
     );
     expect(formatCompactTokens(1_500)).toBe("1.5k");
     expect(setPipkinStatus).toBeTypeOf("function");
+    expect(createActivityPublisher).toBeTypeOf("function");
     expect(bindSandboxHost).toBeTypeOf("function");
     expect(executeSandboxBash).toBeTypeOf("function");
     expect(getSubagentRuntime).toBeTypeOf("function");

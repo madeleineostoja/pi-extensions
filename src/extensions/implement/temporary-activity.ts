@@ -1,39 +1,33 @@
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type {
+  EventBus,
+  ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
+import {
+  createActivityPublisher,
+  type ActivityPublisher,
+  type ActivityState,
+} from "#ui/activity";
 import { readExecutionPlan, type ExecutionPlan } from "./execution-plan.js";
 import type { SchedulerEvent } from "./scheduler/scheduler.js";
 import type { RunState } from "./store.js";
 
-export const TEMPORARY_ACTIVITY_WIDGET_KEY =
-  "pipkin.implement.temporary-activity";
-
 type TransitionEvent = SchedulerEvent | { kind: "planner_bound" };
-type RuntimeWorkstream =
-  | { kind: "source"; id: string }
-  | { kind: "overall"; repairId: string };
-
-export function createTemporaryActivity(ctx: ExtensionCommandContext): {
-  starting(label: string): void;
+export function createTemporaryActivity(
+  events: EventBus,
+  ctx: ExtensionCommandContext,
+): {
   update(state: RunState, event?: TransitionEvent): void;
   clear(): void;
 } {
   let plan: ExecutionPlan | undefined;
   let planPath: string | undefined;
   let enabled = true;
+  const publisher = createActivityPublisher(events, "implement");
+  let published = new Set<string>();
 
   return {
-    starting(label) {
-      if (!enabled) {
-        return;
-      }
-      bestEffort(() => {
-        if (ctx.mode === "tui") {
-          ctx.ui.setWidget(TEMPORARY_ACTIVITY_WIDGET_KEY, [
-            `implement · starting · ${sanitize(label)}`,
-          ]);
-        }
-      });
-    },
     update(state, event) {
       if (!enabled) {
         return;
@@ -46,121 +40,153 @@ export function createTemporaryActivity(ctx: ExtensionCommandContext): {
         planPath = nextPath && nextPlan ? nextPath : undefined;
         plan = nextPlan;
       }
-      bestEffort(() => {
-        if (ctx.mode === "tui") {
-          ctx.ui.setWidget(
-            TEMPORARY_ACTIVITY_WIDGET_KEY,
-            formatTemporaryActivity(state, plan),
-          );
-        }
-      });
+      published =
+        bestEffort(() => publishActivity(publisher, state, plan, published)) ??
+        published;
       if (event) {
         bestEffort(() => notifyAttentionTransition(ctx, state, event, plan));
       }
     },
     clear() {
       enabled = false;
-      bestEffort(() => {
-        if (ctx.mode === "tui") {
-          ctx.ui.setWidget(TEMPORARY_ACTIVITY_WIDGET_KEY, undefined);
-        }
-      });
+      published.clear();
+      publisher.dispose();
     },
   };
 }
 
-export function formatTemporaryActivity(
+function publishActivity(
+  publisher: ActivityPublisher,
   state: RunState,
-  plan?: ExecutionPlan,
-): string[] {
-  const taskTitles = new Map(
-    plan?.tasks.map((task) => [task.id, sanitize(task.title)]),
-  );
+  plan: ExecutionPlan | undefined,
+  previous: ReadonlySet<string>,
+): Set<string> {
+  const runId = activityId("run", state.run.id);
+  const current = publishedIds(state);
+  const accepted = new Set<string>();
+  for (const id of previous) {
+    if (!current.has(id)) {
+      publisher.remove(id);
+    }
+  }
   const published = Object.values(state.tasks).filter(
     (task) => task.phase === "published",
   ).length;
   const total = Object.keys(state.tasks).length;
-  const progress = total > 0 ? ` · ${published}/${total} published` : "";
-  const lines = [
-    `implement ${sanitize(state.run.id)} · ${runPhase(state)}${progress}`,
-  ];
-
+  if (
+    publisher.upsert({
+      id: runId,
+      label: "Implement",
+      title: "Implementation run",
+      detail: shorten(runPhase(state), 120),
+      state: runState(state),
+      ...(total ? { progress: { completed: published, total } } : {}),
+      updatedAt: Date.now(),
+    })
+  ) {
+    accepted.add(runId);
+  }
+  const taskTitles = new Map(
+    plan?.tasks.map((task) => [task.id, sanitize(task.title)]),
+  );
   for (const workstream of Object.values(state.workstreams.source)) {
-    const titles = workstream.taskIds.map(
-      (taskId) => taskTitles.get(taskId) ?? taskId,
-    );
-    lines.push(
-      `  ${workstreamPhase(workstream.phase)} · ${workstream.id} · ${titles.join("; ")}`,
-    );
-    appendAttentionLines(lines, state, workstream);
+    if (terminalWorkstream(workstream.phase)) {
+      continue;
+    }
+    const title =
+      workstream.taskIds
+        .map((id) => taskTitles.get(id))
+        .find((value): value is string => Boolean(value)) ??
+      "Source workstream";
+    const id = activityId("source", workstream.id);
+    if (
+      publisher.upsert({
+        id,
+        parent: { source: "implement", id: runId },
+        label: "Workstream",
+        title: shorten(title, 240),
+        detail: shorten(workstreamPhase(workstream.phase), 120),
+        state: workstreamState(workstream.phase),
+        updatedAt: Date.now(),
+      })
+    ) {
+      accepted.add(id);
+    }
   }
-
   for (const workstream of Object.values(state.workstreams.overall)) {
-    lines.push(
-      `  ${workstreamPhase(workstream.phase)} · ${workstream.repairId} · whole-plan repair`,
-    );
-    appendAttentionLines(lines, state, {
-      kind: "overall",
-      repairId: workstream.repairId,
-    });
+    if (terminalWorkstream(workstream.phase)) {
+      continue;
+    }
+    const id = activityId("repair", workstream.repairId);
+    if (
+      publisher.upsert({
+        id,
+        parent: { source: "implement", id: runId },
+        label: "Repair",
+        title: "Whole-plan repair",
+        detail: shorten(workstreamPhase(workstream.phase), 120),
+        state: workstreamState(workstream.phase),
+        updatedAt: Date.now(),
+      })
+    ) {
+      accepted.add(id);
+    }
   }
-
-  if (state.wholePlanReview.reviewRetry) {
-    const retry = state.wholePlanReview.reviewRetry;
-    lines.push(
-      `  whole-plan review retry · ${retry.status} · ${shorten(retry.evidence.at(-1) ?? "retrying review")}`,
-    );
-  }
-  if (state.failure) {
-    lines.push(
-      `  failed · ${state.failure.category} · ${shorten(state.failure.reason)}`,
-    );
-  }
-  return lines;
+  return accepted;
 }
 
-function appendAttentionLines(
-  lines: string[],
-  state: RunState,
-  workstream: RuntimeWorkstream,
-): void {
-  const sameWorkstream = (candidate: RuntimeWorkstream) =>
-    candidate.kind === workstream.kind &&
-    (candidate.kind === "source"
-      ? candidate.id ===
-        (workstream as Extract<RuntimeWorkstream, { kind: "source" }>).id
-      : candidate.repairId ===
-        (workstream as Extract<RuntimeWorkstream, { kind: "overall" }>)
-          .repairId);
-  const failure = Object.values(state.failures)
-    .filter((entry) => sameWorkstream(entry.workstream))
-    .at(-1);
-  if (failure) {
-    lines.push(
-      `    last failure · ${failure.category} · ${shorten(failure.evidence)}`,
-    );
+function publishedIds(state: RunState): Set<string> {
+  const result = new Set<string>([activityId("run", state.run.id)]);
+  for (const workstream of Object.values(state.workstreams.source)) {
+    if (!terminalWorkstream(workstream.phase)) {
+      result.add(activityId("source", workstream.id));
+    }
   }
-  const review =
-    state.reviews[
-      workstream.kind === "source"
-        ? `source:${workstream.id}`
-        : `overall:${workstream.repairId}`
-    ];
-  if (review?.latestCorrection) {
-    lines.push(
-      `    final review · ${review.latestCorrection.mode} correction · ${shorten(review.latestCorrection.evidence)}`,
-    );
+  for (const workstream of Object.values(state.workstreams.overall)) {
+    if (!terminalWorkstream(workstream.phase)) {
+      result.add(activityId("repair", workstream.repairId));
+    }
   }
-  const findings = Object.values(state.findings).filter(
-    (finding) =>
-      finding.status === "open" && sameWorkstream(finding.workstream),
-  );
-  for (const finding of findings.slice(0, 2)) {
-    lines.push(`    finding · ${shorten(finding.summary)}`);
+  return result;
+}
+
+function activityId(kind: "run" | "source" | "repair", value: string): string {
+  const prefix = `${kind}-`;
+  return `${prefix}${createHash("sha256")
+    .update(value)
+    .digest("hex")
+    .slice(0, 64 - prefix.length)}`;
+}
+
+function terminalWorkstream(phase: string): boolean {
+  return ["completed", "stopped", "dependency_skipped"].includes(phase);
+}
+
+function runState(state: RunState): ActivityState {
+  if (
+    state.failure ||
+    state.phase === "failed" ||
+    state.phase === "incomplete"
+  ) {
+    return "failed";
   }
-  if (findings.length > 2) {
-    lines.push(`    findings · ${findings.length - 2} more`);
+  if (state.phase === "completed") {
+    return "completed";
   }
+  if (state.phase === "planning") {
+    return "queued";
+  }
+  return "running";
+}
+
+function workstreamState(phase: string): ActivityState {
+  if (phase.includes("failed")) {
+    return "attention";
+  }
+  if (phase === "queued") {
+    return "queued";
+  }
+  return "running";
 }
 
 function notifyAttentionTransition(

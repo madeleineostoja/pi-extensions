@@ -91,7 +91,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 ### Session details
 
-- **UI** keeps cwd, branch, model, thinking, cost, cache hit rate, context usage, and extension state in one compact footer.
+- **UI** keeps cwd, branch, model, thinking, cost, cache hit rate, context usage, and extension state in one compact footer, with a bounded live Activity view for current work.
 - **Personality** gives unnamed sessions useful titles, so `/resume` is less of an archaeological dig.
 - **Papercuts** saves recurring project-specific workflow failures for human review instead of letting the lesson vanish with the session.
 
