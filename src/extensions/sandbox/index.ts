@@ -19,7 +19,7 @@ export default function (pi: ExtensionAPI): void {
 
   let hostBinding: SandboxHostBinding | undefined;
 
-  registerSandboxCommand({ pi, state, supportedMac });
+  registerSandboxCommand({ pi, state, denials, supportedMac });
   pi.on("session_start", async (event, ctx) => {
     hostBinding?.dispose();
     hostBinding = bindSandboxHost(pi.events, state.enabled);

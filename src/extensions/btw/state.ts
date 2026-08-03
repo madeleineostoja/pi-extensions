@@ -21,7 +21,3 @@ export function addExchange(sessionKey: string, exchange: BtwExchange): void {
   history.push(exchange);
   btwHistory.set(sessionKey, history);
 }
-
-export function clearHistory(sessionKey: string): void {
-  btwHistory.delete(sessionKey);
-}

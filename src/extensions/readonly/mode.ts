@@ -3,10 +3,16 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { promptForPermission } from "#lib/permission-prompt";
+import { clearPipkinStatus, setPipkinStatus } from "#ui/status";
 import { resolveChoice } from "./handler";
-import { parseReadonlyArgs, extractToolPath, formatSteerTitle } from "./utils";
+import {
+  parseReadonlyArgs,
+  extractToolPath,
+  formatProposalDetail,
+  formatSteerTitle,
+} from "./utils";
 
-const FOOTER_KEY = "pipkin.readonly.mode";
+const READONLY_STATUS = { id: "readonly", priority: 200 } as const;
 const READONLY_ICON = "󰏯";
 const EDITING_ICON = "󰏫";
 
@@ -17,13 +23,12 @@ export function registerReadonlyMode(pi: ExtensionAPI): void {
     if (ctx.mode !== "tui") {
       return;
     }
-    const theme = ctx.ui.theme;
-    ctx.ui.setStatus(
-      FOOTER_KEY,
-      enabled
-        ? `${theme.fg("success", READONLY_ICON)} ${theme.fg("muted", "readonly")}`
-        : `${theme.fg("warning", EDITING_ICON)} ${theme.fg("warning", "editing")}`,
-    );
+    setPipkinStatus(ctx.ui, {
+      ...READONLY_STATUS,
+      icon: enabled ? READONLY_ICON : EDITING_ICON,
+      state: enabled ? "normal" : "warning",
+      text: enabled ? "readonly" : "editing",
+    });
   }
 
   function setEnabled(value: boolean, ctx?: ExtensionContext) {
@@ -60,6 +65,12 @@ export function registerReadonlyMode(pi: ExtensionAPI): void {
     syncFooter(ctx);
   });
 
+  pi.on("session_shutdown", async (_event, ctx) => {
+    if (ctx.mode === "tui") {
+      clearPipkinStatus(ctx.ui, READONLY_STATUS.id, READONLY_STATUS.priority);
+    }
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     if (
       !enabled ||
@@ -74,6 +85,7 @@ export function registerReadonlyMode(pi: ExtensionAPI): void {
       ui: ctx.ui,
       signal: ctx.signal,
       title: `Readonly: apply proposed ${event.toolName}?`,
+      detail: formatProposalDetail(event.toolName, path, event.input),
       choices: [
         { value: "Accept", label: "Accept" },
         { value: "Accept for this session", label: "Accept for this session" },

@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { clearPipkinStatus, setPipkinStatus } from "#ui/status";
 import {
   createPapercutStoreForCwd,
   onPapercutChange,
@@ -7,7 +8,11 @@ import {
   type PapercutRecord,
 } from "./store.js";
 
-export const PAPERCUT_STATUS_KEY = "pipkin.papercuts.status";
+export const PAPERCUT_STATUS = {
+  id: "papercuts",
+  priority: 300,
+  icon: "󰶯",
+} as const;
 
 function pendingRecords(file: PapercutFile): PapercutRecord[] {
   return file.records.filter((record) => record.status === "pending");
@@ -48,17 +53,20 @@ export function createPapercutStatusController() {
         return;
       }
       const count = pendingRecords(file).length;
-      ctx.ui.setStatus(
-        PAPERCUT_STATUS_KEY,
-        count > 0
-          ? `${ctx.ui.theme.fg("warning", "󰶯")} ${ctx.ui.theme.fg("warning", `${count} papercuts`)}`
-          : undefined,
-      );
+      if (count > 0) {
+        setPipkinStatus(ctx.ui, {
+          ...PAPERCUT_STATUS,
+          state: "warning",
+          text: `${count} papercuts`,
+        });
+      } else {
+        clearPipkinStatus(ctx.ui, PAPERCUT_STATUS.id, PAPERCUT_STATUS.priority);
+      }
     } catch (error) {
       if (!sessionIsActive()) {
         return;
       }
-      ctx.ui.setStatus(PAPERCUT_STATUS_KEY, undefined);
+      clearPipkinStatus(ctx.ui, PAPERCUT_STATUS.id, PAPERCUT_STATUS.priority);
       ctx.ui.notify(
         `Papercuts unavailable: ${error instanceof Error ? error.message : String(error)}`,
         "error",
@@ -140,7 +148,7 @@ export function createPapercutStatusController() {
       unsubscribeFromPapercutChanges();
       unsubscribeFromPapercutChanges = () => {};
       if (ctx.mode === "tui") {
-        ctx.ui.setStatus(PAPERCUT_STATUS_KEY, undefined);
+        clearPipkinStatus(ctx.ui, PAPERCUT_STATUS.id, PAPERCUT_STATUS.priority);
       }
     },
   };

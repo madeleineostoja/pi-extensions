@@ -1,4 +1,5 @@
 import {
+  createAgentSession,
   DefaultResourceLoader,
   ExtensionRunner,
   ModelRegistry,
@@ -9,6 +10,11 @@ import {
   type Extension,
   type LoadExtensionsResult,
 } from "@earendil-works/pi-coding-agent";
+import {
+  createFauxCore,
+  fauxAssistantMessage,
+  fauxToolCall,
+} from "@earendil-works/pi-ai";
 import {
   existsSync,
   mkdirSync,
@@ -162,6 +168,7 @@ async function loadBundle(): Promise<BundleFixture> {
         medium: { model: "openai/gpt-4o", thinking: "medium" },
         high: { model: "openai/gpt-4o", thinking: "high" },
       },
+      nickname: "Pipkin",
     }),
     { encoding: "utf8", flush: true },
   );
@@ -452,16 +459,117 @@ describe("Pipkin bundle", () => {
     await assertSafetyOrder(fixture, "reload");
   });
 
+  it("persists a native error result for a blocked direct write", async () => {
+    const fixture = await loadBundle();
+    const faux = createFauxCore({});
+    const deniedPath = join(tmpdir(), "pipkin-sandbox-denied", "blocked.txt");
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall(
+          "write",
+          { path: deniedPath, content: "blocked" },
+          { id: "blocked-write" },
+        ),
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("acknowledged"),
+    ]);
+    const sessionManager = SessionManager.inMemory(ROOT);
+    const resourceLoader = Object.create(
+      fixture.loader,
+    ) as DefaultResourceLoader;
+    resourceLoader.getExtensions = () => ({
+      ...fixture.result,
+      extensions: safetyExtensions(fixture.result),
+    });
+    const { session } = await createAgentSession({
+      cwd: ROOT,
+      model: faux.getModel(),
+      resourceLoader,
+      sessionManager,
+      settingsManager: SettingsManager.inMemory(),
+      tools: ["write"],
+    });
+    const statuses = new Map<string, string | undefined>();
+
+    try {
+      await session.bindExtensions({
+        mode: "tui",
+        uiContext: {
+          setStatus: (key: string, text: string | undefined) =>
+            statuses.set(key, text),
+          theme: { fg: (_tone: string, text: string) => text },
+        } as never,
+      });
+      session.agent.streamFunction = faux.streamSimple;
+      await session.agent.prompt("attempt the blocked write");
+
+      const messages = sessionManager.buildSessionContext().messages;
+      const call = messages.find(
+        (message) =>
+          message.role === "assistant" &&
+          message.content.some(
+            (part) =>
+              part.type === "toolCall" &&
+              part.name === "write" &&
+              part.arguments.path === deniedPath,
+          ),
+      );
+      const result = messages.find(
+        (message) =>
+          message.role === "toolResult" &&
+          message.toolCallId === "blocked-write",
+      );
+
+      expect(call).toBeDefined();
+      expect(result).toMatchObject({
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: expect.stringContaining(
+              "Sandbox: direct writes must stay in the workspace.",
+            ),
+          },
+        ],
+      });
+      expect(JSON.stringify(result)).toContain(deniedPath);
+      expect([...statuses.values()]).toContain("󰒃 sandbox · 1 denied");
+      expect(
+        sessionManager
+          .getBranch()
+          .some(
+            (entry) =>
+              entry.type === "custom" && entry.customType.includes("sandbox"),
+          ),
+      ).toBe(false);
+    } finally {
+      await (
+        session as unknown as { _extensionRunner: ExtensionRunner }
+      )._extensionRunner.emit({
+        type: "session_shutdown",
+        reason: "quit",
+      });
+      session.dispose();
+    }
+  });
+
   it("resolves internal modules without mutating Pipkin runtime state", async () => {
     vi.resetModules();
     const before = snapshotGlobalSymbols();
     const [
       { getConfigPath },
+      { formatCompactTokens },
+      { setPipkinStatus },
+      { createActivityPublisher },
       { bindSandboxHost },
       { executeSandboxBash },
       { getSubagentRuntime },
     ] = await Promise.all([
       import("#lib/config"),
+      import("#lib/ui/metrics"),
+      import("#ui/status"),
+      import("#ui/activity"),
       import("#sandbox/runtime"),
       import("#sandbox/bash"),
       import("#subagents/runtime"),
@@ -470,6 +578,9 @@ describe("Pipkin bundle", () => {
     expect(getConfigPath("/tmp/pipkin-agent")).toBe(
       "/tmp/pipkin-agent/pipkin/config.json",
     );
+    expect(formatCompactTokens(1_500)).toBe("1.5k");
+    expect(setPipkinStatus).toBeTypeOf("function");
+    expect(createActivityPublisher).toBeTypeOf("function");
     expect(bindSandboxHost).toBeTypeOf("function");
     expect(executeSandboxBash).toBeTypeOf("function");
     expect(getSubagentRuntime).toBeTypeOf("function");

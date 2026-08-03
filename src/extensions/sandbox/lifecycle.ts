@@ -19,7 +19,12 @@ import { clearSandboxStatus, syncSandboxStatus } from "./status.js";
 
 function initializationError(error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error);
-  return `Sandbox: initialization failed: ${detail.slice(0, 240)}`;
+  const bounded = Array.from(detail, (character) =>
+    /\p{C}/u.test(character) ? "�" : character,
+  )
+    .join("")
+    .slice(0, 240);
+  return `Sandbox: initialization failed: ${bounded}`;
 }
 
 export function createSandboxSessionController(options: {
@@ -35,6 +40,7 @@ export function createSandboxSessionController(options: {
   let bash: ReturnType<typeof createSandboxBashRuntime> | undefined;
   let observer: SandboxDenialObserver | undefined;
   let bashBinding: { dispose: () => void } | undefined;
+  let unsubscribeDenials: (() => void) | undefined;
   let shutdown: Promise<void> | undefined;
 
   return {
@@ -45,6 +51,8 @@ export function createSandboxSessionController(options: {
     ) {
       bashBinding?.dispose();
       bashBinding = undefined;
+      unsubscribeDenials?.();
+      unsubscribeDenials = undefined;
       await shutdown;
       shutdown = undefined;
       const previousBash = bash;
@@ -88,7 +96,20 @@ export function createSandboxSessionController(options: {
         unavailableReason: failure,
         denialObserver: observer,
       });
-      syncSandboxStatus(ctx, options.state, options.supportedMac);
+      syncSandboxStatus(
+        ctx,
+        options.state,
+        options.supportedMac,
+        options.denials,
+      );
+      unsubscribeDenials = options.denials.subscribe(() =>
+        syncSandboxStatus(
+          ctx,
+          options.state,
+          options.supportedMac,
+          options.denials,
+        ),
+      );
       const definition = createSandboxBashDefinition(
         policy?.sessionCwd ?? ctx.cwd,
         bash,
@@ -112,6 +133,8 @@ export function createSandboxSessionController(options: {
         bashBinding = undefined;
         bash = undefined;
         observer = undefined;
+        unsubscribeDenials?.();
+        unsubscribeDenials = undefined;
         activeBashBinding?.dispose();
         options.state.revoke();
         clearSandboxStatus(ctx);

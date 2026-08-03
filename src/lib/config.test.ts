@@ -63,6 +63,25 @@ describe("Pipkin config", () => {
     );
   });
 
+  it("accepts a normalized nickname while keeping the snapshot immutable", () => {
+    const snapshot = parsePipkinConfig(
+      JSON.stringify({ models, nickname: "  Mads   Ostoja  " }),
+    );
+
+    expect(snapshot.config.nickname).toBe("Mads Ostoja");
+    expect(Object.isFrozen(snapshot.config)).toBe(true);
+  });
+
+  it("rejects empty, control, and oversized nicknames", () => {
+    for (const nickname of ["   ", "Mads\n", "x".repeat(41)]) {
+      const snapshot = parsePipkinConfig(JSON.stringify({ models, nickname }));
+      expect(snapshot.config.nickname).toBeUndefined();
+      expect(snapshot.issues).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: "nickname" })]),
+      );
+    }
+  });
+
   it("rejects removed context policy configuration", () => {
     const snapshot = parsePipkinConfig(
       JSON.stringify({ models, context: { staleTurns: 6 } }),

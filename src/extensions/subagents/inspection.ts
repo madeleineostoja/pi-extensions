@@ -11,13 +11,17 @@ export type InspectionMessage = {
   toolCallId?: string;
 };
 
+export type InspectionToolArguments = Readonly<
+  Record<string, string | number | boolean>
+>;
+
 export type InspectionActivity =
   | {
       kind: "tool";
       toolCallId: string;
       toolName: string;
       status: "running" | "completed" | "failed" | "interrupted";
-      arguments?: string;
+      arguments?: InspectionToolArguments;
       result?: string;
       error?: string;
       timestamp?: string;
@@ -44,10 +48,20 @@ export type InspectionActivity =
       timestamp: string;
     };
 
+export type InspectionRecord =
+  | {
+      kind: "message";
+      role: "user" | "assistant" | "final";
+      text: string;
+      timestamp?: string;
+    }
+  | InspectionActivity;
+
 export type RuntimeInspection = {
   snapshot: RuntimeSnapshot;
   messages: readonly InspectionMessage[];
   activity: readonly InspectionActivity[];
+  records: readonly InspectionRecord[];
   omittedMessages: number;
   omittedActivity: number;
   compactedHistory: boolean;
@@ -81,7 +95,69 @@ export function immutableInspection(
     snapshot: freezeValue(inspection.snapshot),
     messages: Object.freeze(inspection.messages.map(freezeValue)),
     activity: Object.freeze(inspection.activity.map(freezeValue)),
+    records: Object.freeze(inspection.records.map(freezeValue)),
   });
+}
+
+export function chronologicalInspectionRecords(
+  messages: readonly InspectionMessage[],
+  activity: readonly InspectionActivity[],
+  additional: readonly InspectionRecord[] = [],
+): InspectionRecord[] {
+  const records: InspectionRecord[] = [
+    ...messages.flatMap((message) => {
+      if (
+        !message.text ||
+        !["user", "assistant", "final"].includes(message.role)
+      ) {
+        return [];
+      }
+      return [
+        {
+          kind: "message" as const,
+          role: message.role as "user" | "assistant" | "final",
+          text: message.text,
+          ...(message.timestamp === undefined
+            ? {}
+            : { timestamp: message.timestamp }),
+        },
+      ];
+    }),
+    ...activity,
+    ...additional,
+  ];
+  return records
+    .map((record, index) => ({ record, index }))
+    .sort(
+      (left, right) =>
+        (left.record.timestamp ?? "").localeCompare(
+          right.record.timestamp ?? "",
+        ) || left.index - right.index,
+    )
+    .map(({ record }) => record);
+}
+
+export function projectFinalInspectionRecord(
+  value: unknown,
+  timestamp?: string,
+): InspectionRecord | undefined {
+  let serialized: string | undefined;
+  try {
+    serialized =
+      typeof value === "string" ? value : (JSON.stringify(value) ?? undefined);
+  } catch {
+    return undefined;
+  }
+  const text = serialized.replace(/\p{C}/gu, " ").trim();
+  if (!text) {
+    return undefined;
+  }
+  return {
+    kind: "message",
+    role: "final",
+    text: truncateUtf8(text),
+    ...(timestamp === undefined ? {} : { timestamp }),
+  };
 }
 
 export function projectMessages(messages: readonly unknown[]): {
@@ -158,21 +234,17 @@ export function projectMessages(messages: readonly unknown[]): {
       if (!toolCallId || !toolName) {
         continue;
       }
+      const argumentsValue = safeToolArguments(
+        toolName,
+        part.arguments ?? part.params,
+      );
       calls.set(toolCallId, activity.length);
       activity.push({
         kind: "tool",
         toolCallId,
         toolName,
         status: "running",
-        ...(safeToolArguments(toolName, part.arguments ?? part.params) ===
-        undefined
-          ? {}
-          : {
-              arguments: safeToolArguments(
-                toolName,
-                part.arguments ?? part.params,
-              ),
-            }),
+        ...(argumentsValue === undefined ? {} : { arguments: argumentsValue }),
         ...(timestamp === undefined ? {} : { timestamp }),
       });
     }
@@ -208,33 +280,82 @@ function retain(messages: InspectionMessage[], activity: InspectionActivity[]) {
   };
 }
 
-function safeToolArguments(name: string, value: unknown): string | undefined {
+function safeToolArguments(
+  name: string,
+  value: unknown,
+): InspectionToolArguments | undefined {
   if (!isObject(value)) {
     return undefined;
   }
-  const path = stringValue(value.path) ?? stringValue(value.file_path);
+  const path = boundedString(value.path) ?? boundedString(value.file_path);
   if (name === "edit" || name === "write") {
-    return path === undefined ? undefined : `path: ${truncateUtf8(path)}`;
+    return path === undefined ? undefined : { path };
   }
-  const range = [
-    scalarText(value.offset),
-    scalarText(value.limit),
-    scalarText(value.startLine),
-    scalarText(value.endLine),
-  ]
-    .filter((part): part is string => part !== undefined)
-    .join(", ");
-  const fields = [
-    path && `path: ${path}`,
-    range && `range: ${range}`,
-    (stringValue(value.query) ?? stringValue(value.pattern)) &&
-      `query: ${stringValue(value.query) ?? stringValue(value.pattern)}`,
-    stringValue(value.command) && `command: ${stringValue(value.command)}`,
-    stringValue(value.symbol) && `symbol: ${stringValue(value.symbol)}`,
-    stringValue(value.action) && `action: ${stringValue(value.action)}`,
-    stringValue(value.question) && `question: ${stringValue(value.question)}`,
-  ].filter((field): field is string => Boolean(field));
-  return fields.length === 0 ? undefined : truncateUtf8(fields.join(" · "));
+  if (name === "read") {
+    return path === undefined
+      ? undefined
+      : compactArguments({
+          path,
+          offset: finiteScalar(value.offset),
+          limit: finiteScalar(value.limit),
+        });
+  }
+  if (name === "grep") {
+    const pattern = boundedString(value.pattern);
+    return pattern === undefined
+      ? undefined
+      : compactArguments({
+          pattern,
+          path,
+          glob: boundedString(value.glob),
+          ignoreCase: booleanValue(value.ignoreCase),
+          literal: booleanValue(value.literal),
+          context: finiteScalar(value.context),
+          limit: finiteScalar(value.limit),
+        });
+  }
+  if (name === "find") {
+    const pattern = boundedString(value.pattern);
+    return pattern === undefined
+      ? undefined
+      : compactArguments({
+          pattern,
+          path,
+          limit: finiteScalar(value.limit),
+        });
+  }
+  if (name === "bash") {
+    const command = boundedString(value.command);
+    return command === undefined
+      ? undefined
+      : compactArguments({
+          command,
+          timeout: finiteScalar(value.timeout),
+        });
+  }
+  return undefined;
+}
+
+function compactArguments(
+  value: Record<string, string | number | boolean | undefined>,
+): InspectionToolArguments {
+  return Object.fromEntries(
+    Object.entries(value).filter((entry) => entry[1] !== undefined),
+  ) as Record<string, string | number | boolean>;
+}
+
+function boundedString(value: unknown): string | undefined {
+  return typeof value === "string" ? truncateUtf8(value) : undefined;
+}
+
+function finiteScalar(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function messageText(message: Record<string, unknown>): string | undefined {
@@ -274,12 +395,6 @@ function timestampText(value: unknown): string | undefined {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-function scalarText(value: unknown): string | undefined {
-  return typeof value === "string" || typeof value === "number"
-    ? String(value)
-    : undefined;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

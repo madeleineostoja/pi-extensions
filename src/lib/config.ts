@@ -25,6 +25,7 @@ export type ConfigIssue = Readonly<{
 export type PipkinConfig = Readonly<{
   models: Readonly<Partial<Record<ModelPresetName, ModelPreset>>>;
   implement: Readonly<{ workerConcurrency: number }>;
+  nickname?: string;
 }>;
 export type ConfigSnapshot = Readonly<{
   path: string;
@@ -121,6 +122,11 @@ function parseValue(
     }
   }
 
+  let nickname: string | undefined;
+  if (root?.nickname !== undefined) {
+    nickname = parseNickname(root.nickname, issue);
+  }
+
   const implementInput = root?.implement;
   let workerConcurrency = 3;
   if (implementInput !== undefined) {
@@ -149,7 +155,7 @@ function parseValue(
 
   if (root) {
     for (const key of Object.keys(root)) {
-      if (!["models", "implement"].includes(key)) {
+      if (!["models", "implement", "nickname"].includes(key)) {
         issue(key, "is not supported");
       }
     }
@@ -160,9 +166,34 @@ function parseValue(
     config: {
       models,
       implement: { workerConcurrency },
+      ...(nickname ? { nickname } : {}),
     },
     issues,
   });
+}
+
+function parseNickname(
+  value: unknown,
+  issue: (field: string, message: string) => void,
+): string | undefined {
+  if (typeof value !== "string") {
+    issue("nickname", "must be a non-empty text value");
+    return undefined;
+  }
+  if (Array.from(value).some((character) => /\p{Cc}/u.test(character))) {
+    issue("nickname", "must not contain control characters");
+    return undefined;
+  }
+  const nickname = value.replace(/\s+/g, " ").trim();
+  if (!nickname) {
+    issue("nickname", "must be a non-empty text value");
+    return undefined;
+  }
+  if (Array.from(nickname).length > 40) {
+    issue("nickname", "must be at most 40 characters");
+    return undefined;
+  }
+  return nickname;
 }
 
 function parseModelPreset(

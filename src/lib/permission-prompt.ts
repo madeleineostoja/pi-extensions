@@ -1,7 +1,8 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { promptForAction } from "./action-prompt.js";
+import { promptForAction, type ActionPromptUI } from "./ui/action-prompt.js";
 
-export type PermissionPromptUI = Pick<ExtensionUIContext, "select" | "input">;
+export type PermissionPromptUI = ActionPromptUI &
+  Pick<ExtensionUIContext, "input">;
 
 export type PermissionPromptChoice<T extends string> = {
   value: T;
@@ -39,10 +40,16 @@ export async function promptForPermission<T extends string>(
   }
   try {
     const message =
-      (await options.ui.input(
-        selectedChoice.input.title,
-        selectedChoice.input.placeholder,
-      )) ?? "";
+      (options.signal
+        ? await options.ui.input(
+            selectedChoice.input.title,
+            selectedChoice.input.placeholder,
+            { signal: options.signal },
+          )
+        : await options.ui.input(
+            selectedChoice.input.title,
+            selectedChoice.input.placeholder,
+          )) ?? "";
     return { ...result, message };
   } catch (error) {
     if (

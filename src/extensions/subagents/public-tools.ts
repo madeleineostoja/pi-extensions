@@ -8,7 +8,6 @@ import {
   PUBLIC_BUILTIN_TYPES,
 } from "./agent-profiles.js";
 import type { SubagentRuntime } from "./runtime.js";
-import type { SubagentRosterController } from "./roster.js";
 import {
   renderAgentCall,
   renderAgentResult,
@@ -83,14 +82,12 @@ export function resolveAgentSelection(
 export function registerPublicAgentTools({
   pi,
   runtime,
-  roster,
   foregroundInterrupt,
   configPath,
   modelPresets,
 }: {
   pi: ExtensionAPI;
   runtime: SubagentRuntime;
-  roster: SubagentRosterController;
   foregroundInterrupt: ForegroundInterruptGuard;
   configPath: string;
   modelPresets: Readonly<Partial<Record<"low" | "high", ModelPreset>>>;
@@ -147,9 +144,7 @@ export function registerPublicAgentTools({
       } else {
         running = run();
       }
-      roster.track(ctx);
       const snapshot = await running;
-      roster.track(ctx);
       return toolResult(snapshot, mode);
     },
     renderCall: renderAgentCall,

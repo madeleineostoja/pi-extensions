@@ -229,29 +229,29 @@ describe("status line sanitization", () => {
     ).toBe("󰏯 readonly");
   });
 
-  it("prioritizes common extension statuses before sorting unknown keys", () => {
+  it("prioritizes namespaced Pipkin statuses before unknown keys", () => {
     const result = buildStatusLine(
       new Map([
         ["z", "z-status"],
-        ["pipkin.sandbox", "sandbox-status"],
-        ["pipkin.implement.status", "implement-status"],
-        ["pipkin.papercuts.status", "papercuts-status"],
+        ["pipkin:status:0100:sandbox", "sandbox-status"],
+        ["pipkin:status:0050:other", "other-status"],
+        ["pipkin:status:0300:papercuts", "papercuts-status"],
         ["a", "a-status"],
-        ["pipkin.readonly.mode", "readonly-status"],
+        ["pipkin:status:0200:readonly", "readonly-status"],
       ]),
       makePlainTheme(),
     );
 
-    expect(result.indexOf("implement-status")).toBeLessThan(
-      result.indexOf("papercuts-status"),
-    );
-    expect(result.indexOf("papercuts-status")).toBeLessThan(
-      result.indexOf("readonly-status"),
-    );
-    expect(result.indexOf("readonly-status")).toBeLessThan(
+    expect(result.indexOf("other-status")).toBeLessThan(
       result.indexOf("sandbox-status"),
     );
     expect(result.indexOf("sandbox-status")).toBeLessThan(
+      result.indexOf("readonly-status"),
+    );
+    expect(result.indexOf("readonly-status")).toBeLessThan(
+      result.indexOf("papercuts-status"),
+    );
+    expect(result.indexOf("papercuts-status")).toBeLessThan(
       result.indexOf("a-status"),
     );
     expect(result.indexOf("a-status")).toBeLessThan(result.indexOf("z-status"));

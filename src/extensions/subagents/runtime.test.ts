@@ -674,6 +674,7 @@ describe("SubagentRuntime", () => {
       },
       messages: [],
       activity: [],
+      records: [],
       omittedMessages: 0,
       omittedActivity: 0,
       compactedHistory: false,
@@ -1180,12 +1181,22 @@ describe("SubagentRuntime", () => {
         }),
       ]),
     );
-    expect(runtime.inspect(final.id)?.activity).toEqual(
+    const inspection = runtime.inspect(final.id);
+    expect(inspection?.activity).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           kind: "tool",
           toolCallId: "valid-completion",
           status: "completed",
+        }),
+      ]),
+    );
+    expect(inspection?.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "message",
+          role: "final",
+          text: '{"summary":"accepted"}',
         }),
       ]),
     );

@@ -35,7 +35,7 @@ import {
 import { ForegroundInterruptGuard } from "./foreground-interrupt.js";
 import { registerSubagentLifecycle } from "./lifecycle.js";
 import { registerPublicAgentTools } from "./public-tools.js";
-import { SubagentRosterController } from "./roster.js";
+import { SubagentActivityProjector } from "./activity-projector.js";
 import { getSubagentRuntime, SubagentRuntime } from "./runtime.js";
 import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 
@@ -47,13 +47,12 @@ function registerExtension(pi: any): void {
     low: config.config.models.low,
     high: config.config.models.high,
   });
-  const roster = new SubagentRosterController(runtime);
+  const activity = new SubagentActivityProjector(runtime, pi.events);
   const foregroundInterrupt = new ForegroundInterruptGuard();
-  registerSubagentLifecycle({ pi, runtime, roster, foregroundInterrupt });
+  registerSubagentLifecycle({ pi, runtime, activity, foregroundInterrupt });
   registerPublicAgentTools({
     pi,
     runtime,
-    roster,
     foregroundInterrupt,
     configPath: config.path,
     modelPresets: config.config.models,
@@ -340,7 +339,6 @@ describe("public subagent tools", () => {
     registerPublicAgentTools({
       pi: pi as never,
       runtime,
-      roster: new SubagentRosterController(runtime),
       foregroundInterrupt: new ForegroundInterruptGuard(),
       configPath: config.path,
       modelPresets: config.config.models,

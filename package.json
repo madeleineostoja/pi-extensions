@@ -36,6 +36,8 @@
   },
   "imports": {
     "#lib/*": "./src/lib/*.ts",
+    "#ui/activity": "./src/extensions/ui/activity.ts",
+    "#ui/status": "./src/extensions/ui/status.ts",
     "#sandbox/runtime": "./src/extensions/sandbox/runtime.ts",
     "#sandbox/bash": "./src/extensions/sandbox/bash-capability.ts",
     "#subagents/runtime": "./src/extensions/subagents/runtime.ts",

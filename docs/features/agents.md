@@ -72,7 +72,7 @@ The `/agents` dashboard is more than a process list. It can:
 - ask for a point-in-time activity summary;
 - stop active work with confirmation.
 
-The live roster keeps current agent activity visible in the session UI. Records are bounded operational views, not raw transcripts. Child sessions live in memory, do not appear in `/resume`, and cannot be resumed after the parent session ends.
+The live Activity widget keeps current public-agent and Implement work visible in one bounded hierarchy. Records are operational views, not raw transcripts: they omit prompts, commands, cwd, raw output, hidden runtime objects, and token or cost telemetry. `/agents` remains the complete inspector, including Implement-managed workers and retained records. Child sessions live in memory, do not appear in `/resume`, and cannot be resumed after the parent session ends.
 
 Nested Explore runs created by managed Pipkin workflows use the same runtime and remain visible to the operator.
 

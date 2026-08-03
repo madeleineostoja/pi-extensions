@@ -83,10 +83,10 @@ describe("Sandbox lifecycle", () => {
     expect(state.enabled()).toBe(true);
     expect(state.policy()).toBe(policy);
     expect(watched.start).toHaveBeenCalledOnce();
-    expect(ctx.statuses.get("pipkin.sandbox")).toContain("sandbox");
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain("sandbox");
     await session.sessionShutdown(ctx as never);
     expect(watched.dispose).toHaveBeenCalledOnce();
-    expect(ctx.statuses.get("pipkin.sandbox")).toBeUndefined();
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toBeUndefined();
   });
 
   it("keeps macOS Bash fail-closed when policy resolution fails", async () => {
@@ -103,7 +103,9 @@ describe("Sandbox lifecycle", () => {
     expect(bash.definition.name).toBe("bash");
     expect(state.policy()).toBeUndefined();
     expect(state.unavailableReason()).toContain("Git failed");
-    expect(ctx.statuses.get("pipkin.sandbox")).toContain("unavailable");
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain(
+      "unavailable",
+    );
     expect(state.enabled()).toBe(true);
     await session.sessionShutdown(ctx as never);
   });
@@ -140,7 +142,9 @@ describe("Sandbox lifecycle", () => {
     expect(bash.definition.name).toBe("bash");
     expect(state.policy()).toBeUndefined();
     expect(createDenialObserver).not.toHaveBeenCalled();
-    expect(ctx.statuses.get("pipkin.sandbox")).toContain("unavailable");
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain(
+      "unavailable",
+    );
     await session.sessionShutdown(ctx as never);
   });
 
@@ -191,6 +195,24 @@ describe("Sandbox lifecycle", () => {
     await expect(
       executeSandboxBash(host as never, request("printf never")),
     ).rejects.toThrow("unavailable");
+  });
+
+  it("publishes a warning count after an active-runtime denial", async () => {
+    const { controller: session, denials } = controller({
+      supportedMac: true,
+      resolvePolicy: async () => policy,
+      createDenialObserver: () => observer().value,
+    });
+    const ctx = context();
+    await session.sessionStart({} as never, ctx as never);
+    denials.recordDirect({ tool: "write", reason: "blocked" });
+
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toContain(
+      "sandbox · 1 denied",
+    );
+    await session.sessionShutdown(ctx as never);
+    denials.recordDirect({ tool: "write", reason: "later" });
+    expect(ctx.statuses.get("pipkin:status:0100:sandbox")).toBeUndefined();
   });
 
   it("resets session diagnostics and replaces the observer on restart", async () => {

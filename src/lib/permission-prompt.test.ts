@@ -8,6 +8,7 @@ import { promptForPermission } from "./permission-prompt.js";
 type FakeUI = PermissionPromptUI & {
   select: ReturnType<typeof vi.fn>;
   input: ReturnType<typeof vi.fn>;
+  custom: ReturnType<typeof vi.fn>;
 };
 
 function makeUI(options: {
@@ -17,6 +18,7 @@ function makeUI(options: {
   return {
     select: vi.fn().mockResolvedValue(options.selected),
     input: vi.fn().mockResolvedValue(options.input),
+    custom: vi.fn(),
   } as FakeUI;
 }
 
@@ -43,15 +45,11 @@ describe("promptForPermission", () => {
       promptForPermission({
         ui,
         title: "Run command?",
-        detail: "rm -rf tmp",
         choices,
       }),
     ).resolves.toEqual({ kind: "selected", value: "allow" });
 
-    expect(ui.select).toHaveBeenCalledWith("Run command?\nrm -rf tmp", [
-      "Allow",
-      "Block",
-    ]);
+    expect(ui.select).toHaveBeenCalledWith("Run command?", ["Allow", "Block"]);
     expect(ui.input).not.toHaveBeenCalled();
   });
 
@@ -123,8 +121,8 @@ describe("promptForPermission", () => {
     ).rejects.toBe(err);
   });
 
-  it("forwards a provided signal to select", async () => {
-    const ui = makeUI({ selected: "Allow" });
+  it("forwards a provided signal to selection and steering input", async () => {
+    const ui = makeUI({ selected: "Block", input: "reason" });
     const controller = new AbortController();
 
     await promptForPermission({
@@ -135,6 +133,9 @@ describe("promptForPermission", () => {
     });
 
     expect(ui.select).toHaveBeenCalledWith("Run command?", ["Allow", "Block"], {
+      signal: controller.signal,
+    });
+    expect(ui.input).toHaveBeenCalledWith("Reason", "why?", {
       signal: controller.signal,
     });
   });

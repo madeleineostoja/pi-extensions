@@ -1,8 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { clearPipkinStatus, setPipkinStatus } from "#ui/status";
+import type { SandboxDenialRecorder } from "./denials.js";
 import type { SandboxSessionState } from "./state.js";
 
-const STATUS_KEY = "pipkin.sandbox";
-const SANDBOX_ICON = "󰒃";
+const SANDBOX_STATUS = { id: "sandbox", priority: 100, icon: "󰒃" } as const;
 
 export type SandboxStatus = "on" | "off" | "unavailable";
 
@@ -19,33 +20,35 @@ export function sandboxStatus(
   return state.policy() ? "on" : "unavailable";
 }
 
-export function sandboxStatusLabel(status: SandboxStatus): string {
-  return {
+export function sandboxStatusLabel(status: SandboxStatus, denials = 0): string {
+  const label = {
     on: "sandbox",
     off: "sandbox off",
     unavailable: "sandbox unavailable",
   }[status];
+  return denials > 0 ? `${label} · ${denials} denied` : label;
 }
 
 export function syncSandboxStatus(
   ctx: ExtensionContext,
   state: SandboxSessionState,
   supportedMac: boolean,
+  denials?: SandboxDenialRecorder,
 ): void {
   if (ctx.mode !== "tui") {
     return;
   }
   const status = sandboxStatus(state, supportedMac);
-  const tone = status === "on" ? "success" : "warning";
-  const theme = ctx.ui.theme;
-  ctx.ui.setStatus(
-    STATUS_KEY,
-    `${theme.fg(tone, SANDBOX_ICON)} ${theme.fg(tone, sandboxStatusLabel(status))}`,
-  );
+  const count = denials?.snapshot().count ?? 0;
+  setPipkinStatus(ctx.ui, {
+    ...SANDBOX_STATUS,
+    state: status === "on" && count === 0 ? "normal" : "warning",
+    text: sandboxStatusLabel(status, count),
+  });
 }
 
 export function clearSandboxStatus(ctx: ExtensionContext): void {
   if (ctx.mode === "tui") {
-    ctx.ui.setStatus(STATUS_KEY, undefined);
+    clearPipkinStatus(ctx.ui, SANDBOX_STATUS.id, SANDBOX_STATUS.priority);
   }
 }
