@@ -1,8 +1,12 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import {
+  chmodSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -11,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { ensureGitInfoExclude } from "./git.js";
+import { ensureGitInfoExclude, gitPrimaryWorktreeRoot } from "./git.js";
 
 const roots: string[] = [];
 const children: ChildProcess[] = [];
@@ -109,6 +113,109 @@ afterEach(async () => {
   roots
     .splice(0)
     .forEach((root) => rmSync(root, { recursive: true, force: true }));
+});
+
+describe("gitPrimaryWorktreeRoot", () => {
+  it("resolves the canonical primary root from linked and detached worktrees", async () => {
+    const root = repo();
+    git(root, "commit", "--allow-empty", "-qm", "initial");
+    const linked = mkdtempSync(join(tmpdir(), "pi git linked "));
+    roots.push(linked);
+    rmSync(linked, { recursive: true });
+    git(root, "worktree", "add", "-qb", "linked", linked);
+    git(root, "checkout", "--detach");
+    git(linked, "checkout", "--detach");
+
+    await expect(gitPrimaryWorktreeRoot(root)).resolves.toBe(
+      realpathSync(root),
+    );
+    await expect(gitPrimaryWorktreeRoot(linked)).resolves.toBe(
+      realpathSync(root),
+    );
+    await expect(gitPrimaryWorktreeRoot(join(root, "missing"))).rejects.toThrow(
+      "primary Git worktree",
+    );
+  });
+
+  it("resolves named primary and linked worktrees, including porcelain-sensitive paths", async () => {
+    const root = repo();
+    git(root, "commit", "--allow-empty", "-qm", "initial");
+    const linked = mkdtempSync(join(tmpdir(), "pi git linked named "));
+    roots.push(linked);
+    rmSync(linked, { recursive: true });
+    git(root, "worktree", "add", "-qb", "named-linked", linked);
+
+    await expect(gitPrimaryWorktreeRoot(root)).resolves.toBe(
+      realpathSync(root),
+    );
+    await expect(gitPrimaryWorktreeRoot(linked)).resolves.toBe(
+      realpathSync(root),
+    );
+  });
+
+  it("keeps separate clones isolated at their own canonical roots", async () => {
+    const root = repo();
+    git(root, "commit", "--allow-empty", "-qm", "initial");
+    const clone = mkdtempSync(join(tmpdir(), "pi-git-clone-"));
+    roots.push(clone);
+    rmSync(clone, { recursive: true });
+    execFileSync("git", ["clone", "-q", root, clone]);
+
+    await expect(gitPrimaryWorktreeRoot(clone)).resolves.toBe(
+      realpathSync(clone),
+    );
+  });
+
+  it("fails missing, non-worktree, and stale primary locations without fallback or state", async () => {
+    const nonWorktree = mkdtempSync(join(tmpdir(), "pi-git-non-worktree-"));
+    roots.push(nonWorktree);
+    await expect(gitPrimaryWorktreeRoot("")).rejects.toThrow("required");
+    await expect(gitPrimaryWorktreeRoot(nonWorktree)).rejects.toThrow(
+      "primary Git worktree",
+    );
+    await expect(
+      gitPrimaryWorktreeRoot(join(nonWorktree, "missing")),
+    ).rejects.toThrow("primary Git worktree");
+    expect(existsSync(join(nonWorktree, ".pi"))).toBe(false);
+
+    const root = repo();
+    git(root, "commit", "--allow-empty", "-qm", "initial");
+    const linked = linkedWorktree(root);
+    const staleRoot = `${root}-moved`;
+    roots.push(staleRoot);
+    renameSync(root, staleRoot);
+    await expect(gitPrimaryWorktreeRoot(linked)).rejects.toThrow();
+    expect(existsSync(join(linked, ".pi"))).toBe(false);
+  });
+
+  it("does not fall back to a linked worktree when Git reports no primary entry", async () => {
+    const root = repo();
+    git(root, "commit", "--allow-empty", "-qm", "initial");
+    const linked = linkedWorktree(root);
+    const bin = mkdtempSync(join(tmpdir(), "pi-git-no-primary-bin-"));
+    roots.push(bin);
+    const shim = join(bin, "git");
+    writeFileSync(shim, "#!/bin/sh\nexit 0\n");
+    chmodSync(shim, 0o755);
+    const path = process.env.PATH ?? "";
+    process.env.PATH = `${bin}:${path}`;
+    try {
+      await expect(gitPrimaryWorktreeRoot(linked)).rejects.toThrow(
+        "Git did not report a primary worktree",
+      );
+    } finally {
+      process.env.PATH = path;
+    }
+    expect(existsSync(join(linked, ".pi"))).toBe(false);
+  });
+
+  it("rejects a bare repository without creating worktree state", async () => {
+    const bare = mkdtempSync(join(tmpdir(), "pi-git-bare-"));
+    roots.push(bare);
+    git(bare, "init", "--bare", "-q");
+    await expect(gitPrimaryWorktreeRoot(bare)).rejects.toThrow();
+    expect(existsSync(join(bare, ".pi"))).toBe(false);
+  });
 });
 
 describe("ensureGitInfoExclude", () => {

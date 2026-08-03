@@ -142,7 +142,7 @@ export async function spawnValidatedWorker<
       `${roleName} packet ${packet.identity} has an invalid worker identity.`,
     );
   }
-  const prompt = args.render(packet);
+  const prompt = `${args.render(packet)}\n\nrecord_papercut is the sole allowed personal-metadata write for qualifying incidental friction; it does not permit source or Git changes.`;
   return args.subagents.spawn({
     type: role.type,
     role: roleName,

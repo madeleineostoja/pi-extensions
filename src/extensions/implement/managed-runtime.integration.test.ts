@@ -1,4 +1,14 @@
-import { rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   createManagedSessionHarness,
@@ -19,8 +29,16 @@ import {
   type ImplementRoles,
 } from "./subagents.js";
 import { spawnValidatedWorker } from "./worker-invocation.js";
+import { registerRecordTool } from "../papercuts/record-tool.js";
+import { createPapercutStatusController } from "../papercuts/status.js";
 
 const directories: string[] = [];
+
+function recordPapercutExtension(
+  pi: Parameters<typeof registerRecordTool>[0],
+): void {
+  registerRecordTool(pi, createPapercutStatusController());
+}
 
 afterEach(() => {
   while (directories.length) {
@@ -259,6 +277,114 @@ describe("Implement managed runtime integration", () => {
       },
     });
     expect(harness.faux.state.callCount).toBe(2);
+    await runtime.dispose();
+  });
+
+  it("records directly from an owned worktree after its removal", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipkin-implement-papercut-"));
+    directories.push(root);
+    const workspace = join(
+      root,
+      ".pi",
+      "pipkin",
+      "implement",
+      "worktrees",
+      "run-1",
+      "task",
+    );
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: root,
+    });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: root });
+    writeFileSync(join(root, "README.md"), "fixture\n");
+    execFileSync("git", ["add", "README.md"], { cwd: root });
+    execFileSync("git", ["commit", "-qm", "fixture"], { cwd: root });
+    mkdirSync(dirname(workspace), { recursive: true });
+    execFileSync("git", ["worktree", "add", "-qb", "task", workspace], {
+      cwd: root,
+    });
+    const harness = await createManagedSessionHarness(
+      [
+        fauxAssistantMessage(
+          fauxToolCall(
+            "record_papercut",
+            {
+              key: "owned-worktree-detour",
+              title: "Owned worktree detour",
+              task: "Implement an unrelated task",
+              incident:
+                "The assigned validation convention required undocumented discovery.",
+              evidence:
+                "The repository scripts established the required command.",
+              workarounds: ["Inspected the repository scripts."],
+              taskOutcome: "Safely continued the assigned implementation.",
+            },
+            { id: "record" },
+          ),
+        ),
+        fauxAssistantMessage(
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            {
+              outcome: "changed",
+              summary: "Completed the assignment.",
+              verification: ["Checked the assigned result."],
+            },
+            { id: "completion" },
+          ),
+        ),
+      ],
+      { extensionFactories: [recordPapercutExtension] },
+    );
+    const extension = {
+      sendMessage() {},
+      getActiveTools: () => [
+        "read",
+        "bash",
+        "bash_outcome",
+        "context_recall",
+        "edit",
+        "write",
+        "Agent",
+        "get_subagent_result",
+        "steer_subagent",
+        "record_papercut",
+      ],
+    };
+    const runtime = new SubagentRuntime(extension as never, {
+      createSession: harness.createSession,
+    });
+    const client = new RuntimeSubagentClient(
+      extension as never,
+      managedSessionContext(harness) as never,
+      "run-1",
+    );
+
+    const handle = await spawnValidatedWorker({
+      packet: {
+        completionKind: "implementer" as const,
+        identity: "run-1/task",
+        workspace: { path: workspace },
+      },
+      subagents: client,
+      roles: roles(),
+      taskId: "task",
+      description: "Implement task",
+      render: () => "Implement the assigned task.",
+    });
+    await expect(client.waitFor(handle)).resolves.toMatchObject({
+      status: "completed",
+    });
+
+    execFileSync("git", ["worktree", "remove", "--force", workspace], {
+      cwd: root,
+    });
+    const registry = join(root, ".pi", "pipkin", "papercuts.json");
+    expect(existsSync(registry)).toBe(true);
+    expect(JSON.parse(readFileSync(registry, "utf8"))).toMatchObject({
+      records: [expect.objectContaining({ key: "owned-worktree-detour" })],
+    });
     await runtime.dispose();
   });
 

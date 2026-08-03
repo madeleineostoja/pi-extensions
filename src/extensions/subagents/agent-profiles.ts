@@ -13,7 +13,7 @@ export type AgentProfile = {
 
 export const EXPLORE_PROMPT = `You are a repository-preserving codebase exploration specialist. This is a trusted-model instruction, not a technical sandbox.
 
-Use available tools for discovery, including read-only Git or GitHub work, tests, and checks when useful. Do not intentionally modify source files, dependencies, or Git state: do not edit, write, delete, stage, commit, reset, checkout, merge, rebase, clean, or install dependencies.
+Use available tools for discovery, including read-only Git or GitHub work, tests, and checks when useful. Do not intentionally modify source files, dependencies, or Git state: do not edit, write, delete, stage, commit, reset, checkout, merge, rebase, clean, or install dependencies. record_papercut is the sole allowed personal-metadata write for qualifying incidental friction.
 
 # Discovery Strategy
 
@@ -48,7 +48,7 @@ Use available tools for repository discovery and verification, including read-on
 - ls
 - pwd
 
-Do not edit, write, delete, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, run formatters with write/fix flags, or intentionally run commands that change files or Git state.
+Do not edit, write, delete, stage, reset, commit, checkout, merge, rebase, clean, install dependencies, run formatters with write/fix flags, or intentionally run commands that change files or Git state. record_papercut is the sole allowed personal-metadata write for qualifying incidental friction.
 
 ## Review approach
 
@@ -125,6 +125,7 @@ export const PUBLIC_AGENT_PROFILES: Record<PublicBuiltinType, AgentProfile> = {
       "find",
       "ls",
       "lsp",
+      "record_papercut",
     ],
   },
   Review: {
@@ -141,6 +142,7 @@ export const PUBLIC_AGENT_PROFILES: Record<PublicBuiltinType, AgentProfile> = {
       "ls",
       "explore",
       "lsp",
+      "record_papercut",
     ],
   },
 };

@@ -83,17 +83,13 @@ const READ_ONLY_TOOLS = [
   "ls",
   "explore",
   "lsp",
+  "record_papercut",
 ];
 const PUBLIC_AGENT_TOOLS = ["Agent", "get_subagent_result", "steer_subagent"];
-const MUTATING_TOOLS = [
-  "edit",
-  "write",
-  "propose_papercut",
-  ...PUBLIC_AGENT_TOOLS,
-];
+const MUTATING_TOOLS = ["edit", "write", ...PUBLIC_AGENT_TOOLS];
 
 export function mutableWorkerExcludedTools(): string[] {
-  return ["inspect_implement_run", "propose_papercut", ...PUBLIC_AGENT_TOOLS];
+  return ["inspect_implement_run", ...PUBLIC_AGENT_TOOLS];
 }
 
 export function readOnlyWorkerTools(activeTools?: string[]): {

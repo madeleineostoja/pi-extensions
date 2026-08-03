@@ -2,222 +2,179 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import type {
-  PapercutFile,
-  PapercutProposal,
-  PapercutRecord,
-} from "./store.js";
+import { promptForPermission } from "#lib/permission-prompt";
+import type { PapercutFile, PapercutRecord, PapercutStatus } from "./store.js";
 import { createPapercutStatusController } from "./status.js";
 
-function pendingRecords(file: PapercutFile): PapercutRecord[] {
-  return file.records.filter((record) => record.status === "pending");
-}
-
-export function formatPapercutSummary(file: PapercutFile): string {
-  const groups = (["pending", "ignored", "resolved"] as const).map((status) => {
-    const records = file.records.filter((record) => record.status === status);
-    const lines = records
-      .sort((a, b) => a.key.localeCompare(b.key))
-      .map(
-        (record) => `- ${record.key}: ${record.title} (${record.occurrences})`,
-      );
-    return `${status} (${records.length})${lines.length ? `\n${lines.join("\n")}` : ""}`;
-  });
-  return groups.join("\n");
-}
-
-function remediationPrompt(record: PapercutRecord): string {
-  return [
-    `Address papercut: ${record.title}`,
-    "",
-    `Trigger: ${record.trigger}`,
-    `Impact: ${record.impact}`,
-    `Current gap: ${record.currentGap}`,
-    `Proposed resolution: ${record.proposedResolution}`,
-    `Suggested destination: ${record.suggestedDestination}`,
-    "",
-    "Implement and validate a durable remediation. Do not change this papercut's status automatically; return to /papercuts and mark it resolved after human review.",
-  ].join("\n");
-}
-
-async function editProposal(
-  ctx: ExtensionContext,
-  record: PapercutRecord,
-): Promise<PapercutProposal | undefined> {
-  const fields: Array<keyof PapercutProposal> = [
-    "key",
-    "title",
-    "trigger",
-    "impact",
-    "currentGap",
-    "proposedResolution",
-    "suggestedDestination",
-  ];
-  const proposal = {} as PapercutProposal;
-  for (const field of fields) {
-    const response = await ctx.ui.input(`Edit ${field}`, record[field]);
-    if (response === undefined) {
-      return undefined;
-    }
-    proposal[field] = response.trim() as never;
-  }
-  return proposal;
-}
-
-async function chooseDisposition(
-  ctx: ExtensionContext,
-  action: "resolved" | "ignored",
-): Promise<{ note?: string; target?: string } | undefined> {
-  const note = await ctx.ui.input(
-    action === "resolved"
-      ? "Resolution note (optional)"
-      : "Ignore reason (optional)",
-    "",
-  );
-  if (note === undefined) {
-    return undefined;
-  }
-  const target = await ctx.ui.input(
-    action === "resolved"
-      ? "Resolution target (optional)"
-      : "Ignore target (optional)",
-    "",
-  );
-  if (target === undefined) {
-    return undefined;
-  }
-  return {
-    ...(note.trim() ? { note: note.trim() } : {}),
-    ...(target.trim() ? { target: target.trim() } : {}),
-  };
-}
+const SUMMARY_LIMIT = 16_384;
 
 type PapercutStatusController = ReturnType<
   typeof createPapercutStatusController
 >;
 
+function sortedRecords(
+  file: PapercutFile,
+  status?: PapercutStatus,
+): PapercutRecord[] {
+  return file.records
+    .filter((record) => status === undefined || record.status === status)
+    .sort(
+      (a, b) =>
+        (a.status === b.status ? 0 : a.status === "open" ? -1 : 1) ||
+        a.key.localeCompare(b.key),
+    );
+}
+
+export function formatPapercutSummary(file: PapercutFile): string {
+  const records = sortedRecords(file);
+  const lines = [
+    `open (${records.filter((record) => record.status === "open").length})`,
+    `closed (${records.filter((record) => record.status === "closed").length})`,
+  ];
+  let included = 0;
+  for (const record of records) {
+    const line = `- ${record.status} ${record.key}: ${record.title} (${record.occurrences})`;
+    const candidate = [...lines, line].join("\n");
+    if (Buffer.byteLength(candidate, "utf8") > SUMMARY_LIMIT) {
+      break;
+    }
+    lines.push(line);
+    included += 1;
+  }
+  const omitted = records.length - included;
+  if (!omitted) {
+    return lines.join("\n");
+  }
+  const suffix = `… ${omitted} record${omitted === 1 ? "" : "s"} omitted`;
+  while (
+    Buffer.byteLength([...lines, suffix].join("\n"), "utf8") > SUMMARY_LIMIT &&
+    lines.length > 2
+  ) {
+    lines.pop();
+    included -= 1;
+  }
+  return [
+    ...lines,
+    `… ${records.length - included} record${records.length - included === 1 ? "" : "s"} omitted`,
+  ].join("\n");
+}
+
+function detail(record: PapercutRecord): string {
+  return [
+    `Title: ${record.title}`,
+    `Key: ${record.key}`,
+    "",
+    `Assigned task: ${record.task}`,
+    "",
+    `Incident: ${record.incident}`,
+    "",
+    `Evidence: ${record.evidence}`,
+    "",
+    "Exercised workarounds:",
+    ...record.workarounds.map(
+      (workaround, index) => `${index + 1}. ${workaround}`,
+    ),
+    "",
+    `Task outcome: ${record.taskOutcome}`,
+    ...(record.guardrailCandidate
+      ? ["", `Guardrail candidate: ${record.guardrailCandidate}`]
+      : []),
+    ...(record.suggestedDestination
+      ? [`Suggested destination: ${record.suggestedDestination}`]
+      : []),
+    "",
+    `Occurrences: ${record.occurrences}`,
+    `First seen: ${record.firstSeenAt}`,
+    `Last seen: ${record.lastSeenAt}`,
+  ].join("\n");
+}
+
+async function browseStatus(
+  ctx: ExtensionContext,
+  status: PapercutStatus,
+  controller: PapercutStatusController,
+): Promise<void> {
+  while (true) {
+    const records = sortedRecords(
+      await (await controller.storeFor(ctx)).load(),
+      status,
+    );
+    const selected = await ctx.ui.select(
+      `${status === "open" ? "Open" : "Closed"} papercuts`,
+      [...records.map((record) => `${record.key} — ${record.title}`), "Back"],
+    );
+    if (!selected || selected === "Back") {
+      return;
+    }
+    const record = records.find((candidate) =>
+      selected.startsWith(`${candidate.key} — `),
+    );
+    if (!record) {
+      continue;
+    }
+    const action = await promptForPermission({
+      ui: ctx.ui,
+      title: record.title,
+      detail: detail(record),
+      choices:
+        status === "open"
+          ? [
+              { value: "close", label: "Close Finding" },
+              { value: "back", label: "Back" },
+            ]
+          : [{ value: "back", label: "Back" }],
+    });
+    if (action.kind !== "selected" || action.value === "back") {
+      continue;
+    }
+    try {
+      await (await controller.storeFor(ctx)).close(record.key);
+      await controller.refreshStatus(ctx);
+    } catch {
+      ctx.ui.notify("Papercut action failed.", "error");
+    }
+  }
+}
+
 export function registerPapercutsBrowser(
   pi: ExtensionAPI,
   status: PapercutStatusController,
 ): void {
-  const browse = async (
-    ctx: ExtensionContext,
-    generation: number,
-  ): Promise<void> => {
-    const store = await status.storeFor(ctx);
-    while (true) {
-      const file = await store.load();
-      const view = await ctx.ui.select("Papercuts", [
-        `Pending (${pendingRecords(file).length})`,
-        `Ignored (${file.records.filter((record) => record.status === "ignored").length})`,
-        `Resolved (${file.records.filter((record) => record.status === "resolved").length})`,
-        "Close",
-      ]);
-      if (!view || view === "Close") {
-        return;
-      }
-      const recordStatus = view.startsWith("Pending")
-        ? "pending"
-        : view.startsWith("Ignored")
-          ? "ignored"
-          : "resolved";
-      const records = file.records
-        .filter((record) => record.status === recordStatus)
-        .sort((a, b) => a.key.localeCompare(b.key));
-      const selected = await ctx.ui.select(
-        `${recordStatus[0].toUpperCase()}${recordStatus.slice(1)} papercuts`,
-        [...records.map((record) => `${record.key} — ${record.title}`), "Back"],
-      );
-      if (!selected || selected === "Back") {
-        continue;
-      }
-      const record = records.find((candidate) =>
-        selected.startsWith(`${candidate.key} — `),
-      );
-      if (!record) {
-        continue;
-      }
-      const actions =
-        recordStatus === "pending"
-          ? [
-              "Work on this",
-              "Mark resolved",
-              "Ignore",
-              "Edit proposal",
-              "Delete",
-              "Back",
-            ]
-          : ["Reopen", "Edit proposal", "Delete", "Back"];
-      const action = await ctx.ui.select(
-        `${record.title}\n${record.trigger}\n\n${record.currentGap}\n\nProposed: ${record.proposedResolution}`,
-        actions,
-      );
-      if (!action || action === "Back") {
-        continue;
-      }
-      try {
-        if (action === "Work on this") {
-          ctx.ui.setEditorText(remediationPrompt(record));
-          ctx.ui.notify("Remediation prompt added to the editor.", "info");
-        } else if (action === "Mark resolved" || action === "Ignore") {
-          const disposition = await chooseDisposition(
-            ctx,
-            action === "Mark resolved" ? "resolved" : "ignored",
-          );
-          if (disposition) {
-            await store.transition(
-              record.key,
-              action === "Mark resolved" ? "resolved" : "ignored",
-              disposition,
-            );
-          }
-        } else if (action === "Reopen") {
-          await store.transition(record.key, "pending");
-        } else if (action === "Edit proposal") {
-          const proposal = await editProposal(ctx, record);
-          if (proposal) {
-            await store.edit(record.key, proposal);
-          }
-        } else if (action === "Delete") {
-          const confirmed = await ctx.ui.confirm(
-            "Delete papercut",
-            `Permanently delete ${record.key}?`,
-          );
-          if (confirmed) {
-            await store.delete(record.key, true);
-          }
-        }
-        await status.refreshStatus(ctx, generation);
-      } catch (error) {
-        ctx.ui.notify(
-          `Papercut action failed: ${error instanceof Error ? error.message : String(error)}`,
-          "error",
-        );
-      }
-    }
-  };
-
   pi.registerCommand("papercuts", {
-    description: "Browse durable project papercuts",
+    description: "Browse incidental papercut findings",
     handler: async (args, ctx) => {
-      const generation = status.generation();
       if (args.trim()) {
         ctx.ui.notify("usage: /papercuts", "warning");
         return;
       }
       try {
-        const store = await status.storeFor(ctx);
-        const file = await store.load();
+        const file = await (await status.storeFor(ctx)).load();
         if (!ctx.hasUI || ctx.mode !== "tui") {
           ctx.ui.notify(formatPapercutSummary(file), "info");
           return;
         }
-        await browse(ctx, generation);
-      } catch (error) {
-        ctx.ui.notify(
-          `Papercuts unavailable: ${error instanceof Error ? error.message : String(error)}`,
-          "error",
-        );
+        while (true) {
+          const current = await (await status.storeFor(ctx)).load();
+          const open = current.records.filter(
+            (record) => record.status === "open",
+          ).length;
+          const closed = current.records.length - open;
+          const choice = await ctx.ui.select("Papercuts", [
+            `Open (${open})`,
+            `Closed (${closed})`,
+            "Back",
+          ]);
+          if (!choice || choice === "Back") {
+            return;
+          }
+          await browseStatus(
+            ctx,
+            choice.startsWith("Open") ? "open" : "closed",
+            status,
+          );
+        }
+      } catch {
+        ctx.ui.notify("Papercuts unavailable.", "error");
       }
     },
   });

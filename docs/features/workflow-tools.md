@@ -36,34 +36,26 @@ Unavailable servers and unsupported capabilities return non-fatal fallback resul
 
 The model can choose only Pipkin's fixed read-only actions, supported files, and in-workspace paths. It cannot choose an executable, send arbitrary protocol methods, apply edits, or invoke server commands. The language servers themselves are trusted processes outside Sandbox and inherit Pi's environment.
 
-## Papercuts: keep the lesson, not just the scar
+## Papercuts: factual incidental workaround inbox
 
-`propose_papercut` records a recurring project-specific failure mode or hidden constraint for later human review. It is for lessons that should outlive this session but have not yet made their way into guidance, tests, tooling, errors, documentation, or code.
+`record_papercut` is an experimental inbox, not a backlog or remediation system. A trusted agent records a finding only when, while completing an assigned subject that was something else, it concretely encountered avoidable friction, exercised at least one workaround or detour, and then completed or safely continued the task.
 
-A proposal captures the lesson in a form that can become a real fix:
+An incident need not be an outage, exception, failed command or run, or user-visible failure. It can be a recoverable test failure handled with a narrower reliable command, discovery of an undocumented validation convention, reconstructing missing context from ambiguous output, or redundant manual worktree setup. The workaround list records the actions actually exercised.
 
-| Field                  | What belongs there                                                          |
-| ---------------------- | --------------------------------------------------------------------------- |
-| `key`                  | Stable lowercase slug for deduplication                                     |
-| `title`                | Concise human-readable summary                                              |
-| `trigger`              | Repeatable condition that exposes the gap                                   |
-| `impact`               | Why it matters in a future independent session                              |
-| `currentGap`           | What current guidance, tests, tooling, errors, docs, or code fails to cover |
-| `proposedResolution`   | A concrete durable remedy                                                   |
-| `suggestedDestination` | `agents`, `skill`, `test`, `lint`, `tooling`, `docs`, or `code`             |
+Do not record the task or review subject itself, unmet criteria, unresolved correctness or safety issues, inferred architectural concerns, unused suggestions, expected guided steps, adequately documented proportionate procedures, ordinary agent mistakes, or transient provider failures. This eligibility rule is a trusted-agent instruction; Pipkin does not classify incidents or apply a candidate fix.
 
-One-off mistakes, transient service failures, expected intermediate errors, and behavior already explained by the project do not qualify. Repeated proposals merge into the existing record and increment its occurrence count.
+Records merge by stable key and retain an occurrence count. `/papercuts` presents open and closed findings; an open finding can be closed, while a later observed recurrence reopens it. Records are factual candidates for repository guidance or small fixes in `agents`, skills, tests, lint, tooling, docs, or code, never automatic work.
 
-Run `/papercuts` to browse pending, ignored, and resolved items. From the interactive browser you can inspect, edit, reopen, ignore, resolve, or delete a proposal. **Work on this** drafts a remediation prompt in the editor but deliberately does not mark the record resolved.
-
-Each Git checkout keeps its own atomically written, leased registry:
+A repository and its linked worktrees share one atomically published, leased registry at the canonical primary worktree:
 
 ```text
 .pi/pipkin/papercuts.json
 .pi/pipkin/papercuts.lock
 ```
 
-Pipkin adds the paths to that checkout's `.git/info/exclude`; it never changes committed `.gitignore` and does not keep a global queue. The footer shows the pending count in interactive sessions. Non-interactive `/papercuts` prints a deterministic summary.
+Pipkin excludes these paths through the common Git directory's `info/exclude`; it does not change committed `.gitignore`. The footer shows the current host's open count after session start and successful local mutations. Non-interactive `/papercuts` prints a bounded deterministic summary.
+
+The interactive host, public General, Explore, and Review agents, and Implement's planner, review, implementation, revision, repair, and reconciliation workers record directly to this same registry. For repository-preserving workers, it is the sole controlled metadata write; it does not expose source-editing, Git, orchestration, or public-agent controls. Records are not relayed through worker completion data or another persistence path.
 
 ## BTW: ask without changing the subject
 

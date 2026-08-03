@@ -65,7 +65,7 @@ const expectedTools = {
   code_search: "src/extensions/reference/index.ts",
   web_fetch: "src/extensions/web/index.ts",
   batch_web_fetch: "src/extensions/web/index.ts",
-  propose_papercut: "src/extensions/papercuts/index.ts",
+  record_papercut: "src/extensions/papercuts/index.ts",
 };
 
 const expectedCommands = {
@@ -408,9 +408,12 @@ describe("Pipkin bundle", () => {
   it("assigns every factory-time public registration to its expected feature", async () => {
     const fixture = await loadBundle();
 
-    expect(provenanceMap(fixture.result.extensions, "tools")).toEqual(
-      expectedProvenance(expectedTools),
-    );
+    const tools = provenanceMap(fixture.result.extensions, "tools");
+    expect(tools).toEqual(expectedProvenance(expectedTools));
+    expect(tools).not.toHaveProperty("propose_papercut");
+    expect(tools.record_papercut).toEqual([
+      "src/extensions/papercuts/index.ts",
+    ]);
     expect(provenanceMap(fixture.result.extensions, "commands")).toEqual(
       expectedProvenance(expectedCommands),
     );

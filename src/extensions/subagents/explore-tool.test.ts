@@ -303,13 +303,12 @@ describe("runtime-injected explore tool", () => {
         cwd: "/task-worktree",
         model: { provider: "configured", id: "explore" },
         thinkingLevel: "low",
-        tools: ["read", "bash", "grep", "find", "ls", "lsp"],
+        tools: ["read", "bash", "grep", "find", "ls", "lsp", "record_papercut"],
         excludeTools: [
           "explore",
           "Agent",
           "get_subagent_result",
           "steer_subagent",
-          "propose_papercut",
           "edit",
           "write",
         ],
@@ -322,6 +321,7 @@ describe("runtime-injected explore tool", () => {
       "find",
       "ls",
       "lsp",
+      "record_papercut",
     ]);
     expect(child.prompt).toHaveBeenCalledWith(
       expect.stringMatching(
