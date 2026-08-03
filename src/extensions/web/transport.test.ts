@@ -43,6 +43,64 @@ describe("public target transport", () => {
     }
   });
 
+  it("accepts representative public literals and rejects special IPv4/IPv6 ranges", () => {
+    for (const value of [
+      "https://8.8.8.8/",
+      "https://[2606:4700:4700::1111]/",
+    ]) {
+      expect(canonicalTarget(value).isLiteral).toBe(true);
+    }
+    for (const value of [
+      "http://0.0.0.0/",
+      "http://255.255.255.255/",
+      "http://10.0.0.1/",
+      "http://100.64.0.1/",
+      "http://169.254.1.1/",
+      "http://172.16.0.1/",
+      "http://192.0.2.1/",
+      "http://198.18.0.1/",
+      "http://224.0.0.1/",
+      "http://[::]/",
+      "http://[::1]/",
+      "http://[fc00::1]/",
+      "http://[fe80::1]/",
+      "http://[ff02::1]/",
+      "http://[2001:db8::1]/",
+    ]) {
+      expect(() => canonicalTarget(value)).toThrow();
+    }
+  });
+
+  it("denies empty, malformed, mixed, and failed DNS results before transport", async () => {
+    const deadline = {
+      signal: new AbortController().signal,
+      remaining: () => 1_000,
+      dispose: () => {},
+    };
+    for (const resolver of [
+      async () => [],
+      async () => [{ address: "not-an-address", family: 4 }],
+      async () => [
+        { address: "8.8.8.8", family: 4 },
+        { address: "127.0.0.1", family: 4 },
+      ],
+      async () => {
+        throw new Error("lookup failed");
+      },
+    ]) {
+      const browser = vi.fn();
+      const transport = createWebTransport({
+        profiles: ["chrome_120"],
+        resolver,
+        browserFetch: browser,
+      });
+      await expect(
+        transport.fetch("https://example.com", undefined, undefined, deadline),
+      ).rejects.toThrow();
+      expect(browser).not.toHaveBeenCalled();
+    }
+  });
+
   it("denies mixed DNS answers before browser transport", async () => {
     const browser = vi.fn();
     const transport = createWebTransport({
@@ -211,16 +269,193 @@ describe("public target transport", () => {
     expect(cancelled).toBe(true);
   });
 
+  it("permits GET and HEAD while rejecting unsupported nested methods", async () => {
+    const browser = vi.fn<BrowserFetch>(async () => response(200));
+    const transport = createWebTransport({
+      profiles: ["chrome_100"],
+      resolver: async () => [{ address: "8.8.8.8", family: 4 }],
+      browserFetch: browser,
+    });
+    const deadline = {
+      signal: new AbortController().signal,
+      remaining: () => 1_000,
+      dispose: () => {},
+    };
+    await transport.fetch(
+      "https://example.com/get",
+      undefined,
+      undefined,
+      deadline,
+    );
+    await transport.fetch(
+      "https://example.com/head",
+      { method: "HEAD" },
+      undefined,
+      deadline,
+    );
+    await expect(
+      transport.fetch(
+        "https://example.com/delete",
+        { method: "DELETE" },
+        undefined,
+        deadline,
+      ),
+    ).rejects.toThrow("only GET, HEAD, and POST");
+    expect(browser).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["parent", "deadline"] as const)(
+    "preserves %s cancellation identity during response streaming",
+    async (source) => {
+      const controller = new AbortController();
+      const stream = new ReadableStream<Uint8Array>({ pull() {} });
+      const browser = vi.fn<BrowserFetch>(async () => ({
+        status: 200,
+        statusText: "OK",
+        url: "",
+        headers: [],
+        body: stream,
+      }));
+      const transport = createWebTransport({
+        profiles: ["chrome_100"],
+        resolver: async () => [{ address: "8.8.8.8", family: 4 }],
+        browserFetch: browser,
+      });
+      const deadline = {
+        signal:
+          source === "deadline"
+            ? controller.signal
+            : new AbortController().signal,
+        remaining: () => 1_000,
+        dispose: () => {},
+      };
+      const parent = source === "parent" ? controller.signal : undefined;
+      const reason = new Error(`${source} cancellation`);
+      const pending = transport.fetch(
+        "https://example.com/slow",
+        undefined,
+        parent,
+        deadline,
+      );
+
+      await vi.waitFor(() => expect(browser).toHaveBeenCalledOnce());
+      controller.abort(reason);
+      await expect(pending).rejects.toBe(reason);
+    },
+  );
+
+  it("maps stream failures to a bounded network error and releases the reader lock", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("socket failed"));
+      },
+    });
+    const transport = createWebTransport({
+      profiles: ["chrome_100"],
+      resolver: async () => [{ address: "8.8.8.8", family: 4 }],
+      browserFetch: async () => ({
+        status: 200,
+        statusText: "OK",
+        url: "",
+        headers: [],
+        body: stream,
+      }),
+    });
+    const deadline = {
+      signal: new AbortController().signal,
+      remaining: () => 1_000,
+      dispose: () => {},
+    };
+
+    await expect(
+      transport.fetch("https://example.com", undefined, undefined, deadline),
+    ).rejects.toThrow("response stream failed");
+    expect(stream.locked).toBe(false);
+  });
+
+  it("preserves the 1 MiB POST error when request-body cancellation rejects", async () => {
+    let cancellations = 0;
+    const request = new Request("https://example.com", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(LIMITS.requestBodyBytes + 1));
+        },
+        cancel() {
+          cancellations++;
+          return Promise.reject(new Error("cleanup failed"));
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+    const resolver = vi.fn();
+    const transport = createWebTransport({
+      profiles: ["chrome_100"],
+      resolver,
+      browserFetch: vi.fn(),
+    });
+    const deadline = {
+      signal: new AbortController().signal,
+      remaining: () => 1_000,
+      dispose: () => {},
+    };
+
+    await expect(
+      transport.fetch(request, undefined, undefined, deadline),
+    ).rejects.toThrow("1 MiB");
+    expect(cancellations).toBe(1);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it("preserves an overflow error when reader cancellation rejects", async () => {
+    let cancellations = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(LIMITS.responseBytes + 1));
+      },
+      cancel() {
+        cancellations++;
+        return Promise.reject(new Error("cleanup failed"));
+      },
+    });
+    const transport = createWebTransport({
+      profiles: ["chrome_100"],
+      resolver: async () => [{ address: "8.8.8.8", family: 4 }],
+      browserFetch: async () => ({
+        status: 200,
+        statusText: "OK",
+        url: "",
+        headers: [],
+        body: stream,
+      }),
+    });
+    const deadline = {
+      signal: new AbortController().signal,
+      remaining: () => 1_000,
+      dispose: () => {},
+    };
+
+    await expect(
+      transport.fetch("https://example.com", undefined, undefined, deadline),
+    ).rejects.toThrow("5 MiB");
+    expect(cancellations).toBe(1);
+  });
+
   it("settles an aborted lookup without starting a late request", async () => {
     let resolveLookup:
       | ((answers: { address: string; family: number }[]) => void)
       | undefined;
     const browser = vi.fn();
+    let entered!: () => void;
+    const enteredLookup = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
     const transport = createWebTransport({
       profiles: ["chrome_100"],
       resolver: () =>
         new Promise((resolve) => {
           resolveLookup = resolve;
+          entered();
         }),
       browserFetch: browser,
     });
@@ -236,6 +471,7 @@ describe("public target transport", () => {
       controller.signal,
       deadline,
     );
+    await enteredLookup;
     controller.abort();
 
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
@@ -319,6 +555,138 @@ describe("public target transport", () => {
     controller.abort(reason);
     await expect(pending).rejects.toBe(reason);
     expect(cancelled).toBe(true);
+  });
+
+  it("returns bounded standard response text, JSON, array-buffer, and stream bodies", async () => {
+    const transport = createWebTransport({
+      profiles: ["chrome_100"],
+      resolver: async () => [{ address: "8.8.8.8", family: 4 }],
+      browserFetch: async () =>
+        response(200, { "content-type": "application/json" }, '{"ok":true}'),
+    });
+    const deadline = {
+      signal: new AbortController().signal,
+      remaining: () => 1_000,
+      dispose: () => {},
+    };
+    const jsonResponse = await transport.fetch(
+      "https://example.com/json",
+      undefined,
+      undefined,
+      deadline,
+    );
+    expect(await jsonResponse.json()).toEqual({ ok: true });
+
+    const bytesResponse = await transport.fetch(
+      "https://example.com/bytes",
+      undefined,
+      undefined,
+      deadline,
+    );
+    expect(new TextDecoder().decode(await bytesResponse.arrayBuffer())).toBe(
+      '{"ok":true}',
+    );
+
+    const streamResponse = await transport.fetch(
+      "https://example.com/stream",
+      undefined,
+      undefined,
+      deadline,
+    );
+    const reader = streamResponse.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(
+      '{"ok":true}',
+    );
+    reader.releaseLock();
+  });
+
+  it.each([
+    [301, "GET"],
+    [302, "GET"],
+    [303, "GET"],
+    [307, "POST"],
+    [308, "POST"],
+  ])(
+    "applies the POST redirect transition for HTTP %i",
+    async (status, method) => {
+      const browser = vi
+        .fn<BrowserFetch>()
+        .mockResolvedValueOnce(response(status, { location: "/next" }))
+        .mockResolvedValueOnce(response(200));
+      const transport = createWebTransport({
+        profiles: ["chrome_100"],
+        resolver: async () => [{ address: "8.8.8.8", family: 4 }],
+        browserFetch: browser,
+      });
+      const deadline = {
+        signal: new AbortController().signal,
+        remaining: () => 1_000,
+        dispose: () => {},
+      };
+
+      await transport.fetch(
+        "https://example.com/start",
+        {
+          method: "POST",
+          body: "request body",
+          headers: { "content-type": "text/plain" },
+        },
+        undefined,
+        deadline,
+      );
+
+      const redirected = browser.mock.calls[1]![1];
+      expect(redirected.method).toBe(method);
+      if (method === "GET") {
+        expect(redirected.body).toBeUndefined();
+        expect(redirected.headers).not.toHaveProperty("content-type");
+      } else {
+        expect(redirected.body).toBeInstanceOf(Uint8Array);
+      }
+    },
+  );
+
+  it("rejects forbidden and over-limit redirects before another request starts", async () => {
+    const forbidden = vi.fn<BrowserFetch>(async () =>
+      response(302, { location: "http://127.0.0.1/" }),
+    );
+    const transport = createWebTransport({
+      profiles: ["chrome_100"],
+      resolver: async (hostname) => [
+        {
+          address: hostname === "localhost" ? "127.0.0.1" : "8.8.8.8",
+          family: 4,
+        },
+      ],
+      browserFetch: forbidden,
+    });
+    const deadline = {
+      signal: new AbortController().signal,
+      remaining: () => 1_000,
+      dispose: () => {},
+    };
+    await expect(
+      transport.fetch("https://example.com", undefined, undefined, deadline),
+    ).rejects.toThrow("public unicast");
+    expect(forbidden).toHaveBeenCalledOnce();
+
+    const looping = vi.fn<BrowserFetch>(async () =>
+      response(302, { location: "/again" }),
+    );
+    const loopingTransport = createWebTransport({
+      profiles: ["chrome_100"],
+      resolver: async () => [{ address: "8.8.8.8", family: 4 }],
+      browserFetch: looping,
+    });
+    await expect(
+      loopingTransport.fetch(
+        "https://example.com",
+        undefined,
+        undefined,
+        deadline,
+      ),
+    ).rejects.toThrow("five HTTP redirects");
+    expect(looping).toHaveBeenCalledTimes(6);
   });
 
   it("fails clearly when wreq-js has no Chrome profile", () => {

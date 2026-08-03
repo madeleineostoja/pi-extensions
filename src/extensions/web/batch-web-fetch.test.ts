@@ -534,6 +534,55 @@ describe("batch_web_fetch", () => {
     await expect(batch).rejects.toBeInstanceOf(DeadlineError);
     expect(started).toBe(4);
   });
+
+  it("keeps single-fetch final-limit omissions distinct from request and fair truncation", async () => {
+    const output = await executeBatchWebFetch(
+      {
+        requests: [
+          { url: "https://example.com/utf8", maxChars: 40_000 },
+          { url: "https://example.com/lines", maxChars: 40_000 },
+        ],
+      },
+      undefined,
+      undefined,
+      {
+        execute: async (request) => ({
+          content: [
+            {
+              type: "text",
+              text: `Requested URL: ${request.url}\n\n${"😀".repeat(20_000)}\n${"line\n".repeat(2_000)}`,
+            },
+          ],
+          details: {
+            finalUrl: request.url,
+            status: 200,
+            contentType: "text/plain",
+            semanticTruncated: request.url.endsWith("utf8"),
+            finalTruncated: true,
+          },
+        }),
+      },
+    );
+    const content = output.content[0]?.text ?? "";
+    const items = output.details.items as Array<Record<string, unknown>>;
+
+    expect(
+      content.match(
+        /Content: truncated by the single-fetch final result limit\./gu,
+      ),
+    ).toHaveLength(2);
+    expect(content).toContain("Content: truncated to the request's maxChars.");
+    expect(content).toContain(
+      "[Item content truncated for fair batch allocation.]",
+    );
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ finalTruncated: true }),
+      ]),
+    );
+    expect(Buffer.byteLength(content)).toBeLessThanOrEqual(48 * 1024);
+    expect(content.split("\n").length).toBeLessThanOrEqual(1_900);
+  });
 });
 
 function deadline(

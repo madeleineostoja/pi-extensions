@@ -138,6 +138,113 @@ describe("web_fetch", () => {
     expect(result.details).toMatchObject({ alternateAttempts: 1 });
   });
 
+  it.each([
+    ["markdown", "plain response"],
+    ["text", "plain response"],
+    ["html", "<pre>plain response</pre>"],
+    ["json", '{\n  "ok": true\n}'],
+  ] as const)(
+    "renders bounded non-HTML %s output",
+    async (format, expected) => {
+      const transport: WebTransport = {
+        profile: { browser: "chrome_147", os: "windows" },
+        fetch: async () =>
+          page(
+            "https://example.com/data",
+            format === "json" ? "application/json" : "text/plain",
+            format === "json" ? '{"ok":true}' : "plain response",
+          ),
+      };
+      const result = await executeWebFetch(
+        { url: "https://example.com/data", format },
+        undefined,
+        undefined,
+        { transport },
+      );
+
+      expect(result.content[0]?.text).toContain(expected);
+    },
+  );
+
+  it("follows bounded immediate meta refreshes and rejects a sixth refresh", async () => {
+    const fetch = vi
+      .fn<WebTransport["fetch"]>()
+      .mockResolvedValueOnce(
+        page(
+          "https://example.com/start",
+          "text/html",
+          '<html><head><meta http-equiv="refresh" content="0; url=/next"></head></html>',
+        ),
+      )
+      .mockResolvedValueOnce(
+        page("https://example.com/next", "text/plain", "finished"),
+      );
+    const transport: WebTransport = {
+      profile: { browser: "chrome_147", os: "windows" },
+      fetch,
+    };
+    const result = await executeWebFetch(
+      { url: "https://example.com/start", format: "text" },
+      undefined,
+      undefined,
+      { transport },
+    );
+    expect(result.content[0]?.text).toContain("finished");
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "https://example.com/next",
+      undefined,
+      undefined,
+      expect.anything(),
+    );
+
+    let loopCalls = 0;
+    const loopingTransport: WebTransport = {
+      profile: transport.profile,
+      fetch: async (input) => {
+        loopCalls++;
+        return page(
+          String(input),
+          "text/html",
+          '<html><head><meta http-equiv="refresh" content="0; url=/again"></head></html>',
+        );
+      },
+    };
+    await expect(
+      executeWebFetch(
+        { url: "https://example.com/again", format: "text" },
+        undefined,
+        undefined,
+        { transport: loopingTransport },
+      ),
+    ).rejects.toThrow("five immediate meta refreshes");
+    expect(loopCalls).toBe(6);
+  });
+
+  it("limits qualified alternate retries", async () => {
+    const fetch = vi.fn<WebTransport["fetch"]>(async (input) =>
+      page(
+        String(input),
+        "text/html",
+        '<link rel="alternate" type="application/json" href="/alternate">',
+      ),
+    );
+    const transport: WebTransport = {
+      profile: { browser: "chrome_147", os: "windows" },
+      fetch,
+    };
+
+    await expect(
+      executeWebFetch(
+        { url: "https://example.com/start", format: "json" },
+        undefined,
+        undefined,
+        { transport },
+      ),
+    ).rejects.toThrow("after alternate fallbacks");
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
   it("writes a raw textual artifact without invoking extraction", async () => {
     const root = await mkdtemp(join(tmpdir(), "pipkin-web-test-"));
     const artifacts = new ArtifactStore({ temporaryRoot: root });
@@ -372,5 +479,126 @@ describe("web_fetch", () => {
     );
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(48 * 1024);
     expect(text.split("\n").length).toBeLessThanOrEqual(1_900);
+    expect(result.details).toMatchObject({ finalTruncated: true });
+  });
+
+  it("rejects a nonempty application loading shell as JavaScript-required", async () => {
+    const deadline = createInvocationDeadline();
+    const transport: WebTransport = {
+      profile: { browser: "chrome_147", os: "windows" },
+      fetch: async () => page("https://example.com", "text/plain", "unused"),
+    };
+
+    try {
+      await expect(
+        extractHtml(
+          '<div id="root">Loading...</div><script>boot()</script>',
+          "https://example.com",
+          normalizeInput({ url: "https://example.com" }),
+          { transport, deadline },
+        ),
+      ).rejects.toThrow("may require JavaScript");
+    } finally {
+      deadline.dispose();
+    }
+  });
+
+  it("uses the sanitized untouched DOM fallback for useful short content", async () => {
+    const deadline = createInvocationDeadline();
+    const transport: WebTransport = {
+      profile: { browser: "chrome_147", os: "windows" },
+      fetch: async () => page("https://example.com", "text/plain", "unused"),
+    };
+
+    try {
+      await expect(
+        extractHtml(
+          "<html><body><main>Brief useful evidence.</main><script>ignore()</script><noscript>ignore</noscript><p hidden>hidden</p></body></html>",
+          "https://example.com",
+          normalizeInput({ url: "https://example.com" }),
+          {
+            transport,
+            deadline,
+            defuddle: (async () => ({ content: "" })) as never,
+          },
+        ),
+      ).resolves.toMatchObject({ content: "Brief useful evidence." });
+    } finally {
+      deadline.dispose();
+    }
+  });
+
+  it("forwards Defuddle POST requests through the controlled transport", async () => {
+    const deadline = createInvocationDeadline();
+    const fetch = vi.fn<WebTransport["fetch"]>(async () =>
+      page("https://extractor.example/api", "text/plain", "nested response"),
+    );
+    const transport: WebTransport = {
+      profile: { browser: "chrome_147", os: "windows" },
+      fetch,
+    };
+
+    try {
+      await extractHtml(
+        "<main>Initial content</main>",
+        "https://example.com",
+        normalizeInput({ url: "https://example.com" }),
+        {
+          transport,
+          deadline,
+          defuddle: (async (
+            _document: Document,
+            _url: string,
+            options: {
+              fetch?: (
+                input: RequestInfo | URL,
+                init?: RequestInit,
+              ) => Promise<Response>;
+            },
+          ) => {
+            await options.fetch!(
+              new Request("https://extractor.example/api", {
+                method: "POST",
+                body: "bounded extractor body",
+                headers: { "x-extractor": "yes" },
+              }),
+            );
+            return { content: "Readable extracted content." };
+          }) as never,
+        },
+      );
+      expect(fetch).toHaveBeenCalledWith(
+        expect.any(Request),
+        undefined,
+        undefined,
+        deadline,
+      );
+    } finally {
+      deadline.dispose();
+    }
+  });
+
+  it("observes cancellation immediately after synchronous extraction", async () => {
+    const controller = new AbortController();
+    const transport: WebTransport = {
+      profile: { browser: "chrome_147", os: "windows" },
+      fetch: async () =>
+        page("https://example.com/post", "text/html", "<main>content</main>"),
+    };
+
+    await expect(
+      executeWebFetch(
+        { url: "https://example.com/post" },
+        controller.signal,
+        undefined,
+        {
+          transport,
+          extractHtml: async () => {
+            controller.abort(new DOMException("cancelled", "AbortError"));
+            return { content: "late content", alternates: [] };
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
   });
 });

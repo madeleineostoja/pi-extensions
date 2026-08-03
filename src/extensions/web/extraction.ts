@@ -17,6 +17,7 @@ type ExtractionDependencies = {
   transport: WebTransport;
   parentSignal?: AbortSignal;
   deadline: Deadline;
+  defuddle?: typeof Defuddle;
 };
 
 export async function extractHtml(
@@ -33,7 +34,7 @@ export async function extractHtml(
   assertActive(dependencies.deadline, dependencies.parentSignal);
   let extracted: DefuddleResponse;
   try {
-    extracted = await Defuddle(document, url, {
+    extracted = await (dependencies.defuddle ?? Defuddle)(document, url, {
       markdown: input.format === "markdown",
       separateMarkdown: false,
       removeImages: input.removeImages,
@@ -250,7 +251,17 @@ function appropriateAlternate(type: string, format: string): boolean {
 }
 
 function useful(value: string): boolean {
-  return value.replace(/<[^>]*>/gu, "").trim().length > 0;
+  const text = value
+    .replace(/<[^>]*>/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return text.length > 0 && !loadingPlaceholder(text);
+}
+
+function loadingPlaceholder(value: string): boolean {
+  return /^(?:loading(?:[ .…!]+| (?:app(?:lication)?|page|content))?|(?:please )?wait(?:[ .…!]+)?|(?:initiali[sz]ing|booting|starting)(?: (?:app(?:lication)?|page))?[ .…!]*|redirecting[ .…!]*|(?:enable|requires?) javascript[ .…!]*)$/iu.test(
+    value,
+  );
 }
 
 function stripHtml(value: string): string {

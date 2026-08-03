@@ -258,6 +258,7 @@ function itemSection(item: ItemState, ordinal: number): ItemSection {
     typeof details.status === "number" ? details.status : undefined;
   const contentType = detailText(details.contentType, 128);
   const semanticTruncated = details.semanticTruncated === true;
+  const sourceFinalTruncated = details.finalTruncated === true;
   lines.push(
     `Status: succeeded${status ? ` · HTTP ${status}` : ""}${contentType ? ` · ${contentType}` : ""}`,
   );
@@ -270,6 +271,9 @@ function itemSection(item: ItemState, ordinal: number): ItemSection {
   }
   if (semanticTruncated) {
     lines.push("Content: truncated to the request's maxChars.");
+  }
+  if (sourceFinalTruncated) {
+    lines.push("Content: truncated by the single-fetch final result limit.");
   }
   return {
     prefix: lines.join("\n"),
@@ -330,6 +334,7 @@ function itemDetails(
       ? { finalUrl: displayUrl(detailText(details?.finalUrl)!) }
       : {}),
     ...(details?.semanticTruncated === true ? { semanticTruncated: true } : {}),
+    ...(details?.finalTruncated === true ? { finalTruncated: true } : {}),
     ...(artifactDetails(details?.artifact)
       ? { artifact: artifactDetails(details?.artifact) }
       : {}),

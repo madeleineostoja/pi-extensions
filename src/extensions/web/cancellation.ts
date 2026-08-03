@@ -58,6 +58,36 @@ export function composeSignal(
   };
 }
 
+export type ReaderCleanup = {
+  cancel: (reason?: unknown) => Promise<void>;
+  release: () => void;
+};
+
+export function cleanupReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): ReaderCleanup {
+  let cancellation: Promise<void> | undefined;
+  let released = false;
+  const release = () => {
+    if (!released) {
+      released = true;
+      try {
+        reader.releaseLock();
+      } catch {}
+    }
+  };
+  return {
+    cancel: (reason) => {
+      cancellation ??= Promise.resolve()
+        .then(() => reader.cancel(reason))
+        .catch(() => {})
+        .then(release);
+      return cancellation;
+    },
+    release,
+  };
+}
+
 export function assertActive(deadline: Deadline, signal?: AbortSignal): void {
   throwIfAborted(signal);
   throwIfAborted(deadline.signal);

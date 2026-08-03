@@ -3,7 +3,7 @@ import { chmod, mkdtemp, open, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { assertActive, type Deadline } from "./cancellation.js";
+import { assertActive, cleanupReader, type Deadline } from "./cancellation.js";
 import { LIMITS } from "./constants.js";
 import { abortReason, DeadlineError, WebError } from "./errors.js";
 
@@ -67,7 +67,6 @@ export class ArtifactStore {
     );
     const path = join(directory, name);
     let handle: Awaited<ReturnType<typeof open>> | undefined;
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let created = false;
     let completed = false;
     let bytes = 0;
@@ -90,11 +89,13 @@ export class ArtifactStore {
       }
       this.#active.set(path, handle);
       if (response.body) {
-        reader = response.body.getReader();
-        const onAbort = () =>
-          void reader?.cancel(
+        const reader = response.body.getReader();
+        const cleanup = cleanupReader(reader);
+        const onAbort = () => {
+          void cleanup.cancel(
             options.signal?.reason ?? options.deadline.signal.reason,
           );
+        };
         options.signal?.addEventListener("abort", onAbort, { once: true });
         options.deadline.signal.addEventListener("abort", onAbort, {
           once: true,
@@ -109,7 +110,6 @@ export class ArtifactStore {
             }
             bytes += next.value.byteLength;
             if (bytes > options.maximumBytes) {
-              await reader.cancel().catch(() => {});
               throw oversize(options.kind);
             }
             await writeAll(handle, next.value);
@@ -132,10 +132,13 @@ export class ArtifactStore {
             preview = appended.value;
             previewTruncated ||= appended.truncated;
           }
+        } catch (error) {
+          await cleanup.cancel();
+          throw error;
         } finally {
           options.signal?.removeEventListener("abort", onAbort);
           options.deadline.signal.removeEventListener("abort", onAbort);
-          reader.releaseLock();
+          cleanup.release();
         }
       }
       assertActive(options.deadline, options.signal);
@@ -152,7 +155,6 @@ export class ArtifactStore {
         ...(decoder ? { preview, previewTruncated } : {}),
       };
     } catch (error) {
-      await reader?.cancel().catch(() => {});
       if (options.signal?.aborted) {
         throw abortReason(options.signal);
       }

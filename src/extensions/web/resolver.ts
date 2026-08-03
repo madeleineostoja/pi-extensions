@@ -22,7 +22,7 @@ export const resolvePublicTarget = async (
   }
   let answers: readonly AddressAnswer[];
   try {
-    answers = await resolver(target.hostname, signal);
+    answers = await resolveWithSignal(target.hostname, signal, resolver);
   } catch (error) {
     if (signal.aborted) {
       throw abortReason(signal);
@@ -53,6 +53,35 @@ export const resolvePublicTarget = async (
   }
   return target;
 };
+
+function resolveWithSignal(
+  hostname: string,
+  signal: AbortSignal,
+  resolver: Resolver,
+): Promise<readonly AddressAnswer[]> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (!settled) {
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        callback();
+      }
+    };
+    const onAbort = () => finish(() => reject(abortReason(signal)));
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    void Promise.resolve()
+      .then(() => resolver(hostname, signal))
+      .then(
+        (answers) => finish(() => resolve(answers)),
+        (error: unknown) => finish(() => reject(error)),
+      );
+  });
+}
 
 export function lookup(
   hostname: string,

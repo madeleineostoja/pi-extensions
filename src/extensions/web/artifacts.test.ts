@@ -76,6 +76,9 @@ describe("web artifacts", () => {
       pull() {
         pulled();
       },
+      cancel() {
+        return Promise.reject(new Error("cleanup failed"));
+      },
     });
     const started = new Promise<void>((resolve) => {
       pulled = resolve;
@@ -149,6 +152,40 @@ describe("web artifacts", () => {
       failureDeadline.dispose();
       await failing.dispose();
       await rm(setupRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("removes a binary artifact that crosses its 25 MiB streaming limit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pipkin-web-test-"));
+    const artifacts = new ArtifactStore({ temporaryRoot: root });
+    const deadline = createInvocationDeadline();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(ARTIFACT_LIMITS.binaryBytes + 1));
+        controller.close();
+      },
+    });
+    try {
+      await expect(
+        artifacts.write(
+          response("https://example.com/archive", stream, {
+            "content-length": "1",
+            "content-type": "application/octet-stream",
+          }),
+          {
+            kind: "binary",
+            maximumBytes: ARTIFACT_LIMITS.binaryBytes,
+            deadline,
+          },
+        ),
+      ).rejects.toThrow("25 MiB");
+      const [directory] = await readdir(root);
+      expect(directory).toBeDefined();
+      await expect(readdir(join(root, directory!))).resolves.toEqual([]);
+    } finally {
+      deadline.dispose();
+      await artifacts.dispose();
+      await rm(root, { recursive: true, force: true });
     }
   });
 

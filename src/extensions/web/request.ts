@@ -1,3 +1,4 @@
+import { cleanupReader } from "./cancellation.js";
 import { LIMITS } from "./constants.js";
 import { abortReason, WebError } from "./errors.js";
 
@@ -58,9 +59,12 @@ async function readBody(
     return undefined;
   }
   const reader = body.getReader();
+  const cleanup = cleanupReader(reader);
   const chunks: Uint8Array[] = [];
   let bytes = 0;
-  const onAbort = () => void reader.cancel(signal.reason);
+  const onAbort = () => {
+    void cleanup.cancel(signal.reason);
+  };
   signal.addEventListener("abort", onAbort, { once: true });
   try {
     while (true) {
@@ -76,7 +80,6 @@ async function readBody(
       }
       bytes += next.value.byteLength;
       if (bytes > LIMITS.requestBodyBytes) {
-        await reader.cancel();
         throw new WebError(
           "oversize",
           "Web Fetch POST body exceeds its 1 MiB limit.",
@@ -85,14 +88,14 @@ async function readBody(
       chunks.push(next.value);
     }
   } catch (error) {
-    await reader.cancel().catch(() => {});
+    await cleanup.cancel();
     if (signal.aborted) {
       throw abortReason(signal);
     }
     throw error;
   } finally {
     signal.removeEventListener("abort", onAbort);
-    reader.releaseLock();
+    cleanup.release();
   }
   if (signal.aborted) {
     throw abortReason(signal);

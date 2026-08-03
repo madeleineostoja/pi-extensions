@@ -3,7 +3,7 @@ import {
   type AgentToolUpdateCallback,
 } from "@earendil-works/pi-coding-agent";
 import { ArtifactStore, ARTIFACT_LIMITS, type Artifact } from "./artifacts.js";
-import { assertActive, type Deadline } from "./cancellation.js";
+import { assertActive, cleanupReader, type Deadline } from "./cancellation.js";
 import { LIMITS } from "./constants.js";
 import { abortReason, WebError } from "./errors.js";
 import {
@@ -170,6 +170,7 @@ export async function executeWebFetch(
             parentSignal: signal,
             deadline,
           });
+          assertActive(deadline, signal);
         } catch (error) {
           assertActive(deadline, signal);
           const alternate = inspection.alternates[0];
@@ -330,7 +331,7 @@ function result(options: {
     content: [
       { type: "text", text: `${truncatedPrefix}${truncatedBody.content}` },
     ],
-    details: metadata,
+    details: { ...metadata, finalTruncated: true },
   };
 }
 
@@ -404,10 +405,12 @@ async function readText(
     return "";
   }
   const reader = response.body.getReader();
+  const cleanup = cleanupReader(reader);
   const chunks: Uint8Array[] = [];
   let bytes = 0;
-  const cancel = () =>
-    void reader.cancel(signal?.reason ?? deadline.signal.reason);
+  const cancel = () => {
+    void cleanup.cancel(signal?.reason ?? deadline.signal.reason);
+  };
   signal?.addEventListener("abort", cancel, { once: true });
   deadline.signal.addEventListener("abort", cancel, { once: true });
   try {
@@ -420,7 +423,6 @@ async function readText(
       }
       bytes += next.value.byteLength;
       if (bytes > LIMITS.responseBytes) {
-        await reader.cancel().catch(() => {});
         throw new WebError(
           "oversize",
           "Web Fetch response exceeds its 5 MiB text limit.",
@@ -429,7 +431,7 @@ async function readText(
       chunks.push(next.value);
     }
   } catch (error) {
-    await reader.cancel().catch(() => {});
+    await cleanup.cancel();
     if (signal?.aborted) {
       throw abortReason(signal);
     }
@@ -443,7 +445,7 @@ async function readText(
   } finally {
     signal?.removeEventListener("abort", cancel);
     deadline.signal.removeEventListener("abort", cancel);
-    reader.releaseLock();
+    cleanup.release();
   }
   const output = new Uint8Array(bytes);
   let offset = 0;
