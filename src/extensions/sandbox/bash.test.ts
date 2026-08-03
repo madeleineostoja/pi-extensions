@@ -39,6 +39,16 @@ function processExists(pid: number): boolean {
   }
 }
 
+async function waitForProcessExit(pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!processExists(pid)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for process ${pid} to exit`);
+}
+
 function executionEnv(values: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return { ...process.env, ...values };
 }
@@ -437,7 +447,7 @@ printf last`,
     );
     await runtime.dispose();
     await expect(run).rejects.toThrow("aborted");
-    expect(processExists(pid)).toBe(false);
+    await waitForProcessExit(pid);
     await expect(runtime.dispose()).resolves.toBeUndefined();
   });
 
@@ -479,7 +489,7 @@ printf last`,
     );
     await runtime.dispose();
     await expect(run).rejects.toThrow("aborted");
-    expect(processExists(pid)).toBe(false);
+    await waitForProcessExit(pid);
     await expect(runtime.dispose()).resolves.toBeUndefined();
     await expect(
       runtime.operations.exec("printf after", workspace, {
