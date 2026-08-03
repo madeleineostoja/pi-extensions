@@ -160,6 +160,7 @@ async function loadBundle(): Promise<BundleFixture> {
         medium: { model: "openai/gpt-4o", thinking: "medium" },
         high: { model: "openai/gpt-4o", thinking: "high" },
       },
+      nickname: "Pipkin",
     }),
     { encoding: "utf8", flush: true },
   );

@@ -73,8 +73,8 @@ Pipkin adds the paths to that checkout's `.git/info/exclude`; it never changes c
 /btw Why did we choose a file lease here?
 ```
 
-Pipkin sends the current model a bounded view of the session context and prior BTW exchanges, then shows the answer in an overlay. The exchange does not enter the main transcript, trigger the primary agent, or influence later model turns.
+Pipkin sends the current model a bounded view of the session context and prior BTW exchanges, then shows the answer in a disposable non-overlay custom surface. The exchange does not enter the main transcript, trigger the primary agent, or influence later model turns.
 
 BTW has no tools. It cannot inspect files, run commands, or mutate state beyond what is already present in the supplied conversation context. Use an Explore or General agent when the side task needs tool access.
 
-Escape closes or aborts the overlay, arrow keys scroll, and `x` clears process-local BTW history for that session. BTW requires an interactive session, active model, and usable authentication.
+Escape closes or aborts the surface, arrow keys scroll, and `x` clears process-local BTW history for that session. Session replacement and shutdown abort and dispose the active surface, so stale completions are ignored. BTW requires an interactive session, active model, and usable authentication.

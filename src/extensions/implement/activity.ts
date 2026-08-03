@@ -14,7 +14,7 @@ import type { SchedulerEvent } from "./scheduler/scheduler.js";
 import type { RunState } from "./store.js";
 
 type TransitionEvent = SchedulerEvent | { kind: "planner_bound" };
-export function createTemporaryActivity(
+export function createImplementActivity(
   events: EventBus,
   ctx: ExtensionCommandContext,
   publisher: ActivityPublisher = createActivityPublisher(events, "implement"),

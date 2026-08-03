@@ -230,6 +230,30 @@ describe("/btw", () => {
     ]);
   });
 
+  it("cancels and rejects stale completion after session replacement", async () => {
+    const { command, handlers } = fixture();
+    const custom = customFixture();
+    const { value } = context(custom);
+    let resolveCompletion: (value: any) => void = () => {};
+    completeTextMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveCompletion = resolve;
+        }),
+    );
+
+    const running = command("question", value);
+    await flush();
+    handlers.get("session_start")?.();
+    resolveCompletion({ ok: true, text: "stale", stopReason: "stop" });
+    await running;
+
+    expect(getHistory("/tmp/btw-session.json")).toEqual([]);
+    expect(
+      custom.component?.render(80).some((line) => line.includes("stale")),
+    ).toBe(false);
+  });
+
   it("cancels and rejects stale completion after session shutdown", async () => {
     const { command, handlers } = fixture();
     const custom = customFixture();

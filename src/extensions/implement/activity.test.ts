@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { ACTIVITY_CHANNEL, type ActivityPublisher } from "#ui/activity";
 import { ActivityStore } from "../ui/activity-store.js";
-import { createTemporaryActivity } from "./temporary-activity.js";
+import { createImplementActivity } from "./activity.js";
 import type { RunState } from "./store.js";
 
 function state(
@@ -39,7 +39,7 @@ describe("Implement Activity projector", () => {
     const store = new ActivityStore();
     events.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
     const id = `a${"b".repeat(63)}`;
-    const activity = createTemporaryActivity(events, {} as never);
+    const activity = createImplementActivity(events, {} as never);
 
     activity.update(
       state(
@@ -58,7 +58,7 @@ describe("Implement Activity projector", () => {
     const events = createEventBus();
     const store = new ActivityStore();
     events.on(ACTIVITY_CHANNEL, (event) => store.accept(event));
-    const activity = createTemporaryActivity(events, {} as never);
+    const activity = createImplementActivity(events, {} as never);
 
     activity.update(
       state({
@@ -86,7 +86,7 @@ describe("Implement Activity projector", () => {
       .mockImplementationOnce(firstRemoval)
       .mockReturnValue(true);
     const publisher = fakePublisher(remove);
-    const activity = createTemporaryActivity(
+    const activity = createImplementActivity(
       {} as never,
       {} as never,
       publisher,
@@ -110,7 +110,7 @@ describe("Implement Activity projector", () => {
 
   it("removes stopped and replaced IDs once after accepted removal", () => {
     const publisher = fakePublisher();
-    const activity = createTemporaryActivity(
+    const activity = createImplementActivity(
       {} as never,
       {} as never,
       publisher,
@@ -145,7 +145,7 @@ describe("Implement Activity projector", () => {
 
   it("shuts down idempotently and ignores later updates", () => {
     const publisher = fakePublisher();
-    const activity = createTemporaryActivity(
+    const activity = createImplementActivity(
       {} as never,
       {} as never,
       publisher,

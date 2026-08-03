@@ -23,6 +23,7 @@ Choose the models Pipkin should use in `~/.pi/agent/pipkin/config.json`
 
 ```json
 {
+  "nickname": "Mads",
   "models": {
     "utility": { "model": "provider/fast-model", "thinking": "minimal" },
     "low": { "model": "provider/low-cost-model", "thinking": "low" },
@@ -85,14 +86,14 @@ They can run in the foreground or alongside independent parent work, accept stee
 
 The read-only **LSP** tool finds definitions, types, implementations, references, symbols, hover information, and diagnostics for TypeScript/JavaScript, Svelte, and provisioned Ruby projects. It follows a pull-only model where the agent uses it deliberately, rather than interrupting turns with noise.
 
-**BTW** handles the small question that would otherwise derail the main thread: `/btw <question>` answers from current session context in a disposable overlay and leaves the transcript alone.
+**BTW** handles the small question that would otherwise derail the main thread: `/btw <question>` answers from current session context in a disposable full-screen surface and leaves the transcript alone.
 
 **[Workflow tools →](docs/features/workflow-tools.md)**
 
 ### Session details
 
-- **UI** keeps cwd, branch, model, thinking, cost, cache hit rate, context usage, and extension state in one compact footer, with a bounded live Activity view for current work.
-- **Personality** gives unnamed sessions useful titles, so `/resume` is less of an archaeological dig.
+- **UI** keeps cwd, branch, model, thinking, cost, cache hit rate, context usage, and ordered extension state in one compact footer, with a bounded live Activity view for current work.
+- **Personality** gives unnamed sessions useful titles and a brief fresh-session greeting, so `/resume` is less of an archaeological dig.
 - **Papercuts** saves recurring project-specific workflow failures for human review instead of letting the lesson vanish with the session.
 
 **[Interface and Personality →](docs/features/interface-and-personality.md)**

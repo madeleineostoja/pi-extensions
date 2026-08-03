@@ -14,6 +14,7 @@ With Pi's default agent directory, that is `~/.pi/agent/pipkin/config.json`. Pip
 
 ```json
 {
+  "nickname": "Mads",
   "models": {
     "utility": { "model": "provider/fast-model", "thinking": "minimal" },
     "low": { "model": "provider/low-cost-model", "thinking": "low" },
@@ -26,7 +27,11 @@ With Pi's default agent directory, that is `~/.pi/agent/pipkin/config.json`. Pip
 }
 ```
 
-Only `models` is needed to unlock the complete model-powered feature set. `implement` is optional.
+Only `models` is needed to unlock the complete model-powered feature set. `implement` and `nickname` are optional.
+
+## Nickname
+
+`nickname` is an optional 1–40 character display name. Pipkin trims and collapses its whitespace, rejects empty values and control characters, and uses it only in Personality's deterministic greeting for fresh TUI startup and `/new` sessions.
 
 ## Model presets
 

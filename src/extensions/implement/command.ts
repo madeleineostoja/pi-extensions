@@ -21,11 +21,11 @@ import {
   releaseCompletedRunResources,
   type RunListing,
 } from "./controls.js";
-import { createTemporaryActivity } from "./temporary-activity.js";
+import { createImplementActivity } from "./activity.js";
 import { createTerminalHandoffPublisher } from "./terminal-handoff-publisher.js";
 import type { RunState } from "./store.js";
 
-type TemporaryActivity = ReturnType<typeof createTemporaryActivity>;
+type ImplementActivity = ReturnType<typeof createImplementActivity>;
 
 export function registerImplementCommand(
   pi: ExtensionAPI,
@@ -33,7 +33,7 @@ export function registerImplementCommand(
 ): void {
   const roles = config && resolveImplementRoles(config.config.models);
   let active: ActiveRun | undefined;
-  let activity: TemporaryActivity | undefined;
+  let activity: ImplementActivity | undefined;
   let lifecycle = Promise.resolve();
   const handoffPublisher = createTerminalHandoffPublisher(pi);
 
@@ -281,7 +281,7 @@ export function registerImplementCommand(
       return;
     }
     activity?.clear();
-    const nextActivity = createTemporaryActivity(pi.events, ctx);
+    const nextActivity = createImplementActivity(pi.events, ctx);
     activity = nextActivity;
     const onTransition = (
       state: RunState,

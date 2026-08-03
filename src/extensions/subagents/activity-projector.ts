@@ -55,7 +55,7 @@ export class SubagentActivityProjector {
         id: snapshot.id,
         ...parentIdentity(snapshot.owner, ids),
         label: agentLabel(snapshot),
-        title: bounded(snapshot.description, 240),
+        title: activityTitle(snapshot),
         ...(safeDetail(snapshot) ? { detail: safeDetail(snapshot) } : {}),
         state: activityState(snapshot),
         ...(timestamp(snapshot.timestamps.startedAt) === undefined
@@ -100,6 +100,13 @@ function agentLabel(snapshot: RuntimeSnapshot): string {
     return `Agent · ${snapshot.owner.tool}`;
   }
   return `Agent · ${bounded(snapshot.type, 80)}`;
+}
+
+function activityTitle(snapshot: RuntimeSnapshot): string {
+  if (typeof snapshot.owner === "object" && snapshot.owner.kind === "nested") {
+    return "Nested agent";
+  }
+  return `${bounded(snapshot.type, 80)} agent`;
 }
 
 function safeDetail(snapshot: RuntimeSnapshot): string | undefined {
