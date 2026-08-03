@@ -2,12 +2,24 @@ import type {
   AgentToolResult,
   BashToolDetails,
 } from "@earendil-works/pi-coding-agent";
-import type { SandboxBashHost, SandboxBashRequest } from "./bash-capability.js";
+import type {
+  SandboxBashHost,
+  SandboxBashRequest,
+  SandboxExecutionLease,
+  SandboxManagedRequest,
+} from "./bash-capability.js";
 
 type SandboxBashExecutor = (
   request: SandboxBashRequest,
 ) => Promise<AgentToolResult<BashToolDetails | undefined>>;
-type Binding = { token: object; execute: SandboxBashExecutor };
+type SandboxManagedExecutor = (
+  request: SandboxManagedRequest,
+) => Promise<SandboxExecutionLease>;
+type Binding = {
+  token: object;
+  execute: SandboxBashExecutor;
+  startManaged: SandboxManagedExecutor | undefined;
+};
 type SandboxBashManager = { bindings: WeakMap<object, Binding> };
 
 const managerKey = Symbol.for("pipkin:sandbox:bash");
@@ -26,10 +38,11 @@ function getManager(): SandboxBashManager {
 export function bindSandboxBashExecutor(
   host: SandboxBashHost,
   execute: SandboxBashExecutor,
+  startManaged?: SandboxManagedExecutor,
 ): { dispose: () => void } {
   const manager = getManager();
   const token = {};
-  manager.bindings.set(host, { token, execute });
+  manager.bindings.set(host, { token, execute, startManaged });
   return {
     dispose() {
       if (manager.bindings.get(host)?.token === token) {

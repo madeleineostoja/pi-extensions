@@ -76,6 +76,9 @@ export function resolveImplementRoles(
 const READ_ONLY_TOOLS = [
   "read",
   "bash",
+  "start_process",
+  "get_process_result",
+  "stop_process",
   "bash_outcome",
   "context_recall",
   "grep",
@@ -104,6 +107,7 @@ export function readOnlyWorkerTools(activeTools?: string[]): {
   return {
     tools: selected.filter(
       (name) =>
+        (name !== "start_process" || bashActive) &&
         (name !== "context_recall" || recallActive) &&
         (name !== "bash_outcome" ||
           (recallActive && selected.includes("bash_outcome"))),

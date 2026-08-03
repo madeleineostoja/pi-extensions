@@ -12,12 +12,13 @@ The root manifest loads the complete bundle in this order:
 4. UI
 5. Personality
 6. LSP
-7. Subagents
-8. Implement
-9. Reference
-10. Web Fetch
-11. Papercuts
-12. BTW
+7. Processes
+8. Subagents
+9. Implement
+10. Reference
+11. Web Fetch
+12. Papercuts
+13. BTW
 
 Order is a runtime contract. Sandbox then Readonly form the safety prefix: Sandbox owns model Bash and direct workspace-write containment; Readonly retains the independent edit/write workflow. Subagents precedes Implement because Implement consumes its managed runtime. Web Fetch follows Reference: Reference retains exactly `docs`, `package_search`, and `code_search`, while Web Fetch owns direct public URL retrieval through `web_fetch` and fixed-concurrency `batch_web_fetch`.
 
@@ -31,15 +32,15 @@ Feature subfolders represent established cohesive clusters rather than a univers
 
 Generic modules shared by at least two features live in `src/lib/`. There is no barrel: consumers import the concrete capability through `#lib/*`, which keeps dependencies visible.
 
-`#sandbox/runtime` is a Sandbox-owned capability consumed by Subagents to snapshot the invoking session's Sandbox mode for a child. `#sandbox/bash` is a separate narrow Sandbox-owned execution capability consumed by Context's `bash_outcome`: it invokes the current host's ordinary Bash path but exposes neither a tool definition nor mutable Sandbox state. `#subagents/runtime` is consumed by Implement for the managed runtime. `#personality/session-name` is Personality's stateless session-identity capability, consumed by Implement after a successful run starts. `#ui/activity` is a UI-owned event protocol consumed by Subagents and Implement; it binds each publisher source and leaves records, generations, timers, and widgets with the UI registration. `#ui/status` is a UI-owned stateless capability consumed by footer-status producers: it validates and immediately publishes through the producer's current UI without retaining producer state, importing a producer, or registering the UI extension. Shared chrome and metric presentation modules remain concrete `#lib/ui/*` imports. Neither consumer imports or registers the producer's extension root. A new mapping needs a real consumer, a narrow producer-owned type, an acyclic graph, package-import declaration, loader and TypeScript coverage, and an update to this document and repository guidance.
+`#sandbox/runtime` is a Sandbox-owned capability consumed by Subagents to snapshot the invoking session's Sandbox mode for a child. `#sandbox/bash` is a separate narrow Sandbox-owned execution capability consumed by Context's `bash_outcome` and Processes: it invokes ordinary Bash or starts a current-host managed execution lease, but exposes neither a tool definition, mutable Sandbox state, nor a child process. `#context/retained-result` is Context's side-effect-free validated retained-result encoder/decoder, consumed by Processes for explicit point-in-time outcomes; it owns no registration or session state. Processes owns session-local handles, output retention, waits, process-tool lifecycle, the `/processes` inspector, and its source-bound Activity projection. `#subagents/runtime` is consumed by Implement for the managed runtime. `#personality/session-name` is Personality's stateless session-identity capability, consumed by Implement after a successful run starts. `#ui/activity` is a UI-owned event protocol consumed by Subagents, Implement, and Processes; it binds each publisher source and leaves records, generations, timers, and widgets with the UI registration. `#ui/status` is a UI-owned stateless capability consumed by footer-status producers: it validates and immediately publishes through the producer's current UI without retaining producer state, importing a producer, or registering the UI extension. Shared chrome and metric presentation modules remain concrete `#lib/ui/*` imports. Neither consumer imports or registers the producer's extension root. A new mapping needs a real consumer, a narrow producer-owned type, an acyclic graph, package-import declaration, loader and TypeScript coverage, and an update to this document and repository guidance.
 
-UI owns generic presentation only: its Activity protocol projects bounded source-owned records without transcript content, commands, cwd, raw output, hidden runtime objects, or cost/token telemetry; its status capability is stateless and producer-owned. Personality owns voice and identity, including the synchronous fresh-session Welcome header and Implement session-name generation. UI never imports a producer implementation or registration root.
+UI owns generic presentation only: its Activity protocol projects bounded source-owned records without transcript content, commands, cwd, raw output, process or OS identifiers, hidden runtime objects, or cost/token telemetry; its status capability is stateless and producer-owned. Personality owns voice and identity, including the synchronous fresh-session Welcome header and Implement session-name generation. UI never imports a producer implementation or registration root.
 
 ## Separate loaders, explicit coordination
 
 Pi loads entrypoints through separate Jiti instances. Code may share pure helpers and typed protocols, but it must not rely on mutable module-singleton identity crossing those loader graphs.
 
-Subagents' coordinator and Sandbox's child-mode handoff are explicit exceptions: both are keyed by Pi's event bus, which gives them stable host identity across runtime reload boundaries. The Bash execution capability uses the same explicit host identity with a generation-scoped binding: Sandbox installs the final executor only after constructing the session runtime and revokes it before state reset and process disposal. Each managed child receives a distinct event bus, so its extension lifecycle and runtime remain isolated from its parent. Sandbox records the parent's current mode against that child bus before construction and consumes it at child startup; this is a spawn-time snapshot, not live synchronization.
+Subagents' coordinator and Sandbox's child-mode handoff are explicit exceptions: both are keyed by Pi's event bus, which gives them stable host identity across runtime reload boundaries. Every child extension binding creates its own isolated Processes runtime and Sandbox execution leases, and child shutdown stops only that runtime's leases. Activity publication is deliberately narrower: print, JSON, and RPC children create no Processes Activity source; only the top-level interactive TUI lifecycle publishes and clears Processes activity. The Bash execution capability uses the same explicit host identity with a generation-scoped binding: Sandbox installs the final executor only after constructing the session runtime. On shutdown it first settles managed execution leases, then revokes the binding and state; Processes performs only later record and waiter cleanup. Each managed child receives a distinct event bus, so its extension lifecycle and runtime remain isolated from its parent. Sandbox records the parent's current mode against that child bus before construction and consumes it at child startup; this is a spawn-time snapshot, not live synchronization.
 
 ## Files shared by concurrent features
 

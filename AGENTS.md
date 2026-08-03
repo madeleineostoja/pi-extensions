@@ -12,12 +12,13 @@
 ## Scope
 
 - This is for personal use by one user. When carrying out solution design you do not need to account for general user adoption, configurability, maintaining backwards compatibility, etc
+- Windows is unsupported. Do not add Windows-specific compatibility or test accommodations
 
 ## Imports and ownership
 
 - Use relative imports within a feature.
 - Import concrete generic helpers through `#lib/*`, for example `#lib/file-lease`.
-- `#sandbox/runtime` lets Subagents snapshot Sandbox session-mode inheritance. `#sandbox/bash` lets Context compose the current host's ordinary Sandbox Bash execution. `#subagents/runtime` lets Implement consume the managed agent runtime. `#personality/session-name` lets Implement generate active-run session names through Personality's stateless identity capability. `#ui/activity` lets Subagents and Implement publish bounded generic activity through the UI-owned event capability. `#ui/status` lets status producers publish immediately through the UI-owned stateless footer capability. `#lib/ui/*` resolves shared presentation helpers. Production code must not import another feature's `index.ts` or an unlisted extension internal.
+- `#sandbox/runtime` lets Subagents snapshot Sandbox session-mode inheritance. `#sandbox/bash` lets Context compose ordinary Bash and lets Processes start Sandbox-owned managed execution leases for the current host; it never exposes Sandbox runtime state or a child process. `#context/retained-result` is Context's side-effect-free validated retained-result envelope capability, consumed by Processes for explicit point-in-time outcomes. `#subagents/runtime` lets Implement consume the managed agent runtime. `#personality/session-name` lets Implement generate active-run session names through Personality's stateless identity capability. `#ui/activity` lets Subagents, Implement, and Processes publish bounded generic activity through the UI-owned event capability. `#ui/status` lets status producers publish immediately through the UI-owned stateless footer capability. `#lib/ui/*` resolves shared presentation helpers. Production code must not import another feature's `index.ts` or an unlisted extension internal.
 - Direct capability coupling is allowed only when the producer owns the capability, the dependency is narrow and typed, the graph is acyclic, and the import neither registers an extension nor assumes mutable module-singleton identity.
 - Add a new cross-feature mapping only after there is a real consumer. Define the narrow source-owned capability, add its `package.json#imports` mapping, cover Pi Jiti/Vitest/TypeScript resolution, document the dependency here and in `docs/architecture.md`, and keep the producer registration root private. UI owns the sole bounded Activity projection and generic footer-status presentation; it never owns producer cleanup or transcript delivery. `#ui/status` is UI-owned and may be consumed by producers such as Sandbox, Readonly, and Papercuts; it never imports them or registers the UI extension. Personality owns its synchronous fresh-session Welcome header and identity behavior, including the stateless `#personality/session-name` capability consumed by Implement, while UI owns generic presentation infrastructure.
 - Keep feature-specific code with its owner. Add a `src/lib` module only when at least two features need it.
@@ -26,7 +27,7 @@
 
 - Pi loads entrypoints through separate Jiti instances. Share pure helpers and explicit capability modules, not mutable module singletons. Sandbox's executable Bash capability rendezvous through a generation-scoped binding keyed by `pi.events`; Sandbox installs it after session runtime construction and revokes it before reset and disposal.
 - Start long-lived resources at `session_start` or on demand. Dispose them idempotently at `session_shutdown`.
-- Explicitly remove direct `pi.events` listeners during disposal. Stateful cross-entrypoint coordination needs an explicit host identity; the Subagents coordinator and Sandbox child-mode handoff are event-bus-keyed exceptions.
+- Explicitly remove direct `pi.events` listeners during disposal. Stateful cross-entrypoint coordination needs an explicit host identity; the Subagents coordinator, Sandbox child-mode handoff, and Sandbox-owned managed execution lease binding are event-bus-keyed exceptions.
 
 ## Commands
 
@@ -44,6 +45,6 @@ Vitest projects run adjacent feature/library tests and the root bundle contract.
 ## Development workflow
 
 - To add a feature, create `src/extensions/<feature>/index.ts`, add it in its intentional position to `package.json#pi.extensions`, add adjacent behavior tests, extend `test/bundle/` if public registrations or ordering change, and update the relevant concept guide plus the root README.
-- Root registration order is a runtime contract. Sandbox and Readonly lead the bundle; Subagents precedes Implement.
+- Root registration order is a runtime contract. Sandbox and Readonly lead the bundle; Processes follows LSP and precedes Subagents, which precedes Implement.
 - Prefer root-level validation before handoff. For TypeScript changes, run the narrowest relevant test and `npm run check`; run bundle tests when manifest entries, registrations, internal imports, or lifecycle ordering change.
 - If changing Pi extension APIs or TUI integrations, verify against the local Pi docs referenced in the harness instructions rather than relying on memory.

@@ -27,6 +27,7 @@
       "./src/extensions/ui/index.ts",
       "./src/extensions/personality/index.ts",
       "./src/extensions/lsp/index.ts",
+      "./src/extensions/processes/index.ts",
       "./src/extensions/subagents/index.ts",
       "./src/extensions/implement/index.ts",
       "./src/extensions/reference/index.ts",
@@ -41,6 +42,7 @@
     "#ui/status": "./src/extensions/ui/status.ts",
     "#sandbox/runtime": "./src/extensions/sandbox/runtime.ts",
     "#sandbox/bash": "./src/extensions/sandbox/bash-capability.ts",
+    "#context/retained-result": "./src/extensions/context/retained-result.ts",
     "#subagents/runtime": "./src/extensions/subagents/runtime.ts",
     "#personality/session-name": "./src/extensions/personality/session-name.ts",
     "#test/*": "./test/support/*.ts"

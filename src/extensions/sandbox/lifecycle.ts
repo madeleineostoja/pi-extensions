@@ -122,7 +122,11 @@ export function createSandboxSessionController(options: {
           request.onUpdate,
           request.ctx,
         );
-      bashBinding = bindSandboxBashExecutor(options.host, execute);
+      bashBinding = bindSandboxBashExecutor(
+        options.host,
+        execute,
+        bash.startManaged,
+      );
       return { definition, execute };
     },
     async sessionShutdown(ctx: ExtensionContext): Promise<void> {
@@ -135,11 +139,11 @@ export function createSandboxSessionController(options: {
         observer = undefined;
         unsubscribeDenials?.();
         unsubscribeDenials = undefined;
-        activeBashBinding?.dispose();
-        options.state.revoke();
-        clearSandboxStatus(ctx);
         shutdown = (async () => {
           await activeBash?.dispose();
+          activeBashBinding?.dispose();
+          options.state.revoke();
+          clearSandboxStatus(ctx);
           await activeObserver?.dispose();
           options.denials.reset();
         })();

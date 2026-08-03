@@ -709,6 +709,9 @@ describe("public subagent tools", () => {
     const { pi } = makePi([
       "read",
       "bash",
+      "start_process",
+      "get_process_result",
+      "stop_process",
       "bash_outcome",
       "context_recall",
       "Agent",
@@ -759,6 +762,9 @@ describe("public subagent tools", () => {
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
+      "start_process",
+      "get_process_result",
+      "stop_process",
       "bash_outcome",
       "context_recall",
       "edit",
@@ -889,8 +895,15 @@ describe("public subagent tools", () => {
     ]);
   });
 
-  it("removes Context Bash companions when their active capability is incomplete", async () => {
-    const bashFree = makePi(["read", "bash_outcome", "context_recall"]);
+  it("intersects process capabilities with parent active tools", async () => {
+    const bashFree = makePi([
+      "read",
+      "start_process",
+      "get_process_result",
+      "stop_process",
+      "bash_outcome",
+      "context_recall",
+    ]);
     const missingRecall = makePi(["read", "bash", "bash_outcome"]);
     const bashFreeSession = makeSession("bash-free");
     const missingRecallSession = makeSession("missing-recall");
@@ -921,6 +934,8 @@ describe("public subagent tools", () => {
 
     expect(bashFreeSession.session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
+      "get_process_result",
+      "stop_process",
       "grep",
       "find",
       "ls",
@@ -1005,7 +1020,17 @@ describe("public subagent tools", () => {
     expect(EXPLORE_PROMPT).not.toContain("Use the find tool");
     expect(EXPLORE_PROMPT).not.toContain("NOT bash grep/rg");
 
-    const { pi } = makePi(["read", "bash", "edit", "write", "Agent"]);
+    const { pi } = makePi([
+      "read",
+      "bash",
+      "start_process",
+      "get_process_result",
+      "stop_process",
+      "record_papercut",
+      "edit",
+      "write",
+      "Agent",
+    ]);
     const { session } = makeSession("explore result");
     const createSession = vi.fn(async (_options: any) => ({ session }));
     const runtime = new SubagentRuntime(pi as never, { createSession });
@@ -1028,11 +1053,24 @@ describe("public subagent tools", () => {
     expect(createSession.mock.calls[0][0]).toMatchObject({
       agentDir: "/tmp/pipkin-subagents-config",
       resourceLoader: resourceLoaderConstructions[0].loader,
-      tools: ["read", "bash", "grep", "find", "ls", "record_papercut"],
+      tools: [
+        "read",
+        "bash",
+        "start_process",
+        "get_process_result",
+        "stop_process",
+        "grep",
+        "find",
+        "ls",
+        "record_papercut",
+      ],
     });
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
+      "start_process",
+      "get_process_result",
+      "stop_process",
       "grep",
       "find",
       "ls",
@@ -1042,7 +1080,17 @@ describe("public subagent tools", () => {
 
   it("uses append-mode prompt loading and pinned tools for Review", async () => {
     expect(REVIEW_PROMPT).toContain("sole allowed personal-metadata write");
-    const { pi } = makePi(["read", "bash", "edit", "write", "Agent"]);
+    const { pi } = makePi([
+      "read",
+      "bash",
+      "start_process",
+      "get_process_result",
+      "stop_process",
+      "record_papercut",
+      "edit",
+      "write",
+      "Agent",
+    ]);
     const { session } = makeSession("review result");
     const createSession = vi.fn(async (_options: any) => ({ session }));
     const runtime = new SubagentRuntime(pi as never, { createSession });
@@ -1067,6 +1115,9 @@ describe("public subagent tools", () => {
       tools: [
         "read",
         "bash",
+        "start_process",
+        "get_process_result",
+        "stop_process",
         "grep",
         "find",
         "ls",
@@ -1077,6 +1128,9 @@ describe("public subagent tools", () => {
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
+      "start_process",
+      "get_process_result",
+      "stop_process",
       "grep",
       "find",
       "ls",

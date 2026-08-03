@@ -30,6 +30,70 @@ describe("retained result", () => {
     expect(hasRetainedResult(retained.details)).toBe(true);
   });
 
+  it("uses a source-owned label without changing Bash defaults", () => {
+    const retained = retainResult(
+      { content: [{ type: "text", text: "process output" }] },
+      "Managed process process-1 is completed.",
+      "process-call",
+      { label: "managed process" },
+    );
+
+    expect(retained.content[0]?.text).toBe(
+      'Managed process process-1 is completed.\nThe managed process result is retained; call context_recall("process-call") to inspect it.',
+    );
+  });
+
+  it("rejects oversized text, image, and combined retained payloads", () => {
+    const oversizedText = "x".repeat(DEFAULT_MAX_BYTES + 1);
+    const oversizedImage = "x".repeat(DEFAULT_MAX_BYTES + 1);
+    expect(() =>
+      retainResult(
+        { content: [{ type: "text", text: oversizedText }] },
+        "Bash command succeeded.",
+        "call",
+      ),
+    ).toThrow("Invalid retained result");
+    const nearLimit = retainResult(
+      {
+        content: [{ type: "text", text: "x".repeat(DEFAULT_MAX_BYTES) }],
+        details: { exitCode: 0, metadata: "bounded" },
+      },
+      "Bash command succeeded.",
+      "call",
+    );
+    expect(decodeRetainedResult(nearLimit.details)).toEqual({
+      content: [{ type: "text", text: "x".repeat(DEFAULT_MAX_BYTES) }],
+      details: { exitCode: 0, metadata: "bounded" },
+    });
+    expect(
+      decodeRetainedResult({
+        retainedResult: {
+          type: "pipkin.context.retained-result",
+          version: 1,
+          result: {
+            content: [
+              { type: "image", data: oversizedImage, mimeType: "image/png" },
+            ],
+          },
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      decodeRetainedResult({
+        retainedResult: {
+          type: "pipkin.context.retained-result",
+          version: 1,
+          result: {
+            content: [
+              { type: "text", text: "x".repeat(DEFAULT_MAX_BYTES / 2) },
+              { type: "text", text: "x".repeat(DEFAULT_MAX_BYTES / 2 + 1) },
+            ],
+          },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
   it("rejects malformed versions and non-JSON or oversized source details without state", () => {
     const before = (globalThis as Record<symbol, unknown>)[managerKey];
     const cyclic: { self?: unknown } = {};

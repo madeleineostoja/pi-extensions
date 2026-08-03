@@ -133,7 +133,11 @@ export function registerRecallTool(pi: ExtensionAPI): void {
         );
       }
       const source = resolveSourceDisplay(ctx, params.id);
-      const recalled = resolveRecalledResult(result, params.id);
+      const recalled = resolveRecalledResult(
+        result,
+        params.id,
+        findToolCall(ctx, params.id),
+      );
       if (params.lines === undefined && params.find === undefined) {
         if (!hasContentBlocks(recalled.content)) {
           throw new Error(
@@ -457,7 +461,11 @@ function findToolResult(
   return undefined;
 }
 
-function resolveRecalledResult(result: ToolResult, id: string): RecalledResult {
+function resolveRecalledResult(
+  result: ToolResult,
+  id: string,
+  toolCall: ToolCall | undefined,
+): RecalledResult {
   const retained = decodeRetainedResult(result.details);
   if (retained) {
     return { content: retained.content, retainedDetails: retained.details };
@@ -470,7 +478,49 @@ function resolveRecalledResult(result: ToolResult, id: string): RecalledResult {
       `context_recall: retained Bash content for id=${shortenedId(id)} is ${status}`,
     );
   }
+  if (
+    !result.isError &&
+    (toolCall?.name === "get_process_result" ||
+      toolCall?.name === "stop_process") &&
+    isOutcomeArguments(toolCall.arguments)
+  ) {
+    if (hasRetainedResult(result.details)) {
+      throw new Error(
+        `context_recall: retained managed process content for id=${shortenedId(id)} is malformed`,
+      );
+    }
+    if (!isFailedProcessOutcomeFallback(result.details)) {
+      throw new Error(
+        `context_recall: retained managed process content for id=${shortenedId(id)} is unavailable`,
+      );
+    }
+  }
   return { content: result.content };
+}
+
+function isOutcomeArguments(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { resultMode?: unknown }).resultMode === "outcome"
+  );
+}
+
+function isFailedProcessOutcomeFallback(details: unknown): boolean {
+  if (typeof details !== "object" || details === null) {
+    return false;
+  }
+  const typed = details as {
+    snapshot?: { status?: unknown; id?: unknown };
+    resultMode?: unknown;
+  };
+  return (
+    typed.resultMode === "outcome" &&
+    typeof typed.snapshot === "object" &&
+    typed.snapshot !== null &&
+    typeof typed.snapshot.id === "string" &&
+    typed.snapshot.status === "failed"
+  );
 }
 
 function findToolCall(ctx: ExtensionContext, id: string): ToolCall | undefined {

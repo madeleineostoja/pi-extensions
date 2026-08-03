@@ -17,27 +17,37 @@ type RetainedEnvelope = {
 };
 
 const RETAINED_KEY = "retainedResult";
+const MAX_CONTENT_BYTES = DEFAULT_MAX_BYTES;
+const MAX_DETAILS_BYTES = DEFAULT_MAX_BYTES;
+const MAX_ENVELOPE_BYTES = MAX_CONTENT_BYTES + MAX_DETAILS_BYTES + 8 * 1024;
 
 export function retainResult(
   result: Readonly<{ content: unknown; details?: unknown }>,
   summary: string,
   toolCallId: string,
+  options: Readonly<{ label?: string }> = {},
 ): { content: TextBlock[]; details: { retainedResult: RetainedEnvelope } } {
   const retained = validateResult(result);
+  const label = options.label ?? "Bash";
+  if (!/^[\p{L}\p{N} ][\p{L}\p{N} -]{0,79}$/u.test(label)) {
+    throw new Error("Invalid retained result label");
+  }
+  const envelope: RetainedEnvelope = {
+    type: "pipkin.context.retained-result",
+    version: 1,
+    result: retained,
+  };
+  if (encodedBytes(envelope) > MAX_ENVELOPE_BYTES) {
+    throw new Error("Invalid retained result");
+  }
   return {
     content: [
       {
         type: "text",
-        text: `${summary}\nThe Bash result is retained; call context_recall("${toolCallId}") to inspect it.`,
+        text: `${summary}\nThe ${label} result is retained; call context_recall("${toolCallId}") to inspect it.`,
       },
     ],
-    details: {
-      retainedResult: {
-        type: "pipkin.context.retained-result",
-        version: 1,
-        result: retained,
-      },
-    },
+    details: { retainedResult: envelope },
   };
 }
 
@@ -52,7 +62,8 @@ export function decodeRetainedResult(
     !isRecord(envelope) ||
     envelope.type !== "pipkin.context.retained-result" ||
     envelope.version !== 1 ||
-    !Object.hasOwn(envelope, "result")
+    !Object.hasOwn(envelope, "result") ||
+    encodedBytes(envelope) > MAX_ENVELOPE_BYTES
   ) {
     return undefined;
   }
@@ -72,16 +83,19 @@ function validateResult(value: unknown): RetainedResult {
     throw new Error("Invalid retained result");
   }
   const content = value.content.map(validateContentBlock);
-  if (content.length === 0) {
+  if (content.length === 0 || contentBytes(content) > MAX_CONTENT_BYTES) {
     throw new Error("Invalid retained result");
   }
-  if (!Object.hasOwn(value, "details") || value.details === undefined) {
-    return { content };
-  }
-  if (!isJson(value.details) || jsonBytes(value.details) > DEFAULT_MAX_BYTES) {
+  const result =
+    !Object.hasOwn(value, "details") || value.details === undefined
+      ? { content }
+      : !isJson(value.details) || jsonBytes(value.details) > MAX_DETAILS_BYTES
+        ? undefined
+        : { content, details: value.details };
+  if (result === undefined || encodedBytes(result) > MAX_ENVELOPE_BYTES) {
     throw new Error("Invalid retained result");
   }
-  return { content, details: value.details };
+  return result;
 }
 
 function validateContentBlock(value: unknown): ContentBlock {
@@ -101,8 +115,25 @@ function validateContentBlock(value: unknown): ContentBlock {
   throw new Error("Invalid retained result");
 }
 
+function contentBytes(content: readonly ContentBlock[]): number {
+  return content.reduce(
+    (total, block) =>
+      total +
+      Buffer.byteLength(block.type === "text" ? block.text : block.data),
+    0,
+  );
+}
+
 function jsonBytes(value: Json): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function encodedBytes(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 function isJson(value: unknown, ancestors = new Set<object>()): value is Json {

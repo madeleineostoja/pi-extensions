@@ -344,6 +344,49 @@ describe("context_recall", () => {
     });
   });
 
+  it("fails closed for a malformed managed-process envelope even when details claim failure", async () => {
+    const execute = recall([
+      toolCall("malformed-process", "get_process_result", {
+        id: "process-1",
+        wait: true,
+        resultMode: "outcome",
+      }),
+      toolResult("malformed-process", [{ type: "text", text: "summary" }], {
+        retainedResult: { version: 1 },
+        snapshot: { id: "process-1", status: "failed" },
+        resultMode: "outcome",
+      }),
+    ]).execute;
+    await expect(execute({ id: "malformed-process" })).rejects.toThrow(
+      "retained managed process content",
+    );
+  });
+
+  it("recalls the ordinary failed managed-process outcome fallback", async () => {
+    const execute = recall([
+      toolCall("failed-process", "get_process_result", {
+        id: "process-1",
+        wait: true,
+        resultMode: "outcome",
+      }),
+      toolResult("failed-process", [{ type: "text", text: "exit 1\nneedle" }], {
+        snapshot: { id: "process-1", status: "failed" },
+        resultMode: "outcome",
+      }),
+    ]).execute;
+    await expect(execute({ id: "failed-process" })).resolves.toMatchObject({
+      content: [{ type: "text", text: "exit 1\nneedle" }],
+    });
+    await expect(
+      execute({ id: "failed-process", lines: "2" }),
+    ).resolves.toMatchObject({ content: [{ type: "text", text: "needle" }] });
+    await expect(
+      execute({ id: "failed-process", find: "needle" }),
+    ).resolves.toMatchObject({
+      content: [{ type: "text", text: expect.stringContaining("2 | needle") }],
+    });
+  });
+
   it("retains recalled outcomes through persisted, resumed, forked, and in-memory sessions", async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), "pipkin-context-recall-"));
     const ordinary = {

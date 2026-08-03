@@ -37,6 +37,7 @@ const expectedExtensions = [
   "./src/extensions/ui/index.ts",
   "./src/extensions/personality/index.ts",
   "./src/extensions/lsp/index.ts",
+  "./src/extensions/processes/index.ts",
   "./src/extensions/subagents/index.ts",
   "./src/extensions/implement/index.ts",
   "./src/extensions/reference/index.ts",
@@ -56,6 +57,9 @@ const expectedTools = {
   bash_outcome: "src/extensions/context/index.ts",
   context_recall: "src/extensions/context/index.ts",
   lsp: "src/extensions/lsp/index.ts",
+  start_process: "src/extensions/processes/index.ts",
+  get_process_result: "src/extensions/processes/index.ts",
+  stop_process: "src/extensions/processes/index.ts",
   Agent: "src/extensions/subagents/index.ts",
   get_subagent_result: "src/extensions/subagents/index.ts",
   steer_subagent: "src/extensions/subagents/index.ts",
@@ -71,6 +75,7 @@ const expectedTools = {
 const expectedCommands = {
   sandbox: "src/extensions/sandbox/index.ts",
   readonly: "src/extensions/readonly/index.ts",
+  processes: "src/extensions/processes/index.ts",
   agents: "src/extensions/subagents/index.ts",
   implement: "src/extensions/implement/index.ts",
   papercuts: "src/extensions/papercuts/index.ts",
@@ -651,7 +656,8 @@ describe("Pipkin bundle", () => {
       { setPipkinStatus },
       { createActivityPublisher },
       { bindSandboxHost },
-      { executeSandboxBash },
+      { executeSandboxBash, startSandboxManagedExecution },
+      { retainResult, decodeRetainedResult },
       { getSubagentRuntime },
       { generateSessionName },
     ] = await Promise.all([
@@ -661,6 +667,7 @@ describe("Pipkin bundle", () => {
       import("#ui/activity"),
       import("#sandbox/runtime"),
       import("#sandbox/bash"),
+      import("#context/retained-result"),
       import("#subagents/runtime"),
       import("#personality/session-name"),
     ]);
@@ -673,9 +680,37 @@ describe("Pipkin bundle", () => {
     expect(createActivityPublisher).toBeTypeOf("function");
     expect(bindSandboxHost).toBeTypeOf("function");
     expect(executeSandboxBash).toBeTypeOf("function");
+    expect(startSandboxManagedExecution).toBeTypeOf("function");
+    expect(retainResult).toBeTypeOf("function");
+    expect(decodeRetainedResult).toBeTypeOf("function");
     expect(getSubagentRuntime).toBeTypeOf("function");
     expect(generateSessionName).toBeTypeOf("function");
     expect(snapshotGlobalSymbols()).toEqual(before);
+  });
+
+  it("keeps Context retained-result ownership side-effect-free and acyclic", () => {
+    const retained = readFileSync(
+      join(ROOT, "src/extensions/context/retained-result.ts"),
+      "utf8",
+    );
+    const bashOutcome = readFileSync(
+      join(ROOT, "src/extensions/context/bash-outcome.ts"),
+      "utf8",
+    );
+    const processTools = readFileSync(
+      join(ROOT, "src/extensions/processes/tools.ts"),
+      "utf8",
+    );
+    const sandbox = readFileSync(
+      join(ROOT, "src/extensions/sandbox/bash-capability.ts"),
+      "utf8",
+    );
+
+    expect(retained).not.toMatch(/register|bindSandbox|#sandbox|#processes/);
+    expect(bashOutcome).toContain('from "./retained-result.ts"');
+    expect(processTools).toContain('from "#context/retained-result"');
+    expect(sandbox).not.toContain("#context/retained-result");
+    expect(retained).not.toContain("#sandbox/bash");
   });
 
   it("contains no package-era topology or cross-feature entrypoint imports", () => {

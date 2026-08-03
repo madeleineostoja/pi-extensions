@@ -52,6 +52,12 @@ Or search one text result with a non-empty case-insensitive literal. Search retu
 
 Recall also keeps a bounded source label for terminal presentation, such as the originating tool or Bash command. That label is metadata only: it is never prepended to or substituted for the recalled model content. Recall does not alter the original pruning decision.
 
+## Managed process outcomes
+
+`get_process_result` and `stop_process` default to bounded visible output. For a successful snapshot, readiness wait, timeout, cancellation-finalization, terminal join, or stop where only status matters, pass `resultMode:"outcome"`. It returns a concise status and exact `context_recall` instruction while retaining the same bounded point-in-time process result. Full recall, a line range, and literal search work after compaction or record eviction, but cannot recover newer or dropped output. Use a later output-mode call for newer live output; failed process output remains visible instead of being hidden as an outcome.
+
+For example, start overlapping finite work, continue independent work, then call `get_process_result` once with `wait:true, resultMode:"outcome"`. A server can instead wait once with `untilContains:"ready"`; inspect targeted later output with `find:"error"`, or stop it explicitly when no longer needed.
+
 ## Bash outcomes
 
 Choose `bash_outcome` when the next reasoning step only needs to know whether Bash succeeded, regardless of the command's finite duration. It shares Sandbox's ordinary Bash execution and leaves failures visible normally. On success it returns a concise status while retaining the same ordinary bounded Bash result for `context_recall`; choose ordinary `bash` when successful output may affect the next decision. An optional display-only label is control-safe normalized, whitespace-collapsed, and must be 1–80 Unicode code points; it never changes the command.
