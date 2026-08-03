@@ -41,6 +41,7 @@
     "#ui/status": "./src/extensions/ui/status.ts",
     "#sandbox/runtime": "./src/extensions/sandbox/runtime.ts",
     "#sandbox/bash": "./src/extensions/sandbox/bash-capability.ts",
+    "#context/retained-result": "./src/extensions/context/retained-result.ts",
     "#subagents/runtime": "./src/extensions/subagents/runtime.ts",
     "#test/*": "./test/support/*.ts"
   },

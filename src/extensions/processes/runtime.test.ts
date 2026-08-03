@@ -5,6 +5,7 @@ import { ProcessRuntime } from "./runtime.js";
 
 type LeaseControl = {
   complete: (terminal: SandboxExecutionTerminal) => void;
+  write: (stream: "stdout" | "stderr", data: Buffer) => void;
 };
 
 function runtime(
@@ -26,7 +27,11 @@ function runtime(
         : new Promise<SandboxExecutionTerminal>((settle) => {
             resolve = settle;
           });
-      const control = { complete: resolve };
+      const control = {
+        complete: resolve,
+        write: (stream: "stdout" | "stderr", data: Buffer) =>
+          request.onOutput({ stream, data }),
+      };
       controls.push(control);
       for (const event of options.output ?? [
         { stream: "stdout" as const, data: Buffer.from("hello\n") },
@@ -206,6 +211,138 @@ describe("ProcessRuntime", () => {
       outputComplete: true,
     });
     await expect(Promise.all(waits)).resolves.toHaveLength(16);
+  });
+
+  it("waits eventfully for same-stream split readiness without consuming output", async () => {
+    const fixture = runtime({ output: [] });
+    bindings.push(fixture.binding);
+    const snapshot = await start(fixture.runtime);
+    const waiting = fixture.runtime.result(
+      snapshot.id,
+      true,
+      undefined,
+      undefined,
+      "ready ✓",
+    );
+    fixture.controls[0].write("stdout", Buffer.from("rea"));
+    fixture.controls[0].write("stderr", Buffer.from("dy ✓"));
+    await expect(
+      Promise.race([
+        waiting.then(() => "settled"),
+        new Promise((resolve) => setTimeout(() => resolve("pending"), 5)),
+      ]),
+    ).resolves.toBe("pending");
+    fixture.controls[0].write("stdout", Buffer.from("dy ✓"));
+    await expect(waiting).resolves.toMatchObject({ waitOutcome: "ready" });
+    expect(fixture.runtime.snapshot(snapshot.id).status).toBe("running");
+    await expect(
+      fixture.runtime.result(
+        snapshot.id,
+        true,
+        undefined,
+        undefined,
+        "ready ✓",
+      ),
+    ).resolves.toMatchObject({ waitOutcome: "ready" });
+  });
+
+  it("seeds readiness from retained same-stream output without joining streams", async () => {
+    const fixture = runtime({
+      output: [{ stream: "stdout", data: Buffer.from("rea") }],
+    });
+    bindings.push(fixture.binding);
+    const snapshot = await start(fixture.runtime);
+    const waiting = fixture.runtime.result(
+      snapshot.id,
+      true,
+      undefined,
+      undefined,
+      "ready",
+    );
+    fixture.controls[0].write("stderr", Buffer.from("dy"));
+    fixture.controls[0].write("stdout", Buffer.from("dy"));
+    await expect(waiting).resolves.toMatchObject({ waitOutcome: "ready" });
+
+    const terminalWait = fixture.runtime.result(
+      snapshot.id,
+      true,
+      undefined,
+      undefined,
+      "never",
+    );
+    fixture.controls[0].complete({
+      exitCode: 0,
+      signal: null,
+      termination: "natural",
+      outputComplete: true,
+    });
+    await expect(terminalWait).resolves.toMatchObject({
+      waitOutcome: "terminal",
+      snapshot: { status: "completed" },
+    });
+  });
+
+  it("keeps the newest contiguous tail and source-relative find line numbers", async () => {
+    const fixture = runtime({ output: [] });
+    bindings.push(fixture.binding);
+    const snapshot = await start(fixture.runtime);
+    for (let line = 0; line < 20; line += 1) {
+      fixture.controls[0].write(
+        "stdout",
+        Buffer.from(`${line}:${"x".repeat(4_000)}\n`),
+      );
+    }
+    const tail = await fixture.runtime.result(
+      snapshot.id,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      { tailLines: 20 },
+    );
+    expect(tail.output).toContain("[stdout] 19:");
+    expect(tail.output).toContain("Output projection truncated;");
+    expect(tail.output).not.toContain("[stdout] 0:");
+
+    fixture.controls[0].write("stdout", Buffer.from("x\n".repeat(600_000)));
+    fixture.controls[0].write("stderr", Buffer.from("Needle\n"));
+    const found = await fixture.runtime.result(
+      snapshot.id,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      { find: "needle" },
+    );
+    expect(found.output).toMatch(/\d+ \[stderr\] Needle/);
+    expect(found.output).not.toMatch(/(?:^|\n)1 \[stderr\] Needle/);
+    expect(found.output).toContain("Older retained output dropped:");
+  });
+
+  it("selects bounded case-insensitive source-line matches", async () => {
+    const fixture = runtime({
+      output: [
+        { stream: "stdout", data: Buffer.from("zero\nneedle one\n") },
+        { stream: "stderr", data: Buffer.from("NEEDLE two\nlast\n") },
+      ],
+    });
+    bindings.push(fixture.binding);
+    const snapshot = await start(fixture.runtime);
+    const result = await fixture.runtime.result(
+      snapshot.id,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      { find: " Needle " },
+    );
+    expect(result.output).toContain("2 [stdout] needle one");
+    expect(result.output).toContain("3 [stderr] NEEDLE two");
+    expect(result.selector).toMatchObject({
+      type: "find",
+      totalMatches: 2,
+      selectedMatchAnchors: 2,
+    });
   });
 
   it("keeps logical lines, stream identity, and mandatory notices bounded", async () => {

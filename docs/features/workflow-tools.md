@@ -36,6 +36,12 @@ Unavailable servers and unsupported capabilities return non-fatal fallback resul
 
 The model can choose only Pipkin's fixed read-only actions, supported files, and in-workspace paths. It cannot choose an executable, send arbitrary protocol methods, apply edits, or invoke server commands. The language servers themselves are trusted processes outside Sandbox and inherit Pi's environment.
 
+## Managed processes: schedule, then project
+
+Use foreground `bash` or `bash_outcome` when completion is immediately required. Use `start_process` only for finite foreground commands or readiness work that can overlap real independent work; never start it merely to call an immediate join. When completion or readiness becomes a dependency, call `get_process_result` with `wait:true` once, not as a poll. `untilContains` waits eventfully for one case-sensitive literal on either source stream, and its timeout leaves the process running.
+
+Use output mode for bounded recent-tail or `find` inspection when output changes the next decision. Use `resultMode:"outcome"` when only a point-in-time status matters, then use the supplied exact ID with `context_recall` to recover its full result, lines, or literal matches. A later output-mode result is required for newer output; failures stay directly visible. Stop unneeded processes with `stop_process`.
+
 ## Papercuts: keep the lesson, not just the scar
 
 `propose_papercut` records a recurring project-specific failure mode or hidden constraint for later human review. It is for lessons that should outlive this session but have not yet made their way into guidance, tests, tooling, errors, documentation, or code.

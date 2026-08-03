@@ -568,6 +568,7 @@ describe("Pipkin bundle", () => {
       { createActivityPublisher },
       { bindSandboxHost },
       { executeSandboxBash, startSandboxManagedExecution },
+      { retainResult, decodeRetainedResult },
       { getSubagentRuntime },
     ] = await Promise.all([
       import("#lib/config"),
@@ -576,6 +577,7 @@ describe("Pipkin bundle", () => {
       import("#ui/activity"),
       import("#sandbox/runtime"),
       import("#sandbox/bash"),
+      import("#context/retained-result"),
       import("#subagents/runtime"),
     ]);
 
@@ -588,8 +590,35 @@ describe("Pipkin bundle", () => {
     expect(bindSandboxHost).toBeTypeOf("function");
     expect(executeSandboxBash).toBeTypeOf("function");
     expect(startSandboxManagedExecution).toBeTypeOf("function");
+    expect(retainResult).toBeTypeOf("function");
+    expect(decodeRetainedResult).toBeTypeOf("function");
     expect(getSubagentRuntime).toBeTypeOf("function");
     expect(snapshotGlobalSymbols()).toEqual(before);
+  });
+
+  it("keeps Context retained-result ownership side-effect-free and acyclic", () => {
+    const retained = readFileSync(
+      join(ROOT, "src/extensions/context/retained-result.ts"),
+      "utf8",
+    );
+    const bashOutcome = readFileSync(
+      join(ROOT, "src/extensions/context/bash-outcome.ts"),
+      "utf8",
+    );
+    const processTools = readFileSync(
+      join(ROOT, "src/extensions/processes/tools.ts"),
+      "utf8",
+    );
+    const sandbox = readFileSync(
+      join(ROOT, "src/extensions/sandbox/bash-capability.ts"),
+      "utf8",
+    );
+
+    expect(retained).not.toMatch(/register|bindSandbox|#sandbox|#processes/);
+    expect(bashOutcome).toContain('from "./retained-result.ts"');
+    expect(processTools).toContain('from "#context/retained-result"');
+    expect(sandbox).not.toContain("#context/retained-result");
+    expect(retained).not.toContain("#sandbox/bash");
   });
 
   it("contains no package-era topology or cross-feature entrypoint imports", () => {

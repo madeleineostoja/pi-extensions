@@ -344,6 +344,31 @@ describe("context_recall", () => {
     });
   });
 
+  it("recalls the ordinary failed managed-process outcome fallback", async () => {
+    const execute = recall([
+      toolCall("failed-process", "get_process_result", {
+        id: "process-1",
+        wait: true,
+        resultMode: "outcome",
+      }),
+      toolResult("failed-process", [{ type: "text", text: "exit 1\nneedle" }], {
+        snapshot: { status: "failed" },
+        resultMode: "outcome",
+      }),
+    ]).execute;
+    await expect(execute({ id: "failed-process" })).resolves.toMatchObject({
+      content: [{ type: "text", text: "exit 1\nneedle" }],
+    });
+    await expect(
+      execute({ id: "failed-process", lines: "2" }),
+    ).resolves.toMatchObject({ content: [{ type: "text", text: "needle" }] });
+    await expect(
+      execute({ id: "failed-process", find: "needle" }),
+    ).resolves.toMatchObject({
+      content: [{ type: "text", text: expect.stringContaining("2 | needle") }],
+    });
+  });
+
   it("retains recalled outcomes through persisted, resumed, forked, and in-memory sessions", async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), "pipkin-context-recall-"));
     const ordinary = {

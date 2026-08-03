@@ -61,13 +61,13 @@ Pipkin's first layers are deliberately about control:
 
 - **Sandbox** owns model Bash and direct `write`/`edit` containment. On macOS it confines model Bash descendants to the canonical repository, required Git state, temporary roots, and reviewed package caches; direct tools stay within the workspace. Linux reports Sandbox as unavailable and uses local Bash.
 - **Readonly** separately checkpoints resolved tools named `edit` and `write`. Toggle its established workflow with `Ctrl+R` or `/readonly`.
-- **Processes** starts Sandbox-owned foreground non-interactive work when useful independent work can continue. Join it once with `get_process_result`, inspect deliberately without polling, and stop no-longer-needed work explicitly.
+- **Processes** starts Sandbox-owned foreground non-interactive work when useful independent work can continue. Join once for completion or literal readiness, inspect bounded tail/search output without polling, choose recallable point-in-time outcomes when only status matters, and stop no-longer-needed work explicitly.
 
 **[Safety →](docs/features/safety.md)**
 
 ### Context
 
-Long sessions collect a remarkable amount of baggage. **Context Prune** uses deterministic, persisted epochs to replace stale output, superseded and repeated reads, and already-consumed command results with small, reasoned stubs while keeping every original result available through `context_recall`. Choose `bash_outcome` whenever the next reasoning step needs only success or failure, regardless of the command's finite duration; choose `bash` when successful output may affect that step. Successful output remains recallable under ordinary Bash limits and failures remain visible. Pi remains responsible for context pressure and compaction.
+Long sessions collect a remarkable amount of baggage. **Context Prune** uses deterministic, persisted epochs to replace stale output, superseded and repeated reads, and already-consumed command results with small, reasoned stubs while keeping every original result available through `context_recall`. Choose `bash_outcome` whenever the next reasoning step needs only success or failure, regardless of the command's finite duration; choose `bash` when successful output may affect that step. Managed process outcomes likewise retain one bounded point-in-time result for recall, while failures remain visible. Pi remains responsible for context pressure and compaction.
 
 **[Context →](docs/features/context.md)**
 
