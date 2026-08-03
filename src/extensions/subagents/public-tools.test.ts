@@ -91,7 +91,7 @@ function makePi(
     "bash",
     "Agent",
     "get_subagent_result",
-    "propose_papercut",
+    "record_papercut",
   ],
 ) {
   const tools: ToolDef[] = [];
@@ -767,18 +767,14 @@ describe("public subagent tools", () => {
   });
 
   it("withholds public agent tools from inherited active tools for all subagent types", async () => {
-    const publicAgentTools = [
-      "Agent",
-      "get_subagent_result",
-      "steer_subagent",
-      "propose_papercut",
-    ];
+    const publicAgentTools = ["Agent", "get_subagent_result", "steer_subagent"];
     const { pi } = makePi([
       "read",
       "bash",
       "bash_outcome",
       "context_recall",
       ...publicAgentTools,
+      "record_papercut",
       "edit",
       "explore",
     ]);
@@ -822,6 +818,7 @@ describe("public subagent tools", () => {
       const activeTools = vi.mocked(session.setActiveToolsByName).mock
         .calls[0][0];
       expect(activeTools).not.toEqual(expect.arrayContaining(publicAgentTools));
+      expect(activeTools).not.toContain("record_papercut");
     }
     expect(general.session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
@@ -875,7 +872,7 @@ describe("public subagent tools", () => {
         "explore",
         "Agent",
         "get_subagent_result",
-        "propose_papercut",
+        "record_papercut",
         "bash",
       ],
       ctx: makeCtx() as never,

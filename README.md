@@ -98,7 +98,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 - **UI** keeps cwd, branch, model, thinking, cost, cache hit rate, context usage, and ordered extension state in one compact footer, with a bounded live Activity view for current work.
 - **Personality** gives unnamed sessions useful titles and a brief fresh-session greeting, so `/resume` is less of an archaeological dig.
-- **Papercuts** saves recurring project-specific workflow failures for human review instead of letting the lesson vanish with the session.
+- **Papercuts** is an experimental inbox for factual incidental friction: exercised workarounds that can recur into repository guidance or small fixes.
 
 **[Interface and Personality →](docs/features/interface-and-personality.md)**
 
@@ -106,22 +106,22 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 ## Commands
 
-| Surface                           | What it does                                                         |
-| --------------------------------- | -------------------------------------------------------------------- |
-| `/sandbox [on\|off]`              | Inspect or change the current repository-write Sandbox mode          |
-| `/readonly [on\|off]`             | Toggle approval for resolved `edit` and `write` tools                |
-| `context_recall`                  | Recover the original content behind an elision stub                  |
-| `bash_outcome`                    | Run Bash when only successful outcome matters; recall output         |
-| `lsp`                             | Make semantic source queries or inspect language-server status       |
-| `docs`                            | Retrieve bounded Context7 documentation                              |
-| `package_search`                  | Discover separately ranked Context7, npm, and public GitHub packages |
-| `code_search`                     | Search bounded observed usage in explicitly public GitHub source     |
-| `/agents` / `Agent`               | Run and operate General, Explore, and Review subagents               |
-| `get_subagent_result`             | Inspect or join a background agent                                   |
-| `steer_subagent`                  | Queue guidance for a running background agent                        |
-| `/implement`                      | Start, inspect, stop, or clean up implementation runs                |
-| `/papercuts` / `propose_papercut` | Capture and review durable project workflow gaps                     |
-| `/btw <question>`                 | Ask an ephemeral side question from current session context          |
+| Surface                          | What it does                                                         |
+| -------------------------------- | -------------------------------------------------------------------- |
+| `/sandbox [on\|off]`             | Inspect or change the current repository-write Sandbox mode          |
+| `/readonly [on\|off]`            | Toggle approval for resolved `edit` and `write` tools                |
+| `context_recall`                 | Recover the original content behind an elision stub                  |
+| `bash_outcome`                   | Run Bash when only successful outcome matters; recall output         |
+| `lsp`                            | Make semantic source queries or inspect language-server status       |
+| `docs`                           | Retrieve bounded Context7 documentation                              |
+| `package_search`                 | Discover separately ranked Context7, npm, and public GitHub packages |
+| `code_search`                    | Search bounded observed usage in explicitly public GitHub source     |
+| `/agents` / `Agent`              | Run and operate General, Explore, and Review subagents               |
+| `get_subagent_result`            | Inspect or join a background agent                                   |
+| `steer_subagent`                 | Queue guidance for a running background agent                        |
+| `/implement`                     | Start, inspect, stop, or clean up implementation runs                |
+| `/papercuts` / `record_papercut` | Record and close incidental exercised-workaround findings            |
+| `/btw <question>`                | Ask an ephemeral side question from current session context          |
 
 ## Limits
 

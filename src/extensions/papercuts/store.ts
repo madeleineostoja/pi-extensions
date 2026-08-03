@@ -1,25 +1,26 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
-  readFileSync,
+  openSync,
+  readSync,
   realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
 import { acquireFileLease } from "#lib/file-lease";
-import { ensureGitInfoExclude } from "#lib/git";
+import { ensureGitInfoExclude, gitPrimaryWorktreeRoot } from "#lib/git";
 
-const execFileAsync = promisify(execFile);
-const VERSION = 1 as const;
-const SOURCE_LIMIT = 20;
+const VERSION = 2 as const;
+const MAX_BYTES = 1_048_576;
+const MAX_RECORDS = 256;
+const MAX_OCCURRENCES = 2_147_483_647;
 const LOCK_WAIT_MS = 2_000;
 const queues = new Map<string, Promise<unknown>>();
-const statuses = ["pending", "resolved", "ignored"] as const;
+const statuses = ["open", "closed"] as const;
 const destinations = [
   "agents",
   "skill",
@@ -29,104 +30,64 @@ const destinations = [
   "docs",
   "code",
 ] as const;
-const sourceKinds = ["agent", "pipkin:implement", "user"] as const;
 
 export type PapercutStatus = (typeof statuses)[number];
-export type PapercutSource = {
-  kind: (typeof sourceKinds)[number];
-  sessionId?: string;
-  runId?: string;
-  taskId?: string;
-  role?: string;
-};
-export type PapercutProposal = {
+export type PapercutDestination = (typeof destinations)[number];
+export type PapercutObservation = {
   key: string;
   title: string;
-  trigger: string;
-  impact: string;
-  currentGap: string;
-  proposedResolution: string;
-  suggestedDestination: (typeof destinations)[number];
+  task: string;
+  incident: string;
+  evidence: string;
+  workarounds: string[];
+  taskOutcome: string;
+  guardrailCandidate?: string;
+  suggestedDestination?: PapercutDestination;
 };
-export type PapercutRecord = PapercutProposal & {
+export type PapercutRecord = PapercutObservation & {
   status: PapercutStatus;
   occurrences: number;
   firstSeenAt: string;
   lastSeenAt: string;
-  sources: PapercutSource[];
-  disposition?: { at: string; note?: string; target?: string };
 };
-export type PapercutFile = { version: 1; records: PapercutRecord[] };
-export type ProposalOutcome =
+export type PapercutFile = { version: 2; records: PapercutRecord[] };
+export type RecordOutcome =
   | { kind: "created"; record: PapercutRecord }
   | { kind: "merged"; record: PapercutRecord }
-  | { kind: "ignored"; record: PapercutRecord }
-  | { kind: "resolved"; record: PapercutRecord }
+  | { kind: "reopened"; record: PapercutRecord }
   | { kind: "rejected"; reason: string };
-
 export type PapercutStore = ReturnType<typeof createPapercutStore>;
-export type PapercutChange = { registryPath: string };
-
-type PapercutChangeListener = (change: PapercutChange) => void;
-
-const changeListeners = new Set<PapercutChangeListener>();
-
-export function onPapercutChange(listener: PapercutChangeListener): () => void {
-  changeListeners.add(listener);
-  return () => changeListeners.delete(listener);
-}
-
-function emitPapercutChange(change: PapercutChange): void {
-  for (const listener of changeListeners) {
-    try {
-      listener(change);
-    } catch {
-      // Store mutations must not fail because a UI observer cannot refresh.
-    }
-  }
-}
-
-export function normalizeKey(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
-function normalizedText(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function identity(record: Pick<PapercutProposal, "title" | "trigger">): string {
-  return `${normalizedText(record.title)}\u0000${normalizedText(record.trigger)}`;
-}
-
-function sourceKey(source: PapercutSource): string {
-  return JSON.stringify(source);
-}
-
-function stableFile(file: PapercutFile): PapercutFile {
-  return {
-    version: VERSION,
-    records: [...file.records].sort((a, b) => a.key.localeCompare(b.key)),
-  };
-}
-
-function serialize(file: PapercutFile): string {
-  return `${JSON.stringify(stableFile(file), null, 2)}\n`;
-}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const actual = Object.keys(value).sort();
+  return (
+    actual.length === keys.length &&
+    actual.every((key, index) => key === keys.sort()[index])
+  );
 }
 
-function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
-  return Object.keys(value).every((key) => keys.includes(key));
+function validString(value: unknown, maximum: number): value is string {
+  return (
+    typeof value === "string" &&
+    value === value.trim() &&
+    value.length >= 1 &&
+    value.length <= maximum
+  );
+}
+
+export function normalizeKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function validKey(value: unknown): value is string {
+  return (
+    validString(value, 64) &&
+    /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(value)
+  );
 }
 
 export function isPapercutStatus(value: unknown): value is PapercutStatus {
@@ -135,183 +96,185 @@ export function isPapercutStatus(value: unknown): value is PapercutStatus {
   );
 }
 
-function isSource(value: unknown): value is PapercutSource {
-  if (
-    !isObject(value) ||
-    !hasOnlyKeys(value, ["kind", "sessionId", "runId", "taskId", "role"]) ||
-    !sourceKinds.includes(value.kind as PapercutSource["kind"])
-  ) {
+function validTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") {
     return false;
   }
-  return ["sessionId", "runId", "taskId", "role"].every(
-    (key) => value[key] === undefined || typeof value[key] === "string",
+  const timestamp = new Date(value);
+  return (
+    !Number.isNaN(timestamp.valueOf()) && timestamp.toISOString() === value
   );
 }
 
-function isProposal(value: unknown): value is PapercutProposal {
+function isObservation(value: unknown): value is PapercutObservation {
   if (
     !isObject(value) ||
-    !hasOnlyKeys(value, [
-      "key",
-      "title",
-      "trigger",
-      "impact",
-      "currentGap",
-      "proposedResolution",
-      "suggestedDestination",
-    ])
-  ) {
-    return false;
-  }
-  return (
-    [
-      "key",
-      "title",
-      "trigger",
-      "impact",
-      "currentGap",
-      "proposedResolution",
-    ].every((key) => isString(value[key])) &&
-    destinations.includes(
-      value.suggestedDestination as PapercutProposal["suggestedDestination"],
+    !hasExactKeys(
+      value,
+      [
+        "key",
+        "title",
+        "task",
+        "incident",
+        "evidence",
+        "workarounds",
+        "taskOutcome",
+        "guardrailCandidate",
+        "suggestedDestination",
+      ].filter((key) => key in value),
     )
-  );
-}
-
-function isDisposition(
-  value: unknown,
-): value is { note?: string; target?: string } | undefined {
+  ) {
+    return false;
+  }
   return (
-    value === undefined ||
-    (isObject(value) &&
-      hasOnlyKeys(value, ["note", "target"]) &&
-      (value.note === undefined || typeof value.note === "string") &&
-      (value.target === undefined || typeof value.target === "string"))
+    validKey(value.key) &&
+    validString(value.title, 120) &&
+    validString(value.task, 1_000) &&
+    validString(value.incident, 2_000) &&
+    validString(value.evidence, 2_000) &&
+    Array.isArray(value.workarounds) &&
+    value.workarounds.length >= 1 &&
+    value.workarounds.length <= 5 &&
+    value.workarounds.every((workaround) => validString(workaround, 1_000)) &&
+    validString(value.taskOutcome, 1_000) &&
+    (value.guardrailCandidate === undefined ||
+      validString(value.guardrailCandidate, 1_000)) &&
+    (value.suggestedDestination === undefined ||
+      destinations.includes(value.suggestedDestination as PapercutDestination))
   );
 }
 
 function isRecord(value: unknown): value is PapercutRecord {
   if (
     !isObject(value) ||
-    !hasOnlyKeys(value, [
-      "key",
-      "title",
-      "trigger",
-      "impact",
-      "currentGap",
-      "proposedResolution",
-      "suggestedDestination",
-      "status",
-      "occurrences",
-      "firstSeenAt",
-      "lastSeenAt",
-      "sources",
-      "disposition",
-    ]) ||
-    !isProposal({
+    !hasExactKeys(
+      value,
+      [
+        "key",
+        "title",
+        "task",
+        "incident",
+        "evidence",
+        "workarounds",
+        "taskOutcome",
+        "guardrailCandidate",
+        "suggestedDestination",
+        "status",
+        "occurrences",
+        "firstSeenAt",
+        "lastSeenAt",
+      ].filter((key) => key in value),
+    ) ||
+    !isObservation({
       key: value.key,
       title: value.title,
-      trigger: value.trigger,
-      impact: value.impact,
-      currentGap: value.currentGap,
-      proposedResolution: value.proposedResolution,
-      suggestedDestination: value.suggestedDestination,
+      task: value.task,
+      incident: value.incident,
+      evidence: value.evidence,
+      workarounds: value.workarounds,
+      taskOutcome: value.taskOutcome,
+      ...(value.guardrailCandidate === undefined
+        ? {}
+        : { guardrailCandidate: value.guardrailCandidate }),
+      ...(value.suggestedDestination === undefined
+        ? {}
+        : { suggestedDestination: value.suggestedDestination }),
     })
   ) {
     return false;
   }
   const record = value as PapercutRecord;
-  const disposition = record.disposition;
   return (
     isPapercutStatus(record.status) &&
     Number.isInteger(record.occurrences) &&
-    record.occurrences > 0 &&
-    typeof record.firstSeenAt === "string" &&
-    typeof record.lastSeenAt === "string" &&
-    Array.isArray(record.sources) &&
-    record.sources.every(isSource) &&
-    (disposition === undefined ||
-      (isObject(disposition) &&
-        typeof disposition.at === "string" &&
-        (disposition.note === undefined ||
-          typeof disposition.note === "string") &&
-        (disposition.target === undefined ||
-          typeof disposition.target === "string")))
+    record.occurrences >= 1 &&
+    record.occurrences <= MAX_OCCURRENCES &&
+    validTimestamp(record.firstSeenAt) &&
+    validTimestamp(record.lastSeenAt)
   );
 }
 
-function canonicalizeFile(value: { records: PapercutRecord[] }): PapercutFile {
-  const keys = new Set<string>();
-  const identities = new Set<string>();
-  const records = value.records.map((record) => {
-    const key = normalizeKey(record.key);
-    const duplicateIdentity = identity(record);
-    if (!key || keys.has(key)) {
-      throw new Error("Papercut registry contains duplicate or invalid keys.");
-    }
-    if (identities.has(duplicateIdentity)) {
-      throw new Error(
-        "Papercut registry contains duplicate title and trigger.",
-      );
-    }
-    keys.add(key);
-    identities.add(duplicateIdentity);
-    return { ...record, key };
-  });
-  return { version: VERSION, records };
+function stableFile(file: PapercutFile): PapercutFile {
+  return {
+    ...file,
+    records: [...file.records].sort((a, b) => a.key.localeCompare(b.key)),
+  };
 }
 
-export function parsePapercutFile(text: string): PapercutFile {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new Error("Papercut registry contains invalid JSON.");
+function serialize(file: PapercutFile): string {
+  const text = `${JSON.stringify(stableFile(file), null, 2)}\n`;
+  if (Buffer.byteLength(text, "utf8") > MAX_BYTES) {
+    throw new Error("Papercut registry exceeds its size limit.");
   }
+  return text;
+}
+
+function validateFile(value: unknown): PapercutFile {
   if (
     !isObject(value) ||
+    !hasExactKeys(value, ["version", "records"]) ||
     value.version !== VERSION ||
     !Array.isArray(value.records)
   ) {
     throw new Error("Papercut registry has an unsupported version or shape.");
   }
-  if (!value.records.every(isRecord)) {
+  if (value.records.length > MAX_RECORDS || !value.records.every(isRecord)) {
     throw new Error("Papercut registry contains an invalid record.");
   }
-  return canonicalizeFile({ records: value.records });
+  const keys = new Set<string>();
+  for (const record of value.records) {
+    const key = normalizeKey(record.key);
+    if (keys.has(key)) {
+      throw new Error("Papercut registry contains duplicate keys.");
+    }
+    keys.add(key);
+  }
+  return value as PapercutFile;
 }
 
-async function gitRoot(cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync(
-    "git",
-    ["rev-parse", "--show-toplevel"],
-    { cwd },
-  );
-  return stdout.trim();
+export function parsePapercutFile(text: string): PapercutFile {
+  if (Buffer.byteLength(text, "utf8") > MAX_BYTES) {
+    throw new Error("Papercut registry exceeds its size limit.");
+  }
+  try {
+    return validateFile(JSON.parse(text));
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error("Papercut registry contains invalid JSON.");
+    }
+    throw error;
+  }
 }
 
 function readRegistry(path: string): PapercutFile {
   if (!existsSync(path)) {
     return { version: VERSION, records: [] };
   }
-  return parsePapercutFile(readFileSync(path, "utf-8"));
-}
-
-async function acquireLock(anchorPath: string) {
-  return acquireFileLease(anchorPath, { timeoutMs: LOCK_WAIT_MS });
+  const descriptor = openSync(path, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(MAX_BYTES + 1);
+    const bytes = readSync(descriptor, buffer, 0, buffer.length, 0);
+    if (bytes > MAX_BYTES) {
+      throw new Error("Papercut registry exceeds its size limit.");
+    }
+    return parsePapercutFile(buffer.toString("utf8", 0, bytes));
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function atomicWrite(path: string, file: PapercutFile): void {
+  const text = serialize(validateFile(file));
   mkdirSync(dirname(path), { recursive: true });
-  const tempPath = join(
+  const temporaryPath = join(
     dirname(path),
     `.pipkin-papercuts-${process.pid}-${randomUUID()}.tmp`,
   );
   try {
-    writeFileSync(tempPath, serialize(file), "utf-8");
-    renameSync(tempPath, path);
+    writeFileSync(temporaryPath, text, "utf8");
+    renameSync(temporaryPath, path);
   } finally {
-    rmSync(tempPath, { force: true });
+    rmSync(temporaryPath, { force: true });
   }
 }
 
@@ -319,42 +282,63 @@ function queue<T>(path: string, operation: () => Promise<T>): Promise<T> {
   const previous = queues.get(path) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(operation);
   queues.set(path, next);
-  void next.then(
-    () => queues.get(path) === next && queues.delete(path),
-    () => queues.get(path) === next && queues.delete(path),
-  );
+  void next
+    .finally(() => {
+      if (queues.get(path) === next) {
+        queues.delete(path);
+      }
+    })
+    .catch(() => {});
   return next;
 }
 
-function mergeSources(
-  current: PapercutSource[],
-  source: PapercutSource,
-): PapercutSource[] {
-  const sources = [...current];
+function trimObservation(value: PapercutObservation): PapercutObservation {
+  return {
+    key: value.key.trim(),
+    title: value.title.trim(),
+    task: value.task.trim(),
+    incident: value.incident.trim(),
+    evidence: value.evidence.trim(),
+    workarounds: value.workarounds.map((workaround) => workaround.trim()),
+    taskOutcome: value.taskOutcome.trim(),
+    ...(value.guardrailCandidate === undefined
+      ? {}
+      : { guardrailCandidate: value.guardrailCandidate.trim() }),
+    ...(value.suggestedDestination === undefined
+      ? {}
+      : { suggestedDestination: value.suggestedDestination }),
+  };
+}
+
+function validateObservation(value: unknown): PapercutObservation | undefined {
   if (
-    !sources.some((candidate) => sourceKey(candidate) === sourceKey(source))
+    !isObject(value) ||
+    !hasExactKeys(
+      value,
+      [
+        "key",
+        "title",
+        "task",
+        "incident",
+        "evidence",
+        "workarounds",
+        "taskOutcome",
+        "guardrailCandidate",
+        "suggestedDestination",
+      ].filter((key) => key in value),
+    ) ||
+    !["key", "title", "task", "incident", "evidence", "taskOutcome"].every(
+      (key) => typeof value[key] === "string",
+    ) ||
+    !Array.isArray(value.workarounds) ||
+    !value.workarounds.every((workaround) => typeof workaround === "string") ||
+    (value.guardrailCandidate !== undefined &&
+      typeof value.guardrailCandidate !== "string")
   ) {
-    sources.push(source);
+    return undefined;
   }
-  return sources.slice(-SOURCE_LIMIT);
-}
-
-function normalizeProposal(proposal: PapercutProposal): PapercutProposal {
-  return { ...proposal, key: normalizeKey(proposal.key) };
-}
-
-function validateProposal(proposal: unknown): string | undefined {
-  if (!isProposal(proposal) || !normalizeKey(proposal.key)) {
-    return "All proposal fields must be concrete and valid.";
-  }
-  return undefined;
-}
-
-function normalizeLookupKey(key: unknown): string {
-  if (typeof key !== "string" || !normalizeKey(key)) {
-    throw new Error("Papercut key must be a non-empty string.");
-  }
-  return normalizeKey(key);
+  const trimmed = trimObservation(value as PapercutObservation);
+  return isObservation(trimmed) ? trimmed : undefined;
 }
 
 export function createPapercutStore(root: string) {
@@ -365,9 +349,11 @@ export function createPapercutStore(root: string) {
   async function initialize(): Promise<void> {
     return queue(registryPath, async () => {
       mkdirSync(dirname(registryPath), { recursive: true });
-      const lease = await acquireLock(lockPath);
+      const lease = await acquireFileLease(lockPath, {
+        timeoutMs: LOCK_WAIT_MS,
+      });
       try {
-        await ensureGitInfoExclude(root, [
+        await ensureGitInfoExclude(canonicalRoot, [
           "/.pi/pipkin/papercuts.json",
           "/.pi/pipkin/papercuts.lock",
         ]);
@@ -382,21 +368,17 @@ export function createPapercutStore(root: string) {
     });
   }
 
-  async function load(): Promise<PapercutFile> {
-    return readRegistry(registryPath);
-  }
-
   async function mutate<T>(
     operation: (file: PapercutFile) => { file: PapercutFile; result: T },
   ): Promise<T> {
     return queue(registryPath, async () => {
       mkdirSync(dirname(registryPath), { recursive: true });
-      const lease = await acquireLock(lockPath);
+      const lease = await acquireFileLease(lockPath, {
+        timeoutMs: LOCK_WAIT_MS,
+      });
       try {
-        const current = readRegistry(registryPath);
-        const { file, result } = operation(current);
-        atomicWrite(registryPath, canonicalizeFile(file));
-        emitPapercutChange({ registryPath });
+        const { file, result } = operation(readRegistry(registryPath));
+        atomicWrite(registryPath, file);
         return result;
       } finally {
         await lease.release();
@@ -405,174 +387,93 @@ export function createPapercutStore(root: string) {
   }
 
   return {
-    root,
+    root: canonicalRoot,
     registryPath,
     initialize,
-    load,
-    async propose(
-      proposal: unknown,
-      source: unknown,
-    ): Promise<ProposalOutcome> {
-      const reason = validateProposal(proposal);
-      if (reason || !isProposal(proposal) || !isSource(source)) {
+    async load(): Promise<PapercutFile> {
+      return readRegistry(registryPath);
+    },
+    async record(input: unknown): Promise<RecordOutcome> {
+      const observation = validateObservation(input);
+      if (!observation) {
         return {
           kind: "rejected",
-          reason: reason ?? "Papercut source must be valid.",
+          reason: "Papercut observation fields are invalid.",
         };
       }
-      const normalizedProposal = normalizeProposal(proposal);
       await initialize();
-      return mutate<ProposalOutcome>((file) => {
+      return mutate<RecordOutcome>((file) => {
         const existing = file.records.find(
           (record) =>
-            record.key === normalizedProposal.key ||
-            identity(record) === identity(normalizedProposal),
+            normalizeKey(record.key) === normalizeKey(observation.key),
         );
-        if (existing) {
-          if (existing.status === "ignored") {
-            return {
-              file,
-              result: { kind: "ignored" as const, record: existing },
-            };
+        const now = new Date().toISOString();
+        if (!existing) {
+          if (file.records.length >= MAX_RECORDS) {
+            throw new Error("Papercut registry has reached its record limit.");
           }
-          if (existing.status === "resolved") {
-            return {
-              file,
-              result: { kind: "resolved" as const, record: existing },
-            };
-          }
-          const record = {
-            ...existing,
-            occurrences: existing.occurrences + 1,
-            lastSeenAt: new Date().toISOString(),
-            sources: mergeSources(existing.sources, source),
+          const record: PapercutRecord = {
+            ...observation,
+            status: "open",
+            occurrences: 1,
+            firstSeenAt: now,
+            lastSeenAt: now,
           };
           return {
-            file: {
-              ...file,
-              records: file.records.map((candidate) =>
-                candidate.key === record.key ? record : candidate,
-              ),
-            },
-            result: { kind: "merged" as const, record },
+            file: { version: VERSION, records: [...file.records, record] },
+            result: { kind: "created" as const, record },
           };
         }
-        const now = new Date().toISOString();
+        if (existing.occurrences >= MAX_OCCURRENCES) {
+          throw new Error("Papercut occurrence limit has been reached.");
+        }
         const record: PapercutRecord = {
-          ...normalizedProposal,
-          status: "pending",
-          occurrences: 1,
-          firstSeenAt: now,
+          ...observation,
+          key: existing.key,
+          title: existing.title,
+          status: "open",
+          occurrences: existing.occurrences + 1,
+          firstSeenAt: existing.firstSeenAt,
           lastSeenAt: now,
-          sources: [source],
         };
         return {
-          file: { ...file, records: [...file.records, record] },
-          result: { kind: "created" as const, record },
+          file: {
+            version: VERSION,
+            records: file.records.map((candidate) =>
+              candidate.key === existing.key ? record : candidate,
+            ),
+          },
+          result: {
+            kind:
+              existing.status === "closed"
+                ? ("reopened" as const)
+                : ("merged" as const),
+            record,
+          },
         };
       });
     },
-    async transition(
-      key: unknown,
-      status: unknown,
-      disposition?: unknown,
-    ): Promise<PapercutRecord> {
-      const normalizedKey = normalizeLookupKey(key);
-      if (!isPapercutStatus(status)) {
-        throw new Error(
-          "Papercut status must be pending, resolved, or ignored.",
-        );
-      }
-      if (!isDisposition(disposition)) {
-        throw new Error(
-          "Papercut disposition must contain only string note or target values.",
-        );
+    async close(key: unknown): Promise<PapercutRecord> {
+      const normalized = typeof key === "string" ? normalizeKey(key) : "";
+      if (!validKey(normalized)) {
+        throw new Error("Papercut key is invalid.");
       }
       return mutate((file) => {
         const found = file.records.find(
-          (record) => record.key === normalizedKey,
+          (record) => normalizeKey(record.key) === normalized,
         );
         if (!found) {
-          throw new Error(`Unknown papercut: ${normalizedKey}`);
+          throw new Error("Papercut finding was not found.");
         }
-        const record: PapercutRecord =
-          status === "pending"
-            ? { ...found, status, disposition: undefined }
-            : {
-                ...found,
-                status,
-                disposition: { at: new Date().toISOString(), ...disposition },
-              };
+        const record = { ...found, status: "closed" as const };
         return {
           file: {
-            ...file,
+            version: VERSION,
             records: file.records.map((candidate) =>
-              candidate.key === normalizedKey ? record : candidate,
+              candidate.key === found.key ? record : candidate,
             ),
           },
           result: record,
-        };
-      });
-    },
-    async edit(key: unknown, proposal: unknown): Promise<PapercutRecord> {
-      const normalizedKey = normalizeLookupKey(key);
-      const reason = validateProposal(proposal);
-      if (reason || !isProposal(proposal)) {
-        throw new Error(
-          reason ?? "All proposal fields must be concrete and valid.",
-        );
-      }
-      const normalizedProposal = normalizeProposal(proposal);
-      return mutate((file) => {
-        const found = file.records.find(
-          (record) => record.key === normalizedKey,
-        );
-        if (!found) {
-          throw new Error(`Unknown papercut: ${normalizedKey}`);
-        }
-        if (normalizedProposal.key !== normalizedKey) {
-          throw new Error("Editing a papercut cannot change its key.");
-        }
-        if (
-          file.records.some(
-            (record) =>
-              record.key !== normalizedKey &&
-              identity(record) === identity(normalizedProposal),
-          )
-        ) {
-          throw new Error(
-            "Papercut title and trigger already belong to another record.",
-          );
-        }
-        const record = { ...found, ...normalizedProposal };
-        return {
-          file: {
-            ...file,
-            records: file.records.map((candidate) =>
-              candidate.key === normalizedKey ? record : candidate,
-            ),
-          },
-          result: record,
-        };
-      });
-    },
-    async delete(key: unknown, confirmed: unknown): Promise<void> {
-      const normalizedKey = normalizeLookupKey(key);
-      if (confirmed !== true) {
-        throw new Error("Deleting a papercut requires confirmation.");
-      }
-      return mutate((file) => {
-        if (!file.records.some((record) => record.key === normalizedKey)) {
-          throw new Error(`Unknown papercut: ${normalizedKey}`);
-        }
-        return {
-          file: {
-            ...file,
-            records: file.records.filter(
-              (record) => record.key !== normalizedKey,
-            ),
-          },
-          result: undefined,
         };
       });
     },
@@ -582,5 +483,5 @@ export function createPapercutStore(root: string) {
 export async function createPapercutStoreForCwd(
   cwd: string,
 ): Promise<PapercutStore> {
-  return createPapercutStore(await gitRoot(cwd));
+  return createPapercutStore(await gitPrimaryWorktreeRoot(cwd));
 }

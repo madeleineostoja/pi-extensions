@@ -91,7 +91,7 @@ Pipkin's checkout-owned state lives under `.pi/pipkin/`:
   papercuts.lock
 ```
 
-Implement and Papercuts arrange local Git exclusion through the repository's common `.git/info/exclude`; they do not modify committed `.gitignore`. Linked worktrees retain checkout-specific run and papercut state.
+Implement arranges checkout-specific state and Papercuts uses the canonical primary worktree's shared registry. Both arrange local Git exclusion through the repository's common `.git/info/exclude`; they do not modify committed `.gitignore`. Linked worktrees retain Implement state while sharing Papercut findings.
 
 ## No legacy migration
 

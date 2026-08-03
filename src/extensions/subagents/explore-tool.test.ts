@@ -309,7 +309,6 @@ describe("runtime-injected explore tool", () => {
           "Agent",
           "get_subagent_result",
           "steer_subagent",
-          "propose_papercut",
           "edit",
           "write",
         ],

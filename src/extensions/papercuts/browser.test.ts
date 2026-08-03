@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatPapercutSummary, registerPapercutsBrowser } from "./browser.js";
 import { createPapercutStatusController } from "./status.js";
-import { createPapercutStore } from "./store.js";
 
 const roots: string[] = [];
 
@@ -16,197 +16,185 @@ function repo(): string {
   return root;
 }
 
-function browserCommand() {
-  let command: any;
-  registerPapercutsBrowser(
-    {
-      registerCommand: (_name: string, definition: unknown) => {
-        command = definition;
-      },
-    } as never,
-    createPapercutStatusController(),
-  );
-  return command;
-}
-
-afterEach(() => {
-  for (const root of roots.splice(0)) {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-const proposal = {
-  key: "devcontainer-validation",
-  title: "Validation needs the devcontainer",
-  trigger: "Ruby validation runs on the host",
-  impact: "Future sessions waste time",
-  currentGap: "No preflight instruction exists",
-  proposedResolution: "Add a preflight",
-  suggestedDestination: "agents" as const,
+const observation = {
+  key: "finding",
+  title: "A finding",
+  task: "An unrelated task",
+  incident: "A detour",
+  evidence: "Observed output",
+  workarounds: ["Inspected scripts.", "Took the detour."],
+  taskOutcome: "Continued safely.",
 };
 
+const record = {
+  ...observation,
+  status: "open" as const,
+  occurrences: 2,
+  firstSeenAt: "2025-01-01T00:00:00.000Z",
+  lastSeenAt: "2025-01-01T00:00:00.000Z",
+};
+
+const theme = {
+  fg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+};
+const keybindings = {
+  matches: (data: string, binding: string) =>
+    data === "\r" && binding === "tui.select.confirm",
+};
+
+function browserHarness(selections: string[]) {
+  initTheme("dark");
+  let command:
+    | { handler: (args: string, ctx: unknown) => Promise<void> }
+    | undefined;
+  const components: Array<{ render(width: number): string[] }> = [];
+  const custom = vi.fn((factory) => {
+    const done = vi.fn();
+    const component = factory(
+      { requestRender: vi.fn() },
+      theme,
+      keybindings,
+      done,
+    );
+    components.push(component);
+    component.handleInput("\r");
+    return Promise.resolve(done.mock.calls[0]?.[0]);
+  });
+  const ui = {
+    select: vi.fn(async () => selections.shift()),
+    custom,
+    notify: vi.fn(),
+    setStatus: vi.fn(),
+  };
+  const pi = {
+    registerCommand: (_name: string, next: typeof command) => {
+      command = next;
+    },
+  };
+  return {
+    pi,
+    ui,
+    renders: () => components.map((component) => component.render(48)),
+    command: () => command!,
+  };
+}
+
+afterEach(() =>
+  roots
+    .splice(0)
+    .forEach((root) => rmSync(root, { recursive: true, force: true })),
+);
+
 describe("papercuts browser", () => {
-  it("rejects unexpected command arguments", async () => {
-    const command = browserCommand();
-    const notify = vi.fn();
-
-    await command.handler("unexpected", {
-      cwd: repo(),
-      mode: "json",
-      hasUI: false,
-      ui: { notify },
-    });
-
-    expect(notify).toHaveBeenCalledWith("usage: /papercuts", "warning");
-  });
-
-  it("runs every menu action durably and leaves Work on this unchanged", async () => {
-    const command = browserCommand();
-    const root = repo();
-    const store = createPapercutStore(root);
-    await store.propose(proposal, { kind: "agent" });
-    const notify = vi.fn();
-    const setEditorText = vi.fn();
-    const setStatus = vi.fn();
-    const theme = { fg: (_color: string, text: string) => text };
-    const runAction = async (
-      selections: string[],
-      inputs: string[] = [],
-      confirmed = true,
-    ) => {
-      const select = vi.fn(async () => selections.shift());
-      const input = vi.fn(async () => inputs.shift());
-      await command.handler("", {
-        cwd: root,
-        mode: "tui",
-        hasUI: true,
-        ui: {
-          select,
-          input,
-          confirm: vi.fn(async () => confirmed),
-          notify,
-          setEditorText,
-          setStatus,
-          theme,
-        },
-      });
-    };
-    const pending = () => [
-      "Pending (1)",
-      `${proposal.key} — ${proposal.title}`,
-    ];
-
-    await runAction([...pending(), "Work on this", "Close"]);
-    expect(setEditorText).toHaveBeenLastCalledWith(
-      expect.stringContaining(
-        "Do not change this papercut's status automatically",
-      ),
-    );
-    expect((await store.load()).records[0]).toMatchObject({
-      status: "pending",
-    });
-
-    await runAction(
-      [...pending(), "Mark resolved", "Close"],
-      ["fixed", "docs"],
-    );
-    expect((await store.load()).records[0]).toMatchObject({
-      status: "resolved",
-      disposition: { note: "fixed", target: "docs" },
-    });
-    await runAction([
-      "Resolved (1)",
-      `${proposal.key} — ${proposal.title}`,
-      "Reopen",
-      "Close",
-    ]);
-    expect((await store.load()).records[0]).toMatchObject({
-      status: "pending",
-    });
-
-    await runAction([...pending(), "Ignore", "Close"], ["defer", "backlog"]);
-    expect((await store.load()).records[0]).toMatchObject({
-      status: "ignored",
-      disposition: { note: "defer", target: "backlog" },
-    });
-    await runAction([
-      "Ignored (1)",
-      `${proposal.key} — ${proposal.title}`,
-      "Reopen",
-      "Close",
-    ]);
-
-    await runAction(
-      [...pending(), "Edit proposal", "Close"],
-      [
-        proposal.key,
-        "Improved title",
-        proposal.trigger,
-        proposal.impact,
-        proposal.currentGap,
-        proposal.proposedResolution,
-        proposal.suggestedDestination,
-      ],
-    );
-    expect((await store.load()).records[0]).toMatchObject({
-      title: "Improved title",
-    });
-    await runAction([
-      "Pending (1)",
-      `${proposal.key} — Improved title`,
-      "Delete",
-      "Close",
-    ]);
-    expect((await store.load()).records).toEqual([]);
-    expect(setStatus).not.toHaveBeenCalled();
-  });
-
-  it("prints populated deterministic summaries without opening a modal", async () => {
-    const command = browserCommand();
-    const root = repo();
-    await createPapercutStore(root).propose(proposal, { kind: "agent" });
-    const notify = vi.fn();
-
-    await command.handler("", {
-      cwd: root,
-      mode: "json",
-      hasUI: false,
-      ui: { notify, setStatus: vi.fn() },
-    });
-
-    expect(notify).toHaveBeenCalledWith(
-      "pending (1)\n- devcontainer-validation: Validation needs the devcontainer (1)\nignored (0)\nresolved (0)",
-      "info",
-    );
-  });
-
-  it("formats deterministic pending-first non-TUI summaries", () => {
+  it("formats deterministic status then key summaries", () => {
     expect(
       formatPapercutSummary({
-        version: 1,
+        version: 2,
         records: [
-          {
-            ...proposal,
-            key: "z",
-            status: "resolved",
-            occurrences: 1,
-            firstSeenAt: "a",
-            lastSeenAt: "a",
-            sources: [],
-          },
-          {
-            ...proposal,
-            key: "a",
-            status: "pending",
-            occurrences: 2,
-            firstSeenAt: "a",
-            lastSeenAt: "a",
-            sources: [],
-          },
+          { ...record, key: "z", status: "closed" },
+          { ...record, key: "a" },
         ],
       }),
     ).toBe(
-      "pending (1)\n- a: Validation needs the devcontainer (2)\nignored (0)\nresolved (1)\n- z: Validation needs the devcontainer (1)",
+      "open (1)\nclosed (1)\n- open a: A finding (2)\n- closed z: A finding (2)",
     );
+  });
+
+  it("reports omitted records within the summary budget", () => {
+    const summary = formatPapercutSummary({
+      version: 2,
+      records: Array.from({ length: 256 }, (_, index) => ({
+        ...record,
+        key: `finding-${index}`,
+        title: "x".repeat(120),
+      })),
+    });
+    expect(Buffer.byteLength(summary, "utf8")).toBeLessThanOrEqual(16_384);
+    expect(summary).toMatch(/record.* omitted/);
+  });
+
+  it("shows complete open detail through a width-safe action panel and closes it", async () => {
+    const root = repo();
+    const status = createPapercutStatusController();
+    const ctx = {
+      cwd: root,
+      mode: "tui",
+      hasUI: true,
+      ui: undefined as never,
+    };
+    await (await status.storeFor(ctx as never)).record(observation);
+    const harness = browserHarness([
+      "Open (1)",
+      "finding — A finding",
+      "Back",
+      "Back",
+    ]);
+    ctx.ui = harness.ui as never;
+    registerPapercutsBrowser(harness.pi as never, status);
+    await status.sessionStart(ctx as never);
+    await harness.command().handler("", ctx as never);
+
+    const rendered = harness.renders()[0];
+    const detail = rendered.join("\n");
+    expect(detail).toContain("Title: A finding");
+    expect(detail).toContain("Key: finding");
+    expect(detail).toContain("Assigned task: An unrelated task");
+    expect(detail).toContain("Incident: A detour");
+    expect(detail).toContain("Evidence: Observed output");
+    expect(detail).toContain("1. Inspected scripts.");
+    expect(detail).toContain("2. Took the detour.");
+    expect(detail).toContain("Task outcome: Continued safely.");
+    expect(detail).toContain("Occurrences: 1");
+    expect(detail).toContain("First seen:");
+    expect(detail).toContain("Last seen:");
+    expect(detail).toContain("Close Finding");
+    expect(detail).toContain("Back");
+    expect(detail).not.toMatch(
+      /copy|clipboard|editor|work on|edit|delete|ignore|reopen/i,
+    );
+    expect(rendered.every((line) => line.length <= 48)).toBe(true);
+    expect(
+      (await (await status.storeFor(ctx as never)).load()).records[0],
+    ).toMatchObject({
+      status: "closed",
+      occurrences: 1,
+    });
+    expect(harness.ui.setStatus).toHaveBeenLastCalledWith(
+      "pipkin:status:0300:papercuts",
+      undefined,
+    );
+  });
+
+  it("shows closed detail with Back as its only action", async () => {
+    const root = repo();
+    const status = createPapercutStatusController();
+    const ctx = {
+      cwd: root,
+      mode: "tui",
+      hasUI: true,
+      ui: undefined as never,
+    };
+    const store = await status.storeFor(ctx as never);
+    await store.record(observation);
+    await store.close("finding");
+    const harness = browserHarness([
+      "Closed (1)",
+      "finding — A finding",
+      "Back",
+      "Back",
+    ]);
+    ctx.ui = harness.ui as never;
+    registerPapercutsBrowser(harness.pi as never, status);
+    await harness.command().handler("", ctx as never);
+
+    const detail = harness.renders()[0].join("\n");
+    expect(detail).toContain("Exercised workarounds:");
+    expect(detail).toContain("Back");
+    expect(detail).not.toContain("Close Finding");
+    expect((await store.load()).records[0]).toMatchObject({
+      status: "closed",
+      occurrences: 1,
+    });
   });
 });

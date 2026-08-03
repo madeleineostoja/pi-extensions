@@ -14,7 +14,7 @@ import {
 import { Panel } from "./panel.js";
 
 const MAX_ACTION_LENGTH = 160;
-const MAX_DETAIL_LENGTH = 4000;
+const MAX_DETAIL_LENGTH = 16_384;
 const CONTROL_PATTERN = /\p{C}/u;
 
 export type ActionPromptUI = Pick<ExtensionUIContext, "select" | "custom">;

@@ -62,7 +62,7 @@ const expectedTools = {
   docs: "src/extensions/reference/index.ts",
   package_search: "src/extensions/reference/index.ts",
   code_search: "src/extensions/reference/index.ts",
-  propose_papercut: "src/extensions/papercuts/index.ts",
+  record_papercut: "src/extensions/papercuts/index.ts",
 };
 
 const expectedCommands = {

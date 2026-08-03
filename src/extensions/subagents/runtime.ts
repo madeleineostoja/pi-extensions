@@ -262,8 +262,8 @@ const publicToolNames = new Set([
   "Agent",
   "get_subagent_result",
   "steer_subagent",
-  "propose_papercut",
 ]);
+const childWithheldTools = new Set(["record_papercut"]);
 const sessionStartReasons = new Set(["startup", "new", "resume", "fork"]);
 const retirementShutdownReasons = new Set(["quit", "new", "resume", "fork"]);
 export function withoutPublicAgentTools(names: string[]): string[] {
@@ -276,6 +276,7 @@ function normalizeActiveToolNames(
 ): string[] {
   const normalized = withoutPublicAgentTools(names).filter(
     (name) =>
+      !childWithheldTools.has(name) &&
       (options.allowExplore || name !== "explore") &&
       (name !== "lsp" || options.registered?.includes("lsp") !== false),
   );

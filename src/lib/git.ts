@@ -1,5 +1,13 @@
 import { execFile } from "node:child_process";
-import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rename,
+  stat,
+  unlink,
+} from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { acquireFileLease } from "./file-lease.js";
@@ -27,6 +35,45 @@ export async function gitCommonDir(cwd: string): Promise<string> {
     { cwd },
   );
   return stdout.trim();
+}
+
+export async function gitPrimaryWorktreeRoot(cwd: string): Promise<string> {
+  if (!cwd) {
+    throw new Error(
+      "A working directory is required to resolve the primary worktree.",
+    );
+  }
+  let stdout: Buffer;
+  try {
+    ({ stdout } = await execFileAsync(
+      "git",
+      ["worktree", "list", "--porcelain", "-z"],
+      { cwd, encoding: "buffer" },
+    ));
+  } catch (error) {
+    throw new Error("Could not resolve a primary Git worktree.", {
+      cause: error,
+    });
+  }
+  const entries = stdout.toString("utf8").split("\0").filter(Boolean);
+  if (entries.includes("bare")) {
+    throw new Error("Git repository is bare and has no primary worktree.");
+  }
+  const primary = entries.find((entry) => entry.startsWith("worktree "));
+  if (!primary) {
+    throw new Error("Git did not report a primary worktree.");
+  }
+  const path = primary.slice("worktree ".length);
+  if (!path) {
+    throw new Error("Git reported an invalid primary worktree path.");
+  }
+  try {
+    return await realpath(path);
+  } catch (error) {
+    throw new Error("Git reported a missing primary worktree path.", {
+      cause: error,
+    });
+  }
 }
 
 export async function ensureGitInfoExclude(

@@ -53,8 +53,8 @@ Long-lived resources start at `session_start` or on demand and dispose idempoten
 State belongs to the narrowest durable owner:
 
 - transient UI and agent activity belongs to the session;
-- Papercuts and Implement state belongs to a checkout;
-- policy that varies by repository belongs under that checkout's `.pi/pipkin/`;
+- Implement state belongs to a checkout, while Papercuts belongs to its canonical primary worktree;
+- policy that varies by repository belongs under that worktree's `.pi/pipkin/`;
 - personal model routing and logs belong under Pi's agent directory.
 
 See [Configuration and state](configuration.md) for concrete paths.
