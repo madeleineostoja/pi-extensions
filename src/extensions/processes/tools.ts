@@ -1,7 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { decodeRetainedResult, retainResult } from "#context/retained-result";
+import { retainResult } from "#context/retained-result";
 import { ProcessRuntime } from "./runtime.js";
 
 const ResultModeValues = [Type.Literal("output"), Type.Literal("outcome")];
@@ -221,7 +220,6 @@ export function registerProcessTools(
       "Use a later get_process_result resultMode:output call for newer output while the process record exists.",
     ],
     parameters: ResultParams,
-    renderResult: renderProcessResult,
     async execute(toolCallId, params, signal) {
       const mode = params.resultMode ?? "output";
       validateOutcomeSelection(mode, params.tailLines, params.find);
@@ -254,7 +252,6 @@ export function registerProcessTools(
       "Use stop_process resultMode:output when final output affects the next decision; resultMode:outcome keeps a point-in-time result for context_recall. Failed output remains visible.",
     ],
     parameters: StopParams,
-    renderResult: renderProcessResult,
     async execute(toolCallId, params) {
       const mode = params.resultMode ?? "output";
       const result = await runtime().stop(params.id);
@@ -267,65 +264,4 @@ export function registerProcessTools(
       });
     },
   });
-}
-
-type ProcessResultRenderer = NonNullable<
-  Parameters<ExtensionAPI["registerTool"]>[0]["renderResult"]
->;
-
-const renderProcessResult: ProcessResultRenderer = (
-  result,
-  options,
-  theme,
-  context,
-) => {
-  const summary = firstText(result.content);
-  if (context.isError || options.isPartial) {
-    return new Text(
-      theme.fg(context.isError ? "error" : "warning", summary),
-      0,
-      0,
-    );
-  }
-  if (!options.expanded) {
-    return new Text(
-      theme.fg("success", summary.split("\n", 1)[0] ?? summary),
-      0,
-      0,
-    );
-  }
-  const retained = decodeRetainedResult(result.details);
-  const output =
-    retained === undefined ? summary : retainedText(retained.content);
-  return new Text(theme.fg("toolOutput", output), 0, 0);
-};
-
-function firstText(content: unknown): string {
-  if (!Array.isArray(content)) {
-    return "Managed process result unavailable.";
-  }
-  const text = content.find(
-    (block): block is { type: "text"; text: string } =>
-      typeof block === "object" &&
-      block !== null &&
-      (block as { type?: unknown }).type === "text" &&
-      typeof (block as { text?: unknown }).text === "string",
-  );
-  return text?.text ?? "Managed process result unavailable.";
-}
-
-function retainedText(content: unknown): string {
-  if (!Array.isArray(content)) {
-    return "";
-  }
-  return content
-    .filter(
-      (block): block is { type: "text"; text: string } =>
-        typeof block === "object" &&
-        block !== null &&
-        (block as { type?: unknown }).type === "text" &&
-        typeof (block as { text?: unknown }).text === "string",
-    )
-    .map((block) => block.text)
-    .join("\n");
 }

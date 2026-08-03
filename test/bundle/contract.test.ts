@@ -72,6 +72,7 @@ const expectedTools = {
 const expectedCommands = {
   sandbox: "src/extensions/sandbox/index.ts",
   readonly: "src/extensions/readonly/index.ts",
+  processes: "src/extensions/processes/index.ts",
   agents: "src/extensions/subagents/index.ts",
   implement: "src/extensions/implement/index.ts",
   papercuts: "src/extensions/papercuts/index.ts",

@@ -282,10 +282,16 @@ function normalizeActiveToolNames(
   const active = (name: string) =>
     normalized.includes(name) && options.registered?.includes(name) !== false;
   const bashActive = active("bash");
+  const startProcessActive = bashActive && active("start_process");
+  const getProcessResultActive = active("get_process_result");
+  const stopProcessActive = active("stop_process");
   const recallActive = bashActive && active("context_recall");
   return normalized.filter(
     (name) =>
       (name !== "bash" || bashActive) &&
+      (name !== "start_process" || startProcessActive) &&
+      (name !== "get_process_result" || getProcessResultActive) &&
+      (name !== "stop_process" || stopProcessActive) &&
       (name !== "context_recall" || recallActive) &&
       (name !== "bash_outcome" || (recallActive && active("bash_outcome"))),
   );
@@ -295,6 +301,9 @@ const readOnlyToolNames = normalizeActiveToolNames(
   [
     "read",
     "bash",
+    "start_process",
+    "get_process_result",
+    "stop_process",
     "bash_outcome",
     "context_recall",
     "grep",

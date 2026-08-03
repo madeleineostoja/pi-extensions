@@ -1,4 +1,6 @@
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
+import { ACTIVITY_CHANNEL } from "#ui/activity";
 import { bindSandboxBashExecutor } from "../sandbox/bash-binding.js";
 import type { SandboxExecutionTerminal } from "../sandbox/bash-capability.js";
 import { ProcessSessionLifecycle } from "./lifecycle.js";
@@ -13,6 +15,41 @@ function terminal(): SandboxExecutionTerminal {
 }
 
 describe("ProcessSessionLifecycle", () => {
+  it("starts activity only for the top-level interactive TUI lifecycle", async () => {
+    const events = createEventBus();
+    const activityEvents: unknown[] = [];
+    events.on(ACTIVITY_CHANNEL, (event) => activityEvents.push(event));
+    const lifecycle = new ProcessSessionLifecycle({
+      events,
+      getActiveTools: () => ["bash"],
+    } as never);
+
+    await lifecycle.sessionStart(
+      {} as never,
+      {
+        mode: "print",
+        hasUI: false,
+      } as never,
+    );
+    expect(activityEvents).toEqual([]);
+    await lifecycle.sessionShutdown();
+
+    await lifecycle.sessionStart(
+      {} as never,
+      {
+        mode: "tui",
+        hasUI: true,
+      } as never,
+    );
+    expect(activityEvents).toEqual([
+      expect.objectContaining({ source: "processes", operation: "replace" }),
+    ]);
+    await lifecycle.sessionShutdown();
+    expect(activityEvents).toContainEqual(
+      expect.objectContaining({ source: "processes", operation: "clear" }),
+    );
+  });
+
   it("replaces disposed session state with a fresh process-id generation", async () => {
     const events = {} as never;
     const binding = bindSandboxBashExecutor(

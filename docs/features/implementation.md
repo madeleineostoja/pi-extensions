@@ -135,7 +135,7 @@ Stopping is transient while owned processes settle. Failed, incomplete, and comp
 
 `inspect_implement_run` is the model-facing counterpart to `status` and `inspect`. It lists retained durable runs or summarizes one run, returning state and artifact paths for deeper diagnosis with ordinary read tools. It is read-only and unavailable to managed Implement workers.
 
-The active session projects one Implement parent with active workstream children into UI's shared Activity widget. Implement does not publish active progress to the footer; detailed live and retained worker inspection remains available through `/agents`.
+The active session projects one Implement parent with active workstream children into UI's shared Activity widget. Implement does not publish active progress to the footer; detailed live and retained worker inspection remains available through `/agents`. Mutable workers inherit active managed-process tools, and Bash-enabled planner and reviewer lanes select them only when their parent still exposes them; each child owns a separate current-session process runtime in its assigned worktree.
 
 ## Models and concurrency
 

@@ -74,7 +74,7 @@ describe("process tools", () => {
     expect(stop.parameters.additionalProperties).toBe(false);
   });
 
-  it("keeps failed outcome output visible and renders validated retained output only when expanded", async () => {
+  it("keeps failed outcome output visible through Pi's default result shell", async () => {
     const failedSnapshot = { ...snapshot, status: "failed" };
     const tools = toolsFor({
       async result() {
@@ -102,45 +102,7 @@ describe("process tools", () => {
     expect(failed.details.retainedResult).toBeUndefined();
     expect(failed.content[0].text).toContain("failure output");
 
-    const successful = {
-      content: [
-        {
-          type: "text",
-          text: 'Managed process process-1 is completed.\nThe managed process result is retained; call context_recall("ok") to inspect it.',
-        },
-      ],
-      details: {
-        retainedResult: {
-          type: "pipkin.context.retained-result",
-          version: 1,
-          result: { content: [{ type: "text", text: "retained output" }] },
-        },
-      },
-    };
-    const theme = { fg: (_color: string, text: string) => text };
-    expect(
-      get.renderResult!(successful, { expanded: false }, theme, {
-        isError: false,
-      })
-        .render(200)
-        .join("\n"),
-    ).not.toContain("retained output");
-    expect(
-      get.renderResult!(successful, { expanded: true }, theme, {
-        isError: false,
-      })
-        .render(200)
-        .join("\n"),
-    ).toContain("retained output");
-    expect(
-      get.renderResult!(
-        { ...successful, details: { retainedResult: { version: 1 } } },
-        { expanded: true },
-        theme,
-        { isError: false },
-      )
-        .render(200)
-        .join("\n"),
-    ).not.toContain("retainedResult");
+    expect(get.renderResult).toBeUndefined();
+    expect(tools.get("stop_process")!.renderResult).toBeUndefined();
   });
 });

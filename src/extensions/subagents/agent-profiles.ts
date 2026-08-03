@@ -119,6 +119,9 @@ export const PUBLIC_AGENT_PROFILES: Record<PublicBuiltinType, AgentProfile> = {
     tools: [
       "read",
       "bash",
+      "start_process",
+      "get_process_result",
+      "stop_process",
       "bash_outcome",
       "context_recall",
       "grep",
@@ -134,6 +137,9 @@ export const PUBLIC_AGENT_PROFILES: Record<PublicBuiltinType, AgentProfile> = {
     tools: [
       "read",
       "bash",
+      "start_process",
+      "get_process_result",
+      "stop_process",
       "bash_outcome",
       "context_recall",
       "grep",

@@ -40,7 +40,7 @@ The model can choose only Pipkin's fixed read-only actions, supported files, and
 
 Use foreground `bash` or `bash_outcome` when completion is immediately required. Use `start_process` only for finite foreground commands or readiness work that can overlap real independent work; never start it merely to call an immediate join. When completion or readiness becomes a dependency, call `get_process_result` with `wait:true` once, not as a poll. `untilContains` waits eventfully for one case-sensitive literal on either source stream, and its timeout leaves the process running.
 
-Use output mode for bounded recent-tail or `find` inspection when output changes the next decision. Use `resultMode:"outcome"` when only a point-in-time status matters, then use the supplied exact ID with `context_recall` to recover its full result, lines, or literal matches. A later output-mode result is required for newer output; failures stay directly visible. Stop unneeded processes with `stop_process`.
+Use output mode for bounded recent-tail or `find` inspection when output changes the next decision. Use `resultMode:"outcome"` when only a point-in-time status matters, then use the supplied exact ID with `context_recall` to recover its full result, lines, or literal matches. A later output-mode result is required for newer output; failures stay directly visible. Stop unneeded processes with `stop_process`. `/processes` is the separate human recovery surface: it updates from process events, shows bounded live details and recent output, and only stops the still-selected exact running record.
 
 ## Papercuts: keep the lesson, not just the scar
 

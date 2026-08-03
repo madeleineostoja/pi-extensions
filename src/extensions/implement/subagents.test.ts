@@ -41,6 +41,9 @@ describe("managed Pipkin Implement worker tools", () => {
     const selection = readOnlyWorkerTools([
       "read",
       "bash",
+      "start_process",
+      "get_process_result",
+      "stop_process",
       "bash_outcome",
       "context_recall",
       "Agent",
@@ -52,6 +55,9 @@ describe("managed Pipkin Implement worker tools", () => {
     expect(selection.tools).toEqual([
       "read",
       "bash",
+      "start_process",
+      "get_process_result",
+      "stop_process",
       "bash_outcome",
       "context_recall",
     ]);
@@ -73,6 +79,13 @@ describe("managed Pipkin Implement worker tools", () => {
     expect(readOnlyWorkerTools(["read", "bash", "bash_outcome"]).tools).toEqual(
       ["read", "bash"],
     );
+    expect(
+      readOnlyWorkerTools(["read", "get_process_result", "stop_process"]).tools,
+    ).toEqual(["read", "get_process_result", "stop_process"]);
+    expect(
+      readOnlyWorkerTools(["read", "bash", "start_process", "context_recall"])
+        .tools,
+    ).toEqual(["read", "bash", "start_process", "context_recall"]);
     expect(
       readOnlyWorkerTools(["read", "bash", "context_recall"]).tools,
     ).toEqual(["read", "bash", "context_recall"]);

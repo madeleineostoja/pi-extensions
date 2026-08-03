@@ -116,6 +116,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | `lsp`                                 | Make semantic source queries or inspect language-server status       |
 | `start_process`                       | Start independent foreground non-interactive managed work            |
 | `get_process_result` / `stop_process` | Join, inspect, or explicitly stop a managed process                  |
+| `/processes`                          | Inspect live output and deliberately stop managed processes          |
 | `docs`                                | Retrieve bounded Context7 documentation                              |
 | `package_search`                      | Discover separately ranked Context7, npm, and public GitHub packages |
 | `code_search`                         | Search bounded observed usage in explicitly public GitHub source     |
@@ -128,7 +129,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 
 ## Limits
 
-On enabled macOS sessions, Sandbox lets model Bash and descendants write only the canonical repository, its required Git administration, temporary roots, and reviewed package caches; direct `write` and `edit` stay within the canonical workspace. `/sandbox off` also applies to Pipkin subagents spawned afterward. It allows broad reads and unrestricted networking, and repository and shared Git state remain mutable.
+On enabled macOS sessions, Sandbox lets model Bash and descendants write only the canonical repository, its required Git administration, temporary roots, and reviewed package caches; direct `write` and `edit` stay within the canonical workspace. `/sandbox off` also applies to Pipkin subagents spawned afterward. It allows broad reads and unrestricted networking, and repository and shared Git state remain mutable. Managed processes are current-session only: each runtime allows at most eight active processes, retains at most 32 records and 1 MiB per record, and exposes bounded output. `/processes` is the live operational surface; its Activity rows disclose only safe descriptions and state.
 
 Pipkin extensions are trusted code with the permissions of the Pi process. Sandbox does not confine extension JavaScript, extension-owned processes, provider traffic, Web Fetch, direct RPC Bash, language servers, remote mutations, inherited credentials, or hostile repository code. Use a VM, devcontainer, remote sandbox, or equivalent external boundary for hostile or unattended work. Readonly steps aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
 

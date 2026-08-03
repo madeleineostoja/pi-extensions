@@ -17,7 +17,7 @@ Cost includes assistant usage and prompt-cache read/write pricing on the active 
 
 The footer adapts to terminal width rather than forcing every metric onto one crowded line. Sandbox, Readonly, and Papercuts publish source-owned `normal`, `warning`, or `error` statuses with required icons; unknown statuses retain their icon or receive a generic fallback. Sandbox turns warning-yellow with its active-runtime denial count after a confirmed direct-tool or kernel Bash write denial.
 
-UI owns the generic Activity widget and status presentation. It does not replace Pi's editor, working indicator, ordinary selectors, built-in tool renderers, or custom-message presentation.
+UI owns the generic Activity widget and status presentation. Subagents, Implement, and Processes independently publish bounded source-qualified activity; Processes owns its `/processes` inspector and process cleanup, while UI never imports a producer or owns its records. It does not replace Pi's editor, working indicator, ordinary selectors, built-in tool renderers, or custom-message presentation.
 
 ## Personality: sessions you can recognize later
 
