@@ -34,6 +34,9 @@ export type PlannerTask = {
 export type PlannerWorkstream = {
   id: string;
   taskIds: string[];
+};
+
+export type ExecutionWorkstream = PlannerWorkstream & {
   dependsOn: string[];
 };
 
@@ -70,7 +73,7 @@ export type ExecutionPlan = {
   };
   workerConcurrency: number;
   tasks: CompiledExecutionTask[];
-  workstreams: PlannerWorkstream[];
+  workstreams: ExecutionWorkstream[];
 };
 
 export type UncheckedPlanTask = {
@@ -173,6 +176,7 @@ export async function planExecution(
     return packet;
   }
   const result = await args.requestPlanner(packet.value);
+  writePlannerAttempt(args.runDir, result);
   const compiled = compileExecutionPlan(result, args);
   if (!compiled.ok) {
     return compiled;
@@ -307,7 +311,7 @@ export function compileExecutionPlan(
     },
     workerConcurrency: input.workerConcurrency,
     tasks,
-    workstreams: planner.value.workstreams,
+    workstreams: validation.value,
   };
   return {
     ok: true,
@@ -348,8 +352,8 @@ export function uncheckedPlanTasks(plan: ParsedPlan): UncheckedPlanTask[] {
 
 export function validatePlannerPlan(
   planner: PlannerExecutionPlan,
-  unchecked: UncheckedPlanTask[],
-): ExecutionPlanResult<void> {
+  unchecked: ReadonlyArray<Pick<UncheckedPlanTask, "planIndex">>,
+): ExecutionPlanResult<ExecutionWorkstream[]> {
   const ids = new Set<string>();
   const indexes = new Set<number>();
   const uncheckedIndexes = new Set(unchecked.map((task) => task.planIndex));
@@ -426,30 +430,8 @@ export function validatePlannerPlan(
   if (membership.size !== ids.size) {
     return failure("Workstream task coverage is incomplete.");
   }
-  for (const workstream of planner.workstreams) {
-    const dependencies = validateDependencies(
-      workstream.id,
-      workstream.dependsOn,
-      workstreamIds,
-      "workstream",
-    );
-    if (!dependencies.ok) {
-      return dependencies;
-    }
-  }
-  const workstreamCycle = findCycle(
-    planner.workstreams.map((stream) => ({
-      id: stream.id,
-      dependsOn: stream.dependsOn,
-    })),
-  );
-  if (workstreamCycle) {
-    return failure(
-      `Workstream dependency cycle detected: ${workstreamCycle.join(" -> ")}.`,
-    );
-  }
-
   const taskById = new Map(planner.tasks.map((task) => [task.id, task]));
+  const compiledWorkstreams: ExecutionWorkstream[] = [];
   for (const [streamIndex, workstream] of planner.workstreams.entries()) {
     const taskOrder = new Map(
       workstream.taskIds.map((id, index) => [id, index]),
@@ -474,23 +456,23 @@ export function validatePlannerPlan(
         }
       }
     }
-    if (!sameSet(induced, new Set(workstream.dependsOn))) {
-      return failure(
-        `Workstream "${workstream.id}" dependencies must exactly match dependencies induced by its tasks.`,
-      );
-    }
-    for (const dependency of workstream.dependsOn) {
-      if (
-        planner.workstreams.findIndex((stream) => stream.id === dependency) >=
-        streamIndex
-      ) {
-        return failure(
-          `Workstream "${workstream.id}" must follow dependency "${dependency}".`,
-        );
-      }
-    }
+    compiledWorkstreams.push({
+      ...workstream,
+      dependsOn: planner.workstreams
+        .slice(0, streamIndex)
+        .map((stream) => stream.id)
+        .filter((id) => induced.has(id)),
+    });
   }
-  return { ok: true, value: undefined };
+  return { ok: true, value: compiledWorkstreams };
+}
+
+export function plannerAttemptPath(runDir: string): string {
+  return join(runDir, "planner-attempt-1.json");
+}
+
+function writePlannerAttempt(runDir: string, attempt: unknown): void {
+  writeAtomicJson(plannerAttemptPath(runDir), attempt);
 }
 
 export function writeExecutionPlan(runDir: string, plan: ExecutionPlan): void {
@@ -590,10 +572,30 @@ function parseStoredExecutionPlan(value: unknown): ExecutionPlan | undefined {
     } = compiled;
     plannerTasks.push(plannerTask);
   }
+  const storedWorkstreams = plan.workstreams as unknown[];
+  const plannerWorkstreams: unknown[] = [];
+  for (const workstream of storedWorkstreams) {
+    if (
+      typeof workstream !== "object" ||
+      workstream === null ||
+      Array.isArray(workstream)
+    ) {
+      return undefined;
+    }
+    const stored = workstream as Record<string, unknown>;
+    if (
+      !hasExactKeys(stored, ["id", "taskIds", "dependsOn"]) ||
+      !Array.isArray(stored.dependsOn) ||
+      !stored.dependsOn.every((dependency) => typeof dependency === "string")
+    ) {
+      return undefined;
+    }
+    plannerWorkstreams.push({ id: stored.id, taskIds: stored.taskIds });
+  }
   const parsed = parsePlannerExecutionPlan({
     version: plan.version,
     tasks: plannerTasks,
-    workstreams: plan.workstreams,
+    workstreams: plannerWorkstreams,
   });
   if (!parsed.ok) {
     return undefined;
@@ -778,7 +780,7 @@ function parsePlannerWorkstream(
   }
   const keys = exactKeys(
     stream.value,
-    ["id", "taskIds", "dependsOn"],
+    ["id", "taskIds"],
     `Execution plan workstreams[${index}]`,
   );
   if (!keys.ok) {
@@ -793,26 +795,17 @@ function parsePlannerWorkstream(
     `Execution plan workstreams[${index}].taskIds`,
     true,
   );
-  const dependsOn = stringList(
-    stream.value.dependsOn,
-    `Execution plan workstreams[${index}].dependsOn`,
-    false,
-  );
   if (!id.ok) {
     return id;
   }
   if (!taskIds.ok) {
     return taskIds;
   }
-  if (!dependsOn.ok) {
-    return dependsOn;
-  }
   return {
     ok: true,
     value: {
       id: id.value,
       taskIds: taskIds.value,
-      dependsOn: dependsOn.value,
     },
   };
 }
@@ -996,12 +989,6 @@ function taskHash(task: PlanTask): string {
 
 function safeId(value: string): boolean {
   return ID_RE.test(value);
-}
-
-function sameSet(left: Set<string>, right: Set<string>): boolean {
-  return (
-    left.size === right.size && [...left].every((value) => right.has(value))
-  );
 }
 
 function hash(value: string): string {

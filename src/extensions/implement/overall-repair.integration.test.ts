@@ -116,9 +116,7 @@ async function overallFixture() {
           },
         },
       ],
-      workstreams: [
-        { id: "repair-app", taskIds: ["repair-app"], dependsOn: [] },
-      ],
+      workstreams: [{ id: "repair-app", taskIds: ["repair-app"] }],
     },
     {
       plan: parsed,

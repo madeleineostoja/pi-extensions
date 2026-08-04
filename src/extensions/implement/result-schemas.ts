@@ -35,7 +35,6 @@ const strictWorkstreamSchema = Type.Object(
   {
     id: Type.String({ pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" }),
     taskIds: Type.Array(nonEmptyString(), { minItems: 1 }),
-    dependsOn: Type.Array(nonEmptyString()),
   },
   { additionalProperties: false },
 );

@@ -410,7 +410,6 @@ function reviewPlan(root: string, baseSha: string): ExecutionPlan {
         {
           id: "first-stream",
           taskIds: ["preserve-behavior"],
-          dependsOn: [],
         },
       ],
     },

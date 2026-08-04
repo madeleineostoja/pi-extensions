@@ -45,12 +45,10 @@ export async function createLifecycleFixture(): Promise<LifecycleFixture> {
         {
           id: "first-stream",
           taskIds: ["first"],
-          dependsOn: [],
         },
         {
           id: "second-stream",
           taskIds: ["second"],
-          dependsOn: ["first-stream"],
         },
       ],
     },

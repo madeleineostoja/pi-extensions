@@ -65,12 +65,10 @@ export function planFor(
         {
           id: "first-stream",
           taskIds: ["first"],
-          dependsOn: [],
         },
         {
           id: "second-stream",
           taskIds: ["second"],
-          dependsOn: independent ? [] : ["first-stream"],
         },
       ],
     },

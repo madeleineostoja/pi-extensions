@@ -65,7 +65,7 @@ describe("requirements context", () => {
             },
           },
         ],
-        workstreams: [{ id: "context", taskIds: ["context"], dependsOn: [] }],
+        workstreams: [{ id: "context", taskIds: ["context"] }],
       },
       {
         plan,
@@ -114,7 +114,7 @@ describe("requirements context", () => {
       {
         version: 1,
         tasks: [task()],
-        workstreams: [{ id: "context", taskIds: ["context"], dependsOn: [] }],
+        workstreams: [{ id: "context", taskIds: ["context"] }],
       },
       {
         plan,

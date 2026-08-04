@@ -4,7 +4,7 @@ import { writeAtomicJson } from "./atomic-json.js";
 import type {
   CompiledExecutionTask,
   ExecutionPlan,
-  PlannerWorkstream,
+  ExecutionWorkstream,
   StrictCompiledContract,
 } from "./execution-plan.js";
 import {
@@ -46,7 +46,7 @@ export type WorkerSchedule = {
   tasks: Array<
     Pick<WorkerRequirementTask, "id" | "planIndex" | "title" | "dependsOn">
   >;
-  workstreams: PlannerWorkstream[];
+  workstreams: ExecutionWorkstream[];
 };
 
 export type RequirementsContext = {

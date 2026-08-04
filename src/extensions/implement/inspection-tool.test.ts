@@ -1,8 +1,8 @@
 import {
   cpSync,
   mkdirSync,
-  readFileSync,
   rmSync,
+  readFileSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import { formatStatus } from "./controls.js";
+import { plannerAttemptPath } from "./execution-plan.js";
 import { checkoutPaths } from "./store.js";
 import {
   createLifecycleFixture,
@@ -118,6 +119,7 @@ describe("inspect_implement_run", () => {
     const paths = checkoutPaths(run.root);
     const worktree = join(paths.worktrees, "run-1");
     mkdirSync(worktree, { recursive: true });
+    writeFileSync(plannerAttemptPath(join(paths.runs, "run-1")), "{}\n");
 
     const result = inspectImplementRun(run.root, { runId: "run-1" });
     const text = result.content[0].text;
@@ -126,14 +128,20 @@ describe("inspect_implement_run", () => {
     expect(text).toContain(
       `State: ${join(paths.runs, "run-1", "run-state.json")}`,
     );
+    expect(text).toContain(`Source plan: ${run.plan.source.planPath}`);
+    expect(text).toContain(
+      `Planner attempt: ${join(paths.runs, "run-1", "planner-attempt-1.json")}`,
+    );
+    expect(text).not.toContain("planner-attempt-1.json (not retained)");
     expect(text).toContain(
       `Execution plan: ${join(paths.runs, "run-1", "execution-plan.json")}`,
     );
     expect(text).toContain(
       `Source corpus: ${join(paths.runs, "run-1", "source-corpus.json")}`,
     );
+    expect(text).not.toContain("source-corpus.json (not retained)");
     expect(text).toContain(
-      `Artifacts: ${join(paths.runs, "run-1", "artifacts")}`,
+      `Artifacts: ${join(paths.runs, "run-1", "artifacts")} (not retained)`,
     );
     expect(text).toContain(`Retained worktree: ${worktree}`);
     expect(result.details).toEqual({
@@ -141,6 +149,32 @@ describe("inspect_implement_run", () => {
       runId: "run-1",
       truncated: false,
     });
+  });
+
+  it("marks absent planning artifacts as not retained", async () => {
+    const run = await fixture();
+    const paths = checkoutPaths(run.root);
+    const state = run.store.read();
+    state.phase = "failed";
+    state.executionPlan = undefined;
+    state.workstreams = { source: {}, overall: {} };
+    state.tasks = {};
+    state.failure = {
+      category: "runtime",
+      reason: "Planning failed.",
+      originPhase: "planning",
+      at: "2026-01-01T00:00:00.000Z",
+    };
+    writeFileSync(run.store.path, `${JSON.stringify(state, null, 2)}\n`);
+    rmSync(join(paths.runs, "run-1", "execution-plan.json"));
+    rmSync(join(paths.runs, "run-1", "source-corpus.json"));
+
+    const result = inspectImplementRun(run.root, { runId: "run-1" });
+    const text = result.content[0].text;
+
+    expect(text).toContain("planner-attempt-1.json (not retained)");
+    expect(text).toContain("execution-plan.json (not retained)");
+    expect(text).toContain("source-corpus.json (not retained)");
   });
 
   it("structures finding evidence without changing its content", async () => {

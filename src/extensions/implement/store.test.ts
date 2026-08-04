@@ -61,7 +61,6 @@ function planFor(directory: string): ExecutionPlan {
         {
           id: "implementation",
           taskIds: ["first", "second"],
-          dependsOn: [],
         },
       ],
     },

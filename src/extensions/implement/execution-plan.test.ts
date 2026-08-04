@@ -8,6 +8,7 @@ import {
   compileExecutionPlan,
   parsePlannerExecutionPlan,
   planExecution,
+  plannerAttemptPath,
   readExecutionPlan,
   writeExecutionPlan,
   type ExecutionPlanCompilerInput,
@@ -51,17 +52,14 @@ function plannerPlan() {
       {
         id: "first-work",
         taskIds: ["first"],
-        dependsOn: [],
       },
       {
         id: "second-work",
         taskIds: ["second"],
-        dependsOn: [],
       },
       {
         id: "join-work",
         taskIds: ["join"],
-        dependsOn: ["first-work", "second-work"],
       },
     ],
   };
@@ -188,7 +186,6 @@ describe("strict execution-plan compiler", () => {
               {
                 id: "task-work",
                 taskIds: ["task"],
-                dependsOn: [],
               },
             ],
           };
@@ -197,6 +194,57 @@ describe("strict execution-plan compiler", () => {
 
       expect(result.ok).toBe(true);
       expect(calls).toBe(1);
+      expect(
+        JSON.parse(
+          readFileSync(plannerAttemptPath(join(directory, "run")), "utf-8"),
+        ),
+      ).toEqual({
+        version: 1,
+        tasks: [
+          {
+            id: "task",
+            planIndex: 1,
+            title: "Task",
+            dependsOn: [],
+            compiledContract: {
+              objective: "Implement the task.",
+              inScope: ["Task behavior"],
+              acceptanceCriteria: ["Task works"],
+              outOfScope: ["Unrelated changes"],
+            },
+          },
+        ],
+        workstreams: [{ id: "task-work", taskIds: ["task"] }],
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("retains a schema-valid planner attempt before semantic validation", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pipkin-implement-plan-"));
+    try {
+      const invalid = {
+        ...plannerPlan(),
+        workstreams: [
+          { id: "first-work", taskIds: ["first"] },
+          { id: "second-work", taskIds: ["second"] },
+          { id: "join-work", taskIds: ["join", "first"] },
+        ],
+      };
+      const result = await planExecution({
+        ...input(),
+        runDir: directory,
+        workspacePath: "/repo",
+        checkoutRoot: "/repo",
+        runId: "run-1",
+        requestPlanner: async () => invalid,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(
+        JSON.parse(readFileSync(plannerAttemptPath(directory), "utf-8")),
+      ).toEqual(invalid);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -345,11 +393,82 @@ describe("strict execution-plan compiler", () => {
     }
   });
 
-  it("requires workstream dependencies induced by task dependencies", () => {
-    const plan = plannerPlan();
-    plan.workstreams[2]!.dependsOn = ["first-work"];
+  it("derives workstream dependencies from task dependencies", () => {
+    const result = compileExecutionPlan(plannerPlan(), input());
 
-    expect(compileExecutionPlan(plan, input()).ok).toBe(false);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.value.workstreams).toEqual([
+      { id: "first-work", taskIds: ["first"], dependsOn: [] },
+      { id: "second-work", taskIds: ["second"], dependsOn: [] },
+      {
+        id: "join-work",
+        taskIds: ["join"],
+        dependsOn: ["first-work", "second-work"],
+      },
+    ]);
+  });
+
+  it("deduplicates external workstream dependencies and omits internal ones", () => {
+    const plan = plannerPlan();
+    plan.tasks[1]!.dependsOn = ["first"];
+    plan.tasks[2]!.dependsOn = ["first", "second"];
+    plan.workstreams = [
+      { id: "batched", taskIds: ["first", "second"] },
+      { id: "join-work", taskIds: ["join"] },
+    ];
+
+    const result = compileExecutionPlan(plan, input());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.value.workstreams).toEqual([
+      { id: "batched", taskIds: ["first", "second"], dependsOn: [] },
+      {
+        id: "join-work",
+        taskIds: ["join"],
+        dependsOn: ["batched"],
+      },
+    ]);
+  });
+
+  it("rejects workstreams ordered before their task dependencies", () => {
+    const plan = plannerPlan();
+    plan.workstreams = [
+      { id: "join-work", taskIds: ["join"] },
+      { id: "first-work", taskIds: ["first"] },
+      { id: "second-work", taskIds: ["second"] },
+    ];
+
+    const result = compileExecutionPlan(plan, input());
+
+    expect(result).toEqual({
+      ok: false,
+      reason:
+        'Workstream "join-work" appears before required workstream for task "join".',
+    });
+  });
+
+  it("rejects tasks ordered before dependencies in the same workstream", () => {
+    const plan = plannerPlan();
+    plan.workstreams = [
+      { id: "branches", taskIds: ["first", "second"] },
+      { id: "join-work", taskIds: ["join"] },
+    ];
+    plan.workstreams[0]!.taskIds = ["second", "first"];
+    plan.tasks[1]!.dependsOn = ["first"];
+
+    const result = compileExecutionPlan(plan, input());
+
+    expect(result).toEqual({
+      ok: false,
+      reason:
+        'Workstream "branches" orders task "second" before its dependency "first".',
+    });
   });
 
   it("accepts a task in its own workstream", () => {
@@ -358,12 +477,10 @@ describe("strict execution-plan compiler", () => {
       {
         id: "batched",
         taskIds: ["first", "second"],
-        dependsOn: [],
       },
       {
         id: "isolated-join",
         taskIds: ["join"],
-        dependsOn: ["batched"],
       },
     ];
 
@@ -376,12 +493,10 @@ describe("strict execution-plan compiler", () => {
       {
         id: "isolated-contract",
         taskIds: ["first", "second"],
-        dependsOn: [],
       },
       {
         id: "join-work",
         taskIds: ["join"],
-        dependsOn: ["isolated-contract"],
       },
     ];
 
@@ -394,7 +509,6 @@ describe("strict execution-plan compiler", () => {
       {
         id: "whole-plan",
         taskIds: ["first", "second", "join"],
-        dependsOn: [],
       },
     ];
     expect(compileExecutionPlan(wholePlan, input()).ok).toBe(true);
@@ -407,12 +521,10 @@ describe("strict execution-plan compiler", () => {
       {
         id: "foundation",
         taskIds: ["first"],
-        dependsOn: [],
       },
       {
         id: "dependent-delivery",
         taskIds: ["second", "join"],
-        dependsOn: ["foundation"],
       },
     ];
     expect(compileExecutionPlan(sequential, input()).ok).toBe(true);

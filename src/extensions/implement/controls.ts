@@ -12,6 +12,7 @@ import {
 } from "./store.js";
 import { reduceRunEvent } from "./scheduler/scheduler.js";
 import { sourceCorpusPath } from "./requirements-context.js";
+import { plannerAttemptPath } from "./execution-plan.js";
 import {
   settleProjectionTransactions,
   settlePublicationTransactions,
@@ -236,6 +237,9 @@ export function inspectRun(checkoutRoot: string, runId: string): string {
   if (state.run.checkout.root !== checkoutRoot) {
     throw new Error("Run belongs to a different checkout.");
   }
+  const executionPlan = join(path, "execution-plan.json");
+  const sourceCorpus = sourceCorpusPath(path);
+  const plannerAttempt = plannerAttemptPath(path);
   const artifacts = join(path, "artifacts");
   const worktree = join(paths.worktrees, runId);
   return [
@@ -243,8 +247,10 @@ export function inspectRun(checkoutRoot: string, runId: string): string {
     [
       "Paths:",
       `- State: ${join(path, "run-state.json")}`,
-      `- Execution plan: ${join(path, "execution-plan.json")}`,
-      `- Source corpus: ${sourceCorpusPath(path)}`,
+      `- Source plan: ${state.run.source.entry.path}`,
+      `- Planner attempt: ${plannerAttempt}${existsSync(plannerAttempt) ? "" : " (not retained)"}`,
+      `- Execution plan: ${executionPlan}${existsSync(executionPlan) ? "" : " (not retained)"}`,
+      `- Source corpus: ${sourceCorpus}${existsSync(sourceCorpus) ? "" : " (not retained)"}`,
       `- Artifacts: ${artifacts}${existsSync(artifacts) ? "" : " (not retained)"}`,
       `- Retained worktree: ${existsSync(worktree) ? worktree : "none"}`,
     ].join("\n"),

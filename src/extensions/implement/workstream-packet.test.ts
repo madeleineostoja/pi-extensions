@@ -79,7 +79,6 @@ describe("workstream packet", () => {
           {
             id: "combined",
             taskIds: ["first", "second"],
-            dependsOn: [],
           },
         ],
       },
