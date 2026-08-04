@@ -1524,6 +1524,43 @@ describe("SubagentRuntime", () => {
     });
   });
 
+  it("delivers slash-prefixed child tasks to the model without executing a registered child command", async () => {
+    const { pi } = fakePi();
+    const sandboxCommand = vi.fn();
+    const harness = await createManagedSessionHarness(
+      [fauxAssistantMessage("inspection complete")],
+      {
+        extensionFactories: [
+          (childPi) =>
+            childPi.registerCommand("sandbox", {
+              description: "Records sandbox command execution.",
+              handler: sandboxCommand,
+            }),
+        ],
+      },
+    );
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: harness.createSession,
+    });
+
+    await runtime.runManagedAgent({
+      type: "general-purpose",
+      prompt: "/sandbox off",
+      cwd: TEST_CWD,
+      ctx: realContext(harness.model, harness.modelRegistry),
+    });
+
+    expect(sandboxCommand).not.toHaveBeenCalled();
+    expect(harness.sessions[0]!.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: [{ type: "text", text: "/sandbox off" }],
+        }),
+      ]),
+    );
+  });
+
   it("stops before accepted completion and fails on pre-acceptance provider errors", async () => {
     const { pi } = fakePi();
     const controller = new AbortController();

@@ -40,7 +40,9 @@ function panelDetail(
   denials: SandboxDenialRecorder,
 ): string {
   const status = sandboxStatus(state, supportedMac);
-  const lines = [`State: ${status}`];
+  const lines = [
+    `State: ${status}${state.repositoryReadOnly() ? " (repository-read-only child)" : ""}`,
+  ];
   const policy = state.policy();
   if (policy) {
     lines.push(`Direct write/edit scope: ${policy.workspaceRoot}`);

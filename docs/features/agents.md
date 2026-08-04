@@ -81,7 +81,7 @@ Subagents inherit the parent extension environment and active tools, except publ
 
 Explore and Review retain shell access for discovery and checks. Repository preservation is a role contract; it is not technical confinement.
 
-Public subagents share the invoking session's filesystem and **do not receive isolated Git worktrees**. Each child resolves Sandbox policy from its own runtime cwd and snapshots the invoking session's current Sandbox mode when spawned. Turning Sandbox off affects later children but does not change children already running. Do not edit files that a child currently owns. If implementation needs strong workspace separation and publication control, use [Implement](implementation.md), whose trusted managed workers run in owned disposable worktrees.
+Public subagents share the invoking session's filesystem and **do not receive isolated Git worktrees**. On enabled macOS Sandbox sessions, Explore, Review, and nested Explore snapshot repository-read-only mode when spawned: the workspace/worktree, worktree Git directory, and common Git directory are protected while temporary/cache writes remain available. The snapshot includes the invoking session's current enabled state; `/sandbox off` affects later children but does not change children already running. Linux has no kernel enforcement, so this remains an instruction-only trusted-agent boundary there, not hostile-code isolation. Do not edit files that a child currently owns. If implementation needs strong workspace separation and publication control, use [Implement](implementation.md), whose trusted managed workers run in owned disposable worktrees.
 
 ## Model routing
 

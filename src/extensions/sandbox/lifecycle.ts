@@ -16,6 +16,7 @@ import type { SandboxDenialRecorder } from "./denials.js";
 import { resolveSandboxPolicy } from "./policy.js";
 import type { SandboxSessionState } from "./state.js";
 import { clearSandboxStatus, syncSandboxStatus } from "./status.js";
+import type { SandboxChildSnapshot } from "./write-mode.js";
 
 function initializationError(error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error);
@@ -47,7 +48,7 @@ export function createSandboxSessionController(options: {
     async sessionStart(
       _event: SessionStartEvent,
       ctx: ExtensionContext,
-      inheritedEnabled?: boolean,
+      inherited?: SandboxChildSnapshot | boolean,
     ) {
       bashBinding?.dispose();
       bashBinding = undefined;
@@ -72,9 +73,13 @@ export function createSandboxSessionController(options: {
           failure = initializationError(error);
         }
       }
-      options.state.reset(policy, failure);
-      if (inheritedEnabled !== undefined) {
-        options.state.setEnabled(inheritedEnabled);
+      const childSnapshot =
+        typeof inherited === "boolean"
+          ? { enabled: inherited, writeMode: "workspace-write" as const }
+          : inherited;
+      options.state.reset(policy, failure, childSnapshot?.writeMode);
+      if (childSnapshot !== undefined) {
+        options.state.setEnabled(childSnapshot.enabled);
       }
       options.denials.reset();
       if (options.supportedMac) {
@@ -92,6 +97,7 @@ export function createSandboxSessionController(options: {
       bash = createSandboxBashRuntime({
         policy,
         enabled: options.state.enabled,
+        repositoryReadOnly: options.state.repositoryReadOnly,
         supportedMac: options.supportedMac,
         unavailableReason: failure,
         denialObserver: observer,

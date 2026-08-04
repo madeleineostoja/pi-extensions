@@ -19,6 +19,21 @@ describe("Sandbox runtime handoff", () => {
     parentBinding.dispose();
   });
 
+  it("snapshots the requested write mode once with the parent state", () => {
+    const parent = host();
+    const child = host();
+    const parentBinding = bindSandboxHost(parent, () => true);
+    prepareSandboxChild(parent, child, "repository-read-only");
+    const snapshot = bindSandboxHost(child, () => false).inherited;
+
+    expect(snapshot).toEqual({
+      enabled: true,
+      writeMode: "repository-read-only",
+    });
+    expect(bindSandboxHost(child, () => false).inherited).toBeUndefined();
+    parentBinding.dispose();
+  });
+
   it("snapshots an enabled parent mode for a child", () => {
     const parent = host();
     const child = host();

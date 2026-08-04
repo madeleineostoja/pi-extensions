@@ -72,7 +72,7 @@ Once no safe work, lease, publication transaction, or projection debt remains, a
 
 ## Protecting the target checkout
 
-The invoking checkout remains orchestrator-owned. Managed agents do not run while integration or publication is active, and publication does not run while managed agents are active. Each worker receives its controlled worktree cwd and initializes its own enabled Sandbox policy there. Planner, review, implementation, revision, repair, and reconciliation workers may directly use `record_papercut` for qualifying incidental friction. It writes only the shared Papercuts personal registry and does not grant source, Git, orchestration, or public-agent controls.
+The invoking checkout remains orchestrator-owned. Managed agents do not run while integration or publication is active, and publication does not run while managed agents are active. Each worker receives its controlled worktree cwd and initializes its own Sandbox policy there. On enabled macOS sessions, planner and every reviewer snapshot repository-read-only mode, protecting their worktree/workspace, worktree Git directory, and common Git directory; implementers, whole-plan repair, revision, and reconciliation retain workspace-write mode. `/sandbox off` affects only later child snapshots. Linux remains instruction-only, and this trusted-agent defense is not hostile-code isolation. Planner, review, implementation, revision, repair, and reconciliation workers may directly use `record_papercut` for qualifying incidental friction. It writes only the shared Papercuts personal registry and does not grant source, Git, orchestration, or public-agent controls.
 
 Before and after managed work, Pipkin verifies:
 

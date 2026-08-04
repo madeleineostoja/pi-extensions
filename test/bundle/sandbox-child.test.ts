@@ -27,7 +27,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const directories: string[] = [];
 
-function captureChildSandboxMode(value: { mode?: boolean }) {
+function captureChildSandboxMode(value: {
+  mode?: { enabled: boolean; writeMode: string };
+}) {
   return (pi: ExtensionAPI): void => {
     pi.on("session_start", () => {
       const probeBus = createEventBus();
@@ -36,7 +38,7 @@ function captureChildSandboxMode(value: { mode?: boolean }) {
         return;
       }
       const probe = bindSandboxHost(probeBus, () => true);
-      value.mode = probe.inheritedEnabled;
+      value.mode = probe.inherited;
       probe.dispose();
       pending.dispose();
     });
@@ -60,7 +62,9 @@ describe("Sandbox child binding", () => {
       content: [{ type: "text" as const, text: "parent executor" }],
       details: undefined,
     }));
-    const childSandbox = {} as { mode?: boolean };
+    const childSandbox = {} as {
+      mode?: { enabled: boolean; writeMode: string };
+    };
     const harness = await createManagedSessionHarness(
       [
         fauxAssistantMessage(
@@ -209,7 +213,10 @@ describe("Sandbox child binding", () => {
         ]),
       );
       expect(childBus).not.toBe(parentBus);
-      expect(childSandbox.mode).toBe(false);
+      expect(childSandbox.mode).toEqual({
+        enabled: false,
+        writeMode: "repository-read-only",
+      });
       await expect(
         executeSandboxBash(childBus, {
           toolCallId: "child-after-shutdown",
@@ -226,13 +233,66 @@ describe("Sandbox child binding", () => {
     }
   });
 
+  it("assembles enabled repository-read-only children without direct mutation tools", async () => {
+    const workspace = mkdtempSync(
+      join(tmpdir(), "pipkin-sandbox-readonly-child-"),
+    );
+    directories.push(workspace);
+    const parentBus = createEventBus();
+    const parentMode = bindSandboxHost(parentBus, () => true);
+    const childSandbox = {} as {
+      mode?: { enabled: boolean; writeMode: string };
+    };
+    const harness = await createManagedSessionHarness(
+      [fauxAssistantMessage("inspection complete")],
+      {
+        extensionFactories: [sandbox, captureChildSandboxMode(childSandbox)],
+      },
+    );
+    const runtime = new SubagentRuntime(
+      { events: parentBus, getActiveTools: () => ["read", "bash"] } as never,
+      {
+        createSession: harness.createSession,
+        modelPresets: {
+          high: {
+            model: `${MANAGED_TEST_PROVIDER}/${MANAGED_TEST_MODEL}`,
+            thinking: "high",
+          },
+        },
+      },
+    );
+
+    try {
+      await expect(
+        runtime.runPublicAgent({
+          type: "Review",
+          prompt: "inspect the checkout",
+          cwd: workspace,
+          ctx: { ...managedSessionContext(harness), cwd: workspace } as never,
+        }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(childSandbox.mode).toEqual({
+        enabled: true,
+        writeMode: "repository-read-only",
+      });
+      const toolNames = harness.sessions[0]!.getAllTools().map(
+        (tool) => tool.name,
+      );
+      expect(toolNames).not.toContain("write");
+      expect(toolNames).not.toContain("edit");
+    } finally {
+      await runtime.dispose();
+      parentMode.dispose();
+    }
+  });
+
   it("loads isolated process runtimes across public, nested, and Implement workers", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "pipkin-process-adoption-"));
     directories.push(workspace);
     const canonicalWorkspace = realpathSync(workspace);
     const parentBus = createEventBus();
     const parentMode = bindSandboxHost(parentBus, () => false);
-    const childModes: boolean[] = [];
+    const childModes: Array<{ enabled: boolean; writeMode: string }> = [];
     const captureMode = (pi: ExtensionAPI): void => {
       pi.on("session_start", () => {
         const probeBus = createEventBus();
@@ -241,8 +301,8 @@ describe("Sandbox child binding", () => {
           return;
         }
         const probe = bindSandboxHost(probeBus, () => true);
-        if (probe.inheritedEnabled !== undefined) {
-          childModes.push(probe.inheritedEnabled);
+        if (probe.inherited !== undefined) {
+          childModes.push(probe.inherited);
         }
         probe.dispose();
         pending.dispose();
@@ -399,7 +459,14 @@ describe("Sandbox child binding", () => {
       expect(harness.sessions).toHaveLength(labels.length);
       expect(new Set(harness.eventBuses).size).toBe(labels.length);
       expect(harness.eventBuses).not.toContain(parentBus);
-      expect(childModes).toEqual(Array(labels.length).fill(false));
+      expect(childModes).toEqual([
+        { enabled: false, writeMode: "repository-read-only" },
+        { enabled: false, writeMode: "repository-read-only" },
+        { enabled: false, writeMode: "repository-read-only" },
+        { enabled: false, writeMode: "repository-read-only" },
+        { enabled: false, writeMode: "workspace-write" },
+        { enabled: false, writeMode: "repository-read-only" },
+      ]);
       for (const [index, session] of harness.sessions.entries()) {
         const label = labels[index]!;
         const result = session.messages.find(

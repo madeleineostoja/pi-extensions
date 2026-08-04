@@ -28,6 +28,7 @@ function fixture() {
     workspaceRoot: realpathSync(workspace),
     temporaryRoots: [],
     cacheRoots: [],
+    dependencyRoots: [],
     writableRoots: [realpathSync(workspace)],
     creationRoots: [],
   });
@@ -86,6 +87,20 @@ describe("Sandbox direct-tool gate", () => {
       ),
     ).toBeUndefined();
     expect(denials.snapshot().count).toBe(0);
+  });
+
+  it("denies repository mutation for enabled repository-read-only children", () => {
+    const { denials, state } = fixture();
+    state.reset(state.policy(), undefined, "repository-read-only");
+    expect(
+      createSandboxToolGate({ state, denials, supportedMac: true })(
+        { toolName: "write", input: { path: "inside.txt" } },
+        {} as never,
+      ),
+    ).toMatchObject({
+      block: true,
+      reason: expect.stringContaining("repository-read-only"),
+    });
   });
 
   it("fails closed after macOS policy initialization failure", () => {

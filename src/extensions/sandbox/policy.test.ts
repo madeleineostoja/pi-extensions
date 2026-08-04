@@ -16,6 +16,7 @@ import {
   SandboxPolicyError,
   resolveSandboxPolicy,
 } from "./policy.js";
+import { sandboxArguments } from "./seatbelt.js";
 
 const directories: string[] = [];
 
@@ -192,8 +193,28 @@ describe("Sandbox policy", () => {
         realpathSync(packageModules),
       ]),
     );
+    expect(policy.dependencyRoots).toEqual(
+      expect.arrayContaining([
+        realpathSync(rootModules),
+        realpathSync(packageModules),
+      ]),
+    );
     expect(policy.writableRoots).not.toContain(realpathSync(root));
     expect(policy.writableRoots).not.toContain(realpathSync(escapedTarget));
+    const readOnlyArguments = sandboxArguments({
+      policy,
+      shell: { shell: "/bin/bash", args: ["-s"] },
+      writeMode: "repository-read-only",
+    });
+    const readOnlyRoots = readOnlyArguments.filter((value) =>
+      /^root\d+=/.test(value),
+    );
+    expect(readOnlyRoots).not.toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(realpathSync(rootModules)),
+        expect.stringContaining(realpathSync(packageModules)),
+      ]),
+    );
   });
 
   it("normalizes the configured and standard temporary roots", async () => {

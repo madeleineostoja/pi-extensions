@@ -157,6 +157,9 @@ export async function spawnValidatedWorker<
     description: args.description,
     cwd: packet.workspace.path,
     ...(completion.readOnly ? { readOnly: true } : {}),
+    sandboxWriteMode: completion.readOnly
+      ? "repository-read-only"
+      : "workspace-write",
     prompt,
     completion: {
       description: completion.description,

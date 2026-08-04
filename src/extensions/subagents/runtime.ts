@@ -21,7 +21,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { completeText, type CompleteTextDeps } from "#lib/complete";
 import { MANAGED_COMPLETION_FINAL_ACTION } from "./managed-completion.js";
 import { parseModelRef } from "#lib/model-ref";
-import { prepareSandboxChild } from "#sandbox/runtime";
+import { prepareSandboxChild, type SandboxWriteMode } from "#sandbox/runtime";
 import type { ModelPreset, ThinkingLevel } from "#lib/config";
 import { Type, type Static, type TSchema } from "typebox";
 import type { Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
@@ -192,6 +192,7 @@ export type RunManagedAgentInput<
   systemPrompt?: string;
   systemPromptMode?: PromptMode;
   rosterVisibility?: RosterVisibility;
+  sandboxWriteMode?: SandboxWriteMode;
   completion?: ManagedCompletion<
     TSchemaValue extends TSchema ? TSchemaValue : TSchema
   >;
@@ -1075,6 +1076,7 @@ export class SubagentRuntime {
         mode: "background",
         ctx,
         signal: timeout.signal,
+        sandboxWriteMode: "repository-read-only",
         owner:
           typeof parent.owner === "object" &&
           parent.owner.kind === "pipkin:implement"
@@ -1355,7 +1357,14 @@ export class SubagentRuntime {
       const promptInput = resolveSystemPromptInput(input);
       const childEventBus = createEventBus();
       releaseSandboxChild = this.pi.events
-        ? prepareSandboxChild(this.pi.events, childEventBus)
+        ? prepareSandboxChild(
+            this.pi.events,
+            childEventBus,
+            input.sandboxWriteMode ??
+              (publicAgentProfile(record.type) || nested
+                ? "repository-read-only"
+                : "workspace-write"),
+          )
         : undefined;
       const resources =
         promptInput || releaseSandboxChild
@@ -1635,7 +1644,11 @@ export class SubagentRuntime {
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         return record.finalization ?? projectSnapshot(record);
       }
-      const prompt = session.prompt(input.prompt, { source: "extension" });
+      const prompt = session.prompt(input.prompt, {
+        source: "extension",
+        // Prompt-template bypass also prevents extension-command expansion here.
+        expandPromptTemplates: false,
+      });
       record.canSteer = true;
       await this.#drainSteering(record);
       await prompt;

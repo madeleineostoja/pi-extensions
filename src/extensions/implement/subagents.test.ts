@@ -135,6 +135,9 @@ describe("managed Pipkin Implement worker tools", () => {
           type: `pipkin:implement:${role}`,
           role,
           ...(readOnly ? { readOnly: true } : {}),
+          sandboxWriteMode: readOnly
+            ? "repository-read-only"
+            : "workspace-write",
           completion: {
             description: completion.description,
             schema: completion.schema,

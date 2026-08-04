@@ -1,8 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { SandboxChildSnapshot, SandboxWriteMode } from "./write-mode.js";
+
+export type { SandboxWriteMode } from "./write-mode.js";
 
 export type SandboxHost = ExtensionAPI["events"];
 
 export type SandboxHostBinding = {
+  inherited: SandboxChildSnapshot | undefined;
+  /** @deprecated Use the complete immutable child snapshot. */
   inheritedEnabled: boolean | undefined;
   dispose: () => void;
 };
@@ -10,11 +15,12 @@ export type SandboxHostBinding = {
 type HostBinding = {
   token: object;
   enabled: () => boolean;
+  writeMode: () => SandboxWriteMode;
 };
 
 type PendingInheritance = {
   token: object;
-  enabled: boolean;
+  snapshot: SandboxChildSnapshot;
 };
 
 type SandboxRuntimeManager = {
@@ -43,14 +49,16 @@ function getRuntimeManager(): SandboxRuntimeManager {
 export function bindSandboxHost(
   host: SandboxHost,
   enabled: () => boolean,
+  writeMode: () => SandboxWriteMode = () => "workspace-write",
 ): SandboxHostBinding {
   const manager = getRuntimeManager();
   const token = {};
   const pending = manager.pendingChildren.get(host);
   manager.pendingChildren.delete(host);
-  manager.hosts.set(host, { token, enabled });
+  manager.hosts.set(host, { token, enabled, writeMode });
   return {
-    inheritedEnabled: pending?.enabled,
+    inherited: pending?.snapshot,
+    inheritedEnabled: pending?.snapshot.enabled,
     dispose() {
       if (manager.hosts.get(host)?.token === token) {
         manager.hosts.delete(host);
@@ -62,6 +70,7 @@ export function bindSandboxHost(
 export function prepareSandboxChild(
   parentHost: SandboxHost,
   childHost: SandboxHost,
+  writeMode?: SandboxWriteMode,
 ): { dispose: () => void } | undefined {
   const manager = getRuntimeManager();
   const parent = manager.hosts.get(parentHost);
@@ -71,7 +80,10 @@ export function prepareSandboxChild(
   const token = {};
   manager.pendingChildren.set(childHost, {
     token,
-    enabled: parent.enabled(),
+    snapshot: Object.freeze({
+      enabled: parent.enabled(),
+      writeMode: writeMode ?? parent.writeMode(),
+    }),
   });
   return {
     dispose() {

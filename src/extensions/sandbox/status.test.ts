@@ -12,6 +12,7 @@ const policy = {
   workspaceRoot: "/workspace",
   temporaryRoots: [],
   cacheRoots: [],
+  dependencyRoots: [],
   writableRoots: ["/workspace"],
   creationRoots: [],
 } as const;

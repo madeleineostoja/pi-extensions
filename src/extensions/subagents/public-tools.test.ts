@@ -980,6 +980,7 @@ describe("public subagent tools", () => {
     ]);
     expect(session.prompt).toHaveBeenCalledWith("do work", {
       source: "extension",
+      expandPromptTemplates: false,
     });
     expect(resourceLoaderConstructions).toHaveLength(1);
     expect(resourceLoaderConstructions[0].options).toEqual({
