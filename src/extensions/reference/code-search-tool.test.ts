@@ -16,7 +16,7 @@ const publicItem = {
 };
 
 describe("code_search", () => {
-  it("assembles validated qualifiers, requests text matches, and filters before normalization", async () => {
+  it("assembles validated qualifiers and normalizes matches visible to the credential", async () => {
     const github = {
       searchRepositories: vi.fn(),
       searchCode: vi.fn(async () => ({
@@ -26,12 +26,14 @@ describe("code_search", () => {
             {
               ...publicItem,
               repository: {
-                private: false,
-                visibility: "internal",
-                owner: { login: "secret" },
-                name: "leak",
+                private: true,
+                visibility: "private",
+                owner: { login: "acme" },
+                name: "private-widget",
               },
-              path: "secret.ts",
+              path: "private.ts",
+              html_url:
+                "https://github.com/acme/private-widget/blob/main/private.ts",
             },
             publicItem,
           ],
@@ -62,8 +64,14 @@ describe("code_search", () => {
       results: Array<Record<string, unknown>>;
     };
     expect(details).toMatchObject({
-      discarded: 1,
+      discarded: 0,
       results: [
+        {
+          rank: 1,
+          repository: "acme/private-widget",
+          revision: "a".repeat(40),
+          path: "private.ts",
+        },
         {
           rank: 2,
           repository: "acme/widget",
@@ -72,7 +80,9 @@ describe("code_search", () => {
         },
       ],
     });
-    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(result.content[0]?.text).toContain(
+      '"repository":"acme/private-widget"',
+    );
     expect(result.content[0]?.text).toContain('"repository":"acme/widget"');
     expect(result.content[0]?.text).toContain(
       '"revision":"' + "a".repeat(40) + '"',
@@ -80,15 +90,15 @@ describe("code_search", () => {
     expect(result.content[0]?.text).toContain('"text":"useWidget()"');
   });
 
-  it("succeeds with an empty list when every result fails public visibility", async () => {
+  it("succeeds with an empty list when every result is malformed", async () => {
     const github = {
       searchCode: vi.fn(async () => ({
         data: {
           total_count: 2,
           incomplete_results: true,
           items: [
-            { repository: { private: true, visibility: "public" } },
-            { repository: { private: false, visibility: "internal" } },
+            { repository: { owner: { login: "acme" }, name: "missing" } },
+            { repository: "malformed" },
           ],
         },
       })),

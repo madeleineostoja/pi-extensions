@@ -26,6 +26,9 @@ describe("bash_outcome", () => {
       "when exit status alone answers the current question",
     );
     expect(definition.description).toContain("immediately recallable");
+    expect(definition.description).toContain(
+      "successful command with no output returns only concise status",
+    );
     expect(definition.promptGuidelines.join(" ")).toContain(
       "Use bash for inspection, discovery, diagnostics",
     );
@@ -67,7 +70,37 @@ describe("bash_outcome", () => {
       content: [
         {
           type: "text",
-          text: 'Bash command succeeded.\nThe Bash result is retained; call context_recall("call-123") to inspect this result rather than repeat the operation.',
+          text: "Bash command succeeded (no output).",
+        },
+      ],
+      details: {
+        retainedResult: {
+          type: "pipkin.context.retained-result",
+          version: 1,
+          result: ordinary,
+        },
+      },
+    });
+  });
+
+  it("keeps recall guidance for successful commands with output", async () => {
+    const ordinary = {
+      content: [{ type: "text", text: "tests passed" }],
+      details: { truncation: { truncated: false } },
+    };
+    executeSandboxBash.mockResolvedValueOnce(ordinary);
+    const { definition } = outcome();
+
+    const result = await definition.execute("call-456", {
+      command: "npm test",
+      label: "Tests",
+    });
+
+    expect(result).toEqual({
+      content: [
+        {
+          type: "text",
+          text: 'Tests succeeded.\nThe Bash result is retained; call context_recall("call-456") to inspect this result rather than repeat the operation.',
         },
       ],
       details: {
@@ -150,6 +183,29 @@ describe("bash_outcome", () => {
     expect(collapsed.trimEnd()).toBe("Build succeeded.");
     expect(collapsed).not.toContain("ordinary output");
     expect(expanded.match(/ordinary output/g)).toHaveLength(1);
+
+    const noOutput = {
+      content: [
+        { type: "text" as const, text: "Build succeeded (no output)." },
+      ],
+      details: {
+        retainedResult: {
+          type: "pipkin.context.retained-result" as const,
+          version: 1 as const,
+          result: {
+            content: [{ type: "text" as const, text: "(no output)" }],
+          },
+        },
+      },
+    };
+    expect(
+      definition
+        .renderResult(noOutput, { expanded: true, isPartial: false }, theme, {
+          isError: false,
+        })
+        .render(120)
+        .join("\n"),
+    ).toContain("(no output)");
     expect(
       definition
         .renderResult(

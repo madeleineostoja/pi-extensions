@@ -67,7 +67,7 @@ Pipkin's first layers are deliberately about control:
 
 ### Context
 
-Long sessions collect a remarkable amount of baggage. **Context Prune** uses deterministic, persisted epochs to replace stale output, superseded and repeated reads, and already-consumed command results with small, reasoned stubs while keeping every original result available through `context_recall`. Choose `bash_outcome` for actions or validations when exit status alone answers the current question; choose `bash` for inspection, diagnostics, or when successful output informs reasoning or reporting. Successful outcomes remain immediately recallable and failures remain visible. Managed process outcomes likewise retain one bounded point-in-time result for recall. Pi remains responsible for context pressure and compaction.
+Long sessions collect a remarkable amount of baggage. **Context Prune** uses deterministic, persisted epochs to replace stale output, superseded and repeated reads, and already-consumed command results with small, reasoned stubs while keeping every original result available through `context_recall`. Choose `bash_outcome` for actions or validations when exit status alone answers the current question; choose `bash` for inspection, diagnostics, or when successful output informs reasoning or reporting. Successful output remains immediately recallable, no-output success stays concise, and failures remain visible. Managed process outcomes likewise retain one bounded point-in-time result for recall. Pi remains responsible for context pressure and compaction.
 
 **[Context →](docs/features/context.md)**
 
@@ -85,11 +85,11 @@ They can run in the foreground or alongside independent parent work, accept stee
 
 ### Reference, code intelligence, and side questions
 
-**Reference** provides bounded `docs`, `package_search`, and `code_search` tools: Context7 documentation with exact-version support, independently ranked Context7/npm/public-GitHub package discovery, and fail-closed public GitHub code matches. It does not inspect the project.
+**Reference** provides bounded `docs`, `package_search`, and `code_search` tools: Context7 documentation with exact-version support, independently ranked Context7/npm/public-GitHub package discovery, and GitHub code matches visible to the configured credential. It does not inspect the project.
 
 **[Reference →](docs/features/reference.md)**
 
-**Web Fetch** provides `web_fetch` and fixed-concurrency `batch_web_fetch` for bounded readable retrieval from direct public URLs. It complements Reference: use `docs` for known-library documentation, `package_search` for package discovery, and `code_search` or the GitHub tool/skill for public GitHub source and repository workflows. Web Fetch has no authentication, proxy, private-network, cache, or caller configuration support; it does not execute page JavaScript, and temporary artifacts remain readable directly only for the live session.
+**Web Fetch** provides `web_fetch` and fixed-concurrency `batch_web_fetch` for bounded readable retrieval from direct public URLs. It complements Reference: use `docs` for known-library documentation, `package_search` for package discovery, and `code_search` or the GitHub tool/skill for GitHub source and repository workflows. Web Fetch has no authentication, proxy, private-network, cache, or caller configuration support; it does not execute page JavaScript, and temporary artifacts remain readable directly only for the live session.
 
 **[Web Fetch →](docs/features/web-fetch.md)**
 
@@ -123,7 +123,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | `/processes`                          | Inspect live output and deliberately stop managed processes          |
 | `docs`                                | Retrieve bounded Context7 documentation                              |
 | `package_search`                      | Discover separately ranked Context7, npm, and public GitHub packages |
-| `code_search`                         | Search bounded observed usage in explicitly public GitHub source     |
+| `code_search`                         | Search bounded GitHub source visible to the configured credential    |
 | `web_fetch`                           | Retrieve bounded readable content from one public URL                |
 | `batch_web_fetch`                     | Retrieve one to eight public URLs with fixed four-worker concurrency |
 | `/agents` / `Agent`                   | Run and operate General, Explore, and Review subagents               |

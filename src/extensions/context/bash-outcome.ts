@@ -26,13 +26,13 @@ export function registerBashOutcomeTool(pi: ExtensionAPI): void {
     name: "bash_outcome",
     label: "bash_outcome",
     description:
-      "Run Bash through Sandbox when exit status alone answers the current question. Successful output remains immediately recallable; failures remain visible.",
+      "Run Bash through Sandbox when exit status alone answers the current question. Successful output remains immediately recallable; a successful command with no output returns only concise status; failures remain visible.",
     promptSnippet:
       "bash_outcome — run an action or validation when exit status alone is enough; recall successful output if needed",
     promptGuidelines: [
       "Use bash_outcome for an action or validation when exit status alone answers the current question, especially when successful output may be noisy. The command may take any finite duration.",
       "Use bash for inspection, discovery, diagnostics, or when successful output informs reasoning or reporting, such as search results, diffs, listings, warnings, skipped tests, or test counts.",
-      "After a successful bash_outcome, use context_recall with its tool-call ID if that execution's output later becomes relevant; do not rerun solely to inspect it. Failure output remains visible, including for chained commands.",
+      "After a successful bash_outcome with output, use context_recall with its tool-call ID if that execution's output later becomes relevant; do not rerun solely to inspect it. A successful command with no output returns only concise status. Failure output remains visible, including for chained commands.",
     ],
     parameters: BashOutcomeParams,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -53,7 +53,13 @@ export function registerBashOutcomeTool(pi: ExtensionAPI): void {
         onUpdate,
         ctx,
       });
-      return retainResult(result, `${label} succeeded.`, toolCallId);
+      const noOutput = isNoOutputResult(result);
+      return retainResult(
+        result,
+        `${label} succeeded${noOutput ? " (no output)" : ""}.`,
+        toolCallId,
+        { includeRecallGuidance: !noOutput },
+      );
     },
     renderCall(args, theme) {
       return new Text(
@@ -98,6 +104,14 @@ export function registerBashOutcomeTool(pi: ExtensionAPI): void {
       );
     },
   });
+}
+
+function isNoOutputResult(result: Readonly<{ content: unknown }>): boolean {
+  return (
+    Array.isArray(result.content) &&
+    result.content.length === 1 &&
+    firstText(result.content) === "(no output)"
+  );
 }
 
 function retainedText(content: unknown): string | undefined {

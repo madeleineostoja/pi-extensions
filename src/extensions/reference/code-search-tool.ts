@@ -16,7 +16,7 @@ export const CodeSearchParameters = Type.Object({
   }),
   repository: Type.Optional(
     Type.String({
-      description: "Exact public GitHub owner/name repository filter.",
+      description: "Exact GitHub owner/name repository filter.",
     }),
   ),
   owner: Type.Optional(
@@ -52,7 +52,7 @@ export function registerCodeSearch(
     name: "code_search",
     label: "code_search",
     description:
-      "Search observed usage in explicitly public GitHub source. Matches are bounded provider excerpts, not proof of correctness, authority, freshness, identity, or repository health.",
+      "Search observed usage in GitHub source visible to the configured credential. Matches are bounded provider excerpts, not proof of correctness, authority, freshness, identity, or repository health.",
     parameters: CodeSearchParameters,
     async execute(_toolCallId, input: CodeSearchInput, signal) {
       return executeCodeSearch(input, signal, { agentDir: agentDir() });
@@ -212,12 +212,10 @@ function buildResult(input: NormalizedInput, payload: unknown): ToolResult {
   let discarded = 0;
   let locallyTruncated = false;
   for (const [index, item] of items.slice(0, input.limit).entries()) {
-    const repository = acceptedPublicRepository(item);
-    if (!repository) {
-      discarded++;
-      continue;
-    }
-    const normalized = normalizeMatch(item, repository, index + 1);
+    const repository = object(object(item)?.repository);
+    const normalized = repository
+      ? normalizeMatch(item, repository, index + 1)
+      : undefined;
     if (normalized) {
       locallyTruncated ||= normalized.truncated;
       results.push(normalized.match);
@@ -242,12 +240,12 @@ function buildResult(input: NormalizedInput, payload: unknown): ToolResult {
       results,
     };
     const text = [
-      `GitHub public code search for: ${input.query}`,
+      `GitHub code search for: ${input.query}`,
       input.qualifiers.length
         ? `Qualifiers: ${input.qualifiers.join(" ")}`
         : "Qualifiers: none",
       `Accepted: ${results.length}; discarded before normalization: ${discarded}${boundedTruncation ? "; results or fields truncated" : ""}.`,
-      "Matches are observed public usage, not proof of correctness, authority, freshness, package identity, or repository health.",
+      "Matches are observed usage visible to the configured GitHub credential, not proof of correctness, authority, freshness, package identity, or repository health.",
       ...results.map((result) => JSON.stringify(result)),
     ].join("\n");
     return { content: [{ type: "text" as const, text }], details };
@@ -262,17 +260,6 @@ function buildResult(input: NormalizedInput, payload: unknown): ToolResult {
   return result();
 }
 
-function acceptedPublicRepository(
-  value: unknown,
-): Record<string, unknown> | undefined {
-  const item = object(value);
-  const repository = item && object(item.repository);
-  return repository?.private === false &&
-    typeof repository.visibility === "string" &&
-    repository.visibility.toLocaleLowerCase() === "public"
-    ? repository
-    : undefined;
-}
 function normalizeMatch(
   value: unknown,
   repository: Record<string, unknown>,

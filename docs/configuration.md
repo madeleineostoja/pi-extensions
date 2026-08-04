@@ -52,7 +52,7 @@ Pi still owns model credentials and its `settings.json`. Keep API keys out of th
 
 ## Reference credentials
 
-Reference optionally reads `<getAgentDir()>/pipkin/auth.json`, separate from `config.json`. Its bounded JSON object recognizes only optional non-empty string fields named `context7` and `github`; unrelated keys are ignored. Use `context7` for Context7 and a dedicated least-privilege `github` token limited to public repository and code search. Reference never reads GitHub CLI, repository, npm, or environment credentials.
+Reference optionally reads `<getAgentDir()>/pipkin/auth.json`, separate from `config.json`. Its bounded JSON object recognizes only optional non-empty string fields named `context7` and `github`; unrelated keys are ignored. Use `context7` for Context7 and a dedicated least-privilege `github` token. The token's repository access defines the scope of `code_search`, including private or internal source when permitted; `package_search` explicitly requests public repositories. Reference never reads GitHub CLI, repository, npm, or environment credentials.
 
 Do not place real credentials in documentation, repository files, or tool inputs.
 

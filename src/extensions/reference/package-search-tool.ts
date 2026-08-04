@@ -276,12 +276,12 @@ async function githubProvider(
     let discarded = 0;
     let locallyTruncated = false;
     for (const [index, item] of items.slice(0, limit).entries()) {
-      const repository = acceptedPublicRepository(item);
+      const repository = object(item);
       if (!repository) {
         discarded++;
         continue;
       }
-      const normalized = normalizeRepository(item, repository, index + 1);
+      const normalized = normalizeRepository(repository, index + 1);
       if (normalized) {
         locallyTruncated ||= repositoryFieldsWereShortened(repository);
         results.push(normalized);
@@ -306,19 +306,7 @@ async function githubProvider(
   }
 }
 
-function acceptedPublicRepository(
-  value: unknown,
-): Record<string, unknown> | undefined {
-  const repository = object(value);
-  return repository?.private === false &&
-    typeof repository.visibility === "string" &&
-    repository.visibility.toLocaleLowerCase() === "public"
-    ? repository
-    : undefined;
-}
-
 function normalizeRepository(
-  _value: unknown,
   repository: Record<string, unknown>,
   rank: number,
 ): GithubRepository | undefined {

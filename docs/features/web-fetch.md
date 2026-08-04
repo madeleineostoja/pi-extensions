@@ -14,6 +14,6 @@ There is no JavaScript execution, crawling, ordinary linked-asset retrieval, aut
 
 Artifacts live in one private, unpredictable session-temporary directory and are deleted when the session shuts down. Copy a returned artifact path during the live session if it must persist. A later direct `read` can inspect that canonical path without another mechanism. Artifact writes are trusted Web Fetch extension writes beneath its own temporary directory: they are outside Sandbox and are not routed through Readonly's separate public `edit`/`write` mediation.
 
-Use Web Fetch for direct public URL retrieval. Use Reference's `docs` for known-library documentation, `package_search` for package discovery, and `code_search` or the GitHub tool/skill for public GitHub source and repository workflows. No tool automatically falls back to another.
+Use Web Fetch for direct public URL retrieval. Use Reference's `docs` for known-library documentation, `package_search` for package discovery, and `code_search` or the GitHub tool/skill for GitHub source and repository workflows. No tool automatically falls back to another.
 
 If you separately installed `pi-smart-fetch`, remove it before reloading Pipkin so its external tool registration does not collide with Pipkin's Web Fetch tools.

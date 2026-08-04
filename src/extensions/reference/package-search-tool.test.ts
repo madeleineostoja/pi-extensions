@@ -33,13 +33,12 @@ describe("package_search", () => {
           items: [
             {
               private: true,
-              visibility: "public",
+              visibility: "private",
               owner: { login: "private" },
-              name: "leak",
+              name: "malformed",
             },
             {
-              private: false,
-              visibility: "PUBLIC",
+              visibility: null,
               owner: { login: "acme" },
               name: "widget",
               html_url: "https://github.com/acme/widget",
@@ -84,6 +83,9 @@ describe("package_search", () => {
       "omitted provider fields or results",
     );
     expect(context.search).toHaveBeenCalledWith("widget", "widget", 2);
+    expect(github.searchRepositories).toHaveBeenCalledWith(
+      expect.objectContaining({ q: "widget is:public", per_page: 2 }),
+    );
   });
 
   it("wraps successful npm results in the npm provider group and renders them", async () => {

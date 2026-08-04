@@ -25,7 +25,10 @@ export function retainResult(
   result: Readonly<{ content: unknown; details?: unknown }>,
   summary: string,
   toolCallId: string,
-  options: Readonly<{ label?: string }> = {},
+  options: Readonly<{
+    label?: string;
+    includeRecallGuidance?: boolean;
+  }> = {},
 ): { content: TextBlock[]; details: { retainedResult: RetainedEnvelope } } {
   const retained = validateResult(result);
   const label = options.label ?? "Bash";
@@ -40,13 +43,12 @@ export function retainResult(
   if (encodedBytes(envelope) > MAX_ENVELOPE_BYTES) {
     throw new Error("Invalid retained result");
   }
+  const guidance =
+    options.includeRecallGuidance === false
+      ? ""
+      : `\nThe ${label} result is retained; call context_recall("${toolCallId}") to inspect this result rather than repeat the operation.`;
   return {
-    content: [
-      {
-        type: "text",
-        text: `${summary}\nThe ${label} result is retained; call context_recall("${toolCallId}") to inspect this result rather than repeat the operation.`,
-      },
-    ],
+    content: [{ type: "text", text: `${summary}${guidance}` }],
     details: { retainedResult: envelope },
   };
 }

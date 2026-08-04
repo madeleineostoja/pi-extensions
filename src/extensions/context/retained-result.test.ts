@@ -30,6 +30,23 @@ describe("retained result", () => {
     expect(hasRetainedResult(retained.details)).toBe(true);
   });
 
+  it("can omit recall guidance without changing the retained envelope", () => {
+    const ordinary = {
+      content: [{ type: "text" as const, text: "(no output)" }],
+    };
+    const retained = retainResult(
+      ordinary,
+      "Build succeeded (no output).",
+      "call-123",
+      { includeRecallGuidance: false },
+    );
+
+    expect(retained.content).toEqual([
+      { type: "text", text: "Build succeeded (no output)." },
+    ]);
+    expect(decodeRetainedResult(retained.details)).toEqual(ordinary);
+  });
+
   it("uses a source-owned label without changing Bash defaults", () => {
     const retained = retainResult(
       { content: [{ type: "text", text: "process output" }] },
