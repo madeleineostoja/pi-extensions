@@ -21,6 +21,7 @@ import {
   MANAGED_COMPLETION_TOOL_NAME,
   SubagentRuntime,
 } from "#subagents/runtime";
+import { MANAGED_COMPLETION_FINAL_ACTION } from "#subagents/completion";
 import { afterEach, describe, expect, it } from "vitest";
 import { within } from "./test-boundary.js";
 import {
@@ -89,17 +90,21 @@ describe("Implement managed runtime integration", () => {
   });
 
   it("runs a typed reviewer completion through a real managed child", async () => {
+    let assembledProviderInput = "";
     const harness = await createManagedSessionHarness([
-      fauxAssistantMessage(
-        fauxToolCall(
-          MANAGED_COMPLETION_TOOL_NAME,
-          {
-            findings: [],
-            publicationCommitSubject: "feat: publish workstream",
-          },
-          { id: "completion" },
-        ),
-      ),
+      (context) => {
+        assembledProviderInput = JSON.stringify(context);
+        return fauxAssistantMessage(
+          fauxToolCall(
+            MANAGED_COMPLETION_TOOL_NAME,
+            {
+              findings: [],
+              publicationCommitSubject: "feat: publish workstream",
+            },
+            { id: "completion" },
+          ),
+        );
+      },
     ]);
     const extension = pi();
     const runtime = new SubagentRuntime(extension as never, {
@@ -155,6 +160,11 @@ describe("Implement managed runtime integration", () => {
       thinking: "high",
     });
     expect(harness.sessions).toHaveLength(1);
+    expect(
+      assembledProviderInput.match(
+        new RegExp(MANAGED_COMPLETION_FINAL_ACTION, "g"),
+      ),
+    ).toHaveLength(1);
     await runtime.dispose();
   });
 

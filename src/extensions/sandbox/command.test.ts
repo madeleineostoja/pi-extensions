@@ -118,6 +118,39 @@ describe("Sandbox command", () => {
     );
   });
 
+  it("reports repository-read-only effective authorities rather than base workspace writes", () => {
+    const state = createSandboxSessionState();
+    const denials = createSandboxDenialRecorder();
+    state.reset(
+      {
+        ...policy,
+        git: {
+          worktreeRoot: "/workspace",
+          worktreeGitDir: "/workspace/.git",
+          commonGitDir: "/git-common",
+        },
+        dependencyRoots: ["/workspace/node_modules"],
+        writableRoots: [
+          "/workspace",
+          "/workspace/.git",
+          "/git-common",
+          "/workspace/node_modules",
+          "/temporary",
+          "/cache",
+        ],
+      },
+      undefined,
+      "repository-read-only",
+    );
+
+    expect(sandboxPanelDetail(state, true, denials)).toBe(
+      "State: on (repository-read-only child)\n" +
+        "Direct write/edit scope: repository mutation denied\n" +
+        "Sandbox Bash write scopes:\n  /temporary\n  /cache\n" +
+        "Confirmed denials: 0",
+    );
+  });
+
   it("opens only a TUI custom panel and reports a bounded non-TUI fallback", async () => {
     const fixture = commandFixture(true);
     await fixture.handler("", fixture.ctx);

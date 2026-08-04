@@ -19,7 +19,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { completeText, type CompleteTextDeps } from "#lib/complete";
-import { MANAGED_COMPLETION_FINAL_ACTION } from "./managed-completion.js";
 import { parseModelRef } from "#lib/model-ref";
 import { prepareSandboxChild, type SandboxWriteMode } from "#sandbox/runtime";
 import type { ModelPreset, ThinkingLevel } from "#lib/config";
@@ -1714,7 +1713,6 @@ export class SubagentRuntime {
       description: completion.definition.description,
       promptSnippet:
         "Complete the managed task with its required structured result.",
-      promptGuidelines: [MANAGED_COMPLETION_FINAL_ACTION],
       parameters: completion.definition.schema,
       executionMode: "sequential",
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {

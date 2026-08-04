@@ -127,9 +127,33 @@ export async function executeDocs(
         truncations: document.truncations ?? [],
       },
     );
+  } catch (error) {
+    throw neutralDocumentationError(error);
   } finally {
     transport.dispose();
   }
+}
+
+function neutralDocumentationText(value: string): string {
+  return value.replace(/context7/giu, "documentation provider");
+}
+
+function visibleLocation(location: string | undefined): string | undefined {
+  return location && !/context7/iu.test(location) ? location : undefined;
+}
+
+function neutralDocumentationError(error: unknown): Error {
+  if (error instanceof Context7Error) {
+    return new Context7Error(
+      error.kind,
+      neutralDocumentationText(error.message),
+    );
+  }
+  if (error instanceof Error) {
+    error.message = neutralDocumentationText(error.message);
+    return error;
+  }
+  return new Error("The documentation request failed.");
 }
 
 type NormalizedInput = { subject: string; question: string; version?: string };
@@ -304,9 +328,14 @@ function buildResult(
       : []),
     ...resolved.warnings,
     ...activity.truncations,
-  ].slice(0, LIMITS.warnings);
+  ]
+    .map(neutralDocumentationText)
+    .slice(0, LIMITS.warnings);
   const locations = snippets
-    .flatMap((snippet) => (snippet.location ? [snippet.location] : []))
+    .flatMap((snippet) => {
+      const location = visibleLocation(snippet.location);
+      return location ? [location] : [];
+    })
     .slice(0, LIMITS.detailsLocations);
   const details: Record<string, unknown> = {
     provider: "documentation",
@@ -374,7 +403,8 @@ function render(
       break;
     }
     const title = snippet.title ?? "Documentation snippet";
-    const source = snippet.location ? ` (${snippet.location})` : "";
+    const location = visibleLocation(snippet.location);
+    const source = location ? ` (${location})` : "";
     const language = snippet.language ? ` [${snippet.language}]` : "";
     lines.push(`\n${index + 1}. ${title}${language}${source}\n${snippet.text}`);
   }

@@ -20,7 +20,6 @@ import {
   SubagentRuntime,
   serializeInspectionForSummary,
 } from "./runtime.js";
-import { MANAGED_COMPLETION_FINAL_ACTION } from "./managed-completion.js";
 
 type Message = {
   customType?: string;
@@ -106,7 +105,6 @@ function completionTool(options: unknown): {
   description?: string;
   executionMode?: string;
   parameters: unknown;
-  promptGuidelines?: string[];
   execute: (...args: any[]) => Promise<unknown>;
 } {
   const customTools = (options as { customTools?: unknown[] }).customTools;
@@ -121,7 +119,6 @@ function completionTool(options: unknown): {
     description?: string;
     executionMode?: string;
     parameters: unknown;
-    promptGuidelines?: string[];
     execute: (...args: any[]) => Promise<unknown>;
   };
 }
@@ -1133,9 +1130,7 @@ describe("SubagentRuntime", () => {
       status: "completed",
       result: { result: "accepted" },
     });
-    expect(completionTool(options).promptGuidelines).toEqual([
-      MANAGED_COMPLETION_FINAL_ACTION,
-    ]);
+    expect(completionTool(options)).not.toHaveProperty("promptGuidelines");
   });
 
   it("retries a schema-rejected completion through Pi's sequential agent loop", async () => {
