@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { npmEnvironment, searchNpm } from "./npm.js";
+import { NpmError, npmEnvironment, searchNpm } from "./npm.js";
 
 describe("npm package search boundary", () => {
   it("uses fixed argv, isolated cwd/config, minimal environment, and removes temporary state", async () => {
@@ -67,11 +67,13 @@ describe("npm package search boundary", () => {
         run: (() => child(0, "not json")) as never,
       }),
     ).rejects.toThrow("malformed");
-    await expect(
-      searchNpm("widget", 1, new AbortController().signal, {
-        run: (() => child(1, "[]")) as never,
-      }),
-    ).rejects.toThrow("failed");
+    const unavailable = searchNpm("widget", 1, new AbortController().signal, {
+      run: (() => child(1, "[]")) as never,
+    });
+    await expect(unavailable).rejects.toMatchObject({
+      kind: "unavailable",
+      message: "npm search is temporarily unavailable.",
+    } satisfies Partial<NpmError>);
   });
 
   it("terminates the process when cancellation arrives during execution", async () => {

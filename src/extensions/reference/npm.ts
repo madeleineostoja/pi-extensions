@@ -22,7 +22,7 @@ type NpmRun = (
 export class NpmError extends Error {
   constructor(
     readonly kind:
-      | "provider"
+      | "unavailable"
       | "malformed"
       | "oversized"
       | "timeout"
@@ -67,7 +67,7 @@ export async function searchNpm(
       join(tmpdir(), "pipkin-npm-"),
     );
   } catch {
-    throw new NpmError("provider", "npm search temporary setup failed.");
+    throw new NpmError("unavailable", "npm search temporary setup failed.");
   }
   let primaryError: unknown;
   const userconfig = join(directory, "user.npmrc");
@@ -80,7 +80,7 @@ export async function searchNpm(
         (dependencies.writeConfig ?? writeFile)(globalconfig, ""),
       ]);
     } catch {
-      throw new NpmError("provider", "npm search temporary setup failed.");
+      throw new NpmError("unavailable", "npm search temporary setup failed.");
     }
     const args = [
       "search",
@@ -109,7 +109,7 @@ export async function searchNpm(
         forceKillAfterDelay: 1_000,
       });
     } catch {
-      throw new NpmError("provider", "npm search could not be started.");
+      throw new NpmError("unavailable", "npm search could not be started.");
     }
     const stop = () => child.kill("SIGTERM");
     signal.addEventListener("abort", stop, { once: true });
@@ -126,7 +126,10 @@ export async function searchNpm(
           "npm search output exceeded the supported size limit.",
         );
       }
-      throw new NpmError("provider", "npm search failed.");
+      throw new NpmError(
+        "unavailable",
+        "npm search is temporarily unavailable.",
+      );
     } finally {
       signal.removeEventListener("abort", stop);
     }
@@ -143,7 +146,10 @@ export async function searchNpm(
       );
     }
     if (completed.exitCode !== 0) {
-      throw new NpmError("provider", "npm search failed.");
+      throw new NpmError(
+        "unavailable",
+        "npm search is temporarily unavailable.",
+      );
     }
     return parseNpm(completed.stdout, limit);
   } catch (error) {
@@ -167,7 +173,7 @@ async function cleanupDirectory(
     await removeDirectory(directory, { force: true, recursive: true });
   } catch {
     if (primaryError === undefined) {
-      throw new NpmError("provider", "npm search temporary cleanup failed.");
+      throw new NpmError("unavailable", "npm search temporary cleanup failed.");
     }
   }
 }

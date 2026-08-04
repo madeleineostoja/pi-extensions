@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { executePackageSearch } from "./package-search-tool.js";
 import type { Context7Transport } from "./context7.js";
 import type { GithubSearchClient } from "./github.js";
+import { NpmError } from "./npm.js";
 
 describe("package_search", () => {
   it("keeps provider order and native ranks while preserving a failed provider", async () => {
@@ -58,7 +59,10 @@ describe("package_search", () => {
       {
         context: () => context,
         npm: async () => {
-          throw new Error("npm unavailable");
+          throw new NpmError(
+            "unavailable",
+            "npm search is temporarily unavailable.",
+          );
         },
         github: () => github,
       },
@@ -70,7 +74,11 @@ describe("package_search", () => {
       "github",
     ]);
     expect(groups[0]).toMatchObject({ truncated: true });
-    expect(groups[1]).toMatchObject({ status: "error", results: [] });
+    expect(groups[1]).toMatchObject({
+      status: "error",
+      errorKind: "unavailable",
+      results: [],
+    });
     expect(groups[2]).toMatchObject({
       discarded: 1,
       truncated: true,
@@ -82,6 +90,10 @@ describe("package_search", () => {
     expect(result.content[0]?.text).toContain(
       "omitted provider fields or results",
     );
+    expect(result.content[0]?.text).toContain(
+      "verify a candidate from another provider with `npm view`",
+    );
+    expect(result.content[0]?.text).toContain("npm (error [unavailable]");
     expect(context.search).toHaveBeenCalledWith("widget", "widget", 2);
     expect(github.searchRepositories).toHaveBeenCalledWith(
       expect.objectContaining({ q: "widget is:public", per_page: 2 }),
@@ -121,6 +133,12 @@ describe("package_search", () => {
       results: [{ rank: 1, name: "widget" }],
     });
     expect(result.content[0]?.text).toContain('"name":"widget"');
+    expect(result.content[0]?.text).toContain(
+      "similarly named discovery candidates",
+    );
+    expect(result.content[0]?.text).toContain(
+      "Use an exact package name with `npm view`",
+    );
   });
 
   it("does not construct providers for an already-cancelled invocation", async () => {

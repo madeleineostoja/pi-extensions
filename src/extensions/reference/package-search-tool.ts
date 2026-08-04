@@ -15,7 +15,7 @@ import {
   type GithubSearchClient,
 } from "./github.js";
 import { createReferenceInvocation } from "./invocation.js";
-import { searchNpm, type NpmPackage } from "./npm.js";
+import { NpmError, searchNpm, type NpmPackage } from "./npm.js";
 
 export const PackageSearchParameters = Type.Object({
   query: Type.String({
@@ -34,6 +34,7 @@ type Group<T> = {
   status: "ok" | "error";
   results: T[];
   error?: string;
+  errorKind?: "unavailable" | "malformed" | "oversized";
   discarded?: number;
   truncated?: boolean;
 };
@@ -367,6 +368,7 @@ function buildResult(
     const text = [
       `Package discovery for: ${input.query}`,
       "Context7 documentation availability, npm publication data, and public GitHub repositories are separately ranked provider signals; they are not matched, compared, or recommendations.",
+      npmGuidance(groups[1]),
       ...groups.map(renderGroup),
     ].join("\n");
     return { content: [{ type: "text" as const, text }], details };
@@ -382,8 +384,17 @@ function buildResult(
   return result();
 }
 
+function npmGuidance(group: Group<NpmPackage>): string {
+  return group.status === "ok"
+    ? "npm results are query-ranked, similarly named discovery candidates, not verified identity matches. Use an exact package name with `npm view` for manifests, dependencies, platform support, and publication metadata."
+    : "npm discovery failed. Retry with a simpler or exact package-name query, or verify a candidate from another provider with `npm view`.";
+}
+
 function renderGroup(group: Group<unknown>): string {
-  const state = group.status === "ok" ? "ok" : `error: ${group.error}`;
+  const state =
+    group.status === "ok"
+      ? "ok"
+      : `error${group.errorKind ? ` [${group.errorKind}]` : ""}: ${group.error}`;
   const notices = [
     group.discarded ? `${group.discarded} discarded` : undefined,
     group.truncated
@@ -428,15 +439,34 @@ function strictText(value: unknown, maximum: number): string | undefined {
 }
 
 function errorGroup(provider: Provider, error: unknown): Group<never> {
+  const npmKind = provider === "npm" ? npmErrorKind(error) : undefined;
   return {
     provider,
     status: "error",
     results: [],
+    ...(npmKind ? { errorKind: npmKind } : {}),
     error: boundedError(
       error instanceof Error ? error.message : `${provider} search failed.`,
     ),
   };
 }
+
+function npmErrorKind(
+  error: unknown,
+): "unavailable" | "malformed" | "oversized" | undefined {
+  if (!(error instanceof NpmError)) {
+    return undefined;
+  }
+  switch (error.kind) {
+    case "unavailable":
+    case "malformed":
+    case "oversized":
+      return error.kind;
+    default:
+      return undefined;
+  }
+}
+
 function object(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
