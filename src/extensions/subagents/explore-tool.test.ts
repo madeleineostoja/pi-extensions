@@ -76,7 +76,7 @@ describe("runtime-injected explore tool", () => {
     const runtime = new SubagentRuntime(makePi() as never);
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "General",
+      type: "Worker",
       description: "general",
       cwd: "/workspace",
     });
@@ -109,7 +109,7 @@ describe("runtime-injected explore tool", () => {
     });
 
     await runtime.runPublicAgent({
-      type: "General",
+      type: "Review",
       prompt: "work",
       cwd: "/workspace",
       ctx: makeCtx() as never,
@@ -361,7 +361,7 @@ describe("runtime-injected explore tool", () => {
     });
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "General",
+      type: "Worker",
       description: "general",
       cwd: "/workspace",
     });
@@ -390,7 +390,7 @@ describe("runtime-injected explore tool", () => {
     });
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "General",
+      type: "Worker",
       description: "general",
       cwd: "/workspace",
     });
@@ -429,7 +429,7 @@ describe("runtime-injected explore tool", () => {
     });
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "General",
+      type: "Worker",
       description: "general",
       cwd: "/workspace",
     });
@@ -479,7 +479,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "General",
+        type: "Worker",
         description: "general",
         cwd: "/workspace",
       });
@@ -527,7 +527,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "General",
+        type: "Worker",
         description: "general",
         cwd: "/workspace",
       });
@@ -571,7 +571,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "General",
+        type: "Worker",
         description: "general",
         cwd: "/workspace",
       });
@@ -633,7 +633,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "General",
+        type: "Worker",
         description: "general",
         cwd: "/workspace",
       });
@@ -694,7 +694,7 @@ describe("runtime-injected explore tool", () => {
     });
     const nestedParent = runtime.queue({
       owner: { kind: "nested", parentId: exploreParent.id, tool: "explore" },
-      type: "General",
+      type: "Worker",
       description: "nested",
       cwd: "/workspace",
     });

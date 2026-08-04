@@ -29,15 +29,8 @@ describe("bash_outcome", () => {
     expect(definition.description).toContain(
       "successful command with no output returns only concise status",
     );
-    expect(definition.promptGuidelines.join(" ")).toContain(
-      "Use bash for inspection, discovery, diagnostics",
-    );
-    expect(definition.promptGuidelines.join(" ")).toContain(
-      "do not rerun solely to inspect it",
-    );
-    expect(definition.promptGuidelines.join(" ")).toContain(
-      "including for chained commands",
-    );
+    expect(definition.promptSnippet).toBeUndefined();
+    expect(definition.promptGuidelines).toBeUndefined();
   });
 
   it("retains the ordinary Bash result and returns only concise success", async () => {

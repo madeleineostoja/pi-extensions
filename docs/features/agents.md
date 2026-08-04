@@ -1,16 +1,15 @@
 # Agents
 
-Pipkin gives the main agent a small team without turning every task into orchestration. Explore can map an unfamiliar subsystem, Review can approach a diff without the implementer's assumptions, and General can own a genuinely separate piece of work.
+Pipkin gives the main agent a small team without turning every task into orchestration. Explore can map an unfamiliar subsystem and Review can approach a diff without the implementer's assumptions.
 
-All three run through the `Agent` tool and can be operated from `/agents`.
+Both run through the `Agent` tool and can be operated from `/agents`.
 
 ## Choose the right agent
 
-| Agent       | Best use                                                                                                |
-| ----------- | ------------------------------------------------------------------------------------------------------- |
-| **Explore** | Multi-step codebase discovery, symbol tracing, usage analysis, and subsystem mapping                    |
-| **Review**  | An independent second pass over a concrete diff, commit, patch, or completed implementation             |
-| **General** | Bounded research, synthesis, or non-overlapping work where separate ownership or real concurrency helps |
+| Agent       | Best use                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------- |
+| **Explore** | Multi-step codebase discovery, symbol tracing, usage analysis, and subsystem mapping        |
+| **Review**  | An independent second pass over a concrete diff, commit, patch, or completed implementation |
 
 Use `lsp` directly for one known-symbol question and ordinary reads for one or two obvious files. Keep routine implementation, iterative debugging, tests, and verification in the primary session. Delegation is useful when it creates a clean ownership boundary—not merely because the parent context is getting long.
 
@@ -78,9 +77,9 @@ Nested Explore runs created by managed Pipkin workflows use the same runtime and
 
 ## Context and tool boundaries
 
-Subagents inherit the parent extension environment and active tools, except public agent tools (`Agent`, `get_subagent_result`, and `steer_subagent`) are withheld to prevent recursive fan-out. General, Explore, and Review may also use `record_papercut` for qualifying incidental friction. It is the sole controlled personal-metadata write: it does not permit source, dependency, or Git changes. Where Bash remains active, General and Implement mutable workers inherit managed-process tools, while Explore, Review, and Bash-enabled read-only workers select them from their explicit allowlists. `start_process` is withheld without Bash; `get_process_result` and `stop_process` remain available for existing records after Bash is disabled. Where Bash is available, `bash_outcome` and `context_recall` are available with it: choose the outcome tool for an action or validation when exit status alone answers the current question, regardless of finite duration. Use Bash for inspection, discovery, diagnostics, or when successful output informs reasoning or reporting. Successful output remains immediately recallable under ordinary Bash limits, no-output success stays concise, and failures stay visible. A child's retained Bash output belongs only to that in-memory child session for its lifetime; its final answer is the parent-visible handoff.
+Subagents inherit the parent extension environment and active tools, except public agent tools (`Agent`, `get_subagent_result`, and `steer_subagent`) are withheld to prevent recursive fan-out. Explore and Review may also use `record_papercut` for qualifying incidental friction. It is the sole controlled personal-metadata write: it does not permit source, dependency, or Git changes. Where Bash remains active, Implement mutable workers inherit managed-process tools, while Explore, Review, and Bash-enabled read-only workers select them from their explicit allowlists. `start_process` is withheld without Bash; `get_process_result` and `stop_process` remain available for existing records after Bash is disabled. Where Bash is available, `bash_outcome` and `context_recall` are available with it: choose the outcome tool for an action or validation when exit status alone answers the current question, regardless of finite duration. Use Bash for inspection, discovery, diagnostics, or when successful output informs reasoning or reporting. Successful output remains immediately recallable under ordinary Bash limits, no-output success stays concise, and failures stay visible. A child's retained Bash output belongs only to that in-memory child session for its lifetime; its final answer is the parent-visible handoff.
 
-Explore and Review retain shell access for discovery and checks. Their read-only behavior is a trusted-model instruction, not technical confinement.
+Explore and Review retain shell access for discovery and checks. Repository preservation is a role contract; it is not technical confinement.
 
 Public subagents share the invoking session's filesystem and **do not receive isolated Git worktrees**. Each child resolves Sandbox policy from its own runtime cwd and snapshots the invoking session's current Sandbox mode when spawned. Turning Sandbox off affects later children but does not change children already running. Do not edit files that a child currently owns. If implementation needs strong workspace separation and publication control, use [Implement](implementation.md), whose trusted managed workers run in owned disposable worktrees.
 
@@ -88,7 +87,6 @@ Public subagents share the invoking session's filesystem and **do not receive is
 
 - Explore uses the `low` preset.
 - Review uses the `high` preset.
-- General inherits the parent model and thinking.
 - Explicit `model` or `thinking` arguments apply to one invocation.
 
 Implement uses the same runtime internally, routing planner and reviewer work to `high` and implementation, revision, repair, and reconciliation work to `medium`. See [Configuration](../configuration.md).

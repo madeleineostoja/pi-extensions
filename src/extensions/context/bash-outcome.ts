@@ -27,13 +27,6 @@ export function registerBashOutcomeTool(pi: ExtensionAPI): void {
     label: "bash_outcome",
     description:
       "Run Bash through Sandbox when exit status alone answers the current question. Successful output remains immediately recallable; a successful command with no output returns only concise status; failures remain visible.",
-    promptSnippet:
-      "bash_outcome — run an action or validation when exit status alone is enough; recall successful output if needed",
-    promptGuidelines: [
-      "Use bash_outcome for an action or validation when exit status alone answers the current question, especially when successful output may be noisy. The command may take any finite duration.",
-      "Use bash for inspection, discovery, diagnostics, or when successful output informs reasoning or reporting, such as search results, diffs, listings, warnings, skipped tests, or test counts.",
-      "After a successful bash_outcome with output, use context_recall with its tool-call ID if that execution's output later becomes relevant; do not rerun solely to inspect it. A successful command with no output returns only concise status. Failure output remains visible, including for chained commands.",
-    ],
     parameters: BashOutcomeParams,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       if (!pi.getActiveTools().includes("bash")) {

@@ -3,10 +3,7 @@ import type { ModelPreset } from "#lib/config";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import type { ForegroundInterruptGuard } from "./foreground-interrupt.js";
-import {
-  AGENT_PROMPT_GUIDELINES,
-  PUBLIC_BUILTIN_TYPES,
-} from "./agent-profiles.js";
+import { PUBLIC_BUILTIN_TYPES } from "./agent-profiles.js";
 import type { SubagentRuntime } from "./runtime.js";
 import {
   renderAgentCall,
@@ -15,7 +12,7 @@ import {
 } from "./tool-rendering.js";
 
 const PublicAgentType = StringEnum(PUBLIC_BUILTIN_TYPES, {
-  description: "General, Explore, or Review subagent type.",
+  description: "Explore or Review subagent type.",
 });
 
 const Thinking = StringEnum([
@@ -58,12 +55,6 @@ export function resolveAgentSelection(
   configPath: string,
   presets: Readonly<Partial<Record<"low" | "high", ModelPreset>>>,
 ): { model?: string; thinking?: PublicAgentParams["thinking"] } {
-  if (type === "General") {
-    return {
-      ...(model === undefined ? {} : { model }),
-      ...(thinking === undefined ? {} : { thinking }),
-    };
-  }
   if (model !== undefined && thinking !== undefined) {
     return { model, thinking };
   }
@@ -96,8 +87,7 @@ export function registerPublicAgentTools({
     name: "Agent",
     label: "Agent",
     description:
-      "Run a General, Explore, or Review subagent. Defaults to foreground. Use background only when concrete independent work can proceed before the result is needed; otherwise use foreground.",
-    promptGuidelines: AGENT_PROMPT_GUIDELINES,
+      "Run an Explore or Review subagent. Defaults to foreground. Use background only when concrete independent work can proceed before the result is needed; otherwise use foreground.",
     parameters: PublicAgentParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const mode = params.mode ?? "foreground";

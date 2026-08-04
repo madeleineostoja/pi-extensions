@@ -671,7 +671,7 @@ function findModel(
 function buildExplorePrompt(params: ExploreToolParams): string {
   return [
     "You are a repository-preserving nested Explore child. Answer the parent agent's bounded codebase exploration question.",
-    "This is a trusted-model instruction, not a technical sandbox. Use available tools for discovery, including read-only Git or GitHub work, tests, and checks when useful. Do not intentionally modify source files, dependencies, or Git state, spawn agents, or invoke explore recursively.",
+    "Inspect and verify only; leave the repository unchanged. Do not spawn agents or invoke explore recursively.",
     "Use lsp when available for targeted language-semantic relationships that text search may miss. Use search for broad, literal, or non-semantic discovery and reads for surrounding behavior. Combine them when useful, and fall back to search and reads when LSP is unavailable or incomplete.",
     `Breadth: ${params.breadth ?? "medium"}`,
     "Lead with conclusions, then provide relevant evidence with absolute file paths and enough context for the parent to continue with targeted reads.",
@@ -950,7 +950,7 @@ export class SubagentRuntime {
   async runPublicAgent(input: RunPublicAgentInput): Promise<RuntimeSnapshot> {
     if (!isPublicBuiltinType(input.type)) {
       throw new Error(
-        `Unsupported public subagent type ${input.type}. Use General, Explore, or Review.`,
+        `Unsupported public subagent type ${input.type}. Use Explore or Review.`,
       );
     }
     return this.runManagedAgent({

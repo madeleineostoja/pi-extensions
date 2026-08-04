@@ -60,10 +60,8 @@ describe("context_recall", () => {
     expect(definition.description).toContain(
       "retained by an outcome tool or hidden behind a Context pruning stub",
     );
-    expect(definition.promptSnippet).toContain("retained outcome");
-    expect(definition.promptGuidelines[0]).toContain(
-      "returned by bash_outcome or another recallable outcome",
-    );
+    expect(definition.promptSnippet).toBeUndefined();
+    expect(definition.promptGuidelines).toBeUndefined();
   });
 
   it("returns stored full content unchanged", async () => {

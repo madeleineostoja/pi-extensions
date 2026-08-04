@@ -14,7 +14,7 @@ import {
 export const DocsParameters = Type.Object({
   subject: Type.String({
     description:
-      "Context7 library name or direct /owner/library[/version] or /owner/library@version ID.",
+      "Library name or direct /owner/library[/version] or /owner/library@version ID.",
   }),
   question: Type.String({
     description: "Focused documentation question sent to Context7.",
@@ -37,7 +37,7 @@ export function registerDocs(pi: ExtensionAPI, agentDir: () => string): void {
     name: "docs",
     label: "docs",
     description:
-      "Retrieve bounded Context7 documentation for a named library or direct Context7 ID. Omit version for provider-current material; an explicit version must be an exact Context7 pin. This tool does not inspect the project or delegate research.",
+      "Retrieve bounded documentation for a named library or direct library ID. Omit version for provider-current material; an explicit version must be an exact pin. This tool does not inspect the project or delegate research.",
     parameters: DocsParameters,
     async execute(_toolCallId, input: DocsInput, signal) {
       return executeDocs(input, signal, { agentDir: agentDir() });

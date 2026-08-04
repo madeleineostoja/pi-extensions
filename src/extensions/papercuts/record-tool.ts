@@ -73,8 +73,6 @@ export function registerRecordTool(
     name: "record_papercut",
     label: "record_papercut",
     description: TOOL_DESCRIPTION,
-    promptSnippet:
-      "record_papercut — record a factual incidental exercised workaround",
     parameters: PapercutObservationSchema,
     async execute(
       _id,

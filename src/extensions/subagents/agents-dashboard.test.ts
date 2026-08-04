@@ -8,7 +8,7 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
     key: "agent-1",
     status: "running",
     owner: "public-tool",
-    type: "General",
+    type: "Worker",
     description: "inspect a focused task",
     cwd: "/repo",
     extensionBinding: "bound",
@@ -33,7 +33,7 @@ describe("/agents non-TUI projection", () => {
     } as unknown as SubagentRuntime;
 
     expect(staticAgentsProjection(runtime)).toBe(
-      "Active agents\n1. running · Implement: Reviewer · inspect a focused task\nRetained agents\n1. completed · General · inspect a focused task",
+      "Active agents\n1. running · Implement: Reviewer · inspect a focused task\nRetained agents\n1. completed · Worker · inspect a focused task",
     );
   });
 });

@@ -111,13 +111,6 @@ export function registerRecallTool(pi: ExtensionAPI): void {
     label: "context_recall",
     description:
       "Retrieve original content retained by an outcome tool or hidden behind a Context pruning stub.",
-    promptSnippet:
-      'context_recall("toolCallId") — retrieve a retained outcome or pruned tool result',
-    promptGuidelines: [
-      "Use context_recall with the tool-call ID returned by bash_outcome or another recallable outcome, or printed in a Context pruning stub.",
-      'Pass lines like "10-20" only for one-text-block results.',
-      "Pass find as a non-empty literal only for one-text-block results.",
-    ],
     parameters: RecallParams,
     async execute(
       _toolCallId: string,

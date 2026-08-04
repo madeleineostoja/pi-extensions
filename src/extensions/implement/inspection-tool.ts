@@ -30,11 +30,6 @@ export function registerImplementInspectionTool(pi: ExtensionAPI): void {
     label: "inspect_implement_run",
     description:
       "List and inspect durable Pipkin Implement runs in the current checkout. This tool is read-only and reports only durable retained state and paths.",
-    promptSnippet:
-      "List and inspect durable Pipkin Implement runs in the current checkout.",
-    promptGuidelines: [
-      "Use inspect_implement_run before searching `.pi/pipkin/implement` when investigating an Implement run; follow the returned state and artifact paths with read for deeper evidence.",
-    ],
     parameters: InspectImplementRunParams,
     async execute(
       _toolCallId,

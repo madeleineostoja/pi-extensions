@@ -57,7 +57,7 @@ This makes it practical to give Pipkin a serious implementation plan and let it 
 
 ### Safety
 
-Pipkin's first layers are deliberately about control:
+Pipkin's first layers are deliberately about control. Persistent Pipkin tool summaries and cross-tool strategy are assembled centrally and only for active tools; feature descriptions retain their local capability details.
 
 - **Sandbox** owns model Bash and direct `write`/`edit` containment. On macOS it confines model Bash descendants to the canonical repository, required Git state, temporary roots, and reviewed package caches; direct tools stay within the workspace. Linux reports Sandbox as unavailable and uses local Bash.
 - **Readonly** separately checkpoints resolved tools named `edit` and `write`. Toggle its established workflow with `Ctrl+R` or `/readonly`.
@@ -73,13 +73,12 @@ Long sessions collect a remarkable amount of baggage. **Context Prune** uses det
 
 ### Agents
 
-Pipkin adds three focused subagents through the `Agent` tool:
+Pipkin adds two focused subagents through the `Agent` tool:
 
 - **Explore** maps unfamiliar code and follows relationships across a repository.
 - **Review** approaches a concrete change without the implementer's assumptions.
-- **General** takes bounded research or genuinely separate work.
 
-They can run in the foreground or alongside independent parent work, accept steering, and stay visible through `/agents`. Pipkin does not turn every task into multi-agent theatre; delegation is there when a separate context or owner actually helps.
+They can run in the foreground or alongside independent parent work, accept steering, and stay visible through `/agents`. Pipkin does not turn every task into multi-agent theatre; delegation is there when a separate context helps.
 
 **[Agents →](docs/features/agents.md)**
 
@@ -126,7 +125,7 @@ The read-only **LSP** tool finds definitions, types, implementations, references
 | `code_search`                         | Search bounded GitHub source visible to the configured credential    |
 | `web_fetch`                           | Retrieve bounded readable content from one public URL                |
 | `batch_web_fetch`                     | Retrieve one to eight public URLs with fixed four-worker concurrency |
-| `/agents` / `Agent`                   | Run and operate General, Explore, and Review subagents               |
+| `/agents` / `Agent`                   | Run and operate Explore and Review subagents                         |
 | `get_subagent_result`                 | Inspect or join a background agent                                   |
 | `steer_subagent`                      | Queue guidance for a running background agent                        |
 | `/implement`                          | Start, inspect, stop, or clean up implementation runs                |

@@ -29,7 +29,7 @@ function snapshot(overrides: Partial<RuntimeSnapshot> = {}): RuntimeSnapshot {
     key: "runtime:agent-1",
     status: "running",
     owner: "public-tool",
-    type: "General",
+    type: "Worker",
     description: "first agent",
     cwd: "/repo",
     extensionBinding: "bound",
@@ -217,10 +217,8 @@ describe("AgentsSurface roster", () => {
     ]);
     const retainedSurface = fixture([retained]).surface;
 
-    expect(plain(rendered(retainedSurface))).toContain("Retained · ✓ General");
-    expect(plain(rendered(retainedSurface))).not.toContain(
-      "Active · ✓ General",
-    );
+    expect(plain(rendered(retainedSurface))).toContain("Retained · ✓ Worker");
+    expect(plain(rendered(retainedSurface))).not.toContain("Active · ✓ Worker");
 
     const parent = snapshot({
       id: "parent",
@@ -257,9 +255,9 @@ describe("AgentsSurface roster", () => {
     expect(text.indexOf("active grand")).toBeLessThan(
       text.indexOf("unrelated"),
     );
-    expect(text).toContain("  ↳ ✓ General · settled child");
-    expect(text).toContain("    ↳ ● General · active grand");
-    expect(text).not.toContain("Retained ·   ↳ ✓ General");
+    expect(text).toContain("  ↳ ✓ Worker · settled child");
+    expect(text).toContain("    ↳ ● Worker · active grand");
+    expect(text).not.toContain("Retained ·   ↳ ✓ Worker");
   });
 
   it("keeps stable roster values and falls back to the nearest old position on roster and inspector loss", () => {
@@ -273,7 +271,7 @@ describe("AgentsSurface roster", () => {
     runtime.items = runtime.items.filter((item) => item.id !== "b");
     runtime.emit();
 
-    expect(selectedLine(rosterFixture.surface)).toContain("● General · third");
+    expect(selectedLine(rosterFixture.surface)).toContain("● Worker · third");
     expect(rosterFixture.notify).toHaveBeenCalledTimes(1);
 
     const inspectorRuntime = new FakeRuntime("runtime", [
@@ -292,7 +290,7 @@ describe("AgentsSurface roster", () => {
     const text = plain(rendered(inspectorFixture.surface));
     expect(text).toContain("Agents");
     expect(selectedLine(inspectorFixture.surface)).toContain(
-      "● General · third",
+      "● Worker · third",
     );
     expect(inspectorFixture.notify).toHaveBeenCalledTimes(1);
   });
@@ -623,9 +621,7 @@ describe("AgentsSurface retained transcript", () => {
     const runtime = new FakeRuntime("runtime", [snapshot()]);
     const { surface, requestRender, setThemeMark } = fixture([runtime]);
 
-    expect(plain(rendered(surface))).toContain(
-      "Active · ● General · first age",
-    );
+    expect(plain(rendered(surface))).toContain("Active · ● Worker · first age");
     for (const width of [1, 8, 24, 60]) {
       expect(
         surface.render(width).every((line) => visibleWidth(line) <= width),

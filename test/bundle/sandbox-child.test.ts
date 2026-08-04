@@ -333,8 +333,8 @@ describe("Sandbox child binding", () => {
     try {
       await expect(
         runtime.runPublicAgent({
-          type: "General",
-          prompt: "general process",
+          type: "Review",
+          prompt: "review process",
           cwd: workspace,
           ctx: publicContext,
         }),
@@ -358,7 +358,7 @@ describe("Sandbox child binding", () => {
 
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "General",
+        type: "Worker",
         description: "nested parent",
         cwd: workspace,
       });

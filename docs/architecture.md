@@ -11,14 +11,15 @@ The root manifest loads the complete bundle in this order:
 3. Context
 4. UI
 5. Personality
-6. LSP
-7. Processes
-8. Subagents
-9. Implement
-10. Reference
-11. Web Fetch
-12. Papercuts
-13. BTW
+6. Guidance
+7. LSP
+8. Processes
+9. Subagents
+10. Implement
+11. Reference
+12. Web Fetch
+13. Papercuts
+14. BTW
 
 Order is a runtime contract. Sandbox then Readonly form the safety prefix: Sandbox owns model Bash and direct workspace-write containment; Readonly retains the independent edit/write workflow. Subagents precedes Implement because Implement consumes its managed runtime. Web Fetch follows Reference: Reference retains exactly `docs`, `package_search`, and `code_search`, while Web Fetch owns direct public URL retrieval through `web_fetch` and fixed-concurrency `batch_web_fetch`.
 
@@ -34,7 +35,7 @@ Generic modules shared by at least two features live in `src/lib/`. There is no 
 
 `#sandbox/runtime` is a Sandbox-owned capability consumed by Subagents to snapshot the invoking session's Sandbox mode for a child. `#sandbox/bash` is a separate narrow Sandbox-owned execution capability consumed by Context's `bash_outcome` and Processes: it invokes ordinary Bash or starts a current-host managed execution lease, but exposes neither a tool definition, mutable Sandbox state, nor a child process. `#context/retained-result` is Context's side-effect-free validated retained-result encoder/decoder, consumed by Processes for explicit point-in-time outcomes; it owns no registration or session state. Processes owns session-local handles, output retention, waits, process-tool lifecycle, the `/processes` inspector, and its source-bound Activity projection. `#subagents/runtime` is consumed by Implement for the managed runtime. `#personality/session-name` is Personality's stateless session-identity capability, consumed by Implement after a successful run starts. `#ui/activity` is a UI-owned event protocol consumed by Subagents, Implement, and Processes; it binds each publisher source and leaves records, generations, timers, and widgets with the UI registration. `#ui/status` is a UI-owned stateless capability consumed by footer-status producers: it validates and immediately publishes through the producer's current UI without retaining producer state, importing a producer, or registering the UI extension. Shared chrome and metric presentation modules remain concrete `#lib/ui/*` imports. Neither consumer imports or registers the producer's extension root. A new mapping needs a real consumer, a narrow producer-owned type, an acyclic graph, package-import declaration, loader and TypeScript coverage, and an update to this document and repository guidance.
 
-UI owns generic presentation only: its Activity protocol projects bounded source-owned records without transcript content, commands, cwd, raw output, process or OS identifiers, hidden runtime objects, or cost/token telemetry; its status capability is stateless and producer-owned. Personality owns voice and identity, including the synchronous fresh-session Welcome header and Implement session-name generation. UI never imports a producer implementation or registration root.
+Guidance owns persistent public-tool summaries, cross-tool strategy, and the external-content instruction-authority boundary. It appends selected static guidance from `before_agent_start`; feature descriptions and schemas retain capability detail and result owners retain recovery instructions. The catalogue is static test data, not a registration API. UI owns generic presentation only: its Activity protocol projects bounded source-owned records without transcript content, commands, cwd, raw output, process or OS identifiers, hidden runtime objects, or cost/token telemetry; its status capability is stateless and producer-owned. Personality owns voice and identity, including the synchronous fresh-session Welcome header and Implement session-name generation. UI never imports a producer implementation or registration root.
 
 ## Separate loaders, explicit coordination
 

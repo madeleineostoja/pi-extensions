@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createSandboxBashDefinition,
@@ -222,6 +223,27 @@ describe("Sandbox Bash runtime", () => {
       markers.every((marker) => /^PIPKIN_[A-Fa-f0-9]+$/.test(marker)),
     ).toBe(true);
     expect(releases).toEqual(markers);
+  });
+
+  it("mirrors Pi native Bash metadata while replacing execution", async () => {
+    const { executable, policy, workspace } = fixture();
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+    });
+    const sandbox = createSandboxBashDefinition(workspace, runtime);
+    const native = createBashToolDefinition(workspace);
+
+    expect(sandbox).toMatchObject({
+      name: native.name,
+      label: native.label,
+      description: native.description,
+      parameters: native.parameters,
+      promptSnippet: native.promptSnippet,
+      promptGuidelines: native.promptGuidelines,
+    });
   });
 
   it("preserves Pi Bash partial updates and final result semantics", async () => {

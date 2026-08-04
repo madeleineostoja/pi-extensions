@@ -61,7 +61,7 @@ A repository and its linked worktrees share one atomically published, leased reg
 
 Pipkin excludes these paths through the common Git directory's `info/exclude`; it does not change committed `.gitignore`. The footer shows the current host's open count after session start and successful local mutations. Non-interactive `/papercuts` prints a bounded deterministic summary.
 
-The interactive host, public General, Explore, and Review agents, and Implement's planner, review, implementation, revision, repair, and reconciliation workers record directly to this same registry. For repository-preserving workers, it is the sole controlled metadata write; it does not expose source-editing, Git, orchestration, or public-agent controls. Records are not relayed through worker completion data or another persistence path.
+The interactive host, public Explore and Review agents, and Implement's planner, review, implementation, revision, repair, and reconciliation workers record directly to this same registry. For repository-preserving workers, it is the sole controlled metadata write; it does not expose source-editing, Git, orchestration, or public-agent controls. Records are not relayed through worker completion data or another persistence path.
 
 ## BTW: ask without changing the subject
 
@@ -73,6 +73,6 @@ The interactive host, public General, Explore, and Review agents, and Implement'
 
 Pipkin sends the current model a bounded view of the session context and prior BTW exchanges, then shows the answer in a disposable non-overlay custom surface. The exchange does not enter the main transcript, trigger the primary agent, or influence later model turns.
 
-BTW has no tools. It cannot inspect files, run commands, or mutate state beyond what is already present in the supplied conversation context. Use an Explore or General agent when the side task needs tool access.
+BTW has no tools. It cannot inspect files, run commands, or mutate state beyond what is already present in the supplied conversation context. Use an Explore agent when the side task needs tool access.
 
 Escape closes or aborts the surface, arrow keys scroll, and `x` clears process-local BTW history for that session. Session replacement and shutdown abort and dispose the active surface, so stale completions are ignored. BTW requires an interactive session, active model, and usable authentication.
