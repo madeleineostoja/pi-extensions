@@ -239,6 +239,39 @@ describe("context epochs", () => {
     expect(state.decisions.size).toBe(0);
   });
 
+  it("treats only the first request after compaction as known cold", () => {
+    const messages = [
+      toolResult("source", "x".repeat(40_000)),
+      { role: "user" as const, content: "one" },
+      { role: "user" as const, content: "two" },
+      { role: "user" as const, content: "three" },
+      { role: "user" as const, content: "four" },
+    ];
+    for (const assistantAfter of [false, true]) {
+      const appended: any[] = [];
+      const entries: any[] = [
+        { type: "compaction", id: "compaction", summary: "summary" },
+      ];
+      if (assistantAfter) {
+        entries.push({
+          type: "message",
+          id: "assistant",
+          message: { role: "assistant", content: [] },
+        });
+      }
+      makeContextHook(createPruningState(), (type, data) =>
+        appended.push({ type, data }),
+      )(
+        { type: "context", messages } as any,
+        context(messages, entries, () => {}).ctx as any,
+      );
+
+      expect(appended.map((entry) => entry.data.kind)).toEqual(
+        assistantAfter ? [] : ["known-cold"],
+      );
+    }
+  });
+
   it("does not treat Pi's initial model record as a known-cold transition", () => {
     const messages = [
       toolResult("source", "x".repeat(40_000)),

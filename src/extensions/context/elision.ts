@@ -667,6 +667,10 @@ function isKnownCold(
   entries: readonly unknown[],
   ctx: ExtensionContext,
 ): boolean {
+  if (isAfterCompaction(entries)) {
+    return true;
+  }
+
   const model = ctx.model as { provider?: string; id?: string } | undefined;
   if (!model?.provider || !model.id) {
     return false;
@@ -707,6 +711,28 @@ function isKnownCold(
       (entry.type === "message" &&
         isRecord(entry.message) &&
         entry.message.role === "assistant")
+    );
+  });
+}
+
+function isAfterCompaction(entries: readonly unknown[]): boolean {
+  let compactionIndex = -1;
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (isRecord(entry) && entry.type === "compaction") {
+      compactionIndex = index;
+      break;
+    }
+  }
+  if (compactionIndex < 0) {
+    return false;
+  }
+  return !entries.slice(compactionIndex + 1).some((entry) => {
+    return (
+      isRecord(entry) &&
+      entry.type === "message" &&
+      isRecord(entry.message) &&
+      entry.message.role === "assistant"
     );
   });
 }

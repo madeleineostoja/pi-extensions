@@ -14,7 +14,7 @@ Pruning happens in deterministic branch-local epochs. Context evaluates every el
 
 A successful result can qualify because it is stale after four later user entries and large enough, because a later edit or write supersedes a read, because a later read returns the same or covering lines without an intervening mutation, or because a later assistant consumed low-risk bash output. Read comparisons use Pi's returned-line truncation details, not requested bounds.
 
-Epochs prefer a matching fresh model transition with at least 8k savings, then a qualified warm-cache opportunity with at least 32k savings after eight user entries, then a small changed tail. Context does not measure pressure, invoke compaction, alter Pi's compaction settings, or make a compaction decision. Native Pi compaction remains the sole owner of context-window pressure.
+Epochs prefer a known-cold opportunity with at least 8k savings, then a qualified warm-cache opportunity with at least 32k savings after eight user entries, then a small changed tail. A known-cold opportunity is the first model request after either a real model transition or Pi compaction, before the current model has produced another assistant entry. Context does not measure pressure, invoke compaction, alter Pi's compaction settings, or make a compaction decision. Native Pi compaction remains the sole owner of context-window pressure.
 
 ### Durable pruning milestones
 
