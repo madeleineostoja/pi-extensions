@@ -39,8 +39,10 @@ Use `npm` from the repository root.
 - Format: `npm run format`
 - Check formatting: `npm run format:check`
 - Tests: `npm run test`
+- Focused tests by path: `npm run test -- src/extensions/<feature>`
+- Focused tests by project: `npm run test -- --project <project>`
 
-Vitest projects run adjacent feature/library tests and the root bundle contract. Keep Implement's serialized project intact; do not flatten all tests into one unisolated realm.
+Vitest projects run adjacent feature/library tests and the root bundle contract. Feature project names match their `src/extensions/<feature>/` directory; additional projects are `lib`, `bundle`, `implement-unit`, and `implement-integration`. `vitest.config.ts` is the authoritative project registry. Prefer path filtering for ordinary focused work and project filtering when the configured project boundary matters. Keep Implement's serialized project intact; do not flatten all tests into one unisolated realm.
 
 ## Development workflow
 

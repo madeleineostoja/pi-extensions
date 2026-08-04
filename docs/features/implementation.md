@@ -150,10 +150,10 @@ Implement tests are partitioned by the boundary they exercise. `implement-unit` 
 Run the layers independently or together from the repository root:
 
 ```sh
-npm run test:subagents
-npm run test:implement:unit
-npm run test:implement:integration
-npm run test:implement
+npm run test -- --project subagents
+npm run test -- --project implement-unit
+npm run test -- --project implement-integration
+npm run test -- --project implement-unit --project implement-integration
 npm run test
 ```
 
