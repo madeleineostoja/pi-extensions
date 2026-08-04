@@ -1,10 +1,10 @@
 # Architecture
 
-Pipkin is one product with several runtime owners. The split entrypoints are there to make registration, lifecycle, ordering, and failure boundaries explicit—not to turn each feature into a separately supported package.
+Pipkin is one product with several runtime owners. Split entrypoints make registration, lifecycle, ordering, and failure boundaries explicit; they are not separately supported packages.
 
-## The ordered bundle
+## Ordered bundle
 
-The root manifest loads the complete bundle in this order:
+The root manifest loads one complete bundle:
 
 1. Sandbox
 2. Readonly
@@ -21,47 +21,75 @@ The root manifest loads the complete bundle in this order:
 13. Papercuts
 14. BTW
 
-Order is a runtime contract. Sandbox then Readonly form the safety prefix: Sandbox owns model Bash and direct workspace-write containment; Readonly retains the independent edit/write workflow. Subagents precedes Implement because Implement consumes its managed runtime. Web Fetch follows Reference: Reference retains exactly `docs`, `package_search`, and `code_search`, while Web Fetch owns direct public URL retrieval through `web_fetch` and fixed-concurrency `batch_web_fetch`.
+Order is a runtime contract. Sandbox and Readonly form the safety prefix. Processes follows LSP and precedes Subagents; Subagents precedes Implement because Implement consumes its managed runtime. Web Fetch follows Reference while retaining separate ownership of direct public-URL retrieval.
 
-The bundle integration suite loads the actual manifest through Pi's loader. It checks inventory, public registration ownership, source provenance, internal imports, startup/reload behavior, and safety ordering rather than recreating extension discovery in test code.
+The bundle integration suite loads the actual manifest through Pi's loader and verifies inventory, public registration ownership, source provenance, startup and reload behavior, internal imports, and safety ordering.
 
 ## Source ownership
 
-Each feature owns a Pi-only registration root at `src/extensions/<feature>/index.ts`. It only constructs dependencies, performs Pi registration, attaches lifecycle/event handlers, and provides simple wiring. Business behavior and substantial handlers live in responsibility-named feature modules. Feature code uses relative imports internally and does not import another feature's registration root.
+Each feature owns a Pi-only registration root at `src/extensions/<feature>/index.ts`. It constructs dependencies, registers with Pi, attaches lifecycle or event handlers, and performs simple wiring. Business behavior and substantial handlers live in responsibility-named modules beside their tests.
 
-Feature subfolders represent established cohesive clusters rather than a universal template. Implement currently has only `scheduler/` and `recovery/` clusters; features do not gain generic `internal/`, `src/`, `api/`, or wrapper layers for symmetry.
+Feature subfolders represent cohesive clusters, not a universal template. Implement currently has a `scheduler/` cluster; features do not gain generic `internal/`, `src/`, `api/`, or wrapper layers for symmetry.
 
-Generic modules shared by at least two features live in `src/lib/`. There is no barrel: consumers import the concrete capability through `#lib/*`, which keeps dependencies visible.
+Generic modules used by at least two features live in `src/lib/`. There is no barrel: consumers import concrete capabilities through `#lib/*`.
 
-`#sandbox/runtime` is a Sandbox-owned capability consumed by Subagents to snapshot the invoking session's enabled Sandbox state and requested child write mode for a child. It exposes only `workspace-write` and `repository-read-only` preparation intent; role names remain outside Sandbox. `#sandbox/bash` is a separate narrow Sandbox-owned execution capability consumed by Context's `bash_outcome` and Processes: it invokes ordinary Bash or starts a current-host managed execution lease, but exposes neither a tool definition, mutable Sandbox state, nor a child process. `#context/retained-result` is Context's side-effect-free validated retained-result encoder/decoder, consumed by Processes for explicit point-in-time outcomes; it owns no registration or session state. Processes owns session-local handles, output retention, waits, process-tool lifecycle, the `/processes` inspector, and its source-bound Activity projection. `#subagents/runtime` is consumed by Implement for the managed runtime, while `#subagents/completion` exposes the source-owned stateless final-action protocol shared by its private completion tool and Implement invocation. `#personality/session-name` is Personality's stateless session-identity capability, consumed by Implement after a successful run starts. `#ui/activity` is a UI-owned event protocol consumed by Subagents, Implement, and Processes; it binds each publisher source and leaves records, generations, timers, and widgets with the UI registration. `#ui/status` is a UI-owned stateless capability consumed by footer-status producers: it validates and immediately publishes through the producer's current UI without retaining producer state, importing a producer, or registering the UI extension. Shared chrome and metric presentation modules remain concrete `#lib/ui/*` imports. Neither consumer imports or registers the producer's extension root. A new mapping needs a real consumer, a narrow producer-owned type, an acyclic graph, package-import declaration, loader and TypeScript coverage, and an update to this document and repository guidance.
+## Cross-feature capabilities
 
-Guidance owns persistent public-tool summaries, cross-tool strategy, and the external-content instruction-authority boundary. It appends selected static guidance from `before_agent_start`; feature descriptions and schemas retain capability detail and result owners retain recovery instructions. The catalogue is static test data, not a registration API. UI owns generic presentation only: its Activity protocol projects bounded source-owned records without transcript content, commands, cwd, raw output, process or OS identifiers, hidden runtime objects, or cost/token telemetry; its status capability is stateless and producer-owned. Personality owns voice and identity, including the synchronous fresh-session Welcome header and Implement session-name generation. UI never imports a producer implementation or registration root.
+Cross-feature coupling is explicit, narrow, typed, and producer-owned.
 
-## Separate loaders, explicit coordination
+| Capability                  | Owner          | Consumers                       | Purpose                                                                             |
+| --------------------------- | -------------- | ------------------------------- | ----------------------------------------------------------------------------------- |
+| `#sandbox/runtime`          | Sandbox        | Subagents                       | Snapshot Sandbox state and requested child write mode at child creation             |
+| `#sandbox/bash`             | Sandbox        | Context, Processes              | Run ordinary Bash or start a managed execution lease without exposing Sandbox state |
+| `#context/retained-result`  | Context        | Processes                       | Encode and decode side-effect-free recallable result envelopes                      |
+| `#subagents/runtime`        | Subagents      | Implement                       | Run trusted managed agents                                                          |
+| `#subagents/completion`     | Subagents      | Implement                       | Share the stateless managed-completion final-action protocol                        |
+| `#personality/session-name` | Personality    | Implement                       | Generate the active Implement-run session name                                      |
+| `#ui/activity`              | UI             | Processes, Subagents, Implement | Publish bounded source-qualified live activity                                      |
+| `#ui/status`                | UI             | Status producers                | Publish immediate footer status without transferring producer ownership             |
+| `#lib/ui/*`                 | Shared library | UI consumers                    | Reuse concrete presentation helpers                                                 |
 
-Pi loads entrypoints through separate Jiti instances. Code may share pure helpers and typed protocols, but it must not rely on mutable module-singleton identity crossing those loader graphs.
+Consumers never import another feature's registration root. A new mapping requires a real consumer, an acyclic dependency, a narrow producer-owned type, a `package.json#imports` declaration, Pi Jiti/Vitest/TypeScript resolution coverage, and updates to this guide and `AGENTS.md`.
 
-Subagents' coordinator and Sandbox's child-mode handoff are explicit exceptions: both are keyed by Pi's event bus, which gives them stable host identity across runtime reload boundaries. Every child extension binding creates its own isolated Processes runtime and Sandbox execution leases, and child shutdown stops only that runtime's leases. Activity publication is deliberately narrower: print, JSON, and RPC children create no Processes Activity source; only the top-level interactive TUI lifecycle publishes and clears Processes activity. The Bash execution capability uses the same explicit host identity with a generation-scoped binding: Sandbox installs the final executor only after constructing the session runtime. On shutdown it first settles managed execution leases, then revokes the binding and state; Processes performs only later record and waiter cleanup. Each managed child receives a distinct event bus, so its extension lifecycle and runtime remain isolated from its parent. Sandbox records the parent's current enabled state and requested write mode against that child bus before construction and consumes it once at child startup; this is a spawn-time snapshot, not live synchronization. On macOS, repository-read-only children deny writes to their workspace/worktree, worktree Git, and common Git authorities after all dynamic Seatbelt allows, so descendants beneath allowed temporary ancestors remain denied. Linux has no kernel enforcement; this is trusted-agent accidental-write protection rather than hostile-code isolation.
+Guidance owns persistent summaries for Pipkin's public tools, cross-tool strategy, and the external-content instruction boundary. Feature descriptions and schemas retain capability details; result owners retain recovery instructions. Its catalogue is static test data, not a registration API.
 
-## Files shared by concurrent features
+UI owns generic presentation, not producer state or cleanup. Activity omits transcript content, prompts, commands, cwd, raw output, hidden runtime objects, and cost or token telemetry. Personality owns voice and identity, including the synchronous fresh-session welcome and Implement naming.
 
-`src/lib/file-lease.ts` provides OS-backed leases over persistent regular-file anchors. A caller keeps the returned lease capability and releases it idempotently. Probing is diagnostic only; it never grants permission to mutate. The native adapter fails closed when it cannot provide the contract.
+## Separate loaders and explicit coordination
 
-`src/lib/git.ts` serializes atomic updates to a repository's common `.git/info/exclude` under its own lease. Checkout-local features call `ensureGitInfoExclude()` instead of editing the file directly or inventing another lock protocol. This coordinates linked worktrees without touching committed `.gitignore`.
+Pi loads entrypoints through separate Jiti instances. Shared pure helpers and typed protocols are safe; mutable module-singleton identity across loader graphs is not.
 
-## Lifecycle
+Stateful cross-entrypoint coordination uses an explicit host identity:
 
-Long-lived resources start at `session_start` or on demand and dispose idempotently at `session_shutdown`. Features that subscribe directly to `pi.events` remove those listeners during disposal. Sandbox host bindings and pending child handoffs are likewise disposed idempotently.
+- Subagents' coordinator and Sandbox's child-mode handoff are keyed by Pi's event bus.
+- Sandbox installs its Bash executor only after constructing the session runtime and revokes it during shutdown.
+- Each child receives a distinct event bus and isolated Processes runtime.
+- Child Sandbox policy is a spawn-time snapshot, not live synchronization.
+
+On enabled macOS sessions, repository-read-only children deny writes to their workspace or worktree, worktree Git directory, and common Git directory after dynamic Seatbelt allows. Linux has no kernel enforcement. This is trusted-agent accidental-write protection, not hostile-code isolation.
+
+## Shared concurrent files
+
+`src/lib/file-lease.ts` provides OS-backed leases over persistent regular-file anchors. Probing is diagnostic only and never grants mutation authority; the native adapter fails closed when it cannot provide the contract.
+
+`src/lib/git.ts` serializes updates to the repository's common `.git/info/exclude`. Checkout-local features call `ensureGitInfoExclude()` instead of editing the file directly or inventing another lock.
+
+## Lifecycle and state
+
+Long-lived resources start at `session_start` or on demand and dispose idempotently at `session_shutdown`. Features remove direct `pi.events` listeners during disposal. Sandbox bindings and pending child handoffs are also disposed idempotently.
 
 State belongs to the narrowest durable owner:
 
-- transient UI and agent activity belongs to the session;
-- Implement state belongs to a checkout, while Papercuts belongs to its canonical primary worktree;
-- policy that varies by repository belongs under that worktree's `.pi/pipkin/`;
-- personal model routing and logs belong under Pi's agent directory.
+- UI and agent activity belongs to the session;
+- Implement state belongs to a checkout;
+- Papercuts belongs to the canonical primary worktree;
+- repository policy belongs under `.pi/pipkin/`;
+- personal model routing, Reference credentials, and logs belong under Pi's agent directory.
 
 See [Configuration and state](configuration.md) for concrete paths.
 
 ## Testing boundaries
 
-Feature and generic-library tests stay adjacent to their behavior owner and never import an entrypoint. Root Vitest projects isolate suites and preserve Implement's serialized execution policy. `test/bundle/` is the integration contract for the assembled product and owns entrypoint loading and registration provenance; it catches failures that isolated imports cannot: loader resolution, bundle inventory, lifecycle order, and unsupported package-era topology.
+Feature and shared-library tests stay beside their behavior owners and never import an entrypoint. Root Vitest projects isolate suites and preserve Implement's serialized execution policy.
+
+`test/bundle/` owns the assembled-product contract. It catches failures isolated imports cannot: Pi loader resolution, extension inventory, registration provenance, lifecycle order, and unsupported package topology.

@@ -9,17 +9,17 @@
   </p>
 </div>
 
-Pipkin is an extension for the [Pi](https://pi.dev) agent harness that brings a satchel of goodies. It can orchestrate teams of agents to autonomously implement plans, optimise context on the fly, contain repository-write Bash on macOS, and much more.
+Pipkin is an extension bundle for the [Pi](https://pi.dev) coding-agent harness. It adds autonomous plan implementation, focused subagents, context pruning with recall, semantic code navigation, bounded reference and web retrieval, managed processes, and macOS repository-write containment.
 
-## Getting setup
+## Getting started
 
-Pipkin requires Node 24 or later and an existing Pi installation.
+Pipkin requires Node.js 24 or later and an existing Pi installation.
 
 ```sh
 pi install git:github.com/madeleineostoja/pipkin
 ```
 
-Choose the models Pipkin should use in `~/.pi/agent/pipkin/config.json`
+Configure the models Pipkin should use in `~/.pi/agent/pipkin/config.json`:
 
 ```json
 {
@@ -33,112 +33,101 @@ Choose the models Pipkin should use in `~/.pi/agent/pipkin/config.json`
 }
 ```
 
-See [Configuration](docs/configuration.md) for additional configuration and how these models map to various features.
+All four model presets are required for the complete model-powered feature set. See [Configuration and state](docs/configuration.md) for validation, model routing, optional settings, credentials, and durable paths.
 
-## What Pipkin can help with
+## Features
 
-### Implementer
+### Implement
 
-Pipkin is an autonomous engineering runtime and parallel agent orchestrator for implementing anything from small changes to full rewrites while you sleep. Hand it a Markdown plan, with linked specs or design notes, and it drives the implementation run from initial planning to reviewed commits.
+Give Implement a Markdown plan and it owns the run from dependency-aware scheduling through reviewed publication:
 
 ```text
 /implement docs/plan.md
 ```
 
-**Plan → dependency graph → parallel implementation → review and repair → protected publication**
+**Plan → dependency graph → isolated parallel work → review and repair → protected publication**
 
-A planner agent reads the complete plan corpus and designs a dependency graph and workstreams. Pipkin then coordinates multiple implementer and reviewer agents in isolated Git worktrees. It schedules independent streams concurrently, gives dependent work the right completed base, routes findings back through repair, and finishes with a whole-plan review.
+Implement coordinates trusted workers in disposable Git worktrees, publishes through one serialized integration lane, and retains durable evidence for inspection and cleanup. The target branch moves only after hooks, candidate verification, and compare-and-swap checks succeed.
 
-The orchestration remains inspectable throughout. The target branch only moves through a serialized integration lane after hooks run, the prepared commit is verified, and compare-and-swap checks still hold. Durable run state lets Pipkin explain retained candidates and failures, preserve independently delivered work, and safely clean terminal runs without losing evidence.
+[Implementation guide →](docs/features/implementation.md)
 
-This makes it practical to give Pipkin a serious implementation plan and let it drive the work without surrendering visibility or Git discipline.
+### Safety and context
 
-**[Implementation →](docs/features/implementation.md)**
+- **Sandbox** contains model Bash and direct `write`/`edit` calls on macOS. Inspection children can snapshot repository-read-only protection; Linux remains instruction-only.
+- **Readonly** independently asks for confirmation before resolved `edit` and `write` calls.
+- **Context** prunes stale or superseded tool output while preserving original results for `context_recall`.
+- **Processes** runs foreground non-interactive commands while the main agent continues independent work.
 
-### Safety
+[Safety →](docs/features/safety.md) · [Context →](docs/features/context.md)
 
-Pipkin's first layers are deliberately about control. Persistent Pipkin tool summaries and cross-tool strategy are assembled centrally and only for active tools; feature descriptions retain their local capability details.
+### Agents and research
 
-- **Sandbox** owns model Bash and direct `write`/`edit` containment. On macOS it confines model Bash descendants to mode-specific canonical repository, Git, temporary, and npm, pnpm, and GitHub CLI cache/state roots; inspection children snapshot repository-read-only protection for their workspace/worktree, worktree Git, and common Git roots. Linux reports Sandbox as unavailable and uses local Bash.
-- **Readonly** separately checkpoints resolved tools named `edit` and `write`. Toggle its established workflow with `Ctrl+R` or `/readonly`.
-- **Processes** starts Sandbox-owned foreground non-interactive work when useful independent work can continue. Join once for completion or literal readiness, inspect bounded tail/search output without polling, choose recallable point-in-time outcomes when only status matters, and stop no-longer-needed work explicitly.
+- **Explore** maps unfamiliar code; **Review** independently assesses a concrete artifact. Both run through `Agent` and remain visible through `/agents`.
+- **Reference** searches bounded library documentation, package ecosystems, and credential-visible GitHub source.
+- **Web Fetch** retrieves readable content from direct public URLs without authentication or page JavaScript.
+- **LSP** provides read-only definitions, references, symbols, types, hover information, and diagnostics for supported languages.
 
-**[Safety →](docs/features/safety.md)**
+[Agents →](docs/features/agents.md) · [Reference →](docs/features/reference.md) · [Web Fetch →](docs/features/web-fetch.md) · [Workflow tools →](docs/features/workflow-tools.md)
 
-### Context
+### Session utilities
 
-Long sessions collect a remarkable amount of baggage. **Context Prune** uses deterministic, persisted epochs to replace stale output, superseded and repeated reads, and already-consumed command results with small, reasoned stubs while keeping every original result available through `context_recall`. Choose `bash_outcome` for actions or validations when exit status alone answers the current question; choose `bash` for inspection, diagnostics, or when successful output informs reasoning or reporting. Successful output remains immediately recallable, no-output success stays concise, and failures remain visible. Managed process outcomes likewise retain one bounded point-in-time result for recall. Pi remains responsible for context pressure and compaction.
+- **UI** presents compact session status and bounded live activity.
+- **Personality** greets fresh sessions and gives unnamed sessions useful titles.
+- **Papercuts** records recurring incidental friction only after an agent exercises a workaround and completes or safely continues its actual task.
+- **BTW** answers a transcript-independent side question with the current model and session context.
 
-**[Context →](docs/features/context.md)**
+[Interface and Personality →](docs/features/interface-and-personality.md) · [Workflow tools →](docs/features/workflow-tools.md)
 
-### Agents
+## Human controls
 
-Pipkin adds two focused subagents through the `Agent` tool:
+### Slash commands
 
-- **Explore** maps unfamiliar code and follows relationships across a repository.
-- **Review** approaches a concrete change without the implementer's assumptions.
+| Command               | Purpose                                                        |
+| --------------------- | -------------------------------------------------------------- |
+| `/sandbox [on\|off]`  | Inspect or change Sandbox mode for the current session         |
+| `/readonly [on\|off]` | Inspect or change confirmation for `edit` and `write`          |
+| `/processes`          | Inspect and stop current-session managed processes             |
+| `/agents`             | Inspect, steer, summarize, or stop managed agents              |
+| `/implement …`        | Start, inspect, stop, restart, or clean Implement runs         |
+| `/papercuts`          | Browse and close recorded Papercut findings                    |
+| `/btw <question>`     | Ask an ephemeral side question without changing the transcript |
 
-They can run in the foreground or alongside independent parent work, accept steering, and stay visible through `/agents`. Pipkin does not turn every task into multi-agent theatre; delegation is there when a separate context helps.
+### Keyboard shortcut
 
-**[Agents →](docs/features/agents.md)**
+| Shortcut | Purpose                                                    |
+| -------- | ---------------------------------------------------------- |
+| `Ctrl+R` | Toggle Readonly's `edit` and `write` confirmation workflow |
 
-### Reference, code intelligence, and side questions
+## Model tools
 
-**Reference** provides bounded `docs`, `package_search`, and `code_search` tools: Context7 documentation with exact-version support, independently ranked Context7/npm/public-GitHub package discovery, and GitHub code matches visible to the configured credential. It does not inspect the project.
+These tools are called by the agent rather than typed as slash commands.
 
-**[Reference →](docs/features/reference.md)**
+| Tool                    | Purpose                                                                                |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| `bash_outcome`          | Run an action or validation when exit status alone is enough                           |
+| `context_recall`        | Recover retained output or content hidden behind a pruning stub                        |
+| `lsp`                   | Query definitions, types, implementations, references, symbols, hover, and diagnostics |
+| `start_process`         | Start managed foreground work while independent work continues                         |
+| `get_process_result`    | Join or intentionally inspect a managed process                                        |
+| `stop_process`          | Stop managed work that is no longer needed                                             |
+| `Agent`                 | Run an Explore or Review subagent                                                      |
+| `get_subagent_result`   | Join or inspect a background subagent                                                  |
+| `steer_subagent`        | Queue guidance for a running background subagent                                       |
+| `inspect_implement_run` | List or inspect durable Implement runs and artifact paths                              |
+| `docs`                  | Retrieve bounded library documentation                                                 |
+| `package_search`        | Search documentation, npm, and public GitHub package ecosystems                        |
+| `code_search`           | Search bounded GitHub source visible to the configured credential                      |
+| `web_fetch`             | Retrieve bounded readable content from one public URL                                  |
+| `batch_web_fetch`       | Retrieve one to eight public URLs with fixed concurrency                               |
+| `record_papercut`       | Record qualifying incidental friction after an exercised workaround                    |
 
-**Web Fetch** provides `web_fetch` and fixed-concurrency `batch_web_fetch` for bounded readable retrieval from direct public URLs. It complements Reference: use `docs` for known-library documentation, `package_search` for package discovery, and `code_search` or the GitHub tool/skill for GitHub source and repository workflows. Web Fetch has no authentication, proxy, private-network, cache, or caller configuration support; it does not execute page JavaScript, and temporary artifacts remain readable directly only for the live session.
+## Important safety boundaries
 
-**[Web Fetch →](docs/features/web-fetch.md)**
+Pipkin extensions run with the Pi process's permissions. Sandbox protects against ordinary accidental repository writes by trusted agents; it is not hostile-code isolation. It does not confine extension JavaScript, provider traffic, language servers, remote mutations, inherited credentials, or unrestricted networking. Linux has no kernel enforcement. Use a devcontainer, VM, remote sandbox, or equivalent external boundary for hostile or unattended work.
 
-The read-only **LSP** tool finds definitions, types, implementations, references, symbols, hover information, and diagnostics for TypeScript/JavaScript, Svelte, and provisioned Ruby projects. It follows a pull-only model where the agent uses it deliberately, rather than interrupting turns with noise.
+Public subagents share the invoking working tree. Implement intentionally changes Git state, but gives its managed workers owned disposable worktrees and retains publication control. Read the [Safety guide](docs/features/safety.md) before relying on these boundaries.
 
-**BTW** handles the small question that would otherwise derail the main thread: `/btw <question>` answers from current session context in a disposable full-screen surface and leaves the transcript alone.
-
-**[Workflow tools →](docs/features/workflow-tools.md)**
-
-### Session details
-
-- **UI** keeps cwd, branch, model, thinking, cost, cache hit rate, context usage, and ordered extension state in one compact footer, with a bounded live Activity view for current work.
-- **Personality** gives unnamed sessions useful titles and a brief fresh-session greeting, so `/resume` is less of an archaeological dig.
-- **Papercuts** saves recurring project-specific workflow failures for human review instead of letting the lesson vanish with the session.
-
-**[Interface and Personality →](docs/features/interface-and-personality.md)**
-
-**[Workflow tools →](docs/features/workflow-tools.md)**
-
-## Commands
-
-| Surface                               | What it does                                                         |
-| ------------------------------------- | -------------------------------------------------------------------- |
-| `/sandbox [on\|off]`                  | Inspect or change the current repository-write Sandbox mode          |
-| `/readonly [on\|off]`                 | Toggle approval for resolved `edit` and `write` tools                |
-| `context_recall`                      | Recover a retained outcome or content behind an elision stub         |
-| `bash_outcome`                        | Run Bash when exit status alone answers the current question         |
-| `lsp`                                 | Make semantic source queries or inspect language-server status       |
-| `start_process`                       | Start independent foreground non-interactive managed work            |
-| `get_process_result` / `stop_process` | Join, inspect, or explicitly stop a managed process                  |
-| `/processes`                          | Inspect live output and deliberately stop managed processes          |
-| `docs`                                | Retrieve bounded Context7 documentation                              |
-| `package_search`                      | Discover separately ranked Context7, npm, and public GitHub packages |
-| `code_search`                         | Search bounded GitHub source visible to the configured credential    |
-| `web_fetch`                           | Retrieve bounded readable content from one public URL                |
-| `batch_web_fetch`                     | Retrieve one to eight public URLs with fixed four-worker concurrency |
-| `/agents` / `Agent`                   | Run and operate Explore and Review subagents                         |
-| `get_subagent_result`                 | Inspect or join a background agent                                   |
-| `steer_subagent`                      | Queue guidance for a running background agent                        |
-| `/implement`                          | Start, inspect, stop, or clean up implementation runs                |
-| `/papercuts` / `record_papercut`      | Record and close incidental exercised-workaround findings            |
-| `/btw <question>`                     | Ask an ephemeral side question from current session context          |
-
-## Limits
-
-On enabled macOS sessions, Sandbox lets workspace-write model Bash and descendants write only the canonical repository, its required Git administration, temporary roots, and reviewed npm, pnpm, and GitHub CLI cache/state roots; direct `write` and `edit` stay within the canonical workspace. Explore, Review, nested Explore, and Implement planners/reviewers snapshot repository-read-only mode, which protects their workspace/worktree, worktree Git, and common Git roots while retaining intended temporary/cache writes. `/sandbox off` applies to Pipkin subagents spawned afterward, while already-created children retain their snapshot. Linux is instruction-only; this is trusted-agent accidental-write protection, not hostile-code isolation. It allows broad reads and unrestricted networking, and repository and shared Git state remain mutable in workspace-write mode. Managed processes are current-session only: each runtime allows at most eight active processes, retains at most 32 records and 1 MiB per record, and exposes bounded output. `/processes` is the live operational surface; its Activity rows disclose only safe descriptions and state.
-
-Pipkin extensions are trusted code with the permissions of the Pi process. Sandbox does not confine extension JavaScript, extension-owned processes, provider traffic, Web Fetch, direct RPC Bash, language servers, remote mutations, inherited credentials, or hostile repository code. Use a VM, devcontainer, remote sandbox, or equivalent external boundary for hostile or unattended work. Readonly steps aside where Pi cannot show an interactive prompt. Public subagents share the working tree. Implement intentionally changes Git state.
-
-Those are operating constraints, not footnotes. The feature guides spell out where each boundary begins and ends. If `pi-smart-fetch` was separately installed, remove it before reloading Pipkin to avoid duplicate Web Fetch tool registrations.
+If `pi-smart-fetch` is separately installed, remove it before reloading Pipkin to avoid duplicate Web Fetch tool registrations.
 
 ## Documentation
 

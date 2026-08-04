@@ -1,19 +1,80 @@
 # Safety
 
-Sandbox is Pipkin's repository-write boundary for model Bash and direct `write` and `edit` calls. Readonly remains a separate confirmation owner for `edit` and `write`.
+Pipkin has two independent controls:
 
-## Sandbox
+- **Sandbox** limits where model Bash and direct `write`/`edit` calls may write.
+- **Readonly** asks for confirmation before resolved `edit` and `write` calls.
 
-On macOS, Sandbox starts enabled for main sessions. Child sessions resolve their own policy from their runtime cwd and snapshot their parent's current enabled state and requested write mode when spawned; this is immutable for that child lifetime. Inspection and planning children use repository-read-only mode: final Seatbelt denies protect the workspace/worktree root, its worktree Git directory, and its common Git directory, while intended temporary and cache writes remain available. Model Bash runs under macOS Seatbelt through `/usr/bin/sandbox-exec`; workspace-write sessions can write the canonical repository workspace, required Git administration state, canonical temporary roots, and reviewed npm, pnpm, and GitHub CLI cache/state roots. GitHub CLI gets its effective `$XDG_CACHE_HOME/gh` or `~/.cache/gh` cache and `$XDG_STATE_HOME/gh` or `~/.local/state/gh` state directory; its credential/config and extension/data directories receive no GitHub CLI-specific write grant. Direct `write` and `edit` calls are separately checked against the canonical workspace and cannot escape through ordinary traversal or symlinks; repository-read-only children additionally cannot mutate protected repository roots even if those tools are admitted.
+Neither is hostile-code isolation. Pipkin extensions still run with the Pi process's permissions.
 
-`/sandbox` opens a compact settings panel showing the current state, canonical workspace-only direct-tool scope, and resolved Bash writable roots. It also shows bounded in-memory direct-tool and marker-correlated kernel Bash write-denial history for the active runtime. `/sandbox on` and `/sandbox off` change future model Bash and direct-tool calls in the current session; `/sandbox off` also affects subsequently spawned Pipkin subagents. The footer shows `sandbox` when enabled and `sandbox off` after an explicit disable; after a confirmed denial it turns warning-yellow and includes the active-runtime count. Existing child sessions and already-running sandboxed descendants are unaffected by later toggles.
+## Platform behavior
 
-Linux reports `sandbox unavailable` and uses ordinary local model Bash without direct-tool gating: repository preservation there is instruction-only. A macOS policy-initialization failure also reports unavailable, but keeps model Bash and direct mutations blocked until `/sandbox off` is chosen explicitly; reload the session to retry initialization. `/sandbox off` is an operator-controlled snapshot for later children; a child created while enabled retains its resolved restriction after the parent is turned off. `bash_outcome` is Context's concise-success view over this same Sandbox-owned Bash path, not another shell route or confinement boundary; it remains unavailable when direct `bash` is inactive. Processes composes this same current-host path for managed foreground commands; Sandbox retains process-group ownership and stops managed leases before its binding is revoked. User `!` and `!!` Bash remains ordinary user shell execution on every platform.
+| Platform or state                        | Model Bash and direct writes                                                                                                |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Enabled macOS main session               | Seatbelt-confined Bash and canonical-workspace checks for direct `write`/`edit`                                             |
+| Enabled macOS repository-read-only child | Repository workspace/worktree, worktree Git, and common Git writes denied; intended temporary/cache writes remain available |
+| Linux                                    | `sandbox unavailable`; ordinary local Bash and instruction-only repository preservation                                     |
+| macOS initialization failure             | Sandbox reports unavailable and blocks model Bash/direct mutation until the operator explicitly chooses `/sandbox off`      |
 
-Managed commands must remain foreground and non-interactive: do not use `&`, `nohup`, daemonization, terminal attachment, or input. Start one only when useful work can continue rather than immediately joining it. `get_process_result` waits eventfully once for completion or a case-sensitive readiness literal; a timeout only stops that wait. Use bounded tail or literal search inspection for output that affects the next decision, or `resultMode:"outcome"` to retain a point-in-time result for `context_recall`; later output needs another output-mode inspection. Failed process output remains visible. `/processes` offers current-session live inspection and a confirmed stop action; it closes with the session and never exposes arbitrary PID control.
+Sandbox starts enabled for macOS main sessions. Child sessions resolve policy from their runtime cwd and snapshot their parent's current enabled state and requested write mode when spawned. Later toggles do not change existing children or already-running descendants.
 
-Sandbox permits broad filesystem reads, unrestricted networking, repository destruction, and shared Git-state changes in workspace-write mode. Repository-read-only mode is defense in depth for trusted inspection agents, not hostile-code isolation. Enabled macOS model Bash therefore has unrestricted networking. Web Fetch is separately trusted extension-owned network and temporary-filesystem egress outside Sandbox mediation: Sandbox cannot authorize a private Web Fetch target. Web Fetch independently permits only validated public targets, including its own host-resolver check before each request; the browser resolves again when connecting, so DNS validation materially reduces SSRF but is not address pinning and leaves a DNS-rebinding window. It does not protect secrets or prevent data from reaching providers or network services. Sandbox does not constrain extension JavaScript, extension-owned processes, provider traffic, Web Fetch, custom tools, language servers, remote mutations, or inherited credentials. Hostile or unattended work needs an external boundary such as a devcontainer, VM, or remote sandbox.
+## Sandbox controls
+
+| Command        | Effect                                                                                       |
+| -------------- | -------------------------------------------------------------------------------------------- |
+| `/sandbox`     | Show current state, direct-tool scope, Bash writable roots, and bounded write-denial history |
+| `/sandbox on`  | Enable protection for later model Bash/direct-tool calls in the current session              |
+| `/sandbox off` | Disable protection for later calls and children spawned afterward                            |
+
+The footer shows `sandbox` while enabled, `sandbox off` after explicit disable, and a warning with the active-runtime denial count after confirmed direct-tool or kernel Bash write denial.
+
+On macOS, model Bash runs through `/usr/bin/sandbox-exec`. Workspace-write mode admits the canonical repository workspace, required Git administration, canonical temporary roots, and reviewed npm, pnpm, and GitHub CLI cache/state roots. Direct `write` and `edit` calls are separately checked against the canonical workspace and cannot escape through ordinary traversal or symlinks.
+
+Repository-read-only mode adds final denies for the workspace/worktree and Git authorities after writable-root allows. It is defense in depth for trusted inspection agents, not a general filesystem sandbox.
+
+`bash_outcome` uses the same Sandbox-owned Bash path as ordinary model Bash. Processes uses that path for current-host managed foreground commands. User `!` and `!!` shell execution remains ordinary user-controlled Bash on every platform.
+
+## Child-session snapshots
+
+| Child role                                                     | Requested mode on enabled macOS |
+| -------------------------------------------------------------- | ------------------------------- |
+| Explore, Review, nested Explore                                | Repository read-only            |
+| Implement planner and reviewers                                | Repository read-only            |
+| Implement implementation, revision, reconciliation, and repair | Workspace write                 |
+
+Public subagents share the invoking working tree. Implement workers instead receive owned disposable worktrees. Turning Sandbox off affects only children created afterward.
+
+## Managed-process safety
+
+Managed commands must remain foreground and non-interactive. Do not use `&`, `nohup`, daemonization, terminal attachment, or input.
+
+Start a process only when useful independent work can continue. Wait once for completion or a case-sensitive readiness literal instead of polling; a wait timeout leaves the process running. Inspect bounded output when it affects the next decision, retain a point-in-time outcome when status is enough, and stop unneeded work explicitly. `/processes` provides current-session inspection and confirmed stop controls; it does not expose arbitrary PID management.
+
+Each runtime permits at most eight active processes, retains at most 32 records and 1 MiB of output per record, and closes with the session.
+
+## Trust boundary and non-goals
+
+Workspace-write Sandbox mode still permits broad reads, unrestricted networking, repository destruction, and shared Git-state changes within admitted roots. Sandbox does not confine:
+
+- extension JavaScript or extension-owned processes;
+- provider traffic or Web Fetch;
+- language servers or custom tools;
+- remote mutations or inherited credentials;
+- hostile repository code.
+
+Web Fetch separately validates public targets, but browser resolution after host validation leaves a DNS-rebinding window. Its requests and temporary artifacts are outside Sandbox and Readonly mediation.
+
+Use a devcontainer, VM, remote sandbox, or equivalent external boundary for hostile or unattended work.
 
 ## Readonly
 
-Readonly keeps the established `/readonly` and `Ctrl+R` workflow for resolved `edit` and `write` calls. It is independent from Sandbox: accepting an edit does not expand Sandbox reachability, and turning Sandbox off does not disable Readonly.
+Readonly controls only resolved `edit` and `write` calls.
+
+| Control         | Effect                                          |
+| --------------- | ----------------------------------------------- |
+| `/readonly`     | Inspect or toggle the current confirmation mode |
+| `/readonly on`  | Require confirmation                            |
+| `/readonly off` | Disable confirmation                            |
+| `Ctrl+R`        | Toggle the same workflow                        |
+
+Readonly and Sandbox remain independent: approving an edit does not expand Sandbox reachability, and disabling Sandbox does not disable Readonly. Where Pi cannot show an interactive prompt, Readonly steps aside.

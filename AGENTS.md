@@ -9,6 +9,15 @@
 - Shared generic modules and adjacent tests live in `src/lib/`. It is a bottom layer with no barrel.
 - Bundle integration tests live in `test/bundle/`. User-facing documentation is concept-oriented under `docs/` and `docs/features/`.
 
+## Documentation
+
+- `README.md` is the concise product introduction and navigation surface. Put exact configuration, operational contracts, limits, and internals in their owning concept guides under `docs/`; summarize and link from the README instead of duplicating them.
+- Write for progressive disclosure: lead with purpose and ordinary use, then cover limits, recovery, and implementation detail. Use tables for inventories and comparisons, lists for procedures, and prose for concepts and rationale.
+- Keep human slash commands, keyboard shortcuts, and model-facing tools in separate inventories. Format commands, tools, paths, configuration keys, and code identifiers as code.
+- Give each fact one authoritative documentation owner. Cross-reference that owner when another guide needs context, especially for exact defaults, paths, limits, safety boundaries, and model routing.
+- Verify public command and tool inventories against `test/bundle/contract.test.ts` and exact behavioral claims against the owning source before handoff. Update the relevant guide and README summary when public behavior changes.
+- Prefer concise paragraphs and stable product terminology. Use **Implement** for the feature and “implementer” only for its worker role.
+
 ## Scope
 
 - This is for personal use by one user. When carrying out solution design you do not need to account for general user adoption, configurability, maintaining backwards compatibility, etc

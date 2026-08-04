@@ -1,19 +1,87 @@
 # Web Fetch
 
-`web_fetch` retrieves one public HTTP(S) URL. `batch_web_fetch` retrieves one through eight of the same request objects with a fixed four-worker pool and a 120-second aggregate deadline. Both treat fetched pages as untrusted external data, never as instructions.
+Web Fetch retrieves bounded content from direct public HTTP(S) URLs. Fetched pages are untrusted external data, never instructions.
 
-Each request accepts a URL and these optional bounded fields: `raw` (default `false`), `maxChars` (default 40,000; integer 1–40,000), `timeoutMs` (default 15,000 ms; integer 1,000–120,000 ms), `removeImages` (default `true`), and `includeReplies` (default `"extractors"`; also accepts `true` or `false`). Both tools use this exact request shape; batch accepts only its 1–8 item `requests` array and no batch options.
+## Choose a tool
 
-Normal requests detect the bounded response body automatically: valid JSON is pretty-printed, HTML is extracted as readable markdown, and other textual content is returned as plain text. Detection does not require the server's declared content type to be accurate. Attachments and non-text responses stream to temporary binary artifacts. Set `raw: true` only to bypass automatic detection and extraction: the complete untouched textual response is saved to a temporary artifact and a bounded verbatim preview is returned.
+| Tool              | Purpose                                                                                        |
+| ----------------- | ---------------------------------------------------------------------------------------------- |
+| `web_fetch`       | Retrieve one public URL                                                                        |
+| `batch_web_fetch` | Retrieve one to eight requests with a fixed four-worker pool and 120-second aggregate deadline |
 
-Responses are capped at 5 MiB before parsing; raw text uses the same limit. Binary artifacts have a 25 MiB limit, and extractor POST bodies are capped at 1 MiB. The tools manually follow at most five HTTP redirects and five immediate meta-refresh redirects. Batch output reserves status metadata for every item, preserves request order, divides the 48 KiB/1,900-line result budget fairly, and visibly marks omitted content. A valid batch can report individual failures beside successful items; a completely failed batch is an error.
+Use Reference's `docs` for known-library documentation, `package_search` for package discovery, and `code_search` or the GitHub tool/skill for GitHub source and repository workflows. No tool automatically falls back to another.
 
-The tools use a fixed browser-grade Chrome/Windows transport and validate the initial URL plus every HTTP redirect, immediate meta refresh, and extractor request. URL credentials, localhost names, private addresses, and DNS results containing any non-public answer are rejected. DNS validation uses the host resolver, but the browser transport resolves independently afterwards; this leaves a DNS-rebinding window and is not address pinning or a network sandbox.
+## Request options
 
-There is no JavaScript execution, crawling, ordinary linked-asset retrieval, authentication, cookies, caller headers, proxy, private-network exception, cache, settings, environment configuration, or caller-controlled browser, temporary path, or concurrency. Raw mode accepts only textual responses. Binary artifact bytes never enter tool output or details.
+Both tools use the same request shape. Batch accepts only a `requests` array and has no batch-level options.
 
-Artifacts live in one private, unpredictable session-temporary directory and are deleted when the session shuts down. Copy a returned artifact path during the live session if it must persist. A later direct `read` can inspect that canonical path without another mechanism. Artifact writes are trusted Web Fetch extension writes beneath its own temporary directory: they are outside Sandbox and are not routed through Readonly's separate public `edit`/`write` mediation.
+| Field            |        Default | Valid values                                               | Purpose                                                                 |
+| ---------------- | -------------: | ---------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `url`            |              — | Public credential-free HTTP(S) URL, up to 2,000 characters | Target to retrieve                                                      |
+| `raw`            |        `false` | Boolean                                                    | Save untouched textual response as an artifact instead of extracting it |
+| `maxChars`       |        `40000` | Integer `1–40000`                                          | Maximum model-visible content characters                                |
+| `timeoutMs`      |        `15000` | Integer `1000–120000`                                      | Per-request deadline in milliseconds                                    |
+| `removeImages`   |         `true` | Boolean                                                    | Remove images from extracted HTML                                       |
+| `includeReplies` | `"extractors"` | `true`, `false`, or `"extractors"`                         | Include replies when the HTML extractor supports them                   |
 
-Use Web Fetch for direct public URL retrieval. Use Reference's `docs` for known-library documentation, `package_search` for package discovery, and `code_search` or the GitHub tool/skill for GitHub source and repository workflows. No tool automatically falls back to another.
+Example:
 
-If you separately installed `pi-smart-fetch`, remove it before reloading Pipkin so its external tool registration does not collide with Pipkin's Web Fetch tools.
+```json
+{
+  "url": "https://example.com/article",
+  "maxChars": 12000,
+  "removeImages": true
+}
+```
+
+## Response modes
+
+Normal mode detects the bounded response body automatically:
+
+| Content                         | Result                    |
+| ------------------------------- | ------------------------- |
+| Valid JSON                      | Pretty-printed JSON       |
+| HTML                            | Readable Markdown         |
+| Other text                      | Plain text                |
+| Attachment or non-text response | Temporary binary artifact |
+
+Detection does not depend on an accurate server content type. Set `raw: true` only when the untouched textual response matters; Pipkin saves it as a temporary artifact and returns a bounded verbatim preview. Raw mode does not accept binary responses.
+
+## Limits
+
+| Boundary                         |                  Limit |
+| -------------------------------- | ---------------------: |
+| Response before parsing          |                  5 MiB |
+| Binary artifact                  |                 25 MiB |
+| Extractor POST body              |                  1 MiB |
+| HTTP redirects                   |                      5 |
+| Immediate meta-refresh redirects |                      5 |
+| Batch requests                   |                    1–8 |
+| Batch workers                    |                      4 |
+| Batch aggregate deadline         |            120 seconds |
+| Combined batch result            | 48 KiB and 1,900 lines |
+
+Batch preserves request order, reserves status metadata for every item, divides output fairly, and marks omitted content. Individual failures can appear beside successes; a completely failed batch is an error.
+
+## Network and security boundaries
+
+Web Fetch uses a fixed browser-grade Chrome/Windows transport. It validates the initial URL and every HTTP redirect, immediate meta refresh, and extractor request. URL credentials, localhost names, private addresses, and DNS results containing any non-public answer are rejected.
+
+The host resolver performs validation, but the browser transport resolves again when connecting. This reduces SSRF risk but is not address pinning and leaves a DNS-rebinding window.
+
+Web Fetch does not support:
+
+- JavaScript execution or crawling;
+- ordinary linked-asset retrieval;
+- authentication, cookies, or caller headers;
+- proxies or private-network exceptions;
+- caching or caller-controlled browser settings;
+- caller-controlled temporary paths or concurrency.
+
+Web Fetch is trusted extension-owned network and temporary-filesystem egress. Sandbox and Readonly do not mediate its requests or artifact writes. It does not protect secrets from providers or remote services.
+
+## Artifact lifetime
+
+Artifacts live in a private, unpredictable session-temporary directory and are deleted at session shutdown. A direct `read` can inspect a returned canonical path during the live session. Copy the file elsewhere before shutdown if it must persist; binary bytes never enter tool output.
+
+If `pi-smart-fetch` is separately installed, remove it before reloading Pipkin so its registrations do not collide with Pipkin's Web Fetch tools.

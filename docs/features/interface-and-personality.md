@@ -1,34 +1,40 @@
 # Interface and Personality
 
-Pipkin's interface features are intentionally quiet. They keep important state visible and name sessions so they can be found again.
+Pipkin's interface features stay quiet: UI keeps operational state visible, while Personality makes sessions recognizable later.
 
-## UI: a footer that answers operational questions
+## UI
 
-Pipkin replaces Pi's footer with a compact display of:
+The footer presents a width-aware subset of:
 
 - current directory and Git branch;
 - selected model and thinking level;
 - active-branch cost across model switches;
 - prompt-cache hit rate;
-- context-window usage;
-- ordered extension statuses such as Sandbox mode, readonly mode, or pending papercuts.
+- context-window usage; and
+- ordered extension status such as Sandbox mode, Readonly mode, or pending Papercuts.
 
-Cost includes assistant usage and prompt-cache read/write pricing on the active branch. Subscription-auth responses are excluded, and cost disappears when the branch contains only subscription usage. Cache hit rate appears after cache activity exists.
+Cost includes assistant usage and prompt-cache read/write pricing on the active branch. Subscription-auth responses are excluded; cost disappears when the branch contains only subscription usage. Cache hit rate appears after cache activity exists.
 
-The footer adapts to terminal width rather than forcing every metric onto one crowded line. Sandbox, Readonly, and Papercuts publish source-owned `normal`, `warning`, or `error` statuses with required icons; unknown statuses retain their icon or receive a generic fallback. Sandbox turns warning-yellow with its active-runtime denial count after a confirmed direct-tool or kernel Bash write denial.
+Sandbox, Readonly, and Papercuts publish source-owned `normal`, `warning`, or `error` statuses. Sandbox becomes warning-yellow and shows its active-runtime denial count after a confirmed direct-tool or kernel Bash write denial.
 
-UI owns the generic Activity widget and status presentation. Subagents, Implement, and Processes independently publish bounded source-qualified activity; Processes owns its `/processes` inspector and process cleanup, while UI never imports a producer or owns its records. It does not replace Pi's editor, working indicator, ordinary selectors, built-in tool renderers, or custom-message presentation.
+UI also owns the generic bounded Activity view. Processes, Subagents, and Implement publish source-qualified activity but keep ownership of their records, lifecycle, inspectors, and cleanup. Activity excludes transcript content, prompts, commands, cwd, raw output, hidden runtime objects, and cost or token telemetry.
 
-## Personality: sessions you can recognize later
+UI does not replace Pi's editor, working indicator, selectors, built-in tool renderers, or custom-message presentation.
 
-Personality gives an unnamed session a short descriptive title from its early non-empty prompts. It uses the `utility` model preset and sets Pi's canonical session name, so the result appears naturally in `/resume`, the terminal title, and the window title.
+## Session naming
 
-Naming runs asynchronously and never delays the main agent turn. Up to three early prompts may provide context if naming has not completed yet. Personality never replaces a manually assigned or existing name.
+Personality gives an unnamed session a short title from up to three early non-empty prompts. It uses the `utility` model preset asynchronously, so naming never delays the main agent turn, and writes Pi's canonical session name for `/resume`, terminal titles, and window titles.
 
-A successful Implement run or restart also receives an asynchronous `Implement …` title from the beginning of its root plan. It replaces any existing name because the active run owns the session identity; unavailable or invalid generation falls back to `Implement run`. Blocked, control, and all-checked no-op commands do not rename the session.
+Personality never replaces a manually assigned or existing ordinary-session name. If the utility model cannot run, it derives a local fallback from the initial prompt. Titles use the first non-empty generated line, remove labels and surrounding quotes, collapse whitespace, and stop at 40 characters on a word boundary.
 
-If the utility model cannot run, ordinary naming derives a local fallback from the initial prompt. Titles use the first non-empty generated line, strip labels and surrounding quotes, collapse whitespace, and stop at 40 characters on a word boundary.
+When an Implement run or restart successfully starts, it receives an asynchronous `Implement …` title based on a bounded excerpt of the root plan. The active run owns session identity, so this replaces an earlier name. Invalid or unavailable generation falls back to `Implement run`. Blocked, control, and all-checked no-op commands leave the name unchanged.
 
-On an empty fresh TUI startup or `/new` session, Personality also shows a synchronous one- or two-line greeting. It uses the optional configured nickname and local time band, includes only the current workspace basename as muted detail, and disappears on the first accepted input or session-name update. It never appears on reload, resume, or fork, waits for no model or history lookup, and never changes session naming.
+See [Configuration](../configuration.md#model-presets) for model routing.
 
-See [Configuration](../configuration.md#model-presets) for the `utility` route and [nickname](../configuration.md#nickname) for the greeting setting.
+## Fresh-session welcome
+
+On an empty fresh TUI startup or `/new`, Personality shows a synchronous one- or two-line greeting. It may use the configured nickname and local time band, and includes only the workspace basename as muted detail.
+
+The greeting disappears on first accepted input or a session-name update. It never appears on reload, resume, or fork, waits for no model or history lookup, and does not change session naming.
+
+See [Nickname](../configuration.md#nickname) for configuration.
