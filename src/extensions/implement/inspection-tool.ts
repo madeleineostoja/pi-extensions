@@ -10,11 +10,14 @@ import { inspectRun, listCheckoutRuns } from "./controls.js";
 import { ExecGitClient } from "./git.js";
 import { checkoutPaths, runStatePath } from "./store.js";
 
-export const InspectImplementRunParams = Type.Object({
-  runId: Type.Optional(
-    Type.String({ description: "Retained Implement run ID to inspect." }),
-  ),
-});
+export const InspectImplementRunParams = Type.Object(
+  {
+    runId: Type.Optional(
+      Type.String({ description: "Retained Implement run ID to inspect." }),
+    ),
+  },
+  { additionalProperties: false },
+);
 
 type InspectImplementRunInput = Static<typeof InspectImplementRunParams>;
 

@@ -18,13 +18,13 @@ const RecallParams = Type.Object(
     lines: Type.Optional(
       Type.String({
         description:
-          'Optional 1-indexed line range like "10-20" or single line "5"',
+          'Optional 1-indexed line range like "10-20" or single line "5"; mutually exclusive with find.',
       }),
     ),
     find: Type.Optional(
       Type.String({
         description:
-          "Optional case-insensitive literal search for one-text-block results",
+          "Optional case-insensitive literal search for one-text-block results; mutually exclusive with lines",
       }),
     ),
   },

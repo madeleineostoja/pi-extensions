@@ -185,7 +185,7 @@ export function registerProcessTools(
     name: "start_process",
     label: "start_process",
     description:
-      "Start a foreground non-interactive command only when independent work can continue; do not start it for an immediate terminal join.",
+      "Start and manage a foreground non-interactive command. Returns an ID for later inspection, joining, or stopping.",
     parameters: StartParams,
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
       const snapshot = await runtime().start({
@@ -203,7 +203,7 @@ export function registerProcessTools(
     name: "get_process_result",
     label: "get_process_result",
     description:
-      "Join once or intentionally inspect a managed process. Select output when it affects the next decision; outcome retains a point-in-time result for context_recall.",
+      "Join or inspect a managed process. Output includes retained process output; outcome retains a point-in-time status for context_recall.",
     parameters: ResultParams,
     async execute(toolCallId, params, signal) {
       const mode = params.resultMode ?? "output";
@@ -229,7 +229,7 @@ export function registerProcessTools(
     name: "stop_process",
     label: "stop_process",
     description:
-      "Explicitly stop a no-longer-needed managed process. Choose output when its final output matters or recallable outcome when only final status matters.",
+      "Stop a managed process and return its final output or a recallable point-in-time status.",
     parameters: StopParams,
     async execute(toolCallId, params) {
       const mode = params.resultMode ?? "output";

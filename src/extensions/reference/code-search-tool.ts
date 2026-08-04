@@ -9,26 +9,50 @@ import {
 } from "./github.js";
 import { createReferenceInvocation } from "./invocation.js";
 
-export const CodeSearchParameters = Type.Object({
-  query: Type.String({
-    description:
-      "Non-confidential GitHub code-search text. GitHub syntax is permitted in this text.",
-  }),
-  repository: Type.Optional(
-    Type.String({
-      description: "Exact GitHub owner/name repository filter.",
+export const CodeSearchParameters = Type.Object(
+  {
+    query: Type.String({
+      description:
+        "Non-confidential GitHub code-search text. GitHub syntax is permitted in this text.",
     }),
-  ),
-  owner: Type.Optional(
-    Type.String({
-      description: "GitHub personal-account filter; emits user:owner.",
-    }),
-  ),
-  language: Type.Optional(Type.String()),
-  filename: Type.Optional(Type.String()),
-  extension: Type.Optional(Type.String()),
-  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.codeLimit })),
-});
+    repository: Type.Optional(
+      Type.String({
+        description:
+          "Exact GitHub owner/name repository filter; mutually exclusive with owner.",
+      }),
+    ),
+    owner: Type.Optional(
+      Type.String({
+        description:
+          "GitHub personal-account filter; emits user:owner and is mutually exclusive with repository.",
+      }),
+    ),
+    language: Type.Optional(
+      Type.String({
+        description: "GitHub language qualifier for matching source files.",
+      }),
+    ),
+    filename: Type.Optional(
+      Type.String({
+        description: "GitHub filename qualifier for matching source files.",
+      }),
+    ),
+    extension: Type.Optional(
+      Type.String({
+        description: "GitHub file-extension qualifier without a leading dot.",
+      }),
+    ),
+    limit: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: LIMITS.codeLimit,
+        description:
+          "Maximum code matches to return, bounded by GitHub search limits.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
 export type CodeSearchInput = Static<typeof CodeSearchParameters>;
 
 type CodeMatch = {

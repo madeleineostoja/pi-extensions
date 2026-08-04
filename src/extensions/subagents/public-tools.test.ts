@@ -274,16 +274,17 @@ describe("public subagent tools", () => {
       "get_subagent_result",
       "steer_subagent",
     ]);
-    expect(tools[0].description).toContain("foreground");
-    expect(tools[0].description).toContain("concrete independent work");
+    expect(tools[0].description).toContain("Foreground returns");
+    expect(tools[0].description).toContain(
+      "background starts independent work",
+    );
     expect(tools[0].promptSnippet).toBeUndefined();
     expect(tools[0].promptGuidelines).toBeUndefined();
     expect(tools[0].renderCall).toEqual(expect.any(Function));
     expect(tools[0].renderResult).toEqual(expect.any(Function));
-    expect(tools[1].description).toContain("result becomes a dependency");
-    expect(tools[1].description).toContain("wait:true");
-    expect(tools[1].description).toContain("do not poll");
-    expect(tools[2].description).toContain("result becomes a dependency");
+    expect(tools[1].description).toContain("wait:true blocks");
+    expect(tools[1].description).toContain("wait:false returns");
+    expect(tools[2].description).toContain("running background subagent");
     const parameters = JSON.parse(JSON.stringify(tools[0].parameters));
     expect(parameters.properties.subagent_type).toMatchObject({
       type: "string",

@@ -86,6 +86,7 @@ describe("runtime-injected explore tool", () => {
     expect(parameters.properties.breadth).toMatchObject({
       type: "string",
       enum: ["quick", "medium", "very thorough"],
+      description: expect.stringContaining("exploration depth"),
     });
     expect(tool.description).toContain("repository-preserving");
     expect(tool.description).toContain("cannot spawn agents");

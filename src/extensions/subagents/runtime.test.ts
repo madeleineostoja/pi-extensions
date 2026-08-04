@@ -20,6 +20,7 @@ import {
   SubagentRuntime,
   serializeInspectionForSummary,
 } from "./runtime.js";
+import { MANAGED_COMPLETION_FINAL_ACTION } from "./managed-completion.js";
 
 type Message = {
   customType?: string;
@@ -102,8 +103,10 @@ function realContext(model: unknown, modelRegistry: unknown) {
 }
 
 function completionTool(options: unknown): {
+  description?: string;
   executionMode?: string;
   parameters: unknown;
+  promptGuidelines?: string[];
   execute: (...args: any[]) => Promise<unknown>;
 } {
   const customTools = (options as { customTools?: unknown[] }).customTools;
@@ -115,8 +118,10 @@ function completionTool(options: unknown): {
     throw new Error("Managed completion tool was not registered.");
   }
   return tool as {
+    description?: string;
     executionMode?: string;
     parameters: unknown;
+    promptGuidelines?: string[];
     execute: (...args: any[]) => Promise<unknown>;
   };
 }
@@ -1128,6 +1133,9 @@ describe("SubagentRuntime", () => {
       status: "completed",
       result: { result: "accepted" },
     });
+    expect(completionTool(options).promptGuidelines).toEqual([
+      MANAGED_COMPLETION_FINAL_ACTION,
+    ]);
   });
 
   it("retries a schema-rejected completion through Pi's sequential agent loop", async () => {

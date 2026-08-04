@@ -15,36 +15,34 @@ const PublicAgentType = StringEnum(PUBLIC_BUILTIN_TYPES, {
   description: "Explore or Review subagent type.",
 });
 
-const Thinking = StringEnum([
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const);
+const Thinking = StringEnum(
+  ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const,
+  { description: "Optional reasoning-effort level for the subagent." },
+);
 
-export const PublicAgentParameters = Type.Object({
-  subagent_type: PublicAgentType,
-  prompt: Type.String({ description: "Task prompt for the subagent." }),
-  description: Type.Optional(
-    Type.String({ description: "Short human-readable task summary." }),
-  ),
-  mode: Type.Optional(
-    StringEnum(["foreground", "background"] as const, {
-      description:
-        "Default foreground. Use background only when independent work can proceed before the result is needed.",
-    }),
-  ),
-  model: Type.Optional(
-    Type.String({
-      description:
-        "Optional exact provider/model override. Use only when the ID is explicitly supplied or otherwise known; do not guess available models.",
-    }),
-  ),
-  thinking: Type.Optional(Thinking),
-});
+export const PublicAgentParameters = Type.Object(
+  {
+    subagent_type: PublicAgentType,
+    prompt: Type.String({ description: "Task prompt for the subagent." }),
+    description: Type.Optional(
+      Type.String({ description: "Short human-readable task summary." }),
+    ),
+    mode: Type.Optional(
+      StringEnum(["foreground", "background"] as const, {
+        description:
+          "Default foreground. Use background only when independent work can proceed before the result is needed.",
+      }),
+    ),
+    model: Type.Optional(
+      Type.String({
+        description:
+          "Optional exact provider/model override. Use only when the ID is explicitly supplied or otherwise known; do not guess available models.",
+      }),
+    ),
+    thinking: Type.Optional(Thinking),
+  },
+  { additionalProperties: false },
+);
 
 export type PublicAgentParams = Static<typeof PublicAgentParameters>;
 
@@ -87,7 +85,7 @@ export function registerPublicAgentTools({
     name: "Agent",
     label: "Agent",
     description:
-      "Run an Explore or Review subagent. Defaults to foreground. Use background only when concrete independent work can proceed before the result is needed; otherwise use foreground.",
+      "Run an Explore or Review subagent. Foreground returns its completed result; background starts independent work that can later be joined or inspected.",
     parameters: PublicAgentParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const mode = params.mode ?? "foreground";
@@ -145,15 +143,18 @@ export function registerPublicAgentTools({
     name: "get_subagent_result",
     label: "get_subagent_result",
     description:
-      "Join or inspect a background subagent. Use wait:true when its result becomes a dependency. Use wait:false only for an intentional non-blocking status check; do not poll.",
-    parameters: Type.Object({
-      id: Type.String({ description: "Background subagent id." }),
-      wait: Type.Boolean({
-        description:
-          "false returns current status immediately; true waits for completion.",
-        default: false,
-      }),
-    }),
+      "Join or inspect a background subagent. wait:true blocks for completion; wait:false returns its current status immediately.",
+    parameters: Type.Object(
+      {
+        id: Type.String({ description: "Background subagent id." }),
+        wait: Type.Boolean({
+          description:
+            "false returns current status immediately; true waits for completion.",
+          default: false,
+        }),
+      },
+      { additionalProperties: false },
+    ),
     async execute(_toolCallId, params) {
       const snapshot = await runtime.result(params.id, params.wait);
       return toolResult(snapshot);
@@ -165,11 +166,14 @@ export function registerPublicAgentTools({
     name: "steer_subagent",
     label: "steer_subagent",
     description:
-      "Cooperatively queue guidance for a running background subagent after its current assistant turn's tool calls. Fails for unknown or completed agents; join when its result becomes a dependency.",
-    parameters: Type.Object({
-      id: Type.String({ description: "Background subagent id." }),
-      message: Type.String({ description: "Steering message to send." }),
-    }),
+      "Queue guidance for a running background subagent after its current assistant turn's tool calls. Fails for unknown or completed agents.",
+    parameters: Type.Object(
+      {
+        id: Type.String({ description: "Background subagent id." }),
+        message: Type.String({ description: "Steering message to send." }),
+      },
+      { additionalProperties: false },
+    ),
     async execute(_toolCallId, params) {
       const snapshot = await runtime.steer(params.id, params.message);
       return toolResult(snapshot);

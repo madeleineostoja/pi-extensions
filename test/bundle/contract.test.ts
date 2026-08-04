@@ -37,6 +37,7 @@ import {
   EXPLORE_PROMPT,
   REVIEW_PROMPT,
 } from "../../src/extensions/subagents/agent-profiles.js";
+import { undocumentedSchemaProperties } from "../support/schema-descriptions.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const expectedExtensions = [
@@ -587,6 +588,14 @@ describe("Pipkin bundle", () => {
           promptGuidelines: nativeBash.promptGuidelines,
         });
       } else {
+        expect(
+          definition.description?.trim(),
+          `${definition.name} description`,
+        ).not.toBe("");
+        expect(
+          undocumentedSchemaProperties(definition.parameters),
+          `${definition.name} schema`,
+        ).toEqual([]);
         expect(definition.promptSnippet).toBeUndefined();
         expect(definition.promptGuidelines).toBeUndefined();
       }
@@ -825,6 +834,7 @@ describe("Pipkin bundle", () => {
       { executeSandboxBash, startSandboxManagedExecution },
       { retainResult, decodeRetainedResult },
       { getSubagentRuntime },
+      { MANAGED_COMPLETION_FINAL_ACTION },
       { generateSessionName },
     ] = await Promise.all([
       import("#lib/config"),
@@ -835,6 +845,7 @@ describe("Pipkin bundle", () => {
       import("#sandbox/bash"),
       import("#context/retained-result"),
       import("#subagents/runtime"),
+      import("#subagents/completion"),
       import("#personality/session-name"),
     ]);
 
@@ -850,6 +861,9 @@ describe("Pipkin bundle", () => {
     expect(retainResult).toBeTypeOf("function");
     expect(decodeRetainedResult).toBeTypeOf("function");
     expect(getSubagentRuntime).toBeTypeOf("function");
+    expect(MANAGED_COMPLETION_FINAL_ACTION).toBe(
+      "Call pi_managed_complete exactly once as your final action after all other required work.",
+    );
     expect(generateSessionName).toBeTypeOf("function");
     expect(snapshotGlobalSymbols()).toEqual(before);
   });

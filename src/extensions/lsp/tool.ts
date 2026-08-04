@@ -53,40 +53,54 @@ const Actions = [
 ] as const;
 type Action = (typeof Actions)[number];
 
-export const LspParameters = Type.Object({
-  action: Type.Union(Actions.map((action) => Type.Literal(action))),
-  file: Type.Optional(
-    Type.String({
-      description:
-        "Workspace-relative or absolute source file. Required except status and workspace_symbols without a target file.",
-    }),
-  ),
-  line: Type.Optional(
-    Type.Integer({ description: "1-indexed line for position actions." }),
-  ),
-  column: Type.Optional(
-    Type.Integer({ description: "1-indexed column for position actions." }),
-  ),
-  symbol: Type.Optional(
-    Type.String({
-      description:
-        "Symbol text resolved on line when column is omitted; use occurrence to choose repeated text.",
-    }),
-  ),
-  occurrence: Type.Optional(
-    Type.Integer({
-      minimum: 1,
-      description: "1-indexed occurrence of symbol on the specified line.",
-    }),
-  ),
-  query: Type.Optional(Type.String({ description: "Workspace symbol query." })),
-  timeout: Type.Optional(
-    Type.Number({
-      minimum: 0.1,
-      description: "Request timeout in seconds, capped at 15 seconds.",
-    }),
-  ),
-});
+export const LspParameters = Type.Object(
+  {
+    action: Type.Union(
+      Actions.map((action) => Type.Literal(action)),
+      {
+        description:
+          "Semantic operation to perform. Position actions require a file and line; diagnostics requires a file; workspace_symbols and status may omit a file.",
+      },
+    ),
+    file: Type.Optional(
+      Type.String({
+        description:
+          "Workspace-relative or absolute source file. Required except status and workspace_symbols without a target file.",
+      }),
+    ),
+    line: Type.Optional(
+      Type.Integer({ description: "1-indexed line for position actions." }),
+    ),
+    column: Type.Optional(
+      Type.Integer({ description: "1-indexed column for position actions." }),
+    ),
+    symbol: Type.Optional(
+      Type.String({
+        description:
+          "Symbol text resolved on line when column is omitted; use occurrence to choose repeated text.",
+      }),
+    ),
+    occurrence: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description: "1-indexed occurrence of symbol on the specified line.",
+      }),
+    ),
+    query: Type.Optional(
+      Type.String({
+        description:
+          "Workspace symbol query; required when action is workspace_symbols.",
+      }),
+    ),
+    timeout: Type.Optional(
+      Type.Number({
+        minimum: 0.1,
+        description: "Request timeout in seconds, capped at 15 seconds.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
 type LspInput = Omit<Static<typeof LspParameters>, "action"> & {
   action: Action;
 };
@@ -114,7 +128,7 @@ export function registerLsp(pi: ExtensionAPI): void {
     name: "lsp",
     label: "lsp",
     description:
-      "Read-only, workspace-scoped language-semantic queries: definitions, implementations, references, type information, symbols, hover, and explicit diagnostics. Prefer this for relationships text search may miss; use text search or Explore for broad/non-semantic discovery. Request diagnostics after a coherent edit batch, not during intentionally incomplete edits. LSP feedback does not replace required lint, typecheck, test, or build commands. If unavailable, continue with source search or project CLI tooling and do not install dependencies unless the user asks.",
+      "Read-only, workspace-scoped language-semantic queries for definitions, implementations, references, type information, symbols, hover, diagnostics, and server status. Results are bounded and reflect available configured language servers.",
     parameters: LspParameters,
     async execute(_toolCallId, input: LspInput, signal, _onUpdate, ctx) {
       return executeLsp(input, signal, ctx);

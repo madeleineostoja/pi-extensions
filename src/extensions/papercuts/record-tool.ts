@@ -3,18 +3,24 @@ import { Type } from "typebox";
 import type { PapercutObservation } from "./store.js";
 import { createPapercutStatusController } from "./status.js";
 
-const destination = Type.Union([
-  Type.Literal("agents"),
-  Type.Literal("skill"),
-  Type.Literal("test"),
-  Type.Literal("lint"),
-  Type.Literal("tooling"),
-  Type.Literal("docs"),
-  Type.Literal("code"),
-]);
+const destination = Type.Union(
+  [
+    Type.Literal("agents"),
+    Type.Literal("skill"),
+    Type.Literal("test"),
+    Type.Literal("lint"),
+    Type.Literal("tooling"),
+    Type.Literal("docs"),
+    Type.Literal("code"),
+  ],
+  {
+    description:
+      "Optional repository area most likely to own a future guardrail.",
+  },
+);
 
-function prose(maxLength: number) {
-  return Type.String({ minLength: 1, maxLength, pattern: "\\S" });
+function prose(maxLength: number, description: string) {
+  return Type.String({ minLength: 1, maxLength, pattern: "\\S", description });
 }
 
 export const PapercutObservationSchema = Type.Object(
@@ -23,17 +29,42 @@ export const PapercutObservationSchema = Type.Object(
       minLength: 1,
       maxLength: 64,
       pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+      description: "Stable lowercase registry key, one to 64 characters.",
     }),
-    title: prose(120),
-    task: prose(1_000),
-    incident: prose(2_000),
-    evidence: prose(2_000),
-    workarounds: Type.Array(prose(1_000), {
-      minItems: 1,
-      maxItems: 5,
-    }),
-    taskOutcome: prose(1_000),
-    guardrailCandidate: Type.Optional(prose(1_000)),
+    title: prose(120, "Concise title identifying the recurring friction."),
+    task: prose(
+      1_000,
+      "Assigned subject being completed when the unrelated friction occurred.",
+    ),
+    incident: prose(
+      2_000,
+      "Factual account of the avoidable friction encountered.",
+    ),
+    evidence: prose(
+      2_000,
+      "Concrete observed evidence that the friction occurred.",
+    ),
+    workarounds: Type.Array(
+      prose(
+        1_000,
+        "One workaround or detour actually exercised while continuing safely.",
+      ),
+      {
+        minItems: 1,
+        maxItems: 5,
+        description: "One to five workarounds actually used, not suggestions.",
+      },
+    ),
+    taskOutcome: prose(
+      1_000,
+      "How the assigned task completed or safely continued after the workaround.",
+    ),
+    guardrailCandidate: Type.Optional(
+      prose(
+        1_000,
+        "Optional concrete guardrail that could prevent the friction.",
+      ),
+    ),
     suggestedDestination: Type.Optional(destination),
   },
   { additionalProperties: false },

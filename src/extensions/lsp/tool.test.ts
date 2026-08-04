@@ -18,7 +18,7 @@ import {
   normalizeHoverResult,
 } from "./normalize.js";
 import { LspPool, LSP_POOL_MANAGER_KEY } from "./pool.js";
-import { executeLsp, lspStatus } from "./tool.js";
+import { LspParameters, executeLsp, lspStatus } from "./tool.js";
 
 const directories: string[] = [];
 function workspace(): string {
@@ -286,6 +286,24 @@ describe("lsp tool inputs and bounded render data", () => {
         message: "Type 'number' is not assignable to type 'string'.",
       }),
     ]);
+  });
+
+  it("documents that workspace_symbols requires query", async () => {
+    expect(
+      (
+        LspParameters.properties.query as unknown as {
+          description: string;
+        }
+      ).description,
+    ).toContain("required when action is workspace_symbols");
+    const result = await executeLsp(
+      { action: "workspace_symbols" },
+      undefined,
+      context(workspace()) as never,
+    );
+    expect(result.content[0]?.text).toContain(
+      "workspace_symbols requires query",
+    );
   });
 
   it("bounds aggregate model-visible output", async () => {

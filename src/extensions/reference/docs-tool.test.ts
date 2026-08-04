@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { executeDocs, normalizeName, normalizeVersion } from "./docs-tool.js";
+import {
+  DocsParameters,
+  executeDocs,
+  normalizeName,
+  normalizeVersion,
+} from "./docs-tool.js";
 import {
   Context7Error,
   createContext7Transport,
@@ -115,13 +120,20 @@ describe("docs resolution", () => {
     });
   });
 
-  it("fails unavailable pins and direct conflicts before network work", async () => {
+  it("documents and rejects unavailable or conflicting direct version pins before network work", async () => {
+    expect(
+      (
+        DocsParameters.properties.version as unknown as {
+          description: string;
+        }
+      ).description,
+    ).toContain("already includes a version");
     const client = transport();
     await expect(
       executeDocs({ ...input, version: "2" }, undefined, {
         transport: () => client,
       }),
-    ).rejects.toThrow("exact Context7 version is unavailable");
+    ).rejects.toThrow("exact documentation version is unavailable");
     expect(client.context).not.toHaveBeenCalled();
     const direct = transport();
     await expect(

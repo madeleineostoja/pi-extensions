@@ -1,11 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
-import { executePackageSearch } from "./package-search-tool.js";
+import {
+  PackageSearchParameters,
+  executePackageSearch,
+} from "./package-search-tool.js";
 import type { Context7Transport } from "./context7.js";
 import type { GithubSearchClient } from "./github.js";
 import { NpmError } from "./npm.js";
 
 describe("package_search", () => {
   it("keeps provider order and native ranks while preserving a failed provider", async () => {
+    expect(
+      (
+        PackageSearchParameters.properties.query as unknown as {
+          description: string;
+        }
+      ).description,
+    ).toContain("documentation, npm, and GitHub");
     const context = {
       search: vi.fn(async () => [
         {
@@ -69,7 +79,7 @@ describe("package_search", () => {
     );
     const groups = result.details.groups as Array<Record<string, unknown>>;
     expect(groups.map((group) => group.provider)).toEqual([
-      "context7",
+      "documentation",
       "npm",
       "github",
     ]);
@@ -95,6 +105,7 @@ describe("package_search", () => {
     );
     expect(result.content[0]?.text).toContain("npm (error [unavailable]");
     expect(context.search).toHaveBeenCalledWith("widget", "widget", 2);
+    expect(JSON.stringify(result)).not.toMatch(/context7/i);
     expect(github.searchRepositories).toHaveBeenCalledWith(
       expect.objectContaining({ q: "widget is:public", per_page: 2 }),
     );

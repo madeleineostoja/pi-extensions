@@ -19,6 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { completeText, type CompleteTextDeps } from "#lib/complete";
+import { MANAGED_COMPLETION_FINAL_ACTION } from "./managed-completion.js";
 import { parseModelRef } from "#lib/model-ref";
 import { prepareSandboxChild } from "#sandbox/runtime";
 import type { ModelPreset, ThinkingLevel } from "#lib/config";
@@ -1012,7 +1013,10 @@ export class SubagentRuntime {
           description: "Specific codebase exploration question to answer.",
         }),
         breadth: Type.Optional(
-          StringEnum(["quick", "medium", "very thorough"] as const),
+          StringEnum(["quick", "medium", "very thorough"] as const, {
+            description:
+              "Requested exploration depth; use quick for a narrow trace and very thorough for broad multi-step mapping.",
+          }),
         ),
       }),
       executionMode: "sequential",
@@ -1697,9 +1701,7 @@ export class SubagentRuntime {
       description: completion.definition.description,
       promptSnippet:
         "Complete the managed task with its required structured result.",
-      promptGuidelines: [
-        "Call pi_managed_complete exactly once as your final action after all other required work.",
-      ],
+      promptGuidelines: [MANAGED_COMPLETION_FINAL_ACTION],
       parameters: completion.definition.schema,
       executionMode: "sequential",
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
