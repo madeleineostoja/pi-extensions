@@ -60,10 +60,8 @@ describe("context_recall", () => {
     expect(definition.description).toContain(
       "retained by an outcome tool or hidden behind a Context pruning stub",
     );
-    expect(definition.promptSnippet).toContain("retained outcome");
-    expect(definition.promptGuidelines[0]).toContain(
-      "returned by bash_outcome or another recallable outcome",
-    );
+    expect(definition.promptSnippet).toBeUndefined();
+    expect(definition.promptGuidelines).toBeUndefined();
   });
 
   it("returns stored full content unchanged", async () => {
@@ -134,6 +132,12 @@ describe("context_recall", () => {
       toolResult("text", [{ type: "text", text: "one\ntwo" }]),
     ]);
     expect(definition.parameters.additionalProperties).toBe(false);
+    expect(definition.parameters.properties.lines.description).toContain(
+      "mutually exclusive with find",
+    );
+    expect(definition.parameters.properties.find.description).toContain(
+      "mutually exclusive with lines",
+    );
     await expect(
       execute({ id: "text", lines: "1", find: "one" }),
     ).rejects.toThrow("either lines or find");

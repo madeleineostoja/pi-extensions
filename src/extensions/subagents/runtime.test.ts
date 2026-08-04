@@ -102,6 +102,7 @@ function realContext(model: unknown, modelRegistry: unknown) {
 }
 
 function completionTool(options: unknown): {
+  description?: string;
   executionMode?: string;
   parameters: unknown;
   execute: (...args: any[]) => Promise<unknown>;
@@ -115,6 +116,7 @@ function completionTool(options: unknown): {
     throw new Error("Managed completion tool was not registered.");
   }
   return tool as {
+    description?: string;
     executionMode?: string;
     parameters: unknown;
     execute: (...args: any[]) => Promise<unknown>;
@@ -1128,6 +1130,7 @@ describe("SubagentRuntime", () => {
       status: "completed",
       result: { result: "accepted" },
     });
+    expect(completionTool(options)).not.toHaveProperty("promptGuidelines");
   });
 
   it("retries a schema-rejected completion through Pi's sequential agent loop", async () => {
@@ -1514,6 +1517,43 @@ describe("SubagentRuntime", () => {
       status: "completed",
       result: { result: "session accepted" },
     });
+  });
+
+  it("delivers slash-prefixed child tasks to the model without executing a registered child command", async () => {
+    const { pi } = fakePi();
+    const sandboxCommand = vi.fn();
+    const harness = await createManagedSessionHarness(
+      [fauxAssistantMessage("inspection complete")],
+      {
+        extensionFactories: [
+          (childPi) =>
+            childPi.registerCommand("sandbox", {
+              description: "Records sandbox command execution.",
+              handler: sandboxCommand,
+            }),
+        ],
+      },
+    );
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: harness.createSession,
+    });
+
+    await runtime.runManagedAgent({
+      type: "general-purpose",
+      prompt: "/sandbox off",
+      cwd: TEST_CWD,
+      ctx: realContext(harness.model, harness.modelRegistry),
+    });
+
+    expect(sandboxCommand).not.toHaveBeenCalled();
+    expect(harness.sessions[0]!.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "user",
+          content: [{ type: "text", text: "/sandbox off" }],
+        }),
+      ]),
+    );
   });
 
   it("stops before accepted completion and fails on pre-acceptance provider errors", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { executeCodeSearch } from "./code-search-tool.js";
+import { CodeSearchParameters, executeCodeSearch } from "./code-search-tool.js";
 import type { GithubSearchClient } from "./github.js";
 
 const publicItem = {
@@ -125,7 +125,21 @@ describe("code_search", () => {
     expect(github).not.toHaveBeenCalled();
   });
 
-  it("rejects conflicting or invalid qualifiers before any request", async () => {
+  it("documents and rejects mutually exclusive repository filters before any request", async () => {
+    expect(
+      (
+        CodeSearchParameters.properties.repository as unknown as {
+          description: string;
+        }
+      ).description,
+    ).toContain("mutually exclusive with owner");
+    expect(
+      (
+        CodeSearchParameters.properties.owner as unknown as {
+          description: string;
+        }
+      ).description,
+    ).toContain("mutually exclusive with repository");
     const github = {
       searchCode: vi.fn(),
       searchRepositories: vi.fn(),

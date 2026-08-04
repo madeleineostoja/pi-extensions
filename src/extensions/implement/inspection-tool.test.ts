@@ -301,12 +301,8 @@ describe("inspect_implement_run", () => {
     });
 
     expect(tool.name).toBe("inspect_implement_run");
-    expect(tool.promptSnippet).toBe(
-      "List and inspect durable Pipkin Implement runs in the current checkout.",
-    );
-    expect(tool.promptGuidelines).toEqual([
-      expect.stringContaining("before searching `.pi/pipkin/implement`"),
-    ]);
+    expect(tool.promptSnippet).toBeUndefined();
+    expect(tool.promptGuidelines).toBeUndefined();
     expect(result.content[0].text).toBe(
       "Implement: no retained runs in this checkout.",
     );

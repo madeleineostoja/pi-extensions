@@ -8,6 +8,7 @@ import {
   buildRevisionPrompt,
 } from "./prompts.js";
 import type { OverallRepairPacket } from "./overall-repair.js";
+import { REPOSITORY_PRESERVING_ROLE_CONTRACT } from "./worker-invocation.js";
 import type { RevisionPacket } from "./revision.js";
 
 describe("whole-plan and repair prompts", () => {
@@ -71,6 +72,12 @@ describe("whole-plan and repair prompts", () => {
       );
     }
     expect(repair).toContain("run-base..current-repair");
+    for (const prompt of [initial, anchored]) {
+      expect(prompt).not.toContain("Do not edit files, change Git state");
+    }
+    expect(REPOSITORY_PRESERVING_ROLE_CONTRACT).toContain(
+      "inspect and verify only",
+    );
   });
 
   it("requires reviewer-owned reassessment and first changed-candidate metadata", () => {
@@ -185,7 +192,10 @@ describe("whole-plan and repair prompts", () => {
     }
     expect(source).toContain("publication metadata, not approval");
     expect(overall).toContain("Finalize the complete findings array");
-    expect(overall).toContain("roughly 150–300 words");
+    expect(overall).toContain(
+      "concise, proportionate replacement Markdown handoff draft",
+    );
+    expect(overall).not.toMatch(/\b\d+[–-]\d+ words/);
     expect(overall).toContain(
       "Summary; Material changes; Verification; Residual findings",
     );

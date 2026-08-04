@@ -34,6 +34,7 @@ export type SpawnArgs<TSchemaValue extends TSchema = TSchema> = {
   role?: PiImplementWorkerRole;
   taskId?: string;
   readOnly?: boolean;
+  sandboxWriteMode?: "workspace-write" | "repository-read-only";
   completion?: {
     description: string;
     schema: TSchemaValue;
@@ -149,9 +150,18 @@ export class RuntimeSubagentClient implements SubagentClient {
       ctx: this.ctx,
       rosterVisibility: "hide",
       completion: args.completion as never,
-      ...(args.readOnly || role === "reviewer" || role === "planner"
-        ? readOnlyWorkerTools(this.pi.getActiveTools?.())
-        : { excludeTools: mutableWorkerExcludedTools() }),
+      ...((args.sandboxWriteMode ??
+        (args.readOnly || role === "reviewer" || role === "planner"
+          ? "repository-read-only"
+          : "workspace-write")) === "repository-read-only"
+        ? {
+            ...readOnlyWorkerTools(this.pi.getActiveTools?.()),
+            sandboxWriteMode: "repository-read-only" as const,
+          }
+        : {
+            excludeTools: mutableWorkerExcludedTools(),
+            sandboxWriteMode: "workspace-write" as const,
+          }),
     });
     return snapshot.id as SubagentHandle<Static<TSchemaValue>>;
   }

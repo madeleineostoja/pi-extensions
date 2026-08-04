@@ -44,6 +44,7 @@ export function createSandboxToolGate(options: {
       tool: event.toolName,
       input: (event.input ?? {}) as { path?: unknown },
       policy,
+      writeMode: options.state.writeMode(),
     });
     if (decision.kind === "allow") {
       return undefined;

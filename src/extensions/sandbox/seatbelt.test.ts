@@ -13,6 +13,7 @@ const policy: SandboxPolicy = {
   workspaceRoot: "/workspace",
   temporaryRoots: ["/temporary"],
   cacheRoots: ["/home/user/cache/store"],
+  dependencyRoots: [],
   writableRoots: ["/workspace", "/temporary", "/home/user/cache/store"],
   creationRoots: ["/home/user/cache"],
 };
@@ -59,6 +60,125 @@ describe("Sandbox Seatbelt profile", () => {
     expect(profile).not.toContain("(deny default)\n");
     expect(() => sandboxProfile(policy, 'PIPKIN_bad"')).toThrow(
       "invalid denial marker",
+    );
+  });
+
+  it("keeps repository-root literal and descendant denies after every write allow", () => {
+    const linked: SandboxPolicy = {
+      ...policy,
+      git: {
+        worktreeRoot: "/tmp/worktree",
+        worktreeGitDir: "/tmp/git/worktrees/child",
+        commonGitDir: "/tmp/git",
+      },
+      workspaceRoot: "/tmp/worktree",
+      writableRoots: ["/tmp", "/home/user/cache/store"],
+      creationRoots: [],
+    };
+    const profile = sandboxProfile(
+      linked,
+      "PIPKIN_ABC123",
+      "repository-read-only",
+    );
+    const tail = profile.indexOf(
+      '(deny file-write* (with message "PIPKIN_ABC123")',
+    );
+    expect(tail).toBeGreaterThan(profile.indexOf("(allow file-write*"));
+    expect(profile.slice(tail)).not.toContain("(allow file-write*");
+    for (const [index, root] of [
+      "/tmp/worktree",
+      "/tmp/git/worktrees/child",
+      "/tmp/git",
+    ].entries()) {
+      expect(profile).toContain(`(literal (param "protected${index}"))`);
+      expect(profile).toContain(`(subpath (param "protected${index}"))`);
+      expect(profile).not.toContain(root);
+    }
+    expect(
+      sandboxArguments({
+        policy: linked,
+        shell: { shell: "/bin/bash", args: ["-s"] },
+        marker: "PIPKIN_ABC123",
+        writeMode: "repository-read-only",
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        "-D",
+        "root0=/temporary",
+        "-D",
+        "protected0=/tmp/worktree",
+        "-D",
+        "protected1=/tmp/git/worktrees/child",
+        "-D",
+        "protected2=/tmp/git",
+      ]),
+    );
+  });
+
+  it("keeps safe cache creation authority but omits dependency installation roots", () => {
+    const readOnly: SandboxPolicy = {
+      ...policy,
+      workspaceRoot: "/tmp/checkout",
+      cacheRoots: ["/home/user/missing-cache/store"],
+      dependencyRoots: ["/package-workspace/node_modules"],
+      writableRoots: [
+        "/tmp/checkout",
+        "/temporary",
+        "/home/user/missing-cache/store",
+        "/package-workspace/node_modules",
+      ],
+      creationRoots: ["/home/user/missing-cache"],
+    };
+    const profile = sandboxProfile(
+      readOnly,
+      "PIPKIN_ABC123",
+      "repository-read-only",
+    );
+    const arguments_ = sandboxArguments({
+      policy: readOnly,
+      shell: { shell: "/bin/bash", args: ["-s"] },
+      marker: "PIPKIN_ABC123",
+      writeMode: "repository-read-only",
+    });
+
+    expect(arguments_).toEqual(
+      expect.arrayContaining([
+        "-D",
+        "root0=/temporary",
+        "-D",
+        "root1=/home/user/missing-cache/store",
+        "-D",
+        "create0=/home/user/missing-cache",
+      ]),
+    );
+    expect(arguments_).not.toContain("/package-workspace/node_modules");
+    expect(profile).toContain('(literal (param "create0"))');
+  });
+
+  it("binds arbitrary protected paths without interpolating them into the profile", () => {
+    const protectedPath = '/tmp/a"back\\slash\n(comment)';
+    const unsafe: SandboxPolicy = {
+      ...policy,
+      workspaceRoot: protectedPath,
+      writableRoots: [protectedPath, "/temporary"],
+    };
+    const profile = sandboxProfile(
+      unsafe,
+      "PIPKIN_ABC123",
+      "repository-read-only",
+    );
+    const arguments_ = sandboxArguments({
+      policy: unsafe,
+      shell: { shell: "/bin/bash", args: ["-s"] },
+      marker: "PIPKIN_ABC123",
+      writeMode: "repository-read-only",
+    });
+
+    expect(profile).toContain('(literal (param "protected0"))');
+    expect(profile).toContain('(subpath (param "protected0"))');
+    expect(profile).not.toContain(protectedPath);
+    expect(arguments_).toEqual(
+      expect.arrayContaining(["-D", `protected0=${protectedPath}`]),
     );
   });
 

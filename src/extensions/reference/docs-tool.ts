@@ -11,21 +11,24 @@ import {
   validId,
 } from "./context7.js";
 
-export const DocsParameters = Type.Object({
-  subject: Type.String({
-    description:
-      "Context7 library name or direct /owner/library[/version] or /owner/library@version ID.",
-  }),
-  question: Type.String({
-    description: "Focused documentation question sent to Context7.",
-  }),
-  version: Type.Optional(
-    Type.String({
+export const DocsParameters = Type.Object(
+  {
+    subject: Type.String({
       description:
-        "Exact Context7 version label; omitted uses provider-current documentation.",
+        "Library name or direct /owner/library[/version] or /owner/library@version ID.",
     }),
-  ),
-});
+    question: Type.String({
+      description: "Focused documentation question for the selected library.",
+    }),
+    version: Type.Optional(
+      Type.String({
+        description:
+          "Exact documentation version label; omitted uses current material. With a direct subject ID that already includes a version, it must match that version.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
 export type DocsInput = Static<typeof DocsParameters>;
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -37,7 +40,7 @@ export function registerDocs(pi: ExtensionAPI, agentDir: () => string): void {
     name: "docs",
     label: "docs",
     description:
-      "Retrieve bounded Context7 documentation for a named library or direct Context7 ID. Omit version for provider-current material; an explicit version must be an exact Context7 pin. This tool does not inspect the project or delegate research.",
+      "Retrieve bounded documentation for a named library or direct library ID. Omit version for current material; an explicit version must be an exact pin. This tool does not inspect the project or delegate research.",
     parameters: DocsParameters,
     async execute(_toolCallId, input: DocsInput, signal) {
       return executeDocs(input, signal, { agentDir: agentDir() });
@@ -83,7 +86,7 @@ export async function executeDocs(
         ) {
           throw new Context7Error(
             "version-unavailable",
-            "The requested exact Context7 version is unavailable; no substitute was used.",
+            "The requested exact documentation version is unavailable; no substitute was used.",
           );
         }
         throw error;
@@ -101,7 +104,7 @@ export async function executeDocs(
       ) {
         throw new Context7Error(
           "redirect",
-          "Context7 returned an invalid or conflicting logical documentation redirect.",
+          "The documentation provider returned an invalid or conflicting logical redirect.",
         );
       }
       id = redirectId.id;
@@ -111,7 +114,7 @@ export async function executeDocs(
     if (document.snippets.length === 0) {
       throw new Context7Error(
         "empty",
-        "Context7 returned no documentation snippets for this request.",
+        "The documentation provider returned no snippets for this request.",
       );
     }
     return buildResult(
@@ -124,9 +127,33 @@ export async function executeDocs(
         truncations: document.truncations ?? [],
       },
     );
+  } catch (error) {
+    throw neutralDocumentationError(error);
   } finally {
     transport.dispose();
   }
+}
+
+function neutralDocumentationText(value: string): string {
+  return value.replace(/context7/giu, "documentation provider");
+}
+
+function visibleLocation(location: string | undefined): string | undefined {
+  return location && !/context7/iu.test(location) ? location : undefined;
+}
+
+function neutralDocumentationError(error: unknown): Error {
+  if (error instanceof Context7Error) {
+    return new Context7Error(
+      error.kind,
+      neutralDocumentationText(error.message),
+    );
+  }
+  if (error instanceof Error) {
+    error.message = neutralDocumentationText(error.message);
+    return error;
+  }
+  return new Error("The documentation request failed.");
 }
 
 type NormalizedInput = { subject: string; question: string; version?: string };
@@ -165,7 +192,7 @@ function normalizeInput(input: DocsInput): NormalizedInput {
     );
   }
   if (subject.startsWith("/") && !validId(subject)) {
-    throw new Error("docs subject is not a valid direct Context7 ID.");
+    throw new Error("docs subject is not a valid direct library ID.");
   }
   return { subject, question, ...(version ? { version } : {}) };
 }
@@ -180,7 +207,7 @@ async function resolve(
   if (candidates.length === 0) {
     throw new Context7Error(
       "not-found",
-      "Context7 did not find a documentation library for this subject.",
+      "The documentation provider did not find a library for this subject.",
     );
   }
   const normalizedSubject = normalizeName(input.subject);
@@ -191,7 +218,7 @@ async function resolve(
   if (!selected) {
     throw new Context7Error(
       "not-found",
-      "Context7 did not find a documentation library for this subject.",
+      "The documentation provider did not find a library for this subject.",
     );
   }
   const warning =
@@ -217,7 +244,7 @@ async function resolve(
   if (!version) {
     throw new Context7Error(
       "version-unavailable",
-      "The requested exact Context7 version is unavailable; no substitute was used.",
+      "The requested exact documentation version is unavailable; no substitute was used.",
     );
   }
   const id = version.id ?? `${selected.id}/${version.label}`;
@@ -225,7 +252,7 @@ async function resolve(
   if (!validId(id) || advertisedPin !== requested) {
     throw new Context7Error(
       "malformed",
-      "Context7 advertised an invalid exact version identifier.",
+      "The documentation provider advertised an invalid exact version identifier.",
     );
   }
   return {
@@ -244,7 +271,7 @@ function resolveDirect(input: NormalizedInput): Resolved {
   const requested = input.version && normalizeVersion(input.version);
   if (existing !== undefined && requested && existing !== requested) {
     throw new Error(
-      "The direct Context7 ID and version input specify conflicting exact versions.",
+      "The direct library ID and version input specify conflicting exact versions.",
     );
   }
   const id =
@@ -252,7 +279,7 @@ function resolveDirect(input: NormalizedInput): Resolved {
       ? input.subject
       : `${input.subject}/${input.version}`;
   if (!validId(id)) {
-    throw new Error("docs subject is not a valid direct Context7 ID.");
+    throw new Error("docs subject is not a valid direct library ID.");
   }
   return {
     id,
@@ -296,15 +323,22 @@ function buildResult(
     activity.truncations.length > 0 ||
     resolved.warnings.some((warning) => warning.includes("truncated"));
   const warnings = [
-    ...(providerTruncated ? ["Context7 provider material was truncated."] : []),
+    ...(providerTruncated
+      ? ["Documentation provider material was truncated."]
+      : []),
     ...resolved.warnings,
     ...activity.truncations,
-  ].slice(0, LIMITS.warnings);
+  ]
+    .map(neutralDocumentationText)
+    .slice(0, LIMITS.warnings);
   const locations = snippets
-    .flatMap((snippet) => (snippet.location ? [snippet.location] : []))
+    .flatMap((snippet) => {
+      const location = visibleLocation(snippet.location);
+      return location ? [location] : [];
+    })
     .slice(0, LIMITS.detailsLocations);
   const details: Record<string, unknown> = {
-    provider: "Context7",
+    provider: "documentation",
     resolution: {
       mode: resolved.mode,
       selectedId: resolved.id,
@@ -354,7 +388,7 @@ function render(
   warnings: string[],
 ): { text: string; truncated: boolean } {
   const lines = [
-    `Context7 documentation for ${resolved.subject}`,
+    `Documentation for ${resolved.subject}`,
     `Resolution: ${resolved.mode}; ID: ${resolved.id}`,
     resolved.state === "provider-current"
       ? "Version: provider-current"
@@ -368,13 +402,14 @@ function render(
       truncated = true;
       break;
     }
-    const title = snippet.title ?? "Context7 snippet";
-    const source = snippet.location ? ` (${snippet.location})` : "";
+    const title = snippet.title ?? "Documentation snippet";
+    const location = visibleLocation(snippet.location);
+    const source = location ? ` (${location})` : "";
     const language = snippet.language ? ` [${snippet.language}]` : "";
     lines.push(`\n${index + 1}. ${title}${language}${source}\n${snippet.text}`);
   }
   if (snippets.length > LIMITS.snippets) {
-    lines.push("\nAdditional Context7 snippets were omitted.");
+    lines.push("\nAdditional documentation snippets were omitted.");
   }
   return { text: lines.join("\n"), truncated };
 }

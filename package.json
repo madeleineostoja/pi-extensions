@@ -26,6 +26,7 @@
       "./src/extensions/context/index.ts",
       "./src/extensions/ui/index.ts",
       "./src/extensions/personality/index.ts",
+      "./src/extensions/guidance/index.ts",
       "./src/extensions/lsp/index.ts",
       "./src/extensions/processes/index.ts",
       "./src/extensions/subagents/index.ts",
@@ -44,6 +45,7 @@
     "#sandbox/bash": "./src/extensions/sandbox/bash-capability.ts",
     "#context/retained-result": "./src/extensions/context/retained-result.ts",
     "#subagents/runtime": "./src/extensions/subagents/runtime.ts",
+    "#subagents/completion": "./src/extensions/subagents/managed-completion.ts",
     "#personality/session-name": "./src/extensions/personality/session-name.ts",
     "#test/*": "./test/support/*.ts"
   },

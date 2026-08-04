@@ -23,6 +23,17 @@ import {
 import type { SandboxSessionState } from "./state.js";
 import { sandboxStatus, syncSandboxStatus } from "./status.js";
 
+function effectiveBashWriteScopes(
+  repositoryReadOnly: boolean,
+  policy: NonNullable<ReturnType<SandboxSessionState["policy"]>>,
+): readonly string[] {
+  return repositoryReadOnly
+    ? [...policy.temporaryRoots, ...policy.cacheRoots].filter(
+        (root, index, roots) => roots.indexOf(root) === index,
+      )
+    : policy.writableRoots;
+}
+
 function formatDenial(denial: SandboxDenial): string {
   if (denial.kind === "direct") {
     const requested = denial.requestedPath
@@ -40,13 +51,22 @@ function panelDetail(
   denials: SandboxDenialRecorder,
 ): string {
   const status = sandboxStatus(state, supportedMac);
-  const lines = [`State: ${status}`];
+  const repositoryReadOnly = status === "on" && state.repositoryReadOnly();
+  const lines = [
+    `State: ${status}${repositoryReadOnly ? " (repository-read-only child)" : ""}`,
+  ];
   const policy = state.policy();
   if (policy) {
-    lines.push(`Direct write/edit scope: ${policy.workspaceRoot}`);
+    lines.push(
+      repositoryReadOnly
+        ? "Direct write/edit scope: repository mutation denied"
+        : `Direct write/edit scope: ${policy.workspaceRoot}`,
+    );
     lines.push(
       "Sandbox Bash write scopes:",
-      ...policy.writableRoots.map((root) => `  ${root}`),
+      ...effectiveBashWriteScopes(repositoryReadOnly, policy).map(
+        (root) => `  ${root}`,
+      ),
     );
   }
   if (status === "unavailable") {

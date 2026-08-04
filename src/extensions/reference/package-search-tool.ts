@@ -17,18 +17,26 @@ import {
 import { createReferenceInvocation } from "./invocation.js";
 import { NpmError, searchNpm, type NpmPackage } from "./npm.js";
 
-export const PackageSearchParameters = Type.Object({
-  query: Type.String({
-    description:
-      "Non-confidential package search text sent separately to Context7, npm, and GitHub.",
-  }),
-  limit: Type.Optional(
-    Type.Integer({ minimum: 1, maximum: LIMITS.packageLimit }),
-  ),
-});
+export const PackageSearchParameters = Type.Object(
+  {
+    query: Type.String({
+      description:
+        "Non-confidential package search text sent separately to documentation, npm, and GitHub searches.",
+    }),
+    limit: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: LIMITS.packageLimit,
+        description:
+          "Maximum results requested from each search, bounded by provider limits.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
 export type PackageSearchInput = Static<typeof PackageSearchParameters>;
 
-type Provider = "context7" | "npm" | "github";
+type Provider = "documentation" | "npm" | "github";
 type Group<T> = {
   provider: Provider;
   status: "ok" | "error";
@@ -74,7 +82,7 @@ export function registerPackageSearch(
     name: "package_search",
     label: "package_search",
     description:
-      "Discover separately ranked Context7 documentation, public npm packages, and explicitly public GitHub repositories. Results are provider signals, not identity matching or recommendations.",
+      "Discover separately ranked ecosystem documentation, public npm packages, and explicitly public GitHub repositories. Results are provider signals, not identity matching or recommendations.",
     parameters: PackageSearchParameters,
     async execute(_toolCallId, input: PackageSearchInput, signal) {
       return executePackageSearch(input, signal, { agentDir: agentDir() });
@@ -127,7 +135,7 @@ export async function executePackageSearch(
           normalized.limit,
         );
       } catch (error) {
-        return errorGroup("context7", error);
+        return errorGroup("documentation", error);
       }
     })();
     const githubTask = (async () => {
@@ -176,7 +184,7 @@ export async function executePackageSearch(
       result.status === "fulfilled"
         ? result.value
         : errorGroup(
-            (["context7", "npm", "github"] as const)[index]!,
+            (["documentation", "npm", "github"] as const)[index]!,
             result.reason,
           ),
     ) as [Group<ContextResult>, Group<NpmPackage>, Group<GithubRepository>];
@@ -240,7 +248,7 @@ async function contextProvider(
       };
     });
     return {
-      provider: "context7",
+      provider: "documentation",
       status: "ok",
       results: selected,
       truncated:
@@ -251,7 +259,7 @@ async function contextProvider(
         ),
     };
   } catch (error) {
-    return errorGroup("context7", error);
+    return errorGroup("documentation", error);
   }
 }
 
@@ -367,7 +375,7 @@ function buildResult(
     const details = { query: input.query, limit: input.limit, groups };
     const text = [
       `Package discovery for: ${input.query}`,
-      "Context7 documentation availability, npm publication data, and public GitHub repositories are separately ranked provider signals; they are not matched, compared, or recommendations.",
+      "Documentation availability, npm publication data, and public GitHub repositories are separately ranked provider signals; they are not matched, compared, or recommendations.",
       npmGuidance(groups[1]),
       ...groups.map(renderGroup),
     ].join("\n");
@@ -440,14 +448,18 @@ function strictText(value: unknown, maximum: number): string | undefined {
 
 function errorGroup(provider: Provider, error: unknown): Group<never> {
   const npmKind = provider === "npm" ? npmErrorKind(error) : undefined;
+  const message =
+    provider === "documentation"
+      ? "Documentation search failed."
+      : error instanceof Error
+        ? error.message
+        : `${provider} search failed.`;
   return {
     provider,
     status: "error",
     results: [],
     ...(npmKind ? { errorKind: npmKind } : {}),
-    error: boundedError(
-      error instanceof Error ? error.message : `${provider} search failed.`,
-    ),
+    error: boundedError(message),
   };
 }
 

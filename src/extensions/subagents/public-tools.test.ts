@@ -26,12 +26,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 });
 
 import { loadPipkinConfig } from "#lib/config";
-import {
-  AGENT_PROMPT_GUIDELINES,
-  EXPLORE_PROMPT,
-  GENERAL_PROMPT,
-  REVIEW_PROMPT,
-} from "./agent-profiles.js";
+import { EXPLORE_PROMPT, REVIEW_PROMPT } from "./agent-profiles.js";
 import { ForegroundInterruptGuard } from "./foreground-interrupt.js";
 import { registerSubagentLifecycle } from "./lifecycle.js";
 import { registerPublicAgentTools } from "./public-tools.js";
@@ -63,6 +58,7 @@ type ToolDef = {
   name: string;
   description: string;
   parameters: unknown;
+  promptSnippet?: string;
   promptGuidelines?: string[];
   execute: (...args: any[]) => Promise<any>;
   renderCall?: (...args: any[]) => unknown;
@@ -278,32 +274,21 @@ describe("public subagent tools", () => {
       "get_subagent_result",
       "steer_subagent",
     ]);
-    expect(tools[0].description).toContain("foreground");
-    expect(tools[0].description).toContain("concrete independent work");
-    expect(tools[0].promptGuidelines).toEqual(AGENT_PROMPT_GUIDELINES);
-    expect(tools[0].promptGuidelines).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("Use Explore for non-trivial"),
-        expect.stringContaining("Use lsp directly"),
-        expect.stringContaining("use Review as an independent second pass"),
-        expect.stringContaining("Do not self-review"),
-        expect.stringContaining("Do not use General merely"),
-        expect.stringContaining("context pruning and Pi compaction"),
-        expect.stringContaining("no worktree isolation"),
-        expect.stringContaining("immediately call get_subagent_result"),
-        expect.stringContaining("never guess available model IDs"),
-      ]),
+    expect(tools[0].description).toContain("Foreground returns");
+    expect(tools[0].description).toContain(
+      "background starts independent work",
     );
+    expect(tools[0].promptSnippet).toBeUndefined();
+    expect(tools[0].promptGuidelines).toBeUndefined();
     expect(tools[0].renderCall).toEqual(expect.any(Function));
     expect(tools[0].renderResult).toEqual(expect.any(Function));
-    expect(tools[1].description).toContain("result becomes a dependency");
-    expect(tools[1].description).toContain("wait:true");
-    expect(tools[1].description).toContain("do not poll");
-    expect(tools[2].description).toContain("result becomes a dependency");
+    expect(tools[1].description).toContain("wait:true blocks");
+    expect(tools[1].description).toContain("wait:false returns");
+    expect(tools[2].description).toContain("running background subagent");
     const parameters = JSON.parse(JSON.stringify(tools[0].parameters));
     expect(parameters.properties.subagent_type).toMatchObject({
       type: "string",
-      enum: ["General", "Explore", "Review"],
+      enum: ["Explore", "Review"],
     });
     expect(parameters.properties.mode).toMatchObject({
       type: "string",
@@ -322,13 +307,25 @@ describe("public subagent tools", () => {
     );
   });
 
+  it("rejects unsupported public roles with the supported inventory", async () => {
+    const { pi } = makePi(["read"]);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(),
+    });
+
+    await expect(
+      runtime.runPublicAgent({
+        type: "Worker" as never,
+        prompt: "unsupported",
+        cwd: "/workspace",
+        ctx: makeCtx() as never,
+      }),
+    ).rejects.toThrow("Use Explore or Review.");
+  });
+
   it("roots public agents at the invoking cwd despite an injected legacy cwd", async () => {
     const { pi, tools } = makePi(["read"]);
-    const sessions = [
-      makeSession("general"),
-      makeSession("explore"),
-      makeSession("review"),
-    ];
+    const sessions = [makeSession("explore"), makeSession("review")];
     const createdCwds: string[] = [];
     const createSession = vi.fn(async (options?: { cwd?: string }) => {
       createdCwds.push(options?.cwd ?? "");
@@ -345,7 +342,7 @@ describe("public subagent tools", () => {
     });
     const agent = tools.find((tool) => tool.name === "Agent");
 
-    for (const subagent_type of ["General", "Explore", "Review"] as const) {
+    for (const subagent_type of ["Explore", "Review"] as const) {
       const result = await agent!.execute(
         `call-${subagent_type}`,
         {
@@ -363,8 +360,8 @@ describe("public subagent tools", () => {
         cwd: "/invoking",
       });
     }
-    expect(createSession).toHaveBeenCalledTimes(3);
-    expect(createdCwds).toEqual(["/invoking", "/invoking", "/invoking"]);
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(createdCwds).toEqual(["/invoking", "/invoking"]);
   });
 
   it("returns complete foreground content and actionable background content", async () => {
@@ -394,7 +391,7 @@ describe("public subagent tools", () => {
     try {
       const foreground = await agent!.execute(
         "call-1",
-        { subagent_type: "General", prompt: "do it" },
+        { subagent_type: "Review", prompt: "do it" },
         undefined,
         undefined,
         makeCtx(),
@@ -402,7 +399,7 @@ describe("public subagent tools", () => {
       expect(textContent(foreground)).toBe("done");
       expect(foreground.isError).toBe(false);
       expect(foreground.details).toMatchObject({
-        type: "General",
+        type: "Review",
         status: "completed",
         result: "done",
       });
@@ -485,7 +482,7 @@ describe("public subagent tools", () => {
       const first = agent!.execute(
         "call-2",
         {
-          subagent_type: "General",
+          subagent_type: "Review",
           prompt: "first task",
           description: "First agent",
         },
@@ -496,7 +493,7 @@ describe("public subagent tools", () => {
       const second = agent!.execute(
         "call-3",
         {
-          subagent_type: "Review",
+          subagent_type: "Explore",
           prompt: "second task",
           description: "Second agent",
         },
@@ -510,7 +507,7 @@ describe("public subagent tools", () => {
       expect(ui.confirm).toHaveBeenCalledWith(
         "Stop 2 foreground subagents?",
         expect.stringMatching(
-          /General: First agent[\s\S]*Review: Second agent/,
+          /Review: First agent[\s\S]*Explore: Second agent/,
         ),
         { signal: expect.any(AbortSignal) },
       );
@@ -550,7 +547,7 @@ describe("public subagent tools", () => {
     const runtime = getSubagentRuntime(pi as never);
     const completed = runtime.queue({
       owner: "test",
-      type: "General",
+      type: "Worker",
       description: "finished",
       cwd: "/workspace",
     });
@@ -640,7 +637,7 @@ describe("public subagent tools", () => {
 
     const running = runtime.queue({
       owner: "test",
-      type: "General",
+      type: "Worker",
       description: "running",
       cwd: "/workspace",
     });
@@ -657,7 +654,7 @@ describe("public subagent tools", () => {
 
     const failedForSteer = runtime.queue({
       owner: "test",
-      type: "General",
+      type: "Worker",
       description: "failed steer result",
       cwd: "/workspace",
     });
@@ -784,22 +781,15 @@ describe("public subagent tools", () => {
       "edit",
       "explore",
     ]);
-    const general = makeSession("general");
     const explore = makeSession("explore");
     const review = makeSession("review");
     const internal = makeSession("internal");
-    const sessions = [general, explore, review, internal];
+    const sessions = [explore, review, internal];
     const createSession = vi.fn(async () => ({
       session: sessions.shift()!.session,
     }));
     const runtime = new SubagentRuntime(pi as never, { createSession });
 
-    await runtime.runPublicAgent({
-      type: "General",
-      prompt: "general",
-      cwd: "/workspace",
-      ctx: makeCtx() as never,
-    });
     await runtime.runPublicAgent({
       type: "Explore",
       prompt: "explore",
@@ -820,20 +810,11 @@ describe("public subagent tools", () => {
       ctx: makeCtx() as never,
     });
 
-    for (const { session } of [general, explore, review, internal]) {
+    for (const { session } of [explore, review, internal]) {
       const activeTools = vi.mocked(session.setActiveToolsByName).mock
         .calls[0][0];
       expect(activeTools).not.toEqual(expect.arrayContaining(publicAgentTools));
     }
-    expect(general.session.setActiveToolsByName).toHaveBeenCalledWith([
-      "read",
-      "bash",
-      "bash_outcome",
-      "context_recall",
-      "record_papercut",
-      "edit",
-      "explore",
-    ]);
     expect(explore.session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
@@ -961,7 +942,7 @@ describe("public subagent tools", () => {
     const runtime = new SubagentRuntime(pi as never, { createSession });
 
     const result = await runtime.runPublicAgent({
-      type: "General",
+      type: "Review",
       prompt: "do work",
       cwd: "/workspace",
       ctx: makeCtx() as never,
@@ -991,17 +972,22 @@ describe("public subagent tools", () => {
     expect(session.setActiveToolsByName).toHaveBeenCalledWith([
       "read",
       "bash",
+      "grep",
+      "find",
+      "ls",
       "explore",
+      "record_papercut",
     ]);
     expect(session.prompt).toHaveBeenCalledWith("do work", {
       source: "extension",
+      expandPromptTemplates: false,
     });
     expect(resourceLoaderConstructions).toHaveLength(1);
     expect(resourceLoaderConstructions[0].options).toEqual({
       cwd: "/workspace",
       agentDir: "/tmp/pipkin-subagents-config",
       eventBus: expect.anything(),
-      appendSystemPrompt: [GENERAL_PROMPT],
+      appendSystemPrompt: [REVIEW_PROMPT],
     });
     expect(resourceLoaderConstructions[0].options.eventBus).not.toBe(pi.events);
     expect(reloadMock).toHaveBeenCalledBefore(createSession);
@@ -1011,8 +997,10 @@ describe("public subagent tools", () => {
     });
   });
 
-  it("uses replace-mode prompt loading and pinned tools for Explore", async () => {
-    expect(EXPLORE_PROMPT).toContain("trusted-model instruction");
+  it("uses append-mode prompt loading and pinned tools for Explore", async () => {
+    expect(EXPLORE_PROMPT).toContain(
+      "Inspect and verify only; leave the repository unchanged.",
+    );
     expect(EXPLORE_PROMPT).toContain("Use lsp when available");
     expect(EXPLORE_PROMPT).toContain("broad, literal, or non-semantic");
     expect(EXPLORE_PROMPT).toContain("fall back to search and reads");
@@ -1047,7 +1035,7 @@ describe("public subagent tools", () => {
       cwd: "/workspace",
       agentDir: "/tmp/pipkin-subagents-config",
       eventBus: expect.anything(),
-      systemPrompt: EXPLORE_PROMPT,
+      appendSystemPrompt: [EXPLORE_PROMPT],
     });
     expect(reloadMock).toHaveBeenCalledBefore(createSession);
     expect(createSession.mock.calls[0][0]).toMatchObject({
@@ -1204,7 +1192,7 @@ describe("public subagent tools", () => {
     });
 
     await runtime.runPublicAgent({
-      type: "General",
+      type: "Explore",
       prompt: "do work",
       cwd: "/workspace",
       ctx: makeCtx() as never,

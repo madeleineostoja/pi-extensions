@@ -23,6 +23,8 @@ export type SandboxPolicy = Readonly<{
   git?: SandboxGit;
   temporaryRoots: readonly string[];
   cacheRoots: readonly string[];
+  /** Dependency-installation authorities used only by workspace-write sessions. */
+  dependencyRoots: readonly string[];
   writableRoots: readonly string[];
   creationRoots: readonly string[];
 }>;
@@ -392,6 +394,7 @@ export async function resolveSandboxPolicy(
     ...(git ? { git } : {}),
     temporaryRoots,
     cacheRoots,
+    dependencyRoots,
     writableRoots,
     creationRoots,
   });

@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   chmodSync,
@@ -11,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createSandboxBashDefinition,
@@ -88,6 +90,7 @@ child.once("close", (code) => process.exit(code ?? 1));
     workspaceRoot: workspace,
     temporaryRoots: [],
     cacheRoots: [],
+    dependencyRoots: [],
     writableRoots: [workspace],
     creationRoots: [],
   };
@@ -222,6 +225,27 @@ describe("Sandbox Bash runtime", () => {
       markers.every((marker) => /^PIPKIN_[A-Fa-f0-9]+$/.test(marker)),
     ).toBe(true);
     expect(releases).toEqual(markers);
+  });
+
+  it("mirrors Pi native Bash metadata while replacing execution", async () => {
+    const { executable, policy, workspace } = fixture();
+    const runtime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+    });
+    const sandbox = createSandboxBashDefinition(workspace, runtime);
+    const native = createBashToolDefinition(workspace);
+
+    expect(sandbox).toMatchObject({
+      name: native.name,
+      label: native.label,
+      description: native.description,
+      parameters: native.parameters,
+      promptSnippet: native.promptSnippet,
+      promptGuidelines: native.promptGuidelines,
+    });
   });
 
   it("preserves Pi Bash partial updates and final result semantics", async () => {
@@ -580,6 +604,71 @@ printf last`,
       ).resolves.toEqual({ exitCode: 0 });
       expect(output.join("")).toBe("local");
     }
+  });
+
+  it("uses the same repository-read-only profile for ordinary and managed launches", async () => {
+    const { executable, policy, workspace } = fixture();
+    const arguments_: string[][] = [];
+    const runtime = createSandboxBashRuntime({
+      policy: {
+        ...policy,
+        temporaryRoots: ["/tmp"],
+        writableRoots: [workspace, "/tmp"],
+      },
+      enabled: () => true,
+      repositoryReadOnly: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+      spawn: (command, args, options) => {
+        arguments_.push([...args]);
+        return spawn(command, args, options);
+      },
+    });
+    const ctx = {
+      sessionManager: {
+        getSessionId: () => "shared-session",
+        getSessionFile: () => undefined,
+      },
+    } as never;
+    const definition = createSandboxBashDefinition(workspace, runtime);
+
+    await definition.execute(
+      "foreground-readonly",
+      { command: "printf foreground" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const lease = await runtime.startManaged({
+      toolCallId: "managed-readonly",
+      command: "printf managed",
+      cwd: workspace,
+      ctx,
+      signal: undefined,
+      onOutput: () => undefined,
+    });
+    await lease.completion;
+
+    expect(arguments_).toHaveLength(2);
+    for (const args of arguments_) {
+      const profile = args[args.indexOf("-p") + 1]!;
+      expect(args).toEqual(
+        expect.arrayContaining([
+          "-D",
+          "root0=/tmp",
+          "-D",
+          `protected0=${workspace}`,
+        ]),
+      );
+      expect(profile).toContain('(literal (param "protected0"))');
+      expect(profile).toContain('(subpath (param "protected0"))');
+    }
+    expect(arguments_[0]!.filter((value) => value.startsWith("root"))).toEqual(
+      arguments_[1]!.filter((value) => value.startsWith("root")),
+    );
+    expect(
+      arguments_[0]!.filter((value) => value.startsWith("protected")),
+    ).toEqual(arguments_[1]!.filter((value) => value.startsWith("protected")));
   });
 
   it("gives public Bash and managed leases the same protected environment", async () => {

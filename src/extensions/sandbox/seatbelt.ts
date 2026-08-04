@@ -1,5 +1,6 @@
 import { isAbsolute, normalize } from "node:path";
 import { pathIsWithin, type SandboxPolicy } from "./policy.js";
+import type { SandboxWriteMode } from "./write-mode.js";
 
 export const SANDBOX_EXECUTABLE = "/usr/bin/sandbox-exec";
 
@@ -168,20 +169,86 @@ function markedDenyDefault(marker: string | undefined): string {
   return `(deny default (with message "${marker}"))`;
 }
 
-export function sandboxProfile(policy: SandboxPolicy, marker?: string): string {
-  assertWritableRoots(policy.writableRoots);
-  assertCreationRoots(policy.creationRoots, policy.writableRoots);
-  const recursiveRules = policy.writableRoots.flatMap((_, index) => [
+function protectedRoots(policy: SandboxPolicy): readonly string[] {
+  return Object.freeze(
+    [
+      policy.workspaceRoot,
+      ...(policy.git
+        ? [policy.git.worktreeGitDir, policy.git.commonGitDir]
+        : []),
+    ].filter(
+      (root, index, roots) =>
+        roots.findIndex((candidate) => candidate === root) === index,
+    ),
+  );
+}
+
+function writableProjection(
+  policy: SandboxPolicy,
+  writeMode: SandboxWriteMode,
+): readonly string[] {
+  if (writeMode === "workspace-write") {
+    return policy.writableRoots;
+  }
+  return [...policy.temporaryRoots, ...policy.cacheRoots].filter(
+    (root, index, roots) =>
+      roots.findIndex((candidate) => candidate === root) === index,
+  );
+}
+
+function creationProjection(
+  policy: SandboxPolicy,
+  writeMode: SandboxWriteMode,
+  writableRoots: readonly string[],
+): readonly string[] {
+  if (writeMode === "workspace-write") {
+    return policy.creationRoots;
+  }
+  return policy.creationRoots.filter((creationRoot) =>
+    writableRoots.some(
+      (writableRoot) =>
+        creationRoot !== writableRoot &&
+        pathIsWithin(writableRoot, creationRoot),
+    ),
+  );
+}
+
+function protectedParameters(roots: readonly string[]): string[] {
+  return roots.map((root, index) => `protected${index}=${root}`);
+}
+
+export function sandboxProfile(
+  policy: SandboxPolicy,
+  marker?: string,
+  writeMode: SandboxWriteMode = "workspace-write",
+): string {
+  const writableRoots = writableProjection(policy, writeMode);
+  const creationRoots = creationProjection(policy, writeMode, writableRoots);
+  const repositoryRoots = protectedRoots(policy);
+  assertPaths(writableRoots, true);
+  assertPaths(repositoryRoots, true);
+  assertCreationRoots(creationRoots, writableRoots);
+  const recursiveRules = writableRoots.flatMap((_, index) => [
     `  (literal (param "root${index}"))`,
     `  (subpath (param "root${index}"))`,
   ]);
-  const creationRules = policy.creationRoots.map(
+  const creationRules = creationRoots.map(
     (_, index) => `  (literal (param "create${index}"))`,
   );
-  return `${SANDBOX_PROFILE.replace("(deny default)", markedDenyDefault(marker))}\n(allow file-write*\n${[
-    ...recursiveRules,
-    ...creationRules,
-  ].join("\n")})`;
+  const allow =
+    recursiveRules.length || creationRules.length
+      ? `\n(allow file-write*\n${[...recursiveRules, ...creationRules].join("\n")})`
+      : "";
+  const denies =
+    writeMode === "repository-read-only"
+      ? `\n${repositoryRoots
+          .flatMap((_, index) => [
+            `(deny file-write* (with message "${marker ?? "PIPKIN_REPOSITORY_READ_ONLY"}") (literal (param "protected${index}")))`,
+            `(deny file-write* (with message "${marker ?? "PIPKIN_REPOSITORY_READ_ONLY"}") (subpath (param "protected${index}")))`,
+          ])
+          .join("\n")}`
+      : "";
+  return `${SANDBOX_PROFILE.replace("(deny default)", markedDenyDefault(marker))}${allow}${denies}`;
 }
 
 export function sandboxArguments(
@@ -189,16 +256,29 @@ export function sandboxArguments(
     policy: SandboxPolicy;
     shell: Readonly<{ shell: string; args: readonly string[] }>;
     marker?: string;
+    writeMode?: SandboxWriteMode;
   }>,
 ): string[] {
+  const writeMode = options.writeMode ?? "workspace-write";
+  const writableRoots = writableProjection(options.policy, writeMode);
+  const repositoryRoots = protectedRoots(options.policy);
+  assertPaths(repositoryRoots, true);
+  const creationRoots = creationProjection(
+    options.policy,
+    writeMode,
+    writableRoots,
+  );
   const definitions = [
-    ...sandboxParameters(options.policy.writableRoots),
-    ...creationParameters(options.policy.creationRoots),
+    ...writableRoots.map((root, index) => `root${index}=${root}`),
+    ...creationParameters(creationRoots),
+    ...(writeMode === "repository-read-only"
+      ? protectedParameters(repositoryRoots)
+      : []),
   ];
   return [
     ...definitions.flatMap((value) => ["-D", value]),
     "-p",
-    sandboxProfile(options.policy, options.marker),
+    sandboxProfile(options.policy, options.marker, writeMode),
     "--",
     options.shell.shell,
     ...options.shell.args,

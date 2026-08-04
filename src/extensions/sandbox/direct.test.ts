@@ -34,6 +34,7 @@ function fixture() {
     workspaceRoot: canonicalWorkspace,
     temporaryRoots: [],
     cacheRoots: [],
+    dependencyRoots: [],
     writableRoots: [canonicalWorkspace],
     creationRoots: [],
   };

@@ -22,11 +22,11 @@ export default function (pi: ExtensionAPI): void {
   registerSandboxCommand({ pi, state, denials, supportedMac });
   pi.on("session_start", async (event, ctx) => {
     hostBinding?.dispose();
-    hostBinding = bindSandboxHost(pi.events, state.enabled);
+    hostBinding = bindSandboxHost(pi.events, state.enabled, state.writeMode);
     const started = await session.sessionStart(
       event,
       ctx,
-      hostBinding.inheritedEnabled,
+      hostBinding.inherited,
     );
     pi.registerTool(started.definition);
   });

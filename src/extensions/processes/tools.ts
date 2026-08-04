@@ -185,14 +185,7 @@ export function registerProcessTools(
     name: "start_process",
     label: "start_process",
     description:
-      "Start a foreground non-interactive command only when independent work can continue; do not start it for an immediate terminal join.",
-    promptSnippet:
-      "start_process — schedule independent foreground work, then continue useful work before joining it",
-    promptGuidelines: [
-      "Use start_process only when concrete independent work can continue before process completion; otherwise use foreground bash or bash_outcome.",
-      "Do not call start_process when the next action would be an immediate terminal join.",
-      "Managed commands must remain foreground: do not use &, nohup, daemonization, terminal attachment, or interactive input.",
-    ],
+      "Start and manage a foreground non-interactive command. Returns an ID for later inspection, joining, or stopping.",
     parameters: StartParams,
     async execute(toolCallId, params, signal, _onUpdate, ctx) {
       const snapshot = await runtime().start({
@@ -210,15 +203,7 @@ export function registerProcessTools(
     name: "get_process_result",
     label: "get_process_result",
     description:
-      "Join once or intentionally inspect a managed process. Select output when it affects the next decision; outcome retains a point-in-time result for context_recall.",
-    promptSnippet:
-      "get_process_result — wait once or inspect once; choose output for decisions and recallable outcome for status only",
-    promptGuidelines: [
-      "Use get_process_result with wait:true once completion or readiness becomes a dependency; wait:false is intentional inspection only, never polling.",
-      "A get_process_result wait timeout stops waiting, not the managed process.",
-      "Use get_process_result resultMode:output when output affects the next decision; use resultMode:outcome when only status or readiness matters. Outcome is point-in-time and recallable, while failed output stays visible.",
-      "Use a later get_process_result resultMode:output call for newer output while the process record exists.",
-    ],
+      "Join or inspect a managed process. Output includes retained process output; outcome retains a point-in-time status for context_recall.",
     parameters: ResultParams,
     async execute(toolCallId, params, signal) {
       const mode = params.resultMode ?? "output";
@@ -244,13 +229,7 @@ export function registerProcessTools(
     name: "stop_process",
     label: "stop_process",
     description:
-      "Explicitly stop a no-longer-needed managed process. Choose output when its final output matters or recallable outcome when only final status matters.",
-    promptSnippet:
-      "stop_process — stop no-longer-needed work; choose output for decisions or recallable outcome for status only",
-    promptGuidelines: [
-      "Use stop_process to explicitly stop managed processes that are no longer needed.",
-      "Use stop_process resultMode:output when final output affects the next decision; resultMode:outcome keeps a point-in-time result for context_recall. Failed output remains visible.",
-    ],
+      "Stop a managed process and return its final output or a recallable point-in-time status.",
     parameters: StopParams,
     async execute(toolCallId, params) {
       const mode = params.resultMode ?? "output";

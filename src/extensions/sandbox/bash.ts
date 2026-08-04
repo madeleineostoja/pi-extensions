@@ -169,6 +169,7 @@ export function createSandboxBashRuntime(
   options: Readonly<{
     policy?: SandboxPolicy;
     enabled: () => boolean;
+    repositoryReadOnly?: () => boolean;
     supportedMac?: boolean;
     unavailableReason?: string;
     shellPath?: string;
@@ -187,6 +188,7 @@ export function createSandboxBashRuntime(
     ) => Promise<SandboxExecutionTerminal>;
   }>();
   const supportedMac = options.supportedMac ?? process.platform === "darwin";
+  const protectedMode = () => options.enabled();
   let disposed = false;
   let disposing: Promise<void> | undefined;
   const terminationWaitMs = options.terminationWaitMs ?? TERMINATION_WAIT_MS;
@@ -210,6 +212,9 @@ export function createSandboxBashRuntime(
             args: shell.commandTransport === "stdin" ? shell.args : ["-s"],
           },
           marker: marker!,
+          writeMode: options.repositoryReadOnly?.()
+            ? "repository-read-only"
+            : "workspace-write",
         })
       : shell.commandTransport === "stdin"
         ? shell.args
@@ -505,7 +510,7 @@ export function createSandboxBashRuntime(
     if (request.signal?.aborted) {
       throw new Error("aborted");
     }
-    if (supportedMac && options.enabled() && !options.policy) {
+    if (supportedMac && protectedMode() && !options.policy) {
       throw new Error(
         options.unavailableReason ?? "Sandbox: Bash is unavailable.",
       );
@@ -514,7 +519,7 @@ export function createSandboxBashRuntime(
       command: request.command,
       cwd: request.cwd,
       env: executionEnvironment(request),
-      protectedLaunch: supportedMac && options.enabled(),
+      protectedLaunch: supportedMac && protectedMode(),
       correlation: request.toolCallId,
     });
     const { marker, protectedLaunch } = prepared;
@@ -769,7 +774,7 @@ export function createSandboxBashRuntime(
         if (disposed) {
           return Promise.reject(new Error("Sandbox: Bash is shutting down."));
         }
-        if (!supportedMac || !options.enabled()) {
+        if (!supportedMac || !protectedMode()) {
           return localOperations.exec(command, cwd, execution);
         }
         return protectedOperations.exec(command, cwd, execution);

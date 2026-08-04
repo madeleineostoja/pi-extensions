@@ -9,6 +9,8 @@ import {
   initialWorkstreamReviewSchema,
   repositoryStateReviewSchema,
 } from "./result-schemas.js";
+import { completionContracts } from "./worker-invocation.js";
+import { undocumentedSchemaProperties } from "../../../test/support/schema-descriptions.js";
 
 const finding = {
   summary: "Missing response",
@@ -22,6 +24,23 @@ function validates(schema: object, value: unknown): boolean {
 }
 
 describe("review completion schemas", () => {
+  it("documents every model-selectable property in the production completion inventory", () => {
+    for (const [kind, contract] of Object.entries(completionContracts)) {
+      expect(
+        undocumentedSchemaProperties(contract.schema),
+        `${kind} completion schema`,
+      ).toEqual([]);
+    }
+  });
+  it("describes overall rework as a cumulative repair completion", () => {
+    expect(completionContracts["overall-rework"].description).toContain(
+      "cumulative whole-plan repair summary, verification, and optional uncertainty",
+    );
+    expect(completionContracts["overall-rework"].description).not.toContain(
+      "each whole-plan finding",
+    );
+  });
+
   it("accepts verdict-free findings and complete final assessments", () => {
     expect(
       validates(initialWorkstreamReviewSchema, {

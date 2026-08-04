@@ -76,7 +76,7 @@ describe("runtime-injected explore tool", () => {
     const runtime = new SubagentRuntime(makePi() as never);
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "General",
+      type: "Worker",
       description: "general",
       cwd: "/workspace",
     });
@@ -86,6 +86,7 @@ describe("runtime-injected explore tool", () => {
     expect(parameters.properties.breadth).toMatchObject({
       type: "string",
       enum: ["quick", "medium", "very thorough"],
+      description: expect.stringContaining("exploration depth"),
     });
     expect(tool.description).toContain("repository-preserving");
     expect(tool.description).toContain("cannot spawn agents");
@@ -109,7 +110,7 @@ describe("runtime-injected explore tool", () => {
     });
 
     await runtime.runPublicAgent({
-      type: "General",
+      type: "Review",
       prompt: "work",
       cwd: "/workspace",
       ctx: makeCtx() as never,
@@ -327,11 +328,11 @@ describe("runtime-injected explore tool", () => {
       expect.stringMatching(
         /lsp when available[\s\S]*broad, literal, or non-semantic[\s\S]*fall back to search and reads/,
       ),
-      { source: "extension" },
+      { source: "extension", expandPromptTemplates: false },
     );
     expect(child.prompt).toHaveBeenCalledWith(
       expect.not.stringContaining("Use only read, bash, grep, find, ls"),
-      { source: "extension" },
+      { source: "extension", expandPromptTemplates: false },
     );
     expect(runtime.snapshots()).toEqual([parent]);
     expect(runtime.snapshots({ includeNested: true })).toContainEqual(
@@ -361,7 +362,7 @@ describe("runtime-injected explore tool", () => {
     });
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "General",
+      type: "Worker",
       description: "general",
       cwd: "/workspace",
     });
@@ -390,7 +391,7 @@ describe("runtime-injected explore tool", () => {
     });
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "General",
+      type: "Worker",
       description: "general",
       cwd: "/workspace",
     });
@@ -429,7 +430,7 @@ describe("runtime-injected explore tool", () => {
     });
     const parent = runtime.queue({
       owner: "public-tool",
-      type: "General",
+      type: "Worker",
       description: "general",
       cwd: "/workspace",
     });
@@ -479,7 +480,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "General",
+        type: "Worker",
         description: "general",
         cwd: "/workspace",
       });
@@ -527,7 +528,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "General",
+        type: "Worker",
         description: "general",
         cwd: "/workspace",
       });
@@ -571,7 +572,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "General",
+        type: "Worker",
         description: "general",
         cwd: "/workspace",
       });
@@ -633,7 +634,7 @@ describe("runtime-injected explore tool", () => {
       });
       const parent = runtime.queue({
         owner: "public-tool",
-        type: "General",
+        type: "Worker",
         description: "general",
         cwd: "/workspace",
       });
@@ -694,7 +695,7 @@ describe("runtime-injected explore tool", () => {
     });
     const nestedParent = runtime.queue({
       owner: { kind: "nested", parentId: exploreParent.id, tool: "explore" },
-      type: "General",
+      type: "Worker",
       description: "nested",
       cwd: "/workspace",
     });

@@ -19,25 +19,14 @@ function outcome(activeTools = ["bash", "bash_outcome"]) {
 describe("bash_outcome", () => {
   beforeEach(() => executeSandboxBash.mockReset());
 
-  it("presents outcome as an exit-status tool without discouraging output-driven Bash", () => {
+  it("describes retained concise Sandbox Bash results", () => {
     const { definition } = outcome();
 
-    expect(definition.description).toContain(
-      "when exit status alone answers the current question",
-    );
-    expect(definition.description).toContain("immediately recallable");
-    expect(definition.description).toContain(
-      "successful command with no output returns only concise status",
-    );
-    expect(definition.promptGuidelines.join(" ")).toContain(
-      "Use bash for inspection, discovery, diagnostics",
-    );
-    expect(definition.promptGuidelines.join(" ")).toContain(
-      "do not rerun solely to inspect it",
-    );
-    expect(definition.promptGuidelines.join(" ")).toContain(
-      "including for chained commands",
-    );
+    expect(definition.description).toContain("retain a successful result");
+    expect(definition.description).toContain("concise status");
+    expect(definition.description).toContain("failures remain visible");
+    expect(definition.promptSnippet).toBeUndefined();
+    expect(definition.promptGuidelines).toBeUndefined();
   });
 
   it("retains the ordinary Bash result and returns only concise success", async () => {

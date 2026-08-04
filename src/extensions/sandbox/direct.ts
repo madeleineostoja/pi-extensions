@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathIsWithin, type SandboxPolicy } from "./policy.js";
+import type { SandboxWriteMode } from "./write-mode.js";
 
 export type DirectWriteDecision =
   | Readonly<{ kind: "allow"; target: string }>
@@ -84,12 +85,29 @@ export function effectiveTarget(rawPath: string, sessionCwd: string): string {
 export function decideDirectWrite(
   rawPath: unknown,
   policy: SandboxPolicy,
+  writeMode: SandboxWriteMode = "workspace-write",
 ): DirectWriteDecision {
   if (typeof rawPath !== "string" || rawPath.length === 0) {
     return { kind: "deny", reason: "Sandbox: filesystem path is required." };
   }
   try {
     const target = effectiveTarget(rawPath, policy.sessionCwd);
+    if (writeMode === "repository-read-only") {
+      const protectedRoots = [
+        policy.workspaceRoot,
+        ...(policy.git
+          ? [policy.git.worktreeGitDir, policy.git.commonGitDir]
+          : []),
+      ];
+      if (protectedRoots.some((root) => pathIsWithin(target, root))) {
+        return {
+          kind: "deny",
+          reason:
+            "Sandbox: repository-read-only children cannot modify the repository.",
+          target,
+        };
+      }
+    }
     return pathIsWithin(target, policy.workspaceRoot)
       ? { kind: "allow", target }
       : {
@@ -107,7 +125,12 @@ export function decideDirectMutation(
     tool: "write" | "edit";
     input: Readonly<{ path?: unknown }>;
     policy: SandboxPolicy;
+    writeMode?: SandboxWriteMode;
   }>,
 ): DirectWriteDecision {
-  return decideDirectWrite(options.input.path, options.policy);
+  return decideDirectWrite(
+    options.input.path,
+    options.policy,
+    options.writeMode,
+  );
 }

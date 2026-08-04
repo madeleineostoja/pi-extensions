@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { executeDocs, normalizeName, normalizeVersion } from "./docs-tool.js";
+import {
+  DocsParameters,
+  executeDocs,
+  normalizeName,
+  normalizeVersion,
+} from "./docs-tool.js";
 import {
   Context7Error,
   createContext7Transport,
@@ -49,6 +54,50 @@ describe("docs resolution", () => {
       version: { state: "provider-current" },
     });
     expect(result.content[0]?.text).toContain("provider material");
+  });
+
+  it("does not expose provider implementation names in successful results or warnings", async () => {
+    const client = transport({
+      context: vi.fn(async () => ({
+        snippets: [
+          {
+            title: "Guide",
+            location: "https://context7.com/source",
+            text: "provider material",
+          },
+        ],
+        truncations: ["A Context7 snippet was truncated."],
+      })),
+    });
+
+    const result = await executeDocs(input, undefined, {
+      transport: () => client,
+    });
+
+    expect(JSON.stringify(result)).not.toMatch(/context7/i);
+    expect(JSON.stringify(result)).toMatch(/documentation provider/i);
+  });
+
+  it("neutralizes transport errors without changing their classification", async () => {
+    for (const [kind, message] of [
+      ["auth", "Context7 authentication was rejected."],
+      ["redirect", "Context7 returned an invalid redirect."],
+      ["transient", "Context7 retries were exhausted."],
+      ["malformed", "Context7 returned malformed data."],
+    ] as const) {
+      const client = transport({
+        search: vi.fn(async () => {
+          throw new Context7Error(kind, message);
+        }),
+      });
+
+      await expect(
+        executeDocs(input, undefined, { transport: () => client }),
+      ).rejects.toMatchObject({
+        kind,
+        message: expect.not.stringMatching(/context7/i),
+      });
+    }
   });
 
   it("uses and discloses the first provider-ranked fallback", async () => {
@@ -115,13 +164,20 @@ describe("docs resolution", () => {
     });
   });
 
-  it("fails unavailable pins and direct conflicts before network work", async () => {
+  it("documents and rejects unavailable or conflicting direct version pins before network work", async () => {
+    expect(
+      (
+        DocsParameters.properties.version as unknown as {
+          description: string;
+        }
+      ).description,
+    ).toContain("already includes a version");
     const client = transport();
     await expect(
       executeDocs({ ...input, version: "2" }, undefined, {
         transport: () => client,
       }),
-    ).rejects.toThrow("exact Context7 version is unavailable");
+    ).rejects.toThrow("exact documentation version is unavailable");
     expect(client.context).not.toHaveBeenCalled();
     const direct = transport();
     await expect(

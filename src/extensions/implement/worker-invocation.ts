@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import type { Static } from "typebox";
+import { MANAGED_COMPLETION_FINAL_ACTION } from "#subagents/completion";
 import {
   anchoredOverallReviewSchema,
   anchoredWorkstreamReviewSchema,
@@ -23,7 +24,10 @@ import type {
 
 export class WorkerPacketError extends Error {}
 
-const completionContracts = {
+export const REPOSITORY_PRESERVING_ROLE_CONTRACT =
+  "Repository-preserving role: inspect and verify only; do not modify source or Git state, install dependencies, or run write-producing commands.";
+
+export const completionContracts = {
   planner: {
     role: "planner",
     readOnly: true,
@@ -39,7 +43,8 @@ const completionContracts = {
   "overall-rework": {
     role: "implementer",
     readOnly: false,
-    description: "Report evidence for each whole-plan finding.",
+    description:
+      "Report the cumulative whole-plan repair summary, verification, and optional uncertainty.",
     schema: overallReworkSchema,
   },
   "initial-overall-review": {
@@ -142,7 +147,7 @@ export async function spawnValidatedWorker<
       `${roleName} packet ${packet.identity} has an invalid worker identity.`,
     );
   }
-  const prompt = `${args.render(packet)}\n\nrecord_papercut is the sole allowed personal-metadata write for qualifying incidental friction; it does not permit source or Git changes.`;
+  const prompt = `${args.render(packet)}${completion.readOnly ? `\n\n${REPOSITORY_PRESERVING_ROLE_CONTRACT}` : ""}\n\n${MANAGED_COMPLETION_FINAL_ACTION} The supplied pi_managed_complete definition is the required structured result for this completion kind.\n\nrecord_papercut is the sole allowed personal-metadata write for qualifying incidental friction; it does not permit source or Git changes.`;
   return args.subagents.spawn({
     type: role.type,
     role: roleName,
@@ -152,6 +157,9 @@ export async function spawnValidatedWorker<
     description: args.description,
     cwd: packet.workspace.path,
     ...(completion.readOnly ? { readOnly: true } : {}),
+    sandboxWriteMode: completion.readOnly
+      ? "repository-read-only"
+      : "workspace-write",
     prompt,
     completion: {
       description: completion.description,

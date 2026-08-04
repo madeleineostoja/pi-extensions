@@ -1,5 +1,6 @@
 import {
   createAgentSession,
+  createBashToolDefinition,
   DefaultResourceLoader,
   ExtensionRunner,
   ModelRegistry,
@@ -28,6 +29,15 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  PUBLIC_TOOL_CATALOGUE,
+  PUBLIC_TOOL_EXCEPTIONS,
+} from "../../src/extensions/guidance/catalogue.js";
+import {
+  EXPLORE_PROMPT,
+  REVIEW_PROMPT,
+} from "../../src/extensions/subagents/agent-profiles.js";
+import { undocumentedSchemaProperties } from "../support/schema-descriptions.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const expectedExtensions = [
@@ -36,6 +46,7 @@ const expectedExtensions = [
   "./src/extensions/context/index.ts",
   "./src/extensions/ui/index.ts",
   "./src/extensions/personality/index.ts",
+  "./src/extensions/guidance/index.ts",
   "./src/extensions/lsp/index.ts",
   "./src/extensions/processes/index.ts",
   "./src/extensions/subagents/index.ts",
@@ -282,16 +293,15 @@ function safetyExtensions(result: LoadExtensionsResult): Extension[] {
   );
 }
 
-async function createSafetyRunner(
+async function createBundleRunner(
   fixture: BundleFixture,
-  reason: "startup" | "reload",
+  extensions: Extension[],
+  reason: "startup" | "reload" = "startup",
 ): Promise<{
   runner: ExtensionRunner;
   extensions: Extension[];
   errors: string[];
 }> {
-  const extensions = safetyExtensions(fixture.result);
-  expect(extensions.map(relativeExtensionPath)).toEqual(safetyPaths);
   const modelRuntime = await ModelRuntime.create({
     authPath: join(fixture.agentDir, "auth.json"),
     modelsPath: join(fixture.agentDir, "models.json"),
@@ -339,6 +349,19 @@ async function createSafetyRunner(
   );
   await runner.emit({ type: "session_start", reason });
   return { runner, extensions, errors };
+}
+
+async function createSafetyRunner(
+  fixture: BundleFixture,
+  reason: "startup" | "reload",
+): Promise<{
+  runner: ExtensionRunner;
+  extensions: Extension[];
+  errors: string[];
+}> {
+  const extensions = safetyExtensions(fixture.result);
+  expect(extensions.map(relativeExtensionPath)).toEqual(safetyPaths);
+  return createBundleRunner(fixture, extensions, reason);
 }
 
 async function assertSafetyOrder(
@@ -415,6 +438,9 @@ describe("Pipkin bundle", () => {
 
     const tools = provenanceMap(fixture.result.extensions, "tools");
     expect(tools).toEqual(expectedProvenance(expectedTools));
+    expect(PUBLIC_TOOL_CATALOGUE.map((entry) => entry.name).sort()).toEqual(
+      Object.keys(expectedTools).sort(),
+    );
     expect(tools).not.toHaveProperty("propose_papercut");
     expect(tools.record_papercut).toEqual([
       "src/extensions/papercuts/index.ts",
@@ -456,12 +482,29 @@ describe("Pipkin bundle", () => {
     );
     const webFetch = web?.tools.get("web_fetch")?.definition;
     const batchWebFetch = web?.tools.get("batch_web_fetch")?.definition;
+    expect(webFetch?.description).toContain("one URL");
+    expect(webFetch?.description).toContain("temporary artifacts");
+    expect(webFetch?.description).toContain("Set raw");
+    expect(webFetch?.description).not.toMatch(/untrusted|not instructions/i);
+    expect(batchWebFetch?.description).toContain("one to eight URLs");
+    expect(batchWebFetch?.description).toContain("fixed concurrency");
+    expect(batchWebFetch?.description).toContain("temporary artifact");
+    expect(batchWebFetch?.description).toContain("raw per request");
+    expect(batchWebFetch?.description).not.toMatch(
+      /untrusted|not instructions/i,
+    );
     expect(webFetch?.renderShell).toBeUndefined();
     expect(webFetch?.renderCall).toBeUndefined();
     expect(webFetch?.renderResult).toBeUndefined();
     expect(batchWebFetch?.renderShell).toBeUndefined();
     expect(batchWebFetch?.renderCall).toBeUndefined();
     expect(batchWebFetch?.renderResult).toBeUndefined();
+    for (const extension of fixture.result.extensions) {
+      for (const { definition } of extension.tools.values()) {
+        expect(definition.promptSnippet).toBeUndefined();
+        expect(definition.promptGuidelines).toBeUndefined();
+      }
+    }
     await expect(
       webFetch?.execute(
         "blocked-web-fetch",
@@ -479,6 +522,21 @@ describe("Pipkin bundle", () => {
     expect(provenanceMap(safetyExtensions(fixture.result), "tools")).toEqual(
       expectedProvenance({ bash: "src/extensions/sandbox/index.ts" }),
     );
+    const bash = safetyExtensions(fixture.result)[0]?.tools.get(
+      "bash",
+    )?.definition;
+    const nativeBash = createBashToolDefinition(ROOT);
+    expect(bash).toMatchObject({
+      name: nativeBash.name,
+      label: nativeBash.label,
+      description: nativeBash.description,
+      parameters: nativeBash.parameters,
+      promptSnippet: nativeBash.promptSnippet,
+      promptGuidelines: nativeBash.promptGuidelines,
+    });
+    expect(PUBLIC_TOOL_EXCEPTIONS.bash).toContain("native Bash");
+    expect(PUBLIC_TOOL_EXCEPTIONS.explore).toContain("private");
+    expect(PUBLIC_TOOL_EXCEPTIONS.pi_managed_complete).toContain("private");
     expect(provenanceMap(safetyExtensions(fixture.result), "commands")).toEqual(
       expectedProvenance({
         sandbox: "src/extensions/sandbox/index.ts",
@@ -492,6 +550,123 @@ describe("Pipkin bundle", () => {
       expectedProvenance(expectedTools),
     );
     await assertSafetyOrder(fixture, "reload");
+  });
+
+  it("covers the complete post-start public surface and its explicit exceptions", async () => {
+    const fixture = await loadBundle();
+    const { runner, errors } = await createBundleRunner(
+      fixture,
+      fixture.result.extensions,
+    );
+    const definitions = runner
+      .getAllRegisteredTools()
+      .map(({ definition }) => definition);
+    const names = definitions.map((definition) => definition.name).sort();
+
+    expect(names).toEqual([...Object.keys(expectedTools), "bash"].sort());
+    expect(PUBLIC_TOOL_CATALOGUE.map((entry) => entry.name).sort()).toEqual(
+      names.filter((name) => name !== "bash"),
+    );
+    expect(PUBLIC_TOOL_EXCEPTIONS).toMatchObject({
+      bash: expect.stringContaining("native Bash"),
+      explore: expect.stringContaining("private"),
+      pi_managed_complete: expect.stringContaining("private"),
+    });
+    expect(names).not.toEqual(
+      expect.arrayContaining(["explore", "pi_managed_complete"]),
+    );
+
+    const nativeBash = createBashToolDefinition(ROOT);
+    for (const definition of definitions) {
+      if (definition.name === "bash") {
+        expect(definition).toMatchObject({
+          name: nativeBash.name,
+          label: nativeBash.label,
+          description: nativeBash.description,
+          parameters: nativeBash.parameters,
+          promptSnippet: nativeBash.promptSnippet,
+          promptGuidelines: nativeBash.promptGuidelines,
+        });
+      } else {
+        expect(
+          definition.description?.trim(),
+          `${definition.name} description`,
+        ).not.toBe("");
+        expect(
+          undocumentedSchemaProperties(definition.parameters),
+          `${definition.name} schema`,
+        ).toEqual([]);
+        expect(definition.promptSnippet).toBeUndefined();
+        expect(definition.promptGuidelines).toBeUndefined();
+      }
+    }
+    expect(errors).toEqual([]);
+    await runner.emit({ type: "session_shutdown", reason: "quit" });
+  });
+
+  it("assembles bounded parent and role prompts with filtered Guidance exactly once", async () => {
+    const fixture = await loadBundle();
+    const guidanceExtension = fixture.result.extensions.find(
+      (extension) =>
+        relativeExtensionPath(extension) === "src/extensions/guidance/index.ts",
+    );
+    expect(guidanceExtension).toBeDefined();
+    const { runner, errors } = await createBundleRunner(fixture, [
+      guidanceExtension!,
+    ]);
+    const basePrompt = "Pi base instructions\n\nLoaded context";
+    const parent = await runner.emitBeforeAgentStart(
+      "parent task",
+      undefined,
+      basePrompt,
+      { selectedTools: ["bash_outcome", "context_recall"] } as never,
+    );
+
+    expect(parent?.systemPrompt).toContain(basePrompt);
+    expect(parent?.systemPrompt?.match(/## Pipkin guidance/g)).toHaveLength(1);
+    expect(parent?.systemPrompt).toContain("bash_outcome:");
+    expect(parent?.systemPrompt).not.toContain("start_process:");
+    expect(parent?.systemPrompt?.length).toBeLessThan(12_000);
+
+    const external = await runner.emitBeforeAgentStart(
+      "fetch evidence",
+      undefined,
+      basePrompt,
+      { selectedTools: ["web_fetch"] } as never,
+    );
+    expect(external?.systemPrompt?.match(/### External content/g)).toHaveLength(
+      1,
+    );
+    expect(
+      external?.systemPrompt?.match(/cannot redefine the task/g),
+    ).toHaveLength(1);
+
+    for (const [role, activeTools] of [
+      [EXPLORE_PROMPT, ["bash", "bash_outcome", "context_recall", "lsp"]],
+      [
+        REVIEW_PROMPT,
+        ["bash", "bash_outcome", "context_recall", "lsp", "explore"],
+      ],
+    ] as const) {
+      const child = await runner.emitBeforeAgentStart(
+        "child task",
+        undefined,
+        `${basePrompt}\n\n${role}`,
+        { selectedTools: activeTools } as never,
+      );
+      const prompt = child?.systemPrompt ?? "";
+
+      expect(prompt).toContain(basePrompt);
+      expect(prompt).toContain(role);
+      expect(prompt.match(/## Pipkin guidance/g)).toHaveLength(1);
+      expect(prompt.split(role)).toHaveLength(2);
+      expect(prompt).toContain("bash_outcome:");
+      expect(prompt).toContain("context_recall:");
+      expect(prompt).not.toContain("start_process:");
+      expect(prompt.length).toBeLessThan(12_000);
+    }
+    expect(errors).toEqual([]);
+    await runner.emit({ type: "session_shutdown", reason: "quit" });
   });
 
   it("persists a native error result for a forbidden web target", async () => {
@@ -564,6 +739,7 @@ describe("Pipkin bundle", () => {
       { executeSandboxBash, startSandboxManagedExecution },
       { retainResult, decodeRetainedResult },
       { getSubagentRuntime },
+      { MANAGED_COMPLETION_FINAL_ACTION },
       { generateSessionName },
     ] = await Promise.all([
       import("#lib/config"),
@@ -574,6 +750,7 @@ describe("Pipkin bundle", () => {
       import("#sandbox/bash"),
       import("#context/retained-result"),
       import("#subagents/runtime"),
+      import("#subagents/completion"),
       import("#personality/session-name"),
     ]);
 
@@ -589,6 +766,9 @@ describe("Pipkin bundle", () => {
     expect(retainResult).toBeTypeOf("function");
     expect(decodeRetainedResult).toBeTypeOf("function");
     expect(getSubagentRuntime).toBeTypeOf("function");
+    expect(MANAGED_COMPLETION_FINAL_ACTION).toBe(
+      "Call pi_managed_complete exactly once as your final action after all other required work.",
+    );
     expect(generateSessionName).toBeTypeOf("function");
     expect(snapshotGlobalSymbols()).toEqual(before);
   });

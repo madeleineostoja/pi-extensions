@@ -20,7 +20,7 @@ import {
 import { StringEnum } from "@earendil-works/pi-ai";
 import { completeText, type CompleteTextDeps } from "#lib/complete";
 import { parseModelRef } from "#lib/model-ref";
-import { prepareSandboxChild } from "#sandbox/runtime";
+import { prepareSandboxChild, type SandboxWriteMode } from "#sandbox/runtime";
 import type { ModelPreset, ThinkingLevel } from "#lib/config";
 import { Type, type Static, type TSchema } from "typebox";
 import type { Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
@@ -191,6 +191,7 @@ export type RunManagedAgentInput<
   systemPrompt?: string;
   systemPromptMode?: PromptMode;
   rosterVisibility?: RosterVisibility;
+  sandboxWriteMode?: SandboxWriteMode;
   completion?: ManagedCompletion<
     TSchemaValue extends TSchema ? TSchemaValue : TSchema
   >;
@@ -671,7 +672,7 @@ function findModel(
 function buildExplorePrompt(params: ExploreToolParams): string {
   return [
     "You are a repository-preserving nested Explore child. Answer the parent agent's bounded codebase exploration question.",
-    "This is a trusted-model instruction, not a technical sandbox. Use available tools for discovery, including read-only Git or GitHub work, tests, and checks when useful. Do not intentionally modify source files, dependencies, or Git state, spawn agents, or invoke explore recursively.",
+    "Inspect and verify only; leave the repository unchanged. Do not spawn agents or invoke explore recursively.",
     "Use lsp when available for targeted language-semantic relationships that text search may miss. Use search for broad, literal, or non-semantic discovery and reads for surrounding behavior. Combine them when useful, and fall back to search and reads when LSP is unavailable or incomplete.",
     `Breadth: ${params.breadth ?? "medium"}`,
     "Lead with conclusions, then provide relevant evidence with absolute file paths and enough context for the parent to continue with targeted reads.",
@@ -950,7 +951,7 @@ export class SubagentRuntime {
   async runPublicAgent(input: RunPublicAgentInput): Promise<RuntimeSnapshot> {
     if (!isPublicBuiltinType(input.type)) {
       throw new Error(
-        `Unsupported public subagent type ${input.type}. Use General, Explore, or Review.`,
+        `Unsupported public subagent type ${input.type}. Use Explore or Review.`,
       );
     }
     return this.runManagedAgent({
@@ -1012,7 +1013,10 @@ export class SubagentRuntime {
           description: "Specific codebase exploration question to answer.",
         }),
         breadth: Type.Optional(
-          StringEnum(["quick", "medium", "very thorough"] as const),
+          StringEnum(["quick", "medium", "very thorough"] as const, {
+            description:
+              "Requested exploration depth; use quick for a narrow trace and very thorough for broad multi-step mapping.",
+          }),
         ),
       }),
       executionMode: "sequential",
@@ -1071,6 +1075,7 @@ export class SubagentRuntime {
         mode: "background",
         ctx,
         signal: timeout.signal,
+        sandboxWriteMode: "repository-read-only",
         owner:
           typeof parent.owner === "object" &&
           parent.owner.kind === "pipkin:implement"
@@ -1351,7 +1356,14 @@ export class SubagentRuntime {
       const promptInput = resolveSystemPromptInput(input);
       const childEventBus = createEventBus();
       releaseSandboxChild = this.pi.events
-        ? prepareSandboxChild(this.pi.events, childEventBus)
+        ? prepareSandboxChild(
+            this.pi.events,
+            childEventBus,
+            input.sandboxWriteMode ??
+              (publicAgentProfile(record.type) || nested
+                ? "repository-read-only"
+                : "workspace-write"),
+          )
         : undefined;
       const resources =
         promptInput || releaseSandboxChild
@@ -1631,7 +1643,11 @@ export class SubagentRuntime {
       if (!this.#isCurrentRecord(record) || isTerminal(record.status)) {
         return record.finalization ?? projectSnapshot(record);
       }
-      const prompt = session.prompt(input.prompt, { source: "extension" });
+      const prompt = session.prompt(input.prompt, {
+        source: "extension",
+        // Prompt-template bypass also prevents extension-command expansion here.
+        expandPromptTemplates: false,
+      });
       record.canSteer = true;
       await this.#drainSteering(record);
       await prompt;
@@ -1697,9 +1713,6 @@ export class SubagentRuntime {
       description: completion.definition.description,
       promptSnippet:
         "Complete the managed task with its required structured result.",
-      promptGuidelines: [
-        "Call pi_managed_complete exactly once as your final action after all other required work.",
-      ],
       parameters: completion.definition.schema,
       executionMode: "sequential",
       execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
