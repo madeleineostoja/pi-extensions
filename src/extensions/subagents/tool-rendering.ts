@@ -4,7 +4,7 @@ import type {
   ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import type { RuntimeSnapshot } from "./runtime.js";
+import type { PublicSubagentResult, RuntimeSnapshot } from "./runtime.js";
 import {
   contextUsageLabel,
   costLabel,
@@ -13,7 +13,7 @@ import {
 } from "./formatters.js";
 import type { PublicAgentParams } from "./public-tools.js";
 
-type AgentToolDetails = RuntimeSnapshot;
+type AgentToolDetails = RuntimeSnapshot | PublicSubagentResult;
 type AgentToolResultWithStatus = AgentToolResult<AgentToolDetails> & {
   isError: boolean;
 };
@@ -21,10 +21,15 @@ type AgentToolResultWithStatus = AgentToolResult<AgentToolDetails> & {
 export function toolResult(
   snapshot: RuntimeSnapshot,
   mode: "foreground" | "background" | "status" = "status",
+  progress?: string,
 ): AgentToolResultWithStatus {
+  const content = resultContent(snapshot, mode);
+  const details = progress === undefined ? snapshot : { snapshot, progress };
   return {
-    content: [{ type: "text", text: resultContent(snapshot, mode) }],
-    details: snapshot,
+    content: [
+      { type: "text", text: progress ? `${content}\n${progress}` : content },
+    ],
+    details,
     isError: snapshot.status === "failed" || snapshot.status === "stopped",
   } satisfies AgentToolResultWithStatus;
 }
@@ -43,7 +48,10 @@ export function renderAgentResult(
   options: ToolRenderResultOptions,
   theme: Theme,
 ): Text {
-  const snapshot = result.details;
+  const response = result.details;
+  const snapshot = isPublicSubagentResult(response)
+    ? response.snapshot
+    : response;
   if (!isRuntimeSnapshot(snapshot)) {
     return new Text(firstText(result) ?? "(no output)", 0, 0);
   }
@@ -119,6 +127,15 @@ function previewText(value: unknown, max = 220): string | undefined {
     return undefined;
   }
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function isPublicSubagentResult(value: unknown): value is PublicSubagentResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "snapshot" in value &&
+    isRuntimeSnapshot(value.snapshot)
+  );
 }
 
 function isRuntimeSnapshot(value: unknown): value is RuntimeSnapshot {

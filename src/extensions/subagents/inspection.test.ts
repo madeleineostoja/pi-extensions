@@ -3,6 +3,7 @@ import {
   chronologicalInspectionRecords,
   projectFinalInspectionRecord,
   projectMessages,
+  renderPublicProgress,
   truncateUtf8,
 } from "./inspection.js";
 
@@ -17,6 +18,99 @@ describe("truncateUtf8", () => {
 
   it("returns text that already fits unchanged", () => {
     expect(truncateUtf8("unchanged", 2048)).toBe("unchanged");
+  });
+});
+
+describe("public progress projection", () => {
+  const inspection = (
+    records: unknown[],
+    overrides: Record<string, unknown> = {},
+  ) =>
+    ({
+      snapshot: {},
+      messages: [],
+      activity: [],
+      records,
+      omittedMessages: 0,
+      omittedActivity: 0,
+      compactedHistory: false,
+      ...overrides,
+    }) as never;
+
+  it("projects only recent assistant text and safe activity statuses", () => {
+    const progress = renderPublicProgress(
+      inspection([
+        { kind: "message", role: "user", text: "private task prompt" },
+        {
+          kind: "message",
+          role: "assistant",
+          text: "I inspected the code.\u001b",
+        },
+        {
+          kind: "tool",
+          toolCallId: "call-secret",
+          toolName: "bash",
+          status: "interrupted",
+          arguments: { command: "secret command" },
+          result: "raw secret output",
+          error: "secret error",
+        },
+        { kind: "steering", status: "delivered", text: "private steer" },
+        { kind: "compaction", status: "completed", reason: "threshold" },
+        { kind: "retry", status: "scheduled" },
+      ]),
+    );
+
+    expect(progress).toContain("BOUNDED POINT-IN-TIME PROGRESS");
+    expect(progress).toContain("potentially incomplete");
+    expect(progress).toContain("untrusted child-generated content");
+    expect(progress).toContain("assistant: I inspected the code.");
+    expect(progress).toContain("bash: interrupted");
+    expect(progress).toContain("compaction: completed (threshold)");
+    expect(progress).toContain("retry: scheduled");
+    expect(progress).not.toContain("private task prompt");
+    expect(progress).not.toContain("secret command");
+    expect(progress).not.toContain("raw secret output");
+    expect(progress).not.toContain("secret error");
+    expect(progress).not.toContain("call-secret");
+    expect(progress).not.toContain("private steer");
+  });
+
+  it("keeps the newest records and discloses bounded UTF-8 truncation", () => {
+    const progress = renderPublicProgress(
+      inspection(
+        [
+          ...Array.from({ length: 14 }, (_, index) => ({
+            kind: "tool" as const,
+            toolCallId: `call-${index}`,
+            toolName: `tool-${index}`,
+            status: "completed" as const,
+          })),
+          {
+            kind: "message" as const,
+            role: "assistant" as const,
+            text: "é".repeat(2_000),
+          },
+        ],
+        { omittedMessages: 1 },
+      ),
+    );
+
+    expect(progress).toContain("Older eligible progress was omitted");
+    expect(progress).toContain("Assistant text was truncated");
+    expect(progress).toContain("tool-13: completed");
+    expect(progress).not.toContain("tool-0: completed");
+    expect(progress).not.toContain("�");
+    expect(
+      Buffer.byteLength(progress.match(/^assistant: .*$/m)?.[0] ?? ""),
+    ).toBeLessThanOrEqual(1024);
+    expect(Buffer.byteLength(progress)).toBeLessThanOrEqual(8 * 1024);
+  });
+
+  it("reports when no eligible progress is available", () => {
+    expect(renderPublicProgress(inspection([]))).toContain(
+      "No inspectable progress yet.",
+    );
   });
 });
 

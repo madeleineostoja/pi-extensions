@@ -470,6 +470,109 @@ describe("SubagentRuntime", () => {
     promptDone.resolve();
   });
 
+  it("returns coherent bounded progress only for current public records", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const session = makeSession("final result");
+    session.prompt = vi.fn(() => promptDone.promise);
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runPublicAgent({
+      type: "Explore",
+      prompt: "private task prompt",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    session.messages.push(
+      {
+        role: "assistant",
+        timestamp: 1_700_000_000_000,
+        content: [
+          { type: "text", text: "Checked the runtime owner." },
+          {
+            type: "toolCall",
+            id: "private-call",
+            name: "bash",
+            arguments: { command: "private command" },
+          },
+        ],
+      } as AgentSession["messages"][number],
+      {
+        role: "toolResult",
+        timestamp: 1_700_000_001_000,
+        toolCallId: "private-call",
+        toolName: "bash",
+        content: [{ type: "text", text: "private raw output" }],
+      } as AgentSession["messages"][number],
+    );
+
+    const live = await runtime.publicResult(started.id, false, true);
+    expect(live.snapshot.status).toBe("running");
+    expect(live.progress).toContain("Checked the runtime owner.");
+    expect(live.progress).toContain("bash: completed");
+    expect(live.progress).not.toContain("private task prompt");
+    expect(live.progress).not.toContain("private command");
+    expect(live.progress).not.toContain("private raw output");
+
+    const internal = runtime.queue({
+      owner: "internal",
+      type: "Explore",
+      description: "internal",
+      cwd: "/workspace",
+    });
+    await expect(
+      runtime.publicResult(internal.id, false, true),
+    ).rejects.toThrow(`Unknown subagent ${internal.id}`);
+    runtime.retireCurrentSession();
+    await expect(runtime.publicResult(started.id, false, true)).rejects.toThrow(
+      `Unknown subagent ${started.id}`,
+    );
+    promptDone.resolve();
+  });
+
+  it("waits for frozen terminal progress while leaving non-waiting recovery immediate", async () => {
+    const { pi } = fakePi();
+    const promptDone = deferred<void>();
+    const abortDone = deferred<void>();
+    const session = makeSession();
+    session.prompt = vi.fn(() => promptDone.promise);
+    session.abort = vi.fn(async () => {
+      session.messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: "Terminal cancellation work." }],
+      } as AgentSession["messages"][number]);
+      await abortDone.promise;
+    });
+    const runtime = new SubagentRuntime(pi as never, {
+      createSession: vi.fn(async () => ({ session })),
+    });
+    const started = await runtime.runPublicAgent({
+      type: "Review",
+      prompt: "review",
+      cwd: "/workspace",
+      ctx: makeCtx() as never,
+      mode: "background",
+    });
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    runtime.stop(started.id, "Stopped for recovery.");
+
+    await expect(
+      runtime.publicResult(started.id, false, true),
+    ).resolves.toMatchObject({
+      snapshot: { status: "stopped" },
+    });
+    const frozen = runtime.publicResult(started.id, true, true);
+    abortDone.resolve();
+    await expect(frozen).resolves.toMatchObject({
+      snapshot: { status: "stopped" },
+      progress: expect.stringContaining("Terminal cancellation work."),
+    });
+    promptDone.resolve();
+  });
+
   it("serializes steering and continues after one rejected delivery", async () => {
     const { pi } = fakePi();
     const promptDone = deferred<void>();

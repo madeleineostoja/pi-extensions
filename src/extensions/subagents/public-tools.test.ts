@@ -284,6 +284,7 @@ describe("public subagent tools", () => {
     expect(tools[0].renderResult).toEqual(expect.any(Function));
     expect(tools[1].description).toContain("wait:true blocks");
     expect(tools[1].description).toContain("wait:false returns");
+    expect(tools[1].description).toContain("bounded partial progress");
     expect(tools[2].description).toContain("running background subagent");
     const parameters = JSON.parse(JSON.stringify(tools[0].parameters));
     expect(parameters.properties.subagent_type).toMatchObject({
@@ -305,6 +306,16 @@ describe("public subagent tools", () => {
     expect(JSON.stringify(tools[0].parameters)).toContain(
       "do not guess available models",
     );
+    const resultParameters = JSON.parse(JSON.stringify(tools[1].parameters));
+    expect(resultParameters.properties.include_progress.description).toContain(
+      "wait:false returns currently available progress",
+    );
+    expect(resultParameters.properties.include_progress.description).toContain(
+      "wait:true waits for frozen post-cleanup progress",
+    );
+    expect(resultParameters.required).toEqual(["id", "wait"]);
+    expect(tools[1].promptSnippet).toBeUndefined();
+    expect(tools[1].promptGuidelines).toBeUndefined();
   });
 
   it("rejects unsupported public roles with the supported inventory", async () => {
@@ -546,8 +557,8 @@ describe("public subagent tools", () => {
 
     const runtime = getSubagentRuntime(pi as never);
     const completed = runtime.queue({
-      owner: "test",
-      type: "Worker",
+      owner: "public-tool",
+      type: "Explore",
       description: "finished",
       cwd: "/workspace",
     });
@@ -598,7 +609,7 @@ describe("public subagent tools", () => {
     expect(expanded).toContain("expanded-only detail expanded-only detail");
 
     const failed = runtime.queue({
-      owner: "test",
+      owner: "public-tool",
       type: "Explore",
       description: "failed",
       cwd: "/workspace",
@@ -617,7 +628,7 @@ describe("public subagent tools", () => {
     expect(failedResult.isError).toBe(true);
 
     const stopped = runtime.queue({
-      owner: "test",
+      owner: "public-tool",
       type: "Review",
       description: "stopped",
       cwd: "/workspace",
@@ -636,8 +647,8 @@ describe("public subagent tools", () => {
     expect(stoppedResult.isError).toBe(true);
 
     const running = runtime.queue({
-      owner: "test",
-      type: "Worker",
+      owner: "public-tool",
+      type: "Explore",
       description: "running",
       cwd: "/workspace",
     });
@@ -653,8 +664,8 @@ describe("public subagent tools", () => {
     ).rejects.toThrow(/not steerable/);
 
     const failedForSteer = runtime.queue({
-      owner: "test",
-      type: "Worker",
+      owner: "public-tool",
+      type: "Explore",
       description: "failed steer result",
       cwd: "/workspace",
     });
@@ -677,7 +688,7 @@ describe("public subagent tools", () => {
     expect(textContent(failedSteerResult)).toContain("failed: steer failure");
 
     const stoppedForSteer = runtime.queue({
-      owner: "test",
+      owner: "public-tool",
       type: "Review",
       description: "stopped steer result",
       cwd: "/workspace",
@@ -700,6 +711,68 @@ describe("public subagent tools", () => {
       "stopped: Steer stopped.",
     );
     steerSpy.mockRestore();
+  });
+
+  it("returns bounded public progress without changing completed output", async () => {
+    const { pi, tools } = makePi(["read"]);
+    registerExtension(pi as never);
+    const getResult = tools.find((tool) => tool.name === "get_subagent_result");
+    const runtime = getSubagentRuntime(pi as never);
+    const running = runtime.queue({
+      owner: "public-tool",
+      type: "Explore",
+      description: "progress",
+      cwd: "/workspace",
+    });
+    runtime.start(running.id);
+    const withProgress = await getResult!.execute(
+      "call-progress",
+      { id: running.id, wait: false, include_progress: true },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(textContent(withProgress)).toContain("No inspectable progress yet.");
+
+    runtime.complete(running.id, "authoritative final");
+    const ordinary = await getResult!.execute(
+      "call-final-default",
+      { id: running.id, wait: true },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    const requested = await getResult!.execute(
+      "call-final-progress",
+      { id: running.id, wait: true, include_progress: true },
+      undefined,
+      undefined,
+      makeCtx(),
+    );
+    expect(textContent(requested)).toBe(textContent(ordinary));
+  });
+
+  it("rejects internally owned records as unknown public subagents", async () => {
+    const { pi, tools } = makePi(["read"]);
+    registerExtension(pi as never);
+    const getResult = tools.find((tool) => tool.name === "get_subagent_result");
+    const runtime = getSubagentRuntime(pi as never);
+    const internal = runtime.queue({
+      owner: { kind: "nested", parentId: "subagent-0", tool: "explore" },
+      type: "Explore",
+      description: "internal",
+      cwd: "/workspace",
+    });
+
+    await expect(
+      getResult!.execute(
+        "call-internal",
+        { id: internal.id, wait: false, include_progress: true },
+        undefined,
+        undefined,
+        makeCtx(),
+      ),
+    ).rejects.toThrow(`Unknown subagent ${internal.id}`);
   });
 
   it("runs pipkin-implement managed background sessions and waits for completion", async () => {

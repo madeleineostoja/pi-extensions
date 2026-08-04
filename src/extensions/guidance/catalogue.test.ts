@@ -78,6 +78,18 @@ describe("Guidance catalogue", () => {
     expect(routing).not.toContain("General");
   });
 
+  it("guides intentional subagent progress inspection without scripting its use", () => {
+    const prompt = renderGuidance(["Agent", "get_subagent_result"])!;
+
+    expect(prompt).toContain("Inspect partial progress intentionally");
+    expect(prompt).toContain("rather than polling");
+    expect(prompt).toContain(
+      "foreground rather than immediately starting and joining",
+    );
+    expect(prompt).not.toContain("salvage partial work");
+    expect(prompt).not.toContain("before deciding whether to steer");
+  });
+
   it("states the complete Papercut qualification boundary", () => {
     const prompt = renderGuidance(["record_papercut"])!;
     expect(prompt).toContain("avoidable incidental friction");

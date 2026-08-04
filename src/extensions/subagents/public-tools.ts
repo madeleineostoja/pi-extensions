@@ -143,21 +143,31 @@ export function registerPublicAgentTools({
     name: "get_subagent_result",
     label: "get_subagent_result",
     description:
-      "Join or inspect a background subagent. wait:true blocks for completion; wait:false returns its current status immediately.",
+      "Join a background subagent or intentionally inspect bounded partial progress. wait:true blocks for completion; wait:false returns its current status immediately.",
     parameters: Type.Object(
       {
         id: Type.String({ description: "Background subagent id." }),
         wait: Type.Boolean({
           description:
-            "false returns current status immediately; true waits for completion.",
+            "false returns current status immediately; true waits for completion and final cleanup.",
           default: false,
         }),
+        include_progress: Type.Optional(
+          Type.Boolean({
+            description:
+              "Include a bounded point-in-time excerpt of untrusted partial progress. wait:false returns currently available progress immediately; for stopped or failed agents, wait:true waits for frozen post-cleanup progress. Completed agents remain final-result only.",
+          }),
+        ),
       },
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params) {
-      const snapshot = await runtime.result(params.id, params.wait);
-      return toolResult(snapshot);
+      const response = await runtime.publicResult(
+        params.id,
+        params.wait,
+        params.include_progress ?? false,
+      );
+      return toolResult(response.snapshot, "status", response.progress);
     },
     renderResult: renderAgentResult,
   });

@@ -46,7 +46,7 @@ export const PUBLIC_TOOL_CATALOGUE: readonly GuidanceTool[] = [
   { name: "Agent", summary: "Run an Explore or Review subagent." },
   {
     name: "get_subagent_result",
-    summary: "Join or inspect a background subagent.",
+    summary: "Join a background subagent or inspect bounded partial progress.",
   },
   {
     name: "steer_subagent",
@@ -116,7 +116,7 @@ export const CROSS_TOOL_RULES: readonly GuidanceRule[] = [
   },
   {
     requiredTools: ["Agent", "get_subagent_result"],
-    text: "Use background only while independent work continues; otherwise use foreground rather than immediately starting and joining.",
+    text: "Use background only while independent work continues; otherwise use foreground rather than immediately starting and joining. Inspect partial progress intentionally rather than polling.",
   },
   {
     requiredTools: ["lsp", "Agent"],

@@ -39,13 +39,26 @@ Use background mode only while the parent can continue independent work:
 
 A background start returns an ID. Continue parent work, then operate it with:
 
-| Tool                                     | Purpose                                                                                  |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `get_subagent_result` with `wait: true`  | Join once the result becomes a dependency                                                |
-| `get_subagent_result` with `wait: false` | Make an intentional non-blocking status check; do not poll                               |
-| `steer_subagent`                         | Queue updated direction after the child's current assistant turn finishes its tool calls |
+| Tool                                                | Purpose                                                                                  |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `get_subagent_result` with `wait: true`             | Join once the result becomes a dependency                                                |
+| `get_subagent_result` with `wait: false`            | Make an intentional non-blocking status check; do not poll                               |
+| `get_subagent_result` with `include_progress: true` | Inspect one bounded, point-in-time partial-progress excerpt or recover partial work      |
+| `steer_subagent`                                    | Queue updated direction after the child's current assistant turn finishes its tool calls |
 
 If the next action would be an immediate blocking join, start in foreground instead. Steering fails for queued, stopped, unknown, or completed agents.
+
+Use progress once when live evidence would help decide whether to steer, or to salvage work after cancellation or failure:
+
+```json
+{
+  "id": "subagent-1",
+  "wait": false,
+  "include_progress": true
+}
+```
+
+This returns a fixed-size, point-in-time tail of assistant excerpts and tool/compaction/retry statuses. It is untrusted child-generated content, may be incomplete, and is not a final answer. Do not poll it. Queued agents report that progress is not available yet; running agents return immediately; stopped and failed agents return immediately with currently available work when `wait` is false. With `wait: true`, stopped and failed agents wait for terminal cleanup and use the frozen post-abort inspection. Completed agents always return only their authoritative final result, even when progress is requested.
 
 In the TUI, Escape during foreground work asks for confirmation before aborting all foreground agents from that turn; background agents continue.
 
@@ -61,7 +74,7 @@ The dashboard can:
 
 The shared Activity view shows current public-agent and Implement work in a bounded hierarchy. It omits prompts, commands, cwd, raw output, hidden runtime objects, and token or cost telemetry. `/agents` is the complete inspector, including Implement-managed workers and retained records.
 
-Child sessions are in-memory only. They do not appear in `/resume` and cannot be resumed after the parent session ends.
+Child sessions are in-memory only. They do not appear in `/resume` and cannot be resumed after the parent session ends. Stopped or failed partial progress is recoverable only while the current parent session remains alive; inspection does not create persistent or resumable child sessions.
 
 ## Tools and context
 

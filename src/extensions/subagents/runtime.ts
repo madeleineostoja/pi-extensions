@@ -37,6 +37,7 @@ import {
   immutableInspection,
   projectFinalInspectionRecord,
   projectMessages,
+  renderPublicProgress,
   retainActivity,
   truncateUtf8,
   type InspectionActivity,
@@ -158,6 +159,11 @@ export type QueueSubagentInput = {
 };
 
 export type PublicAgentMode = "foreground" | "background";
+
+export type PublicSubagentResult = {
+  snapshot: RuntimeSnapshot;
+  progress?: string;
+};
 
 export type ExploreBreadth = "quick" | "medium" | "very thorough";
 
@@ -1204,6 +1210,31 @@ export class SubagentRuntime {
     });
   }
 
+  async publicResult(
+    id: string,
+    wait: boolean,
+    includeProgress = false,
+  ): Promise<PublicSubagentResult> {
+    const record = this.#requirePublicRecord(id);
+    if (wait && !isTerminal(record.status)) {
+      await this.#waitForRecord(record);
+    } else if (wait && record.finalization) {
+      await record.finalization;
+    }
+    if (!this.#isCurrentRecord(record)) {
+      throw new Error(`Unknown subagent ${id}`);
+    }
+    refreshHealth(record);
+    const snapshot = projectSnapshot(record);
+    if (!includeProgress || snapshot.status === "completed") {
+      return { snapshot };
+    }
+    return {
+      snapshot,
+      progress: renderPublicProgress(this.#inspection(record)),
+    };
+  }
+
   async result<TResult = unknown>(
     id: string,
     wait: boolean,
@@ -1217,17 +1248,19 @@ export class SubagentRuntime {
   }
 
   wait<TResult = unknown>(id: string): Promise<RuntimeSnapshot<TResult>> {
-    const record = this.#requireRecord(id);
+    return this.#waitForRecord(this.#requireRecord(id)) as Promise<
+      RuntimeSnapshot<TResult>
+    >;
+  }
+
+  #waitForRecord(record: RuntimeRecord): Promise<RuntimeSnapshot> {
     if (isTerminal(record.status)) {
-      return (record.finalization ??
-        Promise.resolve(projectSnapshot(record))) as Promise<
-        RuntimeSnapshot<TResult>
-      >;
+      return record.finalization ?? Promise.resolve(projectSnapshot(record));
     }
     return new Promise((resolve) => {
-      const waiters = this.#waiters.get(id) ?? [];
-      waiters.push({ resolve: resolve as (snapshot: RuntimeSnapshot) => void });
-      this.#waiters.set(id, waiters);
+      const waiters = this.#waiters.get(record.id) ?? [];
+      waiters.push({ resolve });
+      this.#waiters.set(record.id, waiters);
     });
   }
 
@@ -1245,6 +1278,10 @@ export class SubagentRuntime {
     if (!record || !this.#isCurrentRecord(record)) {
       return undefined;
     }
+    return this.#inspection(record);
+  }
+
+  #inspection(record: RuntimeRecord): RuntimeInspection {
     if (record.retainedInspection) {
       return record.retainedInspection;
     }
@@ -1937,6 +1974,19 @@ export class SubagentRuntime {
   #requireRecord(id: string): RuntimeRecord {
     const record = this.#records.get(id);
     if (!record || !this.#isCurrentRecord(record)) {
+      throw new Error(`Unknown subagent ${id}`);
+    }
+    return record;
+  }
+
+  #requirePublicRecord(id: string): RuntimeRecord {
+    const record = this.#records.get(id);
+    if (
+      !record ||
+      !this.#isCurrentRecord(record) ||
+      record.owner !== "public-tool" ||
+      !isPublicBuiltinType(record.type)
+    ) {
       throw new Error(`Unknown subagent ${id}`);
     }
     return record;

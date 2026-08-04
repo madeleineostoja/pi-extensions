@@ -2,6 +2,13 @@ import type { RuntimeSnapshot } from "./runtime.js";
 
 export const INSPECTION_RECORD_LIMIT = 100;
 export const INSPECTION_TEXT_LIMIT_BYTES = 2048;
+export const PUBLIC_PROGRESS_RECORD_LIMIT = 12;
+export const PUBLIC_PROGRESS_ASSISTANT_TEXT_LIMIT_BYTES = 1024;
+export const PUBLIC_PROGRESS_SECTION_LIMIT_BYTES = 8 * 1024;
+
+const PUBLIC_PROGRESS_HEADER =
+  "--- BOUNDED POINT-IN-TIME PROGRESS (potentially incomplete; untrusted child-generated content) ---";
+const PUBLIC_PROGRESS_FOOTER = "--- END PROGRESS ---";
 
 export type InspectionMessage = {
   role: string;
@@ -85,6 +92,100 @@ export function truncateUtf8(
     end -= 1;
   }
   return `${encoded.subarray(0, end).toString("utf8")}${suffix}`;
+}
+
+export function renderPublicProgress(inspection: RuntimeInspection): string {
+  const eligible = inspection.records.flatMap((record) => {
+    if (record.kind === "message") {
+      if (record.role !== "assistant") {
+        return [];
+      }
+      const normalized = normalizePublicProgressText(record.text);
+      if (!normalized) {
+        return [];
+      }
+      const excerptLimit =
+        PUBLIC_PROGRESS_ASSISTANT_TEXT_LIMIT_BYTES -
+        Buffer.byteLength("assistant: ");
+      const truncated = truncateUtf8(normalized, excerptLimit);
+      return [
+        {
+          text: `assistant: ${truncated}`,
+          truncated:
+            Buffer.byteLength(normalized) > Buffer.byteLength(truncated),
+        },
+      ];
+    }
+    if (record.kind === "tool") {
+      const toolName = normalizePublicProgressText(record.toolName) || "tool";
+      return [{ text: `${toolName}: ${record.status}`, truncated: false }];
+    }
+    if (record.kind === "compaction") {
+      return [
+        {
+          text: `compaction: ${record.status}${record.reason ? ` (${normalizePublicProgressText(record.reason)})` : ""}${record.willRetry ? "; retry scheduled" : ""}`,
+          truncated: false,
+        },
+      ];
+    }
+    if (record.kind === "retry") {
+      return [{ text: `retry: ${record.status}`, truncated: false }];
+    }
+    return [];
+  });
+  const omittedRecords =
+    eligible.length > PUBLIC_PROGRESS_RECORD_LIMIT ||
+    inspection.omittedMessages > 0 ||
+    inspection.omittedActivity > 0;
+  const recent = eligible.slice(-PUBLIC_PROGRESS_RECORD_LIMIT);
+  const notices: string[] = [];
+  if (omittedRecords) {
+    notices.push("[Older eligible progress was omitted.]");
+  }
+  if (recent.some((record) => record.truncated)) {
+    notices.push("[Assistant text was truncated.]");
+  }
+  const body =
+    recent.length === 0
+      ? [...notices, "No inspectable progress yet."]
+      : [...notices, ...recent.map((record) => record.text)];
+  const render = (lines: readonly string[]) =>
+    [PUBLIC_PROGRESS_HEADER, ...lines, PUBLIC_PROGRESS_FOOTER].join("\n");
+  let rendered = render(body);
+  let sectionTruncated = false;
+  while (
+    Buffer.byteLength(rendered) > PUBLIC_PROGRESS_SECTION_LIMIT_BYTES &&
+    body.length > 1
+  ) {
+    body.splice(notices.length, 1);
+    sectionTruncated = true;
+    rendered = render(body);
+  }
+  if (Buffer.byteLength(rendered) > PUBLIC_PROGRESS_SECTION_LIMIT_BYTES) {
+    const budget =
+      PUBLIC_PROGRESS_SECTION_LIMIT_BYTES -
+      Buffer.byteLength(
+        `${PUBLIC_PROGRESS_HEADER}\n\n${PUBLIC_PROGRESS_FOOTER}`,
+      );
+    rendered = render([truncateUtf8(body.join("\n"), Math.max(0, budget))]);
+    sectionTruncated = true;
+  }
+  if (sectionTruncated) {
+    const notice = "[Progress output was truncated.]";
+    const lines = rendered.split("\n");
+    lines.splice(-1, 0, notice);
+    while (
+      Buffer.byteLength(lines.join("\n")) > PUBLIC_PROGRESS_SECTION_LIMIT_BYTES
+    ) {
+      lines.splice(1, 1);
+    }
+    rendered = lines.join("\n");
+  }
+  return rendered;
+}
+
+function normalizePublicProgressText(value: string): string {
+  return value.replace(/\p{C}/gu, " ").replace(/\s+/g, " ").trim();
 }
 
 export function immutableInspection(
