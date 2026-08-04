@@ -117,6 +117,49 @@ describe("Sandbox Bash runtime", () => {
     expect(output.join("")).toBe(`forwarded:${realpathSync(workspace)}`);
   });
 
+  it("disables optional Git locks only for protected launches unless explicitly configured", async () => {
+    const { executable, policy, workspace } = fixture();
+    const protectedRuntime = createSandboxBashRuntime({
+      policy,
+      enabled: () => true,
+      supportedMac: true,
+      sandboxExecutable: executable,
+    });
+    const inheritedEnv = executionEnv();
+    delete inheritedEnv.GIT_OPTIONAL_LOCKS;
+    for (const [env, expected] of [
+      [inheritedEnv, "0"],
+      [executionEnv({ GIT_OPTIONAL_LOCKS: "1" }), "1"],
+    ] as const) {
+      const output: string[] = [];
+      await protectedRuntime.operations.exec(
+        'printf "%s" "${GIT_OPTIONAL_LOCKS-unset}"',
+        workspace,
+        {
+          onData: (data) => output.push(data.toString()),
+          env,
+        },
+      );
+      expect(output.join("")).toBe(expected);
+    }
+
+    const localRuntime = createSandboxBashRuntime({
+      policy,
+      enabled: () => false,
+      supportedMac: true,
+    });
+    const localOutput: string[] = [];
+    await localRuntime.operations.exec(
+      'printf "%s" "${GIT_OPTIONAL_LOCKS-unset}"',
+      workspace,
+      {
+        onData: (data) => localOutput.push(data.toString()),
+        env: inheritedEnv,
+      },
+    );
+    expect(localOutput.join("")).toBe("unset");
+  });
+
   it("appends an active kernel denial to native Bash output", async () => {
     const { executable, policy, workspace } = fixture();
     const observer: SandboxDenialObserver = {
@@ -556,7 +599,7 @@ printf last`,
       },
     } as never;
     const sessionFile = join(workspace, "session.jsonl");
-    const command = `test "$PI_SESSION_FILE" = ${JSON.stringify(sessionFile)} && printf "%s|%s|%s|%s" "$PI_SESSION_ID" "$PI_PROVIDER" "$PI_MODEL" "$PI_REASONING_LEVEL"`;
+    const command = `test "$PI_SESSION_FILE" = ${JSON.stringify(sessionFile)} && printf "%s|%s|%s|%s|%s" "$GIT_OPTIONAL_LOCKS" "$PI_SESSION_ID" "$PI_PROVIDER" "$PI_MODEL" "$PI_REASONING_LEVEL"`;
     const definition = createSandboxBashDefinition(workspace, runtime);
     const foreground = await definition.execute(
       "foreground-call",
@@ -575,9 +618,11 @@ printf last`,
       onOutput: ({ data }) => managedOutput.push(data),
     });
     await lease.completion;
-    expect(Buffer.concat(managedOutput).toString()).toBe(
+    const expected = "0|shared-session|test-provider|test-model|high";
+    expect(
       foreground.content[0]?.type === "text" ? foreground.content[0].text : "",
-    );
+    ).toBe(expected);
+    expect(Buffer.concat(managedOutput).toString()).toBe(expected);
   });
 
   it("starts managed local execution only after launch and preserves tagged streams", async () => {

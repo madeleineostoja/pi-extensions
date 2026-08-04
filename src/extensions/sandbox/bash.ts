@@ -48,6 +48,12 @@ type PreparedBashLaunch = Readonly<{
   start: (child: ChildProcess) => void;
 }>;
 
+function protectedEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return env.GIT_OPTIONAL_LOCKS === undefined
+    ? { ...env, GIT_OPTIONAL_LOCKS: "0" }
+    : env;
+}
+
 function executionEnvironment(
   request?: SandboxManagedRequest,
 ): NodeJS.ProcessEnv {
@@ -218,7 +224,9 @@ export function createSandboxBashRuntime(
         (options.spawn ?? spawn)(executable, args, {
           cwd: request.cwd,
           detached: process.platform !== "win32",
-          env: request.env,
+          env: request.protectedLaunch
+            ? protectedEnvironment(request.env)
+            : request.env,
           stdio: [
             shell.commandTransport === "stdin" || request.protectedLaunch
               ? "pipe"
